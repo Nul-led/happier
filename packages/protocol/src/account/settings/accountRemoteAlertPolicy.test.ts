@@ -1,0 +1,83 @@
+import { describe, expect, it } from 'vitest';
+
+import { accountSettingsParse } from './accountSettings.js';
+import { REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS } from './attentionDeliveryPolicy.js';
+import { resolveAttentionDeliveryPolicyDecision } from './attentionDeliveryPolicyDecision.js';
+import * as remote from './accountRemoteAlertPolicy.js';
+
+describe('remote alert policy projection', () => {
+  it('derives its strict event and sound maps from the canonical supported subset', () => {
+    expect(Object.keys(remote.RemoteAlertEventPolicyMapV1Schema.shape))
+      .toEqual(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS);
+    const policy = remote.deriveAccountRemoteAlertPolicyV1({ sessionRemoteAlertsEnabled: true });
+    expect(Object.keys(policy?.events ?? {})).toEqual(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS);
+    expect(Object.keys(policy?.channels.expo_push.events ?? {})).toEqual(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS);
+  });
+
+  it('derives only explicitly enabled Account policy and preserves canonical decisions', () => {
+    expect(remote.deriveAccountRemoteAlertPolicyV1({})).toBeNull();
+    const settings = {
+      sessionRemoteAlertsEnabled: true,
+      attentionDeliveryPolicyV1: {
+        events: { ready: { enabled: false }, follow_update: { enabled: true } },
+        channels: { expo_push: { events: { user_action_request: { previewBehavior: 'title_only' } } } },
+        quietHours: { enabled: true, timezone: 'Europe/Zurich', windows: [
+          { startLocalTime: '22:00', endLocalTime: '07:00', days: ['fri', 'sat'] },
+        ] },
+        sounds: { eventSoundIds: { permission_request: 'urgent' }, volume: 0.4 },
+      },
+    };
+    const policy = remote.deriveAccountRemoteAlertPolicyV1(settings);
+    expect(policy).not.toBeNull();
+    for (const event of ['ready', 'permission_request', 'user_action_request', 'follow_update']) {
+      for (const now of ['2026-09-04T19:59:00Z', '2026-09-04T20:00:00Z', '2026-09-05T04:59:00Z', '2026-09-05T05:00:00Z']) {
+        expect(resolveAttentionDeliveryPolicyDecision({ policy, event, channel: 'expo_push', now }))
+          .toEqual(resolveAttentionDeliveryPolicyDecision({
+            policy: accountSettingsParse(settings).attentionDeliveryPolicyV1, event, channel: 'expo_push', now,
+          }));
+      }
+    }
+  });
+
+  it('normalizes legacy settings once and removes private/custom sound data', () => {
+    const policy = remote.deriveAccountRemoteAlertPolicyV1({
+      sessionRemoteAlertsEnabled: true,
+      notificationsSettingsV1: { pushEnabled: false },
+    });
+    expect(policy?.channels.expo_push.enabled).toBe(false);
+    const custom = remote.deriveAccountRemoteAlertPolicyV1({
+      sessionRemoteAlertsEnabled: true,
+      attentionDeliveryPolicyV1: {
+        events: { ready: { soundId: '/private/ready.wav', privateField: 'secret' } },
+        sounds: { defaultSoundId: '/private/default.wav' },
+        channels: { webhook: { destination: 'https://secret.example' } },
+      },
+    });
+    expect(custom?.events.ready.soundId).toBe('none');
+    expect(custom?.sounds.defaultSoundId).toBe('none');
+    expect(JSON.stringify(custom)).not.toContain('private');
+    expect(JSON.stringify(custom)).not.toContain('secret');
+  });
+
+  it('composes device inheritance separately from explicit remote enrollment and restricts previews', () => {
+    const account = remote.deriveAccountRemoteAlertPolicyV1({ sessionRemoteAlertsEnabled: true });
+    const device = {
+      v: 1, enabled: true, nativeConsumer: 'ios_service_extension_v1',
+      quietHoursOverride: { mode: 'account' }, foregroundBehavior: 'account',
+      previewCeiling: 'status_only', soundVolume: 0.7,
+    };
+    const decision = remote.resolveRemoteAlertPolicyDecision({ accountPolicy: account, devicePolicy: device,
+      event: 'permission_request', now: '2026-09-05T12:00:00Z' });
+    expect(decision?.delivery).toBe('deliver');
+    expect(decision?.previewBehavior).toBe('status_only');
+    expect(decision?.sound.volume).toBe(0.7);
+    expect(remote.resolveRemoteAlertPolicyDecision({ accountPolicy: account, devicePolicy: { ...device, enabled: false },
+      event: 'ready', now: '2026-09-05T12:00:00Z' })).toBeNull();
+    expect(remote.resolveRemoteAlertPolicyDecision({ accountPolicy: {}, devicePolicy: device,
+      event: 'ready', now: '2026-09-05T12:00:00Z' })).toBeNull();
+    expect(remote.resolveRemoteAlertPolicyDecision({ accountPolicy: account, devicePolicy: device,
+      event: 'arbitrary_invalidation', now: '2026-09-05T12:00:00Z' })).toBeNull();
+    expect(remote.resolveRemoteAlertPolicyDecision({ accountPolicy: { ...account, secret: 'private' }, devicePolicy: device,
+      event: 'ready', now: '2026-09-05T12:00:00Z' })).toBeNull();
+  });
+});

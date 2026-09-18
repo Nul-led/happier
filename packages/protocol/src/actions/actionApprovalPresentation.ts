@@ -1,0 +1,249 @@
+import { StructuredQuestionAnswersV1Schema } from '../tools/structuredQuestionAnswersV1.js';
+import type { ApprovalRequest } from '../approvals/approvalRequestV1.js';
+import { getActionSpec } from './actionSpecs.js';
+import { resolveEffectiveActionInputFields } from './actionInputHintsRuntime.js';
+import type { ActionId } from './actionIds.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+export type ApprovalStructuredAnswer = Readonly<{
+  question: string;
+  values: readonly string[];
+}>;
+
+export type ApprovalUnrepresentableReason =
+  | 'malformed_entry'
+  | 'duplicate_question'
+  | 'exceeds_protocol_bounds'
+  | 'missing_required_context';
+
+export type ApprovalStructuredAnswersProjection =
+  | Readonly<{ kind: 'valid'; answers: readonly ApprovalStructuredAnswer[] }>
+  | Readonly<{ kind: 'unrepresentable'; reason: ApprovalUnrepresentableReason }>;
+
+export type ApprovalActionFieldRow =
+  | Readonly<{ kind: 'value'; path: string; title: string; value: string }>
+  | Readonly<{ kind: 'structuredAnswers'; path: string; title: string; answers: readonly ApprovalStructuredAnswer[] }>
+  | Readonly<{ kind: 'unrepresentable'; path: string; title: string; reason: ApprovalUnrepresentableReason }>;
+
+export type ApprovalActionFieldsPresentation = Readonly<{
+  rows: readonly ApprovalActionFieldRow[];
+  unrepresentable: Readonly<{ path: string; reason: ApprovalUnrepresentableReason }> | null;
+}>;
+
+export type ApprovalRequestApproveAdmission = Readonly<
+  | {
+      status: 'available';
+      presentation: ApprovalActionFieldsPresentation;
+    }
+  | {
+      status: 'unavailable';
+      reason: 'legacy_request';
+      presentation: ApprovalActionFieldsPresentation;
+    }
+  | {
+      status: 'unavailable';
+      reason: 'context_unavailable';
+      details: NonNullable<ApprovalActionFieldsPresentation['unrepresentable']>;
+      presentation: ApprovalActionFieldsPresentation;
+    }
+>;
+
+const STRUCTURED_ANSWER_FIELD_PATH_BY_ACTION_ID: Readonly<Record<string, string>> = {
+  'session.user_action.answer': 'answers',
+};
+
+function visitSegments(value: unknown, segments: readonly string[], index: number, output: unknown[]): void {
+  if (index >= segments.length) {
+    output.push(value);
+    return;
+  }
+  const segment = segments[index];
+  if (!segment) return;
+  if (segment === '[]') {
+    if (!Array.isArray(value)) return;
+    for (const entry of value) visitSegments(entry, segments, index + 1, output);
+    return;
+  }
+  if (!isRecord(value)) return;
+  visitSegments(value[segment], segments, index + 1, output);
+}
+
+export function getApprovalFieldValues(input: unknown, path: string): readonly unknown[] {
+  if (path === 'answers.[].values' && isRecord(input) && Array.isArray(input.answers)) {
+    return input.answers.flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      if (Array.isArray(entry.values)) return entry.values;
+      return typeof entry.answer === 'string' ? [entry.answer] : [];
+    });
+  }
+  const segments = path.split('.').map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0) return [];
+  const output: unknown[] = [];
+  visitSegments(input, segments, 0, output);
+  return output;
+}
+
+export function shouldHideApprovalField(path: string, allPaths: readonly string[]): boolean {
+  if (!path || path.endsWith('.[]')) return true;
+  return allPaths.some((candidate) => candidate !== path
+    && (candidate.startsWith(`${path}.`) || candidate.startsWith(`${path}.[`)));
+}
+
+export function formatApprovalFieldValues(values: readonly unknown[]): string | null {
+  const formatted = values.flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .map((value) => {
+      if (typeof value === 'string') return value.trim();
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+      if (value && typeof value === 'object') {
+        try {
+          return JSON.stringify(value) ?? '';
+        } catch {
+          return '';
+        }
+      }
+      return '';
+    })
+    .filter((value) => value.length > 0);
+  return formatted.length > 0 ? formatted.join(', ') : null;
+}
+
+export function projectApprovalStructuredAnswers(values: readonly unknown[]): ApprovalStructuredAnswersProjection {
+  const entries = values.flatMap((value) => {
+    if (value === undefined || value === null) return [];
+    return Array.isArray(value) ? value : [value];
+  });
+  const candidate = Object.create(null) as Record<string, readonly string[]>;
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.question !== 'string') {
+      return { kind: 'unrepresentable', reason: 'malformed_entry' };
+    }
+    if (Object.hasOwn(candidate, entry.question)) {
+      return { kind: 'unrepresentable', reason: 'duplicate_question' };
+    }
+    const rawValues = Array.isArray(entry.values)
+      ? entry.values
+      : (entry.answer === undefined ? [] : [entry.answer]);
+    if (rawValues.length === 0 || rawValues.some((value) => typeof value !== 'string')) {
+      return { kind: 'unrepresentable', reason: 'malformed_entry' };
+    }
+    candidate[entry.question] = rawValues as readonly string[];
+  }
+  const parsed = StructuredQuestionAnswersV1Schema.safeParse(candidate);
+  if (!parsed.success) return { kind: 'unrepresentable', reason: 'exceeds_protocol_bounds' };
+  return {
+    kind: 'valid',
+    answers: Object.entries(parsed.data).map(([question, values]) => ({ question, values })),
+  };
+}
+
+/**
+ * Selects the host-owned observation-safe arguments persisted in the approval
+ * preview. Released artifacts without that envelope fall back to the Action's
+ * own observation projection; raw secret-bearing arguments are never selected
+ * merely because the presentation envelope is absent or mismatched.
+ */
+export function resolveApprovalPresentationInput(input: Readonly<{
+  actionId: string;
+  actionArgs: unknown;
+  preview?: unknown;
+}>): unknown {
+  if (isRecord(input.preview)
+    && input.preview.actionId === input.actionId
+    && Object.hasOwn(input.preview, 'actionArgs')) {
+    return input.preview.actionArgs;
+  }
+  try {
+    const spec = getActionSpec(input.actionId as ActionId);
+    return spec.projectObservationInput
+      ? spec.projectObservationInput(input.actionArgs)
+      : input.actionArgs;
+  } catch {
+    return {};
+  }
+}
+
+/** One Protocol-owned reading governs both rendered fields and approval admission. */
+export function describeApprovalActionFields(input: Readonly<{
+  actionId: string;
+  actionArgs: unknown;
+  preview?: unknown;
+}>): ApprovalActionFieldsPresentation {
+  let spec;
+  try {
+    spec = getActionSpec(input.actionId as ActionId);
+  } catch {
+    return { rows: [], unrepresentable: null };
+  }
+  const presentationInput = resolveApprovalPresentationInput(input);
+  const resolved = resolveEffectiveActionInputFields(spec, presentationInput);
+  const paths = resolved.map((field) => field.path);
+  const structuredAnswerPath = STRUCTURED_ANSWER_FIELD_PATH_BY_ACTION_ID[input.actionId];
+  const rows: ApprovalActionFieldRow[] = [];
+  let unrepresentable: ApprovalActionFieldsPresentation['unrepresentable'] = null;
+
+  for (const field of resolved) {
+    if (shouldHideApprovalField(field.path, paths)) continue;
+    const values = getApprovalFieldValues(presentationInput, field.path);
+    if (structuredAnswerPath !== undefined && field.path === structuredAnswerPath) {
+      const projection = projectApprovalStructuredAnswers(values);
+      if (projection.kind === 'unrepresentable') {
+        unrepresentable ??= { path: field.path, reason: projection.reason };
+        rows.push({ kind: 'unrepresentable', path: field.path, title: field.title, reason: projection.reason });
+      } else if (projection.answers.length > 0) {
+        rows.push({ kind: 'structuredAnswers', path: field.path, title: field.title, answers: projection.answers });
+      }
+      continue;
+    }
+    const value = formatApprovalFieldValues(values);
+    if (value === null) {
+      if (field.required) {
+        const reason = 'missing_required_context' as const;
+        unrepresentable ??= { path: field.path, reason };
+        rows.push({ kind: 'unrepresentable', path: field.path, title: field.title, reason });
+      }
+      continue;
+    }
+    rows.push({ kind: 'value', path: field.path, title: field.title, value });
+  }
+  return { rows, unrepresentable };
+}
+
+export function describeApprovalRequestFields(
+  request: Pick<ApprovalRequest, 'actionId' | 'actionArgs' | 'preview'>,
+): ApprovalActionFieldsPresentation {
+  return describeApprovalActionFields({
+    actionId: request.actionId,
+    actionArgs: request.actionArgs,
+    ...(request.preview === undefined ? {} : { preview: request.preview }),
+  });
+}
+
+/**
+ * The single Protocol-owned admission for an Approve decision.
+ *
+ * Released V1 requests stay readable and rejectable, but cannot prove the
+ * immutable execution origin needed for replay. Current requests additionally
+ * fail closed when the Action's required observation-safe context could not be
+ * represented. UI controls and the executor consume this same result so a
+ * button cannot advertise an effect that the decision owner will reject.
+ */
+export function resolveApprovalRequestApproveAdmission(
+  request: ApprovalRequest,
+): ApprovalRequestApproveAdmission {
+  const presentation = describeApprovalRequestFields(request);
+  if (request.v === 1) {
+    return { status: 'unavailable', reason: 'legacy_request', presentation };
+  }
+  if (presentation.unrepresentable) {
+    return {
+      status: 'unavailable',
+      reason: 'context_unavailable',
+      details: presentation.unrepresentable,
+      presentation,
+    };
+  }
+  return { status: 'available', presentation };
+}

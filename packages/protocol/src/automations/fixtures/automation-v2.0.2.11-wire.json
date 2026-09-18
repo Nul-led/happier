@@ -1,0 +1,125 @@
+{
+  "_provenance": {
+    "commit": "98ea8fb76733b1dd785d38c31360179cafa84824",
+    "tags": [
+      "server-v0.2.11",
+      "server-v0.2.11-preview.2",
+      "cli-v0.2.11",
+      "cli-v0.2.11-preview.2",
+      "ui-web-v0.2.11",
+      "ui-web-v0.2.11-preview.186"
+    ],
+    "sources": [
+      "apps/server/sources/app/api/routes/automations/registerAutomationDaemonRoutes.ts",
+      "apps/cli/src/daemon/automation/automationClaimClient.ts",
+      "apps/cli/src/daemon/automation/automationTypes.ts",
+      "apps/ui/sources/sync/api/automations/apiAutomationTypes.ts"
+    ],
+    "note": "Raw representative JSON pinned from the released serializers and strict readers at the named immutable commit; it is intentionally independent of current TypeScript constructors."
+  },
+  "definition": {
+    "id": "automation-schedule",
+    "name": "Daily summary",
+    "description": null,
+    "enabled": true,
+    "schedule": {
+      "kind": "interval",
+      "scheduleExpr": null,
+      "everyMs": 60000,
+      "timezone": null
+    },
+    "targetType": "new_session",
+    "templateCiphertext": "{\"kind\":\"happier_automation_template_plain_v1\",\"payload\":{\"prompt\":\"daily\"}}",
+    "templateVersion": 2,
+    "nextRunAt": 1786363200000,
+    "lastRunAt": null,
+    "createdAt": 1786363200000,
+    "updatedAt": 1786363200000,
+    "assignments": [
+      {
+        "machineId": "machine-1",
+        "enabled": true,
+        "priority": 0,
+        "updatedAt": 1786363200000
+      }
+    ]
+  },
+  "run": {
+    "id": "run-v2",
+    "automationId": "automation-v2",
+    "state": "claimed",
+    "scheduledAt": 1723247201000,
+    "dueAt": 1723247201000,
+    "claimedAt": 1723247201001,
+    "startedAt": null,
+    "finishedAt": null,
+    "claimedByMachineId": "machine-v2",
+    "leaseExpiresAt": 1723247231001,
+    "attempt": 1,
+    "summaryCiphertext": null,
+    "errorCode": null,
+    "errorMessage": null,
+    "producedSessionId": null,
+    "createdAt": 1723247201000,
+    "updatedAt": 1723247201001
+  },
+  "claimRequest": {
+    "machineId": "machine-v2",
+    "leaseDurationMs": 30000
+  },
+  "claimResponse": {
+    "run": {
+      "id": "run-v2",
+      "automationId": "automation-v2",
+      "state": "claimed",
+      "scheduledAt": 1723247201000,
+      "dueAt": 1723247201000,
+      "claimedAt": 1723247201001,
+      "startedAt": null,
+      "finishedAt": null,
+      "claimedByMachineId": "machine-v2",
+      "leaseExpiresAt": 1723247231001,
+      "attempt": 1,
+      "summaryCiphertext": null,
+      "errorCode": null,
+      "errorMessage": null,
+      "producedSessionId": null,
+      "createdAt": 1723247201000,
+      "updatedAt": 1723247201001
+    },
+    "automation": {
+      "id": "automation-v2",
+      "name": "V2 schedule",
+      "enabled": true,
+      "targetType": "new_session",
+      "templateCiphertext": "{\"kind\":\"happier_automation_template_plain_v1\",\"payload\":{\"prompt\":\"daily\"}}"
+    }
+  },
+  "assignmentResponse": {
+    "assignments": [
+      {
+        "machineId": "machine-1",
+        "enabled": true,
+        "priority": 7,
+        "updatedAt": 1787832000000,
+        "automation": {
+          "id": "automation-1",
+          "name": "Canonical schedule",
+          "enabled": true,
+          "schedule": {
+            "kind": "interval",
+            "scheduleExpr": null,
+            "everyMs": 120000,
+            "timezone": "UTC"
+          },
+          "targetType": "new_session",
+          "templateCiphertext": "{\"kind\":\"happier_automation_template_plain_v1\",\"payload\":{\"prompt\":\"daily\"}}",
+          "templateVersion": 3,
+          "nextRunAt": 1787832030000,
+          "lastRunAt": null,
+          "updatedAt": 1787832000000
+        }
+      }
+    ]
+  }
+}

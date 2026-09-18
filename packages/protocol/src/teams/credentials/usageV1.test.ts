@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  TeamCredentialUsageCapabilitiesV1Schema,
+  TeamCredentialUsageLimitDenialV1Schema,
+  TeamCredentialUsageLimitListInputV1Schema,
+  TeamCredentialUsageLimitListOutputV1Schema,
+  TeamCredentialUsageQueryResultV1Schema,
+} from './usageV1.js';
+
+describe('Team credential usage capability and denial contracts', () => {
+  it('requires explicit limit coverage so omitted capability data fails closed', () => {
+    expect(TeamCredentialUsageCapabilitiesV1Schema.safeParse({
+      inferenceRequests: 'available', totalTokens: 'available', costUsd: 'unavailable',
+    }).success).toBe(false);
+    expect(TeamCredentialUsageCapabilitiesV1Schema.parse({
+      inferenceRequests: 'available', totalTokens: 'available', costUsd: 'unavailable',
+      limitCoverage: 'brokered_only',
+    }).limitCoverage).toBe('brokered_only');
+  });
+
+  it('accepts the closed recipient-safe denial shape and rejects private limit facts', () => {
+    const denial = {
+      metric: 'total_tokens',
+      remaining: '0',
+      resetsAtUtc: '2026-09-15T00:00:00.000Z',
+    } as const;
+    expect(TeamCredentialUsageLimitDenialV1Schema.parse(denial)).toEqual(denial);
+    expect(TeamCredentialUsageLimitDenialV1Schema.safeParse({
+      ...denial, limitId: 'private-limit', maximum: '100', memberId: 'private-member',
+    }).success).toBe(false);
+  });
+});
+
+const usageLimit = {
+  id: 'limit-1',
+  subjectKind: 'resource',
+  subjectId: '',
+  period: 'day',
+  metric: 'inference_requests',
+  maximum: '10',
+  enabled: true,
+  currentWindow: {
+    recorded: '3',
+    resetsAtUtc: '2026-09-09T00:00:00.000Z',
+  },
+} as const;
+
+describe('Team credential usage-limit paging contracts', () => {
+  it('accepts an opaque cursor and a bounded page size', () => {
+    expect(TeamCredentialUsageLimitListInputV1Schema.parse({
+      resourceId: 'resource-1',
+      cursor: 'opaque-cursor',
+      limit: 25,
+    })).toEqual({
+      resourceId: 'resource-1',
+      cursor: 'opaque-cursor',
+      limit: 25,
+    });
+
+    expect(TeamCredentialUsageLimitListInputV1Schema.parse({
+      resourceId: 'resource-1',
+    })).toEqual({ resourceId: 'resource-1', limit: 50 });
+
+    expect(TeamCredentialUsageLimitListInputV1Schema.safeParse({
+      resourceId: 'resource-1',
+      limit: 0,
+    }).success).toBe(false);
+
+    expect(TeamCredentialUsageLimitListInputV1Schema.safeParse({
+      resourceId: 'resource-1',
+      limit: 101,
+    }).success).toBe(false);
+  });
+
+  it('projects one page with an explicit continuation cursor', () => {
+    expect(TeamCredentialUsageLimitListOutputV1Schema.parse({
+      limits: [usageLimit],
+      nextCursor: 'next-page',
+    })).toEqual({ limits: [usageLimit], nextCursor: 'next-page' });
+
+    expect(TeamCredentialUsageLimitListOutputV1Schema.safeParse({
+      limits: [usageLimit],
+    }).success).toBe(false);
+  });
+
+  it('does not impose a whole-resource 1,000-limit ceiling on the wire contract', () => {
+    const limits = Array.from({ length: 1_001 }, (_, index) => ({
+      ...usageLimit,
+      id: `limit-${index}`,
+    }));
+
+    expect(TeamCredentialUsageLimitListOutputV1Schema.safeParse({
+      limits,
+      nextCursor: null,
+    }).success).toBe(true);
+  });
+});
+
+describe('Team credential usage coverage contract', () => {
+  it('requires independent completeness and disjoint observation counters', () => {
+    const result = {
+      v: 1,
+      totals: {
+        eventCount: 3,
+        requestCount: 2,
+        tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 3 },
+        cost: {
+          reportedUsd: 0, estimatedUsd: 0, invoiceUsd: 0, effectiveUsd: 0,
+          billingContext: 'unknown', costSource: 'none', currency: 'USD',
+        },
+      },
+      coverage: {
+        requestAdmissionCount: 2,
+        agentObservationCount: 1,
+        externalTerminalObservationCount: 1,
+        directRecordedUseOnly: false,
+        requestCountCoverage: 'complete',
+        tokenCoverage: 'partial',
+        costCoverage: 'unavailable',
+        unobservedExternalRequestCount: 1,
+      },
+      series: [],
+      nextCursor: null,
+      limits: [],
+    } as const;
+
+    expect(TeamCredentialUsageQueryResultV1Schema.parse(result).coverage).toEqual(result.coverage);
+    expect(TeamCredentialUsageQueryResultV1Schema.safeParse({
+      ...result,
+      coverage: { ...result.coverage, costIncomplete: true },
+    }).success).toBe(false);
+  });
+});

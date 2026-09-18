@@ -1,0 +1,38 @@
+import { z } from 'zod';
+import { SessionBoardTabIdSchema, SessionSurfaceItemIdSchema } from './ids.js';
+
+export const SessionBoardItemWidthSchema = z.enum(['compact', 'medium', 'wide', 'full']);
+export const SessionBoardLayoutV1Schema = z.object({
+  v: z.literal(1),
+  tabs: z.array(z.object({
+    id: SessionBoardTabIdSchema,
+    title: z.string().trim(),
+    items: z.array(z.object({
+      itemId: SessionSurfaceItemIdSchema,
+      width: SessionBoardItemWidthSchema,
+    }).strict()),
+  }).strict()),
+}).strict().superRefine((layout, context) => {
+  const tabs = new Set<string>();
+  layout.tabs.forEach((tab, tabIndex) => {
+    if (tabs.has(tab.id)) context.addIssue({ code: 'custom', path: ['tabs', tabIndex, 'id'], message: 'Duplicate Board view identity' });
+    tabs.add(tab.id);
+    const items = new Set<string>();
+    tab.items.forEach((item, itemIndex) => {
+      if (items.has(item.itemId)) context.addIssue({ code: 'custom', path: ['tabs', tabIndex, 'items', itemIndex, 'itemId'], message: 'Duplicate placement in Board view' });
+      items.add(item.itemId);
+    });
+  });
+});
+export type SessionBoardItemWidth = z.infer<typeof SessionBoardItemWidthSchema>;
+export type SessionBoardLayoutV1 = Readonly<{
+  v: 1;
+  tabs: readonly Readonly<{
+    id: z.infer<typeof SessionBoardTabIdSchema>;
+    title: string;
+    items: readonly Readonly<{
+      itemId: z.infer<typeof SessionSurfaceItemIdSchema>;
+      width: SessionBoardItemWidth;
+    }>[];
+  }>[];
+}>;

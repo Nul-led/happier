@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest';
+
+import { McpServersSettingsV1Schema } from '../mcp/servers/settingsV1.js';
+import { resolveRunnerMcpMaterialV1, RunnerMcpMaterialV1Schema } from './runnerMcpMaterial.js';
+
+describe('resolveRunnerMcpMaterialV1', () => {
+  it('freezes the exact portable selection revisions and resolved secret material', () => {
+    const settings = McpServersSettingsV1Schema.parse({
+      v: 1,
+      strictMode: true,
+      servers: [{
+        id: 'github', name: 'github', transport: 'http',
+        remote: { url: 'https://mcp.example.test', headers: { Authorization: { t: 'savedSecret', secretId: 'token' } } },
+        env: {}, createdAt: 10, updatedAt: 20,
+      }],
+      bindings: [{ id: 'all', serverId: 'github', enabled: true, target: { t: 'allMachines' }, createdAt: 30, updatedAt: 40 }],
+    });
+
+    expect(resolveRunnerMcpMaterialV1({
+      settings,
+      selection: { v: 1, managedServersEnabled: true, forceIncludeServerIds: ['github'], forceExcludeServerIds: [] },
+      resolveSavedSecret: (id) => id === 'token' ? { value: 'Bearer reviewed-secret', revision: 15 } : null,
+    })).toEqual({
+      ok: true,
+      material: {
+        v: 1,
+        strictMode: true,
+        selection: { v: 1, managedServersEnabled: true, forceIncludeServerIds: ['github'], forceExcludeServerIds: [] },
+        servers: [{
+          serverId: 'github', serverRevision: 20, bindingId: 'all', bindingRevision: 40,
+          savedSecretRevisions: [{ secretId: 'token', revision: 15 }],
+          config: {
+            id: 'github', name: 'github', transport: 'http',
+            remote: { url: 'https://mcp.example.test', headers: { Authorization: { t: 'literal', v: 'Bearer reviewed-secret' } } },
+            env: {}, createdAt: 10, updatedAt: 20,
+          },
+        }],
+      },
+    });
+  });
+
+  it('returns a source-specific refusal for a selected machine-scoped server', () => {
+    const settings = McpServersSettingsV1Schema.parse({
+      servers: [{ id: 'local', name: 'local', transport: 'stdio', stdio: { command: 'tool', args: [] }, env: {}, createdAt: 1, updatedAt: 2 }],
+      bindings: [{ id: 'machine', serverId: 'local', enabled: true, target: { t: 'machine', machineId: 'm1' }, createdAt: 3, updatedAt: 4 }],
+    });
+    expect(resolveRunnerMcpMaterialV1({
+      settings,
+      selection: { v: 1, managedServersEnabled: false, forceIncludeServerIds: ['local'], forceExcludeServerIds: [] },
+      resolveSavedSecret: () => null,
+    })).toEqual({ ok: false, reason: 'machine_scoped', serverId: 'local', valuePath: null });
+  });
+
+  it('does not reinterpret a removed selected server as a portability failure', () => {
+    const settings = McpServersSettingsV1Schema.parse({ servers: [], bindings: [] });
+    expect(resolveRunnerMcpMaterialV1({
+      settings,
+      selection: { v: 1, managedServersEnabled: false, forceIncludeServerIds: ['removed'], forceExcludeServerIds: [] },
+      resolveSavedSecret: () => null,
+    })).toEqual({ ok: false, reason: 'server_unavailable', serverId: 'removed', valuePath: null });
+  });
+
+  it('names a selected server whose binding was removed', () => {
+    const settings = McpServersSettingsV1Schema.parse({
+      servers: [{ id: 'unbound', name: 'unbound', transport: 'stdio', stdio: { command: 'tool', args: [] }, env: {}, createdAt: 1, updatedAt: 2 }],
+      bindings: [],
+    });
+    expect(resolveRunnerMcpMaterialV1({
+      settings,
+      selection: { v: 1, managedServersEnabled: false, forceIncludeServerIds: ['unbound'], forceExcludeServerIds: [] },
+      resolveSavedSecret: () => null,
+    })).toEqual({ ok: false, reason: 'binding_unavailable', serverId: 'unbound', valuePath: null });
+  });
+
+  it('rejects a reviewed server whose bound identity revision was substituted', () => {
+    expect(RunnerMcpMaterialV1Schema.safeParse({
+      v: 1,
+      strictMode: true,
+      selection: { v: 1, managedServersEnabled: true, forceIncludeServerIds: [], forceExcludeServerIds: [] },
+      servers: [{
+        serverId: 'server-a', serverRevision: 3, bindingId: null, bindingRevision: null,
+        savedSecretRevisions: [],
+        config: {
+          id: 'server-a', name: 'server-a', transport: 'stdio',
+          stdio: { command: 'tool', args: [] }, env: {}, createdAt: 1, updatedAt: 2,
+        },
+      }],
+    }).success).toBe(false);
+  });
+
+  it('returns a source-specific refusal for an unresolved environment template', () => {
+    const settings = McpServersSettingsV1Schema.parse({
+      servers: [{ id: 'env', name: 'env', transport: 'stdio', stdio: { command: 'tool', args: [] }, env: { TOKEN: { t: 'literal', v: '${TOKEN}' } }, createdAt: 1, updatedAt: 2 }],
+      bindings: [{ id: 'all', serverId: 'env', enabled: true, target: { t: 'allMachines' }, createdAt: 3, updatedAt: 4 }],
+    });
+    expect(resolveRunnerMcpMaterialV1({ settings, selection: null, resolveSavedSecret: () => null }))
+      .toEqual({ ok: false, reason: 'endpoint_environment', serverId: 'env', valuePath: 'env:TOKEN' });
+  });
+});

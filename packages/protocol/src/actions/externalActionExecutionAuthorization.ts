@@ -1,0 +1,129 @@
+import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
+import { computeCanonicalDomainSeparatedDigest, encodeCanonicalLengthDelimited } from '../crypto/canonicalDigest.js';
+import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
+import { signEd25519Message, verifyEd25519Signature } from '../crypto/ed25519.js';
+import { MachineInstallationPrivateKeySchema, MachineInstallationPublicKeySchema } from '../machines/identity/installationIdentity.js';
+import { ExternalActionRequestEnvelopeSchema, ExternalActionTargetV1Schema, type ExternalActionTargetV1, type ExternalActionRequestEnvelope } from './externalActionApi.js';
+
+export function computeExternalActionRequestEnvelopeDigestV1(envelope: ExternalActionRequestEnvelope): string {
+  return computeCanonicalDomainSeparatedDigest('happier-external-action-envelope-v1', [
+    createCanonicalJsonSigningInput(ExternalActionRequestEnvelopeSchema.parse(envelope)),
+  ]);
+}
+
+export function encodeExternalActionResolvedTargetV1(target: ExternalActionTargetV1): string {
+  return encodeBase64(new TextEncoder().encode(createCanonicalJsonSigningInput(ExternalActionTargetV1Schema.parse(target))), 'base64url');
+}
+
+export function decodeExternalActionResolvedTargetV1(value: string): ExternalActionTargetV1 | null {
+  try {
+    const target = ExternalActionTargetV1Schema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64(value, 'base64url'))));
+    return encodeExternalActionResolvedTargetV1(target) === value ? target : null;
+  } catch { return null; }
+}
+
+type MachineRequest = Readonly<{
+  authorizationToken: string;
+  effectActionId: string;
+  target: ExternalActionTargetV1;
+  installationId: string;
+  requestId: string;
+  method: string;
+  path: string;
+  body?: unknown;
+}>;
+
+function machineRequestBytes(request: MachineRequest): Uint8Array {
+  return encodeCanonicalLengthDelimited([
+    'happier-external-action-machine-request-v1', request.authorizationToken, request.effectActionId,
+    request.installationId, request.requestId,
+    createCanonicalJsonSigningInput(ExternalActionTargetV1Schema.parse(request.target)),
+    request.method.toUpperCase(), request.path,
+    request.body === undefined ? 'absent' : 'json',
+    createCanonicalJsonSigningInput(request.body === undefined ? null : request.body),
+  ]);
+}
+
+type ApprovalInput = Readonly<{ authorizationToken: string; actionId: string; target: ExternalActionTargetV1; input: unknown }>;
+type MachineRpcRequest = Readonly<{
+  authorizationToken: string;
+  effectActionId: string;
+  target: ExternalActionTargetV1;
+  installationId: string;
+  /** Caller supplies the carrier identity; production binds SOCKET_RPC_EVENTS.CALL. */
+  event: string;
+  method: string;
+  requestId: string;
+  params?: unknown;
+}>;
+
+function machineRpcRequestBytes(request: MachineRpcRequest): Uint8Array {
+  return encodeCanonicalLengthDelimited([
+    'happier-external-action-machine-rpc-v1', request.authorizationToken,
+    request.effectActionId, request.installationId,
+    request.event,
+    createCanonicalJsonSigningInput(ExternalActionTargetV1Schema.parse(request.target)),
+    request.method, request.requestId,
+    request.params === undefined ? 'absent' : 'json',
+    computeCanonicalDomainSeparatedDigest('happier-external-action-rpc-payload-v1', [
+      createCanonicalJsonSigningInput(request.params === undefined ? null : request.params),
+    ]),
+  ]);
+}
+
+export function signExternalActionMachineRpcRequestV1(input: MachineRpcRequest & Readonly<{ privateKey: string | Uint8Array }>): string {
+  const privateKey = typeof input.privateKey === 'string'
+    ? decodeBase64(MachineInstallationPrivateKeySchema.parse(input.privateKey), 'base64url') : input.privateKey;
+  return encodeBase64(signEd25519Message(machineRpcRequestBytes(input), privateKey), 'base64url');
+}
+
+export function verifyExternalActionMachineRpcRequestV1(input: MachineRpcRequest & Readonly<{ publicKey: string | Uint8Array; signature: string }>): boolean {
+  try {
+    const publicKey = typeof input.publicKey === 'string'
+      ? decodeBase64(MachineInstallationPublicKeySchema.parse(input.publicKey), 'base64url') : input.publicKey;
+    const signature = decodeBase64(input.signature, 'base64url');
+    if (encodeBase64(signature, 'base64url') !== input.signature) return false;
+    return verifyEd25519Signature(machineRpcRequestBytes(input), signature, publicKey);
+  } catch { return false; }
+}
+
+function approvalInputBytes(input: ApprovalInput): Uint8Array {
+  return encodeCanonicalLengthDelimited([
+    'happier-external-action-approval-input-v1', input.authorizationToken,
+    input.actionId, createCanonicalJsonSigningInput(ExternalActionTargetV1Schema.parse(input.target)),
+    createCanonicalJsonSigningInput(input.input),
+  ]);
+}
+
+export function signExternalActionApprovalInputV1(input: ApprovalInput & Readonly<{ privateKey: string | Uint8Array }>): string {
+  const privateKey = typeof input.privateKey === 'string'
+    ? decodeBase64(MachineInstallationPrivateKeySchema.parse(input.privateKey), 'base64url') : input.privateKey;
+  return encodeBase64(signEd25519Message(approvalInputBytes(input), privateKey), 'base64url');
+}
+
+export function verifyExternalActionApprovalInputV1(input: ApprovalInput & Readonly<{ publicKey: string | Uint8Array; signature: string }>): boolean {
+  try {
+    const publicKey = typeof input.publicKey === 'string'
+      ? decodeBase64(MachineInstallationPublicKeySchema.parse(input.publicKey), 'base64url') : input.publicKey;
+    const signature = decodeBase64(input.signature, 'base64url');
+    if (encodeBase64(signature, 'base64url') !== input.signature) return false;
+    return verifyEd25519Signature(approvalInputBytes(input), signature, publicKey);
+  } catch { return false; }
+}
+
+/** Uses the existing installation key; the Home authorization is never sufficient alone. */
+export function signExternalActionMachineRequestV1(input: MachineRequest & Readonly<{ privateKey: string | Uint8Array }>): string {
+  const privateKey = typeof input.privateKey === 'string'
+    ? decodeBase64(MachineInstallationPrivateKeySchema.parse(input.privateKey), 'base64url') : input.privateKey;
+  return encodeBase64(signEd25519Message(machineRequestBytes(input), privateKey), 'base64url');
+}
+
+export function verifyExternalActionMachineRequestV1(input: MachineRequest & Readonly<{ publicKey: string | Uint8Array; signature: string }>): boolean {
+  try {
+    const publicKey = typeof input.publicKey === 'string'
+      ? decodeBase64(MachineInstallationPublicKeySchema.parse(input.publicKey), 'base64url') : input.publicKey;
+    const signature = decodeBase64(input.signature, 'base64url');
+    if (encodeBase64(signature, 'base64url') !== input.signature) return false;
+    return verifyEd25519Signature(machineRequestBytes(input), signature, publicKey);
+  } catch { return false; }
+}

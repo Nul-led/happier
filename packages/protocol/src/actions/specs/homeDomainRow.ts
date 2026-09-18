@@ -1,0 +1,112 @@
+import type { z } from 'zod';
+
+import type { ActionInputFieldHint, PreNormalizedActionSpec } from '../actionSpecs.js';
+
+export function homeDomainApprovalField(
+  path: string,
+  title: string,
+  options: Partial<Pick<ActionInputFieldHint, 'widget' | 'required' | 'listSeparator'>> = {},
+): ActionInputFieldHint {
+  return { path, title, widget: options.widget ?? 'text', ...options };
+}
+
+/**
+ * The one row shape for the Home family.
+ *
+ * Each row is the single declaration of its intent: the path it travels, the
+ * strict input it accepts and the strict result it returns. Hosts derive their
+ * lookup from the registered rows rather than from a parallel table, so a path
+ * or codec can never disagree with the catalog.
+ *
+ * `mcp` stays off across the family. External MCP exposure needs its own
+ * supported authority and approval contract; the in-session Agent surface is the
+ * exposure the Home family is actually admitted on today, and adding a tool name
+ * would enable the external bridge before that contract exists.
+ */
+type HomeDomainActionRowInput<
+  TActionId extends PreNormalizedActionSpec['id'],
+  TInputSchema extends z.ZodTypeAny,
+  TOutputSchema extends z.ZodTypeAny,
+> = Readonly<{
+  id: TActionId;
+  title: string;
+  description: string;
+  safety: 'safe' | 'danger';
+  sideEffectClass: 'read' | 'write' | 'external' | 'danger';
+  cliPath: readonly string[];
+  inputSchema: TInputSchema;
+  outputSchema: TOutputSchema;
+  /**
+   * The REST verb this row travels on. POST is the default because the Home
+   * families are intent-shaped; the directory family is resource-shaped and
+   * declares its own verb per row.
+   */
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  path: string;
+  /**
+   * The generated-SDK method path, when the derived one would nest under a
+   * sibling Action. An id that is the exact prefix of another id — `…remove`
+   * beside `…remove.preview` — cannot be both a callable method and a
+   * namespace, so the shorter one takes an explicit verb leaf. This changes the
+   * generated SDK shape only: the Action id, its route and its authorization
+   * are untouched.
+   */
+  sdkMethod?: string;
+  /**
+   * Whether an autonomous Agent may invoke the Action directly. Human UI/CLI,
+   * public API and trusted-plugin exposure remain independently derived.
+   */
+  agent?: boolean;
+  inputHints?: PreNormalizedActionSpec['inputHints'];
+  projectObservationInput?: PreNormalizedActionSpec['projectObservationInput'];
+  projectObservationOutput?: PreNormalizedActionSpec['projectObservationOutput'];
+  approvalResultCustody?: PreNormalizedActionSpec['approvalResultCustody'];
+}>;
+
+export type HomeDomainActionRow<
+  TActionId extends PreNormalizedActionSpec['id'],
+  TInputSchema extends z.ZodTypeAny,
+  TOutputSchema extends z.ZodTypeAny,
+> = Omit<PreNormalizedActionSpec, 'id' | 'inputSchema' | 'outputSchema'> & Readonly<{
+  id: TActionId;
+  inputSchema: TInputSchema;
+  outputSchema: TOutputSchema;
+}>;
+
+export function homeDomainActionRow<
+  const TActionId extends PreNormalizedActionSpec['id'],
+  const TInputSchema extends z.ZodTypeAny,
+  const TOutputSchema extends z.ZodTypeAny,
+>(spec: HomeDomainActionRowInput<TActionId, TInputSchema, TOutputSchema>): HomeDomainActionRow<
+  TActionId,
+  TInputSchema,
+  TOutputSchema
+> {
+  return {
+    id: spec.id,
+    title: spec.title,
+    description: spec.description,
+    safety: spec.safety,
+    // The Home transaction rechecks the actual principal's capabilities; this
+    // floor only says the operation is Account-scoped automation, never that a
+    // holder of an Account bearer may perform it.
+    requiredAuthority: 'account_automation',
+    executionPlacement: 'account',
+    cli: {
+      commands: [{ path: [...spec.cliPath], visibility: 'canonical' }],
+      acceptsServerId: true,
+      requiresServerId: true,
+    },
+    ...(spec.sdkMethod ? { bindings: { sdkMethod: spec.sdkMethod } } : {}),
+    placements: [],
+    surfaces: { ui: true, voice: false, agent: spec.agent ?? true, mcp: false, cli: true, rpc: false },
+    sideEffectClass: spec.sideEffectClass,
+    inputHints: spec.inputHints ?? { fields: [] },
+    inputSchema: spec.inputSchema,
+    outputSchema: spec.outputSchema,
+    ...(spec.projectObservationInput ? { projectObservationInput: spec.projectObservationInput } : {}),
+    ...(spec.projectObservationOutput ? { projectObservationOutput: spec.projectObservationOutput } : {}),
+    ...(spec.approvalResultCustody ? { approvalResultCustody: spec.approvalResultCustody } : {}),
+    serverTransport: { method: spec.method ?? 'POST', path: spec.path },
+  };
+}

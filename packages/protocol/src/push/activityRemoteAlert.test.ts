@@ -1,0 +1,182 @@
+import { describe, expect, it } from 'vitest';
+
+import { AttentionDeliveryEventIdSchema } from '../account/settings/attentionDeliveryPolicy.js';
+
+import {
+  ACTIVITY_REMOTE_ALERT_EVENT_TYPES_V1,
+  ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1,
+  ActivityRemoteAlertEventV1Schema,
+  ActivityRemoteAlertV1Schema,
+  ActivityRemoteAlertEventV2Schema,
+  ActivityRemoteAlertSchema,
+  ActivityRemoteAlertV2Schema,
+  resolveActivityRemoteAlertEventIdentity,
+  resolveActivityRemoteAlertEventForPersonalEventV2,
+} from './activityRemoteAlert.js';
+
+describe('ActivityRemoteAlertV1', () => {
+  const alert = {
+    type: 'activity_alert', v: 1,
+    serverId: 'home-a', sessionId: 'session-a', accountId: 'account-b',
+    event: { type: 'ready', messageSeq: 17 },
+    previewBehavior: 'title_only',
+  };
+
+  it('publishes the complete strict event vocabulary for native capability consumers', () => {
+    const schemaEventTypes = ActivityRemoteAlertEventV1Schema.options.map(
+      (option) => option.shape.type.value,
+    );
+    expect([...ACTIVITY_REMOTE_ALERT_EVENT_TYPES_V1].sort()).toEqual(schemaEventTypes.sort());
+  });
+
+  it('accepts a content-free committed reference and rejects injected content, credential destinations and unknown event claims', () => {
+    expect(ActivityRemoteAlertV1Schema.parse(alert)).toEqual(alert);
+    for (const extra of [
+      { serverUrl: 'https://other.invalid' },
+      { token: 'a-bearer' },
+      { title: 'Private title' },
+      { event: { ...alert.event, content: 'Private content' } },
+      { event: { type: 'human_message' } },
+      { event: { type: 'ready', messageSeq: 17.5 } },
+    ]) {
+      expect(ActivityRemoteAlertV1Schema.safeParse({ ...alert, ...extra }).success).toBe(false);
+    }
+  });
+
+  it('carries the remaining C5b-supported categories without a sequence claim they do not own', () => {
+    for (const event of [
+      { type: 'permission_request' },
+      { type: 'user_action_request' },
+      { type: 'assigned' },
+      { type: 'source_unavailable' },
+    ]) {
+      expect(ActivityRemoteAlertV1Schema.parse({ ...alert, event })).toEqual({ ...alert, event });
+      expect(ActivityRemoteAlertV1Schema.safeParse({ ...alert, event: { ...event, messageSeq: 3 } }).success).toBe(false);
+    }
+  });
+
+  it('maps every supported alert category onto exactly one existing policy event family', () => {
+    expect(ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1).toEqual({
+      ready: 'ready',
+      permission_request: 'permission_request',
+      user_action_request: 'user_action_request',
+      // The reconciled assignment reason is metadata; it does not add a global setting.
+      assigned: 'follow_update',
+      failed: 'follow_update',
+      cancelled: 'follow_update',
+      human_message: 'follow_update',
+      message: 'follow_update',
+      discussion_mention: 'follow_update',
+      source_unavailable: 'follow_update',
+    });
+    for (const policyEvent of Object.values(ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1)) {
+      expect(AttentionDeliveryEventIdSchema.safeParse(policyEvent).success).toBe(true);
+    }
+  });
+
+  it('uses a new closed wire epoch to distinguish transcript and Discussion sequences', () => {
+    const mainHuman = resolveActivityRemoteAlertEventForPersonalEventV2(
+      'human_message',
+      { domain: 'session_transcript', seq: 21 },
+    );
+    const discussionHuman = resolveActivityRemoteAlertEventForPersonalEventV2(
+      'human_message',
+      { domain: 'discussion', discussionId: 'discussion-a', seq: 21 },
+    );
+    const mention = resolveActivityRemoteAlertEventForPersonalEventV2(
+      'discussion_mention',
+      { domain: 'discussion', discussionId: 'discussion-b', seq: 22 },
+    );
+
+    expect(mainHuman).toEqual({
+      type: 'human_message', sequenceDomain: 'session_transcript', messageSeq: 21,
+    });
+    expect(discussionHuman).toEqual({
+      type: 'human_message', sequenceDomain: 'discussion', discussionId: 'discussion-a', messageSeq: 21,
+    });
+    expect(mention).toEqual({
+      type: 'discussion_mention', sequenceDomain: 'discussion', discussionId: 'discussion-b', messageSeq: 22,
+    });
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2(
+      'discussion_mention',
+      { domain: 'session_transcript', seq: 22 },
+    )).toBeNull();
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2(
+      'ready',
+      { domain: 'discussion', discussionId: 'discussion-c', seq: 23 },
+    )).toBeNull();
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('ready')).toBeNull();
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('permission_required'))
+      .toEqual({ type: 'permission_request' });
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('user_action_required'))
+      .toEqual({ type: 'user_action_request' });
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('assigned'))
+      .toEqual({ type: 'assigned' });
+    for (const kind of ['failed', 'cancelled'] as const) {
+      expect(resolveActivityRemoteAlertEventForPersonalEventV2(kind, undefined, 'turn-21'))
+        .toEqual({ type: kind, turnId: 'turn-21' });
+      expect(resolveActivityRemoteAlertEventForPersonalEventV2(kind)).toBeNull();
+    }
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('directly_shared')).toBeNull();
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2('source_unavailable'))
+      .toEqual({ type: 'source_unavailable' });
+
+    const base = {
+      type: 'activity_alert', serverId: 'home-a', sessionId: 'session-a',
+      accountId: 'account-b', previewBehavior: 'include_preview',
+    } as const;
+    expect(ActivityRemoteAlertV2Schema.parse({ ...base, v: 2, event: mainHuman })).toMatchObject({ v: 2 });
+    expect(ActivityRemoteAlertEventV2Schema.safeParse({
+      type: 'human_message', messageSeq: 21,
+    }).success).toBe(false);
+    expect(ActivityRemoteAlertEventV2Schema.safeParse({
+      type: 'discussion_mention', sequenceDomain: 'session_transcript', messageSeq: 22,
+    }).success).toBe(false);
+    expect(ActivityRemoteAlertEventV2Schema.safeParse({
+      type: 'discussion_mention', sequenceDomain: 'discussion', messageSeq: 22,
+    }).success).toBe(false);
+    expect(ActivityRemoteAlertEventV2Schema.safeParse({
+      type: 'discussion_mention', sequenceDomain: 'discussion', discussionId: ' ', messageSeq: 22,
+    }).success).toBe(false);
+    expect(ActivityRemoteAlertEventV2Schema.safeParse({
+      type: 'human_message', sequenceDomain: 'session_transcript', discussionId: 'discussion-a', messageSeq: 21,
+    }).success).toBe(false);
+    expect(ActivityRemoteAlertV2Schema.safeParse({
+      ...base, v: 2, event: { ...mainHuman, unexpected: true },
+    }).success).toBe(false);
+  });
+
+  it('derives one canonical presentation identity for current committed event references', () => {
+    const base = {
+      type: 'activity_alert', v: 2, serverId: 'home-a', sessionId: 'session-a',
+      accountId: 'account-b', previewBehavior: 'title_only',
+    } as const;
+    expect(resolveActivityRemoteAlertEventIdentity({ ...base, event: {
+      type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 21,
+    } })).toBe('message-seq:session_transcript:21');
+    expect(resolveActivityRemoteAlertEventIdentity({ ...base, event: {
+      type: 'discussion_mention', sequenceDomain: 'discussion', discussionId: 'discussion-a', messageSeq: 21,
+    } })).toBe('message-seq:discussion:discussion-a:21');
+    expect(resolveActivityRemoteAlertEventIdentity({ ...base, event: {
+      type: 'discussion_mention', sequenceDomain: 'discussion', discussionId: 'discussion-b', messageSeq: 21,
+    } })).toBe('message-seq:discussion:discussion-b:21');
+    expect(resolveActivityRemoteAlertEventIdentity({ ...base, event: { type: 'failed', turnId: 'turn-21' } }))
+      .toBe('turn:turn-21');
+    expect(resolveActivityRemoteAlertEventIdentity({ ...base, event: { type: 'permission_request' } }))
+      .toBeUndefined();
+  });
+
+  it('retains the released v1 reader shape as an explicitly ambiguous compatibility input', () => {
+    const legacy = {
+      type: 'activity_alert', v: 1,
+      serverId: 'home-a', sessionId: 'session-a', accountId: 'account-b',
+      event: { type: 'human_message', messageSeq: 21 },
+      previewBehavior: 'include_preview',
+    };
+    expect(ActivityRemoteAlertSchema.parse(legacy)).toEqual(legacy);
+    expect(ActivityRemoteAlertV1Schema.parse(legacy)).toEqual(legacy);
+    expect(ActivityRemoteAlertV2Schema.safeParse(legacy).success).toBe(false);
+    expect(resolveActivityRemoteAlertEventIdentity(legacy))
+      .toBe('legacy-message-seq:21');
+  });
+});

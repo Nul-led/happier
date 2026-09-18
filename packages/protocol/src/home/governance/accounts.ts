@@ -1,0 +1,160 @@
+import { z } from 'zod';
+
+import { AccountDisplayProfileV1Schema } from '../../account/accountDisplayProfileV1.js';
+import { AccountStatusV1Schema, HomeRoleV1Schema } from './roles.js';
+
+export const HomeAccountMutationUnavailableReasonV1Schema = z.enum([
+  'not_authorized',
+  'last_active_owner',
+  'target_inactive',
+  'target_not_active',
+  'target_not_suspended',
+  'target_retired',
+  'team_owner_transfer_required',
+  'unchanged',
+]);
+
+export type HomeAccountMutationUnavailableReasonV1 = z.infer<
+  typeof HomeAccountMutationUnavailableReasonV1Schema
+>;
+
+export const HomeAccountMutationCapabilityV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('available') }).strict(),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: HomeAccountMutationUnavailableReasonV1Schema,
+  }).strict(),
+]);
+
+export type HomeAccountMutationCapabilityV1 = z.infer<typeof HomeAccountMutationCapabilityV1Schema>;
+
+export const HomeAccountMutationCapabilitiesV1Schema = z.object({
+  setRole: z.object({
+    member: HomeAccountMutationCapabilityV1Schema,
+    admin: HomeAccountMutationCapabilityV1Schema,
+    owner: HomeAccountMutationCapabilityV1Schema,
+  }).strict(),
+  disable: HomeAccountMutationCapabilityV1Schema,
+  reenable: HomeAccountMutationCapabilityV1Schema,
+  delete: HomeAccountMutationCapabilityV1Schema,
+}).strict();
+
+export type HomeAccountMutationCapabilitiesV1 = z.infer<
+  typeof HomeAccountMutationCapabilitiesV1Schema
+>;
+
+/** Privacy-safe authentication facts projected by the authentication owner. */
+export const HomeAccountAuthenticationV1Schema = z.object({
+  signInEmail: z.string().min(1).nullable(),
+  usableMethodIds: z.array(z.string().min(1)),
+}).strict();
+
+export type HomeAccountAuthenticationV1 = z.infer<typeof HomeAccountAuthenticationV1Schema>;
+
+/**
+ * One Account row in the Home Administration People list.
+ *
+ * Authentication facts come from Lane 02's canonical Account-login decision;
+ * this governance contract never reconstructs them from credential rows. This
+ * row is never reused as the Team picker projection.
+ */
+export const HomeAccountRowV1Schema = z.object({
+  accountId: z.string().min(1),
+  homeRole: HomeRoleV1Schema,
+  status: AccountStatusV1Schema,
+  profile: AccountDisplayProfileV1Schema,
+  createdAt: z.number().int().min(0),
+  authentication: HomeAccountAuthenticationV1Schema,
+  mutationCapabilities: HomeAccountMutationCapabilitiesV1Schema,
+}).strict();
+
+export type HomeAccountRowV1 = z.infer<typeof HomeAccountRowV1Schema>;
+
+/**
+ * Canonical Home Account directory bounds consumed by Account-derived pickers.
+ * A narrower authorized projection may change row eligibility, but must not
+ * invent different text/page/cursor resource limits.
+ */
+export const HOME_ACCOUNT_PAGE_LIMIT_DEFAULT_V1 = 50;
+export const HOME_ACCOUNT_PAGE_LIMIT_MAX_V1 = 100;
+export const HOME_ACCOUNT_PAGE_CURSOR_MAX_LENGTH_V1 = 512;
+export const HOME_ACCOUNT_SEARCH_QUERY_MAX_LENGTH_V1 = 256;
+
+/** Keyset page over `(createdAt, id)`; the cursor is opaque to clients. */
+export const HomeAccountListInputV1Schema = z.object({
+  cursor: z.string().min(1).max(HOME_ACCOUNT_PAGE_CURSOR_MAX_LENGTH_V1).nullable().optional(),
+  limit: z.number().int().min(1).max(HOME_ACCOUNT_PAGE_LIMIT_MAX_V1).optional(),
+}).strict();
+
+export type HomeAccountListInputV1 = z.infer<typeof HomeAccountListInputV1Schema>;
+
+export const HomeAccountListResultV1Schema = z.object({
+  items: z.array(HomeAccountRowV1Schema),
+  nextCursor: z.string().min(1).max(HOME_ACCOUNT_PAGE_CURSOR_MAX_LENGTH_V1).nullable(),
+}).strict();
+
+export type HomeAccountListResultV1 = z.infer<typeof HomeAccountListResultV1Schema>;
+
+/**
+ * Search is authorized against one exact scope. Team scope is authorized by
+ * current management authority on that exact active Team, so managing one Team
+ * can never enumerate another Team or the Home People projection.
+ */
+export const HomeAccountSearchScopeV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('home') }).strict(),
+  z.object({ kind: z.literal('team'), teamId: z.string().min(1) }).strict(),
+]);
+
+export type HomeAccountSearchScopeV1 = z.infer<typeof HomeAccountSearchScopeV1Schema>;
+
+export const HomeAccountSearchInputV1Schema = z.object({
+  query: z.string().min(1).max(HOME_ACCOUNT_SEARCH_QUERY_MAX_LENGTH_V1),
+  scope: HomeAccountSearchScopeV1Schema,
+}).strict();
+
+export type HomeAccountSearchInputV1 = z.infer<typeof HomeAccountSearchInputV1Schema>;
+
+/**
+ * The minimal picker row. It carries no Home role, lifecycle status,
+ * relationship, provider identity, directory link, or authentication metadata,
+ * so a Team manager can resolve a person without reading Home administration.
+ */
+export const HomeAccountPickerRowV1Schema = z.object({
+  accountId: z.string().min(1),
+  profile: AccountDisplayProfileV1Schema,
+  eligible: z.boolean(),
+}).strict();
+
+export type HomeAccountPickerRowV1 = z.infer<typeof HomeAccountPickerRowV1Schema>;
+
+export const HomeAccountSearchResultV1Schema = z.object({
+  accounts: z.array(HomeAccountPickerRowV1Schema),
+}).strict();
+
+export type HomeAccountSearchResultV1 = z.infer<typeof HomeAccountSearchResultV1Schema>;
+
+export const HomeAccountRoleSetInputV1Schema = z.object({
+  accountId: z.string().min(1),
+  homeRole: HomeRoleV1Schema,
+}).strict();
+
+export type HomeAccountRoleSetInputV1 = z.infer<typeof HomeAccountRoleSetInputV1Schema>;
+
+/** Disable, Re-enable, and Delete all address one explicit Account. */
+export const HomeAccountTargetInputV1Schema = z.object({
+  accountId: z.string().min(1),
+}).strict();
+
+export type HomeAccountTargetInputV1 = z.infer<typeof HomeAccountTargetInputV1Schema>;
+
+/**
+ * Administrative deletion reports incomplete cleanup explicitly. It never
+ * reports `deleted` before physical completion, and the released self-erasure
+ * success shape is unchanged by this closed result union.
+ */
+export const HomeAccountDeleteResultV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('deleted') }).strict(),
+  z.object({ status: z.literal('disabled_pending_completion') }).strict(),
+]);
+
+export type HomeAccountDeleteResultV1 = z.infer<typeof HomeAccountDeleteResultV1Schema>;

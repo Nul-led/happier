@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest';
+import { SessionSpawnNewResultV1Schema } from './sessionSpawnNewResultV1.js';
+import { createProviderErrorV1 } from '../../providers/errors.js';
+
+describe('Session creation Provider recovery', () => {
+  it('preserves bounded Provider details and their canonical retryability', () => {
+    const providerError = createProviderErrorV1('provider_not_enabled_on_machine', {
+      connectionId: 'pc_work', machineId: 'machine-1',
+    });
+    const result = { type: 'error', code: 'spawn_failed', retryable: false, providerError };
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, retryable: true }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, code: 'machine_offline' }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, providerError: { ...providerError, token: 'secret' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, providerError: { ...providerError, action: 'retry' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ type: 'error', code: 'spawn_failed', retryable: true })).toMatchObject({ success: true });
+  });
+});
+
+describe('Session creation update requirement', () => {
+  const details = { kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required' };
+  it('preserves a strict component-specific update requirement', () => {
+    const result = { type: 'error', code: 'update_required', retryable: false, details };
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, details: { ...details, token: 'secret' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, retryable: true }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ type: 'error', code: 'update_required', retryable: false }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ type: 'error', code: 'spawn_failed', retryable: false, details }).success).toBe(false);
+  });
+});
+
+describe('Session creation initial-access failures', () => {
+  it.each([
+    ['recipient_key_unavailable', false],
+    ['session_access_invalid_recipient_envelope', false],
+    ['session_access_subject_not_found', false],
+    ['session_access_subject_ineligible', false],
+    ['session_access_external_sharing_requires_team_admin', false],
+    ['session_access_external_sharing_disabled', false],
+    ['session_access_authentication_required', false],
+    ['session_access_authentication_unavailable', false],
+    ['session_data_key_unavailable', false],
+    ['session_access_request_failed', true],
+  ] as const)('preserves the strict %s outcome without secret-bearing details', (code, retryable) => {
+    const result = { type: 'error', code, retryable } as const;
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, retryable: !retryable }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, details: { publicKey: 'secret' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, providerError: { code: 'provider_unknown', retryable: false } }).success).toBe(false);
+  });
+});
