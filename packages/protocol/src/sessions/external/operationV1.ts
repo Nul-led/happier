@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema } from '../idsV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { AbsoluteWorkspacePathSchema } from '../../workspaces/locationSchema.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
 import {
@@ -105,7 +106,7 @@ export type ExternalSessionStorageStateV1 = z.infer<
 
 const ExternalSessionOperationSourceBindingV1Schema = z.object({
   machineId: OperationIdSchema,
-  remoteSessionId: z.string().trim().min(1).max(2_000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2_000),
   qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema,
   linkGeneration: OperationGenerationSchema,
   sourceGeneration: OperationGenerationSchema,

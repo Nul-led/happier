@@ -20,6 +20,8 @@ export const ExecutionRunUserTranscriptDirectiveSchema = z.discriminatedUnion('m
   }),
   z.object({
     mode: z.literal('suppress'),
+    /** Correlates provider input whose transcript was already committed by the caller. */
+    localId: PendingLocalIdSchema.optional(),
   }),
 ]);
 export type ExecutionRunUserTranscriptDirective = z.infer<typeof ExecutionRunUserTranscriptDirectiveSchema>;

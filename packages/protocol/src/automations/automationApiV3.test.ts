@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import releasedV2Wire from './fixtures/automation-v2.0.2.11-wire.json';
 
 import * as Api from './automationApiV3.js';
 import { AutomationRunReplyHandoffStateV1Schema } from './automationEventV1.js';
@@ -385,24 +386,16 @@ describe('Automation versioned API schemas', () => {
   });
 
   it('keeps exact released V2 vectors isolated from triggers and causes', () => {
-    const definition = {
-      id: 'automation-1', name: 'Daily summary', description: null, enabled: true,
-      schedule: scheduleInput.schedule, targetType: 'new_session' as const, templateCiphertext,
-      templateVersion: 1, nextRunAt: timestamp, lastRunAt: null, createdAt: timestamp,
-      updatedAt: timestamp,
-      assignments: [{ machineId: 'machine-1', enabled: true, priority: 0, updatedAt: timestamp }],
-    };
-    const v2Run = {
-      id: 'run-1', automationId: 'automation-1', state: 'queued' as const,
-      scheduledAt: timestamp, dueAt: timestamp, claimedAt: null, startedAt: null,
-      finishedAt: null, claimedByMachineId: null, leaseExpiresAt: null, attempt: 0,
-      summaryCiphertext: null, errorCode: null, errorMessage: null, producedSessionId: null,
-      createdAt: timestamp, updatedAt: timestamp,
-    };
+    const definition: unknown = releasedV2Wire.definition;
+    const v2Run: unknown = releasedV2Wire.run;
     expect(Api.AutomationApiV2Schema.parse(definition)).toEqual(definition);
+    expect(Api.AutomationApiV2Schema.parse({
+      ...releasedV2Wire.definition,
+      schedule: { kind: 'manual', scheduleExpr: null, everyMs: null, timezone: null },
+    }).schedule.kind).toBe('manual');
     expect(Api.AutomationRunApiV2Schema.parse(v2Run)).toEqual(v2Run);
-    expect(Api.AutomationApiV2Schema.safeParse({ ...definition, triggers: [] }).success).toBe(false);
-    expect(Api.AutomationRunApiV2Schema.safeParse({ ...v2Run, cause: { kind: 'manual' } }).success)
+    expect(Api.AutomationApiV2Schema.safeParse({ ...releasedV2Wire.definition, triggers: [] }).success).toBe(false);
+    expect(Api.AutomationRunApiV2Schema.safeParse({ ...releasedV2Wire.run, cause: { kind: 'manual' } }).success)
       .toBe(false);
   });
 
@@ -562,6 +555,30 @@ describe('Automation versioned API schemas', () => {
     }).success).toBe(false);
   });
 
+  it('returns exact Workflow Run correspondence only for a workflow-v2 Run mutation', () => {
+    const legacyResponse = { run };
+    expect(Api.AutomationV3RunMutationResponseSchema.parse(legacyResponse))
+      .toEqual(legacyResponse);
+
+    const workflowResponse = {
+      run,
+      workflowRun: {
+        recipeKind: 'workflow-v2' as const,
+        workflowRunId: run.id,
+      },
+    };
+    expect(Api.AutomationV3RunMutationResponseSchema.parse(workflowResponse))
+      .toEqual(workflowResponse);
+    expect(Api.AutomationV3RunMutationResponseSchema.safeParse({
+      ...workflowResponse,
+      workflowRun: { ...workflowResponse.workflowRun, workflowRunId: 'different-run' },
+    }).success).toBe(false);
+    expect(Api.AutomationV3RunMutationResponseSchema.safeParse({
+      ...workflowResponse,
+      workflowRun: { ...workflowResponse.workflowRun, recipeKind: 'legacy' },
+    }).success).toBe(false);
+  });
+
   it('keeps current cause on worker claims while isolating released V2 frozen-input origin', () => {
     const currentness = { mode: 'plain' as const, version: 10, contentKeyFingerprint: null };
     const cause = { kind: 'manual' as const, invokedAt: timestamp };
@@ -574,7 +591,8 @@ describe('Automation versioned API schemas', () => {
     };
     const claim = {
       run: {
-        id: 'run-1', automationId: 'automation-1', attempt: 1,
+        id: 'run-1', automationId: 'automation-1', attempt: 1, revision: 7,
+        recipeKind: 'legacy' as const,
         executionInputEnvelope: JSON.stringify(input), triggerId: null, triggerRetired: false, cause,
       },
       automation: { id: 'automation-1', name: 'Daily summary', enabled: true },
@@ -602,6 +620,29 @@ describe('Automation versioned API schemas', () => {
     expect(Api.AutomationV3WorkerClaimResponseSchema.safeParse({
       ...claim,
       run: { ...claim.run, origin: cause },
+    }).success).toBe(false);
+  });
+
+  it('admits a direct Workflow claim without fabricating an Automation or cause', () => {
+    const claim = {
+      run: {
+        id: 'run-direct',
+        automationId: null,
+        attempt: 1,
+        revision: 2,
+        recipeKind: 'workflow-v2' as const,
+        origin: { kind: 'direct' as const, originSessionId: 'session-origin' },
+        workflowAcceptedSnapshotEnvelope: '{"t":"encrypted","c":"opaque"}',
+        triggerId: null,
+        triggerRetired: false,
+      },
+      automation: null,
+      accountCurrentness: { mode: 'e2ee' as const, version: 3, contentKeyFingerprint: 'fingerprint' },
+    };
+    expect(Api.AutomationV3WorkerClaimResponseSchema.parse(claim)).toEqual(claim);
+    expect(Api.AutomationV3WorkerClaimResponseSchema.safeParse({
+      ...claim,
+      automation: { id: 'fake', name: 'Fake', enabled: true },
     }).success).toBe(false);
   });
 

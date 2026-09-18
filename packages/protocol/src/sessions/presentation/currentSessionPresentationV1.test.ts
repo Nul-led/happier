@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   CurrentSessionPresentationAckV1Schema,
   CurrentSessionPresentationBindV1Schema,
+  CurrentSessionPresentationBindResultV1Schema,
+  CurrentSessionPresentationIntentV1Schema,
   CurrentSessionPresentationStateV1Schema,
+  CurrentSessionPresentationUnbindV1Schema,
   currentSessionPresentationEntryIdentityV1,
 } from './currentSessionPresentationV1.js';
 
@@ -16,6 +19,24 @@ const owner = (pluginId: string, invocationId: string) => ({
 });
 
 describe('current-session presentation wire contract', () => {
+  it('keeps bind refusal and exact retirement closed and typed', () => {
+    expect(CurrentSessionPresentationBindResultV1Schema.parse({
+      status: 'rejected',
+      reason: 'notCurrent',
+    })).toEqual({ status: 'rejected', reason: 'notCurrent' });
+    expect(CurrentSessionPresentationBindResultV1Schema.safeParse({
+      status: 'rejected',
+      reason: 'notCurrent',
+      clientId: 'caller-authored-authority',
+    }).success).toBe(false);
+    expect(CurrentSessionPresentationUnbindV1Schema.parse({ clientId: 'client-1' }))
+      .toEqual({ clientId: 'client-1' });
+    expect(CurrentSessionPresentationUnbindV1Schema.safeParse({
+      clientId: 'client-1',
+      connectionId: 'caller-authored-origin',
+    }).success).toBe(false);
+  });
+
   it('accepts every existing exact presentation boundary and rejects each +1 case', () => {
     const exactText = 'x'.repeat(16_384);
     const exact = {
@@ -201,6 +222,65 @@ describe('current-session presentation wire contract', () => {
     expect(CurrentSessionPresentationAckV1Schema.safeParse({
       hostNonce: 'host-1', clientId: 'client-2', commandId: 'op-1', result: { status: 'applied', revision: 8 }, replay: true,
     }).success).toBe(false);
+  });
+
+  it('admits only the closed Board and Companion presentation intents', () => {
+    const intents = [
+      { kind: 'chat.return' },
+      { kind: 'board.open', mode: 'beside_chat' },
+      { kind: 'board.view.select', viewId: 'overview' },
+      { kind: 'board.item.reveal', widgetId: 'note-1', viewId: 'overview' },
+      { kind: 'companion.show' },
+      { kind: 'companion.hide' },
+      { kind: 'companion.item.add', item: { kind: 'builtin', id: 'session_summary' }, index: 0 },
+      { kind: 'companion.item.remove', item: { kind: 'widget', widgetId: 'note-1' } },
+      { kind: 'companion.item.move', item: { kind: 'widget', widgetId: 'note-1' }, toIndex: 1 },
+      { kind: 'companion.edge.set', edge: 'leading' },
+      { kind: 'companion.collapse.set', collapsed: true },
+      { kind: 'companion.density.set', density: 'comfortable' },
+      { kind: 'companion.open_full' },
+    ];
+    for (const intent of intents) {
+      expect(CurrentSessionPresentationIntentV1Schema.safeParse(intent).success).toBe(true);
+    }
+    // The host clamps a requested position against the current local list. The
+    // wire therefore accepts every non-negative safe integer instead of
+    // inventing a product item-count ceiling at this transport boundary.
+    expect(CurrentSessionPresentationIntentV1Schema.safeParse({
+      kind: 'companion.item.move',
+      item: { kind: 'widget', widgetId: 'note-1' },
+      toIndex: 10_001,
+    }).success).toBe(true);
+    expect(CurrentSessionPresentationIntentV1Schema.safeParse({ kind: 'board.item.delete', widgetId: 'note-1' }).success).toBe(false);
+    expect(CurrentSessionPresentationIntentV1Schema.safeParse({ kind: 'board.open', mode: 'overlay' }).success).toBe(false);
+    expect(CurrentSessionPresentationIntentV1Schema.safeParse({ kind: 'companion.show', sessionId: 'caller-selected' }).success).toBe(false);
+
+    // Item order is a position in the current preference, not a product quota.
+    // The controller clamps it to the actual list, so the wire must not invent a
+    // maximum item count that would reject an otherwise harmless move request.
+    expect(CurrentSessionPresentationIntentV1Schema.safeParse({
+      kind: 'companion.item.move',
+      item: { kind: 'widget', widgetId: 'note-1' },
+      toIndex: Number.MAX_SAFE_INTEGER,
+    }).success).toBe(true);
+
+    const state = {
+      v: 1,
+      hostNonce: 'host-1',
+      revision: 5,
+      statuses: [],
+      widgets: [],
+      command: {
+        id: 'present-1',
+        clientId: 'client-1',
+        kind: 'presentation.apply',
+        intent: { kind: 'board.item.reveal', widgetId: 'note-1' },
+      },
+    };
+    expect(CurrentSessionPresentationStateV1Schema.parse(state)).toEqual(state);
+    expect(CurrentSessionPresentationAckV1Schema.safeParse({
+      hostNonce: 'host-1', clientId: 'client-1', commandId: 'present-1', result: { status: 'notCurrent' },
+    }).success).toBe(true);
   });
 
   it('requires exact focus and draft revision facts when a client binds', () => {

@@ -82,6 +82,7 @@ import {
 import { PluginDataCollectionsCapabilitiesSchema } from './pluginDataCollectionsCapabilities.js';
 import { AccountDirectoryCapabilitiesSchema } from './accountDirectoryCapabilities.js';
 import { HomeSearchCapabilitiesSchema } from './homeSearchCapabilities.js';
+import { TeamCredentialCapabilitiesSchema } from './teamCredentialCapabilities.js';
 
 export const CapabilitiesSchema = z.object({
   homeSearch: HomeSearchCapabilitiesSchema.optional(),
@@ -131,6 +132,7 @@ export const CapabilitiesSchema = z.object({
   session: SessionCapabilitiesSchema.optional().default(DEFAULT_SESSION_CAPABILITIES),
   sharing: SharingCapabilitiesSchema.optional().default(DEFAULT_SHARING_CAPABILITIES),
   connectedServices: ConnectedServicesCapabilitiesSchema.optional().default(DEFAULT_CONNECTED_SERVICES_CAPABILITIES),
+  teams: TeamCredentialCapabilitiesSchema.optional(),
   liveActivities: z
     .object({
       remoteUpdates: LiveActivityRemoteUpdateCapabilityDiagnosticsSchema.optional().default(

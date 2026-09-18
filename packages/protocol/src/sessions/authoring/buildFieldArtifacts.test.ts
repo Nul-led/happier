@@ -3,9 +3,9 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   SESSION_AUTHORING_FIELD_IDS,
   SESSION_AUTHORING_FIELD_DESCRIPTORS,
-  SYNCED_SESSION_AUTHORING_FIELD_IDS_V1,
-  SyncedSessionAuthoringFieldIdV1Schema,
-  SyncedSessionAuthoringValueV1Schema,
+  SYNCED_SESSION_AUTHORING_FIELD_IDS_V2,
+  SyncedSessionAuthoringFieldIdV2Schema,
+  SyncedSessionAuthoringValueV2Schema,
   SessionAuthoringValueV1Schema,
   type SessionAuthoringFieldId,
   type SessionAuthoringValueV1,
@@ -13,12 +13,12 @@ import {
 
 describe('sessionAuthoring field artifacts', () => {
   it('derives synchronized draft fields from explicit safe catalog dispositions', () => {
-    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V1).toEqual(
+    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V2).toEqual(
       SESSION_AUTHORING_FIELD_IDS.filter((fieldId) => (
         SESSION_AUTHORING_FIELD_DESCRIPTORS[fieldId].draftStorage === 'sync'
       )),
     );
-    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V1).toEqual(expect.arrayContaining([
+    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V2).toEqual(expect.arrayContaining([
       'executionTarget',
       'directory',
       'checkoutCreationDraft',
@@ -29,27 +29,28 @@ describe('sessionAuthoring field artifacts', () => {
       'terminal',
       'automation',
     ]));
-    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V1).not.toEqual(expect.arrayContaining([
+    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V2).not.toEqual(expect.arrayContaining([
       'prompt',
       'environmentVariables',
       'sessionConfigOptionOverrides',
       'sessionEncryptionKeyBase64',
     ]));
-    expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse('environmentVariables').success).toBe(false);
-    expect(SyncedSessionAuthoringValueV1Schema.shape.terminal.safeParse({
+    expect(SyncedSessionAuthoringFieldIdV2Schema.safeParse('environmentVariables').success).toBe(false);
+    expect(SyncedSessionAuthoringValueV2Schema.shape.terminal.safeParse({
       mode: 'tmux',
       tmux: { sessionName: 'safe', tmpDir: '/private/local/path' },
     }).success).toBe(false);
   });
   it('derives stable field ids and descriptors from one catalog', () => {
     expect(SESSION_AUTHORING_FIELD_IDS).toContain('targetType');
-    expect(SESSION_AUTHORING_FIELD_IDS.slice(0, 5)).toEqual([
+    expect(SESSION_AUTHORING_FIELD_IDS).toEqual(expect.arrayContaining([
       'targetType',
       'executionTarget',
       'directory',
       'checkoutCreationDraft',
       'organizationPlacement',
-    ]);
+      'temporaryComputerActivationRef',
+    ]));
     expect(SESSION_AUTHORING_FIELD_IDS).toContain('directory');
     expect(SESSION_AUTHORING_FIELD_IDS).toContain('agentTarget');
     expect(SESSION_AUTHORING_FIELD_IDS).toContain('modelSelection');
@@ -73,7 +74,14 @@ describe('sessionAuthoring field artifacts', () => {
   it('parses the shared authored value shape', () => {
     const parsed = SessionAuthoringValueV1Schema.parse({
       targetType: 'new_session',
-      executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+      executionTarget: {
+        kind: 'machine',
+        target: { serverId: 'server-1', machineId: 'machine-1' },
+        selectionOrigin: {
+          kind: 'machine_pool',
+          poolId: '11111111-1111-4111-8111-111111111111',
+        },
+      },
       directory: '/tmp/project',
       checkoutCreationDraft: {
         kind: 'git_worktree',
@@ -163,7 +171,14 @@ describe('sessionAuthoring field artifacts', () => {
       },
     });
 
-    expect(parsed.executionTarget).toEqual({ serverId: 'server-1', machineId: 'machine-1' });
+    expect(parsed.executionTarget).toEqual({
+      kind: 'machine',
+      target: { serverId: 'server-1', machineId: 'machine-1' },
+      selectionOrigin: {
+        kind: 'machine_pool',
+        poolId: '11111111-1111-4111-8111-111111111111',
+      },
+    });
     expect(parsed.organizationPlacement).toEqual({ folderId: 'folder-1', tagIds: ['tag-1', 'tag-2'] });
     expect(parsed.agentTarget).toEqual({
       kind: 'agent',
@@ -181,7 +196,10 @@ describe('sessionAuthoring field artifacts', () => {
   it('preserves additive authored envelopes without persisting opaque Session-create leaves', () => {
     const parsed = SessionAuthoringValueV1Schema.parse({
       targetType: 'new_session',
-      executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+      executionTarget: {
+        kind: 'machine',
+        target: { serverId: 'server-1', machineId: 'machine-1' },
+      },
       directory: '/tmp/project',
       organizationPlacement: { folderId: null, tagIds: [] },
       displayText: 'ship it',
@@ -344,16 +362,34 @@ describe('sessionAuthoring field artifacts', () => {
 
   it('rejects invalid authored values', () => {
     for (const fieldId of ['machineId', 'serverId', 'agentId', 'backendTarget']) {
-      expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse(fieldId).success).toBe(false);
-      expect(SyncedSessionAuthoringValueV1Schema.safeParse({
+      expect(SyncedSessionAuthoringFieldIdV2Schema.safeParse(fieldId).success).toBe(false);
+      expect(SyncedSessionAuthoringValueV2Schema.safeParse({
         [fieldId]: null,
       }).success).toBe(false);
     }
 
     expect(SessionAuthoringValueV1Schema.shape.executionTarget.parse({
-      serverId: ' server-1 ',
-      machineId: ' machine-1 ',
-    })).toEqual({ serverId: 'server-1', machineId: 'machine-1' });
+      kind: 'machine',
+      target: {
+        serverId: ' server-1 ',
+        machineId: ' machine-1 ',
+      },
+      selectionOrigin: {
+        kind: 'machine_pool',
+        poolId: '11111111-1111-4111-8111-111111111111',
+      },
+    })).toEqual({
+      kind: 'machine',
+      target: { serverId: 'server-1', machineId: 'machine-1' },
+      selectionOrigin: {
+        kind: 'machine_pool',
+        poolId: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+    expect(SessionAuthoringValueV1Schema.shape.executionTarget.safeParse({
+      serverId: 'server-1',
+      machineId: 'machine-1',
+    }).success).toBe(false);
 
     expect(SESSION_AUTHORING_FIELD_DESCRIPTORS.organizationPlacement.schema.safeParse({
       folderId: null,

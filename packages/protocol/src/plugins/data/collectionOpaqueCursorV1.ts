@@ -19,6 +19,6 @@ import { defineProtocolString } from '../actions/protocolComposableSchema.js';
 export const PluginCollectionOpaqueCursorV1Schema = defineProtocolString({
   minLength: 1,
   maxLength: 4096,
-  pattern: '^[A-Za-z0-9_-]+$',
+  pattern: '^[A-Za-z0-9_-]+$(?![\\s\\S])',
 });
 export type PluginCollectionOpaqueCursorV1 = ReturnType<typeof PluginCollectionOpaqueCursorV1Schema.parse>;

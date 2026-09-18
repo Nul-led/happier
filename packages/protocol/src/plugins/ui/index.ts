@@ -18,6 +18,39 @@ export * from './hostedWebBuild.js';
 export * from './hostedWebAssetPolicy.js';
 export * from './hostedWebAssetPolicyNative.js';
 export * from './hostedWebBridge.js';
+export {
+  MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1,
+  PluginHostedHtmlSourceV1Schema,
+  type PluginHostedHtmlSourceV1,
+} from '../contributions/ui/hostedHtmlSourceV1.js';
+export {
+  PluginUiHostedHtmlRequestedCapabilitiesV1Schema,
+  UiSurfaceActionRequestV1Schema,
+  UiSurfaceCapabilityRequestV1Schema,
+  UiSurfaceNetworkOriginV1Schema,
+  UiSurfaceResourceRequestV1Schema,
+  admitCallerAuthoredUiSurfaceCapabilitiesV1,
+  formatUiSurfaceActionRequestV1,
+  normalizeUiSurfaceCapabilityRequestV1,
+  resolvePluginUiHostedHtmlCapabilityRequestV1,
+  type NormalizedUiSurfaceCapabilityRequestV1,
+  type PluginUiHostedHtmlRequestedCapabilitiesV1,
+  type UiSurfaceActionRequestV1,
+  type UiSurfaceCapabilityAdmissionV1,
+  type UiSurfaceCapabilityRequestV1,
+  type UiSurfaceNetworkOriginV1,
+  type UiSurfaceResourceRequestV1,
+} from '../contributions/ui/hostedHtmlCapabilitiesV1.js';
+export {
+  UI_SURFACE_ISOLATION_PROFILE_VERSION_V1,
+  UiSurfaceExecutableApprovalKeyV1Schema,
+  UiSurfaceExecutableApprovalSubjectV1Schema,
+  buildUiSurfaceExecutableApprovalKeyStringV1,
+  createUiSurfaceExecutableSecurityFingerprintV1,
+  createUiSurfaceRequestedCapabilitiesDigestV1,
+  type UiSurfaceExecutableApprovalKeyV1,
+  type UiSurfaceExecutableApprovalSubjectV1,
+} from '../contributions/ui/executableSurfaceApprovalV1.js';
 export * from './hostedWebEndpoint.js';
 export * from './hostRuntimeExternals.js';
 export * from './reactNativeCompatibility.js';
@@ -137,6 +170,8 @@ export {
   PluginUiInlineSurfaceBindingV1Schema,
   PluginUiInlineSurfaceBindingInputV1Schema,
   PluginUiInlineSurfaceRoleV1Schema,
+  isPluginUiAuthoredViewInlineSurfaceRoleV1,
+  isPluginUiInlineSurfaceBindingForSurfaceV1,
   isPluginUiDestinationBindingAdmittedAtRuntimeV1,
   isPluginUiDestinationBindingPotentiallySupportedOnPlatformV1,
   isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1,
@@ -165,6 +200,7 @@ export {
   type PluginUiInlineSurfaceRoleV1,
   type PluginUiInlineSurfaceBindingInputV1,
   type PluginUiInlineSurfaceBindingV1,
+  type PluginUiInlineSurfaceMountV1,
   type PluginUiInlineSurfacePresentationV1,
   type PluginUiSurfaceBindingV1,
 } from '../contributions/ui/surfaceRegistry.js';

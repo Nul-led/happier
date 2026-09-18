@@ -13,7 +13,7 @@ function createDeps(
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -37,6 +37,8 @@ function createDeps(
     sessionRecentMessagesGet: vi.fn(async () => ({})),
     resetGlobalVoiceAgent: vi.fn(),
     externalSessionAction,
+    // External-session routing has dedicated authority tests below; approval is orthogonal.
+    isActionApprovalRequired: () => false,
   };
 }
 

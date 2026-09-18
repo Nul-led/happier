@@ -105,7 +105,7 @@ describe('settingsSecretStringsV1', () => {
     expect(delta.secrets[0]?.encryptedValue.value).toBe('sk-test');
   });
 
-  it('sealSecretsDeepV1 drops whitespace-only plaintext values', () => {
+  it('sealSecretsDeepV1 preserves whitespace-only plaintext values as opaque secret bytes', () => {
     const key = new Uint8Array(32).fill(7);
     const randomBytes = deterministicRandomBytesFactory();
     const input: SecretContainer = {
@@ -115,7 +115,22 @@ describe('settingsSecretStringsV1', () => {
     const sealed = sealSecretsDeepV1(input, key, randomBytes);
 
     expect(readSecret(sealed).value).toBeUndefined();
-    expect(readSecret(sealed).encryptedValue).toBeUndefined();
+    expect(decryptSecretValueWithKeysV1(readSecret(sealed), [key])).toBe('   ');
+  });
+
+  it('resealSecretsDeepV1 preserves leading and trailing whitespace', () => {
+    const key = new Uint8Array(32).fill(7);
+    const input: SecretContainer = {
+      secret: { _isSecretValue: true, value: '  exact secret\n' },
+    };
+
+    const resealed = resealSecretsDeepV1(input, {
+      readKeys: [key],
+      writeKey: key,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+
+    expect(decryptSecretValueWithKeysV1(readSecret(resealed.value), [key])).toBe('  exact secret\n');
   });
 
   it('sealSecretsDeepV1 does not encrypt objects without secret marker', () => {

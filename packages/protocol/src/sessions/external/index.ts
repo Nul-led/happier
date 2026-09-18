@@ -128,10 +128,12 @@ export {
 
 export {
   EXTERNAL_SESSION_TRANSCRIPT_INVALIDATION_EVENT_V1,
+  EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
   ExternalSessionRefreshCursorV1Schema,
   ExternalSessionRefreshCursorIdentityV1Schema,
   ExternalSessionRefreshReadDiagnosticV1Schema,
   ExternalSessionTranscriptInvalidationV1Schema,
+  ExternalSessionSourceUnavailableOccurrenceV1Schema,
   ExternalSessionTranscriptRefreshBindingV1Schema,
   ExternalSessionTranscriptRefreshItemV1Schema,
   ExternalSessionTranscriptRefreshReadAfterRequestV1Schema,
@@ -144,6 +146,7 @@ export {
   type ExternalSessionRefreshCursorIdentityV1,
   type ExternalSessionRefreshReadDiagnosticV1,
   type ExternalSessionTranscriptInvalidationV1,
+  type ExternalSessionSourceUnavailableOccurrenceV1,
   type ExternalSessionTranscriptRefreshApplicationDecisionV1,
   type ExternalSessionTranscriptRefreshBindingV1,
   type ExternalSessionTranscriptRefreshItemV1,

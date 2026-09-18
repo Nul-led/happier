@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { NonBlankOpaqueIdentifierSchema } from '../strings/opaqueIdentifier.js';
+
 /**
  * Provider-native resume identity: the Agent's own conversation id, in its
  * catalog's terms.
@@ -23,11 +25,15 @@ import { z } from 'zod';
  * pointer a successor Agent is handed so it can read the predecessor's log. It
  * is catalog-declared on the Agent's `resume` config and published into session
  * metadata by the Agent's runtime; it never gates a resume.
+ *
+ * The id is opaque (`NonBlankOpaqueIdentifierSchema`): Happier only ever hands
+ * it back to the Agent that minted it, so the released 512-code-unit bound is
+ * measured on the preserved bytes rather than on a trimmed projection of them.
  */
 export const AgentNativeResumeIdentityV1Schema = z
   .object({
     v: z.literal(1),
-    vendorResumeId: z.string().trim().min(1).max(512),
+    vendorResumeId: NonBlankOpaqueIdentifierSchema.max(512),
   })
   .strict();
 export type AgentNativeResumeIdentityV1 = z.infer<typeof AgentNativeResumeIdentityV1Schema>;

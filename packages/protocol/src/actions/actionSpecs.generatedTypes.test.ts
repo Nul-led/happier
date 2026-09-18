@@ -2,12 +2,14 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 
 import type {
+  CanonicalActionSpecDefinition,
   PluginActionInputById,
   PluginActionResultById,
   PluginInvocableActionId,
   PublicActionId,
   PublicActionInputById,
   PublicActionResultById,
+  SignedRootActionId,
   SessionTranscriptGetExternalShareableInputV1,
   SessionTranscriptGetExternalShareableResultV1,
 } from './actionSpecs.js';
@@ -18,6 +20,7 @@ import {
   PUBLIC_ACTION_INPUT_SCHEMAS,
   PUBLIC_ACTION_OUTPUT_SCHEMAS,
   PublicActionIdSchema,
+  SignedRootActionIdSchema,
 } from './actionSpecs.js';
 import type {
   BrowserCommandDispatchResultV1,
@@ -35,16 +38,31 @@ import type {
   ExecutionRunWaitResult,
 } from '../execution/runs/index.js';
 import {
-  SessionInputAdmissionResultV1Schema,
-  type SessionInputAdmissionResultV1,
+  SessionMessageSendResultV1Schema,
+  type SessionMessageSendResultV1,
 } from '../sessions/messages/sessionInputAdmission.js';
 import type { SessionSpawnNewInputV2 } from '../sessions/creation/sessionSpawnNewInputV2.js';
+import {
+  EPHEMERAL_RUNNER_ACTION_IDS_V1,
+  EphemeralRunnerActionInputSchemasV1,
+  EphemeralRunnerActionOutputSchemasV1,
+  type EphemeralRunnerActionIdV1,
+} from '../ephemeralRunner/actionsV1.js';
+import {
+  WORKFLOW_ACTION_IDS_V1,
+  WorkflowActionInputSchemasV1,
+  WorkflowActionOutputSchemasV1,
+  type WorkflowActionIdV1,
+} from '../workflows/actionsV1.js';
+import { RuntimeActionIdV1Schema } from './actionIds.js';
+import type { ActionExecutorDeps } from './executor/types.js';
 
 type BrowserNavigateCommandV1 = z.infer<typeof BrowserNavigateCommandV1Schema>;
 
 type IsUnknown<T> = unknown extends T
   ? ([keyof T] extends [never] ? true : false)
   : false;
+type IsAny<T> = 0 extends (1 & T) ? true : false;
 
 type UnknownPluginInputIds = {
   [K in PluginInvocableActionId]: IsUnknown<PluginActionInputById[K]> extends true ? K : never;
@@ -98,7 +116,28 @@ type PublicActionResultByRuntimeSchemaMap = Readonly<{
   >;
 }>;
 
+
 describe('ActionSpec-generated plugin action types', () => {
+  it('publishes both Session-list continuation families to plugins and the public SDK', () => {
+    expectTypeOf<PluginActionResultById['session.list']>().toMatchTypeOf<{
+      attentionNextCursor?: string | null;
+      attentionHasNext?: boolean;
+      queryVersion?: 1;
+    }>();
+    expectTypeOf<PublicActionResultById['session.list']>().toMatchTypeOf<{
+      attentionNextCursor?: string | null;
+      attentionHasNext?: boolean;
+      queryVersion?: 1;
+    }>();
+    expectTypeOf<Extract<PluginActionResultById['session.list'], { view: 'awareness' }>>()
+      .toEqualTypeOf<Extract<PublicActionResultById['session.list'], { view: 'awareness' }>>();
+    expectTypeOf<keyof Extract<PluginActionResultById['session.list'], { view: 'awareness' }>>()
+      .toEqualTypeOf<
+        'view' | 'projectionVersion' | 'sessions' | 'nextCursor' | 'hasNext'
+        | 'attentionNextCursor' | 'attentionHasNext'
+      >();
+  });
+
   it('keeps external Action discovery result DTOs closed', () => {
     expectTypeOf<ActionDiscoverySummary['id']>().toEqualTypeOf<string>();
     expectTypeOf<ActionDiscoveryDefinition['kindVersion']>().toEqualTypeOf<1>();
@@ -143,6 +182,10 @@ describe('ActionSpec-generated plugin action types', () => {
     expectTypeOf<PluginActionResultById['execution.run.send']>().toEqualTypeOf<ExecutionRunSendResponse>();
     expectTypeOf<PluginActionResultById['execution.run.stop']>().toEqualTypeOf<ExecutionRunStopResponse>();
     expectTypeOf<PluginActionResultById['execution.run.wait']>().toEqualTypeOf<ExecutionRunWaitResult>();
+    expectTypeOf<IsAny<Parameters<ActionExecutorDeps['executionRunWait']>[1]>>()
+      .toEqualTypeOf<false>();
+    expectTypeOf<Parameters<ActionExecutorDeps['executionRunWait']>[1]>()
+      .toEqualTypeOf<Omit<PublicActionInputById['execution.run.wait'], 'sessionId'>>();
     expectTypeOf<Extract<ExecutionRunWaitResult, { ok: true; status: 'succeeded' }>['result']>()
       .toEqualTypeOf<ExecutionRunGetResponse>();
     expectTypeOf<ExecutionRunStartResponse['wait']>().toEqualTypeOf<ExecutionRunWaitResult | undefined>();
@@ -151,7 +194,7 @@ describe('ActionSpec-generated plugin action types', () => {
     expectTypeOf<PluginActionResultById['session.transcript.get']>()
       .toEqualTypeOf<SessionTranscriptGetExternalShareableResultV1>();
     expectTypeOf<PluginActionResultById['session.message.send']>()
-      .toEqualTypeOf<SessionInputAdmissionResultV1>();
+      .toEqualTypeOf<SessionMessageSendResultV1>();
     type ExternalSessionOperationResult =
       PluginActionResultById['sessions.external.operation.status.get'];
     expectTypeOf<PluginActionResultById['sessions.external.materialize.start']>()
@@ -366,7 +409,36 @@ describe('ActionSpec-generated plugin action types', () => {
     expect(schema?.safeParse(accepted).success).toBe(true);
     expect(schema?.safeParse({ ...accepted, status: 'not-an-admission-result' }).success).toBe(false);
     expect(schema?.safeParse({ ...accepted, unexpected: true }).success).toBe(false);
-    expect(schema).toBe(SessionInputAdmissionResultV1Schema);
+    expect(schema).toBe(SessionMessageSendResultV1Schema);
+    expect(schema?.safeParse({
+      status: 'failed',
+      localId: 'plugin-input-v1:failed',
+      code: 'session_input_turn_failed',
+    }).success).toBe(true);
+  });
+
+  it('keeps public Session sends on the same closed canonical admission result', () => {
+    const input: PublicActionInputById['session.message.send'] = {
+      sessionId: 'session-1',
+      message: 'Continue',
+      localId: 'caller-local-id',
+    };
+    expect(PUBLIC_ACTION_INPUT_SCHEMAS['session.message.send'].parse(input)).toEqual(input);
+    const invalidInput: PublicActionInputById['session.message.send'] = {
+      sessionId: 'session-1',
+      message: 'Continue',
+      // @ts-expect-error plugin idempotency is host-derived and not public PAT input.
+      idempotencyKey: 'plugin-input-id',
+    };
+    expect(PUBLIC_ACTION_INPUT_SCHEMAS['session.message.send'].safeParse(invalidInput).success)
+      .toBe(false);
+    const schema = getActionSpec('session.message.send').surfaceBindings?.api?.outputSchema;
+    expect(schema).toBe(SessionMessageSendResultV1Schema);
+    expect(PUBLIC_ACTION_OUTPUT_SCHEMAS['session.message.send']).toBe(
+      SessionMessageSendResultV1Schema,
+    );
+    expectTypeOf<PublicActionResultById['session.message.send']>()
+      .toEqualTypeOf<SessionMessageSendResultV1>();
   });
 
   it('keeps client-placed Actions discoverable while excluding genuinely internal Actions', () => {
@@ -376,6 +448,116 @@ describe('ActionSpec-generated plugin action types', () => {
       .toEqualTypeOf<'ui.current_context.read'>();
     expectTypeOf<Extract<PluginInvocableActionId, 'voice_agent.start'>>()
       .toEqualTypeOf<'voice_agent.start'>();
+  });
+
+  it('keeps creator-local Runner Actions account-placed, internal, and exact in the canonical type map', () => {
+    for (const actionId of EPHEMERAL_RUNNER_ACTION_IDS_V1) {
+      expect(getActionSpec(actionId)).toMatchObject({
+        executionPlacement: 'account',
+        surfaces: { ui: true, api: false, plugin: false },
+      });
+      expect(RuntimeActionIdV1Schema.safeParse(actionId).success).toBe(false);
+    }
+
+    type RunnerActionSpec = Extract<
+      CanonicalActionSpecDefinition,
+      Readonly<{ id: EphemeralRunnerActionIdV1 }>
+    >;
+    type RunnerActionInputSchemas = {
+      [K in EphemeralRunnerActionIdV1]: z.input<
+        Extract<RunnerActionSpec, Readonly<{ id: K }>>['inputSchema']
+      >;
+    };
+    type RunnerActionOutputSchemas = {
+      [K in EphemeralRunnerActionIdV1]: z.output<
+        Extract<RunnerActionSpec, Readonly<{ id: K }>>['outputSchema']
+      >;
+    };
+    type ExpectedRunnerActionInputs = {
+      [K in EphemeralRunnerActionIdV1]: z.input<(typeof EphemeralRunnerActionInputSchemasV1)[K]>;
+    };
+    type ExpectedRunnerActionOutputs = {
+      [K in EphemeralRunnerActionIdV1]: z.output<(typeof EphemeralRunnerActionOutputSchemasV1)[K]>;
+    };
+
+    expectTypeOf<RunnerActionInputSchemas>()
+      .toEqualTypeOf<ExpectedRunnerActionInputs>();
+    expectTypeOf<RunnerActionOutputSchemas>()
+      .toEqualTypeOf<ExpectedRunnerActionOutputs>();
+    expectTypeOf<Extract<PluginInvocableActionId, EphemeralRunnerActionIdV1>>()
+      .toEqualTypeOf<never>();
+  });
+
+  it('keeps workflow Actions public, trusted-plugin invocable, and exact in the canonical type map', () => {
+    const readActionIds = new Set<WorkflowActionIdV1>([
+      'workflow.validate',
+      'workflow.run.list',
+      'workflow.run.get',
+      'workflow.run.wait',
+      'workflow.run.invocations.list',
+      'workflow.run.invocations.get',
+      'workflow.definition.list',
+      'workflow.definition.get',
+    ]);
+    const directMcpActionIds = new Set<WorkflowActionIdV1>([
+      'workflow.run.start',
+      'workflow.run.get',
+      'workflow.run.wait',
+      'workflow.run.cancel',
+    ]);
+    const dangerActionIds = new Set<WorkflowActionIdV1>([
+      'workflow.run.delete',
+      'workflow.definition.delete',
+    ]);
+
+    for (const actionId of WORKFLOW_ACTION_IDS_V1) {
+      const spec = getActionSpec(actionId);
+      expect(spec).toMatchObject({
+        executionPlacement: actionId === 'workflow.run.start' ? 'machine' : 'account',
+        requiredAuthority: 'account_automation',
+        safety: dangerActionIds.has(actionId) ? 'danger' : 'safe',
+        sideEffectClass: dangerActionIds.has(actionId)
+          ? 'danger'
+          : readActionIds.has(actionId)
+            ? 'read'
+            : 'write',
+        approval: readActionIds.has(actionId)
+          ? { result: 'required' }
+          : { result: 'optional', flow: 'deferred' },
+        surfaces: {
+          ui: true,
+          voice: false,
+          agent: true,
+          mcp: true,
+          cli: true,
+          rpc: true,
+          api: true,
+          plugin: true,
+        },
+      });
+      expect(spec.bindings?.mcpToolName).toBe(actionId.replaceAll('.', '_'));
+      expect(spec.bindings?.rpcMethod).toBe(actionId);
+      // Direct MCP projection stays limited to the four interactive tools;
+      // every other Workflow operation is discoverable-only on MCP so generic
+      // `action_execute` remains its only generic transport projection.
+      expect(spec.toolExposure, actionId).toEqual(
+        directMcpActionIds.has(actionId) ? undefined : { mcp: 'discoverable_only' },
+      );
+    }
+
+    type ExpectedWorkflowActionInputs = Readonly<{
+      [K in WorkflowActionIdV1]: z.input<(typeof WorkflowActionInputSchemasV1)[K]>;
+    }>;
+    type ExpectedWorkflowActionOutputs = Readonly<{
+      [K in WorkflowActionIdV1]: z.output<(typeof WorkflowActionOutputSchemasV1)[K]>;
+    }>;
+
+    expectTypeOf<Pick<PluginActionInputById, WorkflowActionIdV1>>()
+      .toEqualTypeOf<ExpectedWorkflowActionInputs>();
+    expectTypeOf<Pick<PluginActionResultById, WorkflowActionIdV1>>()
+      .toEqualTypeOf<ExpectedWorkflowActionOutputs>();
+    expectTypeOf<Extract<PluginInvocableActionId, WorkflowActionIdV1>>()
+      .toEqualTypeOf<WorkflowActionIdV1>();
   });
 
   it('does not degrade any generated plugin row to unknown', () => {
@@ -392,6 +574,10 @@ describe('ActionSpec-generated plugin action types', () => {
     expect(PublicActionIdSchema.safeParse('projects.list').success).toBe(true);
     expect(PublicActionIdSchema.safeParse('ui.current_context.read').success).toBe(true);
     expect(PublicActionIdSchema.safeParse('devices.simulator.input.orientation').success).toBe(false);
+    expect(PublicActionIdSchema.safeParse('approval.request.decide').success).toBe(false);
+    expect(PublicActionIdSchema.safeParse('plugins.install').success).toBe(false);
+    expect(SignedRootActionIdSchema.safeParse('approval.request.decide').success).toBe(true);
+    expect(SignedRootActionIdSchema.safeParse('plugins.install').success).toBe(true);
     expect(Object.hasOwn(PUBLIC_ACTION_INPUT_SCHEMAS, 'session.spawn_new')).toBe(true);
     expect(Object.hasOwn(PUBLIC_ACTION_INPUT_SCHEMAS, 'sessions.subagents.list')).toBe(true);
     expect(Object.hasOwn(PUBLIC_ACTION_INPUT_SCHEMAS, 'sessions.subagents.upsert')).toBe(false);
@@ -409,6 +595,15 @@ describe('ActionSpec-generated plugin action types', () => {
     expectTypeOf<Extract<PublicActionId, 'sessions.external.materialize.start'>>().toEqualTypeOf<never>();
     expectTypeOf<Extract<PublicActionId, 'plugins.permissions.grants.revoke'>>().toEqualTypeOf<never>();
     expectTypeOf<Extract<PublicActionId, 'devices.simulator.input.orientation'>>().toEqualTypeOf<never>();
+    expectTypeOf<Extract<PublicActionId, 'approval.request.decide'>>().toEqualTypeOf<never>();
+    expectTypeOf<Extract<PublicActionId, 'plugins.install'>>().toEqualTypeOf<never>();
+    expectTypeOf<Extract<PublicActionId, 'identity.providers.create'>>().toEqualTypeOf<never>();
+    expectTypeOf<Extract<PublicActionId, 'identity.providers.list'>>()
+      .toEqualTypeOf<'identity.providers.list'>();
+    expectTypeOf<Extract<SignedRootActionId, 'approval.request.decide'>>()
+      .toEqualTypeOf<'approval.request.decide'>();
+    expectTypeOf<Extract<SignedRootActionId, 'plugins.install'>>()
+      .toEqualTypeOf<'plugins.install'>();
     expectTypeOf<UnknownPublicInputIds>().toEqualTypeOf<never>();
     expectTypeOf<UnknownPublicResultIds>().toEqualTypeOf<never>();
     expectTypeOf<keyof typeof PUBLIC_ACTION_INPUT_SCHEMAS>().toEqualTypeOf<PublicActionId>();

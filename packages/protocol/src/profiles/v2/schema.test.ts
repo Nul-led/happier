@@ -16,7 +16,16 @@ describe('LaunchProfileV2Schema', () => {
       updatedAt: 1,
     }).success).toBe(true);
 
-    for (const name of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL']) {
+    for (const name of [
+      'ANTHROPIC_BASE_URL',
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_MODEL',
+      'OPENAI_BASE_URL',
+      'OPENAI_API_KEY',
+      'OPENAI_MODEL',
+      'AZURE_OPENAI_API_KEY',
+      'AZURE_OPENAI_API_VERSION',
+    ]) {
       expect(LaunchProfileV2Schema.safeParse({
         v: 2,
         id: `bad-${name}`,

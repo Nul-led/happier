@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
-import { AccountProfileSchema } from './profile';
+import { AccountProfileSchema, LinkedProviderSchema } from './profile';
 
 describe('AccountProfileSchema connectedServicesV2', () => {
+  it('keeps LinkedProvider strict while accepting management as an optional sibling', () => {
+    expect(LinkedProviderSchema.safeParse({
+      id: 'managed-okta', login: 'alice', displayName: null, avatarUrl: null,
+      profileUrl: null, showOnProfile: false, canDisconnect: false,
+    }).success).toBe(false);
+
+    const oldServer = AccountProfileSchema.parse({ id: 'acct' });
+    expect(oldServer.linkedIdentityManagementV1).toBeUndefined();
+    expect(AccountProfileSchema.parse({
+      id: 'acct',
+      linkedIdentityManagementV1: [{
+        v: 1,
+        providerId: 'managed-okta',
+        descriptor: { displayName: 'Okta', iconHint: 'okta', source: 'managed' },
+        managedBy: { kind: 'team', team: { id: 'team-acme', name: 'Acme' } },
+        requiredByTeams: [{ id: 'team-acme', name: 'Acme' }],
+        canDisconnect: false,
+        disconnectReason: 'required_by_team',
+        canPublishProfile: true,
+        publishProfileReason: null,
+      }],
+    }).linkedIdentityManagementV1).toHaveLength(1);
+  });
+
   it('defaults connectedServicesV2 to an empty array', () => {
     const parsed = AccountProfileSchema.parse({ id: 'acct' });
     expect(parsed.connectedServicesV2).toEqual([]);

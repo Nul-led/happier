@@ -7,7 +7,6 @@ export const CONNECTED_ACCOUNT_SERVICE_CONFIGURATIONS_SETTINGS_KEY =
 
 export const CONNECTED_ACCOUNT_SERVICE_CONFIGURATION_MAX_ENTRIES = 256;
 
-const MAX_CONFIGURATION_FIELDS = 64;
 const MAX_CONFIGURATION_IDENTITY_LENGTH = 256;
 const MAX_SECRET_REFERENCE_LENGTH = 512;
 const MAX_FIELD_ID_LENGTH = 64 * 1024;
@@ -17,29 +16,13 @@ const BoundedConfigurationIdentitySchema = z.string()
   .max(MAX_CONFIGURATION_IDENTITY_LENGTH);
 
 const ConnectedAccountServiceConfigurationValuesV1Schema = z
-  .record(z.string().max(MAX_FIELD_ID_LENGTH), BoundedLegacyJsonValueSchema)
-  .superRefine((value, ctx) => {
-    if (Object.keys(value).length > MAX_CONFIGURATION_FIELDS) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `contains more than ${MAX_CONFIGURATION_FIELDS} configuration fields`,
-      });
-    }
-  });
+  .record(z.string().max(MAX_FIELD_ID_LENGTH), BoundedLegacyJsonValueSchema);
 
 const ConnectedAccountServiceConfigurationSecretRefsV1Schema = z
   .record(
     z.string().max(MAX_FIELD_ID_LENGTH),
     z.string().min(1).max(MAX_SECRET_REFERENCE_LENGTH),
-  )
-  .superRefine((value, ctx) => {
-    if (Object.keys(value).length > MAX_CONFIGURATION_FIELDS) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `contains more than ${MAX_CONFIGURATION_FIELDS} secret references`,
-      });
-    }
-  });
+  );
 
 export const ConnectedAccountServiceConfigurationEntryV1Schema = z.object({
   service: z.object({

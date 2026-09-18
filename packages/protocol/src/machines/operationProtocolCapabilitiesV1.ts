@@ -13,6 +13,13 @@ export const MachineOperationProtocolCapabilityV1Schema = z
   .strict()
   .readonly();
 
+const MachineOperationProtocolCapabilityThroughV2Schema = z.object({
+  protocolVersions: z.union([
+    MachineOperationProtocolVersionsV1Schema,
+    z.tuple([z.literal(1), z.literal(2)]).readonly(),
+  ]),
+}).strict().readonly();
+
 /**
  * Current transport identity published by the authenticated daemon through the
  * existing complete Machine projection. The projection's server-assigned
@@ -28,10 +35,27 @@ export const MachineIrohEndpointCapabilityV1Schema = z
 
 export const MachineOperationProtocolCapabilitiesV1Schema = z
   .object({
-    sessionInputAdmission: MachineOperationProtocolCapabilityV1Schema.optional(),
-    sessionSpawn: MachineOperationProtocolCapabilityV1Schema.optional(),
+    sessionInputAdmission: MachineOperationProtocolCapabilityThroughV2Schema.optional(),
+    sessionSpawn: MachineOperationProtocolCapabilityThroughV2Schema.optional(),
+    sessionSpawnPlacementOrigin: MachineOperationProtocolCapabilityV1Schema.optional(),
     pluginWebhookClaim: MachineOperationProtocolCapabilityV1Schema.optional(),
+    /** Exact parent-PAT plus installation-signed downstream request support. */
+    externalActionExecutionAuthorization: MachineOperationProtocolCapabilityV1Schema.optional(),
     irohMachineEndpoint: MachineIrohEndpointCapabilityV1Schema.optional(),
+    // This declares the broker application ingress, not source/resource readiness.
+    // Daemons publish it only after handler registration and Home support negotiation.
+    providerBrokerIngress: MachineOperationProtocolCapabilityV1Schema.optional(),
+    // Bounded finite-transfer RPC ingress. A host publishes it only after those
+    // handlers are installed, which is what lets a client that has no daemon
+    // state at all — an ephemeral Session Runner — still be reachable for
+    // attachment transfer without inferring support from liveness or version.
+    finiteTransferRpc: MachineOperationProtocolCapabilityV1Schema.optional(),
+    // Host-owned optional context composition. Wake is deliberately absent
+    // until the centralized context-only producer exists.
+    sessionFollow: z.object({
+      contextV1: z.literal(true),
+      wakeOnHumanChangeV1: z.literal(true).optional(),
+    }).strict().readonly().optional(),
   })
   .strict()
   .readonly();
@@ -125,5 +149,44 @@ export function supportsMachineOperationProtocolCapabilityV1(
   capability: MachineOperationProtocolCapabilityNameV1,
 ): boolean {
   const parsed = MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities);
-  return parsed.success && parsed.data[capability]?.protocolVersions[0] === 1;
+  if (!parsed.success) return false;
+  const leaf = parsed.data[capability];
+  return leaf !== undefined
+    && 'protocolVersions' in leaf
+    && leaf.protocolVersions[0] === 1;
+}
+
+export function supportsMachineSessionSpawnProtocolVersionV1(
+  capabilities: unknown,
+  protocolVersion: 1 | 2,
+): boolean {
+  const parsed = MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities);
+  return parsed.success
+    && parsed.data.sessionSpawn?.protocolVersions.some((version) => version === protocolVersion) === true;
+}
+
+/** Target input uses V2; a main-only admission leaf must never authorize it. */
+export function supportsMachineSessionInputAdmissionProtocolVersion(
+  capabilities: unknown,
+  version: 1 | 2,
+): boolean {
+  const parsed = MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities);
+  if (!parsed.success) return false;
+  const protocolVersions = parsed.data.sessionInputAdmission?.protocolVersions;
+  return version === 1
+    ? protocolVersions?.[0] === 1
+    : protocolVersions?.[1] === 2;
+}
+
+/** Follow is supported only by the exact strict complete Machine projection. */
+export function supportsMachineSessionFollowContextV1(capabilities: unknown): boolean {
+  const parsed = MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities);
+  return parsed.success && parsed.data.sessionFollow?.contextV1 === true;
+}
+
+export function supportsMachineSessionFollowWakeOnHumanChangeV1(capabilities: unknown): boolean {
+  const parsed = MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities);
+  return parsed.success
+    && parsed.data.sessionFollow?.contextV1 === true
+    && parsed.data.sessionFollow.wakeOnHumanChangeV1 === true;
 }

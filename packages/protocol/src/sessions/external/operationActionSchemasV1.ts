@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 
 import { SessionIdSchema } from '../idsV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
 import {
   ExternalSessionOperationProgressV1Schema,
@@ -57,7 +58,7 @@ export const ExternalSessionMaterializeActionInputV1Schema = z.object({
 
 const ExternalSessionTakeoverStartIntentSourceV1Schema = z.object({
   machineId: OperationIdSchema,
-  remoteSessionId: z.string().trim().min(1).max(2_000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2_000),
   qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema,
   linkGeneration: z.string().trim().min(1).max(256),
 }).strict();

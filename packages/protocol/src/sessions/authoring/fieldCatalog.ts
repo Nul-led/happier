@@ -1,15 +1,17 @@
+import { SessionInitialAccessDraftV1Schema } from '../access/sessionInitialAccessDraftV1.js';
 import { z } from 'zod';
 
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
+
 import { AgentExecutionTargetV1Schema } from '../../agents/executionTargetV1.js';
-import { BackendTargetRefSchema } from '../../backends/targets/backendTargetRef.js';
-import { SessionMcpSelectionV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
+import { SessionMcpSelectionAuthoringV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
 import { RuntimeDescriptorV1Schema } from '../metadata/runtimeDescriptorV1.js';
 import { AcpConfigOptionOverridesV1Schema } from '../metadata/metadataOverridesV1.js';
 import { WindowsRemoteSessionLaunchModeSchema } from '../metadata/windowsRemoteSessionLaunchMode.js';
 import { WindowsTerminalWindowNameSchema } from '../metadata/windowsTerminalWindowName.js';
 import { SessionModelSelectionV1Schema } from '../../providers/selection/v1.js';
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
 } from '../../connect/connectedServiceBindings.js';
 import { defineSessionAuthoringFields } from './fieldDefinition.js';
 import { AutomationTriggerDefinitionSchema } from '../../automations/automationTriggerDefinition.js';
@@ -18,7 +20,11 @@ import {
   SessionAuthoringTerminalV1Schema,
 } from './creationFieldsV1.js';
 import { SessionExecutionTargetV1Schema } from '../creation/sessionExecutionTargetV1.js';
+import { MachinePoolSelectionOriginV1Schema } from '../../machines/pools/v1.js';
 import { SessionOrganizationPlacementV1Schema } from '../creation/sessionSpawnNewResultV1.js';
+import { RunnerArtifactTargetSchema } from '../../ephemeralRunner/runnerArtifact.js';
+import { RunnerActivationCreateRequestV1Schema } from '../../ephemeralRunner/activation.js';
+import { TemporaryComputerWorkspaceV1Schema } from './temporaryComputerWorkspaceV1.js';
 
 type SessionAuthoringJsonPrimitive = null | string | number | boolean;
 export interface SessionAuthoringJsonObject {
@@ -49,7 +55,7 @@ export const SyncedSessionAuthoringTerminalV1Schema = z.object({
   }).strict().optional(),
 }).strict();
 
-export const SyncedSessionAuthoringConnectedServicesV1Schema = ConnectedServiceBindingsV1Schema;
+export const SyncedSessionAuthoringConnectedServicesV1Schema = ConnectedServiceBindingsV2IngressSchema;
 
 export const SessionAuthoringAutomationTriggerDraftV1Schema = z.object({
   clientId: z.string().trim().min(1),
@@ -86,30 +92,40 @@ export const SessionAuthoringAutomationV1Schema = z.object({
   });
 });
 
-/**
- * Reader-only fields emitted by the published 0.2 Session-draft catalog.
- * Current writers continue to derive their fields from `draftStorage: 'sync'`,
- * so accepting these values cannot restore them as 0.3 write authority.
- * Remove this bridge only after 0.2/0.3 coexistence and persisted 0.2 drafts are
- * no longer supported inputs.
- */
-export const PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1 = {
-  machineId: z.string().trim().min(1).nullable(),
-  serverId: z.string().trim().min(1).nullable(),
-  agentId: z.string().trim().min(1).nullable(),
-  backendTarget: BackendTargetRefSchema.nullable(),
-  modelId: z.string().trim().min(1).nullable(),
-  codexBackendMode: z.enum(['mcp', 'acp', 'appServer']).nullable(),
-} as const;
-
-export const PredecessorSessionDraftAuthoringFieldIdV1Schema = z.enum([
-  'machineId',
-  'serverId',
-  'agentId',
-  'backendTarget',
-  'modelId',
-  'codexBackendMode',
+/** Authoring intent; parsing a temporary target does not authorize headless activation. */
+export const SessionAuthoringExecutionTargetV2Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('machine'),
+    target: SessionExecutionTargetV1Schema,
+    selectionOrigin: MachinePoolSelectionOriginV1Schema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('temporary_computer'),
+    serverId: SessionExecutionTargetV1Schema.shape.serverId,
+    artifactTarget: RunnerArtifactTargetSchema,
+    workspace: TemporaryComputerWorkspaceV1Schema,
+    /**
+     * Optional absolute package expiry, in epoch milliseconds.
+     *
+     * Absent means Never, which is the product default: an unclaimed package
+     * stays valid until it connects or the creator cancels. It is deliberately
+     * an absolute instant chosen once by the author, not a duration — a TTL
+     * would need something to keep counting it down, and nothing in this lane
+     * owns a timer. The activation service enforces it before materialization.
+     */
+    packageExpiresAt: z.number().int().positive().safe().optional(),
+  }).strict(),
 ]);
+export type SessionAuthoringExecutionTargetV2 = z.infer<typeof SessionAuthoringExecutionTargetV2Schema>;
+
+/** Synchronized display/recovery reference only; the activation service owns lifecycle and authority. */
+export const TemporaryComputerActivationRefV1Schema = z.object({
+  v: z.literal(1),
+  activationId: RunnerActivationCreateRequestV1Schema.shape.activationId,
+  createdOnDeviceLabel: z.string().trim().min(1),
+}).strict();
+export type TemporaryComputerActivationRefV1 = z.infer<typeof TemporaryComputerActivationRefV1Schema>;
+
 const ALL_AUTHORING_CONTEXTS = [
   'newSession',
   'liveSession',
@@ -143,8 +159,8 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
     },
   },
   executionTarget: {
-    schema: SessionExecutionTargetV1Schema.nullable(),
-    description: 'Exact server-qualified execution target for a not-yet-created session.',
+    schema: SessionAuthoringExecutionTargetV2Schema.nullable(),
+    description: 'Exact server-qualified execution target and optional selection provenance for a not-yet-created session.',
     storageClass: 'template',
     draftStorage: 'sync',
     contexts: ['newSession', 'automationNewSession', 'automationExistingSession'],
@@ -154,6 +170,16 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
       automationNewSession: 'editable',
       automationExistingSession: 'inherited',
     },
+    default: null,
+  },
+  temporaryComputerActivationRef: {
+    schema: TemporaryComputerActivationRefV1Schema.nullable().optional(),
+    description: 'Non-authoritative reference to a pending Temporary computer activation; private launch custody stays on its creating device.',
+    storageClass: 'derived',
+    draftStorage: 'sync',
+    contexts: ['newSession'],
+    defaultSurface: 'hidden',
+    defaultEditabilityByContext: { newSession: 'inherited' },
     default: null,
   },
   directory: {
@@ -182,6 +208,24 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
       automationExistingSession: 'hidden',
     },
     default: null,
+  },
+  access: {
+    schema: SessionInitialAccessDraftV1Schema.nullable().optional(),
+    description: 'Initial named Session access applied only during fresh creation.',
+    storageClass: 'template',
+    draftStorage: 'sync',
+    contexts: ['newSession'],
+    defaultSurface: 'chip+section',
+    defaultEditabilityByContext: { newSession: 'editable' },
+  },
+  primaryTeamId: {
+    schema: z.string().trim().min(1).nullable().optional(),
+    description: 'Home-local Team context applied only during fresh Session creation.',
+    storageClass: 'template',
+    draftStorage: 'sync',
+    contexts: ['newSession'],
+    defaultSurface: 'chip+section',
+    defaultEditabilityByContext: { newSession: 'editable' },
   },
   organizationPlacement: {
     schema: SessionOrganizationPlacementV1Schema,
@@ -287,8 +331,8 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
     default: null,
   },
   resumeSessionId: {
-    schema: z.string().trim().min(1).nullable(),
-    description: 'Requested resume session id when session start should attach/reuse an existing runner.',
+    schema: NonBlankOpaqueIdentifierSchema.nullable(),
+    description: 'Requested resume session id when session start should attach/reuse an existing runner. The Agent minted it, so it is stored and replayed byte for byte.',
     storageClass: 'template',
     draftStorage: 'sync',
     contexts: ['newSession', 'automationNewSession'],
@@ -373,7 +417,7 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
     },
   },
   mcpSelection: {
-    schema: SessionMcpSelectionV1Schema.nullable(),
+    schema: SessionMcpSelectionAuthoringV1Schema.nullable(),
     description: 'Managed/unmanaged MCP selection authored for the session.',
     storageClass: 'template',
     draftStorage: 'sync',

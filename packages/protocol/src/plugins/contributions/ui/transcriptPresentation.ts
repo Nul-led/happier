@@ -60,7 +60,7 @@ function findExcludedTranscriptNodePath(
     node.kind === 'field'
     || node.kind === 'collectionList'
     || node.kind === 'targetedSurface'
-    || (node.kind === 'action' && node.effect?.kind === 'composerApply')
+    || (node.kind === 'action' && (node.effect?.kind === 'composerApply' || node.hostAction !== undefined))
   ) return path;
 
   if (!('children' in node)) return null;

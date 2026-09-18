@@ -6,6 +6,15 @@ import {
 } from './accountSettings.js';
 
 describe('attentionDeliveryPolicyV1 legacy backfill', () => {
+  it.each([false, true])('maps request preview opt-in %s independently from ready previews', (requestIncludeMessageText) => {
+    const parsed = accountSettingsParse({ notificationsSettingsV1: { readyIncludeMessageText: true, requestIncludeMessageText } });
+    const channel = parsed.attentionDeliveryPolicyV1.channels.expo_push;
+    expect(channel.events.permission_request.previewBehavior).toBe(requestIncludeMessageText ? 'include_preview' : 'status_only');
+    expect(channel.events.user_action_request.previewBehavior).toBe(requestIncludeMessageText ? 'include_preview' : 'status_only');
+    expect(channel.previewBehavior).toBe('include_preview');
+    expect(channel.events.permission_request.enabled).toBe(true);
+  });
+
   it('backfills expo push policy from legacy notificationsSettingsV1', () => {
     const parsed = accountSettingsParse({
       notificationsSettingsV1: {

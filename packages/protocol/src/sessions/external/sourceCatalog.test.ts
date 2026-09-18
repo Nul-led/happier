@@ -61,7 +61,13 @@ describe('sourceCatalog', () => {
       expect(ExternalSessionRefSchema.safeParse({ ...ref, sourceId: invalidSourceId }).success).toBe(false);
     }
     expect(ExternalSessionRefSchema.safeParse({ ...ref, source: { kind: 'codexHome' } }).success).toBe(false);
-    expect(ExternalSessionRefSchema.safeParse({ ...ref, remoteSessionId: ' remote ' }).success).toBe(false);
+
+    // Happier mints the Agent id and the source id, so both stay canonical.
+    // The Agent mints `remoteSessionId`, so the ref keeps its exact bytes and
+    // only rejects an absent identity. See `remoteSessionIdOpacityV1.test.ts`.
+    expect(ExternalSessionRefSchema.parse({ ...ref, remoteSessionId: ' remote ' }).remoteSessionId)
+      .toBe(' remote ');
+    expect(ExternalSessionRefSchema.safeParse({ ...ref, remoteSessionId: '   ' }).success).toBe(false);
   });
 
   it('uses generated protocol-local source projections instead of provider source leaves', () => {
@@ -78,6 +84,8 @@ describe('sourceCatalog', () => {
       codexHome: ['codex'],
       opencodeServer: ['opencode'],
       antigravityCliPrint: ['antigravity'],
+      kimiAcpSessionList: ['kimi'],
+      fxAcpSessionList: ['fx'],
       ohMyPiAgentDir: ['ohMyPi'],
       piAgentDir: ['pi'],
     });
@@ -89,6 +97,8 @@ describe('sourceCatalog', () => {
       'codex',
       'opencode',
       'antigravity',
+      'kimi',
+      'fx',
       'ohMyPi',
       'pi',
     ]);

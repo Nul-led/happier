@@ -1,6 +1,26 @@
 import { z } from 'zod';
 
+import { HOME_GOVERNANCE_ACTION_IDS_V1 } from '../home/governance/actionsV1.js';
 import { PLUGIN_SETTINGS_ADMINISTRATION_ACTION_IDS_V1 } from '../plugins/settingsAdministration.js';
+import { SESSION_BOARD_ACTION_IDS_V1 } from '../sessions/board/actionIds.js';
+import { SESSION_DISCUSSION_ACTION_IDS_V1 } from '../sessions/discussions/actionIds.js';
+import { SESSION_READ_STATE_ACTION_IDS_V1 } from '../sessions/readState/actionIds.js';
+import { MACHINE_POOL_ACTION_IDS_V1 } from '../machines/pools/actionsV1.js';
+import { TEAM_ACTION_IDS_V1 } from '../teams/actionsV1.js';
+import { MANAGED_GITHUB_APP_ACTION_IDS_V1 } from '../identity/githubApps.js';
+import { MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1 } from '../identity/providers.js';
+import { EPHEMERAL_RUNNER_ACTION_IDS_V1 } from '../ephemeralRunner/actionIdsV1.js';
+import { SHARED_SAVED_SECRET_ACTION_IDS_V1 } from '../account/settings/savedSecretResourceActionsV1.js';
+
+export const WORKFLOW_ACTION_IDS_V1 = [
+  'workflow.validate', 'workflow.run.start', 'workflow.run.list', 'workflow.run.get', 'workflow.run.wait',
+  'workflow.run.pause', 'workflow.run.resume', 'workflow.run.cancel', 'workflow.run.invocations.list',
+  'workflow.run.invocations.get', 'workflow.run.invocations.retry', 'workflow.run.delete',
+  'workflow.definition.list', 'workflow.definition.get', 'workflow.definition.create',
+  'workflow.definition.update', 'workflow.definition.delete',
+] as const;
+export type WorkflowActionIdV1 = typeof WORKFLOW_ACTION_IDS_V1[number];
+export const WorkflowActionIdV1Schema = z.enum(WORKFLOW_ACTION_IDS_V1);
 
 /**
  * The closed host Action vocabulary for the public plugin-authoring journey.
@@ -38,6 +58,18 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'action.options.resolve',
     'action.invoke',
   ],
+  workflows: WORKFLOW_ACTION_IDS_V1,
+  session_access: [
+    'session.access.grants.list',
+    'session.access.grant.set',
+    'session.access.grant.remove',
+    'session.access.context.set',
+    'session.responsibility.set',
+    'session.responsibility.candidates.list',
+    'session.public_link.get',
+    'session.public_link.create',
+    'session.public_link.remove',
+  ],
   session_lifecycle: [
     'session.open',
     'session.fork',
@@ -53,6 +85,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'session.handoff.commit',
     'session.handoff.abort',
     'session.handoff.status.get',
+    'workspace.sync.conflict.resolve',
     'session.spawn_new',
   ],
   inventory: [
@@ -96,6 +129,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'session.skill_catalog.list',
     'session.history.get',
     'session.wait.idle',
+    'session.presentation.apply',
   ],
   intent_start: [
     'review.start',
@@ -145,6 +179,22 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'session.activity.get',
     'session.messages.recent.get',
   ],
+  /**
+   * Durable Session-to-Session Follow authoring. `set` and `remove` create or
+   * remove durable cross-Session context flow, so they are classified `danger`
+   * in the Action safety source of truth and inherit the shared approval
+   * default and user override; this family adds no approval policy of its own.
+   */
+  session_follow: [
+    'session.follow.get',
+    'session.follow.set',
+    'session.follow.remove',
+    'session.follow.preferences.get',
+    'session.follow.preferences.set',
+    'session.follow.sources.list',
+    'session.follow.sources.set',
+    'session.follow.sources.remove',
+  ],
   session_transcripts: [
     'session.transcript.get',
     'session.events.get',
@@ -156,6 +206,20 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'transcript.import',
     'transcript.search',
   ],
+  /**
+   * The one explicit-human Session read-state intent. UI and CLI reach the
+   * same durable viewer frontier through this id; automatic viewport sync
+   * stays an internal owner operation with no id here, so an Agent reading
+   * context can never acknowledge what the human saw.
+   */
+  session_read_state: SESSION_READ_STATE_ACTION_IDS_V1,
+  /** The shared human and Agent Board intents; the Board schemas own their ids. */
+  session_board: SESSION_BOARD_ACTION_IDS_V1,
+  /**
+   * The Session-owned human discussion intents. UI, CLI, Agents and supported
+   * SDK callers reach one family; the discussion schemas own their ids.
+   */
+  session_discussion: SESSION_DISCUSSION_ACTION_IDS_V1,
   session_permissions: [
     'session.permission.respond',
     'session.permission.remote.pending.list',
@@ -168,6 +232,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   ],
   external_sessions: [
     'sessions.external.candidates.list',
+    'sessions.external.candidate.delete',
     'sessions.external.link.ensure',
     'sessions.external.follow',
     'sessions.external.unfollow',
@@ -389,12 +454,23 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   account_sessions: [
     'account.sessions.signOutEverywhere',
   ],
+  account_security: [
+    'account.security.get',
+    'account.password.enroll',
+    'account.password.change',
+    'account.password.remove',
+    'account.email.change.request',
+  ],
   account_api_tokens: [
     'account.apiTokens.create',
     'account.apiTokens.list',
     'account.apiTokens.revoke',
     'account.apiTokens.revokeAll',
   ],
+  identity_github_apps: MANAGED_GITHUB_APP_ACTION_IDS_V1,
+  identity_providers: MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1,
+  machine_pools: MACHINE_POOL_ACTION_IDS_V1,
+  ephemeral_runner: EPHEMERAL_RUNNER_ACTION_IDS_V1,
   automation_events: [
     'automation.event.sources.list',
     'automation.event.admit',
@@ -425,10 +501,19 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   scm_diff_summary: [
     'scm.diffSummary.generate',
   ],
+  /**
+   * Home governance and Teams are carried to one exact Home by the same
+   * transport family. The ids stay in their domain owners so neither family
+   * becomes the other's registry.
+   */
+  home_governance: HOME_GOVERNANCE_ACTION_IDS_V1,
+  teams: TEAM_ACTION_IDS_V1,
+  saved_secret_sharing: SHARED_SAVED_SECRET_ACTION_IDS_V1,
 } as const);
 
 export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.discovery,
+  ...ACTION_ID_FAMILIES_V1.session_access,
   ...ACTION_ID_FAMILIES_V1.session_lifecycle,
   ...ACTION_ID_FAMILIES_V1.inventory,
   ...ACTION_ID_FAMILIES_V1.messaging,
@@ -438,7 +523,11 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.subagent_registry,
   ...ACTION_ID_FAMILIES_V1.execution_run_control,
   ...ACTION_ID_FAMILIES_V1.session_targeting,
+  ...ACTION_ID_FAMILIES_V1.session_follow,
+  ...ACTION_ID_FAMILIES_V1.session_read_state,
   ...ACTION_ID_FAMILIES_V1.session_transcripts,
+  ...ACTION_ID_FAMILIES_V1.session_board,
+  ...ACTION_ID_FAMILIES_V1.session_discussion,
   ...ACTION_ID_FAMILIES_V1.session_permissions,
   ...ACTION_ID_FAMILIES_V1.external_sessions,
   ...ACTION_ID_FAMILIES_V1.voice_controls,
@@ -466,12 +555,21 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.plugin_webhooks,
   ...ACTION_ID_FAMILIES_V1.account_plugin_data,
   ...ACTION_ID_FAMILIES_V1.account_sessions,
+  ...ACTION_ID_FAMILIES_V1.account_security,
   ...ACTION_ID_FAMILIES_V1.account_api_tokens,
+  ...ACTION_ID_FAMILIES_V1.identity_github_apps,
+  ...ACTION_ID_FAMILIES_V1.identity_providers,
+  ...ACTION_ID_FAMILIES_V1.machine_pools,
+  ...ACTION_ID_FAMILIES_V1.ephemeral_runner,
   ...ACTION_ID_FAMILIES_V1.automation_events,
   ...ACTION_ID_FAMILIES_V1.automation_conversation,
   ...ACTION_ID_FAMILIES_V1.scm_pull_request,
   ...ACTION_ID_FAMILIES_V1.scm_repository,
   ...ACTION_ID_FAMILIES_V1.scm_diff_summary,
+  ...ACTION_ID_FAMILIES_V1.home_governance,
+  ...ACTION_ID_FAMILIES_V1.teams,
+  ...ACTION_ID_FAMILIES_V1.saved_secret_sharing,
+  ...ACTION_ID_FAMILIES_V1.workflows,
 ] as const;
 
 export const RUNTIME_ACTION_IDS_V1 = [
@@ -509,4 +607,9 @@ const LEGACY_ACTION_ID_ALIASES: Readonly<Record<string, ActionId>> = Object.free
 
 export function normalizeLegacyActionId(value: string): string {
   return LEGACY_ACTION_ID_ALIASES[value] ?? value;
+}
+
+export type SessionAccessActionId = typeof ACTION_ID_FAMILIES_V1.session_access[number];
+export function isSessionAccessActionId(value: string): value is SessionAccessActionId {
+  return (ACTION_ID_FAMILIES_V1.session_access as readonly string[]).includes(value);
 }

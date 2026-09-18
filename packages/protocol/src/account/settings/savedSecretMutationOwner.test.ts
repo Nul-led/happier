@@ -5,8 +5,15 @@ import {
   applyAccountSettingsSavedSecretMutation,
   applyAccountSettingsVoiceCredentialSourceMutation,
   eraseAccountSettingsPluginSecretBindings,
+  formatSharedSavedSecretRefV1,
   listAccountSettingsSavedSecretReferences,
+  parseSavedSecretRefV1,
+  promotePersonalSavedSecretReference,
+  qualifyPluginAccountSecretBindingKey,
+  rekeyPersonalSavedSecret,
+  resolveAccountSettingsPluginSecretBinding,
   resolveAccountSettingsPluginSecret,
+  resolveAccountSettingsVoiceCredentialSecret,
   resolveAccountSettingsVoiceCredentialSource,
   type AccountSettingsVoiceCredentialSourceMutation,
 } from './savedSecretMutationOwner.js';
@@ -112,6 +119,16 @@ const secret = {
   },
 };
 
+const unrelatedSecret = {
+  ...secret,
+  id: 'secret-unrelated',
+  name: 'Unrelated',
+  encryptedValue: {
+    _isSecretValue: true as const,
+    encryptedValue: { t: 'enc-v1' as const, c: 'ciphertext-unrelated' },
+  },
+};
+
 function referencedSettings(): Record<string, unknown> {
   return {
     secrets: [secret],
@@ -202,7 +219,325 @@ function referencedSettings(): Record<string, unknown> {
   };
 }
 
+function settingsWithEverySavedSecretReferenceFamily(): Record<string, unknown> {
+  const pluginTarget = {
+    pluginId: 'acme.notifications',
+    localId: 'webhook-token',
+  };
+  const settings = {
+    ...referencedSettings(),
+    secrets: [secret, unrelatedSecret],
+    pluginSecretBindingsV1: {
+      [qualifyPluginAccountSecretBindingKey(pluginTarget)]: {
+        ...pluginTarget,
+        custody: 'account',
+        savedSecretId: secret.id,
+        createdForBinding: false,
+      },
+    },
+    untouchedFutureRoot: {
+      nestedLiteral: secret.id,
+    },
+  };
+
+  const profileBindings = settings.secretBindingsByProfileId as Record<string, unknown>;
+  profileBindings.profile_unrelated = { TOKEN: unrelatedSecret.id };
+
+  const providerSettings = settings.providerSettingsV1 as Record<string, unknown>;
+  const providerBindings = providerSettings.secretBindingsByConnectionId as Record<string, unknown>;
+  providerBindings.pc_unrelated = { account: { api_key: unrelatedSecret.id } };
+
+  const voice = settings.voice as Record<string, unknown>;
+  (voice.credentialBindings as unknown[]).push({
+    providerId: 'unrelated',
+    credentialBindings: { account: { api_key: unrelatedSecret.id } },
+  });
+
+  const voiceV1 = settings.voiceSettingsV1 as Record<string, unknown>;
+  (voiceV1.credentialBindings as unknown[]).push({
+    contribution: voiceContribution,
+    credentialSlotId: 'unrelated',
+    credentialSource: { kind: 'savedSecret' },
+    credentialBindings: { account: { unrelated: unrelatedSecret.id } },
+  });
+
+  const mcp = settings.mcpServersSettingsV1 as Record<string, unknown>;
+  (mcp.servers as unknown[]).push({
+    id: 'server-unrelated',
+    env: { TOKEN: { t: 'savedSecret', secretId: unrelatedSecret.id } },
+  });
+
+  const acp = settings.acpCatalogSettingsV1 as Record<string, unknown>;
+  (acp.backends as unknown[]).push({
+    id: 'backend-unrelated',
+    env: { TOKEN: { t: 'savedSecret', secretId: unrelatedSecret.id } },
+  });
+
+  const unrelatedPluginTarget = {
+    pluginId: 'acme.notifications',
+    localId: 'unrelated-token',
+  };
+  (settings.pluginSecretBindingsV1 as Record<string, unknown>)[
+    qualifyPluginAccountSecretBindingKey(unrelatedPluginTarget)
+  ] = {
+    ...unrelatedPluginTarget,
+    custody: 'account',
+    savedSecretId: unrelatedSecret.id,
+    createdForBinding: false,
+  };
+
+  const connectedAccounts = settings.connectedAccountServiceConfigurationsV1 as Record<string, unknown>;
+  (connectedAccounts.entries as unknown[]).push({
+    service: { pluginId: 'plugin.example', localId: 'service-unrelated' },
+    modeId: 'token',
+    revision: 'configuration-unrelated',
+    values: {},
+    secretRefs: { api_key: unrelatedSecret.id },
+  });
+
+  return settings;
+}
+
 describe('Account Settings SavedSecret mutation owner', () => {
+  it('round-trips strict shared refs while preserving opaque legacy personal ids', () => {
+    const sharedRef = formatSharedSavedSecretRefV1('resource_01');
+    const maxResourceId = 'r'.repeat(256 - 'happier:shared-secret:v1:'.length);
+
+    expect(sharedRef).toBe('happier:shared-secret:v1:resource_01');
+    expect(parseSavedSecretRefV1(sharedRef)).toEqual({
+      kind: 'shared_resource',
+      resourceId: 'resource_01',
+    });
+    expect(parseSavedSecretRefV1('voice:realtime_elevenlabs:api_key')).toEqual({
+      kind: 'personal',
+      personalId: 'voice:realtime_elevenlabs:api_key',
+    });
+    expect(formatSharedSavedSecretRefV1(maxResourceId)).toHaveLength(256);
+    expect(parseSavedSecretRefV1(formatSharedSavedSecretRefV1(maxResourceId))).toEqual({
+      kind: 'shared_resource',
+      resourceId: maxResourceId,
+    });
+    for (const malformed of [
+      '',
+      'happier:shared-secret:v1:',
+      'happier:shared-secret:v1: resource',
+      'happier:shared-secret:v1:resource\u0000',
+      `happier:shared-secret:v1:${'r'.repeat(256)}`,
+    ]) {
+      expect(() => parseSavedSecretRefV1(malformed)).toThrow();
+    }
+    for (const invalidResourceId of ['', ' resource', 'resource\u007f', `${maxResourceId}r`]) {
+      expect(() => formatSharedSavedSecretRefV1(invalidResourceId)).toThrow();
+    }
+  });
+
+  it('rekeys a colliding legacy personal id before shared-ref activation', () => {
+    const collidingPersonalId = formatSharedSavedSecretRefV1('resource_collision');
+    const settings = {
+      secrets: [{ ...secret, id: collidingPersonalId }],
+      secretBindingsByProfileId: {
+        profile_a: { TOKEN: collidingPersonalId },
+      },
+    };
+
+    const result = rekeyPersonalSavedSecret(settings, {
+      secretId: collidingPersonalId,
+      expectedUpdatedAt: secret.updatedAt,
+      newSecretId: 'secret-after-collision-migration',
+    });
+
+    expect(result.settings.secrets).toEqual([{
+      ...secret,
+      id: 'secret-after-collision-migration',
+    }]);
+    expect(result.settings.secretBindingsByProfileId).toEqual({
+      profile_a: { TOKEN: 'secret-after-collision-migration' },
+    });
+    expect(settings.secrets).toEqual([{ ...secret, id: collidingPersonalId }]);
+  });
+
+  it('rekeys the personal record and every recognized reference family without mutating input', () => {
+    const settings = settingsWithEverySavedSecretReferenceFamily();
+    const before = structuredClone(settings);
+    const unrelatedReferences = listAccountSettingsSavedSecretReferences(
+      settings,
+      unrelatedSecret.id,
+    );
+    expect(unrelatedReferences.map((reference) => reference.owner)).toEqual([
+      'profile',
+      'provider',
+      'voice',
+      'voice',
+      'mcp',
+      'acp',
+      'plugin',
+      'connectedAccountConfiguration',
+    ]);
+
+    const result = rekeyPersonalSavedSecret(settings, {
+      secretId: secret.id,
+      expectedUpdatedAt: secret.updatedAt,
+      newSecretId: 'secret-rekeyed',
+    });
+
+    expect(settings).toEqual(before);
+    expect(result.settings).not.toBe(settings);
+    expect((result.settings.secrets as readonly typeof secret[])[0]).toEqual({
+      ...secret,
+      id: 'secret-rekeyed',
+    });
+    expect(listAccountSettingsSavedSecretReferences(result.settings, secret.id)).toEqual([]);
+    expect(
+      listAccountSettingsSavedSecretReferences(result.settings, 'secret-rekeyed')
+        .map((reference) => reference.owner),
+    ).toEqual([
+      'profile',
+      'provider',
+      'provider',
+      'voice',
+      'voice',
+      'mcp',
+      'mcp',
+      'mcp',
+      'mcp',
+      'acp',
+      'plugin',
+      'connectedAccountConfiguration',
+      'connectedAccountConfiguration',
+    ]);
+    expect(result.settings.untouchedFutureRoot).toEqual({ nestedLiteral: secret.id });
+    expect(listAccountSettingsSavedSecretReferences(result.settings, unrelatedSecret.id))
+      .toEqual(unrelatedReferences);
+  });
+
+  it('promotes one personal record by removing it and rewriting all seven reference families', () => {
+    const settings = settingsWithEverySavedSecretReferenceFamily();
+    const before = structuredClone(settings);
+    const sharedSecretRef = 'happier:shared-secret:v1:resource_01';
+    const unrelatedReferences = listAccountSettingsSavedSecretReferences(
+      settings,
+      unrelatedSecret.id,
+    );
+
+    const result = promotePersonalSavedSecretReference(settings, {
+      secretId: secret.id,
+      expectedUpdatedAt: secret.updatedAt,
+      sharedSecretRef,
+    });
+
+    expect(settings).toEqual(before);
+    expect(result.settings.secrets).toEqual([unrelatedSecret]);
+    expect(listAccountSettingsSavedSecretReferences(result.settings, secret.id)).toEqual([]);
+    expect(
+      listAccountSettingsSavedSecretReferences(result.settings, sharedSecretRef)
+        .map((reference) => reference.owner),
+    ).toEqual([
+      'profile',
+      'provider',
+      'provider',
+      'voice',
+      'voice',
+      'mcp',
+      'mcp',
+      'mcp',
+      'mcp',
+      'acp',
+      'plugin',
+      'connectedAccountConfiguration',
+      'connectedAccountConfiguration',
+    ]);
+    expect(result.settings.untouchedFutureRoot).toEqual({ nestedLiteral: secret.id });
+    expect(listAccountSettingsSavedSecretReferences(result.settings, unrelatedSecret.id))
+      .toEqual(unrelatedReferences);
+  });
+
+  it('blocks promotion while the target shared ref is another personal secret id', () => {
+    const settings = settingsWithEverySavedSecretReferenceFamily();
+    const sharedSecretRef = formatSharedSavedSecretRefV1('resource_01');
+    settings.secrets = [
+      ...(settings.secrets as readonly unknown[]),
+      { ...unrelatedSecret, id: sharedSecretRef },
+    ];
+    const before = structuredClone(settings);
+
+    expect(() => promotePersonalSavedSecretReference(settings, {
+      secretId: secret.id,
+      expectedUpdatedAt: secret.updatedAt,
+      sharedSecretRef,
+    })).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+      code: 'saved_secret_ref_collision_migration_required',
+    }));
+    expect(settings).toEqual(before);
+  });
+
+  it('requires collision migration for malformed reserved-prefix personal ids', () => {
+    const settings = {
+      secrets: [{ ...secret, id: 'happier:shared-secret:v1:' }],
+    };
+    expect(() => promotePersonalSavedSecretReference(settings, {
+      secretId: 'happier:shared-secret:v1:',
+      expectedUpdatedAt: secret.updatedAt,
+      sharedSecretRef: formatSharedSavedSecretRefV1('resource_01'),
+    })).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+      code: 'saved_secret_ref_collision_migration_required',
+    }));
+  });
+
+  it('fails rekey and promotion closed on stale records, malformed roots, and invalid targets', () => {
+    const settings = settingsWithEverySavedSecretReferenceFamily();
+    const before = structuredClone(settings);
+
+    for (const operation of [
+      () => rekeyPersonalSavedSecret(settings, {
+        secretId: secret.id,
+        expectedUpdatedAt: 2,
+        newSecretId: 'secret-rekeyed',
+      }),
+      () => promotePersonalSavedSecretReference(settings, {
+        secretId: secret.id,
+        expectedUpdatedAt: 2,
+        sharedSecretRef: 'happier:shared-secret:v1:resource_01',
+      }),
+    ]) {
+      expect(operation).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+        code: 'saved_secret_conflict',
+      }));
+    }
+
+    expect(() => rekeyPersonalSavedSecret(settings, {
+      secretId: secret.id,
+      expectedUpdatedAt: 1,
+      newSecretId: 'happier:shared-secret:v1:resource_01',
+    })).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+      code: 'saved_secret_invalid',
+    }));
+    expect(() => promotePersonalSavedSecretReference(settings, {
+      secretId: secret.id,
+      expectedUpdatedAt: 1,
+      sharedSecretRef: 'resource_01',
+    })).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+      code: 'saved_secret_reference_invalid',
+    }));
+
+    const malformed = {
+      ...settings,
+      mcpServersSettingsV1: {
+        ...(settings.mcpServersSettingsV1 as Record<string, unknown>),
+        servers: [{ id: 'broken', env: { TOKEN: { t: 'unknown', secretId: secret.id } } }],
+      },
+    };
+    const malformedBefore = structuredClone(malformed);
+    expect(() => rekeyPersonalSavedSecret(malformed, {
+      secretId: secret.id,
+      expectedUpdatedAt: 1,
+      newSecretId: 'secret-rekeyed',
+    })).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
+      code: 'saved_secret_reference_invalid',
+    }));
+    expect(malformed).toEqual(malformedBefore);
+    expect(settings).toEqual(before);
+  });
+
   it.each([
     {
       kind: 'unbindAndDelete',
@@ -1312,6 +1647,90 @@ describe('Account Settings SavedSecret mutation owner', () => {
     });
   });
 
+  it('persists, approves, and unbinds a strict shared Voice ref without inventing a personal record', () => {
+    const sharedRef = formatSharedSavedSecretRefV1('resource-voice');
+    const before = referencedSettings();
+    const bound = applyAccountSettingsSavedSecretMutation(before, {
+      kind: 'bindVoiceCredentialSavedSecret',
+      target: {
+        contribution: voiceContribution,
+        credentialSlotId: 'api_key',
+        machineId: null,
+      },
+      expectedSecretId: secret.id,
+      expectedSecretUpdatedAt: 1,
+      secretId: sharedRef,
+    });
+    const approved = applyAccountSettingsSavedSecretMutation(bound.settings, {
+      kind: 'approveVoiceCredentialRecipientContract',
+      target: {
+        contribution: voiceContribution,
+        credentialSlotId: 'api_key',
+        machineId: null,
+      },
+      expectedSecretId: sharedRef,
+      expectedSecretUpdatedAt: 7,
+      approvedRecipientContractDigest: `sha256:${'e'.repeat(64)}`,
+    });
+    const removed = applyAccountSettingsSavedSecretMutation(approved.settings, {
+      kind: 'removeVoiceCredentialSecret',
+      target: {
+        contribution: voiceContribution,
+        credentialSlotId: 'api_key',
+        machineId: null,
+      },
+      expectedSecretId: sharedRef,
+      expectedSecretUpdatedAt: 7,
+    });
+
+    expect(bound.settings.secrets).toEqual(before.secrets);
+    expect(approved.settings.voiceSettingsV1).toMatchObject({
+      credentialBindings: [{
+        approvedRecipientContractDigest: `sha256:${'e'.repeat(64)}`,
+        credentialBindings: { account: { api_key: sharedRef } },
+      }],
+    });
+    expect(removed.settings.secrets).toEqual(before.secrets);
+    expect(resolveAccountSettingsVoiceCredentialSecret(removed.settings, {
+      contribution: voiceContribution,
+      credentialSlotId: 'api_key',
+      machineId: null,
+    }).reference).toBeNull();
+  });
+
+  it('binds and unbinds a strict shared plugin ref without inventing a personal record', () => {
+    const sharedRef = formatSharedSavedSecretRefV1('resource-plugin');
+    const target = { pluginId: 'acme.notifications', localId: 'webhook-token' };
+    const before = { secrets: [secret] };
+
+    const bound = applyAccountSettingsSavedSecretMutation(before, {
+      kind: 'bindPluginSecret',
+      target,
+      expectedSecretId: null,
+      expectedSecretUpdatedAt: null,
+      secretId: sharedRef,
+    });
+
+    expect(bound.settings.secrets).toEqual(before.secrets);
+    expect(resolveAccountSettingsPluginSecretBinding(bound.settings, target)).toEqual({
+      pluginId: target.pluginId,
+      custody: 'account',
+      localId: target.localId,
+      savedSecretId: sharedRef,
+      createdForBinding: false,
+    });
+    expect(() => resolveAccountSettingsPluginSecret(bound.settings, target)).toThrow();
+
+    const unbound = applyAccountSettingsSavedSecretMutation(bound.settings, {
+      kind: 'unbindPluginSecret',
+      target,
+      expectedSecretId: sharedRef,
+      expectedSecretUpdatedAt: null,
+    });
+    expect(resolveAccountSettingsPluginSecretBinding(unbound.settings, target)).toBeNull();
+    expect(unbound.settings.secrets).toEqual(before.secrets);
+  });
+
   it('rejects Voice recipient approval when the bound SavedSecret changed concurrently', () => {
     expect(() => applyAccountSettingsSavedSecretMutation(referencedSettings(), {
       kind: 'approveVoiceCredentialRecipientContract',
@@ -1641,24 +2060,37 @@ describe('Account Settings SavedSecret mutation owner', () => {
         secretRefs: { api_key: 'x'.repeat(513) },
       }],
     }],
-    ['more than 64 SavedSecret references', {
-      v: 1,
-      entries: [{
-        service: { pluginId: 'plugin.example', localId: 'service-a' },
-        modeId: 'token',
-        revision: 'configuration-1',
-        values: {},
-        secretRefs: Object.fromEntries(
-          Array.from({ length: 65 }, (_, index) => [`field-${index}`, `secret-${index}`]),
-        ),
-      }],
-    }],
   ])('rejects malformed Connected Account reference roots through the persisted owner: %s', (_label, root) => {
     expect(() => listAccountSettingsSavedSecretReferences({
       connectedAccountServiceConfigurationsV1: root,
     }, secret.id)).toThrowError(expect.objectContaining<AccountSettingsSavedSecretMutationError>({
       code: 'saved_secret_reference_invalid',
     }));
+  });
+
+  it('enumerates Connected Account references above the former private member ceiling', () => {
+    const secretRefs = Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [
+        `field${index}`,
+        index === 64 ? secret.id : `secret-${index}`,
+      ]),
+    );
+
+    expect(listAccountSettingsSavedSecretReferences({
+      connectedAccountServiceConfigurationsV1: {
+        v: 1,
+        entries: [{
+          service: { pluginId: 'plugin.example', localId: 'service-a' },
+          modeId: 'token',
+          revision: 'configuration-1',
+          values: {},
+          secretRefs,
+        }],
+      },
+    }, secret.id)).toEqual([{
+      owner: 'connectedAccountConfiguration',
+      path: 'connectedAccountServiceConfigurationsV1.entries[0].secretRefs.field64',
+    }]);
   });
 
   it.each([

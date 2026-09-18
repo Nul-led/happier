@@ -2,15 +2,19 @@ import { z } from 'zod';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 
 import { canonicalBoundedRecordKeySchema } from '../common/canonicalRecordKey.js';
-import { PluginContributionIdentityV1Schema } from '../plugins/contributionIdentity.js';
-import { ConnectedServiceCredentialKindSchema } from './connectedServiceSchemas.js';
+import { ConnectedServiceCredentialKindSchema } from './connectedServiceCredentialKind.js';
+import { ConnectedAccountPurposeIdSchema } from './connectedAccountPurposeIdentity.js';
 import {
   PluginContributionReferenceV2Schema,
   PluginLocalizedStringV2Schema,
 } from '../plugins/contributions/publicTypes.js';
 
-export const ConnectedAccountPurposeIdSchema = z.string().trim().min(1).max(128);
-export type ConnectedAccountPurposeId = z.infer<typeof ConnectedAccountPurposeIdSchema>;
+export {
+  ConnectedAccountPurposeIdSchema,
+  QualifiedConnectedAccountPurposeV1Schema,
+  type ConnectedAccountPurposeId,
+  type QualifiedConnectedAccountPurposeV1,
+} from './connectedAccountPurposeIdentity.js';
 
 export const PluginConnectedAccountMaterializationKindSchema = z.enum([
   'httpHeaders',
@@ -157,12 +161,4 @@ export const ConnectedAccountPurposeDeclarationsV1Schema = z.array(
 });
 export type ConnectedAccountPurposeDeclarationsV1 = z.infer<
   typeof ConnectedAccountPurposeDeclarationsV1Schema
->;
-
-export const QualifiedConnectedAccountPurposeV1Schema = z.object({
-  consumer: asProtocolZod(PluginContributionIdentityV1Schema),
-  purpose: ConnectedAccountPurposeIdSchema,
-}).strict();
-export type QualifiedConnectedAccountPurposeV1 = z.infer<
-  typeof QualifiedConnectedAccountPurposeV1Schema
 >;

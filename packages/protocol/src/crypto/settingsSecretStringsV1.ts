@@ -118,7 +118,7 @@ export function decryptSecretValueWithKeysV1(
 ): string | null {
   if (!input) return null;
   const plaintext = typeof input.value === 'string' ? input.value : null;
-  if (plaintext !== null && plaintext.trim().length > 0) return plaintext;
+  if (plaintext !== null && plaintext.length > 0) return plaintext;
   if (!input.encryptedValue) return null;
   return decryptSecretStringWithKeysV1(input.encryptedValue, keys);
 }
@@ -159,7 +159,7 @@ export function sealSecretsDeepV1<T>(
 
   if ((input as any)._isSecretValue === true) {
     const rawValue = typeof (input as any).value === 'string' ? String((input as any).value) : null;
-    if (rawValue !== null && rawValue.trim().length > 0) {
+    if (rawValue !== null && rawValue.length > 0) {
       const encryptedValue = encryptSecretStringV1(rawValue, key, randomBytes);
       const { value: _dropped, ...rest } = input as any;
       return { ...rest, encryptedValue } as any;
@@ -213,7 +213,7 @@ export function unsealSecretsDeepWithKeysV1<T>(
   if (!isPlainObject(input)) return input;
 
   if ((input as any)._isSecretValue === true) {
-    const hasPlain = typeof (input as any).value === 'string' && String((input as any).value).trim().length > 0;
+    const hasPlain = typeof (input as any).value === 'string' && String((input as any).value).length > 0;
     if (hasPlain) {
       if ((input as any).encryptedValue === undefined) return input as any;
       const { encryptedValue: _dropped, ...rest } = input as any;
@@ -224,7 +224,7 @@ export function unsealSecretsDeepWithKeysV1<T>(
     if (!parsed.success) return input as any;
 
     const opened = decryptSecretStringWithKeysV1(parsed.data, keys);
-    if (!opened) return input as any;
+    if (opened === null) return input as any;
     const { encryptedValue: _dropped, ...rest } = input as any;
     return { ...rest, value: opened } as any;
   }
@@ -277,7 +277,7 @@ export function resealSecretsDeepV1<T>(
   }
 
   if ((input as any)._isSecretValue === true) {
-    const plaintext = typeof (input as any).value === 'string' ? String((input as any).value).trim() : '';
+    const plaintext = typeof (input as any).value === 'string' ? String((input as any).value) : '';
     if (plaintext.length > 0) {
       const { value: _dropped, ...rest } = input as any;
       return {

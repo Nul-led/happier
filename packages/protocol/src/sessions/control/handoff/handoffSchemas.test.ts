@@ -646,6 +646,10 @@ describe('session handoff schemas', () => {
       status: terminalStatus,
       unexpected: true,
     }).success).toBe(false);
+    expect(mod.SessionHandoffActionResultV1Schema.safeParse({
+      handoffId: 'handoff_1',
+      status: terminalStatus,
+    }).success).toBe(false);
 
     expect(
       mod.SessionHandoffPrepareTargetRequestSchema.safeParse({
@@ -1094,6 +1098,67 @@ describe('session handoff schemas', () => {
     expect(mod.SessionHandoffPrepareTargetResultGetResponseSchema.safeParse(buildPayload(' plugin_backend')).success).toBe(false);
     expect(mod.SessionHandoffPrepareTargetResultGetResponseSchema.safeParse(buildPayload('')).success).toBe(false);
     expect(mod.SessionHandoffPrepareTargetResultGetResponseSchema.safeParse(buildPayload('a'.repeat(600))).success).toBe(false);
+  });
+
+  it('keeps provider-minted handoff identities byte-exact and refuses a blank one', async () => {
+    const mod = await loadHandoffModule();
+    expect(mod).not.toHaveProperty('error');
+    if ('error' in mod) return;
+
+    // Bytes an Agent minted. Surrounding whitespace, the embedded newline and
+    // the `/`, `+`, `=` punctuation are all part of the identity Happier hands
+    // back to its issuer, so the handoff wire must carry them unchanged.
+    const providerMintedId = '  provider\nses/AB+cd==  ';
+    const buildPayload = (providerSessionId: string) => ({
+      handoffId: 'handoff_opaque_identity',
+      status: {
+        handoffId: 'handoff_opaque_identity',
+        status: 'ready_for_cutover',
+        phase: 'staging_target',
+        recoveryActions: [],
+      },
+      remoteSessionId: providerSessionId,
+      directSource: {
+        kind: 'claudeConfig',
+        configDir: '/tmp/claude',
+      },
+      resume: {
+        directory: '/repo',
+        agent: 'claude',
+        resume: providerSessionId,
+        transcriptStorage: 'persisted',
+        approvedNewDirectoryCreation: true,
+      },
+    });
+
+    const prepared = mod.SessionHandoffPrepareTargetResponseSchema.parse(
+      buildPayload(providerMintedId),
+    );
+    expect(prepared.remoteSessionId).toBe(providerMintedId);
+    expect(prepared.resume?.resume).toBe(providerMintedId);
+
+    const fetched = mod.SessionHandoffPrepareTargetResultGetSuccessResponseSchema.parse(
+      buildPayload(providerMintedId),
+    );
+    expect(fetched.remoteSessionId).toBe(providerMintedId);
+    expect(fetched.resume.resume).toBe(providerMintedId);
+
+    // An all-whitespace value is not an identity. `min(1)` admitted it; the
+    // opaque-identifier owner is the only judgement made about these bytes.
+    for (const blank of ['   ', '\n', ' \t ']) {
+      expect(mod.SessionHandoffPrepareTargetResponseSchema.safeParse({
+        ...buildPayload(providerMintedId),
+        remoteSessionId: blank,
+      }).success).toBe(false);
+      expect(mod.SessionHandoffPrepareTargetResponseSchema.safeParse({
+        ...buildPayload(blank),
+        remoteSessionId: providerMintedId,
+      }).success).toBe(false);
+      expect(mod.SessionHandoffPrepareTargetResultGetSuccessResponseSchema.safeParse({
+        ...buildPayload(providerMintedId),
+        remoteSessionId: blank,
+      }).success).toBe(false);
+    }
   });
 
   it('validates runtimeDescriptorV1 as a schema-owned field', async () => {

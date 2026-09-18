@@ -71,6 +71,7 @@ export {
 } from '../providers/materialization/v1.js';
 export {
   AgentSessionProviderBindingV1Schema,
+  AgentSessionTeamProviderBindingV1Schema,
   type AgentSessionProviderBinding,
   type AgentSessionProviderBindingV1,
 } from '../providers/sessions/agentSessionProviderBindingV1.js';

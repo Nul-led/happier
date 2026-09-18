@@ -79,7 +79,7 @@ describe('extractVoiceActionsFromAssistantText', () => {
       '<voice_actions>',
       JSON.stringify({
         actions: [
-          { t: 'setPrimaryActionSession', args: { sessionId: 's1' } },
+          { t: 'setPrimaryActionSession', args: { serverId: 'server-1', sessionId: 's1' } },
           { t: 'setTrackedSessions', args: { sessionIds: ['s1', 's2'] } },
         ],
       }),
@@ -89,7 +89,7 @@ describe('extractVoiceActionsFromAssistantText', () => {
     const result = extractVoiceActionsFromAssistantText(input);
     expect(result.assistantText).toBe('Sure.');
     expect(result.actions).toEqual([
-      { t: 'setPrimaryActionSession', args: { sessionId: 's1' } },
+      { t: 'setPrimaryActionSession', args: { serverId: 'server-1', sessionId: 's1' } },
       { t: 'setTrackedSessions', args: { sessionIds: ['s1', 's2'] } },
     ]);
   });

@@ -1,19 +1,42 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import * as externalActionApi from './externalActionApi.js';
+
+it('carries Home-issued invocation authority only in the trusted daemon dispatch', () => {
+  const target = { kind: 'machine', machineId: 'machine-1' };
+  const envelope = { v: 1, requestId: 'request-1', target, input: {} };
+  const principal = { accountId: 'account-1', principalId: 'account-1', credentialId: 'pat-1', authority: 'account_automation' };
+  const executionAuthorization = { v: 1, token: 'home-signed-invocation', binding: {
+    serverIdentityId: 'home-1', accountId: 'account-1', principalId: 'account-1', credentialId: 'pat-1',
+    machineId: 'machine-1', actionId: 'session.title.set', requestId: 'request-1',
+    requestEnvelopeDigest: 'a'.repeat(43), target,
+  } };
+  expect(externalActionApi.ExternalActionDaemonDispatchRequestSchema.safeParse({
+    actionId: 'session.title.set', envelope, principal,
+    placement: { machineId: 'machine-1', target }, executionAuthorization,
+  }).success).toBe(true);
+  expect(externalActionApi.ExternalActionRequestEnvelopeSchema.safeParse({ ...envelope, executionAuthorization }).success).toBe(false);
+});
 
 import {
   EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+  EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
   EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES,
   EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES,
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
+  EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2,
   ExternalActionDaemonDispatchResultV1Schema,
   ExternalActionDaemonDispatchRequestV1Schema,
   ExternalActionHttpErrorV1Schema,
+  ExternalActionHttpErrorSchema,
   ExternalActionMachineBootstrapListV1Schema,
   ExternalActionResultTooLargeExecutionV1Schema,
   ExternalActionRequestEnvelopeV1Schema,
   ExternalActionRequestIdV1Schema,
   ExternalActionResponseEnvelopeV1Schema,
   ExternalActionTargetV1Schema,
+  isExternalActionResolvedTargetAllowedV1,
   createExternalActionDaemonDispatchResponseV1,
   createExternalActionResultTooLargeExecutionV1,
   enforceExternalActionResponseEnvelopeLimitV1,
@@ -24,6 +47,7 @@ import {
   projectExternalActionResponseEnvelopeV1,
   projectExternalActionExecutionResultV1,
   projectExternalActionHttpErrorV1,
+  projectExternalActionHttpError,
   serializeExternalActionResponseEnvelopeV1,
 } from './externalActionApi.js';
 
@@ -34,6 +58,30 @@ function createDeepExternalActionResult(depth = 12_000): unknown {
   }
   return result;
 }
+
+it('admits opaque V2 framing and the complete protected pre-open RPC vocabulary without widening V1', () => {
+  const envelope = { v: 2, requestId: 'request-1', target: { kind: 'machine', machineId: 'machine-1' },
+    payload: { t: 'encrypted', c: 'opaque' } };
+  expect(externalActionApi.ExternalActionRequestEnvelopeSchema?.safeParse(envelope).success).toBe(true);
+  expect(ExternalActionRequestEnvelopeV1Schema.safeParse(envelope).success).toBe(false);
+  expect(externalActionApi.ExternalActionRequestEnvelopeSchema?.safeParse({ ...envelope, input: 'leak' }).success).toBe(false);
+  for (const errorCode of [
+    'invalid_action',
+    'invalid_envelope',
+    'request_too_large',
+    'internal_error',
+    'invalid_encrypted_envelope',
+    'encrypted_action_unsupported',
+    'target_required',
+    'target_not_local',
+    'target_unavailable',
+    'session_input_target_update_required',
+  ] as const) {
+    const failure = { kind: 'invalid_request' as const, errorCode, requestId: 'request-1' };
+    expect(ExternalActionDaemonDispatchResultV1Schema.safeParse(failure).success).toBe(false);
+    expect(externalActionApi.parseExternalActionDaemonDispatchResult(failure)).toEqual(failure);
+  }
+});
 
 describe('External Action API envelope v1', () => {
   it('owns the opaque request-id grammar used by every external Action client', () => {
@@ -86,8 +134,35 @@ describe('External Action API envelope v1', () => {
 
   it('admits only an exact machine or Session transport target', () => {
     expect(ExternalActionTargetV1Schema.safeParse({ kind: 'machine', machineId: 'machine-1' }).success).toBe(true);
+    expect(ExternalActionTargetV1Schema.parse({
+      kind: 'machine', machineId: 'machine-1',
+      project: { machineId: 'machine-1', directory: '~/projects/app', workspaceRefId: 'workspace-1' },
+    })).toMatchObject({ project: { directory: '~/projects/app' } });
+    expect(ExternalActionTargetV1Schema.safeParse({
+      kind: 'machine', machineId: 'machine-1',
+      project: { machineId: 'machine-2', directory: '/repo' },
+    }).success).toBe(false);
     expect(ExternalActionTargetV1Schema.safeParse({ kind: 'session', sessionId: 'session-1' }).success).toBe(true);
     expect(ExternalActionTargetV1Schema.safeParse({ kind: 'account' }).success).toBe(false);
+  });
+
+  it('allows only the selected relay Machine to resolve its exact invocation target', () => {
+    const relayTarget = { kind: 'machine' as const, machineId: 'machine-1' };
+    expect(isExternalActionResolvedTargetAllowedV1({
+      authorizedTarget: relayTarget,
+      resolvedTarget: { kind: 'session', sessionId: 'session-1' },
+      selectedMachineId: 'machine-1',
+    })).toBe(true);
+    expect(isExternalActionResolvedTargetAllowedV1({
+      authorizedTarget: relayTarget,
+      resolvedTarget: { kind: 'machine', machineId: 'machine-2' },
+      selectedMachineId: 'machine-1',
+    })).toBe(false);
+    expect(isExternalActionResolvedTargetAllowedV1({
+      authorizedTarget: { kind: 'session', sessionId: 'session-1' },
+      resolvedTarget: { kind: 'session', sessionId: 'session-2' },
+      selectedMachineId: 'machine-1',
+    })).toBe(false);
   });
 
   it.each([
@@ -216,6 +291,28 @@ describe('External Action API envelope v1', () => {
     });
   });
 
+  it('projects one strict redacted pre-open error vocabulary with safe correlation', () => {
+    const placement = projectExternalActionHttpError('target_required', 'request-placement');
+    expect(placement).toEqual({
+      statusCode: 400,
+      payload: {
+        error: 'invalid_request',
+        code: 'target_required',
+        requestId: 'request-placement',
+      },
+    });
+    expect(ExternalActionHttpErrorSchema.parse(placement.payload)).toEqual(placement.payload);
+    expect(ExternalActionHttpErrorV1Schema.safeParse(placement.payload).success).toBe(false);
+
+    const authentication = projectExternalActionHttpError('invalid_token');
+    expect(authentication).toEqual({ statusCode: 401, payload: { error: 'invalid_token' } });
+    expect(ExternalActionHttpErrorSchema.parse(authentication.payload)).toEqual(authentication.payload);
+    expect(ExternalActionHttpErrorSchema.safeParse({
+      ...placement.payload,
+      details: { target: 'must-not-cross' },
+    }).success).toBe(false);
+  });
+
   it('owns separate request and response relay carrier byte ceilings', () => {
     expect(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES).toBe(33_554_432);
     expect(EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES).toBe(34_603_008);
@@ -228,6 +325,19 @@ describe('External Action API envelope v1', () => {
     expect(EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES).toBe(25_000_000);
     expect(EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES)
       .toBeGreaterThan(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES);
+  });
+
+  it('derives protected transport ceilings without materializing the decoded request ceiling', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('./externalActionApi.ts', import.meta.url)),
+      'utf8',
+    );
+
+    expect(source).not.toMatch(/\.repeat\(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES\)/u);
+    expect(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2)
+      .toBeLessThan(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES * 2);
+    expect(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2)
+      .toBeLessThan(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES * 3);
   });
 
   it('defines a strict result_too_large execution result that records completed execution', () => {

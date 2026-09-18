@@ -46,6 +46,22 @@
       "types": "./dist/crypto/canonicalJson.d.ts",
       "default": "./dist/crypto/canonicalJson.js"
     },
+    "./strings/opaqueIdentifier": {
+      "types": "./dist/strings/opaqueIdentifier.d.ts",
+      "default": "./dist/strings/opaqueIdentifier.js"
+    },
+    "./crypto/boxBundle": {
+      "types": "./dist/crypto/boxBundle.d.ts",
+      "default": "./dist/crypto/boxBundle.js"
+    },
+    "./machines/identity/installationIdentity": {
+      "types": "./dist/machines/identity/installationIdentity.d.ts",
+      "default": "./dist/machines/identity/installationIdentity.js"
+    },
+    "./machines/pools": {
+      "types": "./dist/machines/pools/index.d.ts",
+      "default": "./dist/machines/pools/index.js"
+    },
     "./machines/administration/pluginMachineExecutionOriginV1": {
       "types": "./dist/machines/administration/pluginMachineExecutionOriginV1.d.ts",
       "default": "./dist/machines/administration/pluginMachineExecutionOriginV1.js"
@@ -85,6 +101,18 @@
     "./auth/accountApiTokens": {
       "types": "./dist/auth/accountApiTokens.d.ts",
       "default": "./dist/auth/accountApiTokens.js"
+    },
+    "./auth/accountDirectory": {
+      "types": "./dist/auth/accountDirectory.d.ts",
+      "default": "./dist/auth/accountDirectory.js"
+    },
+    "./auth/accountPasswordCredential": {
+      "types": "./dist/auth/accountPasswordCredential.d.ts",
+      "default": "./dist/auth/accountPasswordCredential.js"
+    },
+    "./auth/entry": {
+      "types": "./dist/auth/entry.d.ts",
+      "default": "./dist/auth/entry.js"
     },
     "./automations/event-setup-result": {
       "types": "./dist/automations/automationEventSetupResultV1.d.ts",
@@ -147,6 +175,38 @@
       "types": "./dist/changes/index.d.ts",
       "default": "./dist/changes/index.js"
     },
+    "./home/governance": {
+      "types": "./dist/home/governance/index.d.ts",
+      "default": "./dist/home/governance/index.js"
+    },
+    "./teams": {
+      "types": "./dist/teams/index.d.ts",
+      "default": "./dist/teams/index.js"
+    },
+    "./ephemeralRunner/runnerArtifact": {
+      "types": "./dist/ephemeralRunner/runnerArtifact.d.ts",
+      "default": "./dist/ephemeralRunner/runnerArtifact.js"
+    },
+    "./ephemeralRunner/runnerPackageLayout": {
+      "types": "./dist/ephemeralRunner/runnerPackageLayout.d.ts",
+      "default": "./dist/ephemeralRunner/runnerPackageLayout.js"
+    },
+    "./ephemeralRunner/activation": {
+      "types": "./dist/ephemeralRunner/activation.d.ts",
+      "default": "./dist/ephemeralRunner/activation.js"
+    },
+    "./ephemeralRunner/activationFile": {
+      "types": "./dist/ephemeralRunner/activationFile.d.ts",
+      "default": "./dist/ephemeralRunner/activationFile.js"
+    },
+    "./ephemeralRunner/endpoint": {
+      "types": "./dist/ephemeralRunner/endpoint.d.ts",
+      "default": "./dist/ephemeralRunner/endpoint.js"
+    },
+    "./ephemeralRunner/consent": {
+      "types": "./dist/ephemeralRunner/consent.d.ts",
+      "default": "./dist/ephemeralRunner/consent.js"
+    },
     "./transferRelayV2": {
       "types": "./dist/transfers/relay/v2/index.d.ts",
       "default": "./dist/transfers/relay/v2/index.js"
@@ -190,6 +250,18 @@
     "./sessions/subagents": {
       "types": "./dist/sessions/subagents/index.d.ts",
       "default": "./dist/sessions/subagents/index.js"
+    },
+    "./sessions/follow": {
+      "types": "./dist/sessions/follow/index.d.ts",
+      "default": "./dist/sessions/follow/index.js"
+    },
+    "./sessions/discussions": {
+      "types": "./dist/sessions/discussions/index.d.ts",
+      "default": "./dist/sessions/discussions/index.js"
+    },
+    "./sessions/board": {
+      "types": "./dist/sessions/board/index.d.ts",
+      "default": "./dist/sessions/board/index.js"
     },
     "./runtime": {
       "types": "./dist/runtime/index.d.ts",
@@ -258,6 +330,14 @@
     "./plugins/contribution-identity": {
       "types": "./dist/plugins/contributionIdentity.d.ts",
       "default": "./dist/plugins/contributionIdentity.js"
+    },
+    "./plugins/backend-surface-declaration": {
+      "types": "./dist/plugins/backendSurfaceDeclarationV1.d.ts",
+      "default": "./dist/plugins/backendSurfaceDeclarationV1.js"
+    },
+    "./plugins/contributions/v2": {
+      "types": "./dist/plugins/contributions/v2.d.ts",
+      "default": "./dist/plugins/contributions/v2.js"
     },
     "./plugins/source-spec": {
       "types": "./dist/plugins/sourceSpecV1.d.ts",
@@ -439,6 +519,10 @@
       "types": "./dist/server/urls/index.d.ts",
       "default": "./dist/server/urls/index.js"
     },
+    "./plugins/contributions/agent-resume-only-sources": {
+      "types": "./dist/plugins/contributions/agentResumeOnlySources.d.ts",
+      "default": "./dist/plugins/contributions/agentResumeOnlySources.js"
+    },
     "./plugins/contributions/browser": {
       "types": "./dist/plugins/contributions/browser/index.d.ts",
       "default": "./dist/plugins/contributions/browser/index.js"
@@ -514,6 +598,114 @@
     "./voice/modelPacks/contributionV1": {
       "types": "./dist/voice/modelPacks/contributionV1.d.ts",
       "default": "./dist/voice/modelPacks/contributionV1.js"
+    },
+    "./ephemeralRunner/projection": {
+      "types": "./dist/ephemeralRunner/projection.d.ts",
+      "default": "./dist/ephemeralRunner/projection.js"
+    },
+    "./ephemeralRunner/launchManifest": {
+      "types": "./dist/ephemeralRunner/launchManifest.d.ts",
+      "default": "./dist/ephemeralRunner/launchManifest.js"
+    },
+    "./ephemeralRunner/runnerMcpMaterial": {
+      "types": "./dist/ephemeralRunner/runnerMcpMaterial.d.ts",
+      "default": "./dist/ephemeralRunner/runnerMcpMaterial.js"
+    },
+    "./ephemeralRunner/bootstrap": {
+      "types": "./dist/ephemeralRunner/bootstrap.d.ts",
+      "default": "./dist/ephemeralRunner/bootstrap.js"
+    },
+    "./ephemeralRunner/runnerConnectedServices": {
+      "types": "./dist/ephemeralRunner/runnerConnectedServices.d.ts",
+      "default": "./dist/ephemeralRunner/runnerConnectedServices.js"
+    },
+    "./ephemeralRunner/runnerEnvironment": {
+      "types": "./dist/ephemeralRunner/runnerEnvironment.d.ts",
+      "default": "./dist/ephemeralRunner/runnerEnvironment.js"
+    },
+    "./ephemeralRunner/machineContentKeyBinding": {
+      "types": "./dist/ephemeralRunner/machineContentKeyBinding.d.ts",
+      "default": "./dist/ephemeralRunner/machineContentKeyBinding.js"
+    },
+    "./ephemeralRunner/readiness": {
+      "types": "./dist/ephemeralRunner/readiness.d.ts",
+      "default": "./dist/ephemeralRunner/readiness.js"
+    },
+    "./ephemeralRunner/review": {
+      "types": "./dist/ephemeralRunner/review.d.ts",
+      "default": "./dist/ephemeralRunner/review.js"
+    },
+    "./ephemeralRunner/materialization": {
+      "types": "./dist/ephemeralRunner/materialization.d.ts",
+      "default": "./dist/ephemeralRunner/materialization.js"
+    },
+    "./ephemeralRunner/endpointProjection": {
+      "types": "./dist/ephemeralRunner/endpointProjection.d.ts",
+      "default": "./dist/ephemeralRunner/endpointProjection.js"
+    },
+    "./ephemeralRunner/progress": {
+      "types": "./dist/ephemeralRunner/progress.d.ts",
+      "default": "./dist/ephemeralRunner/progress.js"
+    },
+    "./ephemeralRunner/progressProof": {
+      "types": "./dist/ephemeralRunner/progressProof.d.ts",
+      "default": "./dist/ephemeralRunner/progressProof.js"
+    },
+    "./ephemeralRunner/principal": {
+      "types": "./dist/ephemeralRunner/principal.d.ts",
+      "default": "./dist/ephemeralRunner/principal.js"
+    },
+    "./ephemeralRunner/actionsV1": {
+      "types": "./dist/ephemeralRunner/actionsV1.d.ts",
+      "default": "./dist/ephemeralRunner/actionsV1.js"
+    },
+    "./ephemeralRunner/actionIdsV1": {
+      "types": "./dist/ephemeralRunner/actionIdsV1.d.ts",
+      "default": "./dist/ephemeralRunner/actionIdsV1.js"
+    },
+    "./ephemeralRunner/errors": {
+      "types": "./dist/ephemeralRunner/errors.d.ts",
+      "default": "./dist/ephemeralRunner/errors.js"
+    },
+    "./ephemeralRunner/routes": {
+      "types": "./dist/ephemeralRunner/routes.d.ts",
+      "default": "./dist/ephemeralRunner/routes.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows/index.d.ts",
+      "default": "./dist/workflows/index.js"
+    },
+    "./workflows/workflowV1": {
+      "types": "./dist/workflows/workflowV1.d.ts",
+      "default": "./dist/workflows/workflowV1.js"
+    },
+    "./workflows/workflowReferenceV1": {
+      "types": "./dist/workflows/workflowReferenceV1.d.ts",
+      "default": "./dist/workflows/workflowReferenceV1.js"
+    },
+    "./workflows/workflowWorkspaceV1": {
+      "types": "./dist/workflows/workflowWorkspaceV1.d.ts",
+      "default": "./dist/workflows/workflowWorkspaceV1.js"
+    },
+    "./workflows/workflowValidationV1": {
+      "types": "./dist/workflows/workflowValidationV1.d.ts",
+      "default": "./dist/workflows/workflowValidationV1.js"
+    },
+    "./workflows/workflowProgressV1": {
+      "types": "./dist/workflows/workflowProgressV1.d.ts",
+      "default": "./dist/workflows/workflowProgressV1.js"
+    },
+    "./workflows/workflowDefinitionV1": {
+      "types": "./dist/workflows/workflowDefinitionV1.d.ts",
+      "default": "./dist/workflows/workflowDefinitionV1.js"
+    },
+    "./workflows/workflowDocumentV1": {
+      "types": "./dist/workflows/workflowDocumentV1.d.ts",
+      "default": "./dist/workflows/workflowDocumentV1.js"
+    },
+    "./workflows/actionsV1": {
+      "types": "./dist/workflows/actionsV1.d.ts",
+      "default": "./dist/workflows/actionsV1.js"
     }
   },
   "files": [
@@ -535,6 +727,8 @@
     "typecheck:local": "node scripts/generate-embedded-feature-policies.mjs --check && node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "tr46": "5.1.1",
+    "@noble/curves": "^1.9.0",
     "@noble/hashes": "^1.8.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",

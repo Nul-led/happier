@@ -36,7 +36,10 @@ import {
   resolveQualifiedConnectedAccountGroupActiveAccountV4,
   sameQualifiedConnectedAccountGroupRef,
 } from './qualifiedConnectedAccountsV4.js';
-import { PluginConnectedAccountAuthenticationV2Schema } from './pluginConnectedAccountAuthenticationV2.js';
+import {
+  CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+  PluginConnectedAccountAuthenticationV2Schema,
+} from './pluginConnectedAccountAuthenticationV2.js';
 import { ConnectedServicesCapabilitiesSchema } from '../features/payload/capabilities/connectedServicesCapabilities.js';
 import {
   buildProviderAccountUsageRecordId,
@@ -463,6 +466,22 @@ describe('qualified connected-account V4 wire contract', () => {
         scopes: ['account.read'],
       },
     } as const;
+
+    expect(QualifiedConnectedAccountCredentialMutationV4Schema.parse({
+      ...mutation,
+      directExportContract: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+      expectedCredentialRevision: null,
+    }).directExportContract).toBe(CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1);
+    expect(QualifiedConnectedAccountCredentialMutationV4Schema.parse({
+      ...mutation,
+      directExportContract: null,
+      expectedCredentialRevision: null,
+    }).directExportContract).toBeNull();
+    expect(QualifiedConnectedAccountCredentialMutationV4Schema.safeParse({
+      ...mutation,
+      directExportContract: 'unknown-contract',
+      expectedCredentialRevision: null,
+    }).success).toBe(false);
 
     expect(QualifiedConnectedAccountCredentialMutationV4Schema.safeParse(mutation).success)
       .toBe(false);

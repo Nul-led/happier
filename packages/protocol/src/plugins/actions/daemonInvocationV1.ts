@@ -49,6 +49,10 @@ export const DaemonPluginStructuredMessageActionInvocationV1Schema = z.discrimin
     kind: z.literal('mountedPluginSurface'),
     mountedBinding: DaemonPluginStructuredMessageActionMountedBindingSchema,
   }).strict(),
+  z.object({
+    kind: z.literal('clientPluginAction'),
+    clientActionBinding: DaemonPluginStructuredMessageActionMountedBindingSchema,
+  }).strict(),
 ]);
 export type DaemonPluginStructuredMessageActionInvocationV1 = z.infer<
   typeof DaemonPluginStructuredMessageActionInvocationV1Schema
@@ -65,7 +69,16 @@ function messageActionReferencesMatch(
 }
 
 function composerRefSessionId(ref: ComposerRefV1): string | null {
-  return ref.kind === 'newSession' ? null : ref.sessionId;
+  switch (ref.kind) {
+    case 'newSession':
+    case 'workflowAuthoring':
+      return null;
+    case 'session':
+    case 'pendingMessage':
+    case 'participantMessage':
+    case 'automationAuthoring':
+      return ref.sessionId;
+  }
 }
 
 const PluginActionDaemonInvocationV1Shape = {

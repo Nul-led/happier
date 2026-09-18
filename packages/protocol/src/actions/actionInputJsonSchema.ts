@@ -27,11 +27,12 @@ function isJsonSchemaObject(value: unknown): value is JsonSchemaObject {
  */
 export function zodSchemaToJsonSchemaObject(
   schema: z.ZodTypeAny,
+  options?: Readonly<{ target?: 'draft-2020-12' | 'draft-7' }>,
 ): JsonSchemaObject {
   try {
     const projectedSchema = schema.toJSONSchema({
       io: 'input',
-      target: 'draft-2020-12',
+      target: options?.target ?? 'draft-2020-12',
       unrepresentable: 'throw',
     });
     if (!isJsonSchemaObject(projectedSchema)) {

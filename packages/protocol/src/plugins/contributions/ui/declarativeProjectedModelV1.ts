@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ActionIdSchema, type ActionId } from '../../../actions/actionIds.js';
 import { asProtocolZod } from '../../actions/internalProtocolZodAdapter.js';
 
 import {
@@ -9,7 +10,7 @@ import { PluginIdSchema } from '../../pluginId.js';
 import {
   NormalizedPluginCollectionUiQueryDescriptorV1Schema,
   type NormalizedPluginCollectionUiQueryDescriptorV1,
-} from '../../data/collectionsV1.js';
+} from '../../data/collectionUiQueryWireV1.js';
 import { PluginUiInstanceKeyV1Schema, type PluginUiInstanceKeyV1 } from '../../ui/semanticCommands.js';
 import {
   PluginUiHostMethodV1Schema,
@@ -23,6 +24,7 @@ import {
   PluginJsonSchemaV2Schema,
   PluginJsonValueV2Schema,
   PluginLocalizedStringV2Schema,
+  PluginLocalizedMarkdownV2Schema,
   type PluginJsonSchemaV2,
   type PluginJsonValueV2,
   type PluginLocalizedStringV2,
@@ -260,6 +262,7 @@ export type PluginDeclarativeProjectedNodeV1 =
     variant?: PluginDeclarativeActionVariantV2;
     action?: PluginDeclarativeProjectedQualifiedReferenceV1;
     effect?: PluginDeclarativeComposerApplyEffectV1;
+    hostAction?: ActionId;
     input?: PluginJsonValueV2;
     enabled: boolean;
   }>
@@ -333,7 +336,7 @@ export type PluginDeclarativeProjectedNodeV1 =
 export const PluginDeclarativeProjectedNodeV1Schema: z.ZodType<PluginDeclarativeProjectedNodeV1> = z.lazy(
   () => z.union([
     z.object({ kind: z.literal('text'), ...ProjectedNodeBaseV1Shape, text: PluginLocalizedStringV2Schema, tone: PluginDeclarativeToneV2Schema.optional() }).strict(),
-    z.object({ kind: z.literal('markdown'), ...ProjectedNodeBaseV1Shape, text: PluginLocalizedStringV2Schema }).strict(),
+    z.object({ kind: z.literal('markdown'), ...ProjectedNodeBaseV1Shape, text: PluginLocalizedMarkdownV2Schema }).strict(),
     z.object({
       kind: z.literal('stack'),
       ...ProjectedNodeBaseV1Shape,
@@ -370,14 +373,15 @@ export const PluginDeclarativeProjectedNodeV1Schema: z.ZodType<PluginDeclarative
       variant: PluginDeclarativeActionVariantV2Schema.optional(),
       action: PluginDeclarativeProjectedQualifiedReferenceV1Schema.optional(),
       effect: PluginDeclarativeComposerApplyEffectV1Schema.optional(),
+      hostAction: ActionIdSchema.optional(),
       input: PluginJsonValueV2Schema.optional(),
       enabled: z.boolean(),
     }).strict().superRefine((node, context) => {
-      if ((node.action === undefined) === (node.effect === undefined)) {
+      if ([node.action, node.hostAction, node.effect].filter((value) => value !== undefined).length !== 1) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['action'],
-          message: 'A projected action must name exactly one Action or effect.',
+          message: 'A projected action must name exactly one contributed Action, host Action, or effect.',
         });
       }
       if (node.effect !== undefined && node.input !== undefined) {

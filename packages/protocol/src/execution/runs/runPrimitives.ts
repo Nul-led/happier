@@ -4,6 +4,7 @@ export const ExecutionRunIntentSchema = z.enum([
   'review',
   'plan',
   'delegate',
+  'agent',
   'task',
   'voice_agent',
   'memory_hints',

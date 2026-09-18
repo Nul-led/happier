@@ -359,16 +359,11 @@ describe('terminalProvisioningV3 structural inspection', () => {
 });
 
 describe('terminalProvisioningVariantPolicy', () => {
-  it('resolves plain accounts to token-only regardless of material availability', () => {
-    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain', dataKeyMaterialAvailable: true })).toBe('tokenOnly');
-    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain', dataKeyMaterialAvailable: false })).toBe('tokenOnly');
+  it('resolves plain accounts to token-only material', () => {
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain' })).toBe('tokenOnly');
   });
 
-  it('resolves e2ee accounts with valid data-key material to dataKey', () => {
-    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee', dataKeyMaterialAvailable: true })).toBe('dataKey');
-  });
-
-  it('fails closed for e2ee accounts without valid data-key material', () => {
-    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee', dataKeyMaterialAvailable: false })).toBe('legacyProvisioningUnavailable');
+  it('resolves e2ee accounts to dataKey material', () => {
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee' })).toBe('dataKey');
   });
 });

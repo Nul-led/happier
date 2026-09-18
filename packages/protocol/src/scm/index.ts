@@ -1,4 +1,7 @@
 import { z } from 'zod';
+
+export { resolveScmBackendCapabilities } from './resolveScmBackendCapabilities.js';
+export { buildWorktreeRelativePath, hasForbiddenGitRefName, normalizeWorktreeDisplayName } from './worktreeName.js';
 import {
   ProviderRefreshPolicySchema,
   VcsLocalStateFreshnessSchema,

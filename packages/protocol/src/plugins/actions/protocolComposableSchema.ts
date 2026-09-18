@@ -486,51 +486,6 @@ export function defineProtocolString(
   );
 }
 
-/**
- * A bounded nonempty string whose executable representation preserves the
- * established JavaScript `trim()` normalization while its JSON Schema
- * projection admits that same spelling. Identity owners use this only when
- * their public contract has already made trim normalization observable.
- */
-export function defineProtocolTrimmedNonemptyString(
-  maxLength: number,
-): ProtocolComposableSchema<string, string> {
-  const normalizedMaxLength = assertPositiveSafeInteger(
-    maxLength,
-    'trimmed string maxLength',
-  );
-  const normalizedCore = normalizedMaxLength === 1
-    ? '\\S'
-    : `(?:\\S|\\S[\\s\\S]{0,${normalizedMaxLength - 2}}\\S)`;
-  const projection = {
-    type: 'string',
-    pattern: `^\\s*${normalizedCore}\\s*$`,
-  };
-  return createProtocolComposableSchema<string, string>(projection, (input) => {
-    if (typeof input !== 'string') {
-      return createProtocolSingleFailure('invalid_string', 'Value must be a string');
-    }
-    const trimmed = input.trim();
-    // This owner projects the incumbent Zod identity contract, whose bound is
-    // JavaScript string length rather than the generic Protocol string's
-    // code-point measure.
-    return trimmed.length > 0 && trimmed.length <= normalizedMaxLength
-      ? { success: true, data: trimmed }
-      : createProtocolSingleFailure('invalid_string', 'Value does not satisfy the trimmed string constraint');
-  });
-}
-
-function readProtocolTrimmedNonemptyStringMaxLength(pattern: string): number | null {
-  if (pattern === '^\\s*\\S\\s*$') return 1;
-  const prefix = '^\\s*(?:\\S|\\S[\\s\\S]{0,';
-  const suffix = '}\\S)\\s*$';
-  if (!pattern.startsWith(prefix) || !pattern.endsWith(suffix)) return null;
-  const encodedMaximum = pattern.slice(prefix.length, -suffix.length);
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(encodedMaximum)) return null;
-  const maximum = Number(encodedMaximum) + 2;
-  return Number.isSafeInteger(maximum) ? maximum : null;
-}
-
 export function defineProtocolUtf8String(
   options: ProtocolUtf8StringOptions,
 ): ProtocolComposableSchema<string, string> {
@@ -570,17 +525,18 @@ export function defineProtocolNumber(
 ): ProtocolComposableSchema<number, number> {
   const minimum = assertFiniteProtocolNumber(options.minimum, 'number minimum');
   const maximum = assertFiniteProtocolNumber(options.maximum, 'number maximum');
+  const integer = options.integer === true;
   if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
     throw new TypeError('Protocol number maximum must not be less than minimum');
   }
-  if (options.integer === true) {
+  if (integer) {
     if ((minimum !== undefined && !Number.isSafeInteger(minimum))
       || (maximum !== undefined && !Number.isSafeInteger(maximum))) {
       throw new TypeError('Protocol integer bounds must be safe integers');
     }
   }
-  const projection: PluginJsonSchemaV2 = { type: options.integer === true ? 'integer' : 'number' };
-  if (options.integer === true) {
+  const projection: PluginJsonSchemaV2 = { type: integer ? 'integer' : 'number' };
+  if (integer) {
     projection.minimum = Math.max(minimum ?? Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER);
     projection.maximum = Math.min(maximum ?? Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
   } else {
@@ -592,7 +548,7 @@ export function defineProtocolNumber(
       && Number.isFinite(input)
       && (minimum === undefined || input >= minimum)
       && (maximum === undefined || input <= maximum)
-      && (options.integer !== true || Number.isSafeInteger(input))
+      && (!integer || Number.isSafeInteger(input))
   )
     ? { success: true, data: input }
     : createProtocolSingleFailure('invalid_number', 'Value does not satisfy the protocol number constraint'));
@@ -679,6 +635,7 @@ export function defineProtocolObject<
       && options.policy !== 'additive-open/preserve')) {
     throw new TypeError('Protocol object requires a supported unknown-key policy');
   }
+  const policy = options.policy;
   const children: Record<string, ProtocolComposableSchema<unknown, unknown>> = {};
   const properties: Record<string, PluginJsonSchemaV2> = {};
   const required: string[] = [];
@@ -690,7 +647,7 @@ export function defineProtocolObject<
   }
 
   const additional = options.additionalProperties;
-  if (additional !== undefined && options.policy !== 'additive-open/preserve') {
+  if (additional !== undefined && policy !== 'additive-open/preserve') {
     throw new TypeError('Typed additionalProperties requires additive-open/preserve');
   }
   const projection: PluginJsonSchemaV2 = {
@@ -699,9 +656,9 @@ export function defineProtocolObject<
     ...(required.length === 0 ? {} : { required }),
   };
   let additionalSchema: ProtocolComposableSchema<unknown, unknown> | undefined;
-  if (options.policy === 'closed') {
+  if (policy === 'closed') {
     projection.additionalProperties = false;
-  } else if (options.policy === 'additive-open/drop') {
+  } else if (policy === 'additive-open/drop') {
     projection.additionalProperties = true;
   } else if (additional === undefined) {
     // `true` is the canonical JSON Schema spelling for accepting then
@@ -733,10 +690,10 @@ export function defineProtocolObject<
     }
     for (const key of Object.keys(values)) {
       if (Object.hasOwn(children, key)) continue;
-      if (options.policy === 'closed') {
+      if (policy === 'closed') {
         return createProtocolSingleFailure('unknown_key', 'Value contains an unknown protocol object key');
       }
-      if (options.policy === 'additive-open/drop') continue;
+      if (policy === 'additive-open/drop') continue;
       const value = values[key];
       if (additionalSchema !== undefined) {
         const parsed = additionalSchema.safeParse(value);
@@ -848,6 +805,7 @@ export function defineProtocolUnion<
   const TMembers extends readonly [AnyProtocolComposableSchema, AnyProtocolComposableSchema, ...AnyProtocolComposableSchema[]],
 >(
   members: TMembers,
+  options: ProtocolJsonValueOptions = {},
 ): ProtocolComposableSchema<
   ProtocolSchemaInput<TMembers[number]>,
   ProtocolSchemaOutput<TMembers[number]>
@@ -855,6 +813,9 @@ export function defineProtocolUnion<
   if (!Array.isArray(members) || members.length < 2) {
     throw new TypeError('Protocol union requires at least two member schemas');
   }
+  const maximum = options.maxSerializedUtf8Bytes === undefined
+    ? undefined
+    : assertPositiveSafeInteger(options.maxSerializedUtf8Bytes, 'union maxSerializedUtf8Bytes');
   const schemas = members.map((member) => requireProtocolComposableSchema<
     ProtocolSchemaInput<TMembers[number]>,
     ProtocolSchemaOutput<TMembers[number]>
@@ -862,7 +823,16 @@ export function defineProtocolUnion<
   return createProtocolComposableSchema<
     ProtocolSchemaInput<TMembers[number]>,
     ProtocolSchemaOutput<TMembers[number]>
-  >({ anyOf: schemas.map(protocolComposableProjection) }, (input) => {
+  >({
+    anyOf: schemas.map(protocolComposableProjection),
+    ...(maximum === undefined ? {} : { [HAPPIER_MAX_SERIALIZED_UTF8_BYTES_KEYWORD]: maximum }),
+  }, (input) => {
+    // The bound belongs to the admitted input, before a member may normalize
+    // or drop fields. Cold validation measures that same wire value.
+    if (maximum !== undefined
+      && measureSerializedValidatedStrictPluginJsonUtf8Bytes(input, 'value', maximum) > maximum) {
+      return createProtocolSingleFailure('invalid_json_value', 'Value exceeds the protocol serialized-byte limit');
+    }
     for (const schema of schemas) {
       const parsed = schema.safeParse(input);
       if (parsed.success) return { success: true, data: parsed.data };
@@ -986,10 +956,13 @@ function readCanonicalComposableSchemaProjection(
     }
 
     if (Object.hasOwn(value, 'anyOf')) {
-      if (!hasOnlyCanonicalSchemaKeys(value, ['anyOf']) || !Array.isArray(value.anyOf)) return null;
+      if (!hasOnlyCanonicalSchemaKeys(value, ['anyOf', HAPPIER_MAX_SERIALIZED_UTF8_BYTES_KEYWORD])
+        || !Array.isArray(value.anyOf)) return null;
+      const maximum = value[HAPPIER_MAX_SERIALIZED_UTF8_BYTES_KEYWORD];
+      if (maximum !== undefined && typeof maximum !== 'number') return null;
       const members = value.anyOf;
       if (members.length < 2) return null;
-      if (members.length === 2
+      if (maximum === undefined && members.length === 2
         && isProtocolRecord(members[1])
         && Object.keys(members[1]).length === 1
         && members[1].type === 'null') {
@@ -1002,7 +975,7 @@ function readCanonicalComposableSchemaProjection(
         CanonicalComposableSchema,
         CanonicalComposableSchema,
         ...CanonicalComposableSchema[],
-      ]);
+      ], maximum === undefined ? {} : { maxSerializedUtf8Bytes: maximum });
     }
 
     if (value.type === 'string') {
@@ -1018,14 +991,6 @@ function readCanonicalComposableSchemaProjection(
         ...(typeof value.maxLength === 'number' ? { maxLength: value.maxLength } : {}),
         ...(typeof value.pattern === 'string' ? { pattern: value.pattern } : {}),
       });
-      const trimmedNonemptyMaxLength = value.minLength === undefined
-        && value.maxLength === undefined
-        && typeof value.pattern === 'string'
-        ? readProtocolTrimmedNonemptyStringMaxLength(value.pattern)
-        : null;
-      if (trimmedNonemptyMaxLength !== null) {
-        return defineProtocolTrimmedNonemptyString(trimmedNonemptyMaxLength);
-      }
       const maxUtf8Bytes = value[HAPPIER_MAX_UTF8_BYTES_KEYWORD];
       return maxUtf8Bytes === undefined
         ? defineProtocolString(options)

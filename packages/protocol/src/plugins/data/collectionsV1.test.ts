@@ -171,6 +171,21 @@ describe('Plugin Account Collection contracts', () => {
       requested: sourceWithDifferentQuerySemantics,
     })).toBeNull();
   });
+  it('admits private scalar fields in static UI projections without making them server-readable', () => {
+    const normalized = normalizePluginAccountCollectionContractV1({
+      pluginId: 'example.private-query',
+      contribution: PluginAccountCollectionContributionV1Schema.parse({
+        ...baseCollection,
+        serverReadable: ['status'],
+      }),
+    });
+
+    expect(normalized.uiQueries[0]?.projectedFields).toEqual([
+      { field: 'status', kind: 'string' },
+      { field: 'title', kind: 'string' },
+    ]);
+    expect(normalized.serverReadable).toEqual(['status']);
+  });
   it('keeps collection-declared ceilings distinct from Account aggregate ceilings', () => {
     expect(resolveEffectivePluginCollectionLimitsV1({
       deployment: {

@@ -32,9 +32,9 @@ import {
     ConnectedServiceQuotaRecoveryCreditsV1Schema,
     ConnectedServiceQuotaSnapshotV1Schema,
     ConnectedServiceUsageSourceV1Schema,
-    SessionConnectedServiceAuthSwitchRpcParamsSchema,
     SealedConnectedServiceCredentialV1Schema,
 } from './connectedServiceSchemas.js';
+import { SessionConnectedServiceAuthSwitchRpcParamsSchema } from './sessionConnectedServiceAuthSwitch.js';
 
 describe('connectedServiceSchemas', () => {
     it('defines one strict credential revision and mutation fence contract', () => {
@@ -640,6 +640,56 @@ describe('connectedServiceSchemas', () => {
         expect(ConnectedServiceAuthGroupIdSchema.safeParse('bad:group').success).toBe(false);
     });
 
+    it('preserves the predecessor quota-reset opt-in and leaves missing policy values absent', () => {
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({})).not.toHaveProperty('autoUseQuotaResetsWhenExhausted');
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({ autoUseQuotaResetsWhenExhausted: true }))
+            .toMatchObject({ autoUseQuotaResetsWhenExhausted: true });
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({ autoUseQuotaResetsWhenExhausted: 'true' }).success).toBe(false);
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({})).not.toHaveProperty('autoDisablePlanInvalidAccounts');
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({ autoDisablePlanInvalidAccounts: true }))
+            .toMatchObject({ autoDisablePlanInvalidAccounts: true });
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({ autoDisablePlanInvalidAccounts: 'true' }).success).toBe(false);
+    });
+
+    it('parses one optional pool quota-limit selection without admitting ambiguous states', () => {
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({}))
+            .not.toHaveProperty('quotaLimitSelection');
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({
+            quotaLimitSelection: { mode: 'all', providerLimitIds: [] },
+        }).quotaLimitSelection).toEqual({ mode: 'all', providerLimitIds: [] });
+        expect(ConnectedServiceAuthGroupPolicyPatchV1Schema.parse({
+            quotaLimitSelection: {
+                mode: 'selected',
+                providerLimitIds: ['weekly', 'spark'],
+            },
+        })).toEqual({
+            quotaLimitSelection: {
+                mode: 'selected',
+                providerLimitIds: ['weekly', 'spark'],
+            },
+        });
+
+        for (const quotaLimitSelection of [
+            { mode: 'all', providerLimitIds: ['weekly'] },
+            { mode: 'selected', providerLimitIds: [] },
+            { mode: 'selected', providerLimitIds: ['weekly', 'weekly'] },
+            { mode: 'selected', providerLimitIds: ['weekly', '   '] },
+        ]) {
+            expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({ quotaLimitSelection }).success).toBe(false);
+            expect(ConnectedServiceAuthGroupPolicyPatchV1Schema.safeParse({ quotaLimitSelection }).success).toBe(false);
+        }
+    });
+
+    it('keeps the V1 provider-limit identity and selection cardinality compatible with 0.2', () => {
+        const providerLimitIds = Array.from({ length: 129 }, (_, index) =>
+            `${'provider-owned-segment-'.repeat(12)}${index}`,
+        );
+
+        expect(ConnectedServiceAuthGroupPolicyV1Schema.safeParse({
+            quotaLimitSelection: { mode: 'selected', providerLimitIds },
+        }).success).toBe(true);
+    });
+
     it('parses default account group fallback policy', () => {
         expect(ConnectedServiceAuthGroupPolicyV1Schema.parse({ v: 1 })).toEqual({
             v: 1,
@@ -720,6 +770,8 @@ describe('connectedServiceSchemas', () => {
             capacityLimitedUntilMs: 30,
             authInvalidUntilMs: 40,
             planUnavailableUntilMs: 45,
+            modelUnavailableUntilMsByModelId: { 'gpt-5.6-sol': 86_400_050 },
+            autoDisabledReason: 'model_not_entitled',
             validationBlockedUntilMs: 46,
             lastFailureKind: 'usage_limit',
             lastFailureCode: 'usage_limit_reached',
@@ -735,6 +787,8 @@ describe('connectedServiceSchemas', () => {
             capacityLimitedUntilMs: 30,
             authInvalidUntilMs: 40,
             planUnavailableUntilMs: 45,
+            modelUnavailableUntilMsByModelId: { 'gpt-5.6-sol': 86_400_050 },
+            autoDisabledReason: 'model_not_entitled',
             validationBlockedUntilMs: 46,
             lastFailureKind: 'usage_limit',
             lastFailureCode: 'usage_limit_reached',
@@ -970,7 +1024,7 @@ describe('connectedServiceSchemas', () => {
             sessionId: 'sess_1',
             agentId: 'claude',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'happier.agent.claude/anthropic': {
                         source: 'connected',

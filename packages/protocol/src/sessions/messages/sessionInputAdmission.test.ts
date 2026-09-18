@@ -5,10 +5,53 @@ import { getActionSpec } from '../../actions/actionSpecs.js';
 import { MAX_COMPOSER_ATTACHMENT_INSTANCES_V1 } from '../../runtime/input/composerAttachmentV1.js';
 import * as sessionInputAdmission from './sessionInputAdmission.js';
 import { SessionMessageMetaSchema } from './sessionMessageMeta.js';
+import {
+  normalizeParticipantRecipientRoutingIdentityV1,
+  ParticipantRecipientRoutingIdentityV1Schema,
+  withParticipantRecipientV1,
+} from '../../messages/structured/participantMessageV1.js';
 
 const protocol = { ...sessionInputAdmission, SessionMessageMetaSchema };
 
 describe('session input admission metadata', () => {
+  it('admits an execution-run recipient only on plugin user-text input', () => {
+    const userText = {
+      kind: 'userText',
+      text: 'Continue the review',
+      idempotencyKey: 'plugin-message-1',
+      recipient: { kind: 'execution_run', runId: 'run-1' },
+    } as const;
+
+    expect(protocol.PluginSessionInputRequestV1Schema.parse(userText)).toEqual(userText);
+    expect(protocol.PluginSessionInputRequestV1Schema.safeParse({
+      kind: 'sessionSubagentLaunch',
+      launch: {
+        kind: 'agent_team_create',
+        teamId: 'reviewers',
+        description: 'Review the current change.',
+      },
+      idempotencyKey: 'plugin-launch-1',
+      recipient: { kind: 'execution_run', runId: 'run-1' },
+    }).success).toBe(false);
+  });
+
+  it('derives label-free routing into authored content while preserving omitted main metadata', () => {
+    const meta = { sentFrom: 'cli' };
+    expect(withParticipantRecipientV1(meta, undefined)).toBe(meta);
+    const run = { kind: 'execution_run', runId: ' run-a ', label: 'Friendly title' } as const;
+    expect(normalizeParticipantRecipientRoutingIdentityV1(run)).toEqual({ kind: 'execution_run', runId: 'run-a' });
+    expect(ParticipantRecipientRoutingIdentityV1Schema.safeParse(run).success).toBe(false);
+    const authored = withParticipantRecipientV1(meta, run);
+    expect(authored).toEqual({ ...meta, happier: { kind: 'participant_message.v1', payload: { recipient: { kind: 'execution_run', runId: 'run-a' } } } });
+    expect(() => withParticipantRecipientV1(authored, { kind: 'execution_run', runId: 'run-b' })).toThrow();
+    expect(() => normalizeParticipantRecipientRoutingIdentityV1({ ...run, authority: 'owner' })).toThrow();
+    expect(() => normalizeParticipantRecipientRoutingIdentityV1({ kind: 'execution_run', runId: ' ' })).toThrow();
+  });
+
+  it('retains Agent-team routing as strict parent-runtime metadata', () => {
+    expect(normalizeParticipantRecipientRoutingIdentityV1({ kind: 'agent_team_member', teamId: ' team ', memberId: ' member ', memberLabel: 'Name' })).toEqual({ kind: 'agent_team_member', teamId: 'team', memberId: 'member' });
+    expect(normalizeParticipantRecipientRoutingIdentityV1({ kind: 'agent_team_broadcast', teamId: ' team ' })).toEqual({ kind: 'agent_team_broadcast', teamId: 'team' });
+  });
   const pluginSource = {
     mediatorPluginId: 'example.channels',
     sourceRef: 'binding-1',
@@ -448,6 +491,70 @@ describe('session input admission metadata', () => {
       sessionId: 'session-a',
       message: '',
       idempotencyKey: 'triage-entry-42',
+    }).success).toBe(false);
+  });
+
+  it('keeps trusted-plugin user-text carriers aligned on authored fields while excluding host authority', () => {
+    const actionInput = getActionSpec('session.message.send').surfaceBindings?.plugin?.inputSchema;
+    const shared = {
+      idempotencyKey: 'channel-message-42',
+      recipient: { kind: 'execution_run', runId: 'run-42' },
+      source: {
+        sourceRef: 'channel-7',
+        sourceRevisionOrEpoch: 'message-42',
+        remoteApprovalMaxScope: 'request',
+        requestedPermissionCeiling: 'read-only',
+      },
+      attachments: [{
+        attachmentLocalId: 'entry',
+        value: {
+          key: 'github:pull:42',
+          value: { sourceId: 'github', entryId: '42' },
+          presentation: { label: 'PR #42' },
+        },
+      }],
+    } as const;
+
+    expect(protocol.PluginSessionInputRequestV1Schema.safeParse({
+      kind: 'userText',
+      text: 'Review this',
+      ...shared,
+    }).success).toBe(true);
+    expect(actionInput?.safeParse({
+      sessionId: 'session-a',
+      message: 'Review this',
+      ...shared,
+    }).success).toBe(true);
+
+    for (const malformed of [
+      { ...shared, idempotencyKey: '' },
+      { ...shared, recipient: { ...shared.recipient, label: 'display-only' } },
+      { ...shared, source: { ...shared.source, sourceRevisionOrEpoch: undefined } },
+      { ...shared, attachments: [] },
+    ]) {
+      expect(protocol.PluginSessionInputRequestV1Schema.safeParse({
+        kind: 'userText',
+        text: 'Review this',
+        ...malformed,
+      }).success).toBe(false);
+      expect(actionInput?.safeParse({
+        sessionId: 'session-a',
+        message: 'Review this',
+        ...malformed,
+      }).success).toBe(false);
+    }
+
+    expect(protocol.PluginSessionInputRequestV1Schema.safeParse({
+      kind: 'userText',
+      text: 'Review this',
+      ...shared,
+      authority: 'present_user',
+    }).success).toBe(false);
+    expect(actionInput?.safeParse({
+      sessionId: 'session-a',
+      message: 'Review this',
+      ...shared,
+      permissionModeOverride: 'yolo',
     }).success).toBe(false);
   });
 

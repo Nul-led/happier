@@ -1,6 +1,49 @@
 import { describe, expect, it } from 'vitest';
 
-import { PluginConnectedAccountConfigurationFieldV2Schema } from './pluginConnectedAccountAuthenticationV2.js';
+import { PluginConnectedAccountConfigurationFieldV2Schema, PluginConnectedAccountDescriptorContributionV2Schema } from './pluginConnectedAccountAuthenticationV2.js';
+
+it('admits an explicitly supported reset capability while keeping the capability envelope closed', () => {
+  const descriptor = {
+    id: 'work', title: 'Work',
+    authentication: { defaultModeId: 'manual', modes: [{ id: 'manual', kind: 'manual', outcomeReconciliation: 'none', fields: [{ id: 'token', title: 'Token', schema: { type: 'string' }, secret: true }] }] },
+    recoveryCredits: { supported: true },
+  };
+  expect(PluginConnectedAccountDescriptorContributionV2Schema.safeParse(descriptor).success).toBe(true);
+  expect(PluginConnectedAccountDescriptorContributionV2Schema.safeParse({ ...descriptor, recoveryCredits: { supported: true, automatic: true } }).success).toBe(false);
+});
+
+it('makes direct export an explicit manual-mode contract that OAuth modes cannot claim', () => {
+  const descriptor = {
+    id: 'work', title: 'Work',
+    authentication: { defaultModeId: 'manual', modes: [{ id: 'manual', kind: 'manual', outcomeReconciliation: 'none', fields: [{ id: 'token', title: 'Token', schema: { type: 'string' }, secret: true }] }] },
+  } as const;
+  const contract = {
+    contractVersion: 'happier.team-credential-manual-connected-account-direct.v1',
+  } as const;
+  expect(PluginConnectedAccountDescriptorContributionV2Schema.safeParse({
+    ...descriptor,
+    authentication: {
+      defaultModeId: 'manual',
+      modes: [{
+        ...descriptor.authentication.modes[0],
+        directExport: contract,
+      }],
+    },
+  }).success).toBe(true);
+  expect(PluginConnectedAccountDescriptorContributionV2Schema.safeParse({
+    ...descriptor,
+    authentication: {
+      defaultModeId: 'oauth',
+      modes: [{
+        id: 'oauth',
+        kind: 'oauthAuthorizationCode',
+        pkce: 'required',
+        outcomeReconciliation: 'providerCheck',
+        directExport: contract,
+      }],
+    },
+  }).success).toBe(false);
+});
 
 /**
  * A deployment a user picks from a closed list is routing configuration, not a

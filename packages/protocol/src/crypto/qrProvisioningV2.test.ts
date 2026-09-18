@@ -16,7 +16,9 @@ import {
   deriveHomeQrRendezvousVerifierV2,
   encodeHomeQrInviteV2Payload,
   parseHomeQrInviteV2Payload,
+  parseHomeQrPairingStatusV2,
   verifyHomeQrBindingProofV2,
+  verifyHomeQrRequesterProofV2,
   verifyHomeQrRendezvousSecretV2,
   verifyHomeQrRendezvousVerifierV2,
 } from './qrProvisioningV2.js';
@@ -212,6 +214,49 @@ describe('Home QR v2 binding proof verification', () => {
     const attackerProof = computeHomeQrBindingProofV2({ ...BINDING_PARAMS, requesterPublicKey: new Uint8Array(32).fill(1) });
     expect(attackerProof).not.toBe(GOLDEN.bindingProofBase64Url);
     expect(verifyHomeQrBindingProofV2(BINDING_PARAMS, attackerProof)).toBe(false);
+  });
+});
+
+describe('Home QR v2 pairing status and requester proof', () => {
+  const expiresAt = new Date(BINDING_CONTEXT.expiresAtMs).toISOString();
+  const requestedStatus = {
+    state: 'requested' as const,
+    pairId: BINDING_CONTEXT.pairId,
+    expiresAt,
+    requestedPublicKey: encodeBase64(REQUESTER_PUBLIC_KEY),
+    requestedDeviceLabel: 'Phone',
+    bindingProof: GOLDEN.bindingProofBase64Url,
+    homeServerIdentityId: BINDING_CONTEXT.homeServerIdentityId,
+  };
+
+  it('parses only the exact pairing status wire shape with canonical encodings', () => {
+    expect(parseHomeQrPairingStatusV2({ state: 'pending', pairId: BINDING_CONTEXT.pairId, expiresAt }))
+      .toEqual({ state: 'pending', pairId: BINDING_CONTEXT.pairId, expiresAt });
+    expect(parseHomeQrPairingStatusV2(requestedStatus)).toEqual(requestedStatus);
+
+    const nonCanonicalKey = requestedStatus.requestedPublicKey.replace(/={1,2}$/u, '');
+    expect(nonCanonicalKey).not.toBe(requestedStatus.requestedPublicKey);
+    expect(parseHomeQrPairingStatusV2({ ...requestedStatus, requestedPublicKey: nonCanonicalKey })).toBeNull();
+    expect(parseHomeQrPairingStatusV2({ ...requestedStatus, requestedPublicKey: encodeBase64(new Uint8Array(31)) })).toBeNull();
+    expect(parseHomeQrPairingStatusV2({ ...requestedStatus, bindingProof: `${requestedStatus.bindingProof}=` })).toBeNull();
+    expect(parseHomeQrPairingStatusV2({ ...requestedStatus, expiresAt: '2000' })).toBeNull();
+    expect(parseHomeQrPairingStatusV2({ ...requestedStatus, extra: true })).toBeNull();
+  });
+
+  it('returns requester bytes only for the exact live identity, key, expiry, and proof', () => {
+    const context = { ...BINDING_PARAMS, issuedAtMs: 1_000, nowMs: 1_500 };
+    expect(verifyHomeQrRequesterProofV2({ ...context, status: requestedStatus })).toEqual(REQUESTER_PUBLIC_KEY);
+    expect(verifyHomeQrRequesterProofV2({ ...context, status: { ...requestedStatus, pairId: 'pair-other' } })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({ ...context, status: { ...requestedStatus, homeServerIdentityId: 'srv_other' } })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({ ...context, status: { ...requestedStatus, bindingProof: GOLDEN.bindingProofReverseBase64Url } })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({ ...context, status: { ...requestedStatus, expiresAt: new Date(2_001).toISOString() } })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({ ...context, nowMs: 999, status: requestedStatus })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({ ...context, nowMs: 2_000, status: requestedStatus })).toBeNull();
+    expect(verifyHomeQrRequesterProofV2({
+      ...context,
+      expectedRequesterPublicKey: new Uint8Array(32).fill(9),
+      status: requestedStatus,
+    })).toBeNull();
   });
 });
 

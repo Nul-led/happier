@@ -6,16 +6,9 @@ import {
   type JsonValue as StrictJsonValue,
 } from '../json/strictJsonValue.js';
 import { ParticipantRecipientV1Schema } from '../messages/structured/participantMessageV1.js';
-import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
-import { SessionIdSchema } from '../sessions/idsV1.js';
 import {
-  PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1,
-  PredecessorSessionDraftAuthoringFieldIdV1Schema,
-} from '../sessions/authoring/fieldCatalog.js';
-import {
-  SyncedSessionAuthoringFieldIdV1Schema,
   SyncedSessionAuthoringValueV1Schema,
-} from '../sessions/authoring/index.js';
+} from '../sessions/authoring/syncedSessionAuthoringV1.js';
 
 export const SESSION_DRAFT_MAX_ID_UTF8_BYTES = 256;
 export const SESSION_DRAFT_MAX_FIELDS = 256;
@@ -34,9 +27,9 @@ const BoundedDraftIdSchema = z.string().refine(
   'Draft identifier exceeds the UTF-8 byte boundary',
 );
 
-export const SessionDraftAddressV1Schema = z.union([
+export const SessionDraftAddressV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('newSession'), draftId: BoundedDraftIdSchema.uuid() }).strict(),
-  z.object({ kind: z.literal('session'), sessionId: asProtocolZod(SessionIdSchema) }).strict(),
+  z.object({ kind: z.literal('session'), sessionId: BoundedDraftIdSchema.min(1) }).strict(),
 ]);
 export type SessionDraftAddressV1 = z.infer<typeof SessionDraftAddressV1Schema>;
 
@@ -88,10 +81,12 @@ export type DraftFieldV1<T extends StrictJsonValue = StrictJsonValue> = Readonly
   value: T;
 }>;
 
-export const SessionDraftPredecessorAuthoringValueV1Schema = z
-  .object(PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1)
-  .partial()
-  .strict();
+/**
+ * Reader-facing name retained for consumers that project the released 0.2
+ * flat authoring vocabulary into current selections. The released V1 catalog
+ * itself remains the sole schema owner.
+ */
+export const SessionDraftPredecessorAuthoringValueV1Schema = SyncedSessionAuthoringValueV1Schema;
 export type SessionDraftPredecessorAuthoringValueV1 = z.infer<
   typeof SessionDraftPredecessorAuthoringValueV1Schema
 >;
@@ -124,18 +119,22 @@ const ComposerSchema = z.object({
   attachments: z.object({ mutationId: z.string().uuid(), value: semanticArraySchema }).strict(),
 }).strict();
 
-const SessionDraftAcceptedSyncedAuthoringFieldIdV1Schema = z.union([
-  SyncedSessionAuthoringFieldIdV1Schema,
-  PredecessorSessionDraftAuthoringFieldIdV1Schema,
-]);
-const SyncedAuthoringFieldsSchema = z
-  .partialRecord(SessionDraftAcceptedSyncedAuthoringFieldIdV1Schema, DraftFieldV1Schema)
+/** Each draft epoch validates field values through its exact catalog projection. */
+export function createSessionDraftAuthoringFieldsSchema<TShape extends Record<string, z.ZodType>>(
+  valueSchema: z.ZodObject<TShape>,
+): z.ZodType<Partial<Record<Extract<keyof TShape, string>, DraftFieldV1>>> {
+  type FieldId = Extract<keyof TShape, string>;
+  const fieldIds = Object.keys(valueSchema.shape) as [FieldId, ...FieldId[]];
+  const currentShape: Readonly<Record<string, z.ZodType>> = valueSchema.shape;
+  return z
+  .partialRecord(z.enum(fieldIds), DraftFieldV1Schema)
   .superRefine((fields, context) => {
-    for (const [fieldId, field] of Object.entries(fields as Record<string, { value: unknown }>)) {
-      const fieldSchema = (
-        SessionDraftPredecessorAuthoringValueV1Schema.shape as Record<string, z.ZodTypeAny>
-      )[fieldId] ?? (SyncedSessionAuthoringValueV1Schema.shape as Record<string, z.ZodTypeAny>)[fieldId];
-      if (fieldSchema && !fieldSchema.safeParse(field.value).success) {
+    for (const [fieldId, field] of Object.entries(fields)) {
+      const parsedField = DraftFieldV1Schema.safeParse(field);
+      if (!parsedField.success) continue;
+      const currentFieldSchema = currentShape[fieldId];
+      const isValidCurrentValue = currentFieldSchema?.safeParse(parsedField.data.value).success === true;
+      if (!isValidCurrentValue) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: [fieldId, 'value'],
@@ -144,6 +143,10 @@ const SyncedAuthoringFieldsSchema = z
       }
     }
   });
+}
+const SyncedAuthoringFieldsSchema = createSessionDraftAuthoringFieldsSchema(
+  SyncedSessionAuthoringValueV1Schema,
+);
 const ExtensionFieldsSchema = z.record(
   BoundedDraftIdSchema,
   z.record(BoundedDraftIdSchema, DraftFieldV1Schema),
@@ -263,6 +266,9 @@ export type SessionDraftMutateResponseV1 = z.infer<typeof SessionDraftMutateResp
 export const SessionDraftRouteErrorResponseV1Schema = z.object({
   error: z.enum(['session_unavailable', 'invalid_content_mode', 'invalid_address_binding']),
 }).strict();
+export type SessionDraftRouteErrorResponseV1 = z.infer<
+  typeof SessionDraftRouteErrorResponseV1Schema
+>;
 
 export const SessionDraftChangeHintV1Schema = z.object({
   v: z.literal(1),

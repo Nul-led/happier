@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase64 } from '../../crypto/base64.js';
 import {
     MachineInstallationIdentityV1Schema,
+    MachineInstallationPublicKeySchema,
     MachineInstallationProofPayloadV1Schema,
     MachineInstallationProofV1Schema,
     buildMachineInstallationProofPayloadBytes,
@@ -13,6 +14,21 @@ import {
 } from './installationIdentity.js';
 
 describe('machine installation identity protocol', () => {
+    it('rejects a forged proof and public-key admission for an Ed25519 identity point', () => {
+        const identityPoint = new Uint8Array(32);
+        identityPoint[0] = 1;
+        const forgedSignature = new Uint8Array(64);
+        forgedSignature[0] = 1;
+        const publicKey = encodeBase64(identityPoint, 'base64url');
+        const params = {
+            payload: { version: 1, installationId: 'installation', machineId: 'machine', accountId: 'account' },
+            proof: { version: 1, algorithm: 'ed25519', signature: encodeBase64(forgedSignature, 'base64url') },
+        } as const;
+        expect(verifyMachineInstallationProof({ ...params, publicKey })).toBe(false);
+        expect(verifyMachineInstallationProof({ ...params, publicKey: identityPoint })).toBe(false);
+        expect(MachineInstallationPublicKeySchema.safeParse(publicKey).success).toBe(false);
+    });
+
     it('validates persisted installation key material lengths at parse time', () => {
         const keyPair = tweetnacl.sign.keyPair();
         const valid = {

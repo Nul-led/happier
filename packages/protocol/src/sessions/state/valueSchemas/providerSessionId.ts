@@ -1,3 +1,4 @@
-import { z } from 'zod';
+import { NonBlankOpaqueIdentifierSchema } from '../../../strings/opaqueIdentifier.js';
 
-export const SessionStateProviderSessionIdValueSchema = z.string().trim().min(1);
+/** The Agent's own session id: presence-validated, never renormalized. */
+export const SessionStateProviderSessionIdValueSchema = NonBlankOpaqueIdentifierSchema;

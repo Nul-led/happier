@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2';
 import tweetnacl from 'tweetnacl';
 import { z } from 'zod';
+import { verifyEd25519Signature } from '../../../crypto/ed25519.js';
 
 import {
   PEER_ROUTE_EPHEMERAL_ED25519_KIND_V2,
@@ -178,7 +179,7 @@ export function verifyPeerRouteEphemeralProofV2(input: Readonly<{
   }
 
   const signingInput = createPeerRouteProofSigningInputV2({ digest: expectedDigest, nonce });
-  const valid = tweetnacl.sign.detached.verify(signingInput, signature, publicKey);
+  const valid = verifyEd25519Signature(signingInput, signature, publicKey);
   expectedDigest.fill(0);
   proofDigest.fill(0);
   nonce.fill(0);

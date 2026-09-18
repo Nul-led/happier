@@ -15,7 +15,7 @@ export const SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1 =
 
 const SessionPendingTargetMachineIdV1Schema = z.string().trim().min(1).max(256);
 
-export const SessionPendingEnqueueByMachineRequestV1Schema = z.object({
+export const SessionPendingEnqueueByMachineFieldsV1 = {
   v: z.literal(1),
   sessionId: asProtocolZod(SessionIdSchema),
   /** Live routing fact only. The server must not persist it in admission metadata. */
@@ -24,7 +24,13 @@ export const SessionPendingEnqueueByMachineRequestV1Schema = z.object({
   content: SessionStoredMessageContentSchema,
   requestedAction: PendingRequestedActionV1Schema,
   requestEqualityEvidenceV1: SessionInputRequestEqualityEvidenceV1Schema.optional(),
-}).strict().superRefine((value, context) => {
+};
+
+/** Shared host-equality boundary for each closed Machine admission epoch. */
+export function refineSessionPendingMachineEqualityEvidenceV1(
+  value: { content: z.infer<typeof SessionStoredMessageContentSchema>; requestEqualityEvidenceV1?: z.infer<typeof SessionInputRequestEqualityEvidenceV1Schema> },
+  context: z.RefinementCtx,
+): void {
   if (value.content.t === 'plain' && value.requestEqualityEvidenceV1 !== undefined) {
     context.addIssue({
       code: 'custom',
@@ -43,7 +49,10 @@ export const SessionPendingEnqueueByMachineRequestV1Schema = z.object({
       message: 'Encrypted machine admission accepts only the host-derived E2EE equality tag',
     });
   }
-});
+}
+
+export const SessionPendingEnqueueByMachineRequestV1Schema = z.object(SessionPendingEnqueueByMachineFieldsV1)
+  .strict().superRefine(refineSessionPendingMachineEqualityEvidenceV1);
 export type SessionPendingEnqueueByMachineRequestV1 = z.infer<
   typeof SessionPendingEnqueueByMachineRequestV1Schema
 >;

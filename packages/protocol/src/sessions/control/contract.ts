@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import { SessionEffectiveAccessV1Schema, type SessionEffectiveAccessV1 } from '../access/sessionEffectiveAccessV1.js';
+import { SessionAccessAccountSummaryV1Schema } from '../access/sessionAccessPrincipalV1.js';
+import { SessionSummarySchema, SessionListResultSchema } from './listResult.js';
+export { SessionSummarySchema, type SessionSummary, SessionListResultSchema, type SessionListResult } from './listResult.js';
+import { SessionAwarenessProjectionV1Schema } from '../awareness/projectionV1.js';
+import { SessionViewerProjectionV1Schema } from '../personal/viewer.js';
 
 import {
   ExecutionRunPublicStateSchema,
@@ -55,7 +61,7 @@ import {
   SessionRunnerRuntimeStateV1Schema,
 } from './sessionRunnerRuntimeV1.js';
 import {
-  parseSessionRuntimeActivityProjectionFields,
+  refineRuntimeActivityProjectionFields,
   SessionRuntimeActivityStateSchema,
 } from '../runtime/activity/index.js';
 export {
@@ -86,7 +92,15 @@ export {
   type SessionTurnV1,
   type SessionTurnsProjectionV1,
 } from '../turns/sessionTurnV1.js';
-import { decodeBase64, encodeBase64 } from '../../crypto/base64.js';
+export {
+  V2_SESSION_LIST_CURSOR_V1_PREFIX,
+  V2_SESSION_LIST_CURSOR_V2_PREFIX,
+  encodeV2SessionListCursorV1,
+  decodeV2SessionListCursorV1,
+  encodeV2SessionListCursorV2,
+  decodeV2SessionListCursorV2,
+  type V2SessionListCursorV2,
+} from '../listing/cursor.js';
 export {
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SESSION_USAGE_LIMIT_RECOVERY_STATE_FIELD_ID,
@@ -208,45 +222,6 @@ export const AuthStatusResultSchema = z.object({
 }).passthrough();
 export type AuthStatusResult = z.infer<typeof AuthStatusResultSchema>;
 
-export const SessionSummarySchema = z.object({
-  id: z.string().min(1),
-  createdAt: z.number().int().nonnegative(),
-  updatedAt: z.number().int().nonnegative(),
-  active: z.boolean(),
-  activeAt: z.number().int().nonnegative(),
-  archivedAt: z.number().int().nonnegative().nullable().optional(),
-  pendingCount: z.number().int().nonnegative().optional(),
-  pendingBlockedCount: z.number().int().nonnegative().optional(),
-  tag: z.string().optional(),
-  title: z.string().min(1).optional(),
-  path: z.string().optional(),
-  host: z.string().optional(),
-  share: z.object({
-    accessLevel: z.string().min(1),
-    canApprovePermissions: z.boolean(),
-  }).nullable().optional(),
-  isSystem: z.boolean().optional(),
-  systemPurpose: z.string().nullable().optional(),
-  encryptionMode: AccountEncryptionModeSchema.optional(),
-  // Reports the caller's available E2EE material without conflating it with the
-  // persisted Session mode. Token-only callers use null, including when listing a
-  // retained E2EE Session whose private metadata remains locked.
-  encryption: z.object({
-    type: z.enum(['legacy', 'dataKey']),
-  }).passthrough().nullable(),
-  latestTurnId: TurnIdSchema.nullable().optional(),
-  latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
-  latestTurnStatusObservedAt: z.number().int().nonnegative().nullable().optional(),
-  lastRuntimeIssue: SessionRuntimeIssueV1Schema.nullable().optional(),
-  runtimeActivityState: SessionRuntimeActivityStateSchema.optional(),
-  runtimeActivityActiveCount: z.number().int().nonnegative().optional(),
-  runtimeActivityObservedAt: z.number().int().nonnegative().nullable().optional(),
-  runtimeActivityRevision: z.number().int().nonnegative().optional(),
-  rollbackEligibleTurnStarts: z.array(z.number().int().nonnegative()).optional(),
-  pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.optional(),
-}).passthrough().superRefine(refineRuntimeActivityProjectionFields);
-export type SessionSummary = z.infer<typeof SessionSummarySchema>;
-
 /**
  * Factory form (accepts a caller-provided `z`) for nohoist/multi-zod-instance repos.
  * Consumers that need to embed the schema into their own Zod objects should use this
@@ -316,13 +291,6 @@ export function buildSystemSessionMetadataV1(params: Readonly<{ key: string; hid
   };
 }
 
-export const SessionListResultSchema = z.object({
-  sessions: z.array(SessionSummarySchema),
-  nextCursor: z.string().nullable().optional(),
-  hasNext: z.boolean().optional(),
-}).passthrough();
-export type SessionListResult = z.infer<typeof SessionListResultSchema>;
-
 export const SessionShareSchema = z
   .object({
     accessLevel: z.enum(['view', 'edit', 'admin']),
@@ -340,6 +308,7 @@ function refineV2SessionMetadataRecipientFields(
     agentState?: string | null;
     agentStateVersion?: number;
     share?: SessionShare | null;
+    effectiveAccess?: SessionEffectiveAccessV1;
   }>,
   context: z.RefinementCtx,
 ): void {
@@ -381,26 +350,25 @@ function refineV2SessionMetadataRecipientFields(
   }
 
   const hasOwnerMetadata = Object.hasOwn(value, 'ownerMetadata');
-  if (value.share === undefined) {
-    context.addIssue({
-      code: 'custom',
-      path: ['share'],
-      message: 'Layout-one records require an explicit recipient share role',
-    });
-  }
-  if (value.share !== undefined && value.share !== null && hasOwnerMetadata) {
-    context.addIssue({
-      code: 'custom',
-      path: ['ownerMetadata'],
-      message: 'Shared-recipient records cannot carry owner metadata',
-    });
-  }
-  if (value.share === null && !hasOwnerMetadata) {
-    context.addIssue({
-      code: 'custom',
-      path: ['ownerMetadata'],
-      message: 'Owner-recipient records require owner metadata',
-    });
+  const effectiveAccess = value.effectiveAccess;
+  if (effectiveAccess) {
+    const owner = effectiveAccess.level === 'owner';
+    if (owner && (value.share !== null || !hasOwnerMetadata)) {
+      context.addIssue({ code: 'custom', path: ['ownerMetadata'], message: 'Owner recipients require their owner projection and explicit owner share role' });
+    }
+    if (!owner && (hasOwnerMetadata || value.share === null)) {
+      context.addIssue({ code: 'custom', path: ['ownerMetadata'], message: 'Non-owner recipients cannot carry an owner projection' });
+    }
+  } else {
+    if (value.share === undefined) {
+      context.addIssue({ code: 'custom', path: ['share'], message: 'Layout-one records require an explicit recipient share role' });
+    }
+    if (value.share !== undefined && value.share !== null && hasOwnerMetadata) {
+      context.addIssue({ code: 'custom', path: ['ownerMetadata'], message: 'Shared-recipient records cannot carry owner metadata' });
+    }
+    if (value.share === null && !hasOwnerMetadata) {
+      context.addIssue({ code: 'custom', path: ['ownerMetadata'], message: 'Owner-recipient records require owner metadata' });
+    }
   }
 
   const projection = {
@@ -446,6 +414,8 @@ export const V2SessionRecordSchema = z
     agentState: z.string().nullable().optional(),
     agentStateVersion: z.number().int().nonnegative().optional(),
     lastViewedSessionSeq: z.number().int().nonnegative().nullable().optional(),
+    unreadSince: z.number().int().nonnegative().nullable().optional(),
+    viewer: SessionViewerProjectionV1Schema.optional(),
     pendingPermissionRequestCount: z.number().int().min(0).optional(),
     pendingUserActionRequestCount: z.number().int().min(0).optional(),
     pendingRequestObservedAt: z.number().int().nonnegative().nullable().optional(),
@@ -454,7 +424,24 @@ export const V2SessionRecordSchema = z
     pendingVersion: z.number().int().min(0).optional(),
     pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.optional(),
     dataEncryptionKey: z.string().nullable(),
+    /**
+     * The one human Account currently responsible for this Session.
+     *
+     * Omitted means this producer does not support or did not project
+     * responsibility; it is never proof that nobody is assigned. Explicit
+     * `null` is a supporting producer stating the Session is unassigned.
+     */
+    responsibleAccountId: z.string().min(1).nullable().optional(),
+    /**
+     * The safe current summary for `responsibleAccountId`, projected at
+     * read/mutation/event time through the shared safe projector. `null`
+     * when unassigned; omitted exactly when `responsibleAccountId` is omitted.
+     */
+    responsibleAccount: SessionAccessAccountSummaryV1Schema.nullable().optional(),
     share: SessionShareSchema.nullable().optional(),
+    effectiveAccess: SessionEffectiveAccessV1Schema.optional(),
+    /** Safe audience-existence signal; never a roster or authorization input. */
+    hasOtherNamedCollaborator: z.boolean().optional(),
     latestTurnId: TurnIdSchema.nullable().optional(),
     latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
     latestTurnStatusObservedAt: z.number().int().nonnegative().nullable().optional(),
@@ -476,7 +463,23 @@ export const V2SessionRecordSchema = z
   })
   .passthrough()
   .superRefine(refineV2SessionMetadataRecipientFields)
-  .superRefine(refineRuntimeActivityProjectionFields);
+  .superRefine(refineRuntimeActivityProjectionFields)
+  .superRefine((value, ctx) => {
+    const id = (value as { responsibleAccountId?: string | null }).responsibleAccountId;
+    const summary = (value as { responsibleAccount?: { accountId: string } | null }).responsibleAccount;
+    if (id === undefined && summary !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'responsibleAccount without responsibleAccountId is unsupported', path: ['responsibleAccount'] });
+    }
+    if (id !== undefined && summary === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'responsibleAccountId requires an explicit responsibleAccount projection', path: ['responsibleAccount'] });
+    }
+    if (id === null && summary !== undefined && summary !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unassigned responsibility must project a null summary', path: ['responsibleAccount'] });
+    }
+    if (typeof id === 'string' && summary !== undefined && (summary === null || summary.accountId !== id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'assigned responsibility must project the matching summary', path: ['responsibleAccount'] });
+    }
+  });
 export type V2SessionRecord = z.infer<typeof V2SessionRecordSchema>;
 
 export const SESSION_LOOKUP_BY_TAGS_MAX_TAGS_V2 = 4;
@@ -522,18 +525,6 @@ export const V2SessionResourceAccessResponseSchema = z
   .strict();
 export type V2SessionResourceAccessResponse = z.infer<typeof V2SessionResourceAccessResponseSchema>;
 
-function refineRuntimeActivityProjectionFields(
-  value: unknown,
-  context: z.RefinementCtx,
-): void {
-  if (parseSessionRuntimeActivityProjectionFields(value).kind !== 'invalid') return;
-  context.addIssue({
-    code: z.ZodIssueCode.custom,
-    message: 'Runtime Activity projection fields must form one complete valid tuple',
-    path: ['runtimeActivityState'],
-  });
-}
-
 export const V2SessionListResponseSchema = z
   .object({
     sessions: z.array(V2SessionRecordSchema),
@@ -544,53 +535,6 @@ export const V2SessionListResponseSchema = z
   })
   .passthrough();
 export type V2SessionListResponse = z.infer<typeof V2SessionListResponseSchema>;
-
-export const V2_SESSION_LIST_CURSOR_V1_PREFIX = 'cursor_v1_' as const;
-export const V2_SESSION_LIST_CURSOR_V2_PREFIX = 'cursor_v2_' as const;
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
-
-export function encodeV2SessionListCursorV1(sessionId: string): string {
-  return `${V2_SESSION_LIST_CURSOR_V1_PREFIX}${sessionId}`;
-}
-
-export function decodeV2SessionListCursorV1(cursor: string): string | null {
-  if (typeof cursor !== 'string') return null;
-  if (!cursor.startsWith(V2_SESSION_LIST_CURSOR_V1_PREFIX)) return null;
-  const sessionId = cursor.slice(V2_SESSION_LIST_CURSOR_V1_PREFIX.length);
-  return sessionId.length > 0 ? sessionId : null;
-}
-
-export type V2SessionListCursorV2 = Readonly<{
-  sessionId: string;
-  meaningfulActivityAt: number;
-}>;
-
-export function encodeV2SessionListCursorV2(cursor: V2SessionListCursorV2): string {
-  const payload = JSON.stringify({
-    sessionId: cursor.sessionId,
-    meaningfulActivityAt: cursor.meaningfulActivityAt,
-  });
-  return `${V2_SESSION_LIST_CURSOR_V2_PREFIX}${encodeBase64(textEncoder.encode(payload), 'base64url')}`;
-}
-
-export function decodeV2SessionListCursorV2(cursor: string): V2SessionListCursorV2 | null {
-  if (typeof cursor !== 'string') return null;
-  if (!cursor.startsWith(V2_SESSION_LIST_CURSOR_V2_PREFIX)) return null;
-  try {
-    const payload = cursor.slice(V2_SESSION_LIST_CURSOR_V2_PREFIX.length);
-    const decoded = JSON.parse(textDecoder.decode(decodeBase64(payload, 'base64url')));
-    if (!decoded || typeof decoded !== 'object') return null;
-    const sessionId = typeof decoded.sessionId === 'string' ? decoded.sessionId : '';
-    const meaningfulActivityAt = (decoded as { meaningfulActivityAt?: unknown }).meaningfulActivityAt;
-    if (!sessionId || typeof meaningfulActivityAt !== 'number' || !Number.isFinite(meaningfulActivityAt) || meaningfulActivityAt < 0) {
-      return null;
-    }
-    return { sessionId, meaningfulActivityAt: Math.trunc(meaningfulActivityAt) };
-  } catch {
-    return null;
-  }
-}
 
 export const V2SessionByIdResponseSchema = z
   .object({
@@ -623,10 +567,11 @@ export type V2SessionMessageResponse = z.infer<typeof V2SessionMessageResponseSc
 
 export const SessionStatusResultSchema = z.object({
   session: SessionSummarySchema,
+  awareness: SessionAwarenessProjectionV1Schema.optional(),
   agentState: z.object({
     controlledByUser: z.boolean().optional(),
     pendingRequestsCount: z.number().int().nonnegative(),
-  }).passthrough().optional(),
+  }).passthrough().nullish(),
 }).passthrough();
 export type SessionStatusResult = z.infer<typeof SessionStatusResultSchema>;
 

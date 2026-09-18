@@ -35,6 +35,8 @@ type CryptoGoldenVectors = Readonly<{
     compatibilitySeed: EncryptedDataKeyEnvelopeVector;
     malformedEnvelope: ByteVector;
     unsupportedVersionEnvelope: ByteVector;
+    undersizedDataKeyEnvelope: EncryptedDataKeyEnvelopeVector;
+    oversizedDataKeyEnvelope: EncryptedDataKeyEnvelopeVector;
   }>;
   serializedJsonValue: ReadonlyArray<Readonly<{
     name: string;
@@ -126,6 +128,26 @@ describe('CRYPTO_GOLDEN_VECTORS', () => {
       envelope: bytesFromHex(vectors.encryptedDataKeyEnvelopeV1.unsupportedVersionEnvelope.hex),
       recipientSecretKeyOrSeed: directSecretKey,
     })).toBeNull();
+  });
+
+  it('pins wrong-sized data-key vectors that only the fixed contract can reject', () => {
+    const vectors = readGoldenVectors();
+
+    for (const vector of [
+      vectors.encryptedDataKeyEnvelopeV1.undersizedDataKeyEnvelope,
+      vectors.encryptedDataKeyEnvelopeV1.oversizedDataKeyEnvelope,
+    ]) {
+      const envelope = bytesFromHex(vector.envelope.hex);
+      const recipientSecretKeyOrSeed = bytesFromHex(vector.recipientSecretKeyOrSeed.hex);
+
+      // Shared with the native runtimes: the bundle itself opens, so a runtime
+      // that only checks the box-bundle minimum would return a wrong-sized key.
+      expectBytesToMatchHex(
+        openBoxBundle({ bundle: envelope.slice(1), recipientSecretKeyOrSeed }),
+        vector.dataKey.hex,
+      );
+      expect(openEncryptedDataKeyEnvelopeV1({ envelope, recipientSecretKeyOrSeed })).toBeNull();
+    }
   });
 
   it('pins serialized JSON values used around native crypto payloads', () => {

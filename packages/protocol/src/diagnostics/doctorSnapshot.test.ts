@@ -4,9 +4,32 @@ import {
   DoctorSnapshotHomeTransportDiagnosticsSchema,
   DoctorSnapshotSchema,
   parseDoctorSnapshotSafe,
+  sanitizeDoctorDiagnosticText,
 } from './doctorSnapshot.js';
 
 describe('DoctorSnapshotSchema', () => {
+  it('sanitizes a multiline copied diagnostic while preserving non-secret technical detail', () => {
+    const sanitized = sanitizeDoctorDiagnosticText([
+      'transport: connection refused on relay eu-west-1',
+      'Authorization: Bearer bearer-value',
+      'password:',
+      'multiline-password',
+      'url: https://alice:url-password@relay.example.test/path?token=query-secret#proof',
+      'proof=proof-value api_key=key-value clientSecret=client-secret',
+    ].join('\n'));
+
+    expect(sanitized).toContain('connection refused on relay eu-west-1');
+    expect(sanitized).toContain('Authorization=[redacted]');
+    expect(sanitized).toContain('password=[redacted]');
+    expect(sanitized).toContain('https://relay.example.test/path');
+    for (const secret of [
+      'bearer-value', 'multiline-password', 'alice', 'url-password', 'query-secret',
+      'proof-value', 'key-value', 'client-secret',
+    ]) {
+      expect(sanitized).not.toContain(secret);
+    }
+  });
+
   it('parses truthful Home transport diagnostics without requiring unobserved carrier or path facts', () => {
     const parsed = DoctorSnapshotHomeTransportDiagnosticsSchema.parse({
       homeServerIdentityId: 'home_1',

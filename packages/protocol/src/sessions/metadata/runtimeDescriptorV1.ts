@@ -124,6 +124,28 @@ export function createRuntimeDescriptorV1Schema(zod: typeof z) {
 
 export const RuntimeDescriptorV1Schema = createRuntimeDescriptorV1Schema(z);
 
+/**
+ * Portable authored subset of a runtime descriptor.
+ *
+ * Runtime descriptors used for live Session identity are intentionally open for
+ * Agent-owned recovery data. Authored recipes instead retain only launch
+ * selection: backend mode and the existing Connected Service binding identity.
+ * Provider Session ids, host paths/endpoints, runtime handles and unknown fields
+ * are therefore rejected at this boundary.
+ */
+export const PortableRuntimeDescriptorV1Schema = z.object({
+  v: z.literal(1),
+  agentId: z.string().trim().min(1),
+  agent: z.object({
+    backendMode: z.string().trim().min(1),
+    home: z.enum(['user', 'connectedService']).optional(),
+    connectedServiceId: z.string().trim().min(1).optional(),
+    connectedServiceProfileId: z.string().trim().min(1).optional(),
+    connectedServiceGroupId: z.string().trim().min(1).optional(),
+  }).strict(),
+}).strict();
+export type PortableRuntimeDescriptorV1 = z.infer<typeof PortableRuntimeDescriptorV1Schema>;
+
 export function readRuntimeDescriptorV1(value: unknown): RuntimeDescriptorV1 | null {
   const parsed = RuntimeDescriptorV1Schema.safeParse(value);
   return parsed.success ? parsed.data : null;

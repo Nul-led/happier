@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { decodeBase64, encodeBase64, type Base64Variant } from '../crypto/base64.js';
+import { SERVER_IDENTITY_ID_PATTERN } from '../features/payload/capabilities/serverIdentityCapabilities.js';
 
 const AccountApiTokenIdV1Schema = z.string().uuid();
 const AccountApiTokenInstantV1Schema = z.string().datetime({ offset: true }).max(64);
@@ -24,6 +26,32 @@ export function parseAccountApiTokenBearerV1(
   return tokenId && secret ? { tokenId, secret } : null;
 }
 
+function canonicalBytes(length: number, variant: Base64Variant) {
+  const encodedLength = variant === 'base64' ? Math.ceil(length / 3) * 4 : Math.ceil(length * 4 / 3);
+  return z.string().length(encodedLength).refine((value) => {
+    const bytes = decodeBase64(value, variant);
+    return bytes.length === length && encodeBase64(bytes, variant) === value;
+  });
+}
+
+const ApiTokenHomeIdentitySchema = z.string().regex(SERVER_IDENTITY_ID_PATTERN);
+const ApiTokenContentPublicKeySchema = canonicalBytes(32, 'base64');
+const ApiTokenUuidV4Schema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+
+/** Opaque sealed content material. No recovery, content or wrapping secret is transported. */
+export const AccountApiTokenEncryptionAccessV1Schema = z.object({
+  v: z.literal(1),
+  serverIdentityId: ApiTokenHomeIdentitySchema,
+  contentPublicKey: ApiTokenContentPublicKeySchema,
+  wrappedContentPrivateKey: canonicalBytes(72, 'base64url'),
+}).strict();
+export type AccountApiTokenEncryptionAccessV1 = z.infer<typeof AccountApiTokenEncryptionAccessV1Schema>;
+
+export const AccountApiTokenCreateEncryptionV1Schema = z.object({
+  access: AccountApiTokenEncryptionAccessV1Schema,
+}).strict();
+export type AccountApiTokenCreateEncryptionV1 = z.infer<typeof AccountApiTokenCreateEncryptionV1Schema>;
+
 /** A non-secret, Account-scoped token projection suitable for Settings lists. */
 export const AccountApiTokenSummaryV1Schema = z.object({
   tokenId: AccountApiTokenIdV1Schema,
@@ -32,13 +60,18 @@ export const AccountApiTokenSummaryV1Schema = z.object({
   createdAt: AccountApiTokenInstantV1Schema,
   lastUsedAt: AccountApiTokenInstantV1Schema.nullable(),
   expiresAt: AccountApiTokenInstantV1Schema.nullable(),
+  hasEncryptionAccess: z.boolean(),
+  hasUnattendedTeamAccess: z.boolean(),
 }).strict();
 export type AccountApiTokenSummaryV1 = z.infer<typeof AccountApiTokenSummaryV1Schema>;
 
 /** The Account is derived from verified credential provenance, never this input. */
 export const AccountApiTokensCreateActionInputV1Schema = z.object({
+  tokenId: ApiTokenUuidV4Schema,
   label: z.string().trim().min(1).max(256),
   expiresAt: AccountApiTokenInstantV1Schema.nullable().optional(),
+  encryption: AccountApiTokenCreateEncryptionV1Schema.optional(),
+  authorizeUnattendedTeamAccess: z.boolean().optional(),
 }).strict();
 export type AccountApiTokensCreateActionInputV1 = z.infer<typeof AccountApiTokensCreateActionInputV1Schema>;
 
@@ -59,6 +92,12 @@ export const AccountApiTokensCreateActionOutputV1Schema = z.object({
   }
 });
 export type AccountApiTokensCreateActionOutputV1 = z.infer<typeof AccountApiTokensCreateActionOutputV1Schema>;
+
+/** Observers receive the existing non-secret summary, never the one-time bearer. */
+export function projectAccountApiTokenCreationObservation(value: unknown): Readonly<{ apiToken: AccountApiTokenSummaryV1 }> {
+  const output = AccountApiTokensCreateActionOutputV1Schema.parse(value);
+  return { apiToken: output.apiToken };
+}
 
 export const AccountApiTokensListActionInputV1Schema = z.object({}).strict();
 export type AccountApiTokensListActionInputV1 = z.infer<typeof AccountApiTokensListActionInputV1Schema>;
@@ -142,6 +181,52 @@ export type AccountApiTokenIntrospectionConnectionFailureV1 = z.infer<
 >;
 
 export const AccountApiTokensServerErrorV1Schema = z.object({
-  error: z.enum(['invalid_request', 'present_user_required']),
+  error: z.enum([
+    'invalid_request', 'present_user_required', 'account-disabled',
+    'api_token_required', 'api_token_id_conflict',
+    'api_token_encryption_unavailable', 'api_token_encryption_stale',
+    'api_token_encryption_not_ready',
+    'credential_authentication_evidence_limit',
+    'credential_authentication_evidence_unavailable',
+  ]),
 }).strict();
 export type AccountApiTokensServerErrorV1 = z.infer<typeof AccountApiTokensServerErrorV1Schema>;
+
+export const AccountApiTokenCredentialV1Schema = z.object({
+  bearer: AccountApiTokenBearerV1Schema.refine((value) => {
+    const parsed = parseAccountApiTokenBearerV1(value);
+    return parsed !== null && canonicalBytes(32, 'base64url').safeParse(parsed.secret).success;
+  }),
+  wrappingSecret: canonicalBytes(32, 'base64url'),
+  serverIdentityId: ApiTokenHomeIdentitySchema,
+  accountId: z.string().min(1),
+  contentPublicKey: ApiTokenContentPublicKeySchema,
+}).strict();
+export type AccountApiTokenCredentialV1 = z.infer<typeof AccountApiTokenCredentialV1Schema>;
+
+/** Invocation-local encoding. It must never be used as an HTTP bearer. */
+export function formatAccountApiTokenCredentialV1(value: AccountApiTokenCredentialV1): string {
+  const payload = AccountApiTokenCredentialV1Schema.parse(value);
+  return `hapc_v1_${encodeBase64(new TextEncoder().encode(JSON.stringify(payload)), 'base64url')}`;
+}
+
+export function parseAccountApiTokenCredentialV1(value: string): AccountApiTokenCredentialV1 | null {
+  if (!value.startsWith('hapc_v1_')) return null;
+  try {
+    const encoded = value.slice('hapc_v1_'.length);
+    const bytes = decodeBase64(encoded, 'base64url');
+    if (encodeBase64(bytes, 'base64url') !== encoded) return null;
+    const parsed = AccountApiTokenCredentialV1Schema.safeParse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export const AccountApiTokenEncryptionAccessRequestV1Schema = z.object({}).strict();
+export const AccountApiTokenEncryptionAccessResponseV1Schema = z.object({
+  v: z.literal(1), accountId: z.string().min(1), tokenId: ApiTokenUuidV4Schema,
+  encryptionAccess: AccountApiTokenEncryptionAccessV1Schema,
+}).strict();
+export type AccountApiTokenEncryptionAccessResponseV1 = z.infer<typeof AccountApiTokenEncryptionAccessResponseV1Schema>;
+export const ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1 = '/v1/auth/api-tokens/encryption-access';

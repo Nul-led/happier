@@ -49,6 +49,7 @@ describe('session.spawn_new approval replay directory proof', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
     } as unknown as ActionExecutorDeps);
 
     await expect(executor.execute('session.spawn_new', sessionSpawnInput, {

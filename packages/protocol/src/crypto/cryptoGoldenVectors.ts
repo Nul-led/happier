@@ -68,6 +68,39 @@ export const CRYPTO_GOLDEN_VECTORS = {
     unsupportedVersionEnvelope: {
       hex: '630102',
     },
+    /**
+     * Cryptographically valid envelopes that wrap 31- and 33-byte payloads
+     * instead of a fixed 32-byte data key. Their box bundles open, so only the
+     * fixed-size contract can reject them; every runtime must return null.
+     */
+    undersizedDataKeyEnvelope: {
+      recipientSecretKeyOrSeed: {
+        hex: '0909090909090909090909090909090909090909090909090909090909090909',
+      },
+      recipientPublicKey: {
+        hex: '57db4b359f23ae5e146e4e2512056704722506348c150c14753d0c933d04d421',
+      },
+      dataKey: {
+        hex: '05050505050505050505050505050505050505050505050505050505050505',
+      },
+      envelope: {
+        hex: '0007a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c2122232425262728292a2b2c2d2e2f303132333435363738877211812d4c44a5bdad39d73d04a1d1ed1470a65c7e6ef6c0afceb9cb0225053b6cec68027325ba7215e844020b10',
+      },
+    },
+    oversizedDataKeyEnvelope: {
+      recipientSecretKeyOrSeed: {
+        hex: '0909090909090909090909090909090909090909090909090909090909090909',
+      },
+      recipientPublicKey: {
+        hex: '57db4b359f23ae5e146e4e2512056704722506348c150c14753d0c933d04d421',
+      },
+      dataKey: {
+        hex: '060606060606060606060606060606060606060606060606060606060606060606',
+      },
+      envelope: {
+        hex: '0007a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c2122232425262728292a2b2c2d2e2f3031323334353637384f5517a6e4c12a67c1623a417339ed80ee1773a55f7d6df5c3accdbac8012606386fef6b017026b97116eb470108137223',
+      },
+    },
   },
   serializedJsonValue: [
     {

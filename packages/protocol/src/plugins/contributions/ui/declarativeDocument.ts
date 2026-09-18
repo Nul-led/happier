@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ActionIdSchema, type ActionId } from '../../../actions/actionIds.js';
 import { asProtocolZod } from "../../actions/internalProtocolZodAdapter.js";
 
 import {
@@ -20,7 +21,7 @@ import {
   type NormalizedPluginCollectionUiQueryDescriptorV1,
   type PluginCollectionProjectedScalarFieldRefV1,
   type PluginCollectionUiQueryRequestV1,
-} from '../../data/collectionsV1.js';
+} from '../../data/collectionUiQueryWireV1.js';
 import {
   compilePluginJsonSchema,
   isValidPluginJsonSchemaValue,
@@ -266,6 +267,13 @@ export type PluginDeclarativeNormalizedNodeV1 =
     effect: PluginDeclarativeComposerApplyEffectV1;
   }>)
   | (PluginDeclarativeNormalizedNodeBaseV1 & Readonly<{
+    kind: 'action';
+    label: PluginLocalizedStringV2;
+    variant?: PluginDeclarativeActionVariantV2;
+    hostAction: ActionId;
+    input?: PluginJsonValueV2;
+  }>)
+  | (PluginDeclarativeNormalizedNodeBaseV1 & Readonly<{
     kind: 'collectionList';
     label?: PluginLocalizedStringV2;
     source: Readonly<{
@@ -361,6 +369,15 @@ export type NormalizePluginDeclarativeDocumentV1Input = Readonly<{
     returnedContentType: unknown;
   }>;
 }>;
+
+export type NormalizeDeclarativeDocumentV1CoreInput =
+  | (NormalizePluginDeclarativeDocumentV1Input & Readonly<{ kind: 'plugin' }>)
+  | Readonly<{
+    kind: 'session';
+    document: unknown;
+    /** Exact host Actions exposed by the caller's incumbent Action front door. */
+    admittedHostActions: readonly ActionId[];
+  }>;
 
 /** Static ceiling promoted from the former CLI-only evaluator. */
 export const MAX_PLUGIN_DECLARATIVE_SELECT_OPTIONS_V1 = 128;
@@ -964,15 +981,16 @@ function normalizeCollectionRowCommand(input: Readonly<{
  * callers supply only an immutable admitted Action inventory and publish its
  * result atomically under their own lifecycle/currentness owner.
  */
-export function normalizePluginDeclarativeDocumentV1(
-  input: NormalizePluginDeclarativeDocumentV1Input,
+export function normalizeDeclarativeDocumentV1Core(
+  input: NormalizeDeclarativeDocumentV1CoreInput,
 ): PluginDeclarativeDocumentNormalizationV1 {
-  const pluginId = normalizePluginId(input.pluginId);
-  const generation = normalizeGeneration(input.generation);
-  if (input.resourceContentTypes) {
+  const pluginInput = input.kind === 'plugin' ? input : null;
+  const pluginId = pluginInput === null ? null : normalizePluginId(pluginInput.pluginId);
+  const generation = pluginInput === null ? null : normalizeGeneration(pluginInput.generation);
+  if (pluginInput?.resourceContentTypes) {
     assertPluginDeclarativeDocumentResourceContentTypesV1(
-      input.resourceContentTypes.declaredContentType,
-      input.resourceContentTypes.returnedContentType,
+      pluginInput.resourceContentTypes.declaredContentType,
+      pluginInput.resourceContentTypes.returnedContentType,
     );
   }
   const preflight = preflightPluginDeclarativeDocumentV1(input.document);
@@ -985,18 +1003,28 @@ export function normalizePluginDeclarativeDocumentV1(
     return fail('plugin_declarative_document_invalid', 'Declarative document is invalid');
   }
   const actions = buildContributionIdentityInventory({
-    identities: input.actions,
+    identities: pluginInput?.actions ?? [],
     kind: 'action',
   });
   const destinations = buildContributionIdentityInventory({
-    identities: input.destinations ?? [],
+    identities: pluginInput?.destinations ?? [],
     kind: 'destination',
   });
-  const settings = buildSettingsInventory(pluginId, input.settings);
-  const uiQueries = buildCollectionUiQueryInventory(pluginId, input.uiQueries);
-  const targetedSurfaces = input.preparedTargetedSurfaces === undefined
+  const settings = buildSettingsInventory(pluginId ?? '', pluginInput?.settings);
+  const uiQueries = buildCollectionUiQueryInventory(pluginId ?? '', pluginInput?.uiQueries);
+  const targetedSurfaces = pluginInput?.preparedTargetedSurfaces === undefined
     ? undefined
-    : buildPreparedTargetedSurfaceInventory(pluginId, input.preparedTargetedSurfaces);
+    : buildPreparedTargetedSurfaceInventory(pluginId!, pluginInput.preparedTargetedSurfaces);
+  const admittedHostActions = new Set<ActionId>();
+  if (input.kind === 'session') {
+    for (const candidate of input.admittedHostActions) {
+      const parsed = ActionIdSchema.safeParse(candidate);
+      if (!parsed.success || admittedHostActions.has(parsed.data)) {
+        return fail('plugin_declarative_action_inventory_invalid', 'Host Action inventory is invalid');
+      }
+      admittedHostActions.add(parsed.data);
+    }
+  }
   const nodes: PluginDeclarativeNormalizedNodeV1[] = [];
 
   function normalizeNode(
@@ -1060,6 +1088,9 @@ export function normalizePluginDeclarativeDocumentV1(
         });
         break;
       case 'field':
+        if (pluginInput === null) {
+          return fail('plugin_declarative_document_invalid', `Session declarative node '${path}' requires plugin Settings authority`);
+        }
         normalized = Object.freeze({
           kind: source.kind,
           path,
@@ -1071,7 +1102,20 @@ export function normalizePluginDeclarativeDocumentV1(
         });
         break;
       case 'action':
-        if (source.effect !== undefined) {
+        if (source.hostAction !== undefined) {
+          if (input.kind === 'session' && !admittedHostActions.has(source.hostAction)) {
+            return fail('plugin_declarative_action_missing', `Host Action '${source.hostAction}' is not admitted`);
+          }
+          normalized = Object.freeze({
+            kind: 'action', path, order, label: source.label,
+            hostAction: source.hostAction,
+            ...(source.variant ? { variant: source.variant } : {}),
+            ...(source.input === undefined ? {} : { input: source.input }),
+          });
+        } else if (source.effect !== undefined) {
+          if (pluginInput === null) {
+            return fail('plugin_declarative_document_invalid', `Session declarative node '${path}' cannot apply plugin composer effects`);
+          }
           normalized = Object.freeze({
             kind: 'action',
             path,
@@ -1085,6 +1129,9 @@ export function normalizePluginDeclarativeDocumentV1(
             }),
           });
         } else {
+          if (pluginInput === null || pluginId === null || generation === null) {
+            return fail('plugin_declarative_action_scope_invalid', `Session declarative node '${path}' cannot invoke a plugin Action`);
+          }
           if (source.action === undefined) {
             return fail('plugin_declarative_document_invalid', 'Declarative Action is missing its Action reference');
           }
@@ -1100,6 +1147,9 @@ export function normalizePluginDeclarativeDocumentV1(
         }
         break;
       case 'collectionList': {
+        if (pluginInput === null || pluginId === null || generation === null) {
+          return fail('plugin_declarative_document_invalid', `Session declarative node '${path}' requires plugin Collection authority`);
+        }
         const binding = normalizeCollectionListBinding({
           pluginId,
           generation,
@@ -1122,12 +1172,25 @@ export function normalizePluginDeclarativeDocumentV1(
         break;
       }
       case 'item': {
+        if (
+          (source.action !== undefined || source.input !== undefined)
+          && (pluginInput === null || pluginId === null || generation === null)
+        ) {
+          return fail('plugin_declarative_item_action_missing', `Session item '${path}' cannot invoke a plugin Action`);
+        }
         if (source.action === undefined && source.input !== undefined) {
           return fail('plugin_declarative_item_action_missing', `Item '${path}' declares an input without an action`);
         }
-        const action = source.action === undefined
-          ? undefined
-          : normalizeActionReference(pluginId, generation, actions, source.action);
+        let action: ReturnType<typeof normalizeActionReference> | undefined;
+        if (source.action !== undefined) {
+          // The shared guard above establishes this invariant at runtime. Keep
+          // the branch explicit so TypeScript preserves the same narrowing at
+          // the Action-reference boundary.
+          if (pluginId === null || generation === null) {
+            return fail('plugin_declarative_item_action_missing', `Session item '${path}' cannot invoke a plugin Action`);
+          }
+          action = normalizeActionReference(pluginId, generation, actions, source.action);
+        }
         normalized = Object.freeze({
           kind: 'item',
           path,
@@ -1154,6 +1217,9 @@ export function normalizePluginDeclarativeDocumentV1(
         });
         break;
       case 'targetedSurface':
+        if (pluginInput === null || pluginId === null) {
+          return fail('plugin_declarative_document_invalid', `Session declarative node '${path}' cannot mount a targeted plugin Surface`);
+        }
         normalized = normalizeTargetedSurfaceNode({
           targetPluginId: pluginId,
           source,
@@ -1222,4 +1288,11 @@ export function normalizePluginDeclarativeDocumentV1(
     root,
     nodes: Object.freeze(nodes),
   });
+}
+
+/** Plugin attribution and admitted inventories stay in this thin outer adapter. */
+export function normalizePluginDeclarativeDocumentV1(
+  input: NormalizePluginDeclarativeDocumentV1Input,
+): PluginDeclarativeDocumentNormalizationV1 {
+  return normalizeDeclarativeDocumentV1Core({ kind: 'plugin', ...input });
 }

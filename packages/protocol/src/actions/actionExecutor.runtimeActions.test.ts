@@ -8,7 +8,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -33,6 +33,8 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     sessionActivityGet: vi.fn(async () => ({})),
     sessionRecentMessagesGet: vi.fn(async () => ({})),
     resetGlobalVoiceAgent: vi.fn(),
+    // Runtime routing is tested independently from approval policy here.
+    isActionApprovalRequired: () => false,
     ...overrides,
   };
 }

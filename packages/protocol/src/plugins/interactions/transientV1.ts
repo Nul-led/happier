@@ -4,6 +4,7 @@ import { StrictJsonValueSchema, type JsonValue } from '../../json/strictJsonValu
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import { PluginIdSchema } from '../pluginId.js';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
+import { PluginExecutionScopeV1Schema } from '../invocationScopeV1.js';
 
 const textEncoder = new TextEncoder();
 
@@ -173,10 +174,7 @@ export type InteractionTransientRequesterV1 = z.infer<typeof InteractionTransien
  * scope is available only from an exact present-user application invocation.
  */
 export const InteractionTransientScopeV1Schema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('session'),
-    sessionId: boundedIdentifier('Interaction session ids'),
-  }).strict(),
+  ...PluginExecutionScopeV1Schema.options,
   z.object({ kind: z.literal('app') }).strict(),
 ]);
 export type InteractionTransientScopeV1 = z.infer<typeof InteractionTransientScopeV1Schema>;

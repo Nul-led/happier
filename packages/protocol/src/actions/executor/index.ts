@@ -32,6 +32,8 @@ export type {
   ActionExecuteResult,
   ActionExecutorContext,
   ActionExecutorDeps,
+  ActionSessionAddress,
+  ActionSessionReferenceResolution,
   ActionPreparedInvocation,
   ActionPrepareResult,
   ApprovalQueueListItemV1,
@@ -45,4 +47,6 @@ export type {
   RuntimeActionExecutionFamily,
   RuntimeActionInputById,
   RuntimeActionResultById,
+  WorkflowActionExecute,
+  WorkflowActionExecuteArgs,
 } from './types.js';

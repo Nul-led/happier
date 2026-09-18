@@ -1,9 +1,15 @@
 import tweetnacl from 'tweetnacl';
 import { sha512 } from '@noble/hashes/sha512';
 
-export const BOX_BUNDLE_PUBLIC_KEY_BYTES = tweetnacl.box.publicKeyLength; // 32
-export const BOX_BUNDLE_NONCE_BYTES = tweetnacl.box.nonceLength; // 24
-export const BOX_BUNDLE_MIN_BYTES = BOX_BUNDLE_PUBLIC_KEY_BYTES + BOX_BUNDLE_NONCE_BYTES + 16;
+import {
+  BOX_BUNDLE_MIN_BYTES,
+  BOX_BUNDLE_NONCE_BYTES,
+  BOX_BUNDLE_PUBLIC_KEY_BYTES,
+} from './boxBundleFormat.js';
+import { isValidBoxBundlePublicKey } from './boxPublicKeyValidation.js';
+
+export { BOX_BUNDLE_MIN_BYTES, BOX_BUNDLE_NONCE_BYTES, BOX_BUNDLE_PUBLIC_KEY_BYTES };
+export { isValidBoxBundlePublicKey } from './boxPublicKeyValidation.js';
 
 export function deriveBoxSecretKeyFromSeed(seed: Uint8Array): Uint8Array {
   // libsodium crypto_box_seed_keypair uses SHA-512(seed) and takes the first 32 bytes as the scalar.
@@ -13,33 +19,6 @@ export function deriveBoxSecretKeyFromSeed(seed: Uint8Array): Uint8Array {
 export function deriveBoxPublicKeyFromSeed(seed: Uint8Array): Uint8Array {
   const secretKey = deriveBoxSecretKeyFromSeed(seed);
   return tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey;
-}
-
-/**
- * Fixed nonzero X25519 scalar used only as a low-order probe. tweetnacl
- * clamps scalars, and a clamped scalar is always a multiple of 8, so it
- * annihilates every point of the curve's order-8 torsion subgroup: probing a
- * low-order public key (including the all-zero key) yields the all-zero
- * result, while a valid high-order public key never does.
- */
-const BOX_BUNDLE_LOW_ORDER_PROBE_SECRET_SCALAR = deriveBoxSecretKeyFromSeed(
-  new TextEncoder().encode('happier.boxBundle.low-order-probe.v1'),
-);
-
-/**
- * Validates an X25519 public key for use as a box-bundle key: exact 32-byte
- * length and not a low-order point. Low-order keys let unrelated private
- * scalars derive the same shared secret, defeating unique key binding, so
- * they are rejected on the cryptographic property rather than a blacklist.
- */
-export function isValidBoxBundlePublicKey(publicKey: Uint8Array): boolean {
-  if (publicKey.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) return false;
-  try {
-    const probe = tweetnacl.scalarMult(BOX_BUNDLE_LOW_ORDER_PROBE_SECRET_SCALAR, publicKey);
-    return probe.some((byte) => byte !== 0);
-  } catch {
-    return false;
-  }
 }
 
 export function sealBoxBundle(params: {
@@ -74,15 +53,15 @@ export function sealBoxBundle(params: {
   return out;
 }
 
-export function openBoxBundle(params: {
+export function openBoxBundleWithSecretKey(params: {
   bundle: Uint8Array;
-  recipientSecretKeyOrSeed: Uint8Array;
+  recipientSecretKey: Uint8Array;
 }): Uint8Array | null {
   const bundle = params.bundle;
   if (bundle.length < BOX_BUNDLE_MIN_BYTES) {
     return null;
   }
-  if (params.recipientSecretKeyOrSeed.length !== tweetnacl.box.secretKeyLength) {
+  if (params.recipientSecretKey.length !== tweetnacl.box.secretKeyLength) {
     return null;
   }
 
@@ -94,18 +73,28 @@ export function openBoxBundle(params: {
   // secret; reject before any plaintext could be produced.
   if (!isValidBoxBundlePublicKey(ephemeralPublicKey)) return null;
 
-  const tryOpen = (secretKey: Uint8Array): Uint8Array | null => {
-    try {
-      const opened = tweetnacl.box.open(boxed, nonce, ephemeralPublicKey, secretKey);
-      return opened ? new Uint8Array(opened) : null;
-    } catch {
-      return null;
-    }
-  };
+  try {
+    const opened = tweetnacl.box.open(boxed, nonce, ephemeralPublicKey, params.recipientSecretKey);
+    return opened ? new Uint8Array(opened) : null;
+  } catch {
+    return null;
+  }
+}
 
-  const direct = tryOpen(params.recipientSecretKeyOrSeed);
+export function openBoxBundle(params: {
+  bundle: Uint8Array;
+  recipientSecretKeyOrSeed: Uint8Array;
+}): Uint8Array | null {
+  if (params.recipientSecretKeyOrSeed.length !== tweetnacl.box.secretKeyLength) return null;
+  const direct = openBoxBundleWithSecretKey({
+    bundle: params.bundle,
+    recipientSecretKey: params.recipientSecretKeyOrSeed,
+  });
   if (direct) return direct;
 
-  const compatSecretKey = deriveBoxSecretKeyFromSeed(params.recipientSecretKeyOrSeed);
-  return tryOpen(compatSecretKey);
+  // Retain the released CLI seed interpretation only at this compatibility seam.
+  return openBoxBundleWithSecretKey({
+    bundle: params.bundle,
+    recipientSecretKey: deriveBoxSecretKeyFromSeed(params.recipientSecretKeyOrSeed),
+  });
 }

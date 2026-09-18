@@ -5,6 +5,53 @@ import { readServerEnabledBit } from '../serverEnabledBit.js';
 import { FeaturesResponseSchema } from './featuresResponseSchema.js';
 
 describe('FeatureGatesSchema', () => {
+  it('preserves the operation-scoped external Provider API deployment projection', () => {
+    const parsed = FeaturesResponseSchema.parse({
+      features: {
+        teams: {
+          enabled: true,
+          credentialResources: { enabled: true, externalApi: { enabled: true } },
+        },
+      },
+      capabilities: {
+        teams: {
+          credentialResources: {
+            externalApi: {
+              available: true,
+              baseUrl: 'https://home.example.test/prefix/api/provider-broker/v1',
+              protocols: ['openai_responses', 'openai_chat_completions', 'anthropic_messages'],
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.capabilities.teams?.credentialResources.externalApi).toEqual({
+      available: true,
+      baseUrl: 'https://home.example.test/prefix/api/provider-broker/v1',
+      protocols: ['openai_responses', 'openai_chat_completions', 'anthropic_messages'],
+    });
+  });
+
+  it('preserves Workflow activation and defaults a missing or malformed bit fail-closed', () => {
+    const enabled = FeaturesResponseSchema.parse({
+      features: { automations: { enabled: true }, workflows: { enabled: true } },
+      capabilities: {},
+    });
+    expect(readServerEnabledBit(enabled, 'workflows')).toBe(true);
+
+    const missing = FeaturesResponseSchema.parse({
+      features: { automations: { enabled: true } },
+      capabilities: {},
+    });
+    expect(readServerEnabledBit(missing, 'workflows')).toBe(false);
+
+    const malformed = FeaturesResponseSchema.parse({
+      features: { automations: { enabled: true }, workflows: { enabled: 'yes' } },
+      capabilities: {},
+    });
+    expect(readServerEnabledBit(malformed, 'workflows')).toBe(false);
+  });
   it('preserves pets companion and sync gates', () => {
     const parsed = FeaturesResponseSchema.parse({
       features: {
@@ -76,6 +123,9 @@ describe('FeatureGatesSchema', () => {
           enabled: true,
           accountGroups: { enabled: true },
           accountFallback: { enabled: true },
+          autoQuotaReset: { enabled: true },
+          autoDisablePlanInvalid: { enabled: true },
+          poolQuotaLimitSelection: { enabled: true },
         },
         sessions: {
           enabled: true,
@@ -87,6 +137,9 @@ describe('FeatureGatesSchema', () => {
 
     expect(readServerEnabledBit(parsed, 'connectedServices.accountGroups')).toBe(true);
     expect(readServerEnabledBit(parsed, 'connectedServices.accountFallback')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'connectedServices.autoQuotaReset')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'connectedServices.autoDisablePlanInvalid')).toBe(true);
+    expect(readServerEnabledBit(parsed, 'connectedServices.poolQuotaLimitSelection')).toBe(true);
     expect(readServerEnabledBit(parsed, 'sessions.usageLimitRecovery')).toBe(true);
   });
 
@@ -105,6 +158,9 @@ describe('FeatureGatesSchema', () => {
 
     expect(readServerEnabledBit(parsed, 'connectedServices.accountGroups')).toBe(false);
     expect(readServerEnabledBit(parsed, 'connectedServices.accountFallback')).toBe(false);
+    expect(readServerEnabledBit(parsed, 'connectedServices.autoQuotaReset')).toBe(false);
+    expect(readServerEnabledBit(parsed, 'connectedServices.autoDisablePlanInvalid')).toBe(false);
+    expect(readServerEnabledBit(parsed, 'connectedServices.poolQuotaLimitSelection')).toBe(false);
     expect(readServerEnabledBit(parsed, 'sessions.usageLimitRecovery')).toBe(false);
   });
 

@@ -9,6 +9,7 @@ export type AccountScopedBlobKind =
   | 'account_settings'
   | 'account_session_draft_private_payload'
   | 'action_operation_snapshot'
+  | 'external_action_transport'
   | 'automation_conversation_reply_context'
   | 'automation_run_result'
   | 'automation_run_failure_detail'
@@ -29,7 +30,11 @@ export type AccountScopedBlobKind =
   | 'session_first_intent'
   | 'session_owner_metadata'
   | 'session_organization_display'
-  | 'session_respawn_environment';
+  | 'session_respawn_environment'
+  | 'workflow_accepted_snapshot'
+  | 'workflow_invocation_progress'
+  | 'workflow_checkpoint'
+  | 'workflow_final_result';
 
 export const ACCOUNT_SCOPED_BLOB_V1_MAGIC = 0xa1;
 export const ACCOUNT_SCOPED_BLOB_V1_PREFIX_BYTES = 2;
@@ -61,6 +66,11 @@ const ACCOUNT_SCOPED_KIND_BYTE = Object.freeze({
   action_operation_snapshot: 23,
   qualified_connected_account_attempt_transaction: 24,
   session_owner_metadata: 26,
+  external_action_transport: 27,
+  workflow_accepted_snapshot: 28,
+  workflow_invocation_progress: 29,
+  workflow_checkpoint: 30,
+  workflow_final_result: 31,
 } satisfies Record<AccountScopedBlobKind, number>);
 
 /**

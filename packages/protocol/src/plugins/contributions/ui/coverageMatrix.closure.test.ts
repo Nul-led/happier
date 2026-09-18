@@ -1496,13 +1496,16 @@ describe('coverage matrix — Stage C (executor-backed coverage + consent floor)
         agentRouting.required,
         `surfaced action '${id}' agent approval must match the derived floor (${flooredByPolicy})`,
       ).toBe(flooredByPolicy);
-      // User-initiated dispatch is NEVER prompted (the floor is surface-keyed to agent).
+      // Dangerous Actions retain their default confirmation floor on every exposed surface;
+      // safe egress remains agent-only.
       const uiRouting = resolveActionApprovalRouting({
         actionId: id,
         spec,
         context: { surface: 'ui' },
       });
-      expect(uiRouting.required, `surfaced action '${id}' must not prompt on ui`).toBe(false);
+      expect(uiRouting.required, `surfaced action '${id}' UI approval must match its danger floor`).toBe(
+        spec.safety === 'danger',
+      );
     }
   });
 

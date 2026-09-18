@@ -1,20 +1,22 @@
 import {
     ConnectedServiceAuthGroupIdSchema,
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
+    ConnectedServiceBindingsV2Schema,
     ConnectedServiceProfileIdSchema,
     readBuiltInLegacyConnectedAccountServiceKeyIngress,
-    type ConnectedServiceBindingSelectionV1,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingSelectionV2,
+    type ConnectedServiceBindingsV2,
     type ConnectedAccountServiceKey,
 } from './connectedServiceBindings.js';
 
 /**
  * Agent-friendly connected-services selection normalizer — the ONE boundary that turns the simple
- * forms an agent naturally reaches for into a canonical {@link ConnectedServiceBindingsV1}. This is
+ * forms an agent naturally reaches for into canonical V2 bindings. This is
  * the canonical contract shared with remote-dev (kept aligned; see F4).
  *
  * Accepted input (any of):
- *  - `undefined` / `null` → no explicit selection; the run/session uses the account default.
+ *  - `undefined` → no explicit selection; the run/session uses the account default.
+ *  - `"native"` / `null` → explicitly suppress all connected-service inheritance for this run.
  *  - a string token, or an array of string tokens, each one of:
  *      - `"<serviceId>"`                     → the NAMED service's account default. This is an
  *                                              explicit per-service intent: it is REPRESENTED in
@@ -29,8 +31,8 @@ import {
  *      - `"<serviceId>:group:<groupId>"`     → bind to that account pool/group (auto-rotates when the
  *                                              pool has autoSwitch enabled). Group ids are strict and
  *                                              never contain `:`.
- *      - `"<serviceId>:native"`              → opt out; use the runner's inherited account.
- *  - a full `{ v: 1, bindingsByServiceId: { ... } }` object (the canonical power form).
+ *      - `"<serviceId>:native"`              → opt out for that service; use its native auth.
+ *  - a full `{ v: 2, bindingsByServiceId: { ... } }` object (the canonical power form).
  *
  * Malformed input is rejected with a typed error naming the valid forms — never silently dropped.
  * The result carries `bindings` (explicit pins) alongside `defaultServiceIds` (services asking for
@@ -41,20 +43,20 @@ import {
 export type NormalizeConnectedServiceSelectionResult =
     | Readonly<{
         ok: true;
-        bindings: ConnectedServiceBindingsV1 | undefined;
+        bindings: ConnectedServiceBindingsV2 | null | undefined;
         /** Services whose bare token requested their stored account default (explicit per-service intent). */
         defaultServiceIds: readonly ConnectedAccountServiceKey[];
     }>
     | Readonly<{ ok: false; error: string }>;
 
 export type NormalizeConnectedServiceSelectionForRunStartResult =
-    | Readonly<{ ok: true; bindings: ConnectedServiceBindingsV1 | undefined }>
+    | Readonly<{ ok: true; bindings: ConnectedServiceBindingsV2 | null | undefined }>
     | Readonly<{ ok: false; error: string }>;
 
 export const CONNECTED_SERVICE_SELECTION_VALID_FORMS =
-    'Valid forms: "<serviceId>" (account default), "<serviceId>:<profileId>", '
+    'Valid forms: "native" (use no connected services), "<serviceId>" (account default), "<serviceId>:<profileId>", '
     + '"<serviceId>:profile:<profileId>", "<serviceId>:group:<groupId>", "<serviceId>:native", '
-    + 'an array of those, or a full { v: 1, bindingsByServiceId: {...} } object. '
+    + 'an array of those, or a full { v: 2, bindingsByServiceId: {...} } object. '
     + 'serviceId is e.g. "openai-codex".';
 
 function invalid(reason: string): Readonly<{ ok: false; error: string }> {
@@ -63,7 +65,7 @@ function invalid(reason: string): Readonly<{ ok: false; error: string }> {
 
 type SelectionVariant =
     | Readonly<{ kind: 'default' }>
-    | Readonly<{ kind: 'binding'; binding: ConnectedServiceBindingSelectionV1 }>;
+    | Readonly<{ kind: 'binding'; binding: ConnectedServiceBindingSelectionV2 }>;
 
 type TokenParse =
     | Readonly<{ ok: true; serviceId: ConnectedAccountServiceKey; variant: SelectionVariant }>
@@ -132,7 +134,7 @@ function parseSelectionToken(rawToken: string): TokenParse {
 }
 
 function normalizeTokens(tokens: readonly string[]): NormalizeConnectedServiceSelectionResult {
-    const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV1> = {};
+    const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV2> = {};
     const defaultServiceIds: ConnectedAccountServiceKey[] = [];
     const seen = new Set<string>();
 
@@ -152,9 +154,9 @@ function normalizeTokens(tokens: readonly string[]): NormalizeConnectedServiceSe
         bindingsByServiceId[parsed.serviceId] = parsed.variant.binding;
     }
 
-    let bindings: ConnectedServiceBindingsV1 | undefined;
+    let bindings: ConnectedServiceBindingsV2 | undefined;
     if (Object.keys(bindingsByServiceId).length > 0) {
-        const parsed = ConnectedServiceBindingsV1Schema.safeParse({ v: 1, bindingsByServiceId });
+        const parsed = ConnectedServiceBindingsV2Schema.safeParse({ v: 2, bindingsByServiceId });
         if (!parsed.success) return invalid('Invalid connected-services selection.');
         bindings = parsed.data;
     }
@@ -164,11 +166,18 @@ function normalizeTokens(tokens: readonly string[]): NormalizeConnectedServiceSe
 export function normalizeConnectedServiceSelectionInput(
     input: unknown,
 ): NormalizeConnectedServiceSelectionResult {
-    if (input === undefined || input === null) {
+    if (input === undefined) {
         return { ok: true, bindings: undefined, defaultServiceIds: [] };
     }
 
+    if (input === null) {
+        return { ok: true, bindings: null, defaultServiceIds: [] };
+    }
+
     if (typeof input === 'string') {
+        if (input.trim() === 'native') {
+            return { ok: true, bindings: null, defaultServiceIds: [] };
+        }
         return normalizeTokens([input]);
     }
 
@@ -181,10 +190,10 @@ export function normalizeConnectedServiceSelectionInput(
 
     if (typeof input === 'object') {
         // Canonical power form: a full bindings object.
-        const parsed = ConnectedServiceBindingsV1Schema.safeParse(input);
-        if (parsed.success) {
-            const hasBinding = Object.keys(parsed.data.bindingsByServiceId).length > 0;
-            return { ok: true, bindings: hasBinding ? parsed.data : undefined, defaultServiceIds: [] };
+        const canonical = ConnectedServiceBindingsV2IngressSchema.safeParse(input);
+        if (canonical.success) {
+            const hasBinding = Object.keys(canonical.data.bindingsByServiceId).length > 0;
+            return { ok: true, bindings: hasBinding ? canonical.data : undefined, defaultServiceIds: [] };
         }
         return invalid('Invalid connected-services object.');
     }

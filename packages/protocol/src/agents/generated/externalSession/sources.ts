@@ -287,6 +287,60 @@ export const GENERATED_EXTERNAL_SESSIONS_SOURCE_DECLARATIONS = [
     "sourceKind": "antigravityCliPrint"
   },
   {
+    "agentId": "kimi",
+    "instances": [
+      {
+        "constants": {},
+        "kind": "default"
+      }
+    ],
+    "key": {
+      "segments": [
+        {
+          "kind": "literal",
+          "value": "kimiAcpSessionList"
+        }
+      ]
+    },
+    "schema": {
+      "fields": [
+        {
+          "kind": "literal",
+          "name": "kind",
+          "value": "kimiAcpSessionList"
+        }
+      ]
+    },
+    "sourceKind": "kimiAcpSessionList"
+  },
+  {
+    "agentId": "fx",
+    "instances": [
+      {
+        "constants": {},
+        "kind": "default"
+      }
+    ],
+    "key": {
+      "segments": [
+        {
+          "kind": "literal",
+          "value": "fxAcpSessionList"
+        }
+      ]
+    },
+    "schema": {
+      "fields": [
+        {
+          "kind": "literal",
+          "name": "kind",
+          "value": "fxAcpSessionList"
+        }
+      ]
+    },
+    "sourceKind": "fxAcpSessionList"
+  },
+  {
     "agentId": "ohMyPi",
     "instances": [
       {

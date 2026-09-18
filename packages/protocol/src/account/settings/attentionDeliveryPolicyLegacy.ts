@@ -11,6 +11,7 @@ type LegacyNotificationsSettings = {
   pushEnabled?: boolean;
   ready?: boolean;
   readyIncludeMessageText?: boolean;
+  requestIncludeMessageText?: boolean;
   permissionRequest?: boolean;
   userActionRequest?: boolean;
   connectedServiceAccountSwitch?: boolean;
@@ -75,10 +76,12 @@ export function deriveAttentionDeliveryPolicyFromLegacySettings(params: {
       permission_request: {
         ...channels.expo_push.events.permission_request,
         enabled: notificationsSettings.permissionRequest !== false,
+        previewBehavior: notificationsSettings.requestIncludeMessageText !== false ? 'include_preview' : 'status_only',
       },
       user_action_request: {
         ...channels.expo_push.events.user_action_request,
         enabled: notificationsSettings.userActionRequest !== false,
+        previewBehavior: notificationsSettings.requestIncludeMessageText !== false ? 'include_preview' : 'status_only',
       },
       connected_service_account_switch: {
         ...channels.expo_push.events.connected_service_account_switch,
@@ -131,6 +134,12 @@ export function deriveAttentionDeliveryPolicyFromLegacySettings(params: {
       if (!eventId) continue;
       nextEvents[eventId] = { ...nextEvents[eventId], enabled };
     }
+    for (const eventId of ['permission_request', 'user_action_request'] as const) {
+      nextEvents[eventId] = {
+        ...nextEvents[eventId],
+        previewBehavior: channel.requestIncludeMessageText !== false ? 'include_preview' : 'status_only',
+      };
+    }
     channels[channelId] = {
       ...current,
       enabled: channel.enabled !== false,
@@ -149,6 +158,13 @@ export function deriveAttentionDeliveryPolicyFromLegacySettings(params: {
         const topicEntry = Object.entries(channel.topics ?? {}).find(([topic]) => eventIdFromChannelTopic(topic) === eventId);
         return topicEntry?.[1] === true;
       }),
+    };
+  }
+  for (const eventId of ['permission_request', 'user_action_request'] as const) {
+    webhookEvents[eventId] = {
+      ...webhookEvents[eventId],
+      previewBehavior: enabledWebhookChannels.some((channel) => channel.requestIncludeMessageText !== false)
+        ? 'include_preview' : 'status_only',
     };
   }
   channels.webhook = {

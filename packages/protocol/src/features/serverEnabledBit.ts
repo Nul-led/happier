@@ -20,6 +20,7 @@ export function readServerEnabledBit(response: FeaturesResponse, featureId: Feat
   return typeof cursor === 'boolean' ? cursor : null;
 }
 
+
 export function tryWriteServerEnabledBitInPlace(
   response: FeaturesResponse,
   featureId: FeatureId,
@@ -41,4 +42,3 @@ export function tryWriteServerEnabledBitInPlace(
   cursor[last] = enabled;
   return true;
 }
-

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TeamInvitationPostAuthContinuationV1Schema } from '../teams/invitation.js';
 
 const ExternalOAuthParamsBaseResponseSchema = z
   .object({ url: z.string().min(1) })
@@ -14,8 +15,15 @@ const AccountDirectoryOAuthParamsResponseSchema =
     expiresAt: z.string().datetime({ offset: true }).max(64),
   }).strict();
 
+const TeamOAuthParamsResponseSchema = ExternalOAuthParamsBaseResponseSchema.extend({
+  purpose: z.literal('team_admission'),
+  teamId: z.string().trim().min(1).max(512),
+  admissionReference: z.string().trim().min(1).max(512),
+}).strict();
+
 export const ExternalOAuthParamsResponseSchema = z.union([
   AccountDirectoryOAuthParamsResponseSchema,
+  TeamOAuthParamsResponseSchema,
   ExternalOAuthParamsBaseResponseSchema,
 ]);
 export type ExternalOAuthParamsResponse = z.infer<typeof ExternalOAuthParamsResponseSchema>;
@@ -50,7 +58,11 @@ export const ExternalOAuthFinalizeAuthRequestSchema = z
 export type ExternalOAuthFinalizeAuthRequest = z.infer<typeof ExternalOAuthFinalizeAuthRequestSchema>;
 
 export const ExternalOAuthFinalizeAuthSuccessResponseSchema = z
-  .object({ success: z.literal(true), token: z.string().min(1) })
+  .object({
+    success: z.literal(true),
+    token: z.string().trim().min(1),
+    teamInvitationContinuation: TeamInvitationPostAuthContinuationV1Schema.optional(),
+  })
   .strict();
 export type ExternalOAuthFinalizeAuthSuccessResponse = z.infer<typeof ExternalOAuthFinalizeAuthSuccessResponseSchema>;
 
@@ -63,5 +75,8 @@ export const ExternalOAuthFinalizeConnectRequestSchema = z
 
 export type ExternalOAuthFinalizeConnectRequest = z.infer<typeof ExternalOAuthFinalizeConnectRequestSchema>;
 
-export const ExternalOAuthFinalizeConnectSuccessResponseSchema = z.object({ success: z.literal(true) }).strict();
+export const ExternalOAuthFinalizeConnectSuccessResponseSchema = z.object({
+  success: z.literal(true),
+  token: z.string().trim().min(1).optional(),
+}).strict();
 export type ExternalOAuthFinalizeConnectSuccessResponse = z.infer<typeof ExternalOAuthFinalizeConnectSuccessResponseSchema>;

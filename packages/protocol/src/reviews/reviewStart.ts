@@ -5,6 +5,9 @@ import {
   ScmPullRequestReviewScopeV1Schema,
 } from './scmPullRequestScope.js';
 import { ReviewScmScopeV1Schema } from './scope.js';
+import { TeamCredentialProviderModelSelectionV1Schema } from '../teams/credentials/resourceV1.js';
+import { ExecutionRunTeamCredentialSessionBindingConsentV1Schema } from '../execution/runs/startRequest.js';
+import { SecretReferenceOverlayV1Schema } from '../profiles/secretReferenceOverlayV1.js';
 
 /**
  * Canonical, cross-surface input contract for starting reviews.
@@ -53,6 +56,9 @@ export const ReviewStartInputSchema = z
     permissionMode: z.string().min(1).default('read_only'),
     profileId: z.string().trim().min(1).optional(),
     profileGenerationId: z.string().trim().min(1).optional(),
+    secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
+    teamCredentialModel: TeamCredentialProviderModelSelectionV1Schema.optional(),
+    teamCredentialSessionBindingConsent: ExecutionRunTeamCredentialSessionBindingConsentV1Schema.optional(),
   })
   .passthrough()
   .superRefine((value, ctx) => {
@@ -69,6 +75,36 @@ export const ReviewStartInputSchema = z
         message: 'execution-run profiles require the execution-run host path',
         path: ['runLocation'],
       });
+    }
+    if (value.teamCredentialModel && value.engineIds.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A Team credential model requires exactly one review engine',
+        path: ['engineIds'],
+      });
+    }
+    if (value.teamCredentialModel && value.runLocation === 'current_session') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Team credential models require the execution-run host path',
+        path: ['runLocation'],
+      });
+    }
+    if (value.teamCredentialSessionBindingConsent) {
+      const consent = value.teamCredentialSessionBindingConsent;
+      const selection = value.teamCredentialModel;
+      if (
+        !selection
+        || consent.teamId !== selection.teamId
+        || consent.resourceId !== selection.resourceId
+        || consent.expectedResourceRevision !== selection.expectedResourceRevision
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Session binding consent must exactly match the selected Team resource revision',
+          path: ['teamCredentialSessionBindingConsent'],
+        });
+      }
     }
   })
   // Intentionally no engine-specific requirements here: this is a generalized,

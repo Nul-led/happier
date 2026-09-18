@@ -6,6 +6,17 @@ import { FEATURE_CATALOG } from './catalog.js';
 import { readServerEnabledBit, resolveServerEnabledBitPath, tryWriteServerEnabledBitInPlace } from './serverEnabledBit.js';
 
 describe('server enabled bit helpers', () => {
+  it('preserves the Teams decision and defaults an absent projection to disabled', () => {
+    const enabled = FeaturesResponseSchema.parse({ features: { teams: { enabled: true } }, capabilities: {} });
+    const absent = FeaturesResponseSchema.parse({ features: {}, capabilities: {} });
+
+    expect(readServerEnabledBit(enabled, 'teams')).toBe(true);
+    expect(readServerEnabledBit(absent, 'teams')).toBe(false);
+    expect(FeaturesResponseSchema.safeParse({
+      features: { teams: { enabled: 'true' } }, capabilities: {},
+    }).success).toBe(false);
+  });
+
   it('derives the enabled-bit path from FeatureId', () => {
     expect(resolveServerEnabledBitPath('social.friends')).toEqual(['features', 'social', 'friends', 'enabled']);
     expect(resolveServerEnabledBitPath('updates.ota')).toEqual(['features', 'updates', 'ota', 'enabled']);

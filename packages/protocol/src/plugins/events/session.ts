@@ -1,3 +1,4 @@
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { z } from 'zod';
 
 export const SESSION_PROVIDER_HOOK_EVENT_ID_V1 = '@happier/session/provider-hook' as const;
@@ -8,7 +9,7 @@ const ProviderPayloadV1Schema = z.record(z.string(), z.unknown());
 export const SessionProviderHookEventPayloadV1Schema = z.object({
   providerId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
-  providerSessionId: z.string().trim().min(1).optional(),
+  providerSessionId: NonBlankOpaqueIdentifierSchema.optional(),
   eventName: z.string().trim().min(1),
   turnId: z.string().trim().min(1).optional(),
   detail: z.string().trim().min(1).optional(),
@@ -19,7 +20,7 @@ export type SessionProviderHookEventPayloadV1 = z.infer<typeof SessionProviderHo
 export const SessionProviderTranscriptEventPayloadV1Schema = z.object({
   providerId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
-  providerSessionId: z.string().trim().min(1).optional(),
+  providerSessionId: NonBlankOpaqueIdentifierSchema.optional(),
   kind: z.string().trim().min(1),
   turnId: z.string().trim().min(1).optional(),
   text: z.string().optional(),

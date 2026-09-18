@@ -60,6 +60,7 @@ describe('qualified connected-account identity', () => {
     const cases = [
       [{ service, accountId: 'team/primary' }, true],
       [{ service, accountId: ' team/primary' }, false],
+      [{ service, accountId: 'team/primary\n' }, false],
       [{ service, accountId: `${'a'.repeat(256)}` }, true],
       [{ service, accountId: `${'a'.repeat(257)}` }, false],
       [{ service, accountId: 'team/primary', extra: true }, false],

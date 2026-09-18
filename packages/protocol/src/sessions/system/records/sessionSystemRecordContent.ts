@@ -1,7 +1,7 @@
 import {
-  SessionStoredMessageContentSchema,
-  type SessionStoredMessageContent,
+  StrictSessionStoredMessageContentEnvelopeSchema,
+  type StrictSessionStoredMessageContentEnvelope,
 } from '../../messages/sessionStoredMessageContent.js';
 
-export const SessionSystemRecordContentSchema = SessionStoredMessageContentSchema;
-export type SessionSystemRecordContent = SessionStoredMessageContent;
+export const SessionSystemRecordContentSchema = StrictSessionStoredMessageContentEnvelopeSchema;
+export type SessionSystemRecordContent = StrictSessionStoredMessageContentEnvelope;

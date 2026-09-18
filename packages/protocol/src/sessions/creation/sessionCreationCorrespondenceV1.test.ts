@@ -72,4 +72,57 @@ describe('SessionCreationCorrespondenceV1', () => {
       'Invalid Session creation correspondence transport',
     );
   });
+
+  it('ignores only model ordering time while retaining semantic model, provider and configuration differences', () => {
+    const selected = {
+      ...correspondence,
+      recipe: {
+        ...correspondence.recipe,
+        modelSelection: {
+          v: 1,
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'model-a' },
+          updatedAt: 1,
+        },
+      },
+    };
+    const retried = {
+      ...selected,
+      recipe: { ...selected.recipe, modelSelection: { ...selected.recipe.modelSelection, updatedAt: 2 } },
+    };
+    expect(SessionCreationCorrespondenceV1Schema.safeParse(selected).success).toBe(true);
+    expect(sessionCreationCorrespondenceMatchesV1(selected, retried)).toBe(true);
+    expect(sessionCreationCorrespondenceMatchesV1(
+      deserializeSessionCreationCorrespondenceV1(serializeSessionCreationCorrespondenceV1(SessionCreationCorrespondenceV1Schema.parse(selected))),
+      retried,
+    )).toBe(true);
+    for (const ref of [
+      { ...selected.recipe.modelSelection.ref, modelId: 'model-b' },
+      { ...selected.recipe.modelSelection.ref, providerConnectionId: 'pc_other' },
+      { ...selected.recipe.modelSelection.ref, agentTargetKey: 'agent:happier.agent.claude/claude' },
+    ]) {
+      expect(sessionCreationCorrespondenceMatchesV1(selected, {
+        ...retried,
+        recipe: { ...retried.recipe, modelSelection: { ...retried.recipe.modelSelection, ref } },
+      })).toBe(false);
+    }
+    expect(sessionCreationCorrespondenceMatchesV1(selected, {
+      ...retried,
+      recipe: { ...retried.recipe, profileId: 'profile-other' },
+    })).toBe(false);
+    const configuration = {
+      mode: { value: null, updatedAtMs: 1 },
+      model: { value: null, updatedAtMs: 1 },
+      permissionIntent: { value: null, updatedAtMs: 1 },
+      options: { reasoning: { value: 'medium', updatedAtMs: 1 } },
+    };
+    const configured = { ...selected, recipe: { ...selected.recipe, configuration } };
+    expect(SessionCreationCorrespondenceV1Schema.safeParse(configured).success).toBe(true);
+    expect(sessionCreationCorrespondenceMatchesV1(configured, {
+      ...retried,
+      recipe: {
+        ...retried.recipe,
+        configuration: { ...configuration, options: { reasoning: { value: 'high', updatedAtMs: 1 } } },
+      },
+    })).toBe(false);
+  });
 });

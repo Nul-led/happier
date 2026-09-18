@@ -9,6 +9,40 @@ async function loadTunnelRelayModule(): Promise<TunnelRelayModule | null> {
 }
 
 describe('peer TCP tunnel relay protocol', () => {
+  it('binds Provider-broker relay authorization to an application request without a TCP destination', async () => {
+    const mod = await loadTunnelRelayModule();
+    const parsed = mod?.PeerTcpTunnelRelayAuthorizationPayloadV2Schema.safeParse({
+      v: 2,
+      grantId: 'relay_grant_provider_1',
+      accountId: 'custodian_1',
+      targetMachineId: 'machine_1',
+      flowKind: 'provider_broker',
+      routeKind: 'server_relay',
+      tunnelId: 'tun_provider_1',
+      providerBroker: {
+        v: 1,
+        kind: 'external_api_key',
+        teamId: 'team_1',
+        resourceId: 'resource_1',
+        requestId: 'request_1',
+        externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+        assignedAccountId: 'account_1',
+        assignedTeamMembershipId: 'membership_1',
+      },
+      relaySocketId: 'relay_socket_1',
+      capProfileId: 'provider_broker',
+      maxFrameBytes: 64 * 1024,
+      maxIdleMs: 300_000,
+      maxDurationMs: 300_000,
+      maxTotalBytes: 16 * 1024 * 1024,
+      iat: 1_000,
+      exp: 301_000,
+      aud: 'happier-tcp-tunnel-relay-authorization',
+    });
+
+    expect(parsed?.success).toBe(true);
+    expect(parsed?.success ? parsed.data : null).not.toHaveProperty('destination');
+  });
   it('parses server relay envelopes without reusing transfer relay envelopes', async () => {
     const mod = await loadTunnelRelayModule();
     const parsed = mod?.PeerTcpTunnelRelayEnvelopeV1Schema.safeParse({

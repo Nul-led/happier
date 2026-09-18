@@ -18,10 +18,7 @@ function nestedArray(depth: number): unknown {
 function hostedBridgeEnvelope(payload: unknown): unknown {
   return {
     version: 1,
-    pluginId: 'acme.preview',
-    contributionId: 'preview-web',
-    surfaceId: 'sessionSurface:acme.preview:preview-pane',
-    nonce: 'nonce-1',
+    identity: { instanceId: 'preview-web', mountNonce: 'nonce-1' },
     sequence: 1,
     kind: 'ready',
     payload,

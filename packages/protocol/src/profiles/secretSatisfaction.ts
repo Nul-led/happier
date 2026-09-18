@@ -112,7 +112,7 @@ export function getSecretSatisfaction(params: SecretSatisfactionParams): SecretS
   const items: SecretSatisfactionItem[] = requirements.map(({ envVarName, required }) => {
     const machineEnvReady = machineEnvReadyByName?.[envVarName];
     const sessionOnly = typeof sessionOnlyValues?.[envVarName] === 'string'
-      ? String(sessionOnlyValues?.[envVarName]).trim()
+      ? String(sessionOnlyValues?.[envVarName])
       : '';
     const selectedRaw = selectedSecretIds?.[envVarName];
     const selectedId = normalizeId(selectedRaw === '' ? null : (selectedRaw ?? null));
@@ -157,4 +157,3 @@ export function getSecretSatisfaction(params: SecretSatisfactionParams): SecretS
     isSatisfied,
   };
 }
-

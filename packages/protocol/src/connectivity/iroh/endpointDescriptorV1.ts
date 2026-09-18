@@ -214,23 +214,3 @@ export function parseIrohEndpointDescriptorV1(value: unknown): IrohEndpointDescr
   if (!result.success) throw new TypeError('Invalid Iroh endpoint descriptor');
   return result.data;
 }
-
-/**
- * Reconciles the privacy-reduced endpoint facts published by an unauthenticated
- * feature response with a previously trusted endpoint snapshot. Public
- * observations may add/change relay reachability, but absence cannot erase
- * private direct-address hints or withdraw the endpoint itself.
- */
-export function mergePublicIrohEndpointObservation(
-  current: IrohEndpointDescriptorV1 | null,
-  observed: IrohEndpointDescriptorV1 | null,
-): IrohEndpointDescriptorV1 | null {
-  if (!observed) return current;
-  if (!current || current.endpointId !== observed.endpointId || observed.directAddresses !== undefined) {
-    return observed;
-  }
-  return parseIrohEndpointDescriptorV1({
-    ...observed,
-    ...(current.directAddresses ? { directAddresses: current.directAddresses } : {}),
-  });
-}

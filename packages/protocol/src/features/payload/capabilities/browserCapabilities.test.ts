@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 type BrowserCapabilitiesModule = typeof import('./browserCapabilities.js');
 
-async function loadBrowserCapabilitiesModule(): Promise<BrowserCapabilitiesModule | null> {
-  return import('./browserCapabilities.js').catch(() => null);
+async function loadBrowserCapabilitiesModule(): Promise<BrowserCapabilitiesModule> {
+  return import('./browserCapabilities.js');
 }
 
 describe('browser capabilities payload', () => {

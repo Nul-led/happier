@@ -7,7 +7,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -41,6 +41,8 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
 
     resetGlobalVoiceAgent: vi.fn(),
     teleportVoiceAgentToSessionRoot: vi.fn(async () => ({ ok: true })),
+    // These cases isolate rollback routing rather than approval behavior.
+    isActionApprovalRequired: () => false,
     ...overrides,
   } as ActionExecutorDeps;
 }

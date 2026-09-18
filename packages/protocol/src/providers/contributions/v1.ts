@@ -26,7 +26,7 @@ import {
   type PluginContributionIdentityV1,
 } from '../../plugins/contributionIdentity.js';
 import type { PluginLocalizedStringV2 } from '../../plugins/contributions/publicTypes.js';
-import type { ConnectedServiceCredentialKind } from '../../connect/connectedServiceSchemas.js';
+import type { ConnectedServiceCredentialKind } from '../../connect/connectedServiceCredentialKind.js';
 import {
   ConnectedAccountPurposeDeclarationsV1Schema,
   type ConnectedAccountPurposeDeclarationV1,

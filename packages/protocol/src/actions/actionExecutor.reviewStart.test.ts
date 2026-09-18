@@ -3,6 +3,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor';
 
 describe('createActionExecutor (review.start)', () => {
+  it('never silently drops a Saved Secret overlay into the non-Run inline review path', async () => {
+    const reviewStartInline = vi.fn(async () => ({ ok: true, reviewTurnId: 'turn-review-native' }));
+    const executionRunCheckProtocolV2 = vi.fn(async () => ({ ok: true as const }));
+    const executor = createActionExecutor({
+      reviewStartInline,
+      executionRunCheckProtocolV2,
+    } as ActionExecutorDeps);
+
+    await expect(executor.execute('review.start', {
+      sessionId: 's1',
+      engineIds: ['codex'],
+      instructions: 'Review this.',
+      runLocation: 'current_session',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: { OPENAI_API_KEY: { ref: 'happier:shared-secret:v1:shared-1', revision: 7 } },
+      },
+    }, { surface: 'ui', defaultSessionId: 's1' })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_secret_reference_overlay_requires_run',
+      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+    });
+    expect(executionRunCheckProtocolV2).not.toHaveBeenCalled();
+    expect(reviewStartInline).not.toHaveBeenCalled();
+  });
+
   it('settles a direct successful branch through the declared output schema', async () => {
     const executor = createActionExecutor({
       reviewStartInline: async () => new Map([['unexpected', true]]),
@@ -32,7 +58,7 @@ describe('createActionExecutor (review.start)', () => {
       executionRunStart,
       executionRunList: async () => ({}),
       executionRunGet: async () => ({}),
-      executionRunSend: async () => ({}),
+      detachedExecutionRunSend: async () => ({}),
       executionRunStop: async () => ({}),
       executionRunAction: async () => ({}),
       executionRunWait: async () => ({}),
@@ -96,7 +122,7 @@ describe('createActionExecutor (review.start)', () => {
       executionRunStart,
       executionRunList: async () => ({}),
       executionRunGet: async () => ({}),
-      executionRunSend: async () => ({}),
+      detachedExecutionRunSend: async () => ({}),
       executionRunStop: async () => ({}),
       executionRunAction: async () => ({}),
       executionRunWait: async () => ({}),
@@ -161,7 +187,7 @@ describe('createActionExecutor (review.start)', () => {
       executionRunStart,
       executionRunList: async () => ({}),
       executionRunGet: async () => ({}),
-      executionRunSend: async () => ({}),
+      detachedExecutionRunSend: async () => ({}),
       executionRunStop: async () => ({}),
       executionRunAction: async () => ({}),
       executionRunWait: async () => ({}),
@@ -228,7 +254,7 @@ describe('createActionExecutor (review.start)', () => {
       executionRunStart,
       executionRunList: async () => ({}),
       executionRunGet: async () => ({}),
-      executionRunSend: async () => ({}),
+      detachedExecutionRunSend: async () => ({}),
       executionRunStop: async () => ({}),
       executionRunAction: async () => ({}),
       executionRunWait: async () => ({}),
@@ -294,7 +320,7 @@ describe('createActionExecutor (review.start)', () => {
       executionRunStart,
       executionRunList: async () => ({}),
       executionRunGet: async () => ({}),
-      executionRunSend: async () => ({}),
+      detachedExecutionRunSend: async () => ({}),
       executionRunStop: async () => ({}),
       executionRunAction: async () => ({}),
       executionRunWait: async () => ({}),

@@ -10,16 +10,22 @@ import {
   QualifiedConnectedAccountRefSchema,
 } from './qualifiedConnectedAccountPersistence.js';
 
-export const QualifiedConnectedAccountPurposeBindingTargetV1Schema = z.discriminatedUnion('kind', [
+export const QualifiedConnectedAccountPurposeBindingAccountTargetV1Schema =
   z.object({
     kind: z.literal('account'),
     account: asProtocolZod(QualifiedConnectedAccountRefSchema),
-  }).strict(),
+  }).strict();
+
+export const QualifiedConnectedAccountPurposeBindingGroupTargetV1Schema =
   z.object({
     kind: z.literal('group'),
     service: asProtocolZod(PluginContributionIdentityV1Schema),
     groupId: ConnectedServiceAuthGroupIdSchema,
-  }).strict(),
+  }).strict();
+
+export const QualifiedConnectedAccountPurposeBindingTargetV1Schema = z.discriminatedUnion('kind', [
+  QualifiedConnectedAccountPurposeBindingAccountTargetV1Schema,
+  QualifiedConnectedAccountPurposeBindingGroupTargetV1Schema,
 ]);
 
 export const QualifiedConnectedAccountPurposeBindingV1Schema = z.object({
@@ -47,6 +53,12 @@ export const QualifiedConnectedAccountPurposeBindingsV1Schema = z.object({
 
 export type QualifiedConnectedAccountPurposeBindingTargetV1 = z.infer<
   typeof QualifiedConnectedAccountPurposeBindingTargetV1Schema
+>;
+export type QualifiedConnectedAccountPurposeBindingAccountTargetV1 = z.infer<
+  typeof QualifiedConnectedAccountPurposeBindingAccountTargetV1Schema
+>;
+export type QualifiedConnectedAccountPurposeBindingGroupTargetV1 = z.infer<
+  typeof QualifiedConnectedAccountPurposeBindingGroupTargetV1Schema
 >;
 export type QualifiedConnectedAccountPurposeBindingV1 = z.infer<
   typeof QualifiedConnectedAccountPurposeBindingV1Schema

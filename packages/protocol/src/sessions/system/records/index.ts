@@ -65,6 +65,7 @@ export {
   type LegacyHostSessionSystemRecordLookupResponse,
   type LegacyHostSessionSystemRecordLatestQuery,
   type LegacyHostSessionSystemRecordLatestResponse,
+  SessionSystemRecordErrorResponseSchema,
   SessionSystemRecordListQuerySchema,
   SessionSystemRecordPageResponseSchema,
   SessionSystemRecordPageSchema,

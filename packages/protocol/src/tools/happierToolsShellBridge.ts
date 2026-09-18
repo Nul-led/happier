@@ -5,6 +5,14 @@ export type HappierToolsShellBridgeCommand =
       sessionId: string | null;
       directory: string | null;
       json: boolean;
+      /**
+       * The `--agent-bridge` provenance marker the host stamps on every command
+       * it generates for an Agent's shell. It states who is invoking the CLI, so
+       * the dispatcher can keep the invocation on the Agent surface instead of
+       * inheriting the human operator's CLI authority from the stored
+       * credentials the process happens to be able to read.
+       */
+      agentBridge: boolean;
     }>
   | Readonly<{
       kind: 'call';
@@ -16,6 +24,7 @@ export type HappierToolsShellBridgeCommand =
       argsJson: string | null;
       args: unknown | null;
       json: boolean;
+      agentBridge: boolean;
     }>;
 
 function normalizeShellPathLike(token: string): string {
@@ -115,6 +124,7 @@ type ParsedBridgeFlags = Readonly<{
   tool: string | null;
   argsJson: string | null;
   json: boolean;
+  agentBridge: boolean;
 }>;
 
 function parseBridgeFlags(subcommand: 'list' | 'call', tokens: readonly string[]): ParsedBridgeFlags | null {
@@ -124,6 +134,7 @@ function parseBridgeFlags(subcommand: 'list' | 'call', tokens: readonly string[]
   let tool: string | null = null;
   let argsJson: string | null = null;
   let json = false;
+  let agentBridge = false;
   const seen = new Set<string>();
 
   for (let index = 0; index < tokens.length; index++) {
@@ -134,6 +145,9 @@ function parseBridgeFlags(subcommand: 'list' | 'call', tokens: readonly string[]
     switch (token) {
       case '--json':
         json = true;
+        continue;
+      case '--agent-bridge':
+        agentBridge = true;
         continue;
       case '--session-id': {
         const value = tokens[index + 1];
@@ -178,7 +192,7 @@ function parseBridgeFlags(subcommand: 'list' | 'call', tokens: readonly string[]
     }
   }
 
-  return { sessionId, directory, source, tool, argsJson, json };
+  return { sessionId, directory, source, tool, argsJson, json, agentBridge };
 }
 
 function normalizeHappierToolsTokens(tokens: readonly string[]): string[] | null {
@@ -216,6 +230,7 @@ export function parseHappierToolsShellBridgeCommand(command: string): HappierToo
       sessionId: flags.sessionId,
       directory: flags.directory,
       json: flags.json,
+      agentBridge: flags.agentBridge,
     };
   }
 
@@ -241,5 +256,6 @@ export function parseHappierToolsShellBridgeCommand(command: string): HappierToo
     argsJson,
     args,
     json: flags.json,
+    agentBridge: flags.agentBridge,
   };
 }

@@ -123,14 +123,29 @@ export function reconcileWithScmSnapshot(params: Readonly<{
   const consumedPaths = new Set<string>();
   const matchedFiles: Array<SessionWorkingTreeProjection['matchedFiles'][number]> = [];
   const unmatchedSessionFiles: Array<SessionWorkingTreeProjection['unmatchedSessionFiles'][number]> = [];
+  const orderedSessionFiles = params.sessionChangeSet.files
+    .map((file, index) => ({
+      file,
+      index,
+      hasExactCurrentPathMatch: entries.some((entry) => buildRepositoryPathCandidates(
+        file.filePath,
+        null,
+        params.snapshot?.repo.rootPath,
+      ).includes(entry.path)),
+    }))
+    .sort((left, right) => Number(right.hasExactCurrentPathMatch) - Number(left.hasExactCurrentPathMatch)
+      || left.index - right.index);
 
-  for (const sessionFile of params.sessionChangeSet.files) {
+  for (const { file: sessionFile } of orderedSessionFiles) {
     const candidates = buildRepositoryPathCandidates(
       sessionFile.filePath,
       sessionFile.previousFilePath,
       params.snapshot?.repo.rootPath,
     );
-    const match = entries.find((entry) => candidates.includes(entry.path) || (entry.previousPath ? candidates.includes(entry.previousPath) : false));
+    const match = entries.find((entry) => (
+      !consumedPaths.has(entry.path)
+      && (candidates.includes(entry.path) || (entry.previousPath ? candidates.includes(entry.previousPath) : false))
+    ));
     if (!match) {
       unmatchedSessionFiles.push(sessionFile);
       continue;
@@ -161,6 +176,8 @@ export function reconcileWithScmSnapshot(params: Readonly<{
     matchedFiles,
     unmatchedSessionFiles,
     repositoryOnlyFiles,
-    projectionReliability: params.sessionChangeSet.confidenceSummary.confidence,
+    projectionReliability: params.sessionChangeSet.confidenceSummary.confidence === 'unavailable'
+      ? 'best_effort'
+      : params.sessionChangeSet.confidenceSummary.confidence,
   };
 }

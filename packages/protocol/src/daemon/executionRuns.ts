@@ -6,6 +6,7 @@ import {
   ExecutionRunIntentSchema,
   ExecutionRunIoModeSchema,
   ExecutionRunLaunchOriginSchema,
+  ExecutionRunRequestedConfigurationSchema,
   normalizeLegacyExecutionRunBackendTargetInput,
   ExecutionRunResumeHandleSchema,
   ExecutionRunRetentionPolicySchema,
@@ -22,19 +23,94 @@ import {
   BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
   ConnectedAccountServiceKeyIngressSchema,
   ConnectedServiceAuthGroupIdSchema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
+  ConnectedServiceBindingsV2Schema,
   ConnectedServiceIdSchema,
   ConnectedServiceProfileIdSchema,
-  PersistedConnectedServiceBindingsV1Schema,
 } from '../connect/connectedServiceBindings.js';
 import {
   ConnectedServiceAuthGroupPolicyV1Schema,
   ConnectedServiceCredentialRevisionV1Schema,
 } from '../connect/connectedServiceSchemas.js';
 import { AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1 } from '../runtime/agentSessionLimitsV1.js';
+import { TeamCredentialDirectMaterialUseV1Schema } from '../teams/credentials/directMaterialV1.js';
 
 const EXECUTION_RUN_MARKER_RESULT_SIZE_MAX_BYTES =
   AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.p0MeasuredCandidates.sendRequestMaxJsonBytes;
+
+export const DaemonExecutionRunBrokerAuthorityRequestV1Schema = z.object({
+  v: z.literal(1),
+  requestNonce: z.string().uuid(),
+  serverIdentityId: z.string().trim().min(1).max(256),
+  requestingAccountId: z.string().trim().min(1).max(256),
+  workerMachineId: z.string().trim().min(1).max(256),
+  executionRunId: z.string().trim().min(1).max(512),
+  expectedIntent: ExecutionRunIntentSchema.optional(),
+  expectedOccurrenceId: z.string().trim().min(1).max(512).nullable(),
+  expectedDirectMaterialUse: TeamCredentialDirectMaterialUseV1Schema.optional(),
+}).strict();
+export type DaemonExecutionRunBrokerAuthorityRequestV1 = z.infer<
+  typeof DaemonExecutionRunBrokerAuthorityRequestV1Schema
+>;
+
+export const DaemonExecutionRunBrokerAuthorityResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('current'),
+    requestNonce: z.string().uuid(),
+    serverIdentityId: z.string().trim().min(1).max(256),
+    requestingAccountId: z.string().trim().min(1).max(256),
+    workerMachineId: z.string().trim().min(1).max(256),
+    executionRunId: z.string().trim().min(1).max(512),
+    occurrenceId: z.string().trim().min(1).max(512),
+    parentSessionId: z.string().trim().min(1).max(512).nullable(),
+    intent: ExecutionRunIntentSchema,
+    runtimeState: z.enum(['active_turn', 'idle']),
+    activeTurnId: z.string().trim().min(1).max(512).nullable().optional(),
+  }).strict(),
+  z.object({
+    status: z.literal('not_current'),
+    requestNonce: z.string().uuid(),
+    reason: z.enum(['identity_mismatch', 'not_found', 'terminal', 'detached', 'occurrence_mismatch', 'runtime_unavailable']),
+  }).strict(),
+]);
+export type DaemonExecutionRunBrokerAuthorityResponseV1 = z.infer<
+  typeof DaemonExecutionRunBrokerAuthorityResponseV1Schema
+>;
+
+/**
+ * Host-private request from the daemon into the exact live Session runtime.
+ * Persisted execution-run markers are intentionally absent: they locate the
+ * Session process but never decide occurrence or turn authority.
+ */
+export const SessionExecutionRunBrokerAuthorityRequestV1Schema = z.object({
+  v: z.literal(1),
+  executionRunId: z.string().trim().min(1).max(512),
+  expectedIntent: ExecutionRunIntentSchema.optional(),
+  expectedOccurrenceId: z.string().trim().min(1).max(512).nullable(),
+  expectedDirectMaterialUse: TeamCredentialDirectMaterialUseV1Schema.optional(),
+}).strict();
+export type SessionExecutionRunBrokerAuthorityRequestV1 = z.infer<
+  typeof SessionExecutionRunBrokerAuthorityRequestV1Schema
+>;
+
+export const SessionExecutionRunBrokerAuthorityResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('current'),
+    executionRunId: z.string().trim().min(1).max(512),
+    occurrenceId: z.string().trim().min(1).max(512),
+    parentSessionId: z.string().trim().min(1).max(512).nullable(),
+    intent: ExecutionRunIntentSchema,
+    runtimeState: z.enum(['active_turn', 'idle']),
+    activeTurnId: z.string().trim().min(1).max(512).nullable().optional(),
+  }).strict(),
+  z.object({
+    status: z.literal('not_current'),
+    reason: z.enum(['identity_mismatch', 'not_found', 'terminal', 'detached', 'occurrence_mismatch', 'runtime_unavailable']),
+  }).strict(),
+]);
+export type SessionExecutionRunBrokerAuthorityResponseV1 = z.infer<
+  typeof SessionExecutionRunBrokerAuthorityResponseV1Schema
+>;
 
 /**
  * Daemon-scoped execution run listing.
@@ -74,7 +150,7 @@ export const ExecutionRunConnectedServicesLaunchV1Schema = z.object({
    */
   agentContribution: ExecutionRunAgentContributionIdentityV1Schema.optional(),
   materializationKey: z.string().trim().min(1),
-  connectedServicesBindings: ConnectedServiceBindingsV1Schema,
+  connectedServicesBindings: ConnectedServiceBindingsV2Schema,
   connectedServiceSelectionsEnv: z.record(z.string(), z.string()),
   sessionDirectory: z.string().trim().min(1).nullable(),
   materializedRoot: z.string().trim().min(1).nullable(),
@@ -176,7 +252,7 @@ const PersistedConnectedServiceSelectionsEnvSchema = z.record(
 
 const PersistedCurrentExecutionRunConnectedServicesLaunchV1Schema =
   ExecutionRunConnectedServicesLaunchV1Schema.extend({
-    connectedServicesBindings: PersistedConnectedServiceBindingsV1Schema,
+    connectedServicesBindings: ConnectedServiceBindingsV2Schema,
     connectedServiceSelectionsEnv: PersistedConnectedServiceSelectionsEnvSchema,
   }).strict();
 
@@ -247,7 +323,15 @@ export function normalizePersistedExecutionRunConnectedServicesLaunchV1(
   if (current.success) return { source: 'current', registration: current.data };
   const legacyCurrent = PersistedLegacyExecutionRunConnectedServicesLaunchV1Schema.safeParse(value);
   if (legacyCurrent.success) {
-    return { source: 'current', registration: legacyCurrent.data };
+    return {
+      source: 'current',
+      registration: {
+        ...legacyCurrent.data,
+        connectedServicesBindings: ConnectedServiceBindingsV2IngressSchema.parse(
+          legacyCurrent.data.connectedServicesBindings,
+        ),
+      },
+    };
   }
   const predecessor = RemoteDevExecutionRunConnectedServicesLaunchV1Schema.safeParse(value);
   if (!predecessor.success) return null;
@@ -258,7 +342,9 @@ export function normalizePersistedExecutionRunConnectedServicesLaunchV1(
       runKey: predecessor.data.runKey,
       agentId: predecessor.data.agentId,
       materializationKey: predecessor.data.runKey,
-      connectedServicesBindings: predecessor.data.connectedServicesBindings,
+      connectedServicesBindings: ConnectedServiceBindingsV2IngressSchema.parse(
+        predecessor.data.connectedServicesBindings,
+      ),
       connectedServiceSelectionsEnv: predecessor.data.connectedServiceSelectionsJson
         ? { HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: predecessor.data.connectedServiceSelectionsJson }
         : {},
@@ -312,6 +398,7 @@ const DaemonExecutionRunMarkerPublicStateFieldsSchema = {
   runClass: ExecutionRunClassSchema.optional(),
   ioMode: ExecutionRunIoModeSchema.optional(),
   retentionPolicy: ExecutionRunRetentionPolicySchema.optional(),
+  notifyParentOnCompletion: z.boolean().optional(),
 };
 
 /**
@@ -332,6 +419,7 @@ const DaemonExecutionRunMarkerFieldsSchema = z.object({
   intent: ExecutionRunIntentSchema,
   backendTarget: DaemonExecutionRunMarkerBackendIdentitySchema,
   launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
+  requestedConfiguration: ExecutionRunRequestedConfigurationSchema.optional(),
 
   ...DaemonExecutionRunMarkerPublicStateFieldsSchema,
 
@@ -365,6 +453,7 @@ const DaemonExecutionRunMarkerPersistenceReadFieldsSchema = z.object({
   sourceKind: BackendTargetSourceKindV2Schema.optional(),
   display: ExecutionRunDisplaySchema.optional(),
   launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
+  requestedConfiguration: ExecutionRunRequestedConfigurationSchema.optional(),
   ...DaemonExecutionRunMarkerPublicStateFieldsSchema,
   status: ExecutionRunStatusSchema,
   startedAtMs: z.number().int().nonnegative(),
@@ -415,10 +504,14 @@ export type DaemonExecutionRunMarkerOwnerWrite = z.infer<
 
 /**
  * Read-only compatibility seam for predecessor marker bytes. New marker writes
- * always use DaemonExecutionRunMarkerSchema above, which strips this launch
+ * always use DaemonExecutionRunMarkerOwnerWriteSchema above, which strips this launch
  * configuration rather than making it a second persisted marker contract.
  */
 const DaemonExecutionRunMarkerPersistenceReadSchemaCore = DaemonExecutionRunMarkerPersistenceReadFieldsSchema.extend({
+  executionRunBrokerAuthorityV1: z.object({
+    occurrenceId: z.string().trim().min(1).max(512),
+    turnState: z.enum(['active_turn', 'idle']),
+  }).strict().optional(),
   executionRunConnectedServicesLaunchV1: PersistedExecutionRunConnectedServicesLaunchV1Schema.optional(),
   executionRunConnectedServicesCleanupReceiptV1:
     ExecutionRunConnectedServicesCleanupReceiptV1Schema.optional(),

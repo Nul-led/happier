@@ -14,6 +14,12 @@ import {
   DaemonProviderAgentCompatibilitySummaryV1Schema,
   DaemonProviderModelProjectionRequestV1Schema,
   DaemonProviderModelProjectionResponseV1Schema,
+  DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema,
+  DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema,
+  DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema,
+  DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema,
+  DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema,
+  DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema,
   DaemonProviderModelSettingsMutationRequestV1Schema,
   DaemonProviderBindingStatusRequestV1Schema,
   DaemonProviderBindingStatusResponseV1Schema,
@@ -83,12 +89,83 @@ describe('provider machine RPC contracts', () => {
     expect(RPC_METHODS.DAEMON_PROVIDERS_CONNECTIONS_DESCRIBE).toBe('daemon.providers.connections.describe');
     expect(RPC_METHODS.DAEMON_PROVIDERS_CONNECTION_MUTATE).toBe('daemon.providers.connection.mutate');
     expect(RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION).toBe('daemon.providers.model.projection');
+    expect(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT)
+      .toBe('daemon.providers.teamCredentialRequestPolicy.support');
+    expect(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE)
+      .toBe('daemon.providers.teamCredentialResourceTest.candidate');
+    expect(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY)
+      .toBe('daemon.providers.teamCredentialBroker.eligibility');
     expect(RPC_METHODS.DAEMON_PROVIDERS_MODEL_SETTINGS_MUTATE).toBe('daemon.providers.model.settings.mutate');
     expect(RPC_METHODS.DAEMON_PROVIDERS_BINDING_STATUS).toBe('daemon.providers.binding.status');
     expect(RPC_METHODS.DAEMON_PROVIDERS_PROFILE_MIGRATION_PREVIEW).toBe('daemon.providers.profileMigration.preview');
     expect(RPC_METHODS.DAEMON_PROVIDERS_PROFILE_MIGRATION_CONFIRM).toBe('daemon.providers.profileMigration.confirm');
     expect(RPC_METHODS.DAEMON_PROVIDERS_PROFILE_MIGRATION_CONFLICT_CONFIRM)
       .toBe('daemon.providers.profileMigration.conflict.confirm');
+  });
+
+  it('keeps broker candidate eligibility source-bound and content-free', () => {
+    const request = {
+      machineId: 'machine-1', teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 3,
+      source: {
+        v: 1 as const, kind: 'provider_connection' as const, connectionId: 'connection-1',
+        connectionSecurityFingerprint: `connection-security:v1:${'a'.repeat(43)}`, credentialSlotId: 'api-key',
+      },
+      application: {
+        agentTargetKey: 'agent:happier.agent.codex/codex',
+        implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+        endpointTemplateId: 'responses', protocol: 'openai-responses' as const,
+      },
+      modelId: 'gpt-test', sourceRevision: 'source-revision-1',
+    };
+    expect(DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema.parse(request)).toEqual(request);
+    expect(DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.parse({ status: 'eligible' }))
+      .toEqual({ status: 'eligible' });
+    expect(DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.safeParse({
+      status: 'eligible', application: request.application,
+    }).success).toBe(false);
+    const sourceAnyRequest = {
+      machineId: request.machineId,
+      teamId: request.teamId,
+      resourceId: request.resourceId,
+      expectedResourceRevision: request.expectedResourceRevision,
+      source: request.source,
+      scope: 'source_any' as const,
+    };
+    expect(DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema.parse(sourceAnyRequest))
+      .toEqual(sourceAnyRequest);
+    expect(DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema.safeParse({
+      ...sourceAnyRequest,
+      application: request.application,
+    }).success).toBe(false);
+  });
+
+  it('uses one strict internal candidate contract for a saved Team credential test', () => {
+    const request = {
+      machineId: 'machine-1',
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 3,
+      refreshPolicy: 'current_only' as const,
+      source: {
+        v: 1 as const,
+        kind: 'provider_connection' as const,
+        connectionId: 'connection-1',
+        connectionSecurityFingerprint: `connection-security:v1:${'a'.repeat(43)}`,
+        credentialSlotId: 'api-key',
+      },
+    };
+    expect(DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema.parse(request)).toEqual(request);
+    expect(DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema.safeParse({
+      ...request,
+      application: { agentTargetKey: 'backend:codex' },
+    }).success).toBe(false);
+
+    const unavailable = { status: 'unavailable' as const, reason: 'model_unavailable' as const };
+    expect(DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema.parse(unavailable)).toEqual(unavailable);
+    expect(DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema.safeParse({
+      ...unavailable,
+      modelId: 'private-topology',
+    }).success).toBe(false);
   });
 
   it('returns probed model ids when the provider does not supply display names', () => {
@@ -696,6 +773,12 @@ describe('provider machine RPC contracts', () => {
       }],
       scope: 'account', authorized: true, authorizationError: null, revision: 2,
       probeObservationIdentity: 'probe-observation:v1:opaque-current-facts',
+      teamCredentialSourceOffer: {
+        connectionId: 'pc_1',
+        connectionSecurityFingerprint: `connection-security:v1:${'a'.repeat(43)}`,
+        credentialSlotId: 'apiKey',
+        label: 'Gateway',
+      },
       runtime: { health: 'available', modelCount: 1, checkedAt: 10 },
     } as const;
     const response = {
@@ -710,8 +793,16 @@ describe('provider machine RPC contracts', () => {
           websiteUrl: 'https://gateway.example',
           credential: { keyUrl: 'https://gateway.example/keys' },
           probeObservationIdentity: connection.probeObservationIdentity,
+          teamCredentialSourceOffer: connection.teamCredentialSourceOffer,
         }],
       });
+    expect(DaemonProviderConnectionsDescribeResponseV1Schema.safeParse({
+      ...response,
+      connections: [{
+        ...connection,
+        teamCredentialSourceOffer: { ...connection.teamCredentialSourceOffer, savedSecretId: 'private' },
+      }],
+    }).success).toBe(false);
     const { probeObservationIdentity: _legacyMissingIdentity, ...legacyConnection } = connection;
     expect(DaemonProviderConnectionsDescribeResponseV1Schema.parse({
       ...response,
@@ -763,6 +854,26 @@ describe('provider machine RPC contracts', () => {
     })).toEqual({
       machineId: 'machine-1', agentTargetKey: 'backend:codex', mode: 'management', forceRefresh: true,
     });
+    expect(DaemonProviderModelProjectionRequestV1Schema.parse({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex', refreshPolicy: 'current_only',
+    })).toEqual({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex', refreshPolicy: 'current_only',
+    });
+    expect(DaemonProviderModelProjectionRequestV1Schema.parse({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex',
+      includeTeamCredentialRequestPolicySupport: true,
+    })).toEqual({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex',
+      includeTeamCredentialRequestPolicySupport: true,
+    });
+    expect(DaemonProviderModelProjectionRequestV1Schema.safeParse({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex',
+      includeTeamCredentialRequestPolicySupport: false,
+    }).success).toBe(false);
+    expect(DaemonProviderModelProjectionRequestV1Schema.safeParse({
+      machineId: 'machine-1', agentTargetKey: 'backend:codex',
+      refreshPolicy: 'current_only', forceRefresh: true,
+    }).success).toBe(false);
     expect(DaemonProviderModelProjectionRequestV1Schema.safeParse({
       ...request, agentTargetKey: 'codex',
     }).success).toBe(false);
@@ -802,6 +913,145 @@ describe('provider machine RPC contracts', () => {
     expect(JSON.stringify(response)).not.toContain('secret');
     expect(DaemonProviderModelProjectionResponseV1Schema.safeParse({
       ...response, groups: [{ ...response.groups[0], endpointUrl: 'https://private.example' }],
+    }).success).toBe(false);
+
+    const policySupport = {
+      application: {
+        agentTargetKey: 'backend:codex',
+        implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+        endpointTemplateId: 'cliproxyapi-openai-responses',
+        protocol: 'openai-responses',
+      },
+      sourceRevision: 'catalog-revision-1',
+      protocolKind: 'openai_responses',
+      model: { canonicalId: 'same-id', aliases: ['same-alias'] },
+      descriptor: {
+        id: 'same-id',
+        name: 'Same',
+        aliases: ['same-alias'],
+        capabilities: { reasoningControls: 'supported' },
+        modelOptions: [{
+          id: 'reasoning_effort',
+          name: 'Reasoning effort',
+          type: 'select',
+          currentValue: 'high',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        }],
+      },
+      reasoningEffort: {
+        supported: true,
+        allowedValues: ['low', 'high'],
+        defaultValue: 'high',
+      },
+      maxOutputTokens: { supported: false },
+      maxThinkingBudgetTokens: { supported: false },
+    } as const;
+    const supportedResponse = {
+      ...response,
+      groups: [{
+        ...response.groups[0],
+        sourceRevision: policySupport.sourceRevision,
+        rows: [{
+          ...response.groups[0].rows[0],
+          descriptor: {
+            id: 'same-id',
+            name: 'Same',
+            aliases: ['same-alias'],
+            capabilities: { reasoningControls: 'supported' },
+            modelOptions: [{
+              id: 'reasoning_effort',
+              name: 'Reasoning effort',
+              type: 'select',
+              currentValue: 'high',
+              options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+            }],
+          },
+          application: policySupport.application,
+          requestPolicySupport: policySupport,
+        }],
+      }],
+    } as const;
+    expect(DaemonProviderModelProjectionResponseV1Schema.parse(supportedResponse))
+      .toEqual(supportedResponse);
+    expect(DaemonProviderModelProjectionResponseV1Schema.safeParse({
+      ...supportedResponse,
+      groups: [{
+        ...supportedResponse.groups[0],
+        rows: [{
+          ...supportedResponse.groups[0].rows[0],
+          requestPolicySupport: { ...policySupport, endpointUrl: 'https://private.example' },
+        }],
+      }],
+    }).success).toBe(false);
+    expect(DaemonProviderModelProjectionResponseV1Schema.safeParse({
+      ...supportedResponse,
+      groups: [{
+        ...supportedResponse.groups[0],
+        rows: [{
+          ...supportedResponse.groups[0].rows[0],
+          requestPolicySupport: {
+            ...policySupport,
+            reasoningEffort: {
+              supported: true,
+              allowedValues: ['low'],
+              defaultValue: 'high',
+            },
+          },
+        }],
+      }],
+    }).success).toBe(false);
+    expect(DaemonProviderModelProjectionResponseV1Schema.safeParse({
+      ...supportedResponse,
+      groups: [{
+        ...supportedResponse.groups[0],
+        sourceRevision: 'another-catalog-revision',
+      }],
+    }).success).toBe(false);
+  });
+
+  it('discovers request-policy support from an exact source without caller-authored application identity', () => {
+    const request = {
+      machineId: 'machine-1',
+      source: {
+        v: 1 as const,
+        kind: 'connected_account' as const,
+        target: {
+          kind: 'account' as const,
+          account: {
+            service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+            accountId: 'account-1',
+          },
+        },
+        credentialIncarnation: 'incarnation-1',
+      },
+      refreshPolicy: 'current_only' as const,
+    };
+    expect(DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema.parse(request)).toEqual(request);
+    expect(DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema.safeParse({
+      ...request,
+      application: { agentTargetKey: 'backend:codex' },
+    }).success).toBe(false);
+    const response = {
+      status: 'success' as const,
+      models: [{
+        application: {
+          agentTargetKey: 'agent:happier.agent.codex/codex',
+          implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+          endpointTemplateId: 'cliproxyapi-openai-chat',
+          protocol: 'openai-chat' as const,
+        },
+        sourceRevision: 'source-revision-1',
+        protocolKind: 'openai_chat_completions' as const,
+        descriptor: { id: 'model-1', name: 'Model 1', aliases: ['model-latest'] },
+        model: { canonicalId: 'model-1', aliases: ['model-latest'] },
+        reasoningEffort: { supported: false as const },
+        maxOutputTokens: { supported: false as const },
+        maxThinkingBudgetTokens: { supported: false as const },
+      }],
+    };
+    expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.parse(response)).toEqual(response);
+    expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.safeParse({
+      status: 'success', models: [], endpointUrl: 'https://private.example',
     }).success).toBe(false);
   });
 

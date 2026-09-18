@@ -127,6 +127,17 @@ function validRemotePermissionSettlementPayload() {
   };
 }
 
+it('requires explicit closed V1 stored envelopes while retaining predecessor host input normalization', () => {
+  const address = validRecord().address;
+  const strict = protocolSchema('SessionSystemRecordStoredUpsertRequestSchema');
+  const legacy = protocolSchema('LegacyHostSessionSystemRecordUpsertRequestSchema');
+  for (const content of ['ciphertext', { ciphertext: 'ciphertext' }, { t: 'encrypted', c: 'ciphertext', extra: true }]) {
+    expect(strict.safeParse({ address, content, expectedRevision: null }).success).toBe(false);
+    expect(legacy.safeParse({ namespace: address.namespace, kind: address.kind, localId: address.localId, content }).success).toBe(true);
+  }
+  expect(strict.safeParse({ address, content: { t: 'encrypted', c: 'ciphertext' }, expectedRevision: null }).success).toBe(true);
+});
+
 describe('session system record protocol schemas', () => {
   it('registers owner-private Permission mediation records while leaving generic record CRUD unavailable', () => {
     expect(protocol.SESSION_SYSTEM_RECORD_CATALOG).toMatchObject({

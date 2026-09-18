@@ -7,7 +7,7 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     executionRunStart: async () => ({}),
     executionRunList: async () => ({}),
     executionRunGet: async () => ({}),
-    executionRunSend: async () => ({}),
+    detachedExecutionRunSend: async () => ({}),
     executionRunStop: async () => ({}),
     executionRunAction: async () => ({}),
     executionRunWait: async () => ({}),
@@ -35,6 +35,8 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     daemonMemoryGetWindow: async () => ({ v: 1, snippets: [], citations: [] }),
     daemonMemoryEnsureUpToDate: async () => ({}),
     resetGlobalVoiceAgent: async () => {},
+    // Routing tests exercise the domain ports, not the shared approval owner.
+    isActionApprovalRequired: () => false,
     ...overrides,
   });
 }

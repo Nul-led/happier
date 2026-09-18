@@ -21,6 +21,7 @@ export const MAX_PLUGIN_COMPOSER_ATTACHMENTS_V1 = 64;
 export const COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1 = Object.freeze([
   'prepareForSend',
   'resolveForDispatch',
+  'resolveForDispatchV2',
   'afterMessageAccepted',
 ] as const);
 export type ComposerAttachmentRuntimeRegistrationFieldV1 =
@@ -29,6 +30,7 @@ export type ComposerAttachmentRuntimeRegistrationFieldV1 =
 export const PluginComposerAttachmentRuntimeDescriptorV1Schema = z.object({
   prepareForSend: z.literal(true).optional(),
   resolveForDispatch: z.literal(true).optional(),
+  resolveForDispatchV2: z.literal(true).optional(),
   afterMessageAccepted: z.literal(true).optional(),
 }).strict().superRefine((value, context) => {
   if (COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1.some((field) => value[field] === true)) return;

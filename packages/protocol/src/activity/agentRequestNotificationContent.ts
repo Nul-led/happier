@@ -13,6 +13,7 @@ export function buildAgentRequestNotificationContent(params: Readonly<{
   toolName: string;
   toolInput?: unknown;
   toolDetails?: string | null;
+  includeMessageText?: boolean;
 }>): Readonly<{
   title: string;
   body: string;
@@ -30,7 +31,7 @@ export function buildAgentRequestNotificationContent(params: Readonly<{
     toolName: params.toolName,
     toolInput: params.toolInput,
   });
-  const toolDetails = typeof params.toolDetails === 'string' && params.toolDetails.trim()
+  const toolDetails = params.includeMessageText === false ? null : typeof params.toolDetails === 'string' && params.toolDetails.trim()
     ? params.toolDetails.trim()
     : summarizeToolInputForNotification(params.toolName, params.toolInput);
   const body = params.kind === 'user_action'

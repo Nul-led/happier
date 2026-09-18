@@ -33,6 +33,7 @@ export {
 } from './marketplaceSourceRegistryMutationResponseV1.js';
 
 export {
+  parseMarketplaceIndexSourceSnapshotV1,
   readMarketplaceNpmDiscoveryProjectionV1,
   type MarketplaceNpmDiscoveryProjectionReadV1Result,
 } from './marketplaceIndexV1.js';

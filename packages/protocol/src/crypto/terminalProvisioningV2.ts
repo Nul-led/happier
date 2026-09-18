@@ -17,8 +17,7 @@ export type TerminalProvisioningV2Response =
 
 export type TerminalProvisioningVariantV2 =
   | 'tokenOnly'
-  | 'dataKey'
-  | 'legacyProvisioningUnavailable';
+  | 'dataKey';
 
 const TERMINAL_PROVISIONING_V3_MAGIC = new Uint8Array([0x48, 0x50, 0x56, 0x33]);
 const TERMINAL_PROVISIONING_V3_MAC_BYTES = 32;
@@ -182,10 +181,9 @@ export function inspectTerminalProvisioningV3Payload(
 /** Canonical account-mode policy for all new terminal/QR v3 provisioning. */
 export function resolveTerminalProvisioningVariantV2(input: Readonly<{
   encryptionMode: 'plain' | 'e2ee';
-  dataKeyMaterialAvailable: boolean;
 }>): TerminalProvisioningVariantV2 {
   if (input.encryptionMode === 'plain') return 'tokenOnly';
-  return input.dataKeyMaterialAvailable ? 'dataKey' : 'legacyProvisioningUnavailable';
+  return 'dataKey';
 }
 
 function sealTerminalProvisioningV3Response(params: {

@@ -100,17 +100,28 @@ export function readPluginHostedWebBridgeFrameOriginV1(url: URL): string | null 
   return null;
 }
 
-const BridgeOriginSchema = z.string().trim().url().refine(isExactPluginHostedWebBridgeOriginV1, {
+const BridgeOriginSchema = z.union([z.literal('null'), z.string().trim().url().refine(isExactPluginHostedWebBridgeOriginV1, {
   message: 'Hosted-web bridge origins must be exact absolute origins.',
-});
+})]);
+
+/** Source adapters supply these transport facts before the common ready handshake. */
+export const PluginHostedWebBridgeBootstrapConfigV1Schema = z.object({
+  identity: PluginUiHostApiWireIdentityV1Schema,
+  frameOrigin: BridgeOriginSchema,
+  hostOrigin: z.string().refine((value) => {
+    try {
+      const url = new URL(value);
+      return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value;
+    } catch {
+      return false;
+    }
+  }, 'Expected an exact HTTP(S) host origin.'),
+}).strict();
+export type PluginHostedWebBridgeBootstrapConfigV1 = z.infer<typeof PluginHostedWebBridgeBootstrapConfigV1Schema>;
 
 const PluginHostedWebBridgeEnvelopeBaseV1Schema = z.object({
   version: z.literal(1),
-  pluginId: BridgeIdSchema,
-  contributionId: BridgeIdSchema,
-  surfaceId: BridgeIdSchema,
-  sessionId: BridgeIdSchema.optional(),
-  nonce: BridgeIdSchema,
+  identity: PluginUiHostApiWireIdentityV1Schema,
   sequence: z.number().int().nonnegative(),
 }).strict();
 
@@ -121,6 +132,10 @@ export const PluginHostedWebBridgeEnvelopeV1Schema =
   }).strict();
 export type PluginHostedWebBridgeEnvelopeV1 =
   z.infer<typeof PluginHostedWebBridgeEnvelopeV1Schema>;
+
+export const PluginHostedFrameOpenExternalPayloadV1Schema = z.object({
+  url: z.string().trim().min(1),
+}).strict();
 
 export const PluginHostedWebBridgeResponseKindV1Schema = z.enum([
   'ack',
@@ -188,7 +203,7 @@ export const PluginHostedWebBridgeHostApiMessageEnvelopeV1Schema =
 /**
  * Frame bootstrap is limited to facts a hosted renderer needs to create the
  * canonical SDK client and receive its current navigation argument. The base
- * envelope supplies exact plugin/contribution/surface address and nonce; the
+ * envelope supplies the opaque instance address and mount nonce; the
  * explicit origin binds the postMessage peer. A Composer-mounted frame alone
  * receives its exact host-stamped Composer ref; generic mounts omit it.
  * Account, runtime target, lifecycle currentness and host-installed methods
@@ -198,6 +213,8 @@ export const PluginHostedWebBridgeBootstrapPayloadV1Schema = z.object({
   apiVersion: z.literal(PLUGIN_UI_HOST_API_VERSION_V1),
   wireVersion: z.literal(PLUGIN_UI_HOST_API_WIRE_VERSION_V1),
   identity: PluginUiHostApiWireIdentityV1Schema,
+  /** Installed source metadata for SDK authoring, never wire authority. */
+  authorPlugin: z.object({ id: BridgeIdSchema, version: BridgeIdSchema }).strict().optional(),
   subPath: PluginUiSubPathV1Schema.optional(),
   launchInput: PluginUiLaunchInputV1Schema.optional(),
   composerRef: ComposerRefV1ZodSchema.optional(),

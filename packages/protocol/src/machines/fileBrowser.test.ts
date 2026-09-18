@@ -38,6 +38,16 @@ describe('machineFileBrowser', () => {
     });
   });
 
+  it('rejects malformed optional ignore metadata', () => {
+    expect(DaemonFilesystemListDirectoryRequestSchema.safeParse({ path: '/repo', includeGitIgnore: 'yes' }).success).toBe(false);
+    expect(DaemonFilesystemListDirectoryResponseSchema.safeParse({
+      ok: true, path: '/repo', truncated: false, gitIgnoreAvailable: 'yes', entries: [],
+    }).success).toBe(false);
+    expect(DaemonFilesystemListDirectoryResponseSchema.safeParse({
+      ok: true, path: '/repo', truncated: false, entries: [{ name: 'noise', path: '/repo/noise', type: 'file', gitIgnored: 'yes' }],
+    }).success).toBe(false);
+  });
+
   it('parses successful directory list responses with truncation metadata', () => {
     const parsed = DaemonFilesystemListDirectoryResponseSchema.parse({
       ok: true,

@@ -34,6 +34,7 @@ export const PLUGIN_HOSTED_WEB_BRIDGE_LIFECYCLE_KINDS_V1 = Object.freeze([
     'error',
     'heightChanged',
     'hostApi',
+    'openExternal',
 ] as const);
 export type PluginHostedWebBridgeLifecycleKindV1 =
   (typeof PLUGIN_HOSTED_WEB_BRIDGE_LIFECYCLE_KINDS_V1)[number];

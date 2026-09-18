@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { RuntimeDescriptorV1Schema } from '../metadata/runtimeDescriptorV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { PluginAgentExternalSessionLinkDataSchema } from '../../plugins/contributions/agentExternalSessions.js';
 import {
   ExternalSessionsAgentIdSchema,
@@ -169,6 +170,19 @@ export type ExternalSessionsAutoLinkPolicyScopeV1 = z.infer<
   typeof ExternalSessionsAutoLinkPolicyScopeV1Schema
 >;
 
+/**
+ * Destructive candidate operations the listing that produced these rows proved
+ * available on its own connection to the Agent. This is a capability fact about
+ * that listing, never a durable Agent property: the daemon re-checks it at the
+ * real boundary before it acts.
+ */
+export const ExternalSessionsCandidateCapabilitiesV1Schema = z.object({
+  deleteCandidate: z.boolean(),
+}).strict();
+export type ExternalSessionsCandidateCapabilitiesV1 = z.infer<
+  typeof ExternalSessionsCandidateCapabilitiesV1Schema
+>;
+
 export const ExternalSessionsCandidatesListResponseSchema = z.union([
   z
     .object({
@@ -195,6 +209,11 @@ export const ExternalSessionsCandidatesListResponseSchema = z.union([
       cursorReset: z.boolean().optional(),
       preparation: ExternalSessionsCandidatePreparationSchema.optional(),
       autoLinkPolicyScopeV1: ExternalSessionsAutoLinkPolicyScopeV1Schema.optional(),
+      /**
+       * Absence is not a negative fact a caller may invert into an offer: only
+       * an explicit capability advertises a destructive candidate affordance.
+       */
+      capabilities: ExternalSessionsCandidateCapabilitiesV1Schema.optional(),
     })
     .passthrough(),
   z
@@ -211,10 +230,54 @@ export const ExternalSessionsCandidatesListResponseSchema = z.union([
 ]);
 export type ExternalSessionsCandidatesListResponse = z.infer<typeof ExternalSessionsCandidatesListResponseSchema>;
 
+/**
+ * Delete one Agent-owned session a resume-only listing surfaced. The Happier
+ * Session store is untouched: this is the Agent's own record, addressed by the
+ * opaque identifier the listing handed out, so the id crosses the wire verbatim.
+ */
+const ExternalSessionCandidateDeleteCanonicalRequestSchema = z.object({
+  machineId: z.string().min(1),
+  agentId: ExternalSessionsAgentIdSchema,
+  source: ExternalSessionsSourceSchema,
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
+}).strict();
+
+/**
+ * Released `daemon.directSessions.candidate.delete` callers name the Agent
+ * `providerId`; they reach this same canonical reader through the one shared
+ * released-identity normalization its siblings use. Normalization touches
+ * request identity only — `remoteSessionId` stays byte-exact.
+ */
+export const ExternalSessionCandidateDeleteRequestSchema = z.preprocess<
+  unknown,
+  typeof ExternalSessionCandidateDeleteCanonicalRequestSchema,
+  z.input<typeof ExternalSessionCandidateDeleteCanonicalRequestSchema>
+>(
+  (value) => normalizeReleasedExternalSessionRequest(value),
+  ExternalSessionCandidateDeleteCanonicalRequestSchema,
+);
+export type ExternalSessionCandidateDeleteRequest = z.infer<
+  typeof ExternalSessionCandidateDeleteRequestSchema
+>;
+
+export const ExternalSessionCandidateDeleteResponseSchema = z.union([
+  // `deleted` is a literal: an outcome the Agent did not commit must never
+  // reach a caller as a successful deletion it can act on.
+  z.object({ ok: z.literal(true), deleted: z.literal(true) }).passthrough(),
+  z.object({
+    ok: z.literal(false),
+    errorCode: ExternalSessionsRpcErrorCodeSchema,
+    error: z.string().min(1),
+  }).passthrough(),
+]);
+export type ExternalSessionCandidateDeleteResponse = z.infer<
+  typeof ExternalSessionCandidateDeleteResponseSchema
+>;
+
 const ExternalSessionLinkEnsureCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   titleHint: z.string().min(1).max(10_000).optional(),
   directoryHint: z.string().min(1).max(10_000).optional(),
   runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
@@ -259,7 +322,7 @@ export type ExternalSessionActivityV1 = z.infer<typeof ExternalSessionActivityV1
 
 export const ExternalSessionCandidateV1Schema = z
   .object({
-    remoteSessionId: z.string().min(1).max(2000),
+    remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
     candidateKey: z.string().min(1).max(128).optional(),
     title: z.string().min(1).max(10_000).optional(),
     updatedAtMs: z.number().int().min(0),
@@ -279,7 +342,7 @@ const ExternalSessionStatusGetCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   sessionId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   source: ExternalSessionsSourceSchema,
 }).strict();
 
@@ -297,7 +360,7 @@ const ExternalSessionAttachCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   sessionId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   source: ExternalSessionsSourceSchema,
   leaseId: z.string().min(1).max(2000).optional(),
   ttlMs: z.number().int().min(1_000).max(15 * 60_000).optional(),
@@ -370,7 +433,7 @@ const ExternalSessionFollowPolicySetCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   sessionId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   source: ExternalSessionsSourceSchema,
   enabled: z.boolean(),
 }).strict();
@@ -537,7 +600,7 @@ export type ExternalSessionTranscriptRawMessageV1 = z.infer<typeof ExternalSessi
 const ExternalSessionTranscriptPageCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   source: ExternalSessionsSourceSchema,
   direction: z.enum(['older', 'newer']),
   cursor: z.string().min(1).optional(),
@@ -579,7 +642,7 @@ export type ExternalSessionTranscriptPageResponse = z.infer<typeof ExternalSessi
 const ExternalSessionTranscriptReadAfterCanonicalRequestSchema = z.object({
   machineId: z.string().min(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().min(1).max(2000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
   source: ExternalSessionsSourceSchema,
   cursor: z.string().min(1),
   maxBytes: z.number().int().min(1).max(10 * 1024 * 1024).optional(),

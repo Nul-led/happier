@@ -16,11 +16,8 @@ import { PluginUiTargetedContributionOperationV1Schema } from './targetedContrib
 export const PLUGIN_UI_HOST_API_WIRE_VERSION_V1 = 1 as const;
 
 export const PluginUiHostApiWireIdentityV1Schema = z.object({
-  pluginId: z.string().trim().min(1),
-  pluginVersion: z.string().trim().min(1),
-  viewId: z.string().trim().min(1),
-  generation: z.string().trim().min(1),
-  sessionId: z.string().trim().min(1).optional(),
+  instanceId: z.string().trim().min(1),
+  mountNonce: z.string().trim().min(1),
 }).strict();
 export type PluginUiHostApiWireIdentityV1 = z.infer<typeof PluginUiHostApiWireIdentityV1Schema>;
 
@@ -31,19 +28,15 @@ export type PluginUiHostApiWireIdentityV1 = z.infer<typeof PluginUiHostApiWireId
  * comparison, so adding an identity member cannot leave one realm accepting
  * an envelope the other two reject.
  *
- * `sessionId` is compared including its absent state: a Session-scoped mount
- * and an Account-scoped mount of the same plugin/view/generation are different
- * addressees, not the same one with a missing field.
+ * Domain identity and authority belong to the outer mount adapter. Two mounts
+ * of the same source and a replacement document are distinct addressees.
  */
 export function pluginUiHostApiWireIdentitiesEqual(
   expected: PluginUiHostApiWireIdentityV1,
   actual: PluginUiHostApiWireIdentityV1,
 ): boolean {
-  return expected.pluginId === actual.pluginId
-    && expected.pluginVersion === actual.pluginVersion
-    && expected.viewId === actual.viewId
-    && expected.generation === actual.generation
-    && expected.sessionId === actual.sessionId;
+  return expected.instanceId === actual.instanceId
+    && expected.mountNonce === actual.mountNonce;
 }
 
 const WireBase = z.object({ wireVersion: z.literal(PLUGIN_UI_HOST_API_WIRE_VERSION_V1), identity: PluginUiHostApiWireIdentityV1Schema });

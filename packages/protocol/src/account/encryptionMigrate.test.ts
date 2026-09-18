@@ -25,7 +25,6 @@ import {
   AccountEncryptionMigrateTransitionCancelRequestSchema,
   AccountEncryptionMigrateTransitionPrepareRequestSchema,
   AccountEncryptionMigrateTransitionPrepareResponseSchema,
-  ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS,
   ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS,
   ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_STAGE_BATCH_MAX_UTF8_BYTES,
   AccountEncryptionMigrateKeyProofSchema,
@@ -158,6 +157,56 @@ describe('account/encryptionMigrate', () => {
     }).sessionDrafts?.records[0]?.revision).toBe(5);
   });
 
+  it('carries successor draft content only through an explicit migration directive and response epoch', () => {
+    const address = { kind: 'newSession' as const, draftId: '00000000-0000-4000-8000-000000000001' };
+    const content = { t: 'encrypted' as const, v: 2 as const, c: 'successor-ciphertext' };
+    const directive = { v: 2 as const, items: [{ address, expectedRevision: 4, content }] };
+    expect(AccountEncryptionMigrateSessionDraftsDirectiveSchema.parse(directive)).toEqual(directive);
+    expect(AccountEncryptionMigrateSessionDraftsDirectiveSchema.safeParse({ items: directive.items }).success).toBe(false);
+    expect(AccountEncryptionMigrateUnsignedRequestSchema.parse({ ...createUnsignedE2eeRequest(), sessionDrafts: directive }).sessionDrafts).toEqual(directive);
+    const response = {
+      success: true, mode: 'e2ee', accountVersion: 14, settingsVersion: 10,
+      sessionDrafts: { v: 2, records: [{ address, revision: 5, content, createdAt: 1, updatedAt: 2 }] },
+    };
+    expect(AccountEncryptionMigrateSuccessResponseSchema.parse(response)).toEqual(response);
+    expect(AccountEncryptionMigrateSuccessResponseSchema.safeParse({
+      ...response, sessionDrafts: { records: response.sessionDrafts.records },
+    }).success).toBe(false);
+  });
+
+  it('preserves the released 0.2.11 unversioned draft migration request and response', () => {
+    // server-v0.2.11 / server-v0.2.11-preview.2 @ 98ea8fb76733b1dd785d38c31360179cafa84824;
+    // also current clean ../0.2 @ af1b427bfa9b61a2146a5f8f457a243449d19e38,
+    // packages/protocol/src/account/encryptionMigrate.ts and drafts/sessionDrafts.ts.
+    const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000001' };
+    const content = { t: 'plain', v: { v: 1, address, document: {
+      v: 1,
+      composer: {
+        text: { mutationId: '00000000-0000-4000-8000-000000000002', value: 'retained' },
+        mentions: { mutationId: '00000000-0000-4000-8000-000000000003', value: [] },
+        attachments: { mutationId: '00000000-0000-4000-8000-000000000004', value: [] },
+      },
+      target: { kind: 'newSession', authoring: {} }, extensions: {},
+    } } };
+    const request = {
+      toMode: 'plain', expectedSettingsVersion: 0, settingsContent: null,
+      connectedServices: { action: 'assert_empty' }, automations: { action: 'assert_empty' },
+      sessionDrafts: { items: [{ address, expectedRevision: 0, content }] },
+    };
+    expect(AccountEncryptionMigratePredecessorRequestSchema.parse(request)).toEqual(request);
+    const response = {
+      success: true, mode: 'plain', settingsVersion: 1,
+      sessionDrafts: { records: [{ address, revision: 1, content, createdAt: 1, updatedAt: 2 }] },
+    };
+    expect(AccountEncryptionMigratePredecessorSuccessResponseSchema.parse(response)).toEqual(response);
+    expect(AccountEncryptionMigratePredecessorRequestSchema.safeParse({
+      ...request, sessionDrafts: { ...request.sessionDrafts, v: 2 },
+    }).success).toBe(false);
+    expect(AccountEncryptionMigratePredecessorSuccessResponseSchema.safeParse({
+      ...response, sessionDrafts: { ...response.sessionDrafts, v: 2 },
+    }).success).toBe(false);
+  });
+
   it('requires the remaining Account-domain transition directives on the strict current wire', () => {
     const complete = {
       toMode: 'plain',
@@ -236,7 +285,7 @@ describe('account/encryptionMigrate', () => {
     ).toBe(false);
   });
 
-  it('requires bounded Machine, Todo, Artifact, and Session inventory directives', () => {
+  it('requires bounded Machine, Todo, and Artifact directives without an artificial Session count ceiling', () => {
     const complete = {
       toMode: 'plain',
       expectedAccountVersion: 0,
@@ -302,17 +351,19 @@ describe('account/encryptionMigrate', () => {
     const { sessions: _sessions, ...missingSessions } = complete;
     expect(AccountEncryptionMigrateRequestSchema.safeParse(missingSessions).success)
       .toBe(false);
-    expect(ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS).toBe(500);
     expect(AccountEncryptionMigrateRequestSchema.safeParse({
       ...complete,
       sessions: {
         action: 'migrate',
         items: Array.from(
-          { length: ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS + 1 },
-          () => complete.sessions.items[0],
+          { length: 501 },
+          (_, index) => ({
+            ...complete.sessions.items[0],
+            sessionId: `session-${index}`,
+          }),
         ),
       },
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it('parses the one-shot target mode request with an explicit empty Session inventory', () => {
@@ -1250,6 +1301,27 @@ describe('account/encryptionMigrate', () => {
     })).not.toBe(digest);
   });
 
+  it('accepts one strict prepared password credential on the incumbent aggregate transition request', () => {
+    const request = createPlainRequest();
+    const passwordCredential = {
+      expectedRevision: 3,
+      credential: {
+        v: 1 as const,
+        kind: 'plain_password_hash' as const,
+        hash: {
+          v: 1 as const,
+          algorithm: 'scrypt' as const,
+          parameters: { n: 2 ** 14, r: 8, p: 5, keyLength: 32 },
+          salt: encodeBase64(new Uint8Array(16).fill(1), 'base64url'),
+          digest: encodeBase64(new Uint8Array(32).fill(2), 'base64url'),
+        },
+      },
+    };
+
+    expect(AccountEncryptionMigrateRequestSchema.parse({ ...request, passwordCredential }).passwordCredential)
+      .toEqual(passwordCredential);
+  });
+
   it('binds Account identity, modes, currentness, keys, domain replacements, and Sessions', () => {
     const request = createUnsignedE2eeRequest();
     const reviewCommentEventRequestBinding =
@@ -1769,5 +1841,34 @@ describe('account/encryptionMigrate', () => {
     ]) {
       expect(migrationContract).not.toHaveProperty(retired);
     }
+  });
+
+  it('migrates direct Workflow Run and invocation envelopes without fabricating an Automation id', () => {
+    const sourceContent = {
+      triggerEvidenceEnvelope: null,
+      occurrenceEvidenceEqualityTag: null,
+      executionInputEnvelope: null,
+      workflowAcceptedSnapshotEnvelope: '{"t":"plain","v":{}}',
+      workflowCheckpointEnvelope: '{"t":"plain","v":{}}',
+      resultEnvelope: null,
+      replyContextEnvelope: null,
+      failureDetailEnvelope: null,
+      summaryCiphertext: null,
+    };
+    expect(AccountEncryptionMigrateAutomationInventoryPageSchema.safeParse({
+      items: [{
+        kind: 'run', runId: 'run-1', revision: 2,
+        origin: { kind: 'direct', originSessionId: 'session-1' },
+        source: sourceContent,
+      }],
+    }).success).toBe(true);
+    expect(AccountEncryptionMigrateAutomationInventoryPageSchema.safeParse({
+      items: [{
+        kind: 'workflow_invocation',
+        runId: 'run-1',
+        invocationRecordId: 'invocation-1',
+        source: { contentEnvelope: '{"t":"plain","v":{}}' },
+      }],
+    }).success).toBe(true);
   });
 });

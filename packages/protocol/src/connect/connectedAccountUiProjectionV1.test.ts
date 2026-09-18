@@ -40,6 +40,7 @@ describe('ConnectedAccountUiProjectionEntryV1', () => {
         }],
       },
       capabilities: [],
+      recoveryCredits: { supported: true },
       availability: { state: 'available', reason: 'resolved' }, diagnostics: [],
     };
     expect(ConnectedAccountUiProjectionEntryV1Schema.parse(input)).toEqual(input);

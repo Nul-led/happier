@@ -20,6 +20,7 @@ import {
   defineProtocolString,
   defineProtocolUnion,
   defineProtocolUniqueArray,
+  defineProtocolUtf8String,
   isValidPluginJsonSchemaValue,
   normalizePluginJsonSchema,
   preparePluginJsonSchema,
@@ -39,6 +40,26 @@ function deepSortObjectKeys(value: unknown): unknown {
 }
 
 describe('plugin JSON Schema validation policy', () => {
+  it('keeps ordinary regex authoring non-normalizing across warm, cold, and AJV admission', () => {
+    const ordinary = defineProtocolString({ pattern: '^\\s*\\S\\s*$' });
+    const coldOrdinary = rehydrateCanonicalProtocolComposableSchema(ordinary.jsonSchema);
+    const validateOrdinary = compilePluginJsonSchema(ordinary.jsonSchema);
+
+    expect(ordinary.parse(' a ')).toBe(' a ');
+    expect(coldOrdinary?.parse(' a ')).toBe(' a ');
+    expect(validateOrdinary(' a ')).toBe(true);
+  });
+
+  it('rejects retired trim/code-unit schema keywords', () => {
+    for (const schema of [
+      { type: 'string', 'x-happier-trim': { type: 'string' } },
+      { type: 'string', 'x-happier-max-code-units': 4 },
+    ]) {
+      expect(() => compilePluginJsonSchema(schema)).toThrow();
+      expect(rehydrateCanonicalProtocolComposableSchema(schema)).toBeNull();
+    }
+  });
+
   it('enforces Protocol-owned byte ceilings at the canonical compiler boundary', () => {
     const validate = compilePluginJsonSchema({
       type: 'object',
@@ -388,6 +409,66 @@ describe('protocol composable schema kernel', () => {
     });
     expect(rehydrated.safeParse({}).success).toBe(false);
     expect(rehydrated.safeParse(undefined).success).toBe(false);
+  });
+
+  it('retains serialized input-byte bounds on nested structural unions after rehydration', () => {
+    const member = defineProtocolObject({
+      kind: defineProtocolLiteral('open'),
+      label: defineProtocolString(),
+    }, { policy: 'closed' });
+    const accepted = { kind: 'open', label: 'éé' };
+    const maximum = new TextEncoder().encode(JSON.stringify(accepted)).byteLength;
+    const bounded = defineProtocolUnion([
+      member,
+      defineProtocolLiteral(null),
+    ], { maxSerializedUtf8Bytes: maximum });
+    const authored = defineProtocolObject({ command: bounded.nullable().optional() }, { policy: 'closed' });
+    const cold = rehydrateCanonicalProtocolComposableSchema(authored.jsonSchema);
+    const validates = compilePluginJsonSchema(authored.jsonSchema);
+    expect(cold).not.toBeNull();
+
+    for (const value of [{ command: accepted }, { command: null }, {}]) {
+      expect(authored.parse(value)).toEqual(value);
+      expect(cold?.parse(value)).toEqual(value);
+      expect(isValidPluginJsonSchemaValue(validates, value)).toBe(true);
+    }
+    for (const value of [
+      { command: { kind: 'open', label: 'ééé' } },
+      { command: {} },
+      { command: { kind: 'unknown', label: '' } },
+      { command: { ...accepted, extra: true } },
+    ]) {
+      expect(authored.safeParse(value).success).toBe(false);
+      expect(cold?.safeParse(value).success).toBe(false);
+      expect(isValidPluginJsonSchemaValue(validates, value)).toBe(false);
+    }
+
+    const dropsUnknown = defineProtocolUnion([
+      defineProtocolObject({ kind: defineProtocolLiteral('open') }, { policy: 'additive-open/drop' }),
+      defineProtocolLiteral(false),
+    ], { maxSerializedUtf8Bytes: maximum });
+    const largeInput = { kind: 'open', extra: 'x'.repeat(maximum) };
+    expect(dropsUnknown.safeParse(largeInput).success).toBe(false);
+    expect(rehydrateCanonicalProtocolComposableSchema(dropsUnknown.jsonSchema)?.safeParse(largeInput).success)
+      .toBe(false);
+    expect(isValidPluginJsonSchemaValue(compilePluginJsonSchema(dropsUnknown.jsonSchema), largeInput)).toBe(false);
+  });
+
+  it('captures number and object policy options before callers mutate them', () => {
+    const numberOptions = { integer: true };
+    const objectOptions: { policy: 'closed' | 'additive-open/preserve' } = { policy: 'closed' };
+    const authored = defineProtocolObject({ count: defineProtocolNumber(numberOptions) }, objectOptions);
+    const cold = rehydrateCanonicalProtocolComposableSchema(authored.jsonSchema);
+    const validates = compilePluginJsonSchema(authored.jsonSchema);
+    numberOptions.integer = false;
+    objectOptions.policy = 'additive-open/preserve';
+
+    expect(authored.parse({ count: 1 })).toEqual({ count: 1 });
+    for (const value of [{ count: 1.5 }, { count: 1, extra: true }]) {
+      expect.soft(authored.safeParse(value).success, JSON.stringify(value)).toBe(false);
+      expect(cold?.safeParse(value).success).toBe(false);
+      expect(isValidPluginJsonSchemaValue(validates, value)).toBe(false);
+    }
   });
 
   it('rehydrates canonical object schemas after manifest key ordering', () => {

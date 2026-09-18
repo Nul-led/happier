@@ -7,8 +7,9 @@ import {
 } from './errors.js';
 
 describe('auth error contract', () => {
-    it('recognizes the server signup policy error', () => {
+    it('recognizes the server signup policy and proven inactive Account errors', () => {
         expect(AuthErrorCodeSchema.parse('signup-disabled')).toBe('signup-disabled');
+        expect(AuthErrorCodeSchema.parse('account-disabled')).toBe('account-disabled');
     });
 
     it('rejects unknown auth error codes', () => {

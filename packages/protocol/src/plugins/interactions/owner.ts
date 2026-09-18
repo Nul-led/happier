@@ -55,6 +55,8 @@ export type TransientInteractionOwnerParams = Readonly<{
   scope: InteractionTransientScopeV1;
   /** Required only for an exact Session scope and maps exclusively to sessionEnded. */
   sessionSignal?: AbortSignal;
+  /** Required only for an exact execution-run scope and retires with that Run. */
+  executionRunSignal?: AbortSignal;
   isGenerationCurrent(): boolean;
   /**
    * Product policy supplied by the host; callers cannot select a fallback.
@@ -65,6 +67,8 @@ export type TransientInteractionOwnerParams = Readonly<{
    */
   deadlineMs: number | null;
   present: TransientInteractionPresenter;
+  /** Host-private classification for presenter failures that must remain observable to the caller. */
+  propagatePresentationError?: (error: unknown) => boolean;
   now?: () => number;
   createRequestId?: () => string;
 }>;
@@ -73,6 +77,7 @@ type PendingInteraction = {
   readonly request: InteractionTransientRequestV1;
   readonly presenterAbort: AbortController;
   readonly resolve: (result: InteractionTransientResultV1) => void;
+  readonly reject: (error: unknown) => void;
   readonly requesterSignal?: AbortSignal;
   readonly requesterAbort: () => void;
   readonly sessionAbort?: () => void;
@@ -162,9 +167,20 @@ export function createTransientInteractionOwner(
   if (scope.kind === 'session' && !params.sessionSignal) {
     throw new Error('Exact Session interactions require the Session lifecycle signal');
   }
-  if (scope.kind === 'app' && params.sessionSignal !== undefined) {
-    throw new Error('Present-user app interactions cannot receive a Session lifecycle signal');
+  if (scope.kind === 'execution_run' && !params.executionRunSignal) {
+    throw new Error('Exact execution-run interactions require the execution-run lifecycle signal');
   }
+  if (scope.kind !== 'session' && params.sessionSignal !== undefined) {
+    throw new Error('Only exact Session interactions can receive a Session lifecycle signal');
+  }
+  if (scope.kind !== 'execution_run' && params.executionRunSignal !== undefined) {
+    throw new Error('Only exact execution-run interactions can receive an execution-run lifecycle signal');
+  }
+  const scopeSignal = scope.kind === 'session'
+    ? params.sessionSignal
+    : scope.kind === 'execution_run'
+      ? params.executionRunSignal
+      : undefined;
 
   const now = params.now ?? Date.now;
   const createRequestId = params.createRequestId ?? defaultRequestId;
@@ -179,11 +195,21 @@ export function createTransientInteractionOwner(
     }
     pending.delete(entry.request.requestId);
     if (entry.deadline !== undefined) clearTimeout(entry.deadline);
-    if (entry.sessionAbort) params.sessionSignal!.removeEventListener('abort', entry.sessionAbort);
+    if (entry.sessionAbort) scopeSignal!.removeEventListener('abort', entry.sessionAbort);
     entry.requesterSignal?.removeEventListener('abort', entry.requesterAbort);
     entry.presenterAbort.abort('interaction_settled');
     entry.resolve(result);
     return Object.freeze({ status: 'settled', result });
+  };
+
+  const fail = (entry: PendingInteraction, error: unknown): void => {
+    if (pending.get(entry.request.requestId) !== entry) return;
+    pending.delete(entry.request.requestId);
+    if (entry.deadline !== undefined) clearTimeout(entry.deadline);
+    if (entry.sessionAbort) scopeSignal!.removeEventListener('abort', entry.sessionAbort);
+    entry.requesterSignal?.removeEventListener('abort', entry.requesterAbort);
+    entry.presenterAbort.abort('interaction_settled');
+    entry.reject(error);
   };
 
   const settleEntry = (
@@ -241,12 +267,12 @@ export function createTransientInteractionOwner(
     if (!readsCurrent(params.isGenerationCurrent)) {
       return lifecycleResult(stamped, 'generationRetired');
     }
-    if (scope.kind === 'session' && params.sessionSignal!.aborted) {
+    if (scopeSignal?.aborted) {
       return lifecycleResult(stamped, 'sessionEnded');
     }
     if (options.signal?.aborted) return lifecycleResult(stamped, 'requesterAborted');
 
-    return await new Promise<InteractionTransientResultV1>((resolve) => {
+    return await new Promise<InteractionTransientResultV1>((resolve, reject) => {
       const presenterAbort = new AbortController();
       const requesterAbort = () => {
         const current = pending.get(stamped.requestId);
@@ -255,7 +281,7 @@ export function createTransientInteractionOwner(
           readsCurrent(params.isGenerationCurrent) ? 'requesterAborted' : 'generationRetired',
         ));
       };
-      const sessionAbort = scope.kind === 'session'
+      const sessionAbort = scopeSignal
         ? () => {
           const current = pending.get(stamped.requestId);
           if (!current) return;
@@ -275,6 +301,7 @@ export function createTransientInteractionOwner(
         request: stamped,
         presenterAbort,
         resolve,
+        reject,
         ...(options.signal ? { requesterSignal: options.signal } : {}),
         ...(options.presentationContext === undefined
           ? {}
@@ -284,7 +311,9 @@ export function createTransientInteractionOwner(
         ...(deadline === undefined ? {} : { deadline }),
       };
       pending.set(stamped.requestId, entry);
-      if (sessionAbort) params.sessionSignal!.addEventListener('abort', sessionAbort, { once: true });
+      if (sessionAbort && scopeSignal) {
+        scopeSignal.addEventListener('abort', sessionAbort, { once: true });
+      }
       options.signal?.addEventListener('abort', requesterAbort, { once: true });
 
       void Promise.resolve().then(
@@ -296,9 +325,20 @@ export function createTransientInteractionOwner(
         }),
       ).then(
         (candidate) => { settleEntry(entry, candidate); },
-        () => {
+        (error) => {
           const current = pending.get(stamped.requestId);
-          if (current) finish(current, lifecycleResult(stamped, 'unavailable'));
+          if (!current) return;
+          let propagate = false;
+          try {
+            propagate = params.propagatePresentationError?.(error) === true;
+          } catch {
+            propagate = false;
+          }
+          if (propagate) {
+            fail(current, error);
+            return;
+          }
+          finish(current, lifecycleResult(stamped, 'unavailable'));
         },
       );
     });

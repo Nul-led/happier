@@ -32,12 +32,14 @@ import {
     type ProviderAccountUsageSnapshotV1,
     type ProviderAccountUsageSourceV1,
 } from './providerAccountUsagePrimitives.js';
+import { SealedProviderAccountSubscriptionV1Schema } from './accountSubscription.js';
 
 export * from './providerAccountUsagePrimitives.js';
 
 export const SealedProviderAccountUsageSnapshotV1Schema = z.object({
     format: ConnectedServiceCredentialFormatSchema,
     ciphertext: z.string().min(1),
+    subscription: SealedProviderAccountSubscriptionV1Schema.optional(),
 });
 export type SealedProviderAccountUsageSnapshotV1 = z.infer<typeof SealedProviderAccountUsageSnapshotV1Schema>;
 

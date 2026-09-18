@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -204,7 +204,12 @@ describe('protocol canonical layout', () => {
 
     it('keeps A.17-owned flat protocol root entries folded into canonical domains', () => {
         const rootEntries = new Set(readdirSync(srcDir));
-        const violations = [...forbiddenRootEntries].filter((entry) => rootEntries.has(entry));
+        const violations = [...forbiddenRootEntries].filter((entry) => {
+            if (!rootEntries.has(entry)) return false;
+            const path = resolve(srcDir, entry);
+            return statSync(path).isFile()
+                || collectSourceFiles(`packages/protocol/src/${entry}`).length > 0;
+        });
 
         expect(violations).toEqual([]);
         for (const entry of allowedRootEntries) {
@@ -231,6 +236,10 @@ describe('protocol canonical layout', () => {
             './crypto/base64',
             './crypto/canonicalDigest',
             './crypto/canonicalJson',
+            './strings/opaqueIdentifier',
+            './crypto/boxBundle',
+            './machines/identity/installationIdentity',
+            './machines/pools',
             './machines/administration/pluginMachineExecutionOriginV1',
             './actions',
             './actions/externalActionLimits',
@@ -241,6 +250,9 @@ describe('protocol canonical layout', () => {
             './actions/actionInputJsonSchema',
             './actions/actionInputVoiceGuidance',
             './auth/accountApiTokens',
+            './auth/accountDirectory',
+            './auth/accountPasswordCredential',
+            './auth/entry',
             './automations/event-setup-result',
             './automations/event',
             './automations/result-delivery',
@@ -256,6 +268,14 @@ describe('protocol canonical layout', () => {
             './capabilities',
             './socketRpc',
             './changes',
+            './home/governance',
+            './teams',
+            './ephemeralRunner/runnerArtifact',
+            './ephemeralRunner/runnerPackageLayout',
+            './ephemeralRunner/activation',
+            './ephemeralRunner/activationFile',
+            './ephemeralRunner/endpoint',
+            './ephemeralRunner/consent',
             './transferRelayV2',
             './transferSessions',
             './updates',
@@ -267,6 +287,9 @@ describe('protocol canonical layout', () => {
             './sessions/replay-seed-budget',
             './sessions/messages/special-commands',
             './sessions/subagents',
+            './sessions/follow',
+            './sessions/discussions',
+            './sessions/board',
             './runtime',
             './bugs/reports',
             './diagnostics/sensitive-keys',
@@ -284,6 +307,8 @@ describe('protocol canonical layout', () => {
             './plugins/actions/protocol-composable-schema',
             './plugins/errors',
             './plugins/contribution-identity',
+            './plugins/backend-surface-declaration',
+            './plugins/contributions/v2',
             './plugins/source-spec',
             './plugins/contributions/system-tools',
             './plugins/contributions/targeted',
@@ -329,6 +354,7 @@ describe('protocol canonical layout', () => {
             './sessions/metadata/overrides',
             './sessions/external/linked-metadata',
             './server/urls',
+            './plugins/contributions/agent-resume-only-sources',
             './plugins/contributions/browser',
             './plugins/contributions/composer-attachments',
             './plugins/contributions/composer-reference-candidate-id',
@@ -348,6 +374,33 @@ describe('protocol canonical layout', () => {
             './voice/speech',
             './voice/sessionBinding',
             './voice/modelPacks/contributionV1',
+            './ephemeralRunner/projection',
+            './ephemeralRunner/launchManifest',
+            './ephemeralRunner/runnerMcpMaterial',
+            './ephemeralRunner/bootstrap',
+            './ephemeralRunner/runnerConnectedServices',
+            './ephemeralRunner/runnerEnvironment',
+            './ephemeralRunner/machineContentKeyBinding',
+            './ephemeralRunner/readiness',
+            './ephemeralRunner/review',
+            './ephemeralRunner/materialization',
+            './ephemeralRunner/endpointProjection',
+            './ephemeralRunner/progress',
+            './ephemeralRunner/progressProof',
+            './ephemeralRunner/principal',
+            './ephemeralRunner/actionsV1',
+            './ephemeralRunner/actionIdsV1',
+            './ephemeralRunner/errors',
+            './ephemeralRunner/routes',
+            './workflows',
+            './workflows/workflowV1',
+            './workflows/workflowReferenceV1',
+            './workflows/workflowWorkspaceV1',
+            './workflows/workflowValidationV1',
+            './workflows/workflowProgressV1',
+            './workflows/workflowDefinitionV1',
+            './workflows/workflowDocumentV1',
+            './workflows/actionsV1',
         ]);
 
         for (const [specifier, target] of Object.entries(protocolExports)) {
@@ -364,6 +417,44 @@ describe('protocol canonical layout', () => {
         }
     });
 
+    it('publishes Machine Pool schemas and Actions through one public machine subpath', () => {
+        const protocolExports = readProtocolExports();
+
+        expect(protocolExports['./machines/pools']).toEqual({
+            types: './dist/machines/pools/index.d.ts',
+            default: './dist/machines/pools/index.js',
+        });
+        expect(existsSync(srcEntryForDistTarget(protocolExports['./machines/pools']?.default ?? ''))).toBe(true);
+        expect(requireFromTest.resolve('@happier-dev/protocol/machines/pools'))
+            .toBe(resolve(packageDir, protocolExports['./machines/pools']?.default ?? ''));
+    });
+
+    it('publishes contextual authentication entry through its narrow browser-safe subpath', () => {
+        const protocolExports = readProtocolExports();
+        const target = protocolExports['./auth/entry'];
+
+        expect(target).toEqual({
+            types: './dist/auth/entry.d.ts',
+            default: './dist/auth/entry.js',
+        });
+        expect(existsSync(srcEntryForDistTarget(target?.default ?? ''))).toBe(true);
+        expect(requireFromTest.resolve('@happier-dev/protocol/auth/entry'))
+            .toBe(resolve(packageDir, target?.default ?? ''));
+    });
+
+    it('publishes the Account Directory connection descriptor through its narrow subpath', () => {
+        const protocolExports = readProtocolExports();
+        const target = protocolExports['./auth/accountDirectory'];
+
+        expect(target).toEqual({
+            types: './dist/auth/accountDirectory.d.ts',
+            default: './dist/auth/accountDirectory.js',
+        });
+        expect(existsSync(srcEntryForDistTarget(target?.default ?? ''))).toBe(true);
+        expect(requireFromTest.resolve('@happier-dev/protocol/auth/accountDirectory'))
+            .toBe(resolve(packageDir, target?.default ?? ''));
+    });
+
     it('publishes portable Session projection owners through cohesive domain subpaths', () => {
         const protocolExports = readProtocolExports();
 
@@ -374,6 +465,10 @@ describe('protocol canonical layout', () => {
         expect(protocolExports['./sessions/subagents']).toEqual({
             types: './dist/sessions/subagents/index.d.ts',
             default: './dist/sessions/subagents/index.js',
+        });
+        expect(protocolExports['./sessions/discussions']).toEqual({
+            types: './dist/sessions/discussions/index.d.ts',
+            default: './dist/sessions/discussions/index.js',
         });
     });
 

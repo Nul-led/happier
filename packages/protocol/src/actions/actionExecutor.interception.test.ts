@@ -7,7 +7,7 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     executionRunStart: async () => ({}),
     executionRunList: async () => ({}),
     executionRunGet: async () => ({}),
-    executionRunSend: async () => ({}),
+    detachedExecutionRunSend: async () => ({}),
     executionRunStop: async () => ({}),
     executionRunAction: async () => ({}),
     executionRunWait: async () => ({}),
@@ -86,7 +86,10 @@ describe('createActionExecutor execution interception', () => {
     expect(result.ok).toBe(true);
     expect(sequence).toEqual(['before', 'execute', 'after']);
     expect(sessionTitleSet).toHaveBeenCalledOnce();
-    expect(sessionTitleSet).toHaveBeenCalledWith({ sessionId: 'session-1', title: 'transformed' });
+    expect(sessionTitleSet).toHaveBeenCalledWith({
+      context: { surface: 'cli', actionCaller: { kind: 'plugin', pluginId: 'caller.plugin' } },
+      sessionId: 'session-1', title: 'transformed',
+    });
     expect(interceptActionExecution).toHaveBeenCalledWith(expect.objectContaining({
       actionId: 'session.title.set',
       input: { sessionId: 'session-1', title: 'original' },
@@ -279,6 +282,7 @@ describe('createActionExecutor execution interception', () => {
         storedRequest = request;
         return { ok: true };
       },
+      isApprovalExecutionOriginCurrent: async () => true,
     });
 
     const deferred = await executor.execute(
@@ -286,7 +290,9 @@ describe('createActionExecutor execution interception', () => {
       { sessionId: 'session-1', title: 'deferred' },
       {
         surface: 'plugin',
-        actionCaller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook' },
+        serverId: 'server-1',
+        actionRequestId: 'deferred-title-1',
+        actionCaller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook', immutableGenerationId: 'generation-1' },
       },
     );
     expect(deferred).toMatchObject({
@@ -305,7 +311,7 @@ describe('createActionExecutor execution interception', () => {
     expect(observeActionExecution.mock.calls.filter(([event]) => event.actionId === 'session.title.set'))
       .toEqual([[expect.objectContaining({
         input: { sessionId: 'session-1', title: 'deferred' },
-        caller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook' },
+        caller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook', immutableGenerationId: 'generation-1' },
         result: expect.objectContaining({ ok: true }),
       })]]);
   });

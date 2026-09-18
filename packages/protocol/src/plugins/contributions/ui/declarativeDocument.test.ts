@@ -17,9 +17,40 @@ import {
   rehydrateCanonicalProtocolComposableSchema,
 } from '../../actions/jsonSchemaValidation.js';
 import { PluginDeclarativeNodeV2Schema } from './v2.js';
+import { PluginDeclarativeProjectedNodeV1Schema } from './declarativeProjectedModelV1.js';
 
 describe('declarative document normalizer v1', () => {
+  it('preserves significant Markdown whitespace through admission, normalization and projection', () => {
+    const markdown = '    indented code\n\nline with hard break  \n';
+    for (const text of [markdown, { key: ' note.body ', fallback: markdown }]) {
+      const expectedText = typeof text === 'string' ? text : { key: 'note.body', fallback: markdown };
+      const root = { kind: 'markdown', text };
+      expect(PluginDeclarativeNodeV2Schema.parse(root)).toEqual({ ...root, text: expectedText });
+      const normalized = normalizePluginDeclarativeDocumentV1({
+        pluginId: 'com.acme.dashboard', generation: 'generation-4', actions: [],
+        document: { version: 1, root },
+      });
+      expect(normalized.root).toEqual({ kind: 'markdown', text: expectedText, path: 'root', order: 0 });
+      expect(PluginDeclarativeProjectedNodeV1Schema.parse(normalized.root)).toEqual(normalized.root);
+    }
+    expect(PluginDeclarativeNodeV2Schema.parse({ kind: 'text', text: ' label ' })).toEqual({ kind: 'text', text: 'label' });
+  });
+
   const action = { pluginId: 'com.acme.dashboard', localId: 'refresh' } as const;
+
+  it('preserves a canonical host Action request without manufacturing contribution authority', () => {
+    const root = { kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' } };
+    const normalized = normalizePluginDeclarativeDocumentV1({
+      pluginId: 'com.acme.dashboard', generation: 'generation-4', actions: [],
+      document: { version: 1, root },
+    });
+    expect(normalized.root).toEqual({ ...root, path: 'root', order: 0 });
+    for (const invalid of [
+      { ...root, hostAction: 'unknown.host.action' },
+      { ...root, action: 'refresh' },
+      { ...root, caller: { kind: 'human' } },
+    ]) expect(PluginDeclarativeNodeV2Schema.safeParse(invalid).success).toBe(false);
+  });
 
   function expectNormalizationFailure(call: () => unknown, code: string): void {
     try {

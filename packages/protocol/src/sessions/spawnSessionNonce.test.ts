@@ -8,6 +8,15 @@ describe('normalizeSpawnSessionNonceResolution', () => {
       .toEqual({ status: 'success', sessionId: 'session-settled' });
     expect(normalizeSpawnSessionNonceResolution({ status: 'pending' })).toEqual({ status: 'pending' });
     expect(normalizeSpawnSessionNonceResolution({ status: 'unsupported' })).toEqual({ status: 'unsupported' });
+    // 0.2 af1b427bfa9b61a2146a5f8f457a243449d19e38, clean inspected
+    // apps/cli/src/daemon/controlServer.ts /spawn-session/resolve error arm:
+    // the HTTP wrapper adds success:true; terminal detail remains optional.
+    expect(normalizeSpawnSessionNonceResolution({
+      success: true,
+      status: 'error',
+      errorCode: 'SPAWN_VALIDATION_FAILED',
+      errorMessage: 'Rejected',
+    })).toEqual({ status: 'error', errorCode: 'SPAWN_VALIDATION_FAILED', errorMessage: 'Rejected' });
     expect(normalizeSpawnSessionNonceResolution({
       status: 'error',
       errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK',

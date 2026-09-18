@@ -5,7 +5,7 @@ import { ProviderConnectionIdSchema, ProviderMachineIdSchema } from './ids.js';
 export const ProviderErrorCodeV1Schema = z.enum([
   'provider_feature_disabled', 'provider_connection_not_found', 'provider_connection_changed', 'provider_contribution_unavailable', 'provider_connection_disabled',
   'provider_account_grant_stale', 'provider_not_enabled_on_machine', 'provider_machine_grant_stale',
-  'provider_incompatible_with_agent', 'provider_compatibility_unverified', 'provider_secret_missing',
+  'provider_incompatible_with_agent', 'provider_compatibility_unverified', 'provider_secret_missing', 'provider_secret_unavailable',
   'provider_credential_transport_unavailable', 'provider_endpoint_unreachable', 'provider_endpoint_unavailable',
   'provider_machine_unavailable',
   'provider_probe_capacity_exhausted',
@@ -42,6 +42,7 @@ const ERROR_DEFAULTS = {
   provider_incompatible_with_agent: [false, 'choose_connection'],
   provider_compatibility_unverified: [false, 'review_compatibility'],
   provider_secret_missing: [false, 'add_secret'],
+  provider_secret_unavailable: [true, 'retry'],
   provider_credential_transport_unavailable: [false, 'review_credential_transport'],
   provider_endpoint_unreachable: [true, 'retry'],
   provider_endpoint_unavailable: [true, 'retry'],

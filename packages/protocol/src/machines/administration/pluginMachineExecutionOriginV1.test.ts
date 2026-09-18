@@ -22,6 +22,7 @@ describe('PluginMachineExecutionOriginV1', () => {
 
     expect(validates(canonical)).toBe(true);
     expect(validates({ ...canonical, serverIdentityId: 'local-profile' })).toBe(false);
+    expect(validates({ ...canonical, serverIdentityId: 'srv_account_one\n' })).toBe(false);
     expect(validates({
       ...canonical,
       materializationRef: { ...canonical.materializationRef, pluginId: 'ACME.PLUGIN' },
@@ -29,6 +30,10 @@ describe('PluginMachineExecutionOriginV1', () => {
     expect(validates({
       ...canonical,
       materializationRef: { ...canonical.materializationRef, pluginId: 'acme.constructor' },
+    })).toBe(false);
+    expect(validates({
+      ...canonical,
+      materializationRef: { ...canonical.materializationRef, materializationId: 'mat-a\n' },
     })).toBe(false);
     expect(validates({ ...canonical, unexpected: true })).toBe(false);
   });

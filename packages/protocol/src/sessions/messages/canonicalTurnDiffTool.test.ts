@@ -98,7 +98,23 @@ describe('canonical turn diff transcript helpers', () => {
     });
   });
 
-  it('suppresses only empty canonical Diff tool calls with turn metadata', () => {
+  it('retains empty canonical Diff tool calls when checkpoint metadata is the evidence', () => {
+    const checkpointInput = createEmptyTurnDiffInput();
+    Object.assign(checkpointInput._happier, {
+      repositoryCheckpoint: {
+        version: 1,
+        scopeId: 'session-1:/repo',
+        baseRefSource: 'unavailable',
+        contentConfidence: 'unavailable',
+        attributionScope: 'unknown',
+        receipts: [],
+        unavailableReason: 'not_repo',
+      },
+    });
+    expect(shouldSuppressEmptyCanonicalTurnDiffToolCall({
+      toolName: 'Diff',
+      input: checkpointInput,
+    })).toBe(false);
     expect(shouldSuppressEmptyCanonicalTurnDiffToolCall({
       toolName: 'Diff',
       input: createEmptyTurnDiffInput(),
@@ -192,7 +208,6 @@ describe('canonical turn diff transcript helpers', () => {
         source: 'scm_checkpoint',
         confidence: 'exact',
         provider: 'codex',
-        agentTurnId: 'turn-1',
       }),
     ]);
 
@@ -201,5 +216,104 @@ describe('canonical turn diff transcript helpers', () => {
     })).toBe(true);
     expect(hasCanonicalTurnDiffEvidence({ _raw: { unified_diff: '@@ -1 +1 @@' } })).toBe(true);
     expect(hasCanonicalTurnDiffEvidence({ files: [] })).toBe(false);
+  });
+
+  it('reads canonical per-file provider turn correlation before legacy aliases', () => {
+    const input = {
+      ...createEmptyTurnDiffInput(),
+      files: [{
+        file_path: 'src/correlated.ts',
+        provider_turn_id: 'provider-turn-canonical',
+        provider_message_id: 'provider-message-canonical',
+        agentTurnId: 'provider-turn-canonical',
+        providerTurnId: 'provider-turn-canonical',
+      }],
+    };
+    const metadata = readTurnChangeToolMetadata(input);
+
+    expect(metadata).not.toBeNull();
+    expect(extractCanonicalDiffFiles(input, metadata!)).toEqual([
+      expect.objectContaining({
+        filePath: 'src/correlated.ts',
+        agentTurnId: 'provider-turn-canonical',
+        providerMessageId: 'provider-message-canonical',
+      }),
+    ]);
+  });
+
+  it('rejects invalid turn envelopes instead of repairing them into valid metadata', () => {
+    const invalidValues = [
+      { turnStatus: 'finished' },
+      { seqRange: { startSeqInclusive: -1, endSeqInclusive: 2 } },
+      { seqRange: { startSeqInclusive: 1.5, endSeqInclusive: 2 } },
+      { seqRange: { startSeqInclusive: 3, endSeqInclusive: 2 } },
+      { seqRange: { startSeqInclusive: Number.POSITIVE_INFINITY, endSeqInclusive: Number.POSITIVE_INFINITY } },
+    ];
+
+    for (const override of invalidValues) {
+      const payload = createEmptyTurnDiffInput();
+      Object.assign(payload._happier, override);
+      expect(readTurnChangeToolMetadata(payload)).toBeNull();
+    }
+  });
+
+  it('rejects conflicting correlation aliases and leaves absent correlation absent', () => {
+    const conflicting = {
+      ...createEmptyTurnDiffInput(),
+      files: [{
+        file_path: 'src/conflict.ts',
+        change_kind: 'modified',
+        provider_turn_id: 'provider-turn-current',
+        providerTurnId: 'provider-turn-predecessor',
+      }],
+    };
+    const uncorrelated = {
+      ...createEmptyTurnDiffInput(),
+      files: [{ file_path: 'src/uncorrelated.ts', change_kind: 'modified' }],
+    };
+
+    expect(extractCanonicalDiffFiles(conflicting, readTurnChangeToolMetadata(conflicting)!)).toEqual([]);
+    expect(extractCanonicalDiffFiles(uncorrelated, readTurnChangeToolMetadata(uncorrelated)!)).toEqual([
+      expect.not.objectContaining({ agentTurnId: expect.anything() }),
+    ]);
+  });
+
+  it('rejects explicit invalid per-file evidence rather than defaulting it', () => {
+    const payload = {
+      ...createEmptyTurnDiffInput(),
+      files: [{
+        file_path: 'src/invalid.ts',
+        change_kind: 'invented',
+        source: 'invented',
+        confidence: 'certain',
+      }],
+    };
+
+    expect(extractCanonicalDiffFiles(payload, readTurnChangeToolMetadata(payload)!)).toEqual([]);
+  });
+
+  it('retains bounded evidence truthfulness and original size statistics', () => {
+    const input = {
+      ...createEmptyTurnDiffInput(),
+      files: [{
+        file_path: 'src/huge.ts',
+        unified_diff: 'diff --git a/src/huge.ts b/src/huge.ts\n# bounded',
+        source: 'scm_checkpoint',
+        confidence: 'best_effort',
+        provider: 'scm:git',
+        truncated: true,
+        stats: { unifiedDiffBytes: 900_000, addedLines: 4000, removedLines: 3000 },
+      }],
+    };
+    const metadata = readTurnChangeToolMetadata(input);
+
+    expect(extractCanonicalDiffFiles(input, metadata!)).toEqual([
+      expect.objectContaining({
+        filePath: 'src/huge.ts',
+        confidence: 'best_effort',
+        truncated: true,
+        stats: { unifiedDiffBytes: 900_000, addedLines: 4000, removedLines: 3000 },
+      }),
+    ]);
   });
 });

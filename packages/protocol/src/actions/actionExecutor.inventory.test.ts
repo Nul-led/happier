@@ -2,15 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor as createRawActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import type { ActionDefinitionV1 } from './actionDefinitionV1.js';
+import { getActionSpec } from './actionSpecs.js';
+import { getActionRequiredServerFeatureId } from './actionRequiredServerFeature.js';
 import { ActionsSettingsV1Schema } from './actionSettings.js';
 import { SPAWN_SESSION_ERROR_CODES } from '../sessions/spawnSession.js';
+import {
+  ExecutionRunTransportErrorCodeSchema,
+  type ExecutionRunTransportErrorCode,
+} from '../execution/runs/responseSchemas.js';
 
 function createDeps(): ActionExecutorDeps {
   return {
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({ runs: [] })),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({ ok: true })),
+    detachedExecutionRunSend: vi.fn(async () => ({ ok: true })),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -73,6 +79,56 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (inventory/discovery)', () => {
+  it('uses the canonical feature map for Action search, get, and admission', async () => {
+    const homeDomainAction = vi.fn(async () => ({ resources: [] }));
+    const enabledFeatures = new Set(['teams', 'teams.credentialResources']);
+    const executor = createActionExecutor({
+      ...createDeps(),
+      homeDomainAction,
+      isActionEnabled: (actionId) => {
+        const featureId = getActionRequiredServerFeatureId(actionId);
+        return featureId === null || enabledFeatures.has(featureId);
+      },
+    } as ActionExecutorDeps);
+
+    const credentialSearch = await executor.execute(
+      'action.spec.search',
+      { query: 'teams.credentials.create', limit: 20 },
+      { surface: 'api' },
+    );
+    expect(credentialSearch).toMatchObject({ ok: true });
+    if (!credentialSearch.ok) throw new Error('Expected credential Action search to succeed');
+    expect(credentialSearch.result.actionSpecs.map((spec) => spec.id)).toContain('teams.credentials.create');
+
+    const externalSearch = await executor.execute(
+      'action.spec.search',
+      { query: 'teams.credentials.externalKeys.create', limit: 20 },
+      { surface: 'api' },
+    );
+    expect(externalSearch).toMatchObject({ ok: true });
+    if (!externalSearch.ok) throw new Error('Expected external-key Action search to succeed');
+    expect(externalSearch.result.actionSpecs.map((spec) => spec.id))
+      .not.toContain('teams.credentials.externalKeys.create');
+
+    await expect(executor.execute(
+      'action.spec.get',
+      { id: 'teams.credentials.externalKeys.create' },
+      { surface: 'api' },
+    )).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+
+    await expect(executor.execute(
+      'teams.credentials.externalKeys.create',
+      {
+        resourceId: 'resource-1',
+        teamMembershipId: 'membership-1',
+        label: 'CI runner',
+        expiresAt: null,
+      },
+      { surface: 'api' },
+    )).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+    expect(homeDomainAction).not.toHaveBeenCalled();
+  });
+
   it('selects the nearest non-escalating delegate permission when permissionMode is omitted', async () => {
     const deps = createDeps();
     const executor = createActionExecutor(deps);
@@ -224,7 +280,12 @@ describe('createActionExecutor (inventory/discovery)', () => {
     );
     const claudeCall = (deps.executionRunStart as ReturnType<typeof vi.fn>).mock.calls
       .find((call) => (call[1] as { backendTarget?: { agentId?: string } }).backendTarget?.agentId === 'claude');
-    expect(claudeCall?.[1]).toMatchObject({ connectedServices: blanketSelection });
+    expect(claudeCall?.[1]).toMatchObject({
+      connectedServices: {
+        ...blanketSelection,
+        v: 2,
+      },
+    });
   });
 
   it('treats successful execution-run service envelopes as successful fanout results', async () => {
@@ -345,19 +406,56 @@ describe('createActionExecutor (inventory/discovery)', () => {
     });
   });
 
+  it('rejects attached execution.run.send before dispatch even with a default Session', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+    const result = await executor.execute('execution.run.send', {
+      sessionId: 'session_1', runId: 'run_1', message: 'Continue',
+    }, { defaultSessionId: 'session_1' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'session_input_target_update_required' });
+    expect(deps.detachedExecutionRunSend).not.toHaveBeenCalled();
+    const schema = getActionSpec('execution.run.send').inputSchema;
+    expect(schema.safeParse({ runId: 'run_1', message: 'Continue' }).success).toBe(false);
+    expect(schema.safeParse({ sessionId: null, runId: 'run_1', message: 'Continue', unknown: true }).success).toBe(false);
+    expect(schema.safeParse({ sessionId: null, runId: 'run_1', message: 'Continue', delivery: 'interrupt' }).success).toBe(true);
+  });
+
+  it('returns the typed update requirement for the released Session-scoped send body without weakening detached input', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+    const releasedBody = {
+      runId: 'run_1',
+      message: 'Continue',
+      delivery: 'steer_if_supported' as const,
+    };
+
+    await expect(executor.execute('execution.run.send', releasedBody, {
+      defaultSessionId: 'session_1',
+      surface: 'rpc',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'session_input_target_update_required',
+    });
+    await expect(executor.execute('execution.run.send', releasedBody, {
+      surface: 'rpc',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(deps.detachedExecutionRunSend).not.toHaveBeenCalled();
+  });
+
   it('defaults execution.run.send delivery to steer_if_supported and omits resume when unset', async () => {
     const deps = createDeps();
+    deps.executionRunCheckProtocolV2 = async () => ({ ok: true });
     const executor = createActionExecutor(deps);
 
     const res = await executor.execute('execution.run.send', {
-      sessionId: 'session_1',
+      sessionId: null,
       runId: 'run_1',
       message: 'Continue and summarize what changed.',
     });
 
     expect(res.ok).toBe(true);
-    expect(deps.executionRunSend).toHaveBeenCalledWith(
-      'session_1',
+    expect(deps.detachedExecutionRunSend).toHaveBeenCalledWith(
+      null,
       {
         runId: 'run_1',
         message: 'Continue and summarize what changed.',
@@ -365,6 +463,34 @@ describe('createActionExecutor (inventory/discovery)', () => {
       },
       undefined,
     );
+  });
+
+  it('preserves send outcome-unknown admission through the public Action failure envelope', async () => {
+    const canonicalCode = 'execution_run_send_outcome_unknown' satisfies ExecutionRunTransportErrorCode;
+    const deps = createDeps();
+    deps.executionRunCheckProtocolV2 = async () => ({ ok: true });
+    deps.detachedExecutionRunSend = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: canonicalCode,
+      error: 'Provider admission outcome is unknown; inspect the retained run before retrying.',
+    }));
+    const executor = createActionExecutor(deps);
+
+    const result = await executor.execute('execution.run.send', {
+      sessionId: null,
+      runId: 'run_1',
+      message: 'Continue and summarize what changed.',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'execution_run_send_outcome_unknown',
+      error: 'Provider admission outcome is unknown; inspect the retained run before retrying.',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(ExecutionRunTransportErrorCodeSchema.parse(result.errorCode)).toBe('execution_run_send_outcome_unknown');
+    }
   });
 
   it('preserves protocol-owned spawn error codes thrown by action dependencies', async () => {
@@ -881,22 +1007,38 @@ describe('createActionExecutor (inventory/discovery)', () => {
 
   it('opens a session by exact title when sessionId is omitted', async () => {
     const deps = createDeps();
-    deps.sessionList = vi
-      .fn()
-      .mockResolvedValueOnce({
-        sessions: [{ id: 's1', title: 'Wrong title' }],
-        nextCursor: 'page-2',
-      })
-      .mockResolvedValueOnce({
-        sessions: [{ id: 's2', title: 'Target Session' }],
-        nextCursor: null,
-      });
+    deps.resolveSessionReference = vi.fn(async () => ({
+      kind: 'unique' as const,
+      address: { serverId: 'server-b', sessionId: 's2' },
+    }));
     const executor = createActionExecutor(deps);
 
     const res = await executor.execute('session.open', { sessionTitle: 'Target Session' });
 
     expect(res.ok).toBe(true);
-    expect(deps.sessionOpen).toHaveBeenCalledWith({ sessionId: 's2' });
+    expect(deps.resolveSessionReference).toHaveBeenCalledWith(expect.objectContaining({
+      sessionTitle: 'Target Session',
+    }));
+    expect(deps.sessionOpen).toHaveBeenCalledWith({ sessionId: 's2', serverId: 'server-b' });
+  });
+
+  it('delegates deep title resolution once without imposing the former pagination cap', async () => {
+    const deps = createDeps();
+    deps.resolveSessionReference = vi.fn(async () => ({
+      kind: 'unique' as const,
+      address: { serverId: 'server-deep', sessionId: 'after-2000' },
+    }));
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute('session.open', { sessionTitle: 'Deep result' });
+
+    expect(res.ok).toBe(true);
+    expect(deps.resolveSessionReference).toHaveBeenCalledOnce();
+    expect(deps.sessionList).not.toHaveBeenCalled();
+    expect(deps.sessionOpen).toHaveBeenCalledWith({
+      sessionId: 'after-2000',
+      serverId: 'server-deep',
+    });
   });
 
   it('passes the resolved server scope when opening a session', async () => {
@@ -923,12 +1065,12 @@ describe('createActionExecutor (inventory/discovery)', () => {
 
   it('does not open a session when the requested title is ambiguous', async () => {
     const deps = createDeps();
-    deps.sessionList = vi.fn(async () => ({
-      sessions: [
-        { id: 's1', title: 'Target Session' },
-        { id: 's2', title: 'Target Session' },
+    deps.resolveSessionReference = vi.fn(async () => ({
+      kind: 'ambiguous' as const,
+      candidates: [
+        { serverId: 'server-a', sessionId: 'same' },
+        { serverId: 'server-b', sessionId: 'same' },
       ],
-      nextCursor: null,
     }));
     const executor = createActionExecutor(deps);
 
@@ -938,35 +1080,41 @@ describe('createActionExecutor (inventory/discovery)', () => {
     expect(deps.sessionOpen).not.toHaveBeenCalled();
   });
 
-  it('sets the primary target by exact title when sessionId is omitted', async () => {
+  it('rejects legacy bare and title primary targets before mutation', async () => {
     const deps = createDeps();
-    deps.sessionList = vi.fn(async () => ({
-      sessions: [{ id: 's2', title: 'Target Session' }],
-      nextCursor: null,
-    }));
     const executor = createActionExecutor(deps);
 
-    const res = await executor.execute('session.target.primary.set', { sessionTitle: 'Target Session' });
-
-    expect(res.ok).toBe(true);
-    expect(deps.sessionTargetPrimarySet).toHaveBeenCalledWith({ sessionId: 's2' });
+    await expect(executor.execute('session.target.primary.set', { sessionId: 'same' }))
+      .resolves.toEqual({ ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' });
+    await expect(executor.execute('session.target.primary.set', { sessionTitle: 'Target Session' }))
+      .resolves.toEqual({ ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' });
+    expect(deps.sessionTargetPrimarySet).not.toHaveBeenCalled();
   });
 
-  it('does not update the primary target when the requested title is ambiguous', async () => {
+  it('fails closed without opening when the authoritative Session corpus is incomplete', async () => {
     const deps = createDeps();
-    deps.sessionList = vi.fn(async () => ({
-      sessions: [
-        { id: 's1', title: 'Target Session' },
-        { id: 's2', title: 'Target Session' },
-      ],
-      nextCursor: null,
-    }));
+    deps.resolveSessionReference = vi.fn(async () => ({ kind: 'incomplete' as const }));
     const executor = createActionExecutor(deps);
 
-    const res = await executor.execute('session.target.primary.set', { sessionTitle: 'Target Session' });
+    const res = await executor.execute('session.open', { sessionTitle: 'Target Session' });
 
-    expect(res).toEqual({ ok: false, errorCode: 'session_id_ambiguous', error: 'session_id_ambiguous' });
-    expect(deps.sessionTargetPrimarySet).not.toHaveBeenCalled();
+    expect(res).toEqual({ ok: false, errorCode: 'session_lookup_incomplete', error: 'session_lookup_incomplete' });
+    expect(deps.sessionOpen).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit Home-qualified Session target exact without consulting the corpus resolver', async () => {
+    const deps = createDeps();
+    deps.resolveSessionReference = vi.fn(async () => ({ kind: 'incomplete' as const }));
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute(
+      'session.target.primary.set',
+      { sessionId: 'same', serverId: 'server-b' },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(deps.resolveSessionReference).not.toHaveBeenCalled();
+    expect(deps.sessionTargetPrimarySet).toHaveBeenCalledWith({ sessionId: 'same', serverId: 'server-b' });
   });
 
   it('rejects session targeting when no client target owner is supplied', async () => {
@@ -979,7 +1127,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
 
     await expect(executor.execute(
       'session.target.primary.set',
-      { sessionId: 's2' },
+      { sessionId: 's2', serverId: 'server-a' },
       { surface: 'ui' },
     )).resolves.toEqual({
       ok: false,
@@ -988,13 +1136,108 @@ describe('createActionExecutor (inventory/discovery)', () => {
     });
     await expect(executor.execute(
       'session.target.tracked.set',
-      { sessionIds: ['s2'] },
+      { sessionAddresses: [{ serverId: 'server-a', sessionId: 's2' }] },
       { surface: 'ui' },
     )).resolves.toEqual({
       ok: false,
       errorCode: 'unsupported_action',
       error: 'unsupported_action:session.target.tracked.set',
     });
+  });
+
+  it('preserves a typed partial tracked-target settlement instead of reporting full success', async () => {
+    const deps = createDeps();
+    deps.sessionTargetTrackedSet = vi.fn(async () => ({
+      ok: false,
+      status: 'partial' as const,
+      sessionIds: [],
+      sessionAddresses: [],
+      sessions: [],
+      error: {
+        code: 'session_follow_partial' as const,
+        message: 'Retry the remaining operation.',
+        operation: 'include' as const,
+        address: { serverId: 'server-a', sessionId: 's2' },
+        reason: 'unavailable' as const,
+      },
+    }));
+    const executor = createActionExecutor(deps);
+
+    await expect(executor.execute(
+      'session.target.tracked.set',
+      { sessionAddresses: [{ serverId: 'server-a', sessionId: 's2' }] },
+      { surface: 'voice' },
+    )).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: false,
+        status: 'partial',
+        sessionIds: [],
+        sessionAddresses: [],
+        sessions: [],
+        error: {
+          code: 'session_follow_partial',
+          message: 'Retry the remaining operation.',
+          operation: 'include',
+          address: { serverId: 'server-a', sessionId: 's2' },
+          reason: 'unavailable',
+        },
+      },
+    });
+    expect(deps.sessionTargetTrackedSet).toHaveBeenCalledWith(expect.objectContaining({
+      sessionAddresses: [{ serverId: 'server-a', sessionId: 's2' }],
+    }));
+  });
+
+  it('forwards the released tracked-target bare ids to the compatibility resolver', async () => {
+    const deps = createDeps();
+    deps.sessionTargetTrackedSet = vi.fn(async () => ({
+      ok: true,
+      status: 'ok' as const,
+      sessionIds: ['s2'],
+      sessionAddresses: [{ serverId: 'server-a', sessionId: 's2' }],
+      sessions: [],
+    }));
+    const executor = createActionExecutor(deps);
+
+    await expect(executor.execute(
+      'session.target.tracked.set',
+      { sessionIds: ['s2'] },
+      { surface: 'voice' },
+    )).resolves.toMatchObject({ ok: true });
+    expect(deps.sessionTargetTrackedSet).toHaveBeenCalledWith(expect.objectContaining({ sessionIds: ['s2'] }));
+  });
+
+  it('delivers a more than 50-target replacement to the dependency and settles its result', async () => {
+    const deps = createDeps();
+    const sessionAddresses = Array.from({ length: 51 }, (_, index) => ({
+      serverId: 'server-a',
+      sessionId: `session-${index}`,
+    }));
+    deps.sessionTargetTrackedSet = vi.fn(async () => ({
+      ok: true,
+      status: 'ok' as const,
+      sessionIds: sessionAddresses.map(address => address.sessionId),
+      sessionAddresses,
+      sessions: [],
+    }));
+    const executor = createActionExecutor(deps);
+
+    await expect(executor.execute(
+      'session.target.tracked.set',
+      { sessionAddresses },
+      { surface: 'voice' },
+    )).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        status: 'ok',
+        sessionIds: sessionAddresses.map(address => address.sessionId),
+        sessionAddresses,
+        sessions: [],
+      },
+    });
+    expect(deps.sessionTargetTrackedSet).toHaveBeenCalledWith(expect.objectContaining({ sessionAddresses }));
   });
 
   it('routes session.user_action.answer to deps.sessionUserActionAnswer', async () => {
@@ -1241,10 +1484,15 @@ describe('createActionExecutor (inventory/discovery)', () => {
     const deps = createDeps();
     const executor = createActionExecutor(deps);
 
-    const res = await executor.execute('action.spec.search', { query: '', limit: 50 }, { surface: 'mcp' });
-    expect(res.ok).toBe(true);
-    expect((res as any).result.actionSpecs.some((spec: any) => spec.id === 'session.mode.set')).toBe(true);
-    expect((res as any).result.actionSpecs.some((spec: any) => spec.id === 'ui.voice_global.reset')).toBe(false);
+    // Query by id so the assertion measures surface filtering rather than where a
+    // growing catalog happens to paginate.
+    const surfaced = await executor.execute('action.spec.search', { query: 'session.mode.set', limit: 50 }, { surface: 'mcp' });
+    expect(surfaced.ok).toBe(true);
+    expect((surfaced as any).result.actionSpecs.some((spec: any) => spec.id === 'session.mode.set')).toBe(true);
+
+    const unsurfaced = await executor.execute('action.spec.search', { query: 'ui.voice_global.reset', limit: 50 }, { surface: 'mcp' });
+    expect(unsurfaced.ok).toBe(true);
+    expect((unsurfaced as any).result.actionSpecs.some((spec: any) => spec.id === 'ui.voice_global.reset')).toBe(false);
   });
 
   it('routes ui.voice_agent.teleport to deps.teleportVoiceAgentToSessionRoot using the default session fallback', async () => {

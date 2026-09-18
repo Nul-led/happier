@@ -5,7 +5,7 @@ import {
   computeCanonicalDomainSeparatedDigest,
   encodeCanonicalLengthDelimited,
 } from '../crypto/canonicalDigest.js';
-import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
+import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundleFormat.js';
 import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
 import { isLoopbackHostname } from '../server/urls/loopbackHostname.js';
 import {
@@ -375,33 +375,6 @@ export const AccountDirectoryHomePutRequestV1Schema = z.object({
 }).strict();
 export type AccountDirectoryHomePutRequestV1 = z.infer<typeof AccountDirectoryHomePutRequestV1Schema>;
 
-/**
- * Relocation publication request. The Account Service composes the outer
- * descriptor and assigns `minimumOuterRevisionExclusive + 1`; callers supply
- * only the fresh destination endpoint facts and revision floor owned by the
- * connectivity layer.
- *
- * V2 is intentionally distinct from ordinary V1 directory upsert. A server
- * that predates monotonic publication rejects this request instead of silently
- * applying the old overwrite semantics.
- */
-export const AccountDirectoryHomePublishRequestV2Schema = z.object({
-  v: z.literal(2),
-  label: LabelSchema,
-  minimumOuterRevisionExclusive: PositiveRevisionSchema.max(Number.MAX_SAFE_INTEGER - 1),
-  canonicalServerUrl: HomeApplicationOriginV1Schema,
-  endpoints: z.array(HomeConnectionEndpointV1Schema)
-    .min(1)
-    .max(ACCOUNT_DIRECTORY_MAX_ENDPOINTS),
-}).strict();
-export type AccountDirectoryHomePublishRequestV2 = z.infer<typeof AccountDirectoryHomePublishRequestV2Schema>;
-
-export const AccountDirectoryHomeWriteRequestSchema = z.union([
-  AccountDirectoryHomePutRequestV1Schema,
-  AccountDirectoryHomePublishRequestV2Schema,
-]);
-export type AccountDirectoryHomeWriteRequest = z.infer<typeof AccountDirectoryHomeWriteRequestSchema>;
-
 export const AccountDirectoryHomePutResponseV1Schema = AccountDirectoryHomeEntryV1Schema;
 export type AccountDirectoryHomePutResponseV1 = AccountDirectoryHomeEntryV1;
 
@@ -648,6 +621,7 @@ export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
   unsupportedCapability: 'unsupported_capability',
   directoryUnavailable: 'directory_unavailable',
   homeUnavailable: 'home_unavailable',
+  accountDisabled: 'account-disabled',
   invalidAssertionSignature: 'invalid_assertion_signature',
   invalidIssuer: 'invalid_issuer',
   invalidSubject: 'invalid_subject',
@@ -671,6 +645,7 @@ export const AccountDirectoryErrorCodeV1Schema = z.enum([
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.unsupportedCapability,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryUnavailable,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.homeUnavailable,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.accountDisabled,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidAssertionSignature,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidIssuer,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidSubject,

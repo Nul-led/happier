@@ -48,6 +48,7 @@ describe('the opaque Collection cursor grammar', () => {
     expect(PluginCollectionOpaqueCursorV1Schema.safeParse('').success).toBe(false);
     expect(PluginCollectionOpaqueCursorV1Schema.safeParse('next page').success).toBe(false);
     expect(PluginCollectionOpaqueCursorV1Schema.safeParse('next+page=').success).toBe(false);
+    expect(PluginCollectionOpaqueCursorV1Schema.safeParse('next_page\n').success).toBe(false);
     expect(PluginCollectionOpaqueCursorV1Schema.safeParse(42).success).toBe(false);
   });
 
@@ -57,7 +58,7 @@ describe('the opaque Collection cursor grammar', () => {
       type: 'string',
       minLength: 1,
       maxLength: 4096,
-      pattern: '^[A-Za-z0-9_-]+$',
+      pattern: '^[A-Za-z0-9_-]+$(?![\\s\\S])',
     });
   });
 

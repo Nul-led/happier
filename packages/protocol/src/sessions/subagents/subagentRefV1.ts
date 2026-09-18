@@ -8,6 +8,7 @@ import {
 } from '../idsV1.js';
 import { SubagentGroupRefV1Schema } from './subagentGroupRefV1.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 
 export const SubagentKindV1Schema = z.enum(['execution-run', 'native', 'custom']);
 export type SubagentKindV1 = z.infer<typeof SubagentKindV1Schema>;
@@ -49,7 +50,7 @@ export const SubagentDisplayV1Schema = z.object({
 export type SubagentDisplayV1 = z.infer<typeof SubagentDisplayV1Schema>;
 
 export const VendorSessionRefV1Schema = z.object({
-  agentSessionId: z.string().trim().min(1),
+  agentSessionId: NonBlankOpaqueIdentifierSchema,
   vendorSource: z.string().trim().min(1).optional(),
   resumeMetadata: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();

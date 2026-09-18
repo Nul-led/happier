@@ -4,6 +4,7 @@ import {
   type ActionDefinitionV1,
   type ActionSpec,
   actionSpecToActionDefinitionV1,
+  getActionDefinitionForCatalogSurface,
   getActionSpec,
   listActionDefinitionsForCatalogSurface,
   searchSerializedActionSpecsForSurface,
@@ -13,6 +14,7 @@ import {
 } from '../index.js';
 import { z } from 'zod';
 import { projectActionDefinitionForExternalDiscovery } from './actionCatalog.js';
+import { zodSchemaToJsonSchemaObject } from './actionInputJsonSchema.js';
 import { prepareExternalActionResponseEnvelopeV1 } from './externalActionApi.js';
 
 describe('actionCatalog action-definition adapter', () => {
@@ -394,5 +396,28 @@ describe('actionCatalog action-definition adapter', () => {
     expect(definition.inputHints?.fields[0]?.options?.[0]?.value).toEqual(connectedAccountRef);
     expect(searchSerializedActionSpecs([spec], { query: 'account-private-42' })).toEqual([]);
     expect(searchSerializedActionSpecs([spec], { query: 'com.acme.accounts' })).toEqual([]);
+  });
+
+  it('projects the API output schema through both get and search while retaining the internal output', () => {
+    const spec = getActionSpec('session.message.send');
+    const apiOutputSchema = spec.surfaceBindings?.api?.outputSchema;
+    if (!spec.outputSchema || !apiOutputSchema) throw new Error('Expected internal and API output schemas');
+
+    const apiOutputJsonSchema = zodSchemaToJsonSchemaObject(apiOutputSchema);
+    const internalOutputJsonSchema = zodSchemaToJsonSchemaObject(spec.outputSchema);
+    const apiDefinition = getActionDefinitionForCatalogSurface({
+      id: 'session.message.send',
+      surface: 'api',
+    });
+    const [apiSearchResult] = searchSerializedActionSpecsForSurface({
+      surface: 'api',
+      query: 'session.message.send',
+      limit: 1,
+    });
+
+    expect(apiDefinition?.outputSchema).toEqual(apiOutputJsonSchema);
+    expect(apiSearchResult?.id).toBe('session.message.send');
+    expect(apiSearchResult?.outputSchema).toEqual(apiOutputJsonSchema);
+    expect(actionSpecToActionDefinitionV1(spec).outputSchema).toEqual(internalOutputJsonSchema);
   });
 });

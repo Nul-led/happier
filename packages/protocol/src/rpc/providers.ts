@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ProviderConnectionIdSchema, ProviderContributionKeySchema, ProviderMachineIdSchema, ProviderModelIdSchema } from '../providers/ids.js';
+import { ProviderConnectionIdSchema, ProviderContributionKeySchema, ProviderLocalIdSchema, ProviderMachineIdSchema, ProviderModelIdSchema } from '../providers/ids.js';
 import { BackendTargetKeyV2Schema } from '../backends/targets/backendTargetRefV2.js';
 import { CustomProviderTemplateV1Schema } from '../providers/connections/customTemplateV1.js';
 import {
@@ -9,9 +9,13 @@ import {
 } from '../providers/connections/v1.js';
 import { ProviderErrorV1Schema } from '../providers/errors.js';
 import {
+  ProviderConnectionSecurityFingerprintV1Schema,
   ProviderProbeObservationIdentityV1Schema,
   ProviderProbeRequestFingerprintV1Schema,
 } from '../providers/fingerprints.js';
+import { ProviderBrokerApplicationBindingV1Schema } from '../providers/brokerRouteGrantV1.js';
+import { ProviderCredentialTransportV1Schema } from '../providers/credentials/v1.js';
+import { ProviderEndpointUrlSyntaxSchema } from '../providers/endpointUrlSchema.js';
 import { ProviderModelDescriptorV1Schema } from '../models/descriptor.js';
 import {
   ProviderConnectionSummaryHealthV1Schema,
@@ -51,6 +55,8 @@ import { QualifiedConnectedAccountPurposeBindingTargetV1Schema } from '../connec
 import { PluginContributionIdentityV1Schema } from '../plugins/contributionIdentity.js';
 import { PluginLocalizedStringV2Schema } from '../plugins/contributions/publicTypes.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
+import { TeamCredentialSourceBindingV1Schema } from '../teams/credentials/sourceBindingV1.js';
+import { TeamCredentialResourceTestApplicationRequestV1Schema } from '../teams/credentials/externalProviderApiV1.js';
 
 const ProviderRpcIdentityV1Schema = z.object({
   connectionId: ProviderConnectionIdSchema,
@@ -84,6 +90,77 @@ export type DaemonProviderProbeRequestV1 = z.infer<typeof DaemonProviderProbeReq
 
 export const DaemonProviderModelsRequestV1Schema = ProviderRpcIdentityV1Schema;
 export type DaemonProviderModelsRequestV1 = z.infer<typeof DaemonProviderModelsRequestV1Schema>;
+
+/**
+ * Server-to-broker-Machine request for the daemon-owned, deterministic test
+ * candidate. The public Action carries only resource identity; current source
+ * and revision are pinned here so stale daemon work fails closed.
+ */
+export const DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema = z.object({
+  machineId: ProviderMachineIdSchema,
+  teamId: z.string().min(1).max(256),
+  resourceId: z.string().min(1).max(256),
+  expectedResourceRevision: z.number().int().nonnegative(),
+  source: TeamCredentialSourceBindingV1Schema,
+  /** Pool fanout reads current source observations without scheduling work on
+   * every candidate Machine. Exact-Machine Tests retain their normal demand. */
+  refreshPolicy: z.literal('current_only').optional(),
+}).strict();
+export type DaemonProviderTeamCredentialResourceTestCandidateRequestV1 = z.infer<
+  typeof DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema
+>;
+
+export const DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('success'),
+    application: ProviderBrokerApplicationBindingV1Schema,
+    request: TeamCredentialResourceTestApplicationRequestV1Schema,
+  }).strict(),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['source_unavailable', 'application_unavailable', 'model_unavailable']),
+  }).strict(),
+]);
+export type DaemonProviderTeamCredentialResourceTestCandidateResponseV1 = z.infer<
+  typeof DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema
+>;
+
+/** One Machine-local, side-effect-free source/application eligibility check.
+ * The Home fans this exact operation across its verified Pool snapshot and
+ * retains the Machine-id association; the response discloses no settings,
+ * credentials, endpoint details, model catalog, or application bytes. */
+const DaemonProviderTeamCredentialBrokerEligibilityRequestBaseV1Schema = z.object({
+  machineId: ProviderMachineIdSchema,
+  teamId: z.string().min(1).max(256),
+  resourceId: z.string().min(1).max(256),
+  expectedResourceRevision: z.number().int().nonnegative(),
+  source: TeamCredentialSourceBindingV1Schema,
+});
+
+export const DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema = z.union([
+  DaemonProviderTeamCredentialBrokerEligibilityRequestBaseV1Schema.extend({
+    application: ProviderBrokerApplicationBindingV1Schema,
+    modelId: ProviderModelIdSchema,
+    sourceRevision: z.string().min(1).max(512),
+  }).strict(),
+  DaemonProviderTeamCredentialBrokerEligibilityRequestBaseV1Schema.extend({
+    scope: z.literal('source_any'),
+  }).strict(),
+]);
+export type DaemonProviderTeamCredentialBrokerEligibilityRequestV1 = z.infer<
+  typeof DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema
+>;
+
+export const DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('eligible') }).strict(),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['source_unavailable', 'application_unavailable', 'model_unavailable', 'source_changed']),
+  }).strict(),
+]);
+export type DaemonProviderTeamCredentialBrokerEligibilityResponseV1 = z.infer<
+  typeof DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema
+>;
 
 const DaemonProviderModelLoadIdentityV1Schema = ProviderRpcIdentityV1Schema.extend({
   modelId: ProviderModelIdSchema,
@@ -362,6 +439,18 @@ export const DaemonProviderConnectionViewV1Schema = z.object({
     boundMachineIds: z.array(ProviderMachineIdSchema),
     keyUrl: ProviderHttpsUrlSchema.optional(),
   }).strict().nullable(),
+  /**
+   * Exact, content-free witness accepted by Team credential resource creation.
+   * It is produced by the canonical local Provider resolver because the Home
+   * cannot read E2EE Account Settings and the UI must not reconstruct a source
+   * fingerprint from administrative presentation rows.
+   */
+  teamCredentialSourceOffer: z.object({
+    connectionId: ProviderConnectionIdSchema,
+    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema,
+    credentialSlotId: ProviderLocalIdSchema,
+    label: z.string().trim().min(1).max(128),
+  }).strict().nullable().default(null),
   deployment: DaemonProviderConnectionDeploymentV1Schema.default({ kind: 'external' }),
   managedLocalOption: z.object({
     targetMachineId: ProviderMachineIdSchema,
@@ -571,7 +660,20 @@ export type DaemonProviderConnectionMutationResponseV1 = z.infer<typeof DaemonPr
 export const DaemonProviderModelProjectionRequestV1Schema = z.object({
   machineId: ProviderMachineIdSchema,
   agentTargetKey: BackendTargetKeyV2Schema,
+  application: ProviderBrokerApplicationBindingV1Schema.optional(),
+  /** Opt-in keeps older broker-only callers compatible with the strict response schema. */
+  includeDirectMaterialization: z.literal(true).optional(),
+  /** Opt-in keeps strict older projection consumers on their unchanged row shape. */
+  includeTeamCredentialRequestPolicySupport: z.literal(true).optional(),
+  providerConnection: z.object({
+    connectionId: ProviderConnectionIdSchema,
+    expectedConnectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema,
+  }).strict().optional(),
+  connectedAccountTarget: QualifiedConnectedAccountPurposeBindingTargetV1Schema.optional(),
   mode: z.enum(['picker', 'management']).optional(),
+  /** Internal current-observation read used by bounded Pool fanout. It must not
+   * schedule Provider refresh/materialization on every candidate Machine. */
+  refreshPolicy: z.literal('current_only').optional(),
   /** Explicit user retry; automatic reads stay backoff-aware. */
   forceRefresh: z.literal(true).optional(),
   currentSelection: ProviderBoundModelRefSchema.optional(),
@@ -579,15 +681,127 @@ export const DaemonProviderModelProjectionRequestV1Schema = z.object({
   if (value.currentSelection && value.currentSelection.agentTargetKey !== value.agentTargetKey) {
     ctx.addIssue({ code: 'custom', path: ['currentSelection', 'agentTargetKey'], message: 'Current selection belongs to another agent target' });
   }
+  if (value.application && value.application.agentTargetKey !== value.agentTargetKey) {
+    ctx.addIssue({ code: 'custom', path: ['application', 'agentTargetKey'], message: 'Application belongs to another agent target' });
+  }
+  if (value.providerConnection && value.connectedAccountTarget) {
+    ctx.addIssue({ code: 'custom', path: ['providerConnection'], message: 'Provider and Connected Account source filters are mutually exclusive' });
+  }
+  if (value.refreshPolicy === 'current_only' && value.forceRefresh) {
+    ctx.addIssue({ code: 'custom', path: ['forceRefresh'], message: 'Current-only projection cannot force refresh' });
+  }
 });
 export type DaemonProviderModelProjectionRequestV1 = z.infer<typeof DaemonProviderModelProjectionRequestV1Schema>;
 
 const ProviderCompatibilityFingerprintV1Schema = z.string().trim().min(1).max(256)
   .startsWith('compatibility:v1:');
 
+const DaemonProviderReasoningEffortSupportV1Schema = z.union([
+  z.object({ supported: z.literal(false) }).strict(),
+  z.object({
+    supported: z.literal(true),
+    allowedValues: z.array(z.string().trim().min(1).max(256)).min(1).max(128),
+    defaultValue: z.string().trim().min(1).max(256),
+  }).strict().superRefine((value, ctx) => {
+    if (new Set(value.allowedValues).size !== value.allowedValues.length) {
+      ctx.addIssue({ code: 'custom', path: ['allowedValues'], message: 'Reasoning effort values must be unique' });
+    }
+    if (!value.allowedValues.includes(value.defaultValue)) {
+      ctx.addIssue({ code: 'custom', path: ['defaultValue'], message: 'Reasoning effort default must be supported' });
+    }
+  }),
+]);
+
+export const DaemonProviderTeamCredentialRequestPolicySupportV1Schema = z.object({
+  /** Value-free current catalog metadata required by the Home projection. */
+  descriptor: ProviderModelDescriptorV1Schema,
+  application: ProviderBrokerApplicationBindingV1Schema,
+  sourceRevision: z.string().trim().min(1).max(512),
+  protocolKind: z.enum([
+    'openai_responses',
+    'openai_chat_completions',
+    'anthropic_messages',
+  ]),
+  model: z.object({
+    canonicalId: ProviderModelIdSchema,
+    aliases: z.array(ProviderModelIdSchema).max(64),
+  }).strict().superRefine((value, ctx) => {
+    if (new Set(value.aliases).size !== value.aliases.length) {
+      ctx.addIssue({ code: 'custom', path: ['aliases'], message: 'Model aliases must be unique' });
+    }
+    if (value.aliases.includes(value.canonicalId)) {
+      ctx.addIssue({ code: 'custom', path: ['aliases'], message: 'A canonical model id cannot alias itself' });
+    }
+  }),
+  reasoningEffort: DaemonProviderReasoningEffortSupportV1Schema,
+  /** The current Provider catalog carries no enforceable output-token limit. */
+  maxOutputTokens: z.object({ supported: z.literal(false) }).strict(),
+  /** The current Provider catalog carries no enforceable thinking-budget limit. */
+  maxThinkingBudgetTokens: z.object({ supported: z.literal(false) }).strict(),
+}).strict().superRefine((value, ctx) => {
+  const expectedProtocolKind = value.application.protocol === 'openai-responses'
+    ? 'openai_responses'
+    : value.application.protocol === 'openai-chat'
+      ? 'openai_chat_completions'
+      : value.application.protocol === 'anthropic'
+        ? 'anthropic_messages'
+        : null;
+  if (value.protocolKind !== expectedProtocolKind) {
+    ctx.addIssue({ code: 'custom', path: ['protocolKind'], message: 'Request-policy protocol must match the exact application protocol' });
+  }
+  if (value.descriptor.id !== value.model.canonicalId) {
+    ctx.addIssue({ code: 'custom', path: ['descriptor', 'id'], message: 'Request-policy descriptor must match the canonical model id' });
+  }
+  const descriptorAliases = value.descriptor.aliases ?? [];
+  if (descriptorAliases.length !== value.model.aliases.length
+    || descriptorAliases.some((alias, index) => alias !== value.model.aliases[index])) {
+    ctx.addIssue({ code: 'custom', path: ['descriptor', 'aliases'], message: 'Request-policy descriptor aliases must match the model aliases' });
+  }
+});
+export type DaemonProviderTeamCredentialRequestPolicySupportV1 = z.infer<
+  typeof DaemonProviderTeamCredentialRequestPolicySupportV1Schema
+>;
+
+/** Exact source-only discovery; the daemon enumerates its current Agent/application
+ * bindings so no UI or Home caller authors executable Provider identity. */
+export const DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema = z.object({
+  machineId: ProviderMachineIdSchema,
+  source: TeamCredentialSourceBindingV1Schema,
+  refreshPolicy: z.literal('current_only').optional(),
+}).strict();
+export type DaemonProviderTeamCredentialRequestPolicySupportRequestV1 = z.infer<
+  typeof DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema
+>;
+
+export const DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('success'),
+    models: z.array(DaemonProviderTeamCredentialRequestPolicySupportV1Schema),
+  }).strict(),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['source_unavailable', 'application_unavailable', 'model_unavailable']),
+  }).strict(),
+]);
+export type DaemonProviderTeamCredentialRequestPolicySupportResponseV1 = z.infer<
+  typeof DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema
+>;
+
 export const DaemonProviderModelProjectionRowV1Schema = z.object({
   ref: ProviderBoundModelRefSchema,
   descriptor: ProviderModelDescriptorV1Schema,
+  application: ProviderBrokerApplicationBindingV1Schema.optional(),
+  requestPolicySupport: DaemonProviderTeamCredentialRequestPolicySupportV1Schema.optional(),
+  /** Non-secret source-owned facts needed to materialize an admitted direct API key. */
+  directMaterialization: z.object({
+    endpoint: z.object({
+      endpointTemplateId: z.string().trim().min(1).max(128),
+      normalizedUrl: ProviderEndpointUrlSyntaxSchema,
+      protocol: ProviderWireProtocolSchema,
+      publicHeaders: z.record(z.string(), z.string()),
+    }).strict(),
+    credentialTransport: ProviderCredentialTransportV1Schema,
+  }).strict().optional(),
   sources: z.object({ manual: z.boolean(), static: z.boolean(), probe: z.boolean() }).strict(),
   confidence: z.enum(['manual', 'verified_static', 'probe', 'account_unverified']),
   compatibility: z.object({
@@ -613,6 +827,20 @@ export const DaemonProviderModelProjectionGroupV1Schema = z.object({
   connectionRole: z.enum(['default', 'named']),
   connectionDisplayNameMode: z.enum(['automatic', 'custom']),
   connectionRevision: z.number().int().nonnegative(),
+  /**
+   * Current source-owned Provider identity and security binding. This is
+   * intentionally absent for custom-template connections: consumers that
+   * require a first-party Provider identity must fail closed rather than infer
+   * one from the executable application.
+   */
+  sourceAuthority: z.object({
+    provider: z.object({
+      identity: asProtocolZod(PluginContributionIdentityV1Schema),
+      definitionRevision: z.literal(1),
+    }).strict(),
+    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema,
+  }).strict().optional(),
+  sourceRevision: z.string().trim().min(1).max(512).optional(),
   modelLoadAction: z.enum(['available', 'descriptor_absent', 'feature_disabled']),
   modelLoadPreflightPolicy: z.enum(['advisory', 'required']).nullable().optional(),
   authorization: z.union([
@@ -625,6 +853,46 @@ export const DaemonProviderModelProjectionGroupV1Schema = z.object({
   rows: z.array(DaemonProviderModelProjectionRowV1Schema)
     .max(PROVIDER_CATALOG_LIMITS_V1.maxModelsPerConnection + 1),
 }).strict().superRefine((value, ctx) => {
+  value.rows.forEach((row, index) => {
+    const support = row.requestPolicySupport;
+    if (!support) return;
+    if (value.sourceRevision !== support.sourceRevision) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rows', index, 'requestPolicySupport', 'sourceRevision'],
+        message: 'Request-policy support must match the projected source revision',
+      });
+    }
+    const application = row.application;
+    if (!application
+      || application.agentTargetKey !== support.application.agentTargetKey
+      || application.implementationIdentity.pluginId !== support.application.implementationIdentity.pluginId
+      || application.implementationIdentity.localId !== support.application.implementationIdentity.localId
+      || application.endpointTemplateId !== support.application.endpointTemplateId
+      || application.protocol !== support.application.protocol) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rows', index, 'requestPolicySupport', 'application'],
+        message: 'Request-policy support must match the projected application',
+      });
+    }
+    if (row.ref.modelId !== support.model.canonicalId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rows', index, 'requestPolicySupport', 'model', 'canonicalId'],
+        message: 'Request-policy support must match the projected canonical model',
+      });
+    }
+    const descriptorAliases = row.descriptor.aliases ?? [];
+    if (descriptorAliases.length !== support.model.aliases.length
+      || descriptorAliases.some((alias, aliasIndex) => alias !== support.model.aliases[aliasIndex])) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rows', index, 'requestPolicySupport', 'model', 'aliases'],
+        message: 'Request-policy support must match the projected model aliases',
+      });
+    }
+  });
   if (new Set(value.suppressedConnectedServiceIds).size !== value.suppressedConnectedServiceIds.length) {
     ctx.addIssue({
       code: 'custom',

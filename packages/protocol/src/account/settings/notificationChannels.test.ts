@@ -5,8 +5,16 @@ import {
   BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID,
   resolveNotificationChannelsV1FromAccountSettings,
 } from './accountSettings.js';
+import { hasConfiguredSecretStringValue } from './notificationChannels.js';
 
 describe('notificationChannelsV1', () => {
+  it('treats a whitespace-only opaque secret as configured', () => {
+    expect(hasConfiguredSecretStringValue({
+      _isSecretValue: true,
+      value: '   ',
+    })).toBe(true);
+  });
+
   it('derives the builtin expo push channel from legacy notification settings when explicit channels are missing', () => {
     const parsed = accountSettingsParse({
       notificationsSettingsV1: {
@@ -14,6 +22,7 @@ describe('notificationChannelsV1', () => {
         pushEnabled: true,
         ready: false,
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
         permissionRequest: true,
         userActionRequest: false,
         foregroundBehavior: 'full',
@@ -35,6 +44,7 @@ describe('notificationChannelsV1', () => {
           connectedServiceQuotaRecovered: true,
         },
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
       },
     ]);
   });
@@ -46,6 +56,7 @@ describe('notificationChannelsV1', () => {
         pushEnabled: true,
         ready: true,
         readyIncludeMessageText: true,
+        requestIncludeMessageText: true,
         permissionRequest: true,
         userActionRequest: true,
         foregroundBehavior: 'full',
@@ -70,6 +81,7 @@ describe('notificationChannelsV1', () => {
             connectedServiceQuotaRecovered: true,
           },
           readyIncludeMessageText: false,
+          requestIncludeMessageText: true,
         },
       ],
     });
@@ -94,6 +106,7 @@ describe('notificationChannelsV1', () => {
             connectedServiceQuotaRecovered: true,
           },
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
       },
     ]);
   });
@@ -105,6 +118,7 @@ describe('notificationChannelsV1', () => {
         pushEnabled: true,
         ready: true,
         readyIncludeMessageText: true,
+        requestIncludeMessageText: true,
         permissionRequest: true,
         userActionRequest: true,
         foregroundBehavior: 'full',
@@ -122,6 +136,7 @@ describe('notificationChannelsV1', () => {
         pushEnabled: true,
         ready: false,
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
         permissionRequest: true,
         userActionRequest: true,
         foregroundBehavior: 'full',
@@ -151,6 +166,7 @@ describe('notificationChannelsV1', () => {
           connectedServiceQuotaRecovered: true,
         },
         readyIncludeMessageText: false,
+        requestIncludeMessageText: true,
       },
     ]);
   });
@@ -162,6 +178,7 @@ describe('notificationChannelsV1', () => {
         pushEnabled: true,
         ready: true,
         readyIncludeMessageText: true,
+        requestIncludeMessageText: true,
         permissionRequest: true,
         userActionRequest: true,
         foregroundBehavior: 'full',
@@ -191,6 +208,7 @@ describe('notificationChannelsV1', () => {
           connectedServiceQuotaRecovered: true,
         },
         readyIncludeMessageText: true,
+        requestIncludeMessageText: true,
       },
     ]);
   });

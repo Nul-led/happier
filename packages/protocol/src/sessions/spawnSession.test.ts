@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   SPAWN_SESSION_ERROR_CODES,
   SPAWN_SESSION_ERROR_DETAIL_KINDS,
+  SpawnSessionErrorCodeSchema,
   SpawnSessionExecutionAuthorizationSchema,
+  SessionCreationTerminalSpawnErrorDetailSchema,
+  isSessionCreationTerminalSpawnErrorDetail,
   isSessionCreationCorrespondenceConflictSpawnErrorDetail,
   isSessionCreationOrganizationInvalidSpawnErrorDetail,
   isConnectedServiceUxDiagnosticSpawnErrorDetail,
@@ -57,6 +60,30 @@ describe('spawn-session execution authorization', () => {
 });
 
 describe('spawn-session error detail contract (D2 structured continuity)', () => {
+  it('preserves only the exact initial-access update requirement as a terminal creation refusal', () => {
+    const detail = {
+      kind: 'update_required',
+      operation: 'session.spawn_new',
+      component: 'server',
+      reason: 'session_initial_access_update_required',
+    };
+    expect(SessionCreationTerminalSpawnErrorDetailSchema.safeParse(detail).success).toBe(true);
+    expect(normalizeSpawnSessionErrorDetail(detail)).toEqual(detail);
+    expect(isSessionCreationTerminalSpawnErrorDetail(detail)).toBe(true);
+    expect(normalizeSpawnSessionErrorDetail({ ...detail, component: 'daemon' }))
+      .toEqual({ ...detail, component: 'daemon' });
+    for (const invalid of [
+      { ...detail, operation: 'session.access.grant.set' },
+      { ...detail, reason: 'timeout' },
+      { ...detail, component: 'client' },
+      { ...detail, rawDiagnostic: '/private/path' },
+    ]) {
+      expect(SessionCreationTerminalSpawnErrorDetailSchema.safeParse(invalid).success).toBe(false);
+      expect(normalizeSpawnSessionErrorDetail(invalid)).toBeUndefined();
+      expect(isSessionCreationTerminalSpawnErrorDetail(invalid)).toBe(false);
+    }
+  });
+
   it('carries exact terminal Session-creation refusals without widening their codes', () => {
     const detail: SpawnSessionErrorDetail = {
       kind: 'session_creation_organization_invalid',
@@ -121,6 +148,17 @@ describe('spawn-session error detail contract (D2 structured continuity)', () =>
     if (legacy.type !== 'error') throw new Error('expected error result');
     expect(legacy.errorCode).toBe(SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED);
     expect('errorDetail' in legacy).toBe(false);
+  });
+
+  it.each([
+    'not_authenticated',
+    'recipient_key_unavailable',
+    'session_access_invalid_recipient_envelope',
+    'session_access_request_failed',
+    'session_access_subject_not_found',
+    'session_data_key_unavailable',
+  ] as const)('carries the physical-host initial-access failure %s through spawn settlement', (errorCode) => {
+    expect(SpawnSessionErrorCodeSchema.safeParse(errorCode)).toMatchObject({ success: true });
   });
 
   it('carries a structured connected-service resume-unreachable detail alongside SPAWN_VALIDATION_FAILED', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { isDeepStrictEqual } from 'node:util';
 
-import type { ApprovalRequestV1 } from '../approvals/approvalRequestV1.js';
+import type { ApprovalRequest, ApprovalRequestV1, ApprovalRequestV2 } from '../approvals/approvalRequestV1.js';
 import { getActionSpec } from './actionSpecs.js';
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import { isApprovalRequiredByActionsSettings } from './actionApprovalPolicy.js';
@@ -11,31 +12,59 @@ const defaultActionsSettings = ActionsSettingsV1Schema.parse({ v: 1 });
 function createApprovalRequest(
   status: ApprovalRequestV1['status'] = 'open',
   overrides: Partial<ApprovalRequestV1> = {},
-): ApprovalRequestV1 {
-  const base: ApprovalRequestV1 = {
-    v: 1,
+): ApprovalRequest {
+  const actionId = overrides.actionId ?? 'session.message.send';
+  const createdBy = overrides.createdBy ?? { surface: 'mcp', sessionId: 's1' };
+  const requestedSurface = overrides.requestedSurface === undefined ? 'mcp' : overrides.requestedSurface;
+  const sessionId = createdBy.sessionId ?? 's1';
+  const serverId = typeof overrides.serverId === 'string' ? overrides.serverId : 'server-1';
+  const executionSurface = requestedSurface === 'plugin'
+    ? 'plugin'
+    : requestedSurface === 'agent'
+      ? 'agent'
+      : requestedSurface === 'cli'
+        ? 'cli'
+        : 'mcp';
+  const base: ApprovalRequestV2 = {
+    v: 2,
     status,
     createdAtMs: 1,
     updatedAtMs: 1,
-    createdBy: { surface: 'mcp', sessionId: 's1' },
-    actionId: 'session.message.send',
+    createdBy,
+    executionOriginV1: {
+      v: 1,
+      authority: 'account_automation',
+      surface: executionSurface,
+      caller: { kind: 'host' },
+      serverId,
+      ...(sessionId ? { sessionId, target: { kind: 'session' as const, sessionId } } : {}),
+      ...(actionId === 'session.list'
+        && (executionSurface === 'agent' || executionSurface === 'mcp' || executionSurface === 'plugin')
+        ? { sessionListAccess: 'current_session' as const }
+        : {}),
+      actionId,
+      requestId: 'request-1',
+    },
+    actionId,
     actionArgs: { sessionId: 's1', message: 'hello' },
     summary: 'Send message',
-    requestedSurface: 'mcp',
+    requestedSurface,
   };
 
+  const { serverId: _legacyServerId, v: _legacyVersion, ...safeOverrides } = overrides;
+
   if (status === 'approved') {
-    return { ...base, ...overrides, decision: { kind: 'approve', decidedAtMs: 2 } };
+    return { ...base, ...safeOverrides, decision: { kind: 'approve', decidedAtMs: 2 } };
   }
 
   if (status === 'rejected') {
-    return { ...base, ...overrides, decision: { kind: 'reject', decidedAtMs: 2 } };
+    return { ...base, ...safeOverrides, decision: { kind: 'reject', decidedAtMs: 2 } };
   }
 
   if (status === 'executed') {
     return {
       ...base,
-      ...overrides,
+      ...safeOverrides,
       decision: { kind: 'approve', decidedAtMs: 2 },
       execution: { executedAtMs: 3, ok: true, result: { ok: true } },
     };
@@ -44,13 +73,13 @@ function createApprovalRequest(
   if (status === 'failed') {
     return {
       ...base,
-      ...overrides,
+      ...safeOverrides,
       decision: { kind: 'approve', decidedAtMs: 2 },
       execution: { executedAtMs: 3, ok: false, errorCode: 'action_failed', error: 'action_failed' },
     };
   }
 
-  return { ...base, ...overrides };
+  return { ...base, ...safeOverrides };
 }
 
 function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
@@ -58,7 +87,7 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     executionRunStart: async () => ({}),
     executionRunList: async () => ({}),
     executionRunGet: async () => ({}),
-    executionRunSend: async () => ({}),
+    detachedExecutionRunSend: async () => ({}),
     executionRunStop: async () => ({}),
     executionRunAction: async () => ({}),
     executionRunWait: async () => ({}),
@@ -72,7 +101,7 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     reviewEnginesList: async () => ({ items: [] }),
     agentsBackendsList: async () => ({ items: [] }),
     agentsModelsList: async () => ({ items: [] }),
-    sessionSendMessage: async () => ({}),
+    sessionSendMessage: async () => ({ status: 'accepted' as const, localId: 'local-1' }),
     sessionPermissionRespond: async () => ({}),
     sessionUserActionAnswer: async () => ({}),
     sessionTargetPrimarySet: async () => ({}),
@@ -84,6 +113,7 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     daemonMemoryGetWindow: async () => ({ v: 1, snippets: [], citations: [] }),
     daemonMemoryEnsureUpToDate: async () => ({}),
     resetGlobalVoiceAgent: async () => {},
+    isApprovalExecutionOriginCurrent: async () => true,
     ...overrides,
   });
   return {
@@ -96,11 +126,66 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
         authority: 'present_user',
         actionCaller: { kind: 'host' },
       },
-    ) => executor.execute(actionId, input, context),
+    ) => executor.execute(actionId, input, {
+      ...(actionId === 'approval.request.decide'
+        ? {}
+        : { serverId: 'server-1', actionRequestId: `test-request:${actionId}` }),
+      // This approval harness represents a Session-bound host. Agent list
+      // admission requires the same explicit corpus boundary as its runtime.
+      defaultSessionId: 's1',
+      sessionListAccess: 'current_session',
+      ...context,
+    }),
   };
 }
 
 describe('createActionExecutor (approvals)', () => {
+  it('continues a Session blocking confirmation without creating an Account Artifact', async () => {
+    let publishedPreview: unknown;
+    // The injected host transport is the Session permission RPC/encrypted-state boundary.
+    const transport = {
+      sessionActionConfirmation: async (request: Parameters<NonNullable<ActionExecutorDeps['sessionActionConfirmation']>>[0]) => {
+        publishedPreview = 'preview' in request ? request.preview : undefined;
+        return { decision: 'approve' as const, isCurrent: () => true };
+      },
+      isActionApprovalRequired: () => true,
+      sessionActivityGet: async () => ({
+        ok: true,
+        sessionId: 's1',
+        presence: 'online',
+        active: true,
+        thinking: false,
+        working: false,
+        blocked: false,
+        permissionRequired: false,
+        actionRequired: false,
+        updatedAt: null,
+      }),
+    };
+    const executor = createExecutor(transport);
+    const result = await executor.execute('session.activity.get', { sessionId: 's1', windowSeconds: 10 }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 's1',
+    });
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        sessionId: 's1',
+        presence: 'online',
+        active: true,
+        thinking: false,
+        working: false,
+        blocked: false,
+        permissionRequired: false,
+        actionRequired: false,
+        updatedAt: null,
+      },
+    });
+    expect(publishedPreview).toEqual({ sessionId: 's1', windowSeconds: 10 });
+  });
+
   it('routes plugin dev-loop actions through one executor dependency on the agent surface', async () => {
     const pluginsDevLoopAction = vi.fn(async ({ actionId }) => ({
       kind: actionId.replaceAll('.', '_'),
@@ -244,7 +329,7 @@ describe('createActionExecutor (approvals)', () => {
 
   it('routes actions through approvals when required by the caller policy', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsCreate,
@@ -332,9 +417,36 @@ describe('createActionExecutor (approvals)', () => {
     }));
   });
 
+  it('does not persist an explicit approval request after preview cancellation', async () => {
+    const controller = new AbortController();
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-exist' }));
+    const executor = createExecutor({
+      approvalsCreate,
+      buildApprovalPreview: async ({ defaultPreview }) => {
+        controller.abort();
+        return defaultPreview;
+      },
+    });
+
+    await expect(executor.execute('approval.request.create' as any, {
+      actionId: 'session.message.send',
+      actionArgs: { sessionId: 's1', message: 'hello' },
+      summary: 'Send message',
+      createdBy: { surface: 'system' },
+    }, {
+      surface: 'mcp',
+      signal: controller.signal,
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'cancelled',
+      error: 'cancelled',
+    });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+  });
+
   it('records transcript tool-call origin metadata on policy-created approvals', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsCreate,
@@ -348,6 +460,16 @@ describe('createActionExecutor (approvals)', () => {
       {
         surface: 'agent',
         defaultSessionId: 's1',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+        sessionInputSource: {
+          sourceSessionId: 's1',
+          sourceTurnId: 'turn-1',
+          via: 'action',
+        },
         approvalOrigin: {
           kind: 'transcript_tool_call',
           sessionId: 's1',
@@ -374,9 +496,9 @@ describe('createActionExecutor (approvals)', () => {
     }));
   });
 
-  it('links policy-created cross-session approvals to the requesting session', async () => {
-    const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+  it('rejects a policy-created cross-session Agent approval before persistence when its source witness is missing', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-exist' }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsCreate,
@@ -390,6 +512,49 @@ describe('createActionExecutor (approvals)', () => {
       {
         surface: 'agent',
         defaultSessionId: 'requesting-session',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+      } as any,
+    );
+
+    expect(res).toEqual({
+      ok: false,
+      errorCode: 'causal_permission_authority_invalid',
+      error: 'causal_permission_authority_invalid',
+    });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('lets the message owner authorize a policy-created cross-session Agent approval with a host-stamped source witness', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
+
+    const executor = createExecutor({
+      approvalsCreate,
+      sessionSendMessage,
+      isActionApprovalRequired: (actionId, ctx) => actionId === 'session.message.send' && ctx.surface === 'agent',
+    } as any);
+
+    const res = await executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target-session', message: 'hello target' },
+      {
+        surface: 'agent',
+        defaultSessionId: 'requesting-session',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+        sessionInputSource: {
+          sourceSessionId: 'requesting-session',
+          sourceTurnId: 'turn-cross-session',
+          via: 'action',
+        },
         approvalOrigin: {
           kind: 'transcript_tool_call',
           sessionId: 'requesting-session',
@@ -400,12 +565,15 @@ describe('createActionExecutor (approvals)', () => {
       } as any,
     );
 
-    expect(res.ok).toBe(true);
+    expect(res).toMatchObject({
+      ok: true,
+      result: { kind: 'approval_request_created', artifactId: 'a1' },
+    });
     expect(sessionSendMessage).not.toHaveBeenCalled();
     expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
       request: expect.objectContaining({
         actionId: 'session.message.send',
-        actionArgs: expect.objectContaining({ sessionId: 'target-session' }),
+        actionArgs: { sessionId: 'target-session', message: 'hello target' },
         createdBy: expect.objectContaining({
           surface: 'agent',
           sessionId: 'requesting-session',
@@ -416,13 +584,24 @@ describe('createActionExecutor (approvals)', () => {
           toolCallId: 'tool-cross-session',
           toolName: 'session_message_send',
         }),
+        executionOriginV1: expect.objectContaining({
+          causalPermissionAuthority: {
+            kind: 'admittedSessionInputV1',
+            admittedPermissionCeiling: 'read-only',
+          },
+          sessionInputSource: {
+            sourceSessionId: 'requesting-session',
+            sourceTurnId: 'turn-cross-session',
+            via: 'action',
+          },
+        }),
       }),
     }));
   });
 
   it('records createdBy.surface=cli when approvals are created from the CLI surface', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsCreate,
@@ -581,7 +760,29 @@ describe('createActionExecutor (approvals)', () => {
     await expect(executor.execute(
       'action.spec.search' as any,
       { query: 'approval', limit: 1 },
-      { surface: 'api', authority: 'account_automation', actionCaller: { kind: 'host' } },
+      {
+        surface: 'api',
+        authority: 'account_automation',
+        actionCaller: { kind: 'host' },
+        externalActionCredential: { accountId: 'account-1', principalId: 'account-1', credentialId: 'credential-1' },
+        externalActionTarget: { kind: 'machine', machineId: 'machine-1' },
+        externalActionExecutionAuthorization: {
+          v: 1,
+          token: 'invocation-authorization',
+          binding: {
+            serverIdentityId: 'server-1',
+            accountId: 'account-1',
+            principalId: 'account-1',
+            credentialId: 'credential-1',
+            machineId: 'machine-1',
+            actionId: 'action.spec.search',
+            requestId: 'test-request:action.spec.search',
+            requestEnvelopeDigest: 'a'.repeat(43),
+            target: { kind: 'machine', machineId: 'machine-1' },
+          },
+        },
+        signExternalActionApprovalInput: () => 'a'.repeat(86),
+      },
     )).resolves.toEqual({
       ok: true,
       result: {
@@ -599,11 +800,139 @@ describe('createActionExecutor (approvals)', () => {
     }));
   });
 
+  it('keeps a present-user invitation approval on its live mounted invocation', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'ui-home-approval-1' }));
+    const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
+    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => ({
+      decision: 'reject' as const,
+      request: {
+        ...request,
+        status: 'rejected' as const,
+        decision: { kind: 'reject' as const, decidedAtMs: 2 },
+      },
+    }));
+    const homeDomainAction = vi.fn(async () => {
+      throw new Error('the mutation must remain gated until the approval owner replays it');
+    });
+    const executor = createExecutor({
+      approvalsCreate,
+      approvalsUpdate,
+      approvalsWaitForDecision,
+      homeDomainAction,
+      isActionApprovalRequired: (actionId, context) => (
+        actionId === 'teams.invitations.create'
+        && context.surface === 'ui'
+        && context.authority === 'present_user'
+      ),
+    } as any);
+
+    await expect(executor.execute(
+      'teams.invitations.create' as any,
+      {
+        v: 1,
+        teamId: 'team-1',
+        role: 'member',
+        historyAccess: 'from_membership',
+        recipientEmail: null,
+        requestKey: 'invite-request-1',
+      },
+      {
+        surface: 'ui',
+        authority: 'present_user',
+        actionCaller: { kind: 'host' },
+        runtimeAccountId: 'account-1',
+      },
+    )).resolves.toMatchObject({ ok: false, errorCode: 'approval_rejected' });
+    expect(approvalsWaitForDecision).toHaveBeenCalledTimes(1);
+    expect(homeDomainAction).not.toHaveBeenCalled();
+    expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        actionId: 'teams.invitations.create',
+        requestedSurface: 'ui',
+        executionOriginV1: expect.objectContaining({
+          authority: 'present_user',
+          surface: 'ui',
+          accountId: 'account-1',
+        }),
+        approval: { flow: 'blocking', result: 'required' },
+      }),
+    }));
+  });
+
+  it('returns an approved invitation bearer to the live invocation but never writes it to the Artifact', async () => {
+    const invitation = {
+      id: 'invitation-live-1',
+      teamId: 'team-1',
+      state: 'active' as const,
+      role: 'member' as const,
+      historyAccess: 'from_membership' as const,
+      recipientEmailMask: null,
+      expiresAt: 2,
+      createdAt: 1,
+      createdByAccountId: 'account-1',
+      acceptedByAccountId: null,
+      lastEmailDelivery: null,
+    };
+    const rawResult = {
+      invitation,
+      joinUrl: 'https://home.example/join/live-only-bearer',
+    };
+    const persisted: ApprovalRequest[] = [];
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      persisted.push(request);
+      return { ok: true as const };
+    });
+    const executor = createExecutor({
+      approvalsCreate: vi.fn(async () => ({ artifactId: 'ui-live-invitation-approval' })),
+      approvalsUpdate,
+      approvalsWaitForDecision: vi.fn(async ({ request }: { request: ApprovalRequest }) => ({
+        decision: 'approve' as const,
+        request: {
+          ...request,
+          status: 'approved' as const,
+          decision: { kind: 'approve' as const, decidedAtMs: 2 },
+        },
+      })),
+      homeDomainAction: vi.fn(async () => rawResult),
+      isActionApprovalRequired: (actionId, context) => (
+        actionId === 'teams.invitations.create'
+        && context.surface === 'ui'
+        && context.authority === 'present_user'
+      ),
+    } as any);
+
+    await expect(executor.execute('teams.invitations.create' as any, {
+      v: 1,
+      teamId: 'team-1',
+      role: 'member',
+      historyAccess: 'from_membership',
+      recipientEmail: null,
+      requestKey: 'invite-live-request-1',
+    }, {
+      surface: 'ui',
+      authority: 'present_user',
+      actionCaller: { kind: 'host' },
+      runtimeAccountId: 'account-1',
+    })).resolves.toEqual({ ok: true, result: rawResult });
+
+    const terminal = persisted.at(-1);
+    expect(terminal?.execution).toEqual({
+      executedAtMs: expect.any(Number),
+      ok: true,
+      result: { invitation, joinUrl: null },
+    });
+    expect(JSON.stringify(persisted)).not.toContain('live-only-bearer');
+  });
+
   it('waits for a blocking approval and returns the underlying action result when approved', async () => {
+    const cancellation = new AbortController();
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 's1', title: 'One' }] }));
-    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const sessionList = vi.fn(async () => ({
+      sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+      nextCursor: null,
+    }));
+    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       expect(sessionList).not.toHaveBeenCalled();
       return {
         decision: 'approve' as const,
@@ -626,42 +955,90 @@ describe('createActionExecutor (approvals)', () => {
     const res = await executor.execute(
       'session.list' as any,
       { limit: 10 },
-      { surface: 'mcp' },
+      { surface: 'mcp', signal: cancellation.signal },
     );
 
-    expect(res).toEqual({ ok: true, result: { sessions: [{ id: 's1', title: 'One' }] } });
+    expect(res).toEqual({
+      ok: true,
+      result: {
+        sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+        nextCursor: null,
+      },
+    });
     expect(approvalsWaitForDecision).toHaveBeenCalledWith(expect.objectContaining({
       artifactId: 'a1',
       request: expect.objectContaining({
         actionId: 'session.list',
         approval: { flow: 'blocking', result: 'required' },
       }),
-      serverId: null,
+      serverId: 'server-1',
+      signal: cancellation.signal,
     }));
-    expect(sessionList).toHaveBeenCalledWith({
+    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({
       limit: 10,
-      cursor: undefined,
-      includeLastMessagePreview: undefined,
-      activeOnly: undefined,
-      archivedOnly: undefined,
-      includeSystem: undefined,
-      resumableOnly: undefined,
-    });
+      serverId: 'server-1',
+      signal: cancellation.signal,
+      context: expect.objectContaining({
+        authority: 'account_automation',
+        surface: 'mcp',
+        bypassApprovals: true,
+      }),
+    }));
     expect(approvalsUpdate).toHaveBeenCalledWith(expect.objectContaining({
       artifactId: 'a1',
       request: expect.objectContaining({
         status: 'executed',
-        execution: expect.objectContaining({ ok: true, result: { sessions: [{ id: 's1', title: 'One' }] } }),
+        execution: expect.objectContaining({
+          ok: true,
+          result: {
+            sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+            nextCursor: null,
+          },
+        }),
       }),
+    }));
+  });
+
+  it('cancels a blocking approval without invoking the target Action', async () => {
+    const cancellation = new AbortController();
+    const sessionList = vi.fn(async () => ({ sessions: [], nextCursor: null }));
+    const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
+    const executor = createExecutor({
+      approvalsCreate: async () => ({ artifactId: 'a1' }),
+      approvalsUpdate,
+      approvalsWaitForDecision: async ({ request, signal }) => {
+        // The approval transport observes the same cancellation as its caller.
+        cancellation.abort();
+        expect(signal?.aborted).toBe(true);
+        return { decision: 'canceled', request };
+      },
+      sessionList,
+      isActionApprovalRequired: (actionId) => actionId === 'session.list',
+    });
+
+    const result = await executor.execute('session.list', { limit: 10 }, {
+      surface: 'mcp', signal: cancellation.signal,
+    });
+
+    expect(result).toMatchObject({ ok: false, errorCode: 'approval_canceled' });
+    expect(sessionList).not.toHaveBeenCalled();
+    expect(approvalsUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({ status: 'canceled' }),
     }));
   });
 
   it('returns an already executed blocking approval result without re-executing the target action', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const recordedResult = { sessions: [{ id: 's1', title: 'Recorded' }] };
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 's2', title: 'Duplicate' }] }));
-    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => ({
+    const recordedResult = {
+      sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'Recorded' }],
+      nextCursor: null,
+    };
+    const sessionList = vi.fn(async () => ({
+      sessions: [{ id: 's2', active: false, presence: 'offline', updatedAt: 1, title: 'Duplicate' }],
+      nextCursor: null,
+    }));
+    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => ({
       decision: 'approve' as const,
       request: {
         ...request,
@@ -693,34 +1070,37 @@ describe('createActionExecutor (approvals)', () => {
   });
 
   it('executes a concurrently approved blocking action exactly once', async () => {
-    let storedRequest: ApprovalRequestV1 | null = null;
-    let resolveWaiter: ((request: ApprovalRequestV1) => void) | null = null;
+    let storedRequest: ApprovalRequest | null = null;
+    let resolveWaiter: ((request: ApprovalRequest) => void) | null = null;
     let markWaiterReady: (() => void) | null = null;
     const waiterReady = new Promise<void>((resolve) => {
       markWaiterReady = resolve;
     });
-    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       return { artifactId: 'a1' };
     });
     const approvalsGet = vi.fn(async () => storedRequest);
-    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       if (request.status === 'approved') resolveWaiter?.(request);
       return { ok: true as const };
     });
-    const approvalsResolveBlockingDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsResolveBlockingDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       resolveWaiter?.(request);
       return { resolved: true };
     });
     const approvalsWaitForDecision = vi.fn(async () => {
       markWaiterReady?.();
-      const request = await new Promise<ApprovalRequestV1>((resolveDecision) => {
+      const request = await new Promise<ApprovalRequest>((resolveDecision) => {
         resolveWaiter = resolveDecision;
       });
       return { decision: 'approve' as const, request };
     });
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 's1', title: 'One' }] }));
+    const sessionList = vi.fn(async () => ({
+      sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+      nextCursor: null,
+    }));
 
     const executor = createExecutor({
       approvalsCreate,
@@ -745,7 +1125,13 @@ describe('createActionExecutor (approvals)', () => {
     const blockingResult = await blockingCall;
 
     expect(decideResult.ok).toBe(true);
-    expect(blockingResult).toEqual({ ok: true, result: { sessions: [{ id: 's1', title: 'One' }] } });
+    expect(blockingResult).toEqual({
+      ok: true,
+      result: {
+        sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+        nextCursor: null,
+      },
+    });
     expect(sessionList).toHaveBeenCalledTimes(1);
   });
 
@@ -753,7 +1139,7 @@ describe('createActionExecutor (approvals)', () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
     const sessionList = vi.fn(async () => ({ sessions: [] }));
-    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => ({
+    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => ({
       decision: 'reject' as const,
       request,
     }));
@@ -796,7 +1182,7 @@ describe('createActionExecutor (approvals)', () => {
     const res = await executor.execute(
       'session.title.set' as any,
       { sessionId: 's1', title: 'Renamed' },
-      { surface: 'mcp', defaultSessionId: null },
+      { surface: 'mcp' },
     );
 
     expect(res.ok).toBe(true);
@@ -811,7 +1197,7 @@ describe('createActionExecutor (approvals)', () => {
     }));
   });
 
-  it('allows approval.request.create for any action (except approval actions)', async () => {
+  it('allows approval.request.create for a non-internal, non-approval Action', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'a1' }));
 
     const executor = createExecutor({ approvalsCreate });
@@ -827,10 +1213,85 @@ describe('createActionExecutor (approvals)', () => {
     expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
       request: expect.objectContaining({
         actionId: 'agents.backends.list',
-        summary: 'List backends',
+        summary: 'List agent backends — s1',
       }),
     }));
   });
+
+  it.each([
+    {
+      actionId: 'teams.invitations.accept.prepareApproval',
+      actionArgs: { v: 1, token: 's'.repeat(43) },
+    },
+    {
+      actionId: 'sessions.subagents.upsert',
+      actionArgs: {
+        id: 'subagent-1',
+        parentSessionId: 's1',
+        origin: 'agent',
+        kind: 'native',
+        status: 'running',
+      },
+    },
+  ] as const)('rejects a public approval request targeting internal Action $actionId', async ({ actionId, actionArgs }) => {
+    const persistedRequests: ApprovalRequest[] = [];
+    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      persistedRequests.push(request);
+      return { artifactId: 'must-not-exist' };
+    });
+    const homeDomainAction = vi.fn(async () => ({ outcome: 'ok' as const }));
+    const executor = createExecutor({ approvalsCreate, homeDomainAction } as any);
+
+    await expect(executor.execute('approval.request.create', {
+      actionId,
+      actionArgs,
+      summary: 'Approve internal host work',
+      createdBy: { surface: 'system' },
+    }, {
+      surface: 'mcp',
+      authority: 'account_automation',
+      actionCaller: { kind: 'host' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      error: 'invalid_parameters',
+    });
+
+    expect(homeDomainAction).not.toHaveBeenCalled();
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(persistedRequests).toEqual([]);
+    expect(JSON.stringify(persistedRequests)).not.toContain('s'.repeat(43));
+  });
+
+  it.each(['decision', 'replay'] as const)(
+    'refuses a forged V2 approval targeting an internal Action during $mode',
+    async (mode) => {
+      const forged = createApprovalRequest('approved', {
+        actionId: 'teams.invitations.accept.prepareApproval',
+        actionArgs: { v: 1, token: 'f'.repeat(43) },
+        summary: 'Forged internal approval',
+      });
+      const approvalsGet = vi.fn(async () => forged);
+      const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
+      const homeDomainAction = vi.fn(async () => ({ outcome: 'ok' as const }));
+      const executor = createExecutor({ approvalsGet, approvalsUpdate, homeDomainAction } as any);
+
+      const result = mode === 'decision'
+        ? await executor.execute('approval.request.decide', {
+            artifactId: 'forged-internal-approval',
+            decision: 'approve',
+          })
+        : await executor.replayApprovedApprovalRequest({ artifactId: 'forged-internal-approval' });
+
+      expect(result).toEqual({
+        ok: false,
+        errorCode: 'invalid_parameters',
+        error: 'invalid_parameters',
+      });
+      expect(approvalsUpdate).not.toHaveBeenCalled();
+      expect(homeDomainAction).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects deciding approval artifacts that target approval queue actions', async () => {
     for (const actionId of ['approval.request.list', 'approval.request.get'] as const) {
@@ -876,7 +1337,7 @@ describe('createActionExecutor (approvals)', () => {
       request: expect.objectContaining({
         status: 'open',
         actionId: 'session.message.send',
-        summary: 'Send message',
+        summary: 'Send a message to a session — s1',
       }),
     }));
   });
@@ -990,6 +1451,7 @@ describe('createActionExecutor (approvals)', () => {
         kind: 'plugin',
         pluginId: 'acme.plugin',
         contributionLocalId: 'approval-queue',
+        immutableGenerationId: 'generation-1',
       },
       defaultSessionId: 'requesting-session',
     });
@@ -1090,7 +1552,7 @@ describe('createActionExecutor (approvals)', () => {
     expect(res.ok).toBe(true);
     expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
       request: expect.objectContaining({
-        serverId: 'server-a',
+        executionOriginV1: expect.objectContaining({ serverId: 'server-a' }),
       }),
       serverId: 'server-a',
     }));
@@ -1112,7 +1574,7 @@ describe('createActionExecutor (approvals)', () => {
     expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
       request: expect.objectContaining({
         actionId: 'review.start',
-        summary: 'Run review',
+        summary: 'Start review — s1',
       }),
     }));
   });
@@ -1120,7 +1582,7 @@ describe('createActionExecutor (approvals)', () => {
   it('executes the underlying action when an approval is approved', async () => {
     const approvalsGet = vi.fn(async () => createApprovalRequest());
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1135,7 +1597,9 @@ describe('createActionExecutor (approvals)', () => {
       message: 'hello',
       requestedAction: { v: 1, kind: 'steer_if_active' },
     }));
-    expect(approvalsUpdate).toHaveBeenCalledTimes(2);
+    // Decide commits open→approved, claims approved→executing, then settles the
+    // terminal row. The claim is what makes the effect exactly-once.
+    expect(approvalsUpdate).toHaveBeenCalledTimes(3);
     expect(approvalsUpdate).toHaveBeenNthCalledWith(1, expect.objectContaining({
       artifactId: 'a1',
       request: expect.objectContaining({
@@ -1146,9 +1610,363 @@ describe('createActionExecutor (approvals)', () => {
     expect(approvalsUpdate).toHaveBeenNthCalledWith(2, expect.objectContaining({
       artifactId: 'a1',
       request: expect.objectContaining({
+        status: 'executing',
+        decision: expect.objectContaining({ kind: 'approve' }),
+      }),
+    }));
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      artifactId: 'a1',
+      request: expect.objectContaining({
         status: 'executed',
         execution: expect.objectContaining({ ok: true }),
       }),
+    }));
+  });
+
+  it('admits only one executor for a persisted approved V2 request', async () => {
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(2);
+    let storedRequest = createApprovalRequest('approved');
+    let releaseEffect!: () => void;
+    let markEffectStarted!: () => void;
+    const effectStarted = new Promise<void>((resolve) => { markEffectStarted = resolve; });
+    const effectBlocked = new Promise<void>((resolve) => { releaseEffect = resolve; });
+    let releaseInitialReads!: () => void;
+    const initialReadsCompleted = new Promise<void>((resolve) => { releaseInitialReads = resolve; });
+    let initialReads = 0;
+    const approvalsGet = vi.fn(async () => {
+      const snapshot = structuredClone(storedRequest);
+      if (snapshot.status === 'approved' && initialReads < 2) {
+        initialReads += 1;
+        if (initialReads === 2) releaseInitialReads();
+        await initialReadsCompleted;
+      }
+      return snapshot;
+    });
+    let markSecondClaimAttempted!: () => void;
+    const secondClaimAttempted = new Promise<void>((resolve) => { markSecondClaimAttempted = resolve; });
+    let claimAttempts = 0;
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      if (request.status === 'executing') {
+        claimAttempts += 1;
+        if (claimAttempts === 2) markSecondClaimAttempted();
+      }
+      // Match the real Artifact adapter contract: terminal equality is
+      // idempotent, while observing an equal executing row loses the claim.
+      if (isDeepStrictEqual(storedRequest, request)) {
+        return request.status === 'executing'
+          ? { ok: false as const, errorCode: 'invalid_transition', error: 'approval_request_invalid_transition' }
+          : { ok: true as const };
+      }
+      const isExecutionClaim = storedRequest.status === 'approved' && request.status === 'executing';
+      const isTerminal = storedRequest.status === 'executing'
+        && (request.status === 'executed' || request.status === 'failed');
+      if (!isExecutionClaim && !isTerminal) {
+        return { ok: false as const, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' };
+      }
+      storedRequest = structuredClone(request);
+      return { ok: true as const };
+    });
+    let effects = 0;
+    const sessionSendMessage = vi.fn(async () => {
+      effects += 1;
+      markEffectStarted();
+      await effectBlocked;
+      return { status: 'accepted' as const, localId: 'local-1' };
+    });
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    const decide = executor.execute('approval.request.decide', {
+      artifactId: 'a1', decision: 'approve',
+    });
+    const replay = executor.replayApprovedApprovalRequest({ artifactId: 'a1' });
+    await effectStarted;
+    await secondClaimAttempted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(effects).toBe(1);
+
+    const loser = await Promise.race([decide, replay]);
+    expect(loser).toMatchObject({
+      ok: false,
+      errorCode: 'approval_execution_outcome_unknown',
+    });
+    expect(effects).toBe(1);
+    expect(storedRequest.status).toBe('executing');
+
+    const freshExecutor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+    await expect(freshExecutor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'approval_execution_outcome_unknown',
+    });
+    expect(effects).toBe(1);
+
+    releaseEffect();
+    await Promise.all([decide, replay]);
+    expect(effects).toBe(1);
+    expect(storedRequest.status).toBe('executed');
+    dateNow.mockRestore();
+  });
+
+  it('reports outcome unknown when the effect succeeds but terminal persistence fails', async () => {
+    let storedRequest = createApprovalRequest('approved');
+    const approvalsGet = vi.fn(async () => structuredClone(storedRequest));
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      if (storedRequest.status === 'approved' && request.status === 'executing') {
+        storedRequest = structuredClone(request);
+        return { ok: true as const };
+      }
+      return { ok: false as const, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' };
+    });
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'approval_execution_outcome_unknown',
+      error: 'approval_execution_outcome_unknown',
+    });
+    expect(sessionSendMessage).toHaveBeenCalledOnce();
+    expect(storedRequest.status).toBe('executing');
+  });
+
+  it('persists strict Board conflict details after deferred approval execution', async () => {
+    const boardInput = {
+      sessionId: 's1',
+      expectedLayoutRevision: null,
+      operation: { op: 'tab.create' as const, tabId: 'overview', title: 'Overview' },
+    };
+    let storedRequest = createApprovalRequest('approved', {
+      actionId: 'session.board.layout.update',
+      actionArgs: boardInput,
+      requestedSurface: 'mcp',
+      createdBy: { surface: 'mcp', sessionId: 's1' },
+    });
+    const approvalsGet = vi.fn(async () => structuredClone(storedRequest));
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      storedRequest = structuredClone(request);
+      return { ok: true as const };
+    });
+    const sessionBoardAction = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'session_board_revision_conflict' as const,
+      error: 'session_board_revision_conflict' as const,
+      details: { currentLayoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ' },
+    }));
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionBoardAction });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        status: 'failed',
+        execution: {
+          ok: false,
+          errorCode: 'session_board_revision_conflict',
+          details: { currentLayoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ' },
+        },
+      },
+    });
+    expect(storedRequest).toMatchObject({
+      status: 'failed',
+      execution: {
+        ok: false,
+        errorCode: 'session_board_revision_conflict',
+        details: { currentLayoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ' },
+      },
+    });
+  });
+
+  it('preserves a request-bound Board outcome-unknown recovery packet after deferred approval', async () => {
+    const boardInput = {
+      sessionId: 's1',
+      expectedLayoutRevision: null,
+      operation: { op: 'tab.create' as const, tabId: 'overview', title: 'Overview' },
+    };
+    const mutationRequest = {
+      operation: 'update_layout' as const,
+      expectedLayoutRevision: null,
+      layoutContent: {
+        t: 'plain' as const,
+        v: { v: 1 as const, tabs: [{ id: 'overview', title: 'Overview', items: [] }] },
+      },
+    };
+    const recovery = {
+      v: 1 as const,
+      actionId: 'session.board.layout.update' as const,
+      serverId: 'server-1',
+      sessionId: 's1',
+      requestBody: JSON.stringify(mutationRequest),
+      mutationRequest,
+      intent: boardInput,
+    };
+    let storedRequest = createApprovalRequest('approved', {
+      actionId: 'session.board.layout.update',
+      actionArgs: boardInput,
+      requestedSurface: 'mcp',
+      createdBy: { surface: 'mcp', sessionId: 's1' },
+    });
+    const approvalsGet = vi.fn(async () => structuredClone(storedRequest));
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      storedRequest = structuredClone(request);
+      return { ok: true as const };
+    });
+    const executor = createExecutor({
+      approvalsGet,
+      approvalsUpdate,
+      sessionBoardAction: vi.fn(async () => ({
+        ok: false as const,
+        errorCode: 'outcome_unknown' as const,
+        error: 'outcome_unknown' as const,
+        details: { recovery },
+      })),
+    });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        status: 'failed',
+        execution: { ok: false, errorCode: 'outcome_unknown', details: { recovery } },
+      },
+    });
+    expect(storedRequest).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'outcome_unknown', details: { recovery } },
+    });
+  });
+
+  it('does not persist unvalidated failure details from another Action family', async () => {
+    let storedRequest = createApprovalRequest('approved');
+    const approvalsGet = vi.fn(async () => structuredClone(storedRequest));
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      storedRequest = structuredClone(request);
+      return { ok: true as const };
+    });
+    const sessionSendMessage = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'action_failed',
+      error: 'action_failed',
+      details: { bearer: 'must-not-persist' },
+    }));
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    await executor.replayApprovedApprovalRequest({ artifactId: 'a1' });
+    expect(storedRequest.execution).toEqual({
+      executedAtMs: expect.any(Number),
+      ok: false,
+      errorCode: 'action_failed',
+      error: 'action_failed',
+    });
+  });
+
+  it('persists the present-user decision before delegating exact-daemon replay', async () => {
+    let storedRequest = createApprovalRequest('open');
+    const approvalsGet = vi.fn(async () => storedRequest);
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      storedRequest = request;
+      return { ok: true as const };
+    });
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
+    const approvalRequestApprovedReplay = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      expect(request).toMatchObject({
+        status: 'approved',
+        decision: { kind: 'approve' },
+      });
+      expect(storedRequest).toEqual(request);
+      return {
+        ok: true as const,
+        result: { ok: true as const, status: 'executed' as const },
+      };
+    });
+
+    const executor = createExecutor({
+      approvalsGet,
+      approvalsUpdate,
+      sessionSendMessage,
+      approvalRequestApprovedReplay,
+    });
+
+    await expect(executor.execute('approval.request.decide' as any, {
+      artifactId: 'a1',
+      decision: 'approve',
+    })).resolves.toEqual({
+      ok: true,
+      result: { ok: true, status: 'executed' },
+    });
+
+    expect(approvalsUpdate).toHaveBeenCalledTimes(1);
+    expect(approvalRequestApprovedReplay).toHaveBeenCalledExactlyOnceWith({
+      artifactId: 'a1',
+      request: expect.objectContaining({
+        status: 'approved',
+        decision: expect.objectContaining({ kind: 'approve' }),
+      }),
+    });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('never delegates a rejected decision to an execution host', async () => {
+    const approvalsGet = vi.fn(async () => createApprovalRequest('open'));
+    const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
+    const approvalRequestApprovedReplay = vi.fn(async () => ({
+      ok: true as const,
+      result: { ok: true as const, status: 'executed' as const },
+    }));
+
+    const executor = createExecutor({
+      approvalsGet,
+      approvalsUpdate,
+      approvalRequestApprovedReplay,
+    });
+
+    await expect(executor.execute('approval.request.decide' as any, {
+      artifactId: 'a1',
+      decision: 'reject',
+    })).resolves.toEqual({
+      ok: true,
+      result: { ok: true, status: 'rejected' },
+    });
+    expect(approvalRequestApprovedReplay).not.toHaveBeenCalled();
+  });
+
+  it('replays only an already-approved Artifact through the immutable origin', async () => {
+    let storedRequest = createApprovalRequest('open');
+    const approvalsGet = vi.fn(async () => storedRequest);
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      storedRequest = request;
+      return { ok: true as const };
+    });
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
+
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'approval_not_approved',
+      error: 'approval_not_approved',
+    });
+    expect(approvalsUpdate).not.toHaveBeenCalled();
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+
+    storedRequest = createApprovalRequest('approved');
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        status: 'executed',
+        execution: expect.objectContaining({ ok: true }),
+      },
+    });
+    expect(sessionSendMessage).toHaveBeenCalledTimes(1);
+    // Replay owns no decision authority, so it writes only the claim and the
+    // terminal row — never a decision.
+    expect(approvalsUpdate).toHaveBeenCalledTimes(2);
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      artifactId: 'a1',
+      serverId: 'server-1',
+      request: expect.objectContaining({ status: 'executing' }),
+    }));
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      artifactId: 'a1',
+      serverId: 'server-1',
+      request: expect.objectContaining({ status: 'executed' }),
     }));
   });
 
@@ -1198,13 +2016,18 @@ describe('createActionExecutor (approvals)', () => {
     const approvalsGet = vi.fn(async () => createApprovalRequest('open', {
       actionId: 'session.list',
       actionArgs: {},
-      approval: { flow: 'blocking', result: 'required' },
+      // Even a stale/manually-created deferred request cannot turn the
+      // Artifact into durable bearer custody.
+      approval: { flow: 'deferred', result: 'required' },
       summary: 'List sessions',
       requestedSurface: 'mcp',
     }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
     const approvalsResolveBlockingDecision = vi.fn(async () => ({ resolved: false }));
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 's1', title: 'One' }] }));
+    const sessionList = vi.fn(async () => ({
+      sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+      nextCursor: null,
+    }));
 
     const executor = createExecutor({
       approvalsGet,
@@ -1225,20 +2048,33 @@ describe('createActionExecutor (approvals)', () => {
         status: 'executed',
         execution: expect.objectContaining({
           ok: true,
-          result: { sessions: [{ id: 's1', title: 'One' }] },
+          result: {
+            sessions: [{ id: 's1', active: false, presence: 'offline', updatedAt: 1, title: 'One' }],
+            nextCursor: null,
+          },
         }),
       },
     });
     expect(sessionList).toHaveBeenCalledTimes(1);
   });
 
-  it('marks approvals as failed when the execution surface cannot be resolved (fails closed)', async () => {
-    const approvalsGet = vi.fn(async () => createApprovalRequest('open', {
+  it('marks legacy V1 approvals stale before effects because their execution origin is unprovable', async () => {
+    let legacyRequest: ApprovalRequestV1 = {
+      v: 1,
+      status: 'open',
+      createdAtMs: 1,
+      updatedAtMs: 1,
       createdBy: { surface: 'system', sessionId: 's1' },
-      requestedSurface: undefined,
-    }));
-    const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+      actionId: 'session.message.send',
+      actionArgs: { sessionId: 's1', message: 'hello' },
+      summary: 'Send message',
+    };
+    const approvalsGet = vi.fn(async () => legacyRequest);
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+      legacyRequest = request;
+      return { ok: true as const };
+    });
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1247,26 +2083,63 @@ describe('createActionExecutor (approvals)', () => {
       decision: 'approve',
     });
 
-    expect(res.ok).toBe(true);
+    expect(res).toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        status: 'failed',
+        execution: expect.objectContaining({ ok: false, errorCode: 'approval_stale' }),
+      },
+    });
     expect(sessionSendMessage).not.toHaveBeenCalled();
     expect(approvalsUpdate).toHaveBeenCalledTimes(2);
-    expect(approvalsUpdate).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      artifactId: 'a1',
-      request: expect.objectContaining({
+    expect(legacyRequest).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'approval_stale' },
+    });
+  });
+
+  it('terminalizes an already-approved legacy V1 replay that cannot prove its execution origin', async () => {
+    let legacyRequest: ApprovalRequestV1 = {
+      v: 1,
+      status: 'approved',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'system', sessionId: 's1' },
+      decision: { kind: 'approve', decidedAtMs: 2 },
+      actionId: 'session.message.send',
+      actionArgs: { sessionId: 's1', message: 'hello' },
+      summary: 'Send message',
+    };
+    const approvalsGet = vi.fn(async () => legacyRequest);
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+      legacyRequest = request;
+      return { ok: true as const };
+    });
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: true,
         status: 'failed',
-        execution: expect.objectContaining({
-          ok: false,
-          errorCode: 'approval_execution_surface_invalid',
-        }),
-      }),
-    }));
+        execution: expect.objectContaining({ ok: false, errorCode: 'approval_stale' }),
+      },
+    });
+    expect(approvalsUpdate).toHaveBeenCalledOnce();
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+    expect(legacyRequest).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'approval_stale' },
+    });
   });
 
   it('does not re-route already-approved actions through approvals when executing them', async () => {
     const approvalsGet = vi.fn(async () => createApprovalRequest('open', { createdBy: { surface: 'mcp', sessionId: 's1' } }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'nested' }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsGet,
@@ -1296,7 +2169,7 @@ describe('createActionExecutor (approvals)', () => {
   it('uses the stored approval serverId when the decision context omits one', async () => {
     const approvalsGet = vi.fn(async () => createApprovalRequest('open', { serverId: 'server-a' }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1317,7 +2190,7 @@ describe('createActionExecutor (approvals)', () => {
       artifactId: 'a1',
       serverId: 'server-a',
       request: expect.objectContaining({
-        serverId: 'server-a',
+        executionOriginV1: expect.objectContaining({ serverId: 'server-a' }),
         status: 'approved',
       }),
     }));
@@ -1325,7 +2198,15 @@ describe('createActionExecutor (approvals)', () => {
       artifactId: 'a1',
       serverId: 'server-a',
       request: expect.objectContaining({
-        serverId: 'server-a',
+        executionOriginV1: expect.objectContaining({ serverId: 'server-a' }),
+        status: 'executing',
+      }),
+    }));
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      artifactId: 'a1',
+      serverId: 'server-a',
+      request: expect.objectContaining({
+        executionOriginV1: expect.objectContaining({ serverId: 'server-a' }),
         status: 'executed',
       }),
     }));
@@ -1375,7 +2256,7 @@ describe('createActionExecutor (approvals)', () => {
       requestedSurface: 'agent',
     }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsGet,
@@ -1409,7 +2290,7 @@ describe('createActionExecutor (approvals)', () => {
       requestedSurface: 'cli',
     }));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({
       approvalsGet,
@@ -1440,7 +2321,7 @@ describe('createActionExecutor (approvals)', () => {
   it('resumes an already-approved approval by finalizing execution', async () => {
     const approvalsGet = vi.fn(async () => createApprovalRequest('approved'));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1456,8 +2337,13 @@ describe('createActionExecutor (approvals)', () => {
       message: 'hello',
       requestedAction: { v: 1, kind: 'steer_if_active' },
     }));
-    expect(approvalsUpdate).toHaveBeenCalledTimes(1);
-    expect(approvalsUpdate).toHaveBeenCalledWith(expect.objectContaining({
+    // Resuming an already-approved row still claims it before the effect.
+    expect(approvalsUpdate).toHaveBeenCalledTimes(2);
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      artifactId: 'a1',
+      request: expect.objectContaining({ status: 'executing' }),
+    }));
+    expect(approvalsUpdate).toHaveBeenNthCalledWith(2, expect.objectContaining({
       artifactId: 'a1',
       request: expect.objectContaining({
         status: 'executed',
@@ -1491,7 +2377,7 @@ describe('createActionExecutor (approvals)', () => {
   ] as const)('returns the existing terminal result for duplicate $decision decisions on $status approvals', async ({ status, decision, expected }) => {
     const approvalsGet = vi.fn(async () => createApprovalRequest(status));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1505,6 +2391,97 @@ describe('createActionExecutor (approvals)', () => {
     expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
+  it('persists only the safe projection when an invitation outlives its live caller', async () => {
+    const invitation = {
+      id: 'invitation-1',
+      teamId: 'team-1',
+      state: 'active' as const,
+      role: 'member' as const,
+      historyAccess: 'from_membership' as const,
+      recipientEmailMask: null,
+      expiresAt: 2,
+      createdAt: 1,
+      createdByAccountId: 'account-1',
+      acceptedByAccountId: null,
+      lastEmailDelivery: null,
+    };
+    const rawResult = {
+      invitation,
+      joinUrl: 'https://home.example/join/one-time-bearer',
+    };
+    const request = createApprovalRequest('open', {
+      actionId: 'teams.invitations.create',
+      actionArgs: {
+        v: 1,
+        teamId: 'team-1',
+        role: 'member',
+        historyAccess: 'from_membership',
+        recipientEmail: null,
+        requestKey: 'request-1',
+      },
+      // `createdBy` is descriptive Artifact provenance; the immutable
+      // execution origin below is the present-user UI authority.
+      createdBy: { surface: 'system' },
+      requestedSurface: 'ui',
+      approval: { flow: 'blocking', result: 'required' },
+    });
+    if (request.v !== 2) throw new Error('expected V2 approval fixture');
+    const {
+      sessionId: _fixtureSessionId,
+      target: _fixtureTarget,
+      ...originWithoutFixtureSession
+    } = request.executionOriginV1;
+    let storedRequest: ApprovalRequestV2 = {
+      ...request,
+      executionOriginV1: {
+        ...originWithoutFixtureSession,
+        authority: 'present_user',
+        surface: 'ui',
+      },
+    };
+    const approvalsGet = vi.fn(async () => storedRequest);
+    const approvalsUpdate = vi.fn(async ({ request: next }: { request: ApprovalRequest }) => {
+      if (next.v !== 2) throw new Error('expected V2 approval update');
+      storedRequest = next;
+      return { ok: true as const };
+    });
+    const homeDomainAction = vi.fn(async () => rawResult);
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, homeDomainAction });
+
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'a1',
+      decision: 'approve',
+    })).resolves.toEqual({
+      ok: true,
+      result: {
+        ok: true,
+        status: 'executed',
+        execution: {
+          executedAtMs: expect.any(Number),
+          ok: true,
+          result: { invitation, joinUrl: null },
+        },
+      },
+    });
+
+    // The Artifact is history, not bearer custody. The raw result is
+    // intentionally unrecoverable after the live blocking invocation is lost.
+    expect(storedRequest.execution).toEqual({
+      executedAtMs: expect.any(Number),
+      ok: true,
+      result: { invitation, joinUrl: null },
+    });
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        status: 'executed',
+        execution: { ok: true, result: { invitation, joinUrl: null } },
+      },
+    });
+    expect(homeDomainAction).toHaveBeenCalledTimes(1);
+    expect(approvalsUpdate).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     { status: 'approved', decision: 'reject' },
     { status: 'rejected', decision: 'approve' },
@@ -1515,7 +2492,7 @@ describe('createActionExecutor (approvals)', () => {
   ] as const)('rejects deciding a $status approval without mutating or executing', async ({ status, decision }) => {
     const approvalsGet = vi.fn(async () => createApprovalRequest(status));
     const approvalsUpdate = vi.fn(async () => ({ ok: true as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1532,11 +2509,11 @@ describe('createActionExecutor (approvals)', () => {
   it('does not re-execute an approval on duplicate approve delivery', async () => {
     let storedRequest = createApprovalRequest('open');
     const approvalsGet = vi.fn(async () => storedRequest);
-    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       return { ok: true as const };
     });
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
 
     const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
 
@@ -1559,7 +2536,9 @@ describe('createActionExecutor (approvals)', () => {
       },
     });
     expect(sessionSendMessage).toHaveBeenCalledTimes(1);
-    expect(approvalsUpdate).toHaveBeenCalledTimes(2);
+    // approved, executing, executed. The duplicate delivery reads the terminal
+    // row and writes nothing.
+    expect(approvalsUpdate).toHaveBeenCalledTimes(3);
   });
 
   // FINALIZATION-PLAN §3.2 activation proof: after the per-family `RUNTIME_ACTION_DISABLED_SURFACES`

@@ -70,9 +70,9 @@ describe('createActionExecutor plugin caller policy', () => {
     await expect(executor.execute('plugins.uninstall', {
       pluginId: 'acme.author',
     }, {
-      surface: 'api',
+      surface: 'plugin',
       authority: 'account_automation',
-      actionCaller: { kind: 'host' },
+      actionCaller: pluginCaller('acme.author'),
     })).resolves.toEqual({
       ok: false,
       errorCode: 'present_user_required',
@@ -83,9 +83,9 @@ describe('createActionExecutor plugin caller policy', () => {
     await expect(executor.execute('plugins.uninstall', {
       pluginId: 'acme.author',
     }, {
-      surface: 'api',
+      surface: 'plugin',
       authority: 'present_user',
-      actionCaller: { kind: 'host' },
+      actionCaller: pluginCaller('acme.author'),
     })).resolves.toEqual({
       ok: true,
       result: {

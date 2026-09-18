@@ -11,7 +11,7 @@ import {
   type AccountScopedBlobKind,
 } from './accountScopedCipherEnvelope.js';
 import { decodeBase64, encodeBase64 } from './base64.js';
-import { computeCanonicalDomainSeparatedDigest } from './canonicalDigest.js';
+import { computeCanonicalDomainSeparatedDigest, encodeCanonicalLengthDelimited } from './canonicalDigest.js';
 import { deriveKey } from './keyDerivation.js';
 import { parseSerializedJsonValue } from './serializedJsonValue.js';
 import { computeContentPublicKeyFingerprint } from '../machines/identity/installationIdentity.js';
@@ -143,6 +143,31 @@ function resolveMachineKey(material: AccountScopedCryptoMaterial): Uint8Array {
 function deriveAccountScopedSecretboxKey(params: { machineKey: Uint8Array; kind: AccountScopedBlobKind }): Uint8Array {
   const info = encodeUtf8(`happier:account_scoped:${params.kind}:v1`);
   return hmacSha512(params.machineKey, info).slice(0, 32);
+}
+
+/** Closed host-owned Reviews identity operation, separate from ciphertext keys. */
+export function deriveReviewCommentPublicationIdentityV1(params: Readonly<{
+  accountId: string;
+  mode: 'plain' | 'e2ee';
+  material: AccountScopedCryptoMaterial | null;
+  purpose: 'target' | 'plan' | 'entry' | 'verdict' | 'externalRef';
+  components: readonly string[];
+}>): string {
+  const domain = 'happier:review-comment-publication-identity:v1';
+  const parts = [params.accountId, params.purpose, ...params.components];
+  if (params.mode === 'plain') {
+    if (params.material !== null) throw new Error('review_comment_encryption_mode_mismatch');
+    return computeCanonicalDomainSeparatedDigest(domain, parts);
+  }
+  if (!params.material) throw new Error('review_comment_encryption_material_unavailable');
+  return encodeBase64(hmacSha512(
+    resolveMachineKey(params.material),
+    encodeCanonicalLengthDelimited([domain, ...parts]),
+  ).slice(0, 32), 'base64url');
+}
+
+export function reviewCommentPublicationContentKeyFingerprintV1(material: AccountScopedCryptoMaterial): string {
+  return computeContentPublicKeyFingerprint(tweetnacl.box.keyPair.fromSecretKey(resolveMachineKey(material)).publicKey);
 }
 
 /**

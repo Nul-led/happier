@@ -9,9 +9,9 @@ const MAX_WORKSPACE_REF_ID_LENGTH = 256;
 const MAX_PATH_LENGTH = 4096;
 export const WORKSPACE_SYNC_MAX_PATTERN_BYTES = 1024;
 export const WORKSPACE_SYNC_MAX_PATTERNS = 128;
-const MAX_DIGEST_LENGTH = 256;
 const MAX_ERROR_CODE_LENGTH = 256;
 const MAX_CONFLICTS = 1_000;
+export const WORKSPACE_SYNC_CONFLICT_PAGE_MAX_ITEMS = 100;
 export const WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
 
 export const WorkspaceSyncModeV1Schema = z.enum([
@@ -138,15 +138,66 @@ export type WorkspaceSyncCopyOnceV1 = z.infer<typeof WorkspaceSyncCopyOnceV1Sche
 export const WorkspaceSyncEndpointEntryKindV1Schema = z.enum(['missing', 'file', 'directory', 'symlink']);
 export type WorkspaceSyncEndpointEntryKindV1 = z.infer<typeof WorkspaceSyncEndpointEntryKindV1Schema>;
 
+const WorkspaceSyncConflictEndpointEntryKindV1Schema = z.enum([
+  ...WorkspaceSyncEndpointEntryKindV1Schema.options,
+  'unsupported',
+]);
+const WorkspaceSyncUnsupportedEntrySourceKindV1Schema = z.enum(['untracked', 'problematic', 'unknown']);
+
+// Mutagen synchronization v1 hashes file content with SHA-1 and exposes the
+// raw 20-byte digest as lowercase hexadecimal at the broker boundary.
+const WorkspaceSyncFileDigestV1Schema = z.string().regex(/^[a-f0-9]{40}$/u);
+
+/**
+ * An engine-relative path is identity-bearing data, not display/user input.
+ * Preserve its bytes exactly. Forward slash is the cross-platform engine
+ * separator; the target filesystem owner applies any additional native rules
+ * (notably Windows backslash separators and volume/ADS rejection).
+ */
+const WorkspaceSyncRelativePathV1Schema = z.string().min(1).max(MAX_PATH_LENGTH).superRefine((value, context) => {
+  const components = value.split('/');
+  if (
+    value.includes('\0')
+    || value.startsWith('/')
+    || components.some((component) => component === '' || component === '.' || component === '..')
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'workspace sync path must identify a safe root-relative descendant',
+    });
+  }
+});
+
 const WorkspaceSyncConflictEndpointV1Schema = z.object({
-  kind: WorkspaceSyncEndpointEntryKindV1Schema,
-  digest: z.string().trim().min(1).max(MAX_DIGEST_LENGTH).optional(),
+  kind: WorkspaceSyncConflictEndpointEntryKindV1Schema,
+  digest: WorkspaceSyncFileDigestV1Schema.optional(),
   size: z.number().int().nonnegative().optional(),
-}).strict();
+  sourceKind: WorkspaceSyncUnsupportedEntrySourceKindV1Schema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === 'unsupported' && value.sourceKind === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceKind'],
+      message: 'unsupported conflict entries require their bounded engine source kind',
+    });
+  } else if (value.kind !== 'unsupported' && value.sourceKind !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceKind'],
+      message: 'supported conflict entries cannot carry an unsupported source kind',
+    });
+  }
+  if (value.kind === 'unsupported' && (value.digest !== undefined || value.size !== undefined)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'unsupported conflict entries cannot claim file metadata',
+    });
+  }
+});
 
 export const WorkspaceSyncConflictV1Schema = z.object({
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
-  path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+  path: WorkspaceSyncRelativePathV1Schema,
   alpha: WorkspaceSyncConflictEndpointV1Schema,
   beta: WorkspaceSyncConflictEndpointV1Schema,
 }).strict();
@@ -188,6 +239,47 @@ export const WorkspaceSyncConflictListV1Schema = z
   });
 export type WorkspaceSyncConflictListV1 = z.infer<typeof WorkspaceSyncConflictListV1Schema>;
 
+export const WorkspaceSyncConflictPageRequestV1Schema = z.object({
+  relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  cursor: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH).optional(),
+  limit: z.number().int().positive().max(WORKSPACE_SYNC_CONFLICT_PAGE_MAX_ITEMS),
+}).strict();
+export type WorkspaceSyncConflictPageRequestV1 = z.infer<typeof WorkspaceSyncConflictPageRequestV1Schema>;
+
+const WorkspaceSyncConflictPageDataV1Schema = z.object({
+  status: z.literal('page'),
+  relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  totalCount: z.number().int().nonnegative(),
+  nextCursor: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH).nullable(),
+  conflicts: z.array(WorkspaceSyncConflictV1Schema).max(WORKSPACE_SYNC_CONFLICT_PAGE_MAX_ITEMS).readonly(),
+}).strict().superRefine((value, context) => {
+  if (value.totalCount < value.conflicts.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['totalCount'],
+      message: 'totalCount must be at least conflicts.length',
+    });
+  }
+  for (const [index, conflict] of value.conflicts.entries()) {
+    if (conflict.relationshipId !== value.relationshipId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['conflicts', index, 'relationshipId'],
+        message: 'conflict relationshipId must match the page relationshipId',
+      });
+    }
+  }
+});
+
+export const WorkspaceSyncConflictPageV1Schema = z.discriminatedUnion('status', [
+  WorkspaceSyncConflictPageDataV1Schema,
+  z.object({
+    status: z.literal('cursor_invalidated'),
+    relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  }).strict(),
+]);
+export type WorkspaceSyncConflictPageV1 = z.infer<typeof WorkspaceSyncConflictPageV1Schema>;
+
 function validateConflictDeletePrecondition(
   value: Readonly<{ expectedKind: z.infer<typeof WorkspaceSyncEndpointEntryKindV1Schema>; expectedDigest?: string }>,
   context: z.RefinementCtx,
@@ -209,12 +301,34 @@ function validateConflictDeletePrecondition(
 
 export const DeleteWorkspaceSyncConflictLoserV1Schema = z.object({
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
-  path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+  path: WorkspaceSyncRelativePathV1Schema,
   keep: z.enum(['alpha', 'beta']),
-  expectedDigest: z.string().trim().min(1).max(MAX_DIGEST_LENGTH).optional(),
+  expectedDigest: WorkspaceSyncFileDigestV1Schema.optional(),
   expectedKind: WorkspaceSyncEndpointEntryKindV1Schema,
 }).strict().superRefine(validateConflictDeletePrecondition);
 export type DeleteWorkspaceSyncConflictLoserV1 = z.infer<typeof DeleteWorkspaceSyncConflictLoserV1Schema>;
+
+/**
+ * Action-owned destructive intent. Binding the controller machine into the
+ * approved subject prevents an otherwise valid receipt from being replayed
+ * against a different controller placement.
+ */
+export const WorkspaceSyncConflictResolveActionInputV1Schema = z.object({
+  controllerMachineId: z.string().trim().min(1).max(MAX_MACHINE_ID_LENGTH),
+  request: DeleteWorkspaceSyncConflictLoserV1Schema,
+}).strict();
+export type WorkspaceSyncConflictResolveActionInputV1 = z.infer<typeof WorkspaceSyncConflictResolveActionInputV1Schema>;
+
+/**
+ * Private controller-daemon carrier for an already approved conflict Action.
+ * The receipt and its exact Action subject travel together so the daemon can
+ * revalidate the persisted approval before performing the destructive write.
+ */
+export const WorkspaceSyncConflictResolveRpcInputV1Schema = z.object({
+  actionReceiptId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  actionInput: WorkspaceSyncConflictResolveActionInputV1Schema,
+}).strict();
+export type WorkspaceSyncConflictResolveRpcInputV1 = z.infer<typeof WorkspaceSyncConflictResolveRpcInputV1Schema>;
 
 export const WorkspaceSyncRelationshipIdV1Schema = z.object({
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
@@ -227,10 +341,12 @@ export type WorkspaceSyncRelationshipIdV1 = z.infer<typeof WorkspaceSyncRelation
  * is deliberately not part of this authority boundary.
  */
 export const WorkspaceSyncTargetConflictDeleteV1Schema = z.object({
+  actionReceiptId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  actionInput: WorkspaceSyncConflictResolveActionInputV1Schema,
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   workspaceRefId: z.string().trim().min(1).max(MAX_WORKSPACE_REF_ID_LENGTH),
-  path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
-  expectedDigest: z.string().trim().min(1).max(MAX_DIGEST_LENGTH).optional(),
+  path: WorkspaceSyncRelativePathV1Schema,
+  expectedDigest: WorkspaceSyncFileDigestV1Schema.optional(),
   expectedKind: WorkspaceSyncEndpointEntryKindV1Schema,
 }).strict().superRefine(validateConflictDeletePrecondition);
 export type WorkspaceSyncTargetConflictDeleteV1 = z.infer<typeof WorkspaceSyncTargetConflictDeleteV1Schema>;
@@ -238,8 +354,8 @@ export type WorkspaceSyncTargetConflictDeleteV1 = z.infer<typeof WorkspaceSyncTa
 export const ReadWorkspaceSyncFileV1Schema = z.object({
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   side: z.enum(['alpha', 'beta']),
-  path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
-  expectedDigest: z.string().trim().min(1).max(MAX_DIGEST_LENGTH).optional(),
+  path: WorkspaceSyncRelativePathV1Schema,
+  expectedDigest: WorkspaceSyncFileDigestV1Schema.optional(),
   maxBytes: z.number().int().positive().max(WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES)
     .default(WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES),
 }).strict();
@@ -316,6 +432,10 @@ export const WorkspaceSyncTargetBootstrapPrepareV1Schema = z.object({
    * stolen proof, which would make the binding prove nothing.
    */
   targetReplacementApproval: HandoffTargetReplacementApprovalV1Schema.optional(),
+  /** Durable Protocol Action artifact authorizing the exact proof and input below. */
+  targetReplacementApprovalReceiptId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH).optional(),
+  /** Exact canonical `session.handoff` input stored in the approving artifact. */
+  targetReplacementApprovalActionInput: z.unknown().optional(),
 }).strict().superRefine((value, context) => {
   const transient = value.transientRelationship;
   const createsTarget = (value.owner.kind === 'copy_once' && value.createIfMissing) || transient !== undefined;
@@ -334,6 +454,19 @@ export const WorkspaceSyncTargetBootstrapPrepareV1Schema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['targetReplacementApproval'],
       message: 'destructive target-reuse approval is valid only for source materialization',
+    });
+  }
+  const replacementAuthorityParts = [
+    value.targetReplacementApproval,
+    value.targetReplacementApprovalReceiptId,
+    value.targetReplacementApprovalActionInput,
+  ];
+  if (replacementAuthorityParts.some((part) => part !== undefined)
+    && replacementAuthorityParts.some((part) => part === undefined)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetReplacementApprovalReceiptId'],
+      message: 'target replacement approval requires its Action receipt and exact approved input',
     });
   }
   if (!transient) return;
@@ -393,14 +526,13 @@ export type WorkspaceSyncTargetBootstrapReleaseResultV1 = z.infer<typeof Workspa
 export const WorkspaceSyncTargetFileReadV1Schema = z.object({
   relationshipId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   workspaceRefId: z.string().trim().min(1).max(MAX_WORKSPACE_REF_ID_LENGTH),
-  path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
-  expectedDigest: z.string().trim().min(1).max(MAX_DIGEST_LENGTH).optional(),
+  path: WorkspaceSyncRelativePathV1Schema,
+  expectedDigest: WorkspaceSyncFileDigestV1Schema.optional(),
   maxBytes: z.number().int().positive().max(WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES)
     .default(WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES),
 }).strict();
 export type WorkspaceSyncTargetFileReadV1 = z.infer<typeof WorkspaceSyncTargetFileReadV1Schema>;
 
-const WorkspaceSyncFileDigestV1Schema = z.string().trim().min(1).max(MAX_DIGEST_LENGTH);
 const WorkspaceSyncFileSizeV1Schema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 export const ReadWorkspaceSyncFileResultV1Schema = z.discriminatedUnion('status', [
@@ -452,14 +584,40 @@ export const WorkspaceSyncStatusV1Schema = z.object({
 }).strict();
 export type WorkspaceSyncStatusV1 = z.infer<typeof WorkspaceSyncStatusV1Schema>;
 
+const WorkspaceSyncReadyComponentV1Schema = z.object({ state: z.literal('ready') }).strict();
+const WorkspaceSyncUnavailableComponentV1Schema = z.object({
+  state: z.literal('unavailable'),
+  errorCode: z.string().trim().min(1).max(MAX_ERROR_CODE_LENGTH),
+}).strict();
+
+export const WorkspaceSyncRuntimeReadinessV1Schema = z.object({
+  engine: z.discriminatedUnion('state', [
+    z.object({ state: z.literal('starting') }).strict(),
+    WorkspaceSyncReadyComponentV1Schema,
+    WorkspaceSyncUnavailableComponentV1Schema,
+  ]),
+  carrier: z.discriminatedUnion('state', [
+    WorkspaceSyncReadyComponentV1Schema,
+    z.object({
+      state: z.literal('unavailable'),
+      errorCode: z.literal('machine_carrier_unavailable'),
+    }).strict(),
+  ]),
+}).strict();
+export type WorkspaceSyncRuntimeReadinessV1 = z.infer<typeof WorkspaceSyncRuntimeReadinessV1Schema>;
+
 /**
- * One bounded derived-status publication carried by the existing Machine
- * daemon-state channel. The enclosing daemon-state version provides ordering;
- * this event deliberately carries no independent cursor or persisted history.
+ * One bounded readiness/status publication carried by the existing Machine
+ * daemon-state channel. Readiness is always present so a client never infers
+ * engine or carrier availability from paths or machine metadata; relationship
+ * status is present only when the daemon has one to project. The enclosing
+ * daemon-state version provides ordering and this event carries no independent
+ * cursor or persisted history.
  */
 export const WorkspaceSyncRuntimeEventV1Schema = z.object({
   v: z.literal(1),
-  status: WorkspaceSyncStatusV1Schema,
+  readiness: WorkspaceSyncRuntimeReadinessV1Schema,
+  status: WorkspaceSyncStatusV1Schema.optional(),
 }).strict();
 export type WorkspaceSyncRuntimeEventV1 = z.infer<typeof WorkspaceSyncRuntimeEventV1Schema>;
 

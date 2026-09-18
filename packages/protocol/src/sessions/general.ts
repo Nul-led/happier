@@ -41,6 +41,11 @@ export {
   settleSessionInputRequestV1,
 } from './messages/sessionInputAdmission.js';
 export {
+  SessionRunPromptContextV1Schema,
+  SessionInputPromptProvenanceV1Schema,
+  type SessionRunPromptContextV1,
+  type SessionInputPromptProvenanceV1,
+  resolveSessionInputPromptProvenanceV1,
   renderSessionInputContextBlockV1,
   renderSessionInputContextPromptV1,
 } from './messages/sessionInputPromptContextV1.js';
@@ -113,3 +118,12 @@ export type {
 export {
   materializeRecipientOperationRequestV1,
 } from '../plugins/recipientContractV1.js';
+export * from './messages/sessionPendingExecutionRunMachineAdmissionV2.js';
+export {
+  ParticipantExecutionRunRecipientRoutingIdentityV1Schema,
+  ParticipantRecipientRoutingIdentityV1Schema,
+  normalizeParticipantRecipientRoutingIdentityV1,
+  withParticipantRecipientV1,
+  readParticipantRecipientRoutingIdentityV1,
+  type ParticipantRecipientRoutingIdentityV1,
+} from '../messages/structured/participantMessageV1.js';

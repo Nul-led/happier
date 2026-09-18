@@ -11,24 +11,44 @@ function dedupeStrings(values: ReadonlyArray<string>): string[] {
   return out;
 }
 
+const SESSION_MCP_SELECTION_V1_FIELDS = {
+  v: z.literal(1).default(1),
+  managedServersEnabled: z.boolean().default(true),
+  forceIncludeServerIds: z.array(z.string().min(1)).default([]),
+  forceExcludeServerIds: z.array(z.string().min(1)).default([]),
+} as const;
+
+function normalizeSessionMcpSelectionV1(value: {
+  v: 1;
+  managedServersEnabled: boolean;
+  forceIncludeServerIds: string[];
+  forceExcludeServerIds: string[];
+}) {
+  return {
+    ...value,
+    forceIncludeServerIds: dedupeStrings(value.forceIncludeServerIds),
+    forceExcludeServerIds: dedupeStrings(value.forceExcludeServerIds),
+  };
+}
+
+/** Closed current authoring/executable-declaration input. */
+export const SessionMcpSelectionAuthoringV1Schema = z
+  .object(SESSION_MCP_SELECTION_V1_FIELDS)
+  .strict()
+  .transform(normalizeSessionMcpSelectionV1);
+
+export type SessionMcpSelectionAuthoringV1 = z.infer<typeof SessionMcpSelectionAuthoringV1Schema>;
+
+/** Permissive legacy Session ingress retained for supported stored/session inputs. */
 export const SessionMcpSelectionV1Schema = z
   .preprocess(
     (raw) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
       return raw;
     },
-    z.object({
-      v: z.literal(1).default(1),
-      managedServersEnabled: z.boolean().default(true),
-      forceIncludeServerIds: z.array(z.string().min(1)).default([]),
-      forceExcludeServerIds: z.array(z.string().min(1)).default([]),
-    }),
+    z.object(SESSION_MCP_SELECTION_V1_FIELDS),
   )
-  .transform((value) => ({
-    ...value,
-    forceIncludeServerIds: dedupeStrings(value.forceIncludeServerIds),
-    forceExcludeServerIds: dedupeStrings(value.forceExcludeServerIds),
-  }));
+  .transform(normalizeSessionMcpSelectionV1);
 
 export type SessionMcpSelectionV1 = z.infer<typeof SessionMcpSelectionV1Schema>;
 

@@ -5,6 +5,7 @@ import {
 } from '../../external/sourceCatalog.js';
 import { RuntimeDescriptorV1Schema } from '../../metadata/runtimeDescriptorV1.js';
 import { AgentExecutionTargetV1Schema } from '../../../agents/executionTargetV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../../strings/opaqueIdentifier.js';
 
 import {
   SessionHandoffStorageModeSchema,
@@ -174,7 +175,8 @@ const SessionHandoffResumePlanSchema = z
     agent: ExternalSessionAgentIdSchema,
     /** Canonical current target; absent only on supported predecessor responses. */
     agentTarget: AgentExecutionTargetV1Schema.optional(),
-    resume: z.string().min(1).max(4096),
+    /** The Agent's own resume token, handed back to its issuer byte-for-byte. */
+    resume: NonBlankOpaqueIdentifierSchema.max(4096),
     environmentVariables: z.record(z.string().min(1).max(128), z.string().max(16 * 1024)).optional(),
     transcriptStorage: z.enum(['direct', 'persisted']),
     approvedNewDirectoryCreation: z.literal(true),
@@ -308,7 +310,7 @@ export const SessionHandoffActionResultV1Schema = z
   .object({
     handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     status: SessionHandoffStatusSchema,
-    workspace: HandoffWorkspaceOutcomeV1Schema.optional(),
+    workspace: HandoffWorkspaceOutcomeV1Schema,
     warning: z
       .object({
         code: z.string().trim().min(1).max(128),
@@ -324,7 +326,7 @@ export const SessionHandoffPrepareTargetResponseSchema = z
   .object({
     handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     status: SessionHandoffStatusSchema,
-    remoteSessionId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
+    remoteSessionId: NonBlankOpaqueIdentifierSchema.max(MAX_HANDOFF_ID_LENGTH).optional(),
     directSource: ExternalSessionsSourceSchema.optional(),
     runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
     resume: SessionHandoffResumePlanSchema.optional(),
@@ -337,7 +339,7 @@ export const SessionHandoffPrepareTargetResultGetSuccessResponseSchema = z
   .object({
     handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     status: SessionHandoffStatusSchema,
-    remoteSessionId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
+    remoteSessionId: NonBlankOpaqueIdentifierSchema.max(MAX_HANDOFF_ID_LENGTH),
     directSource: ExternalSessionsSourceSchema,
     runtimeDescriptorV1: RuntimeDescriptorV1Schema.optional(),
     resume: SessionHandoffResumePlanSchema,

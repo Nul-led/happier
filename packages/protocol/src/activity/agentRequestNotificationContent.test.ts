@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildAgentRequestNotificationContent } from './agentRequestNotificationContent.js';
 
 describe('buildAgentRequestNotificationContent', () => {
-  it('builds permission-request payloads with sanitized tool details', () => {
+  it('builds permission-request payloads with full tool details', () => {
     expect(
       buildAgentRequestNotificationContent({
         kind: 'permission',
@@ -16,7 +16,7 @@ describe('buildAgentRequestNotificationContent', () => {
       }),
     ).toEqual({
       title: 'Fix prod issue',
-      body: 'Claude asks permission to use Bash\nCommand: git',
+      body: 'Claude asks permission to use Bash\nCommand: git status --short && echo secret-token',
       data: {
         sessionId: 'session-1',
         requestId: 'request-1',
@@ -24,7 +24,7 @@ describe('buildAgentRequestNotificationContent', () => {
         type: 'permission_request',
         kind: 'permission',
       },
-      toolDetails: 'Command: git',
+      toolDetails: 'Command: git status --short && echo secret-token',
     });
   });
 

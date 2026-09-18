@@ -7,6 +7,7 @@ export {
   isSessionRuntimeActivityProjectionIdleForPendingDrain,
   mergeSessionRuntimeActivityProjection,
   parseSessionRuntimeActivityProjectionFields,
+  refineRuntimeActivityProjectionFields,
   readSessionRuntimeActivityProjectionForPendingDrain,
   type RuntimeIdleAdmission,
   type SessionRuntimeActivityProjectionForPendingDrain,

@@ -15,6 +15,44 @@ const requester = Object.freeze({
 });
 
 describe('host transient interaction lifecycle owner', () => {
+  it('stamps execution-run scope and settles pending requests when that exact run ends', async () => {
+    const executionRun = new AbortController();
+    let request!: InteractionTransientRequestV1;
+    const owner = createTransientInteractionOwner({
+      scope: Object.freeze({ kind: 'execution_run', executionRunId: 'run-1' }),
+      executionRunSignal: executionRun.signal,
+      isGenerationCurrent: () => true,
+      deadlineMs: null,
+      createRequestId: () => 'run-request-1',
+      present: async (nextRequest) => {
+        request = nextRequest;
+        return await new Promise<InteractionTransientResultV1>(() => undefined);
+      },
+    });
+
+    const pending = owner.request({
+      kind: 'confirmation',
+      title: 'Continue?',
+      message: 'Continue this detached run?',
+    }, { requester });
+
+    await vi.waitFor(() => expect(request).toBeDefined());
+    expect(request).toMatchObject({
+      requestId: 'run-request-1',
+      scope: { kind: 'execution_run', executionRunId: 'run-1' },
+      requester,
+    });
+    expect(request).not.toHaveProperty('sessionId');
+
+    executionRun.abort();
+    await expect(pending).resolves.toEqual({
+      requestId: 'run-request-1',
+      kind: 'confirmation',
+      status: 'sessionEnded',
+    });
+    expect(owner.current()).toEqual([]);
+  });
+
   it('stamps app scope, follows the present-user invocation, and rejects a late answer', async () => {
     const invocation = new AbortController();
     let request!: InteractionTransientRequestV1;
@@ -92,5 +130,24 @@ describe('host transient interaction lifecycle owner', () => {
         status: 'unavailable',
       });
     }
+  });
+
+  it('propagates only presenter failures classified by the host and retires the request', async () => {
+    const capacityError = Object.assign(new Error('capacity'), { code: 'capacity' });
+    const owner = createTransientInteractionOwner({
+      scope: Object.freeze({ kind: 'app' }),
+      isGenerationCurrent: () => true,
+      deadlineMs: 1_000,
+      createRequestId: () => 'app-capacity-1',
+      propagatePresentationError: (error) => error === capacityError,
+      present: async () => { throw capacityError; },
+    });
+
+    await expect(owner.request({
+      kind: 'confirmation',
+      title: 'Continue?',
+      message: 'Continue with the current operation?',
+    }, { requester })).rejects.toBe(capacityError);
+    expect(owner.current()).toEqual([]);
   });
 });

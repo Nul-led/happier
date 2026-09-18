@@ -7,9 +7,11 @@ import {
 } from '../contributionIdentity.js';
 import { PluginIdSchema } from '../pluginId.js';
 import {
-  cloneStrictPluginJsonValue,
-  defineProtocolCanonicalJsonValue,
-  measureSerializedValidatedStrictPluginJsonUtf8Bytes,
+  defineProtocolJsonValue,
+  defineProtocolLiteral,
+  defineProtocolObject,
+  defineProtocolUnion,
+  defineProtocolUtf8String,
   type ProtocolComposableSchema,
 } from '../actions/protocolComposableSchema.js';
 import { asProtocolZod } from '../actions/internalProtocolZodAdapter.js';
@@ -23,41 +25,26 @@ const PluginIdZodSchema = asProtocolZod(PluginIdSchema);
 export const PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1 = 8_192;
 
 /** A bounded `openSurface` launch-input value. */
-export const PluginUiLaunchInputV1Schema = z.unknown().transform((value, ctx): PluginUiJsonValueV1 => {
-  let normalized: PluginUiJsonValueV1;
-  try {
-    normalized = cloneStrictPluginJsonValue(value, 'input') as PluginUiJsonValueV1;
-  } catch {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Plugin UI launch input must contain strict JSON data.',
-    });
-    return z.NEVER;
-  }
-  if (measureSerializedValidatedStrictPluginJsonUtf8Bytes(
-    normalized,
-    'input',
-    PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1,
-  ) > PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Plugin UI launch input exceeds the ${PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1}-byte canonical UTF-8 limit.`,
-      });
-  }
-  return normalized;
+const launchInput = defineProtocolJsonValue({
+  maxSerializedUtf8Bytes: PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1,
 });
+export const PluginUiLaunchInputV1Schema = asProtocolZod(launchInput);
 export type PluginUiLaunchInputV1 = PluginUiJsonValueV1;
 
 /** The bound on a full-page destination's plugin-local location. */
 export const PLUGIN_UI_SUB_PATH_MAX_UTF8_BYTES_V1 = 1_024;
 
+// Validate the authored spelling. Slash canonicalization belongs to the
+// navigation operation, not to a data-only composable command boundary.
+const subPath = defineProtocolUtf8String({
+  maxUtf8Bytes: PLUGIN_UI_SUB_PATH_MAX_UTF8_BYTES_V1,
+  pattern: '^(?![\\s\\S]*(?:^|/)\\.{1,2}(?:/|$))[^\\u0000-\\u001f\\u007f]*$(?![\\s\\S])',
+});
+
 /** Canonicalize a plugin-local sub-path without permitting namespace escape. */
 export function normalizePluginUiSubPathV1(value: string): string | null {
-  if (new TextEncoder().encode(value).byteLength > PLUGIN_UI_SUB_PATH_MAX_UTF8_BYTES_V1) return null;
-  // eslint-disable-next-line no-control-regex -- control characters are exactly what this rejects.
-  if (/[\u0000-\u001f\u007f]/u.test(value)) return null;
+  if (!subPath.safeParse(value).success) return null;
   const segments = value.split('/').filter((segment) => segment.length > 0);
-  if (segments.some((segment) => segment === '.' || segment === '..')) return null;
   return segments.join('/');
 }
 
@@ -77,14 +64,12 @@ export type PluginUiSubPathV1 = string;
 
 /** Instance identity is bounded and opaque to the host's route/pane owner. */
 export const PLUGIN_UI_INSTANCE_KEY_MAX_UTF8_BYTES_V1 = 256;
-export const PluginUiInstanceKeyV1Schema = z.string().trim().min(1).superRefine((value, ctx) => {
-  if (new TextEncoder().encode(value).byteLength > PLUGIN_UI_INSTANCE_KEY_MAX_UTF8_BYTES_V1) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `Plugin UI instance key exceeds the ${PLUGIN_UI_INSTANCE_KEY_MAX_UTF8_BYTES_V1}-byte UTF-8 limit.`,
-    });
-  }
+const instanceKey = defineProtocolUtf8String({
+  minLength: 1,
+  maxUtf8Bytes: PLUGIN_UI_INSTANCE_KEY_MAX_UTF8_BYTES_V1,
+  pattern: '^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])',
 });
+export const PluginUiInstanceKeyV1Schema = asProtocolZod(instanceKey);
 export type PluginUiInstanceKeyV1 = z.infer<typeof PluginUiInstanceKeyV1Schema>;
 
 /**
@@ -95,36 +80,39 @@ export type PluginUiInstanceKeyV1 = z.infer<typeof PluginUiInstanceKeyV1Schema>;
  * contribution schemas can use it without introducing a public-UI-barrel
  * initialization cycle.
  */
-export const PluginUiSemanticExecuteActionCommandV1Schema = z.object({
-  kind: z.literal('executeAction'),
-  action: PluginContributionLocalIdZodSchema,
-  input: PluginUiLaunchInputV1Schema.optional(),
-}).strict();
+const executeActionCommand = defineProtocolObject({
+  kind: defineProtocolLiteral('executeAction'),
+  action: PluginContributionLocalIdSchema,
+  input: launchInput.optional(),
+}, { policy: 'closed' });
+export const PluginUiSemanticExecuteActionCommandV1Schema = asProtocolZod(executeActionCommand);
 export type PluginUiSemanticExecuteActionCommandV1 =
   z.infer<typeof PluginUiSemanticExecuteActionCommandV1Schema>;
 
 /** A local same-plugin destination id or an exact qualified destination. */
-export const PluginUiSemanticDestinationReferenceV1Schema = z.union([
-  PluginContributionLocalIdZodSchema,
-  PluginContributionIdentityV1ZodSchema,
+const destinationReference = defineProtocolUnion([
+  PluginContributionLocalIdSchema,
+  PluginContributionIdentityV1Schema,
 ]);
+export const PluginUiSemanticDestinationReferenceV1Schema = asProtocolZod(destinationReference);
 export type PluginUiSemanticDestinationReferenceV1 =
   z.infer<typeof PluginUiSemanticDestinationReferenceV1Schema>;
 
-export const PluginUiSemanticOpenSurfaceCommandV1Schema = z.object({
-  kind: z.literal('openSurface'),
-  destination: PluginUiSemanticDestinationReferenceV1Schema,
-  input: PluginUiLaunchInputV1Schema.optional(),
-  subPath: PluginUiSubPathV1Schema.optional(),
-  instanceKey: PluginUiInstanceKeyV1Schema.optional(),
-}).strict();
+const openSurfaceCommand = defineProtocolObject({
+  kind: defineProtocolLiteral('openSurface'),
+  destination: destinationReference,
+  input: launchInput.optional(),
+  subPath: subPath.optional(),
+  instanceKey: instanceKey.optional(),
+}, { policy: 'closed' });
+export const PluginUiSemanticOpenSurfaceCommandV1Schema = asProtocolZod(openSurfaceCommand);
 export type PluginUiSemanticOpenSurfaceCommandV1 =
   z.infer<typeof PluginUiSemanticOpenSurfaceCommandV1Schema>;
 
-export const PluginUiSemanticCommandV1Schema = z.discriminatedUnion('kind', [
-  PluginUiSemanticExecuteActionCommandV1Schema,
-  PluginUiSemanticOpenSurfaceCommandV1Schema,
-]);
+export const PluginUiSemanticCommandV1Schema = asProtocolZod(defineProtocolUnion([
+  executeActionCommand,
+  openSurfaceCommand,
+]));
 export type PluginUiSemanticCommandV1 =
   z.infer<typeof PluginUiSemanticCommandV1Schema>;
 
@@ -136,20 +124,16 @@ export type PluginUiSemanticCommandV1 =
  * bounded JSON value. The union stays the only parser, so a `null`, `{}`,
  * missing-discriminator, unknown-key or namespace-escaping command is refused
  * by the same owner that refuses one on a session header action, and no second
- * grammar for the command exists in the composable DSL.
+ * grammar for the command exists alongside the composable DSL. Instance keys
+ * are admitted only in canonical unpadded form; sub-path spellings are
+ * normalized only by the navigation operation below.
  *
  * The caller owns the byte bound because it is the boundary the value crosses.
  */
 export function definePluginUiSemanticCommandProtocolSchemaV1(
   options: Readonly<{ maxSerializedUtf8Bytes: number }>,
 ): ProtocolComposableSchema<PluginUiSemanticCommandV1, PluginUiSemanticCommandV1> {
-  return defineProtocolCanonicalJsonValue<PluginUiSemanticCommandV1>({
-    maxSerializedUtf8Bytes: options.maxSerializedUtf8Bytes,
-    parse: (value) => {
-      const parsed = PluginUiSemanticCommandV1Schema.safeParse(value);
-      return parsed.success ? parsed.data : null;
-    },
-  });
+  return defineProtocolUnion([executeActionCommand, openSurfaceCommand], options);
 }
 
 /**
@@ -238,7 +222,7 @@ export function normalizePluginUiSemanticCommandV1(
     kind: 'openSurface' as const,
     destination: Object.freeze(destination),
     ...(command.input === undefined ? {} : { input: command.input }),
-    ...(command.subPath === undefined ? {} : { subPath: command.subPath }),
+    ...(command.subPath === undefined ? {} : { subPath: normalizePluginUiSubPathV1(command.subPath)! }),
     ...(command.instanceKey === undefined ? {} : { instanceKey: command.instanceKey }),
   });
 }

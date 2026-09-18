@@ -248,8 +248,14 @@ describe('Plugin Account KV logical-key row algebra', () => {
     });
     const pending = clonePluginAccountKvRowV1(initial);
     setPluginAccountKvEntryV1(pending, 'derived', 6, undefined);
-    const write = vi.fn(async () => 'updated' as const);
-    const assertCurrent = vi.fn(() => undefined);
+    let current = true;
+    const write = vi.fn(async () => {
+      current = false;
+      return 'updated' as const;
+    });
+    const assertCurrent = () => {
+      if (!current) throw new Error('Account retired after the CAS committed');
+    };
 
     await expect(commitPluginAccountKvMutationV1({
       snapshot: { revision: 4, row: initial },
@@ -260,7 +266,6 @@ describe('Plugin Account KV logical-key row algebra', () => {
 
     expect(write).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith({ revision: 4, row: initial }, pending);
-    expect(assertCurrent).toHaveBeenCalledTimes(2);
   });
 
   it('advances one key version per write and keeps a deleted key revivable at its next version', () => {

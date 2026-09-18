@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
+import { ExecutionRunResultContractV1Schema } from './resultContractV1.js';
+import { HappierStructuredInputV1Schema } from '../../runtime/input/structuredInputV1.js';
+export {
+  ExecutionRunRequestedConfigurationSchema,
+  projectExecutionRunRequestedConfiguration,
+  type ExecutionRunRequestedConfiguration,
+} from './requestedConfiguration.js';
+
 import {
   ExecutionRunClassSchema,
   type ExecutionRunClass,
@@ -7,6 +16,8 @@ import {
   type ExecutionRunDisplay,
   ExecutionRunLaunchOriginSchema,
   type ExecutionRunLaunchOrigin,
+  ExecutionRunDraftCorrelationIdSchema,
+  type ExecutionRunDraftCorrelationId,
   ExecutionRunIntentSchema,
   type ExecutionRunIntent,
   ExecutionRunKindSchema,
@@ -19,6 +30,10 @@ import {
   type ExecutionRunVoiceAgentIntentInputV1,
   EXECUTION_RUN_TASK_INSTRUCTIONS_MAX_CHARS,
   ExecutionRunTaskIntentInputV1Schema,
+  ExecutionRunAgentIntentInputV1Schema,
+  type ExecutionRunAgentIntentInputV1,
+  ExecutionRunInitialInputV1Schema,
+  type ExecutionRunInitialInputV1,
   type ExecutionRunTaskIntentInputV1,
   ExecutionRunResumeHandleSchema,
   type ExecutionRunResumeHandle,
@@ -46,6 +61,10 @@ import {
   normalizeLegacyExecutionRunBackendTargetInput,
 } from './startRequest.js';
 export {
+  ExecutionRunTeamCredentialSessionBindingConsentV1Schema,
+  type ExecutionRunTeamCredentialSessionBindingConsentV1,
+} from './startRequest.js';
+export {
   ExecutionRunTransportErrorCodeSchema,
   ExecutionRunStartRunCreationSchema,
   ExecutionRunStartFailureDetailsV1Schema,
@@ -55,6 +74,8 @@ export {
   ExecutionRunListRequestSchema,
   ExecutionRunErrorSchema,
   ExecutionRunTranscriptSchema,
+  ExecutionRunInputTurnV1Schema,
+  ExecutionRunTurnResultV1Schema,
   ExecutionRunPublicStateSchema,
   ExecutionRunListResponseSchema,
   ExecutionRunGetRequestSchema,
@@ -64,6 +85,21 @@ export {
   ExecutionRunSendResponseSchema,
   ExecutionRunStopResponseSchema,
 } from './responseSchemas.js';
+export {
+  ExecutionRunInteractionV1Schema,
+} from './executionRunInteractionV1.js';
+export type {
+  ExecutionRunInteractionV1,
+} from './executionRunInteractionV1.js';
+export {
+  ExecutionRunLifecycleV1Schema,
+  type ExecutionRunLifecycleV1,
+} from './executionRunLifecycleV1.js';
+export {
+  buildExecutionRunCompletionInputV1,
+  ExecutionRunCompletionV1Schema,
+  type ExecutionRunCompletionV1,
+} from './completionInputV1.js';
 export type {
   ExecutionRunTransportErrorCode,
   ExecutionRunStartRunCreation,
@@ -72,6 +108,8 @@ export type {
   ExecutionRunListRequest,
   ExecutionRunError,
   ExecutionRunTranscript,
+  ExecutionRunInputTurnV1,
+  ExecutionRunTurnResultV1,
   ExecutionRunPublicState,
   ExecutionRunListResponse,
   ExecutionRunGetRequest,
@@ -84,7 +122,6 @@ export type {
 export {
   ExecutionRunTerminalStatusSchema,
   isExecutionRunTerminalStatus,
-  normalizeExecutionRunWaitPollIntervalMs,
   normalizeExecutionRunWaitTimeoutMs,
   waitForExecutionRunTerminal,
   type ExecutionRunTerminalStatus,
@@ -113,10 +150,13 @@ export {
   ExecutionRunResumeHandleSchema,
   ExecutionRunDisplaySchema,
   ExecutionRunLaunchOriginSchema,
+  ExecutionRunDraftCorrelationIdSchema,
   ExecutionRunReplaySeedRequestSchema,
   ExecutionRunVoiceAgentIntentInputV1Schema,
   EXECUTION_RUN_TASK_INSTRUCTIONS_MAX_CHARS,
   ExecutionRunTaskIntentInputV1Schema,
+  ExecutionRunAgentIntentInputV1Schema,
+  ExecutionRunInitialInputV1Schema,
   ExecutionRunScmCommitMessageScopeV1Schema,
   ExecutionRunScmCommitMessageInputV1Schema,
   ExecutionRunScmCommitMessageResultV1Schema,
@@ -137,9 +177,12 @@ export type {
   ExecutionRunResumeHandle,
   ExecutionRunDisplay,
   ExecutionRunLaunchOrigin,
+  ExecutionRunDraftCorrelationId,
   ExecutionRunReplaySeedRequest,
   ExecutionRunVoiceAgentIntentInputV1,
   ExecutionRunTaskIntentInputV1,
+  ExecutionRunAgentIntentInputV1,
+  ExecutionRunInitialInputV1,
   ExecutionRunScmCommitMessageScopeV1,
   ExecutionRunScmCommitMessageInputV1,
   ExecutionRunScmCommitMessageResultV1,
@@ -149,16 +192,62 @@ export type {
   ExecutionRunDetachedStartRequestV1,
 };
 
+export {
+  ExecutionRunResultContractV1Schema,
+  type ExecutionRunResultContractV1,
+} from './resultContractV1.js';
+
 export const ExecutionRunSendRequestSchema = z.object({
   runId: z.string().min(1),
   message: z.string().min(1),
+  localInputId: z.string().trim().min(1).optional(),
+  resultContract: ExecutionRunResultContractV1Schema.optional(),
+  /** Canonical host-owned structured input for this native turn. */
+  structuredInput: HappierStructuredInputV1Schema.optional(),
   resume: z.boolean().optional(),
   delivery: z.enum(['prompt', 'steer_if_supported', 'interrupt']).optional(),
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  if (value.resultContract && !value.localInputId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['localInputId'],
+      message: 'resultContract requires exact localInputId correspondence',
+    });
+  }
+});
 export type ExecutionRunSendRequest = z.infer<typeof ExecutionRunSendRequestSchema>;
 
 export const ExecutionRunStopRequestSchema = z.object({ runId: z.string().min(1) }).passthrough();
 export type ExecutionRunStopRequest = z.infer<typeof ExecutionRunStopRequestSchema>;
+
+export const ExecutionRunCancelTurnRequestSchema = z.object({
+  runId: z.string().min(1),
+  occurrenceId: z.string().min(1),
+  turnId: z.string().min(1),
+}).strict();
+export type ExecutionRunCancelTurnRequest = z.infer<typeof ExecutionRunCancelTurnRequestSchema>;
+
+export const ExecutionRunCancelTurnResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    status: z.enum(['requested', 'already_requested']),
+    runId: z.string().min(1),
+    occurrenceId: z.string().min(1),
+    turnId: z.string().min(1),
+  }).strict(),
+  z.object({
+    ok: z.literal(false),
+    error: z.string().min(1),
+    errorCode: z.enum([
+      'execution_run_not_found',
+      'execution_run_not_current',
+      'execution_run_turn_not_active',
+      'execution_run_cancel_unsupported',
+      'execution_run_cancel_failed',
+    ]),
+  }).strict(),
+]);
+export type ExecutionRunCancelTurnResponse = z.infer<typeof ExecutionRunCancelTurnResponseSchema>;
 
 export const ExecutionRunEnsureRequestSchema = z.object({
   runId: z.string().min(1),

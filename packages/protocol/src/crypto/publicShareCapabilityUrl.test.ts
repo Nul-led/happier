@@ -3,6 +3,25 @@ import { describe, expect, it } from 'vitest';
 import { redactPublicShareCapabilityUrl } from './publicShareCapabilityUrl.js';
 
 describe('redactPublicShareCapabilityUrl', () => {
+  it('templates Team invitation tokens while preserving the nonsecret Home target', () => {
+    for (const token of ['SENTINEL_TEAM_INVITATION', 'malformed%2Ftoken']) {
+      expect(redactPublicShareCapabilityUrl(`https://app.example.test/join/${token}?target=home-descriptor`)).toBe(
+        'https://app.example.test/join/:token?target=home-descriptor',
+      );
+    }
+  });
+
+  it('templates native email verification and password-reset bearers', () => {
+    const secret = 'SENTINEL_NATIVE_AUTH_BEARER';
+    expect(redactPublicShareCapabilityUrl(
+      `https://app.example.test/auth/email/verify/${secret}`,
+    )).toBe('https://app.example.test/auth/email/verify/:token');
+    expect(redactPublicShareCapabilityUrl(
+      `/auth/password/reset/${secret}?server=https%3A%2F%2Fhome.example.test`,
+    )).toBe('/auth/password/reset/:token?server=https%3A%2F%2Fhome.example.test');
+    expect(redactPublicShareCapabilityUrl('/auth/password/reset')).toBe('/auth/password/reset');
+  });
+
   it('templates only the public-share bearer capability segment', () => {
     const secret = 'SENTINEL_PUBLIC_SHARE_CAPABILITY';
     expect(redactPublicShareCapabilityUrl(`/v1/public-share/${secret}`)).toBe('/v1/public-share/:token');

@@ -1,22 +1,39 @@
 import { z } from 'zod';
 import { sha256 } from '@noble/hashes/sha2';
 
-import { resolveEffectivePermissionMode } from '../../actions/permissionPrivilege.js';
+import {
+  assertNonEscalatingPermissionMode,
+  resolveEffectivePermissionMode,
+} from '../../actions/permissionPrivilege.js';
 import type { ActionSurfaces } from '../../actions/metadata.js';
 import { encodeBase64 } from '../../crypto/base64.js';
 import { readConversationTurnOriginV1FromMessageMeta } from '../../messages/structured/conversationTurnOriginV1.js';
 import { SubagentLaunchV1Schema } from '../../messages/structured/subagentLaunchV1.js';
+import { ParticipantRecipientRoutingIdentityV1Schema } from '../../messages/structured/participantMessageV1.js';
 import { PluginContributionLocalIdSchema } from '../../plugins/contributionIdentity.js';
 import { PluginIdSchema } from '../../plugins/pluginId.js';
 import { AgentPermissionIntentV1Schema } from '../../runtime/permissionIntentV1.js';
 import { SessionIdSchema, TurnIdSchema } from '../idsV1.js';
+import {
+  SessionMutationEqualityBase64UrlSha256V1Schema,
+  SessionMutationEqualityEvidenceV1Schema,
+  serializeCanonicalJsonForSessionMutationEqualityV1,
+} from '../mutations/sessionMutationEqualityV1.js';
 import { PendingLocalIdSchema, readPendingLocalId } from '../pending/pendingLocalId.js';
 import { PendingRequestedActionV1Schema, type PendingRequestedActionV1 } from '../pending/pendingRequestedActionV1.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
+import { preservedBoundedNfcString } from '../../strings/preservedBoundedNfcString.js';
+import { WorkflowInvocationRecordIdSchema } from '../../workflows/workflowIdsV1.js';
 import {
   PluginSessionInputAttachmentsV1Schema,
   requireSessionInputContent,
 } from './sessionInputAuthoringV1.js';
+import { SessionInputAdmissionRejectionCodeV1Schema } from './sessionInputAdmissionRejectionV1.js';
+export {
+  SESSION_INPUT_ADMISSION_REJECTION_CODES_V1,
+  SessionInputAdmissionRejectionCodeV1Schema,
+} from './sessionInputAdmissionRejectionV1.js';
+export type { SessionInputAdmissionRejectionCodeV1 } from './sessionInputAdmissionRejectionV1.js';
 export {
   PluginSessionInputAttachmentV1Schema,
   PluginSessionInputAttachmentsV1Schema,
@@ -32,80 +49,21 @@ export const SESSION_INPUT_AUTHORITY_META_KEY = 'happierInputAuthorityV1' as con
 const UTF8_ENCODER = new TextEncoder();
 const MAX_PROVENANCE_BYTES = 4 * 1024;
 const PLUGIN_SESSION_INPUT_LOCAL_ID_DOMAIN_V1 = 'happier.session-input.local-id.v1';
-
-function serializeCanonicalJsonForSessionInputEquality(
-  value: unknown,
-  ancestors: WeakSet<object> = new WeakSet(),
-): string {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new TypeError('Session input equality requires canonical JSON numbers');
-    return JSON.stringify(Object.is(value, -0) ? 0 : value);
-  }
-  if (Array.isArray(value)) {
-    if (ancestors.has(value)) throw new TypeError('Session input equality requires acyclic canonical JSON');
-    ancestors.add(value);
-    try {
-      const keys = Reflect.ownKeys(value);
-      if (keys.some((key) => typeof key !== 'string')) {
-        throw new TypeError('Session input equality requires canonical JSON arrays');
-      }
-      const dataKeys = keys.filter((key) => key !== 'length');
-      if (dataKeys.length !== value.length) {
-        throw new TypeError('Session input equality requires dense canonical JSON arrays');
-      }
-      const entries: string[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-        if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) {
-          throw new TypeError('Session input equality requires canonical JSON arrays');
-        }
-        entries.push(serializeCanonicalJsonForSessionInputEquality(descriptor.value, ancestors));
-      }
-      return `[${entries.join(',')}]`;
-    } finally {
-      ancestors.delete(value);
-    }
-  }
-  if (typeof value !== 'object' || value === undefined) {
-    throw new TypeError('Session input equality requires canonical JSON');
-  }
-  if (ancestors.has(value)) throw new TypeError('Session input equality requires acyclic canonical JSON');
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError('Session input equality requires canonical JSON objects');
-  }
-  ancestors.add(value);
-  try {
-    const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== 'string')) {
-      throw new TypeError('Session input equality requires canonical JSON objects');
-    }
-    const entries = (keys as string[]).sort().map((key) => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor || !descriptor.enumerable || !('value' in descriptor) || descriptor.value === undefined) {
-        throw new TypeError('Session input equality requires canonical JSON');
-      }
-      return `${JSON.stringify(key)}:${serializeCanonicalJsonForSessionInputEquality(descriptor.value, ancestors)}`;
-    });
-    return `{${entries.join(',')}}`;
-  } finally {
-    ancestors.delete(value);
-  }
-}
+const WORKFLOW_SESSION_INPUT_LOCAL_ID_DOMAIN_V2 = 'happier.workflow-session-input.local-id.v2';
 
 /**
  * Canonical bytes shared by trusted host/server equality code. This is a
  * serializer only: plugins never supply a digest, HMAC, or encryption nonce.
+ *
+ * The canonical JSON owner is the shared Session-mutation equality primitive;
+ * these bytes are unchanged by that extraction.
  */
 export function serializeSessionInputRequestEqualityIntentV1(params: Readonly<{
   requestEnvelope: unknown;
   requestedAction: PendingRequestedActionV1;
 }>): string {
   const requestedAction = PendingRequestedActionV1Schema.parse(params.requestedAction);
-  return serializeCanonicalJsonForSessionInputEquality({
+  return serializeCanonicalJsonForSessionMutationEqualityV1({
     v: 1,
     requestEnvelope: params.requestEnvelope,
     requestedAction,
@@ -116,21 +74,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function boundedNfcString(maxBytes: number, label: string) {
-  return z.string()
-    .refine((value) => value === value.normalize('NFC'), `${label} must be NFC-normalized`)
-    .refine((value) => value.trim().length > 0, `${label} must not be blank`)
-    .refine((value) => UTF8_ENCODER.encode(value).byteLength <= maxBytes, `${label} exceeds its UTF-8 byte limit`);
-}
-
 const DisplayNameSnapshotSchema = z.string()
   .refine((value) => value === value.normalize('NFC'), 'Display-name snapshots must be NFC-normalized')
   .refine((value) => Array.from(value).length <= 128, 'Display-name snapshots must contain at most 128 Unicode code points');
 
-const SourceRefSchema = boundedNfcString(256, 'Source references');
-const SourceRevisionOrEpochSchema = boundedNfcString(128, 'Source revisions');
-const BoundedAutomationIdSchema = boundedNfcString(191, 'Automation ids');
-const BoundedAutomationRunIdSchema = boundedNfcString(191, 'Automation run ids');
+const SourceRefSchema = preservedBoundedNfcString(256, 'Source references');
+const SourceRevisionOrEpochSchema = preservedBoundedNfcString(128, 'Source revisions');
+const BoundedAutomationIdSchema = preservedBoundedNfcString(191, 'Automation ids');
+export const BoundedAutomationRunIdSchema = preservedBoundedNfcString(191, 'Automation run ids');
 
 export const PLUGIN_INVOCATION_SURFACES_V1 = [
   'cli',
@@ -167,7 +118,7 @@ function requireCoPresentExternalProvenance(
   });
 }
 
-export const PluginSessionInputIdempotencyKeyV1Schema = boundedNfcString(
+export const PluginSessionInputIdempotencyKeyV1Schema = preservedBoundedNfcString(
   256,
   'Plugin Session input idempotency keys',
 );
@@ -182,6 +133,21 @@ export const PluginSessionInputSourceV1Schema = z.object({
 }).strict().superRefine(requireCoPresentExternalProvenance);
 export type PluginSessionInputSourceV1 = z.infer<typeof PluginSessionInputSourceV1Schema>;
 
+/**
+ * Canonical authored fields shared by the trusted-plugin SessionHandle request
+ * and its `session.message.send` Action projection. The two carriers
+ * intentionally use different text/session field names, but must not drift on
+ * recipient routing, idempotency, source provenance, or attachments.
+ *
+ * This is a Zod raw shape, not another admission schema or decision-maker.
+ */
+export const PluginSessionUserTextAuthoredFieldSchemasV1 = Object.freeze({
+  idempotencyKey: PluginSessionInputIdempotencyKeyV1Schema,
+  recipient: ParticipantRecipientRoutingIdentityV1Schema.optional(),
+  source: PluginSessionInputSourceV1Schema.optional(),
+  attachments: PluginSessionInputAttachmentsV1Schema.optional(),
+});
+
 /** Public plugin-authored intent. Caller identity and admitted authority are host-owned. */
 const PluginSessionUserTextInputRequestV1Schema = z.object({
   kind: z.literal('userText'),
@@ -190,10 +156,7 @@ const PluginSessionUserTextInputRequestV1Schema = z.object({
    * is the single gate; a `.min(1)` here would restore the divergence.
    */
   text: z.string(),
-  idempotencyKey: PluginSessionInputIdempotencyKeyV1Schema,
-  source: PluginSessionInputSourceV1Schema.optional(),
-  /** Declared attachment drafts admitted alongside the text. */
-  attachments: PluginSessionInputAttachmentsV1Schema.optional(),
+  ...PluginSessionUserTextAuthoredFieldSchemasV1,
 }).strict().superRefine(requireSessionInputContent);
 
 const PluginSessionSubagentLaunchInputRequestV1Schema = z.object({
@@ -314,6 +277,25 @@ export const SessionMessageProvenanceV1Schema = MessageProvenanceUnionSchema.sup
   }
 });
 export type SessionMessageProvenanceV1 = z.infer<typeof SessionMessageProvenanceV1Schema>;
+
+export const SessionMessageProvenanceV2Schema = z.discriminatedUnion('kind', [
+  z.object({
+    v: z.literal(2), kind: z.literal('workflow_invocation'),
+    runId: BoundedAutomationRunIdSchema,
+    invocationRecordId: WorkflowInvocationRecordIdSchema,
+  }).strict(),
+  z.object({
+    v: z.literal(2), kind: z.literal('workflow_result_delivery'),
+    runId: BoundedAutomationRunIdSchema,
+  }).strict(),
+]).superRefine((value, context) => {
+  if (UTF8_ENCODER.encode(JSON.stringify(value)).byteLength > MAX_PROVENANCE_BYTES) {
+    context.addIssue({ code: 'custom', message: 'Session message provenance exceeds its encoded 4 KiB limit' });
+  }
+});
+export type SessionMessageProvenanceV2 = z.infer<typeof SessionMessageProvenanceV2Schema>;
+export const SessionMessageProvenanceSchema = z.union([SessionMessageProvenanceV1Schema, SessionMessageProvenanceV2Schema]);
+export type SessionMessageProvenance = z.infer<typeof SessionMessageProvenanceSchema>;
 
 export const SESSION_ROLE_USER_PRODUCER_KINDS_V1 = [
   'happierApp',
@@ -466,6 +448,13 @@ function refineProtectedInputCommon(
       message: 'Automation identity is valid only for Automation input',
     });
   }
+  if (value.producer === 'automation' && value.automation === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['automation'],
+      message: 'Automation input requires exact Automation and Run identity',
+    });
+  }
 }
 
 export const SessionInputRequestV1Schema = SessionInputProtectedCommonV1Schema.extend({
@@ -474,6 +463,74 @@ export const SessionInputRequestV1Schema = SessionInputProtectedCommonV1Schema.e
   }).strict(),
 }).strict().superRefine(refineProtectedInputCommon);
 export type SessionInputRequestV1 = z.infer<typeof SessionInputRequestV1Schema>;
+
+export const SessionInputWorkflowV2Schema = z.discriminatedUnion('purpose', [
+  z.object({
+    purpose: z.literal('invocation'),
+    runId: BoundedAutomationRunIdSchema,
+    invocationRecordId: WorkflowInvocationRecordIdSchema,
+  }).strict(),
+  z.object({ purpose: z.literal('result_delivery'), runId: BoundedAutomationRunIdSchema }).strict(),
+]);
+export type SessionInputWorkflowV2 = z.infer<typeof SessionInputWorkflowV2Schema>;
+
+/** Durable Pending identity for an exact Workflow invocation or final delivery. */
+export function deriveWorkflowSessionInputLocalIdV2(workflow: SessionInputWorkflowV2): string {
+  const parsed = SessionInputWorkflowV2Schema.parse(workflow);
+  const canonicalIdentity = JSON.stringify([
+    WORKFLOW_SESSION_INPUT_LOCAL_ID_DOMAIN_V2,
+    2,
+    parsed.purpose,
+    parsed.runId,
+    ...(parsed.purpose === 'invocation' ? [parsed.invocationRecordId] : []),
+  ]);
+  const localId = readPendingLocalId(
+    `workflow-input-v2:${encodeBase64(sha256(UTF8_ENCODER.encode(canonicalIdentity)), 'base64url')}`,
+  );
+  if (localId === null) throw new Error('Derived Workflow Session input local id is invalid');
+  return localId;
+}
+
+const SessionInputProtectedCommonV2Schema = z.object({
+  v: z.literal(2),
+  producer: z.literal('workflow'),
+  caller: SessionInputCallerV1Schema.optional(),
+  sourceSession: SessionInputSourceSessionV1Schema.optional(),
+  sourceAuthority: SessionInputSourceAuthorityV1Schema.optional(),
+  workflow: SessionInputWorkflowV2Schema,
+}).strict();
+
+function refineProtectedWorkflowInputCommon(
+  value: z.infer<typeof SessionInputProtectedCommonV2Schema>,
+  context: z.RefinementCtx,
+): void {
+  if (value.caller?.kind === 'plugin') {
+    context.addIssue({ code: 'custom', path: ['caller'], message: 'Workflow input is emitted only by the trusted host' });
+  }
+}
+
+export const SessionInputRequestV2Schema = SessionInputProtectedCommonV2Schema.extend({
+  permission: z.object({
+    requestedPermissionCeiling: asProtocolZod(AgentPermissionIntentV1Schema).optional(),
+  }).strict(),
+}).strict().superRefine(refineProtectedWorkflowInputCommon);
+export type SessionInputRequestV2 = z.infer<typeof SessionInputRequestV2Schema>;
+export const SessionInputRequestSchema = z.union([SessionInputRequestV1Schema, SessionInputRequestV2Schema]);
+export type SessionInputRequest = z.infer<typeof SessionInputRequestSchema>;
+
+export const SessionInputAuthorityV2Schema = SessionInputProtectedCommonV2Schema.extend({
+  permission: z.object({
+    requestedPermissionCeiling: asProtocolZod(AgentPermissionIntentV1Schema).optional(),
+    admittedPermissionCeiling: asProtocolZod(AgentPermissionIntentV1Schema),
+  }).strict(),
+}).strict().superRefine(refineProtectedWorkflowInputCommon);
+export type SessionInputAuthorityV2 = z.infer<typeof SessionInputAuthorityV2Schema>;
+
+export const SESSION_INPUT_ADMISSION_WORKFLOW_PROTOCOL_VERSION = 2 as const;
+export const WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED = 'workflow_input_admission_update_required' as const;
+export const WorkflowInputAdmissionUpdateRequiredSchema = z.literal(
+  WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED,
+);
 
 /**
  * Sole builder for trusted host Pending admission. It stamps modality/source,
@@ -517,6 +574,8 @@ export const SessionInputAuthorityV1Schema = SessionInputProtectedCommonV1Schema
   }).strict(),
 }).strict().superRefine(refineProtectedInputCommon);
 export type SessionInputAuthorityV1 = z.infer<typeof SessionInputAuthorityV1Schema>;
+export const SessionInputAuthoritySchema = z.union([SessionInputAuthorityV1Schema, SessionInputAuthorityV2Schema]);
+export type SessionInputAuthority = z.infer<typeof SessionInputAuthoritySchema>;
 
 /**
  * Machine authentication is required only when the request asserts a fact the
@@ -536,6 +595,13 @@ export function requiresAuthenticatedMachineAdmissionForSessionInputV1(
     || parsed.automation !== undefined;
 }
 
+export function requiresAuthenticatedMachineAdmissionForSessionInput(
+  request: SessionInputRequest,
+): boolean {
+  const parsed = SessionInputRequestSchema.parse(request);
+  return parsed.v === 2 || requiresAuthenticatedMachineAdmissionForSessionInputV1(parsed);
+}
+
 /**
  * Validates the server-issued admission fact before a target can turn a
  * protected request into immutable authority. Account routes may admit human
@@ -552,6 +618,18 @@ export function assertSessionInputAdmissionReceiptForRequestV1(params: Readonly<
     && requiresAuthenticatedMachineAdmissionForSessionInputV1(params.request)
   ) {
     throw new TypeError('Account admission receipts cannot attest plugin, source, or Automation input');
+  }
+  return receipt;
+}
+
+export function assertSessionInputAdmissionReceiptForRequest(params: Readonly<{
+  request: SessionInputRequest;
+  inputAdmissionReceipt: unknown;
+}>): SessionInputAdmissionReceiptV1 {
+  const request = SessionInputRequestSchema.parse(params.request);
+  const receipt = SessionInputAdmissionReceiptV1Schema.parse(params.inputAdmissionReceipt);
+  if (receipt.issuer === 'authenticatedAccount' && requiresAuthenticatedMachineAdmissionForSessionInput(request)) {
+    throw new TypeError('Account admission receipts cannot attest protected Workflow input');
   }
   return receipt;
 }
@@ -609,7 +687,31 @@ export function settleSessionInputRequestV1(params: Readonly<{
   });
 }
 
-const AccountIdSchema = boundedNfcString(191, 'Account ids');
+export function settleSessionInputRequestV2(params: Readonly<{
+  request: SessionInputRequestV2;
+  currentSessionPermissionCeiling: unknown;
+  inputAdmissionReceipt: unknown;
+}>): SessionInputAuthorityV2 {
+  const request = SessionInputRequestV2Schema.parse(params.request);
+  const current = AgentPermissionIntentV1Schema.parse(params.currentSessionPermissionCeiling);
+  assertSessionInputAdmissionReceiptForRequest({ request, inputAdmissionReceipt: params.inputAdmissionReceipt });
+  const requested = request.permission.requestedPermissionCeiling ?? current;
+  const dominance = assertNonEscalatingPermissionMode({
+    requestedMode: requested,
+    callerMode: current,
+    supportedModes: ['read-only', 'plan', 'default', 'safe-yolo', 'yolo'],
+  });
+  if (!dominance.ok) throw new TypeError(`Cannot settle Session input permission: ${dominance.reason}`);
+  return SessionInputAuthorityV2Schema.parse({
+    ...request,
+    permission: {
+      ...(request.permission.requestedPermissionCeiling ? { requestedPermissionCeiling: request.permission.requestedPermissionCeiling } : {}),
+      admittedPermissionCeiling: requested,
+    },
+  });
+}
+
+const AccountIdSchema = preservedBoundedNfcString(191, 'Account ids');
 
 export const SessionInputAdmissionReceiptV1Schema = z.discriminatedUnion('issuer', [
   z.object({
@@ -687,40 +789,39 @@ export function settleSessionMessageProvenanceV1(params: Readonly<{
     : SessionMessageProvenanceV1Schema.parse({ v: 1, kind: 'host', producer: request.producer });
 }
 
-const Base64UrlSha256Schema = z.string().regex(
-  /^[A-Za-z0-9_-]{43}$/u,
-  'Expected an unpadded base64url SHA-256 value',
-);
+export function settleSessionMessageProvenanceV2(params: Readonly<{
+  request: SessionInputRequestV2;
+  requestedProvenance: unknown;
+  inputAdmissionReceipt: unknown;
+}>): SessionMessageProvenanceV2 {
+  const request = SessionInputRequestV2Schema.parse(params.request);
+  assertSessionInputAdmissionReceiptForRequest({
+    request,
+    inputAdmissionReceipt: params.inputAdmissionReceipt,
+  });
+  const provenance = SessionMessageProvenanceV2Schema.parse(params.requestedProvenance);
+  const matches = request.workflow.purpose === 'invocation'
+    ? provenance.kind === 'workflow_invocation'
+      && provenance.runId === request.workflow.runId
+      && provenance.invocationRecordId === request.workflow.invocationRecordId
+    : provenance.kind === 'workflow_result_delivery'
+      && provenance.runId === request.workflow.runId;
+  if (!matches) {
+    throw new TypeError('Workflow Session input provenance does not match the protected request');
+  }
+  return provenance;
+}
 
-export const SessionInputRequestEnvelopeDigestV1Schema = Base64UrlSha256Schema;
+export const SessionInputRequestEnvelopeDigestV1Schema = SessionMutationEqualityBase64UrlSha256V1Schema;
 export type SessionInputRequestEnvelopeDigestV1 = z.infer<typeof SessionInputRequestEnvelopeDigestV1Schema>;
 
-export const SessionInputRequestEqualityEvidenceV1Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('plainDigest'), digest: SessionInputRequestEnvelopeDigestV1Schema }).strict(),
-  z.object({ kind: z.literal('e2eeTag'), tag: Base64UrlSha256Schema }).strict(),
-]);
+/**
+ * Session input's arm of the shared Session-mutation equality evidence. The
+ * name and persisted field stay source-compatible; the schema is the one
+ * canonical owner rather than a second copy of the same closed union.
+ */
+export const SessionInputRequestEqualityEvidenceV1Schema = SessionMutationEqualityEvidenceV1Schema;
 export type SessionInputRequestEqualityEvidenceV1 = z.infer<typeof SessionInputRequestEqualityEvidenceV1Schema>;
-
-export const SESSION_INPUT_ADMISSION_REJECTION_CODES_V1 = [
-  'session_input_invalid',
-  'session_input_archived',
-  'session_input_unauthorized',
-  'session_input_target_unavailable',
-  'session_input_target_update_required',
-  'session_input_cancelled',
-  'session_input_untrusted_assertion',
-  'session_input_idempotency_conflict',
-  'session_input_source_authority_mismatch',
-  'session_input_permission_ceiling_rejected',
-  'session_input_encryption_mode_mismatch',
-] as const;
-
-export const SessionInputAdmissionRejectionCodeV1Schema = z.enum(
-  SESSION_INPUT_ADMISSION_REJECTION_CODES_V1,
-);
-export type SessionInputAdmissionRejectionCodeV1 = z.infer<
-  typeof SessionInputAdmissionRejectionCodeV1Schema
->;
 
 export const SessionInputAdmissionResultV1Schema = z.discriminatedUnion('status', [
   z.object({
@@ -738,10 +839,31 @@ export const SessionInputAdmissionResultV1Schema = z.discriminatedUnion('status'
   z.object({
     status: z.literal('outcomeUnknown'),
     localId: PendingLocalIdSchema,
-    code: boundedNfcString(128, 'Admission outcome codes'),
+    code: preservedBoundedNfcString(128, 'Admission outcome codes'),
   }).strict(),
 ]);
 export type SessionInputAdmissionResultV1 = z.infer<typeof SessionInputAdmissionResultV1Schema>;
+
+/**
+ * Public result for `session.message.send`. Admission remains owned by the
+ * canonical admission result above; these two additional arms describe a
+ * proven terminal outcome when the caller asked to wait for one exact,
+ * already-admitted Execution Run input.
+ */
+export const SessionMessageSendResultV1Schema = z.union([
+  SessionInputAdmissionResultV1Schema,
+  z.object({
+    status: z.literal('failed'),
+    localId: PendingLocalIdSchema,
+    code: z.literal('session_input_turn_failed'),
+  }).strict(),
+  z.object({
+    status: z.literal('cancelled'),
+    localId: PendingLocalIdSchema,
+    code: z.literal('session_input_turn_cancelled'),
+  }).strict(),
+]);
+export type SessionMessageSendResultV1 = z.infer<typeof SessionMessageSendResultV1Schema>;
 
 export const SessionPermissionSourceAuthorityV1Schema = z.object({
   kind: z.literal('mediatedExternal'),
@@ -820,10 +942,24 @@ export function readSessionInputRequestV1(meta: unknown): SessionInputRequestV1 
   return parsed.success ? parsed.data : null;
 }
 
+export function readSessionInputRequest(meta: unknown): SessionInputRequest | null {
+  const record = readMetaRecord(meta);
+  if (!record || Object.hasOwn(record, SESSION_INPUT_AUTHORITY_META_KEY)) return null;
+  const parsed = SessionInputRequestSchema.safeParse(record[SESSION_INPUT_REQUEST_META_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
 export function readSessionInputAuthorityV1(meta: unknown): SessionInputAuthorityV1 | null {
   const record = readMetaRecord(meta);
   if (!record || Object.hasOwn(record, SESSION_INPUT_REQUEST_META_KEY)) return null;
   const parsed = SessionInputAuthorityV1Schema.safeParse(record[SESSION_INPUT_AUTHORITY_META_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
+export function readSessionInputAuthority(meta: unknown): SessionInputAuthority | null {
+  const record = readMetaRecord(meta);
+  if (!record || Object.hasOwn(record, SESSION_INPUT_REQUEST_META_KEY)) return null;
+  const parsed = SessionInputAuthoritySchema.safeParse(record[SESSION_INPUT_AUTHORITY_META_KEY]);
   return parsed.success ? parsed.data : null;
 }
 
@@ -848,10 +984,18 @@ export function readSessionMessageProvenanceV1(meta: unknown): SessionMessagePro
   return projected.success ? projected.data : null;
 }
 
+export function readSessionMessageProvenance(meta: unknown): SessionMessageProvenance | null {
+  const record = readMetaRecord(meta);
+  if (!record) return null;
+  if (!Object.hasOwn(record, SESSION_MESSAGE_PROVENANCE_META_KEY)) return readSessionMessageProvenanceV1(meta);
+  const parsed = SessionMessageProvenanceSchema.safeParse(record[SESSION_MESSAGE_PROVENANCE_META_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
 export function readSessionPermissionSourceAuthorityV1(
   meta: unknown,
 ): SessionPermissionSourceAuthorityV1 | null {
-  const authority = readSessionInputAuthorityV1(meta);
+  const authority = readSessionInputAuthority(meta);
   if (!authority?.sourceAuthority) return null;
   return {
     kind: 'mediatedExternal',
@@ -866,7 +1010,7 @@ export function readSessionPermissionSourceAuthorityV1(
 export function readSessionInputCausalPermissionAuthorityV1(
   meta: unknown,
 ): SessionInputCausalPermissionAuthorityV1 | null {
-  const authority = readSessionInputAuthorityV1(meta);
+  const authority = readSessionInputAuthority(meta);
   if (!authority) return null;
   const sourceAuthority = readSessionPermissionSourceAuthorityV1(meta);
   const parsed = SessionInputCausalPermissionAuthorityV1Schema.safeParse({
@@ -900,6 +1044,16 @@ export function withSessionInputRequestV1(
   };
 }
 
+export function withSessionInputRequest(
+  meta: Record<string, unknown> | null | undefined,
+  request: SessionInputRequest,
+): Record<string, unknown> {
+  return {
+    ...stripSessionInputProtectedMeta(meta),
+    [SESSION_INPUT_REQUEST_META_KEY]: SessionInputRequestSchema.parse(request),
+  };
+}
+
 export function withSessionInputAuthorityV1(
   meta: Record<string, unknown> | null | undefined,
   authority: SessionInputAuthorityV1,
@@ -907,5 +1061,15 @@ export function withSessionInputAuthorityV1(
   return {
     ...stripSessionInputProtectedMeta(meta),
     [SESSION_INPUT_AUTHORITY_META_KEY]: SessionInputAuthorityV1Schema.parse(authority),
+  };
+}
+
+export function withSessionInputAuthority(
+  meta: Record<string, unknown> | null | undefined,
+  authority: SessionInputAuthority,
+): Record<string, unknown> {
+  return {
+    ...stripSessionInputProtectedMeta(meta),
+    [SESSION_INPUT_AUTHORITY_META_KEY]: SessionInputAuthoritySchema.parse(authority),
   };
 }

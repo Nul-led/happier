@@ -14,6 +14,7 @@ import {
   MAX_PLUGIN_DECLARATIVE_DOCUMENT_RESOURCE_BYTES_V1,
   PLUGIN_DECLARATIVE_DOCUMENT_CONTENT_TYPE_V1,
 } from './declarativeDocument.js';
+import { MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1 } from './hostedHtmlSourceV1.js';
 
 /**
  * The declarative vocabulary is a bounded host-rendered document language
@@ -22,6 +23,54 @@ import {
  * from drifting into a general data-binding surface.
  */
 describe('declarative node vocabulary v2', () => {
+  it('admits inline HTML through the canonical UTF-8 source boundary without granting authority fields', () => {
+    const renderer = { id: 'inline', kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' } };
+    expect(PluginUiRendererV2Schema.safeParse(renderer).success).toBe(true);
+    const maximumUtf8Document = 'é'.repeat(MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1 / 2);
+    expect(new TextEncoder().encode(maximumUtf8Document).byteLength).toBe(MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1);
+    expect(PluginUiRendererV2Schema.safeParse({
+      ...renderer,
+      source: { kind: 'html', html: maximumUtf8Document },
+    }).success).toBe(true);
+    expect(PluginUiRendererV2Schema.safeParse({
+      ...renderer,
+      source: { kind: 'html', html: `${maximumUtf8Document}é` },
+    }).success).toBe(false);
+    expect(PluginUiRendererV2Schema.safeParse({ ...renderer, source: { ...renderer.source, url: 'https://example.com' } }).success).toBe(false);
+    expect(PluginUiRendererV2Schema.safeParse({ ...renderer, sessionId: 'forged' }).success).toBe(false);
+  });
+  it('admits a declared hosted-HTML capability request without a second host-method declaration', () => {
+    const renderer = {
+      id: 'inline',
+      kind: 'hostedHtml',
+      source: { kind: 'html', html: '<p>Hello</p>' },
+      requiredHostMethods: ['context', 'watchContext'],
+      requestedCapabilities: {
+        resources: [{ pluginId: 'com.acme.health', localId: 'status' }],
+        actions: [{ pluginId: 'com.acme.health', localId: 'restart' }],
+        networkOrigins: ['https://api.example.com'],
+      },
+    };
+    expect(PluginUiRendererV2Schema.safeParse(renderer).success).toBe(true);
+    // `requiredHostMethods` stays the one declared host-method vocabulary for
+    // every renderer kind; a capability request must not become a second one.
+    expect(PluginUiRendererV2Schema.safeParse({
+      ...renderer,
+      requestedCapabilities: { ...renderer.requestedCapabilities, hostMethods: ['context'] },
+    }).success).toBe(false);
+    expect(PluginUiRendererV2Schema.safeParse({
+      ...renderer,
+      requestedCapabilities: { networkOrigins: ['http://api.example.com'] },
+    }).success).toBe(false);
+    // The capability grammar belongs to hosted HTML's self-contained document,
+    // not to Artifact-backed or host-rendered renderer arms.
+    expect(PluginUiRendererV2Schema.safeParse({
+      id: 'web',
+      kind: 'hostedWeb',
+      source: { kind: 'artifact', artifact: 'web' },
+      requestedCapabilities: { networkOrigins: ['https://api.example.com'] },
+    }).success).toBe(false);
+  });
   it('admits only a symbolic targeted Surface reference without a fabricated runtime handle', () => {
     const targetedSurface = {
       kind: 'targetedSurface',
@@ -114,6 +163,15 @@ describe('declarative node vocabulary v2', () => {
         { kind: 'action', action: 'delete', label: 'Delete', variant: 'destructive' },
       ],
     }).success).toBe(true);
+  });
+
+  it('admits only Actions exposed by the canonical Plugin surface', () => {
+    expect(PluginDeclarativeNodeV2Schema.safeParse({
+      kind: 'action', hostAction: 'session.spawn_new', label: 'New session',
+    }).success).toBe(true);
+    expect(PluginDeclarativeNodeV2Schema.safeParse({
+      kind: 'action', hostAction: 'session.permission_mode.set', label: 'Change mode',
+    }).success).toBe(false);
   });
 
   it('rejects unknown members, unbounded metadata and non-curated icons', () => {

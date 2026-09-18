@@ -726,6 +726,9 @@ describe('plugin UI app-page location replacement', () => {
       subPath: '../escape',
     }).success).toBe(false);
     expect(PluginUiReplacePageLocationRequestV1Schema.safeParse({
+      subPath: 'entries/1\n',
+    }).success).toBe(false);
+    expect(PluginUiReplacePageLocationRequestV1Schema.safeParse({
       subPath: 'a',
       backLocation: '../escape',
     }).success).toBe(false);

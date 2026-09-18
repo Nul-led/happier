@@ -7,22 +7,24 @@ describe('Action SDK method-name validation', () => {
   it('validates only the canonical API-public projection', () => {
     const publicActionIds = new Set<string>(PUBLIC_ACTION_IDS);
 
+    // Present-user Actions reach the interactive signed root, not the public API
+    // projection, so their SDK method path is never validated here.
     expect(() => assertPublicActionSdkMethodNames([
-      { id: 'automation.event.admit', bindings: { sdkMethod: 'execute' } },
+      { id: 'session.permission.respond', bindings: { sdkMethod: 'execute' } },
     ], publicActionIds)).not.toThrow();
 
     expect(() => assertPublicActionSdkMethodNames([
-      { id: 'session.permission.respond', bindings: { sdkMethod: 'execute' } },
+      { id: 'teams.directory.sourceSetup.list', bindings: { sdkMethod: 'execute' } },
     ], publicActionIds)).toThrow(/invalid SDK method path/u);
 
     expect(() => assertPublicActionSdkMethodNames([
       { id: 'session.permission.respond', bindings: { sdkMethod: 'session.open' } },
-      { id: 'automation.event.admit', bindings: { sdkMethod: 'session.open' } },
+      { id: 'teams.directory.sourceSetup.list', bindings: { sdkMethod: 'session.open' } },
     ], publicActionIds)).not.toThrow();
 
     expect(() => assertPublicActionSdkMethodNames([
-      { id: 'session.permission.respond', bindings: { sdkMethod: 'session.open' } },
-      { id: 'account.apiTokens.list', bindings: { sdkMethod: 'session.open' } },
+      { id: 'teams.directory.sources.list', bindings: { sdkMethod: 'session.open' } },
+      { id: 'teams.directory.sourceSetup.list', bindings: { sdkMethod: 'session.open' } },
     ], publicActionIds)).toThrow(/share SDK method path/u);
   });
 });

@@ -5,6 +5,8 @@ import { PUSH_NOTIFICATION_BUNDLED_SOUND_FILES } from '../../push/pushNotificati
 export const HAPPIER_FOCUS_LIVE_ACTIVITY_NAME = 'HappierFocusLiveActivity';
 
 export const LIVE_ACTIVITY_CONTENT_STATE_MAX_BYTES = 4096;
+export const LIVE_ACTIVITY_ALERT_TITLE_MAX_LENGTH = 120;
+export const LIVE_ACTIVITY_ALERT_BODY_MAX_LENGTH = 240;
 
 export const LiveActivityRemoteTransportModeSchema = z.enum([
   'hosted_happier_relay',
@@ -103,8 +105,8 @@ const LiveActivityRemoteUpdateRequestBaseV1Schema = z
 
 const LiveActivityInterruptiveAlertV1Schema = z
   .object({
-    title: z.string().trim().min(1).max(120),
-    body: z.string().trim().min(1).max(240),
+    title: z.string().trim().min(1).max(LIVE_ACTIVITY_ALERT_TITLE_MAX_LENGTH),
+    body: z.string().trim().min(1).max(LIVE_ACTIVITY_ALERT_BODY_MAX_LENGTH),
     sound: z.enum([
       'default',
       PUSH_NOTIFICATION_BUNDLED_SOUND_FILES.soft.expoSoundName,

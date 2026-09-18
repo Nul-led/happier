@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  deriveSessionChangeAttributionFromSource,
+  mergeCheckpointOverlap,
+} from './mergeTurnChangeSets.js';
+
 export const ChangeEvidenceSourceSchema = z.enum([
   'provider_native',
   'provider_tool',
@@ -12,6 +17,29 @@ export const ChangeEvidenceSourceSchema = z.enum([
 
 export const ChangeConfidenceSchema = z.enum(['exact', 'strong', 'best_effort']);
 
+export const SessionAttributionConfidenceSchema = z.enum([
+  'session_exact',
+  'session_likely',
+  'session_possible',
+  'unknown',
+]);
+
+export const SessionAttributionReasonSchema = z.enum([
+  'provider_correlated',
+  'canonical_tool_correlated',
+  'checkpoint_no_happier_overlap_observed',
+  'checkpoint_overlap_observed',
+  'workspace_touched_path',
+  'unavailable',
+]);
+
+export const SessionChangeAttributionSchema = z.object({
+  confidence: SessionAttributionConfidenceSchema,
+  reason: SessionAttributionReasonSchema,
+}).strict();
+
+export const CheckpointOverlapObservationSchema = z.enum(['observed', 'not_observed', 'unknown']);
+
 export const FileChangeKindSchema = z.enum([
   'added',
   'modified',
@@ -21,7 +49,7 @@ export const FileChangeKindSchema = z.enum([
   'unknown',
 ]);
 
-export const FileChangeEvidenceSchema = z.object({
+const CanonicalFileChangeEvidenceSchema = z.object({
   filePath: z.string().min(1),
   previousFilePath: z.string().min(1).nullable().optional(),
   changeKind: FileChangeKindSchema,
@@ -35,7 +63,35 @@ export const FileChangeEvidenceSchema = z.object({
   agentTurnId: z.string().min(1).nullable().optional(),
   providerMessageId: z.string().min(1).nullable().optional(),
   description: z.string().nullable().optional(),
+  truncated: z.literal(true).optional(),
+  stats: z.object({
+    oldTextBytes: z.number().int().nonnegative().optional(),
+    newTextBytes: z.number().int().nonnegative().optional(),
+    unifiedDiffBytes: z.number().int().nonnegative().optional(),
+    addedLines: z.number().int().nonnegative().optional(),
+    removedLines: z.number().int().nonnegative().optional(),
+  }).strict().optional(),
 }).strict();
+
+/**
+ * Prospective 0.2 input (b23f95ed, sessionChanges/schemas.ts) names this correlation
+ * providerTurnId. Normalize at the evidence reader; current writers use agentTurnId.
+ * Remove when predecessor-produced change sets are no longer supported inputs.
+ */
+function normalizePredecessorCorrelation(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !('providerTurnId' in value)) return value;
+  const { providerTurnId, ...canonical } = value;
+  // Invalid aliases remain present so the closed schema rejects them.
+  if (providerTurnId !== null && (typeof providerTurnId !== 'string' || providerTurnId.length === 0)) return value;
+  if ('agentTurnId' in canonical) {
+    // Two names for one identity must agree. Preserve the alias on conflict so the closed schema
+    // rejects the ambiguous input instead of silently granting correlation meaning to either value.
+    return canonical.agentTurnId === providerTurnId ? canonical : value;
+  }
+  return { ...canonical, agentTurnId: providerTurnId };
+}
+
+export const FileChangeEvidenceSchema = z.preprocess(normalizePredecessorCorrelation, CanonicalFileChangeEvidenceSchema);
 
 export const RepositoryCheckpointReceiptIdSchema = z.enum([
   'checkpoint.captured',
@@ -62,7 +118,7 @@ export const RepositoryCheckpointTurnMetadataSchema = z.object({
   finalRef: z.string().min(1).optional(),
   baseRefSource: z.enum(['turn_start', 'message_start', 'previous_final', 'unavailable']),
   contentConfidence: z.enum(['exact', 'unavailable']),
-  attributionScope: z.enum(['exclusive_worktree', 'shared_worktree', 'unknown']),
+  attributionScope: z.enum(['no_happier_checkpoint_overlap_observed', 'shared_worktree', 'unknown']),
   receipts: z.array(RepositoryCheckpointReceiptSchema),
   unavailableReason: z.string().min(1).optional(),
 }).strict();
@@ -84,22 +140,93 @@ export const TurnChangeSetSchema = z.object({
   repositoryCheckpoint: RepositoryCheckpointTurnMetadataSchema.optional(),
 }).strict();
 
-export const SessionChangeSetFileSchema = FileChangeEvidenceSchema.extend({
+function normalizeLegacySessionChangeSetFile(value: unknown): unknown {
+  const correlated = normalizePredecessorCorrelation(value);
+  if (!correlated || typeof correlated !== 'object' || Array.isArray(correlated)) return correlated;
+  const file = correlated as Record<string, unknown>;
+  const sourceParse = ChangeEvidenceSourceSchema.safeParse(file.source);
+  if (!sourceParse.success) return correlated;
+  const checkpointOverlapParse = CheckpointOverlapObservationSchema.safeParse(file.checkpointOverlap);
+  const checkpointOverlap = checkpointOverlapParse.success ? checkpointOverlapParse.data : 'unknown';
+  return {
+    ...file,
+    ...(file.attribution === undefined
+      ? { attribution: deriveSessionChangeAttributionFromSource(sourceParse.data, checkpointOverlap) }
+      : {}),
+    ...(file.checkpointOverlap === undefined ? { checkpointOverlap } : {}),
+  };
+}
+
+export const SessionChangeSetFileSchema = z.preprocess(normalizeLegacySessionChangeSetFile, CanonicalFileChangeEvidenceSchema.extend({
   turns: z.array(z.string().min(1)),
-}).strict();
+  attribution: SessionChangeAttributionSchema,
+  checkpointOverlap: CheckpointOverlapObservationSchema,
+}).strict());
 
 export const ChangeSetConfidenceSummarySchema = z.object({
-  source: ChangeEvidenceSourceSchema,
-  confidence: ChangeConfidenceSchema,
+  source: z.union([ChangeEvidenceSourceSchema, z.literal('unavailable')]),
+  confidence: z.union([ChangeConfidenceSchema, z.literal('unavailable')]),
+  attribution: SessionChangeAttributionSchema,
+  checkpointOverlap: CheckpointOverlapObservationSchema,
 }).strict();
 
-export const SessionChangeSetSchema = z.object({
+const CanonicalSessionChangeSetSchema = z.object({
   sessionId: z.string().min(1),
   turns: z.array(TurnChangeSetSchema),
   files: z.array(SessionChangeSetFileSchema),
   rolledBackTurnIds: z.array(z.string().min(1)),
   confidenceSummary: ChangeSetConfidenceSummarySchema,
 }).strict();
+
+function normalizeLegacySessionChangeSet(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.files) || !input.confidenceSummary || typeof input.confidenceSummary !== 'object') {
+    return value;
+  }
+  const files = input.files.map(normalizeLegacySessionChangeSetFile);
+  const summary = input.confidenceSummary as Record<string, unknown>;
+  const truthfulSummary = files.length === 0
+    ? { ...summary, source: 'unavailable', confidence: 'unavailable' }
+    : summary;
+  if (summary.attribution !== undefined && summary.checkpointOverlap !== undefined) {
+    return { ...input, files, confidenceSummary: truthfulSummary };
+  }
+  const normalizedFiles = files.filter((file): file is Record<string, unknown> => (
+    Boolean(file) && typeof file === 'object' && !Array.isArray(file)
+  ));
+  let attribution: z.infer<typeof SessionChangeAttributionSchema> | null = null;
+  let checkpointOverlap: 'observed' | 'not_observed' | 'unknown' | null = null;
+  const attributionRank = { session_exact: 0, session_likely: 1, session_possible: 2, unknown: 3 } as const;
+  for (const file of normalizedFiles) {
+    const parsedAttribution = SessionChangeAttributionSchema.safeParse(file.attribution);
+    if (parsedAttribution.success && (
+      attribution === null
+      || attributionRank[parsedAttribution.data.confidence] > attributionRank[attribution.confidence]
+    )) {
+      attribution = parsedAttribution.data;
+    }
+    const parsedOverlap = CheckpointOverlapObservationSchema.safeParse(file.checkpointOverlap);
+    if (parsedOverlap.success) {
+      checkpointOverlap = checkpointOverlap === null
+        ? parsedOverlap.data
+        : mergeCheckpointOverlap(checkpointOverlap, parsedOverlap.data);
+    }
+  }
+  return {
+    ...input,
+    files,
+    confidenceSummary: {
+      ...truthfulSummary,
+      ...(summary.attribution === undefined
+        ? { attribution: attribution ?? { confidence: 'unknown', reason: 'unavailable' } }
+        : {}),
+      ...(summary.checkpointOverlap === undefined ? { checkpointOverlap: checkpointOverlap ?? 'unknown' } : {}),
+    },
+  };
+}
+
+export const SessionChangeSetSchema = z.preprocess(normalizeLegacySessionChangeSet, CanonicalSessionChangeSetSchema);
 
 export const SessionWorkingTreeMatchedFileSchema = z.object({
   filePath: z.string().min(1),
@@ -126,6 +253,10 @@ export const SessionWorkingTreeProjectionSchema = z.object({
 
 export type ChangeEvidenceSource = z.infer<typeof ChangeEvidenceSourceSchema>;
 export type ChangeConfidence = z.infer<typeof ChangeConfidenceSchema>;
+export type SessionAttributionConfidence = z.infer<typeof SessionAttributionConfidenceSchema>;
+export type SessionAttributionReason = z.infer<typeof SessionAttributionReasonSchema>;
+export type SessionChangeAttribution = z.infer<typeof SessionChangeAttributionSchema>;
+export type CheckpointOverlapObservation = z.infer<typeof CheckpointOverlapObservationSchema>;
 export type FileChangeKind = z.infer<typeof FileChangeKindSchema>;
 export type FileChangeEvidence = z.infer<typeof FileChangeEvidenceSchema>;
 export type RepositoryCheckpointReceipt = z.infer<typeof RepositoryCheckpointReceiptSchema>;

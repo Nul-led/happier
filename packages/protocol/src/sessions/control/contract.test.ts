@@ -258,6 +258,33 @@ describe('sessionControl contract exports', () => {
       .toBe(true);
   });
 
+  it('validates effective access and isolates collective recipient owner metadata', () => {
+    const shared = {
+      id: 'collective-session', seq: 1, createdAt: 1, updatedAt: 2,
+      active: true, activeAt: 2, metadata: 'shared-envelope', metadataVersion: 3,
+      metadataLayoutVersion: 1, agentState: null, agentStateVersion: 4, dataEncryptionKey: null,
+      effectiveAccess: {
+        v: 1, level: 'edit', sources: [{ kind: 'team', teamId: 'team', requiredByTeamPolicy: false }],
+        capabilities: protocol.projectLegacySessionAccessCapabilitiesV1({ level: 'edit' }),
+      },
+    };
+    expect(protocol.V2SessionRecordSchema.safeParse(shared).success).toBe(true);
+    const context = { ...shared, effectiveAccess: { ...shared.effectiveAccess,
+      audienceContext: { kind: 'group', teamId: 'team', groupId: 'group' }, primaryTeamId: 'authored-team',
+    } };
+    expect(protocol.V2SessionRecordSchema.safeParse(context)).toMatchObject({ success: true, data: {
+      effectiveAccess: { audienceContext: context.effectiveAccess.audienceContext, primaryTeamId: 'authored-team' },
+    } });
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...context, effectiveAccess: { ...context.effectiveAccess,
+      audienceContext: { ...context.effectiveAccess.audienceContext, grantLevels: ['admin'] },
+    } }).success).toBe(false);
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...shared, ownerMetadata: { t: 'plain', v: { v: 1 } } }).success).toBe(false);
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...shared, share: null }).success).toBe(false);
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...shared, effectiveAccess: { ...shared.effectiveAccess, accountId: 'private' } }).success).toBe(false);
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...shared, effectiveAccess: { ...shared.effectiveAccess, capabilities: { readTranscript: true } } }).success).toBe(false);
+    expect(protocol.V2SessionRecordSchema.safeParse({ ...shared, effectiveAccess: { ...shared.effectiveAccess, level: 'owner' } }).success).toBe(false);
+  });
+
   it('keeps layout-zero Agent state required for released compatibility records', () => {
     const layoutZero = {
       id: 'legacy-session',

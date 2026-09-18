@@ -1,12 +1,11 @@
 /**
- * Canonical sanitization for Git worktree / branch display names (UI/contract side).
+ * Canonical sanitization for Git worktree / branch display names.
  *
  * Used by the UI to preview / commit a user-chosen name into the new-session
  * checkout draft so the stored `displayName` matches the branch name git will
- * actually create. The daemon SCM plugin (`@happier-dev/plugins-scm-git`) keeps
- * its own equivalent normalization because, by design, the plugin depends on
- * `@happier-dev/plugin-sdk` rather than `@happier-dev/protocol`; both sides
- * apply identical Git ref-name rules.
+ * actually create. The daemon SCM plugin consumes this same naming and relative
+ * placement policy through the public Plugin SDK SCM projection; only native
+ * absolute-path joining belongs to the plugin.
  *
  * The transforms mirror Git's ref-name restrictions:
  *  - whitespace collapses to `-`

@@ -27,13 +27,10 @@ import {
   PluginCollectionIndexV1Schema,
   PluginCollectionMigrationDeclarationV1Schema,
   PluginCollectionMemberNameV1Schema,
-  PluginCollectionProjectedScalarFieldRefV1Schema,
   PluginCollectionProjectedScalarValueV1Schema,
   PluginCollectionQuotaRequestV1Schema,
   PluginCollectionSchemaV1Schema,
   PluginCollectionSchemaVersionV1Schema,
-  PluginCollectionUiQueryParameterV1Schema,
-  PluginCollectionUiQueryValueV1Schema,
   PluginCollectionRelationV1Schema,
   type PluginAccountCollectionContributionV1,
   type PluginCollectionIndexV1,
@@ -56,6 +53,10 @@ import {
   PluginCollectionUiQueryResultV1Schema,
   PluginCollectionUiRowContextV1Schema,
   PluginCollectionUiRowV1Schema,
+  NormalizedPluginCollectionUiQueryDescriptorV1Schema,
+  isCanonicalPluginCollectionIndexedInstantV1,
+  validatePluginCollectionUiQueryParametersV1,
+  type NormalizedPluginCollectionUiQueryDescriptorV1,
   type PluginCollectionRowIdV1,
   type PluginCollectionUiQueryErrorCodeV1,
   type PluginCollectionUiQueryErrorV1,
@@ -122,6 +123,9 @@ export {
   PluginCollectionUiQueryResultV1Schema,
   PluginCollectionUiRowContextV1Schema,
   PluginCollectionUiRowV1Schema,
+  NormalizedPluginCollectionUiQueryDescriptorV1Schema,
+  isCanonicalPluginCollectionIndexedInstantV1,
+  validatePluginCollectionUiQueryParametersV1,
   type PluginCollectionRowIdV1,
   type PluginCollectionUiQueryErrorCodeV1,
   type PluginCollectionUiQueryErrorV1,
@@ -130,6 +134,7 @@ export {
   type PluginCollectionUiQueryResultV1,
   type PluginCollectionUiRowContextV1,
   type PluginCollectionUiRowV1,
+  type NormalizedPluginCollectionUiQueryDescriptorV1,
 } from './collectionUiQueryWireV1.js';
 export {
   PluginCollectionContractDigestV1Schema,
@@ -683,6 +688,30 @@ export const PluginCollectionRowV1Schema = z.object({
 }).strict();
 export type PluginCollectionRowV1 = z.infer<typeof PluginCollectionRowV1Schema>;
 
+/**
+ * Internal authenticated transport for static UI queries. `logicalRow` is
+ * present only when the app must open private projected fields; the app strips
+ * it before exposing the declared scalar result to a plugin renderer.
+ */
+export const PluginCollectionUiQueryTransportRowV1Schema = PluginCollectionUiRowV1Schema.extend({
+  logicalRow: z.object({
+    content: PluginCollectionContentEnvelopeV1Schema,
+    projection: PluginCollectionProjectionV1Schema,
+  }).strict().optional(),
+}).strict();
+export type PluginCollectionUiQueryTransportRowV1 = z.infer<
+  typeof PluginCollectionUiQueryTransportRowV1Schema
+>;
+
+export const PluginCollectionUiQueryTransportResultV1Schema = z.object({
+  rows: z.array(PluginCollectionUiQueryTransportRowV1Schema).max(200),
+  nextCursor: asProtocolZod(PluginCollectionOpaqueCursorV1Schema).optional(),
+  changeCursor: z.number().int().nonnegative(),
+}).strict();
+export type PluginCollectionUiQueryTransportResultV1 = z.infer<
+  typeof PluginCollectionUiQueryTransportResultV1Schema
+>;
+
 /** Scalar inputs are validated against the selected admitted index by the canonical query owner. */
 export const PluginCollectionIndexScalarValueV1Schema = z.union([
   z.null(),
@@ -999,35 +1028,6 @@ export type PluginCollectionIndexScalarV1 = Readonly<{
  * carries the host-stamped collection identity and typed projected fields that
  * realm adapters consume without reinterpreting the author manifest.
  */
-export const NormalizedPluginCollectionUiQueryDescriptorV1Schema = z.object({
-  collection: z.object({
-    pluginId: asProtocolZod(PluginIdSchema),
-    collectionId: asProtocolZod(PluginContributionLocalIdSchema),
-  }).strict(),
-  id: PluginCollectionMemberNameV1Schema,
-  indexId: PluginCollectionMemberNameV1Schema,
-  parameters: z.record(PluginCollectionMemberNameV1Schema, PluginCollectionUiQueryParameterV1Schema),
-  prefix: z.array(PluginCollectionUiQueryValueV1Schema).max(4),
-  range: z.object({
-    lower: PluginCollectionUiQueryValueV1Schema.optional(),
-    upper: PluginCollectionUiQueryValueV1Schema.optional(),
-  }).strict().refine((value) => value.lower !== undefined || value.upper !== undefined, 'A range needs a lower or upper bound.').optional(),
-  order: z.enum(['asc', 'desc']),
-  pageSize: z.number().int().min(1).max(PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1),
-  projectedFields: z.array(PluginCollectionProjectedScalarFieldRefV1Schema).min(1).max(16),
-}).strict().superRefine((value, context) => {
-  if (new Set(value.projectedFields.map((field) => field.field)).size !== value.projectedFields.length) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['projectedFields'],
-      message: 'Projected fields must be unique.',
-    });
-  }
-});
-export type NormalizedPluginCollectionUiQueryDescriptorV1 = z.infer<
-  typeof NormalizedPluginCollectionUiQueryDescriptorV1Schema
->;
-
 const COLLECTION_OBJECT_ROOT_SCHEMA_MESSAGE = 'Collection schemas must be object schemas with declared properties.';
 
 function collectionObjectProperties(
@@ -1218,6 +1218,64 @@ function canonicalJson(value: unknown): string {
     .join(',')}}`;
 }
 
+/**
+ * The one no-rewrite Collection evolution admitted by the Data contract:
+ * a newer declared reader adds only optional private top-level fields while
+ * every server-owned projection, index, relation, query, identity, and quota
+ * semantic remains byte-equivalent. Activation may adopt the target contract
+ * identity in place while preserving each row's payload bytes and revision;
+ * a later write naturally emits the current logical shape.
+ */
+export function isPluginCollectionOptionalPrivateSchemaAdditionV1(input: Readonly<{
+  source: NormalizedPluginAccountCollectionContractV1;
+  target: NormalizedPluginAccountCollectionContractV1;
+}>): boolean {
+  const { source, target } = input;
+  if (
+    source.pluginId !== target.pluginId
+    || source.collectionId !== target.collectionId
+    || target.schemaVersion <= source.schemaVersion
+    || !target.readableSchemaVersions.includes(source.schemaVersion)
+    || source.rowIdField !== target.rowIdField
+  ) return false;
+  for (const field of [
+    'serverReadable',
+    'indexes',
+    'uiQueries',
+    'relations',
+    'identityFields',
+  ] as const) {
+    if (canonicalJson(source[field]) !== canonicalJson(target[field])) return false;
+  }
+  if (
+    (source.quota === undefined) !== (target.quota === undefined)
+    || (source.quota !== undefined
+      && target.quota !== undefined
+      && canonicalJson(source.quota) !== canonicalJson(target.quota))
+  ) return false;
+
+  const sourceSchema = source.schema as Readonly<Record<string, unknown>>;
+  const targetSchema = target.schema as Readonly<Record<string, unknown>>;
+  const sourceProperties = sourceSchema.properties as Readonly<Record<string, unknown>>;
+  const targetProperties = targetSchema.properties as Readonly<Record<string, unknown>>;
+  const sourceRequired = sourceSchema.required as readonly string[];
+  const targetRequired = targetSchema.required as readonly string[];
+  if (canonicalJson(sourceRequired) !== canonicalJson(targetRequired)) return false;
+  const { properties: _sourceProperties, ...sourceRootWithoutProperties } = sourceSchema;
+  const { properties: _targetProperties, ...targetRootWithoutProperties } = targetSchema;
+  if (canonicalJson(sourceRootWithoutProperties) !== canonicalJson(targetRootWithoutProperties)) return false;
+
+  const addedFields = Object.keys(targetProperties).filter((field) => !(field in sourceProperties));
+  if (addedFields.length === 0) return false;
+  if (addedFields.some((field) => targetRequired.includes(field) || target.serverReadable.includes(field))) {
+    return false;
+  }
+  return Object.entries(sourceProperties).every(([field, schema]) => (
+    Object.hasOwn(targetProperties, field)
+    && canonicalJson(schema) === canonicalJson(targetProperties[field])
+  ));
+}
+
 function normalizeSchema(value: PluginJsonSchemaV2, isCollectionRoot = true): PluginJsonSchemaV2 {
   if (Array.isArray(value)) return value.map((schema) => normalizeSchema(schema, false)) as never;
   const object = value as Record<string, unknown>;
@@ -1304,7 +1362,6 @@ function normalizeQuery(
   query: PluginCollectionUiQueryDescriptorV1,
   index: PluginCollectionIndexV1,
   schema: PluginJsonSchemaV2,
-  serverReadable: ReadonlySet<string>,
   collection: NormalizedPluginCollectionUiQueryDescriptorV1['collection'],
 ): NormalizedPluginCollectionUiQueryDescriptorV1 {
   if (query.prefix.length > index.fields.length) throw new Error(`UI query "${query.id}" has an overlong prefix.`);
@@ -1323,7 +1380,6 @@ function normalizeQuery(
     if (query.range.upper) validateQueryValue(query.range.upper, parameterKinds, scalarKind);
   }
   const projectedFields = query.projectedFields.map((field) => {
-    if (!serverReadable.has(field)) throw new Error(`UI query "${query.id}" projects undeclared field "${field}".`);
     return { field, kind: getPluginCollectionScalarKindV1({ schema, field }) };
   }).sort((left, right) => compareCanonicalText(left.field, right.field));
   return NormalizedPluginCollectionUiQueryDescriptorV1Schema.parse({
@@ -1470,7 +1526,7 @@ export function normalizePluginAccountCollectionContractV1(input: Readonly<{
   const uiQueries = contribution.uiQueries.map((query) => {
     const index = indexById.get(query.indexId);
     if (!index) throw new Error(`UI query "${query.id}" names unknown index "${query.indexId}".`);
-    return normalizeQuery(query, index, schema, serverReadableSet, {
+    return normalizeQuery(query, index, schema, {
       pluginId,
       collectionId: contribution.id,
     });
@@ -1548,37 +1604,6 @@ export function normalizePluginAccountCollectionContractsV1(input: Readonly<{
     }
   }
   return Object.freeze(contracts);
-}
-
-export function validatePluginCollectionUiQueryParametersV1(
-  descriptor: NormalizedPluginCollectionUiQueryDescriptorV1,
-  parameters: Readonly<Record<string, string | number | boolean>>,
-): void {
-  const known = descriptor.parameters;
-  for (const key of Object.keys(parameters)) {
-    if (!(key in known)) throw new Error(`UI query parameter "${key}" is not declared.`);
-  }
-  for (const [id, schema] of Object.entries(known)) {
-    const value = parameters[id];
-    if (value === undefined) throw new Error(`UI query parameter "${id}" is required.`);
-    if (schema.kind === 'string') {
-      if (typeof value !== 'string' || new TextEncoder().encode(value).length > schema.maxUtf8Bytes || (schema.enum && !schema.enum.includes(value))) {
-        throw new Error(`UI query parameter "${id}" is invalid.`);
-      }
-    } else if (schema.kind === 'finiteNumber') {
-      if (typeof value !== 'number' || !Number.isFinite(value) || (schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum)) throw new Error(`UI query parameter "${id}" is invalid.`);
-    } else if (schema.kind === 'boolean' && typeof value !== 'boolean') {
-      throw new Error(`UI query parameter "${id}" is invalid.`);
-    } else if (schema.kind === 'instant' && (typeof value !== 'string' || !isCanonicalPluginCollectionIndexedInstantV1(value))) {
-      throw new Error(`UI query parameter "${id}" is invalid.`);
-    }
-  }
-}
-
-export function isCanonicalPluginCollectionIndexedInstantV1(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
-  const epochMs = Date.parse(value);
-  return Number.isFinite(epochMs) && new Date(epochMs).toISOString() === value;
 }
 
 function encodeIndexedString(value: string): Uint8Array {
@@ -1721,7 +1746,8 @@ export function nextPluginCollectionIndexPrefixV1(encodedPrefix: Uint8Array): Ui
 
 /**
  * Realm adapters use the admitted descriptor to ensure a response cannot add,
- * omit, or change the scalar type of the server-readable projection.
+ * omit, or change the scalar type of its declared logical-field projection.
+ * Private fields are opened by the Account client before this boundary.
  */
 export function validatePluginCollectionUiQueryResultV1(
   descriptor: NormalizedPluginCollectionUiQueryDescriptorV1,

@@ -9,7 +9,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -43,9 +43,11 @@ const SIGN_OUT_EVERYWHERE_ACTION_ID = 'account.sessions.signOutEverywhere' as Ac
 describe('createActionExecutor (account.sessions.signOutEverywhere)', () => {
   it('dispatches the current Account only for a host-stamped present-user call', async () => {
     const accountSessionsSignOutEverywhereAction = vi.fn(async () => ({ status: 'signed_out' as const }));
-    const deps = Object.assign(createDeps(), { accountSessionsSignOutEverywhereAction });
+    const deps = Object.assign(createDeps({ isActionApprovalRequired: () => false }), {
+      accountSessionsSignOutEverywhereAction,
+    });
     const executor = createActionExecutor(deps);
-    const context = { surface: 'api' as const, authority: 'present_user' as const, actionCaller: { kind: 'host' as const } };
+    const context = { surface: 'ui' as const, authority: 'present_user' as const, actionCaller: { kind: 'host' as const } };
 
     await expect(executor.execute(
       SIGN_OUT_EVERYWHERE_ACTION_ID,

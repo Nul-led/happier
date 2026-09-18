@@ -4,13 +4,16 @@ import {
     ConnectedServiceAuthGroupIdSchema,
     ConnectedAccountServiceKeyIngressSchema,
     ConnectedServiceBindingSelectionV1Schema,
+    ConnectedServiceBindingSelectionV2Schema,
     ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
+    ConnectedServiceBindingsV2Schema,
     ConnectedServiceIdSchema,
     ConnectedServiceProfileIdSchema,
     PersistedConnectedServiceBindingSelectionV1Schema,
     PersistedConnectedServiceBindingsV1Schema,
-    SessionConnectedServiceAuthSwitchRpcParamsSchema,
 } from './connectedServiceBindings.js';
+import { ConnectedServiceCredentialKindSchema } from './connectedServiceCredentialKind.js';
 import {
     ConnectedServiceLimitCategoryV1Schema,
     type ConnectedServiceLimitCategoryV1,
@@ -33,23 +36,32 @@ export {
     ConnectedAccountServiceKeySchema,
     ConnectedServiceAuthGroupIdSchema,
     ConnectedServiceBindingSelectionV1Schema,
+    ConnectedServiceBindingSelectionV2Schema,
     ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
+    ConnectedServiceBindingsV2Schema,
+    TeamResourceConnectedServiceSelectionV2Schema,
     ConnectedServiceIdSchema,
     ConnectedServiceProfileIdSchema,
     PersistedConnectedServiceBindingSelectionV1Schema,
     PersistedConnectedServiceBindingsV1Schema,
-    SessionConnectedServiceAuthSwitchRpcParamsSchema,
     type ConnectedServiceAuthGroupId,
     type ConnectedAccountServiceKey,
     type ConnectedAccountServiceKeyIngress,
     type ConnectedServiceBindingSelectionV1,
+    type ConnectedServiceBindingSelectionV2,
     type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ConnectedServiceId,
     type ConnectedServiceProfileId,
     type PersistedConnectedServiceBindingSelectionV1,
     type PersistedConnectedServiceBindingsV1,
-    type SessionConnectedServiceAuthSwitchRpcParams,
+    type TeamResourceConnectedServiceSelectionV2,
 } from './connectedServiceBindings.js';
+export {
+    ConnectedServiceCredentialKindSchema,
+    type ConnectedServiceCredentialKind,
+} from './connectedServiceCredentialKind.js';
 
 export const ConnectedServiceCloudVendorKeySchema = z.enum([
     'openai',
@@ -61,9 +73,6 @@ export type ConnectedServiceCloudVendorKey = z.infer<typeof ConnectedServiceClou
 
 export const ConnectedServiceCredentialFormatSchema = z.enum(['account_scoped_v1']);
 export type ConnectedServiceCredentialFormat = z.infer<typeof ConnectedServiceCredentialFormatSchema>;
-
-export const ConnectedServiceCredentialKindSchema = z.enum(['oauth', 'token']);
-export type ConnectedServiceCredentialKind = z.infer<typeof ConnectedServiceCredentialKindSchema>;
 
 export const ConnectedServiceCredentialHealthStatusV1Schema = z.enum([
     'connected',
@@ -447,6 +456,7 @@ export const ConnectedServiceQuotaMeterV1Schema = z.object({
     resetAtMs: z.number().int().nonnegative().nullable().optional(),
     resetSource: ConnectedServiceQuotaResetSourceV1Schema.optional(),
     providerLimitId: z.string().trim().min(1).optional(),
+    windowDurationMs: z.number().int().positive().optional(),
     modelId: z.string().trim().min(1).nullable().optional(),
     isExhausted: z.boolean().optional(),
     isSoftLimited: z.boolean().optional(),
@@ -523,11 +533,42 @@ export const SealedConnectedServiceQuotaSnapshotV1Schema = z.object({
 
 export type SealedConnectedServiceQuotaSnapshotV1 = z.infer<typeof SealedConnectedServiceQuotaSnapshotV1Schema>;
 
+const ConnectedServiceQuotaProviderLimitIdV1Schema = z.string().trim().min(1);
+
+const ConnectedServiceSelectedQuotaProviderLimitIdsV1Schema = z
+    .array(ConnectedServiceQuotaProviderLimitIdV1Schema)
+    .min(1)
+    .refine(
+        (providerLimitIds) => new Set(providerLimitIds).size === providerLimitIds.length,
+        'Provider limit ids must be unique',
+    );
+
+/** Which provider-reported allowance families drive a Pool's quota decisions. */
+export const ConnectedServiceQuotaLimitSelectionV1Schema = z.discriminatedUnion('mode', [
+    z.object({
+        mode: z.literal('all'),
+        providerLimitIds: z.array(ConnectedServiceQuotaProviderLimitIdV1Schema).length(0),
+    }).strict(),
+    z.object({
+        mode: z.literal('selected'),
+        providerLimitIds: ConnectedServiceSelectedQuotaProviderLimitIdsV1Schema,
+    }).strict(),
+]);
+
+export type ConnectedServiceQuotaLimitSelectionV1 = z.infer<
+    typeof ConnectedServiceQuotaLimitSelectionV1Schema
+>;
+
 export const ConnectedServiceAuthGroupPolicyV1Schema = z
     .object({
         v: z.literal(1).default(1),
         strategy: z.enum(['priority', 'least_limited', 'manual']).default('least_limited'),
         autoSwitch: z.boolean().default(false),
+        // Absence remains false, preserving predecessor persisted policies.
+        autoUseQuotaResetsWhenExhausted: z.boolean().optional(),
+        // Absence remains false. V4 projects this field only when the server feature is enabled.
+        autoDisablePlanInvalidAccounts: z.boolean().optional(),
+        quotaLimitSelection: ConnectedServiceQuotaLimitSelectionV1Schema.optional(),
         switchOn: z
             .object({
                 usageLimit: z.boolean(),
@@ -567,6 +608,9 @@ export const ConnectedServiceAuthGroupPolicyPatchV1Schema = z
         v: z.literal(1).optional(),
         strategy: z.enum(['priority', 'least_limited', 'manual']).optional(),
         autoSwitch: z.boolean().optional(),
+        autoUseQuotaResetsWhenExhausted: z.boolean().optional(),
+        autoDisablePlanInvalidAccounts: z.boolean().optional(),
+        quotaLimitSelection: ConnectedServiceQuotaLimitSelectionV1Schema.optional(),
         switchOn: z
             .object({
                 usageLimit: z.boolean().optional(),
@@ -601,6 +645,8 @@ export const ConnectedServiceAuthGroupMemberStateV1Schema = z
         capacityLimitedUntilMs: z.number().int().nonnegative().nullable().optional(),
         authInvalidUntilMs: z.number().int().nonnegative().nullable().optional(),
         planUnavailableUntilMs: z.number().int().nonnegative().nullable().optional(),
+        modelUnavailableUntilMsByModelId: z.record(z.string().trim().min(1), z.number().int().nonnegative()).optional(),
+        autoDisabledReason: z.enum(['model_not_entitled']).nullable().optional(),
         validationBlockedUntilMs: z.number().int().nonnegative().nullable().optional(),
         lastFailureKind: z.string().trim().min(1).nullable().optional(),
         lastFailureCode: z.string().trim().min(1).nullable().optional(),

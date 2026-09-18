@@ -63,6 +63,7 @@ describe('PluginIdSchema', () => {
       ['acme.prototype.plugin', false],
       ['acme.plugin/child', false],
       ['acme..plugin', false],
+      ['acme.plugin\n', false],
     ] as const) {
       expect(PluginIdSchema.safeParse(value).success, value).toBe(accepted);
       expect(isValidPluginJsonSchemaValue(validates, value), value).toBe(accepted);

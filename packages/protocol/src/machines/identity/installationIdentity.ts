@@ -1,19 +1,25 @@
-import tweetnacl from 'tweetnacl';
-import { sha256 } from '@noble/hashes/sha2';
-import { bytesToHex } from '@noble/hashes/utils';
 import { z } from 'zod';
 
 import { decodeBase64, encodeBase64 } from '../../crypto/base64.js';
+import {
+    ED25519_PUBLIC_KEY_BYTES,
+    ED25519_SECRET_KEY_BYTES,
+    ED25519_SIGNATURE_BYTES,
+    isValidEd25519PublicKey,
+    signEd25519Message,
+    verifyEd25519Signature,
+} from '../../crypto/ed25519.js';
 import { MachineReplacementReasonSchema } from './machineReplacement.js';
-
-const CONTENT_PUBLIC_KEY_FINGERPRINT_PREFIX = 'content-public-key-sha256:' as const;
-const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
+import {
+    ContentPublicKeyFingerprintSchema,
+    computeContentPublicKeyFingerprint,
+} from './contentPublicKeyFingerprint.js';
+export {
+    ContentPublicKeyFingerprintSchema,
+    computeContentPublicKeyFingerprint,
+    type ContentPublicKeyFingerprint,
+} from './contentPublicKeyFingerprint.js';
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/u;
-
-export const ContentPublicKeyFingerprintSchema = z.string()
-    .regex(new RegExp(`^${CONTENT_PUBLIC_KEY_FINGERPRINT_PREFIX}[a-f0-9]{64}$`, 'u'));
-
-export type ContentPublicKeyFingerprint = z.infer<typeof ContentPublicKeyFingerprintSchema>;
 
 function validateBase64UrlEncodedBytes(
     value: string,
@@ -51,28 +57,34 @@ function validateBase64UrlEncodedBytes(
 
 export const MachineInstallationPublicKeySchema = z.string().trim().min(1)
     .superRefine((value, ctx) => {
-        validateBase64UrlEncodedBytes(value, 'installationPublicKey', tweetnacl.sign.publicKeyLength, ctx);
+        validateBase64UrlEncodedBytes(value, 'installationPublicKey', ED25519_PUBLIC_KEY_BYTES, ctx);
+        try {
+            if (!isValidEd25519PublicKey(decodeBase64(value, 'base64url'))) {
+                ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid Ed25519 installation public key' });
+            }
+        } catch {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid Ed25519 installation public key' });
+        }
     });
 
 export const MachineInstallationPrivateKeySchema = z.string().trim().min(1)
     .superRefine((value, ctx) => {
-        validateBase64UrlEncodedBytes(value, 'privateKey', tweetnacl.sign.secretKeyLength, ctx);
+        validateBase64UrlEncodedBytes(value, 'privateKey', ED25519_SECRET_KEY_BYTES, ctx);
     });
 
 export const MachineInstallationProofSignatureSchema = z.string().trim().min(1)
     .superRefine((value, ctx) => {
-        validateBase64UrlEncodedBytes(value, 'signature', tweetnacl.sign.signatureLength, ctx);
+        validateBase64UrlEncodedBytes(value, 'signature', ED25519_SIGNATURE_BYTES, ctx);
     });
 
 export const MachineInstallationIdentityV1Schema = z.object({
     version: z.literal(1),
     installationId: z.string().trim().min(1),
     createdAt: z.number().int().nonnegative(),
-    publicKey: z.string().trim().min(1),
+    publicKey: MachineInstallationPublicKeySchema,
     privateKey: z.string().trim().min(1),
 }).superRefine((identity, ctx) => {
-    validateBase64UrlEncodedBytes(identity.publicKey, 'publicKey', tweetnacl.sign.publicKeyLength, ctx, ['publicKey']);
-    validateBase64UrlEncodedBytes(identity.privateKey, 'privateKey', tweetnacl.sign.secretKeyLength, ctx, ['privateKey']);
+    validateBase64UrlEncodedBytes(identity.privateKey, 'privateKey', ED25519_SECRET_KEY_BYTES, ctx, ['privateKey']);
 });
 
 export type MachineInstallationIdentityV1 = z.infer<typeof MachineInstallationIdentityV1Schema>;
@@ -131,10 +143,10 @@ export function signMachineInstallationProof(params: Readonly<{
     const privateKeyBytes = typeof params.privateKey === 'string'
         ? decodeBase64(MachineInstallationPrivateKeySchema.parse(params.privateKey), 'base64url')
         : params.privateKey;
-    if (privateKeyBytes.length !== tweetnacl.sign.secretKeyLength) {
-        throw new Error(`Invalid installation private key length: expected ${tweetnacl.sign.secretKeyLength} bytes`);
+    if (privateKeyBytes.length !== ED25519_SECRET_KEY_BYTES) {
+        throw new Error(`Invalid installation private key length: expected ${ED25519_SECRET_KEY_BYTES} bytes`);
     }
-    const signature = tweetnacl.sign.detached(
+    const signature = signEd25519Message(
         buildMachineInstallationProofPayloadBytes(params.payload),
         privateKeyBytes,
     );
@@ -164,11 +176,11 @@ export function verifyMachineInstallationProof(params: Readonly<{
         return false;
     }
 
-    if (publicKeyBytes.length !== tweetnacl.sign.publicKeyLength) return false;
-    if (signatureBytes.length !== tweetnacl.sign.signatureLength) return false;
+    if (publicKeyBytes.length !== ED25519_PUBLIC_KEY_BYTES) return false;
+    if (signatureBytes.length !== ED25519_SIGNATURE_BYTES) return false;
 
     try {
-        return tweetnacl.sign.detached.verify(
+        return verifyEd25519Signature(
             buildMachineInstallationProofPayloadBytes(params.payload),
             signatureBytes,
             publicKeyBytes,
@@ -176,15 +188,4 @@ export function verifyMachineInstallationProof(params: Readonly<{
     } catch {
         return false;
     }
-}
-
-export function computeContentPublicKeyFingerprint(publicKey: Uint8Array | string): string {
-    const bytes = typeof publicKey === 'string'
-        ? decodeBase64(publicKey, 'base64url')
-        : publicKey;
-    const hex = bytesToHex(sha256(bytes));
-    if (!SHA256_HEX_PATTERN.test(hex)) {
-        throw new Error('Failed to compute content public key fingerprint');
-    }
-    return `${CONTENT_PUBLIC_KEY_FINGERPRINT_PREFIX}${hex}`;
 }

@@ -7,6 +7,11 @@ import {
 } from './index.js';
 
 describe('PluginTranscriptPresentationNodeV1', () => {
+  it('keeps mounted host Action requests out of contributed transcript snapshots', () => {
+    const node = { kind: 'action', hostAction: 'session.message.send', label: 'Send' };
+    expect(PluginDeclarativeNodeV2Schema.safeParse(node).success).toBe(true);
+    expect(PluginTranscriptPresentationNodeV1Schema.safeParse(node).success).toBe(false);
+  });
   it('accepts the immutable subset of the canonical declarative vocabulary', () => {
     const snapshot = {
       kind: 'stack',

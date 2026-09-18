@@ -2,10 +2,14 @@ export {
   ChangeConfidenceSchema,
   ChangeEvidenceSourceSchema,
   ChangeSetConfidenceSummarySchema,
+  CheckpointOverlapObservationSchema,
   FileChangeEvidenceSchema,
   FileChangeKindSchema,
   RepositoryCheckpointReceiptSchema,
   RepositoryCheckpointTurnMetadataSchema,
+  SessionAttributionConfidenceSchema,
+  SessionAttributionReasonSchema,
+  SessionChangeAttributionSchema,
   SessionChangeSetFileSchema,
   SessionChangeSetSchema,
   SessionWorkingTreeMatchedFileSchema,
@@ -16,16 +20,31 @@ export type {
   ChangeConfidence,
   ChangeEvidenceSource,
   ChangeSetConfidenceSummary,
+  CheckpointOverlapObservation,
   FileChangeEvidence,
   FileChangeKind,
   RepositoryCheckpointReceipt,
   RepositoryCheckpointTurnMetadata,
+  SessionAttributionConfidence,
+  SessionAttributionReason,
+  SessionChangeAttribution,
   SessionChangeSet,
   SessionChangeSetFile,
   SessionWorkingTreeMatchedFile,
   SessionWorkingTreeProjection,
   TurnChangeSet,
+  WorkspaceTouchedFileEvidence,
 } from './types.js';
-export { mergeTurnChangeSets } from './mergeTurnChangeSets.js';
+export { normalizeCheckpointAttributionScope } from './checkpointAttributionScope.js';
+export type {
+  CheckpointAttributionScope,
+} from './checkpointAttributionScope.js';
+export {
+  combineChangedFilesAttribution,
+  deriveSessionChangeAttribution,
+  mergeCheckpointOverlap,
+  mergeTurnChangeSets,
+} from './mergeTurnChangeSets.js';
+export type { ChangedFilesTurnEvidenceScope } from './mergeTurnChangeSets.js';
 export { reconcileWithScmSnapshot } from './reconcileWithScmSnapshot.js';
 export { excludeRolledBackTurns } from './rollbacks.js';

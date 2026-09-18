@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema } from '../idsV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { HappierManagedSessionRuntimeModeV1Schema } from '../runtimeModeV1.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
@@ -28,7 +29,7 @@ export type ExternalSessionDestructiveQuiescenceStatusV1 = z.infer<
 export const ExternalSessionDestructiveSourceIdentityV1Schema = z.object({
   machineId: z.string().trim().min(1).max(2_000),
   linkedSessionId: asProtocolZod(SessionIdSchema),
-  remoteSessionId: z.string().trim().min(1).max(2_000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2_000),
   linkGeneration: z.string().trim().min(1).max(2_000),
   sourceKey: z.string().trim().min(1).max(10_000),
   qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema,

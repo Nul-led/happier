@@ -44,4 +44,20 @@ describe('buildActionDraftSeedInput', () => {
       instructions: 'Make a plan.',
     });
   });
+
+  it('seeds a manifest-qualified external Agent without guessing a backend id', () => {
+    const spec = getActionSpec('subagents.plan.start');
+
+    const seed = buildActionDraftSeedInput(spec, {
+      defaultBackendTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'acme.review-plugin', localId: 'review-agent' },
+      },
+      instructions: 'Make a plan.',
+    });
+    expect(seed).toMatchObject({
+      backendTargetKeys: ['agent:acme.review-plugin/review-agent'],
+      instructions: 'Make a plan.',
+    });
+  });
 });

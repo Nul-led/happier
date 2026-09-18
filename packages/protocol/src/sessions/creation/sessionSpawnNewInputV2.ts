@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 
 import { AgentExecutionTargetV1Schema } from '../../agents/executionTargetV1.js';
-import { ConnectedServiceBindingsV1Schema } from '../../connect/connectedServiceBindings.js';
+import { ConnectedServiceBindingsV2IngressSchema } from '../../connect/connectedServiceBindings.js';
 import { SessionMcpSelectionV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
 import { SessionModelSelectionV1Schema } from '../../providers/selection/v1.js';
 import {
@@ -26,6 +26,10 @@ import { SessionCreationKeyV1Schema } from './sessionCreationIdentityV1.js';
 import { SessionSpawnSourceContextV1Schema } from './sessionSpawnSourceContextV1.js';
 import { SessionExecutionTargetV1Schema } from './sessionExecutionTargetV1.js';
 import { SessionOrganizationPlacementV1Schema } from './sessionSpawnNewResultV1.js';
+import { MachinePoolSelectionOriginV1Schema } from '../../machines/pools/v1.js';
+import { SessionInitialAccessDraftV1Schema } from '../access/sessionInitialAccessDraftV1.js';
+import { SessionTeamCredentialBindingIntentsV1Schema } from '../../teams/credentials/sessionBindingIntentV1.js';
+import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
 
 /**
  * One Message-owned input admitted before the new Session runtime may start.
@@ -46,21 +50,28 @@ export type SessionSpawnNewInitialInputV1 = z.infer<typeof SessionSpawnNewInitia
 export const SessionSpawnNewInputV2Schema = z.object({
   creationKey: SessionCreationKeyV1Schema.optional(),
   executionTarget: SessionExecutionTargetV1Schema,
+  placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
   directory: z.string().trim().min(1),
   organizationPlacement: SessionOrganizationPlacementV1Schema.optional(),
   agentTarget: AgentExecutionTargetV1Schema,
   modelSelection: SessionModelSelectionV1Schema.optional(),
   profileId: z.string().trim().min(1).optional(),
+  /** Value-free Saved Secret binding overrides for this launch only. */
+  secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
   permissionMode: asProtocolZod(AgentPermissionIntentV1Schema).optional(),
   agentModeId: z.string().trim().min(1).optional(),
   configuration: AgentSessionConfigurationSnapshotV1Schema.optional(),
-  connectedServices: ConnectedServiceBindingsV1Schema.optional(),
+  connectedServices: ConnectedServiceBindingsV2IngressSchema.optional(),
   mcpSelection: SessionMcpSelectionV1Schema.optional(),
   transcriptStorage: z.enum(['persisted', 'direct']).optional(),
   terminal: SessionAuthoringTerminalV1Schema.optional(),
   checkoutCreationDraft: SessionAuthoringCheckoutCreationDraftV1Schema.nullable().optional(),
   title: z.string().trim().min(1).optional(),
   initialInput: SessionSpawnNewInitialInputV1Schema.optional(),
+  initialAccess: SessionInitialAccessDraftV1Schema.optional(),
+  primaryTeamId: z.string().min(1).nullable().optional(),
+  /** Complete slot-keyed Team credential selection batch for the fresh Session commit. */
+  teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.optional(),
   agentSessionStartupInstructionsV1: AgentSessionStartupInstructionsV1Schema.optional(),
   /**
    * Create this Session as a continuation of an existing one. Because this

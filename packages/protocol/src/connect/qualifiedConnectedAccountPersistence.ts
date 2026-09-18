@@ -10,7 +10,7 @@ import {
 export const QualifiedConnectedAccountIdSchema = defineProtocolString({
   minLength: 1,
   maxLength: 256,
-  pattern: '^(?!\\s)[\\s\\S]*\\S$',
+  pattern: '^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])',
 });
 
 /**

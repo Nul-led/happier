@@ -47,6 +47,23 @@ function buildComposerAttachmentAggregateAtByteLimit(): readonly Record<string, 
 }
 
 describe('readSessionAttachmentEnvelopeRecordsV1', () => {
+  it('retains a bounded Discussion selection source and rejects Run-only correlation', () => {
+    const source = {
+      kind: 'session_discussion' as const,
+      sessionId: 'session-a',
+      discussionId: 'discussion-a',
+      messageIds: ['message-a'],
+    };
+    expect(HappierStructuredInputV1Schema.parse({
+      v: 1,
+      sessionDiscussionSelectionSourceV1: source,
+    }).sessionDiscussionSelectionSourceV1).toEqual(source);
+    expect(HappierStructuredInputV1Schema.safeParse({
+      v: 1,
+      sessionDiscussionSelectionSourceV1: { ...source, draftCorrelationId: 'draft-a' },
+    }).success).toBe(false);
+  });
+
   it('preserves both incumbent attachment envelopes for one downstream trust decision', () => {
     expect(readSessionAttachmentEnvelopeRecordsV1({
       happier: {

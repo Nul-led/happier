@@ -30,6 +30,27 @@ export const ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION =
 export const ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION =
   ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
 
+/**
+ * The additive `machinePool` AccountChange kind is part of the same unshipped V4 refinement. A V3
+ * or older reader blocks change kinds it does not know, so the change-feed owner withholds this
+ * kind from those peers exactly as it withholds `pluginDomain` from V2 peers — while still
+ * advancing their cursor across the raw page.
+ */
+export const ACCOUNT_STORED_CONTENT_MACHINE_POOL_CHANGE_PROTOCOL_VERSION =
+  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
+
+/** The bounded Saved Secret resource invalidation arm joins the unshipped V4 union. */
+export const ACCOUNT_STORED_CONTENT_SAVED_SECRET_RESOURCE_CHANGE_PROTOCOL_VERSION =
+  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
+
+/**
+ * V4 also admits the additive Machine capability leaf that proves a daemon can preserve an
+ * informational pool origin during Session spawn. Pre-V4 Machine readers use a strict capability
+ * schema, so servers must withhold that leaf from their projections.
+ */
+export const ACCOUNT_STORED_CONTENT_SESSION_SPAWN_PLACEMENT_ORIGIN_PROTOCOL_VERSION =
+  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
+
 export const ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION =
   ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
 

@@ -8,8 +8,16 @@ export const ACTION_OPERATION_RPC_METHODS_V1 = Object.freeze({
   cancel: 'actionOperation.cancel.v1',
 } as const);
 
+/** Dev-current reader retained only while already-running 0.3 processes drain. */
 export const ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1 = 'action-operation-snapshot.v1';
+/** Dev-current reader retained only while already-running 0.3 processes drain. */
 export const ACTION_OPERATION_SNAPSHOT_EPHEMERAL_TYPE_V1 = 'action-operation-snapshot';
+/**
+ * Producer and relay event used by the released 0.2.11 components at
+ * 98ea8fb76733b1dd785d38c31360179cafa84824. Remove with that supported
+ * predecessor frontier.
+ */
+export const ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1 = 'action-operation-updated';
 
 export const ACTION_OPERATION_PROGRESS_PHASE_MAX_LENGTH_V1 = 200;
 export const ACTION_OPERATION_PROGRESS_LABEL_MAX_LENGTH_V1 = 1_000;
@@ -151,6 +159,16 @@ export const ActionOperationSnapshotEphemeralV1Schema = z.object({
   ciphertext: z.string().min(1),
 }).strict();
 export type ActionOperationSnapshotEphemeralV1 = Readonly<z.infer<typeof ActionOperationSnapshotEphemeralV1Schema>>;
+
+export const ActionOperationRevisionEphemeralV1Schema = z.object({
+  type: z.literal(ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1),
+  machineId: ActionOperationIdentifierV1Schema,
+  content: z.object({
+    t: z.literal('encrypted'),
+    c: z.string().trim().min(1),
+  }).strict(),
+}).strict();
+export type ActionOperationRevisionEphemeralV1 = Readonly<z.infer<typeof ActionOperationRevisionEphemeralV1Schema>>;
 
 export const ActionOperationListV1RequestSchema = z.object({
   states: z.array(ActionOperationStateV1Schema)

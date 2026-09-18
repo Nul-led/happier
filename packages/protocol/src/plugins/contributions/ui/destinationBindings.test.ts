@@ -689,3 +689,127 @@ describe('V2 destination declarations', () => {
     }).success).toBe(false);
   });
 });
+
+describe('embedded Session widget role', () => {
+  const widgetView = Object.freeze({
+    id: 'review-status-widget',
+    container: 'sessionWidget',
+    target: { kind: 'session' },
+    renderer: 'review-native',
+    fallbackRenderers: ['review-web'],
+    title: 'Review status',
+  });
+
+  it('admits exactly the sessionWidget × session declaration through the one Registry row', () => {
+    const parsed = PluginUiViewV2Schema.safeParse(widgetView);
+    expect(parsed.success ? null : parsed.error.issues).toBeNull();
+    for (const targetKind of ['app', 'project', 'browser', 'services'] as const) {
+      expect(PluginUiViewV2Schema.safeParse({
+        ...widgetView,
+        target: { kind: targetKind },
+      }).success).toBe(false);
+    }
+  });
+
+  it('admits content and fill and rejects shell-geometry presentations', () => {
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'content'))
+      .toMatchObject({ role: 'sessionWidget', targetKind: 'session', surfaceContextPlacement: 'sessionPane' });
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'fill'))
+      .toMatchObject({ role: 'sessionWidget', presentation: 'fill' });
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'compact')).toBeNull();
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'inline')).toBeNull();
+  });
+
+  it('never becomes a destination, collision domain, or destination-metadata carrier', () => {
+    expect(surfaceRegistry.PluginUiDestinationContainerV1Schema.safeParse('sessionWidget').success)
+      .toBe(false);
+    expect(surfaceRegistry.resolvePluginUiDestinationBindingSlotV1('sessionWidget', 'session'))
+      .toBeNull();
+    expect(normalizePluginUiDestinationBindingV1({
+      pluginId: 'examples.public-sdk-review-assistant',
+      destinationId: 'review-status-widget',
+      rendererId: 'review-native',
+      container: 'sessionWidget',
+      target: { kind: 'session' },
+    })).toBeNull();
+    expect(surfaceRegistry.PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1
+      .some((slot) => (slot.container as string) === 'sessionWidget')).toBe(false);
+    for (const destinationOnly of [
+      { instancePolicy: 'singleton' },
+      { badge: { label: 'New' } },
+      { headerActions: [] },
+      { groupHint: 'review' },
+    ]) {
+      expect(PluginUiViewV2Schema.safeParse({ ...widgetView, ...destinationOnly }).success).toBe(false);
+    }
+  });
+
+  it('normalizes one inline binding whose role, target and placement come from the row', () => {
+    expect(surfaceRegistry.normalizePluginUiInlineSurfaceBindingV1({
+      pluginId: 'examples.public-sdk-review-assistant',
+      surfaceId: 'review-status-widget',
+      rendererId: 'review-native',
+      fallbackRendererIds: ['review-web'],
+      availableRendererIds: ['review-native', 'review-web'],
+      role: 'sessionWidget',
+      target: { kind: 'session' },
+    })).toMatchObject({
+      kind: 'inline',
+      role: 'sessionWidget',
+      targetKind: 'session',
+      surfaceContextPlacement: 'sessionPane',
+      surface: { pluginId: 'examples.public-sdk-review-assistant', localId: 'review-status-widget' },
+    });
+  });
+});
+
+describe('Registry-derived inline role vocabulary', () => {
+  it('derives the inline role enum from the one slot table instead of a parallel list', () => {
+    expect([...surfaceRegistry.PluginUiInlineSurfaceRoleV1Schema.options].sort())
+      .toEqual(Object.keys(surfaceRegistry.PLUGIN_UI_INLINE_SURFACE_SLOTS_V1).sort());
+  });
+
+  it('derives destination containers by removing exactly the Registry inline roles', () => {
+    const inlineRoles = Object.keys(surfaceRegistry.PLUGIN_UI_INLINE_SURFACE_SLOTS_V1);
+    const containers = surfaceRegistry.PluginUiContainerV1Schema.options as readonly string[];
+    expect(inlineRoles.every((role) => containers.includes(role))).toBe(true);
+    expect([...surfaceRegistry.PluginUiDestinationContainerV1Schema.options].sort())
+      .toEqual(containers.filter((container) => !inlineRoles.includes(container)).sort());
+  });
+
+  it('answers authored-`ui.views` inline membership from the Registry, not a caller list', () => {
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionWidget')).toBe(true);
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionSubagentLaunch')).toBe(true);
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionSubagentDetails')).toBe(true);
+    // Session info sections are their own contribution family, never `ui.views`.
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionInfoSection')).toBe(false);
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('detailsTab')).toBe(false);
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('appPage')).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({
+      id: 'activity',
+      container: 'sessionInfoSection',
+      target: { kind: 'session' },
+      renderer: 'review-native',
+    }).success).toBe(false);
+  });
+
+  it('derives the role/presentation mount union from the same rows', () => {
+    const mounts: surfaceRegistry.PluginUiInlineSurfaceMountV1[] = [
+      { role: 'sessionWidget', presentation: 'content' },
+      { role: 'sessionWidget', presentation: 'fill' },
+      { role: 'sessionSubagentLaunch', presentation: 'content' },
+      { role: 'sessionSubagentDetails', presentation: 'fill' },
+      { role: 'sessionInfoSection', presentation: 'content' },
+    ];
+    // @ts-expect-error `sessionSubagentLaunch` declares only `content`.
+    const rejected: surfaceRegistry.PluginUiInlineSurfaceMountV1 = {
+      role: 'sessionSubagentLaunch',
+      presentation: 'fill',
+    };
+    expect(rejected.role).toBe('sessionSubagentLaunch');
+    expect(mounts.every((mount) => surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1(
+      mount.role,
+      mount.presentation,
+    ) !== null)).toBe(true);
+  });
+});

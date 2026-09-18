@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('Simulator preview runtime protocol V1', () => {
   it('defines strict daemon snapshot rpc envelopes for simulator resources', async () => {
-    const mod = await import('./runtimeV1').catch(() => null);
+    const mod = await import('./runtimeV1');
 
     expect(mod?.SimulatorPreviewSnapshotV1Schema).toBeTruthy();
     expect(mod?.DaemonSimulatorPreviewSnapshotRequestV1Schema).toBeTruthy();
@@ -51,7 +51,7 @@ describe('Simulator preview runtime protocol V1', () => {
   });
 
   it('defines typed simulator action rpc envelopes and rejects ad hoc payload fields', async () => {
-    const mod = await import('./runtimeV1').catch(() => null);
+    const mod = await import('./runtimeV1');
 
     expect(mod?.DaemonSimulatorPreviewActionRequestV1Schema).toBeTruthy();
     expect(mod?.DaemonSimulatorPreviewActionResponseV1Schema).toBeTruthy();
@@ -125,7 +125,7 @@ describe('Simulator preview runtime protocol V1', () => {
   });
 
   it('allows accepted sideband request results to carry the typed sideband message', async () => {
-    const mod = await import('./runtimeV1').catch(() => null);
+    const mod = await import('./runtimeV1');
 
     expect(mod?.SimulatorPreviewActionResultV1Schema).toBeTruthy();
     if (!mod?.SimulatorPreviewActionResultV1Schema) return;
@@ -152,7 +152,7 @@ describe('Simulator preview runtime protocol V1', () => {
   });
 
   it('allows accepted stream-open results to carry the live stream binding', async () => {
-    const mod = await import('./runtimeV1').catch(() => null);
+    const mod = await import('./runtimeV1');
 
     expect(mod?.SimulatorPreviewActionResultV1Schema).toBeTruthy();
     if (!mod?.SimulatorPreviewActionResultV1Schema) return;

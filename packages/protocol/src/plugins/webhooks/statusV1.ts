@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { AutomationEventAdmitUnresolvedStatusV1Schema } from '../../automations/automationActionSpecsV1.js';
+import { AutomationEventAdmitUnresolvedStatusV1Schema } from '../../automations/automationEventAdmitStatusV1.js';
 import { AutomationIdV1Schema } from '../../automations/automationIdV1.js';
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { PluginMachineMaterializationRefV1Schema } from '../availability/materializationRefV1.js';

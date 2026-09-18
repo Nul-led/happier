@@ -16,6 +16,39 @@ describe('updates sharing', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('accepts a released 0.2 session-shared update that still carries encryptedDataKey', () => {
+    // A supported released 0.2 Home still emits the key bytes on this event
+    // (`apps/server/sources/app/events/eventPayloadBuilders.ts` in `../0.2`),
+    // so the current client must keep parsing that exact payload even though
+    // 0.3 never writes it and no reader consumes it.
+    const parsed = UpdateBodySchema.safeParse({
+      t: 'session-shared',
+      sessionId: 'sess_1',
+      sid: 'sess_1',
+      shareId: 'share_1',
+      sharedBy: { id: 'u1', firstName: null, lastName: null, username: null, avatar: null },
+      accessLevel: 'view',
+      canApprovePermissions: false,
+      encryptedDataKey: 'AQIDBA==',
+      createdAt: Date.now(),
+    });
+    expect(parsed.success).toBe(true);
+
+    // The released field stays declared rather than becoming an unvalidated
+    // passthrough key: dropping the declaration would silently admit a payload
+    // no released producer can emit.
+    expect(UpdateBodySchema.safeParse({
+      t: 'session-shared',
+      sessionId: 'sess_1',
+      shareId: 'share_1',
+      sharedBy: { id: 'u1', firstName: null, lastName: null, username: null, avatar: null },
+      accessLevel: 'view',
+      canApprovePermissions: false,
+      encryptedDataKey: 42,
+      createdAt: Date.now(),
+    }).success).toBe(false);
+  });
+
   it('accepts approval capability on session share update payloads', () => {
     const parsed = UpdateBodySchema.safeParse({
       t: 'session-share-updated',
@@ -39,6 +72,21 @@ describe('updates sharing', () => {
       pendingActivationRequestId: 'pending-after-ui-death',
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it('accepts an exact execution-run recovery hint on pending-changed payloads', () => {
+    const parsed = UpdateBodySchema.safeParse({
+      t: 'pending-changed',
+      sid: 'sess_1',
+      sessionId: 'sess_1',
+      pendingVersion: 3,
+      pendingCount: 1,
+      recipient: { kind: 'execution_run', runId: 'run_1' },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.t === 'pending-changed') {
+      expect(parsed.data.recipient).toEqual({ kind: 'execution_run', runId: 'run_1' });
+    }
   });
 
   it('validates runtime activity projection on update-session payloads', () => {

@@ -12,6 +12,7 @@ export {
   type TurnId,
 } from './idsV1.js';
 
+export * from './access/index.js';
 export * from './subagents/index.js';
 export * from './slashCommands.js';
 export * from './runtimeModeV1.js';
@@ -19,6 +20,14 @@ export * from './runtimeModeSetRpcV1.js';
 export * from './runtime/index.js';
 export * from './external/index.js';
 export * from './organization/index.js';
+export * from './follow/index.js';
+export * from './discussions/index.js';
+export * from './personal/index.js';
+export * from './readState/index.js';
+export * from './listing/query.js';
+export * from './encryption/sessionDataKeyEnvelopes.js';
+export * from './listing/response.js';
+export * from './encryption/membershipSessionDataKeyEnvelopes.js';
 export {
   DefaultSessionFoldersV1,
   SESSION_FOLDER_MAX_COUNT,
@@ -40,8 +49,11 @@ export * from './messages/canonicalTurnDiffTool.js';
 export * from './messages/spawnedFirstTurn.js';
 export * from './presentation/index.js';
 export * from './metadata/sessionMetadataEnvelopesV1.js';
+export * from './metadata/sessionActionConfirmationsV1.js';
 export * from './metadata/sessionWorkspaceLocationV1.js';
 export * from './creation/index.js';
 export * from './permissions/index.js';
 export * from './userActionRequiredOccurrenceV1.js';
 export * from './pending/pendingActivationAuthorizationV1.js';
+export * from './board/index.js';
+export * from './presence/sessionHumanPresenceV1.js';

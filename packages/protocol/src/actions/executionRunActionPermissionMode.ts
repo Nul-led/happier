@@ -1,17 +1,47 @@
 import { z } from 'zod';
 
+import {
+  SESSION_PERMISSION_INTENT_INPUTS,
+  parseSessionPermissionModeAlias,
+} from '../sessions/metadata/sessionPermissionModes.js';
+
+/** Retained execution-run wire values for mixed-version daemon compatibility. */
 export const EXECUTION_RUN_ACTION_PERMISSION_MODES = [
   'read_only',
   'default',
   'workspace_write',
   'yolo',
 ] as const;
+export type ExecutionRunActionPermissionMode = (typeof EXECUTION_RUN_ACTION_PERMISSION_MODES)[number];
+
+/** Preferred values exposed by Action, MCP, and CLI discovery. */
+export const EXECUTION_RUN_ACTION_PERMISSION_INPUTS = SESSION_PERMISSION_INTENT_INPUTS;
 
 export const EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION =
-  `Permission mode. Allowed values: ${EXECUTION_RUN_ACTION_PERMISSION_MODES.join(' | ')}.`;
+  `Permission intent. Preferred values: ${EXECUTION_RUN_ACTION_PERMISSION_INPUTS.join(' | ')}. Compatible aliases are accepted.`;
 
-export const ExecutionRunActionPermissionModeSchema = z
-  .enum(EXECUTION_RUN_ACTION_PERMISSION_MODES)
+function normalizeExecutionRunActionPermissionMode(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+
+  const mode = parseSessionPermissionModeAlias(value);
+  switch (mode) {
+    case 'read-only':
+      return 'read_only';
+    case 'safe-yolo':
+    case 'acceptEdits':
+      return 'workspace_write';
+    case 'bypassPermissions':
+      return 'yolo';
+    case 'default':
+    case 'yolo':
+      return mode;
+    default:
+      return value;
+  }
+}
+
+export const ExecutionRunActionPermissionModeSchema = z.preprocess(
+  normalizeExecutionRunActionPermissionMode,
+  z.enum(EXECUTION_RUN_ACTION_PERMISSION_MODES),
+)
   .describe(EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION);
-
-export type ExecutionRunActionPermissionMode = z.infer<typeof ExecutionRunActionPermissionModeSchema>;

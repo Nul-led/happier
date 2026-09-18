@@ -38,7 +38,7 @@ function createDefaultPluginHostedWebCspPolicyV1() {
 }
 
 export const PluginHostedWebCspPolicyV1Schema = z.object({
-  connectSrc: z.enum(['selfOnly', 'declaredOrigins']).default('selfOnly'),
+  connectSrc: z.enum(['none', 'selfOnly', 'declaredOrigins']).default('selfOnly'),
   allowDataUrls: z.boolean().default(false),
   allowBlobUrls: z.boolean().default(false),
   allowInlineStyles: z.boolean().default(false),
@@ -127,7 +127,7 @@ export function buildPluginHostedWebStaticAssetContentSecurityPolicyV1(
     `style-src ${styleSrc}`,
     `img-src ${imgSrc}`,
     `font-src ${fontSrc}`,
-    `connect-src ${directiveValues(["'self'", ...connectOrigins])}`,
+    `connect-src ${csp.connectSrc === 'none' ? "'none'" : directiveValues(["'self'", ...connectOrigins])}`,
     'block-all-mixed-content',
   ];
   return directives.join('; ');

@@ -1,9 +1,7 @@
 import { z } from 'zod';
 
-import {
-  MachineLiveStreamCodecIdV1Schema,
-  MachineLiveStreamInputControlKindV1Schema,
-} from '../../machines/peer/mediation/stream/index.js';
+import { MachineLiveStreamCodecIdV1Schema } from '../../machines/peer/mediation/stream/codecsV1.js';
+import { MachineLiveStreamInputControlKindV1Schema } from '../../machines/peer/mediation/stream/controlV1.js';
 
 const NonEmptyStringSchema = z.string().trim().min(1).max(512);
 const DiagnosticRecordSchema = z.record(z.string(), z.unknown());

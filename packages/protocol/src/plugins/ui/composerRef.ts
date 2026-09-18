@@ -1,6 +1,7 @@
 import { ComposerInstanceIdProtocolSchema } from '../../runtime/input/composerInstanceId.js';
 import { PendingLocalIdProtocolSchema } from '../../sessions/pending/pendingLocalId.js';
 import { SessionIdSchema } from '../../sessions/idsV1.js';
+import { WorkflowBlockIdProtocolSchema } from '../../workflows/workflowBlockIdProtocol.js';
 import {
   defineProtocolLiteral,
   defineProtocolObject,
@@ -50,6 +51,12 @@ export const ComposerRefV1Schema = defineProtocolUnion([
     sessionId: SessionIdSchema,
     instanceId: ComposerOpaqueLiveInstanceIdV1Schema,
   }, { policy: 'closed' }),
+  defineProtocolObject({
+    kind: defineProtocolLiteral('workflowAuthoring'),
+    draftId: ComposerOpaqueLiveInstanceIdV1Schema,
+    blockId: WorkflowBlockIdProtocolSchema,
+    instanceId: ComposerOpaqueLiveInstanceIdV1Schema,
+  }, { policy: 'closed' }),
 ]);
 type DeepReadonly<T> = T extends readonly (infer TItem)[]
   ? readonly DeepReadonly<TItem>[]
@@ -74,6 +81,8 @@ export function composerRefV1Key(ref: ComposerRefV1): string {
     case 'participantMessage':
     case 'automationAuthoring':
       return JSON.stringify([ref.kind, ref.sessionId, ref.instanceId]);
+    case 'workflowAuthoring':
+      return JSON.stringify([ref.kind, ref.draftId, ref.blockId, ref.instanceId]);
   }
 }
 

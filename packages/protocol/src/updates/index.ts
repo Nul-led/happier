@@ -1,22 +1,30 @@
 import { z } from 'zod';
+import { MachineKindFromLegacyProjectionSchema } from '../machines/machineKind.js';
+import { RunnerMachineContentKeyBindingV1Schema } from '../ephemeralRunner/machineContentKeyBinding.js';
+import { SessionViewerProjectionV1Schema } from '../sessions/personal/viewer.js';
 import { AutomationRunStateV3Schema } from '../automations/automationRunStateV3.js';
 import { AutomationRunStateChangedHostEventV1Schema } from '../plugins/events/hostReferencesV1.js';
 import { ExternalSessionTranscriptInvalidationV1Schema } from '../sessions/external/secureRefreshV1.js';
 import { ExecutionRunPublicStateSchema } from '../execution/runs/index.js';
 import { SessionMessageAttentionImpactSchema } from '../sessions/messages/transcriptRawRecordV1.js';
 import { SessionMessageRoleSchema } from '../sessions/messages/sessionMessageRole.js';
+import { SessionMessageAccountActorV1Schema } from '../sessions/messages/sessionMessageAccountActorV1.js';
 import { SessionMessageDeliveryResolutionV1Schema } from '../sessions/messages/sessionMessageDeliveryResolutionV1.js';
 import { SessionTranscriptObservationProvenanceV1Schema } from '../sessions/messages/transcriptObservationV1.js';
 import { SessionStoredMessageContentSchema } from '../sessions/messages/sessionStoredMessageContent.js';
 import { PrimaryTurnStatusV1Schema, SessionRuntimeIssueV1Schema } from '../sessions/control/runtimeIssueV1.js';
 import { TurnIdSchema } from '../sessions/idsV1.js';
-import { ActionOperationSnapshotEphemeralV1Schema } from '../actions/operations/v1.js';
+import {
+  ActionOperationRevisionEphemeralV1Schema,
+  ActionOperationSnapshotEphemeralV1Schema,
+} from '../actions/operations/v1.js';
 import {
   parseSessionRuntimeActivityProjectionFields,
   SessionRuntimeActivityStateSchema,
 } from '../sessions/runtime/activity/index.js';
 import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
 import { PendingActivationAuthorizationV1Schema } from '../sessions/pending/pendingActivationAuthorizationV1.js';
+import { ParticipantExecutionRunRecipientRoutingIdentityV1Schema } from '../messages/structured/participantMessageV1.js';
 
 const TimestampMsSchema = z.number().int().min(0);
 const Base64Schema = z.string();
@@ -52,6 +60,12 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
         sourceCreatedAt: TimestampMsSchema.optional(),
         sourceUpdatedAt: TimestampMsSchema.optional(),
         transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
+        /**
+         * Additive authenticated-reader actor projection. Omitted means an
+         * older producer (preserve any known actor); explicit `null` means the
+         * current producer evaluated this row and denies Account attribution.
+         */
+        accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
       })
       .passthrough(),
   }).passthrough(),
@@ -73,12 +87,19 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
         sourceCreatedAt: TimestampMsSchema.optional(),
         sourceUpdatedAt: TimestampMsSchema.optional(),
         transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
+        /**
+         * Additive authenticated-reader actor projection. Omitted means an
+         * older producer (preserve any known actor); explicit `null` means the
+         * current producer evaluated this row and denies Account attribution.
+         */
+        accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
       })
       .passthrough(),
   }).passthrough(),
   z.object({
     t: z.literal('new-session'),
     id: z.string(),
+    viewer: SessionViewerProjectionV1Schema.optional(),
     seq: z.number().int().min(0),
     metadata: Base64Schema,
     metadataVersion: z.number().int(),
@@ -87,6 +108,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     agentState: Base64Schema.nullable(),
     agentStateVersion: z.number().int(),
     dataEncryptionKey: Base64Schema.nullable(),
+    runnerContentKeyBinding: RunnerMachineContentKeyBindingV1Schema.nullable().optional(),
     encryptionMode: SessionEncryptionModeSchema.optional(),
     active: z.boolean(),
     activeAt: TimestampMsSchema,
@@ -106,6 +128,8 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     active: z.boolean().optional(),
     activeAt: TimestampMsSchema.optional(),
     lastViewedSessionSeq: z.number().int().min(0).optional(),
+    unreadSince: TimestampMsSchema.nullable().optional(),
+    viewer: SessionViewerProjectionV1Schema.optional(),
     pendingPermissionRequestCount: z.number().int().min(0).optional(),
     pendingUserActionRequestCount: z.number().int().min(0).optional(),
     pendingRequestObservedAt: TimestampMsSchema.nullable().optional(),
@@ -129,6 +153,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     pendingVersion: z.number().int().min(0),
     pendingCount: z.number().int().min(0),
     pendingBlockedCount: z.number().int().min(0).optional(),
+    recipient: ParticipantExecutionRunRecipientRoutingIdentityV1Schema.optional(),
     changedByAccountId: z.string().optional(),
     meaningfulActivityAt: TimestampMsSchema.optional(),
     pendingActivationRequestId: z.string().trim().min(1).optional(),
@@ -149,7 +174,9 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('automation-run-updated'),
     runId: z.string(),
-    automationId: z.string(),
+    // Direct Workflow Runs have no Automation identity. Machine-targeted
+    // invalidations preserve that absence instead of fabricating one.
+    automationId: z.string().nullable(),
     state: AutomationRunStateV3Schema,
     scheduledAt: TimestampMsSchema,
     startedAt: TimestampMsSchema.nullable().optional(),
@@ -159,6 +186,8 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     // Current producers publish the Run lease generation so a worker can
     // reject a same-machine reclaim. Older supported producers omit it.
     attempt: z.number().int().min(0).optional(),
+    /** Exact machine wake for persisted Workflow cancellation custody. */
+    workflowControl: z.literal('cancel_requested').optional(),
   }).passthrough(),
   z.object({
     t: z.literal('automation-run-state-changed'),
@@ -198,6 +227,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
   }).passthrough(),
   z.object({
     t: z.literal('new-machine'),
+    kind: MachineKindFromLegacyProjectionSchema.optional(),
     machineId: z.string(),
     seq: z.number().int().min(0),
     metadata: Base64Schema,
@@ -275,6 +305,16 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     }).passthrough(),
     accessLevel: z.enum(['view', 'edit', 'admin']),
     canApprovePermissions: z.boolean().optional(),
+    /**
+     * Received-only compatibility seam, never emitted by 0.3.
+     *
+     * The current producer deliberately omits key bytes from this event and the
+     * recipient targeted-hydrates the canonical `(Session, Account)` envelope
+     * instead. A supported released 0.2 Home still emits this field, so the
+     * declaration stays to keep that peer's payload typed rather than falling
+     * through as an unvalidated passthrough key. Remove it only once 0.2 leaves
+     * the supported set; do not restore a 0.3 writer for it.
+     */
     encryptedDataKey: Base64Schema.optional(),
     createdAt: TimestampMsSchema,
   }).passthrough(),
@@ -418,6 +458,7 @@ export const EphemeralUpdateSchema = z.discriminatedUnion('type', [
     timestamp: TimestampMsSchema,
   }).passthrough(),
   ActionOperationSnapshotEphemeralV1Schema,
+  ActionOperationRevisionEphemeralV1Schema,
 ]);
 
 export type EphemeralUpdate = z.infer<typeof EphemeralUpdateSchema>;

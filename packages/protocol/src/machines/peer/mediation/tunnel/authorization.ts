@@ -1,8 +1,12 @@
 import { z } from 'zod';
 import tweetnacl from 'tweetnacl';
+import { ProviderBrokerApplicationBindingV1Schema } from '../../../../providers/brokerRouteGrantV1.js';
+import { AuthTokenAuthenticationEvidenceSnapshotV1Schema } from '../../../../auth/authToken.js';
+import { TeamCredentialSourceBindingV1Schema } from '../../../../teams/credentials/sourceBindingV1.js';
 
 import { decodeBase64 } from '../../../../crypto/base64.js';
 import { createCanonicalJsonSigningInput } from '../../../../crypto/canonicalJson.js';
+import { verifyEd25519Signature } from '../../../../crypto/ed25519.js';
 import { VoiceMediaApplicationKindV1Schema } from '../voiceMediaV1.js';
 
 export const PEER_TCP_TUNNEL_RELAY_AUTHORIZATION_AUDIENCE_V1 =
@@ -16,6 +20,7 @@ const NonNegativeIntSchema = z.number().int().nonnegative();
 export const PeerTcpTunnelRelayAuthorizationFlowKindV1Schema = z.enum([
   'tcp_tunnel',
   'voice_media',
+  'provider_broker',
 ]);
 export type PeerTcpTunnelRelayAuthorizationFlowKindV1 = z.infer<
   typeof PeerTcpTunnelRelayAuthorizationFlowKindV1Schema
@@ -27,6 +32,39 @@ export const PeerTcpTunnelRelayAuthorizationDestinationV1Schema = z.object({
 });
 export type PeerTcpTunnelRelayAuthorizationDestinationV1 = z.infer<
   typeof PeerTcpTunnelRelayAuthorizationDestinationV1Schema
+>;
+
+export const ProviderBrokerExternalApiKeyRelayBindingV1Schema = z.object({
+  v: z.literal(1),
+  kind: z.literal('external_api_key'),
+  teamId: z.string().min(1),
+  resourceId: z.string().min(1),
+  requestId: z.string().min(1),
+  externalApiKeyId: z.string().uuid(),
+  assignedAccountId: z.string().min(1),
+  assignedTeamMembershipId: z.string().min(1),
+}).strict();
+export const ProviderBrokerResourceTestRelayBindingV1Schema = z.object({
+  v: z.literal(1),
+  kind: z.literal('resource_test'),
+  teamId: z.string().min(1),
+  resourceId: z.string().min(1),
+  requestId: z.string().min(1),
+  actorAccountId: z.string().min(1),
+  expectedResourceRevision: z.number().int().positive(),
+  application: ProviderBrokerApplicationBindingV1Schema,
+  source: TeamCredentialSourceBindingV1Schema,
+  verifiedCredentialEvidence: AuthTokenAuthenticationEvidenceSnapshotV1Schema.optional(),
+}).strict();
+export type ProviderBrokerResourceTestRelayBindingV1 = z.infer<
+  typeof ProviderBrokerResourceTestRelayBindingV1Schema
+>;
+export const ProviderBrokerRelayApplicationBindingV1Schema = z.discriminatedUnion('kind', [
+  ProviderBrokerExternalApiKeyRelayBindingV1Schema,
+  ProviderBrokerResourceTestRelayBindingV1Schema,
+]);
+export type ProviderBrokerRelayApplicationBindingV1 = z.infer<
+  typeof ProviderBrokerRelayApplicationBindingV1Schema
 >;
 
 export const PeerTcpTunnelRelayAuthorizationSignatureV1Schema = z.object({
@@ -56,7 +94,8 @@ export const PeerTcpTunnelRelayAuthorizationPayloadV2Schema = z
     applicationAttemptId: z.string().min(1).max(256).optional(),
     applicationAuthorityDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u).optional(),
     relaySocketId: z.string().min(1).max(PEER_TCP_TUNNEL_RELAY_SOCKET_ID_MAX_LENGTH),
-    destination: PeerTcpTunnelRelayAuthorizationDestinationV1Schema.strict(),
+    destination: PeerTcpTunnelRelayAuthorizationDestinationV1Schema.strict().optional(),
+    providerBroker: ProviderBrokerRelayApplicationBindingV1Schema.optional(),
     capProfileId: z.string().min(1),
     maxFrameBytes: PositiveIntSchema,
     maxIdleMs: PositiveIntSchema,
@@ -92,6 +131,22 @@ export const PeerTcpTunnelRelayAuthorizationPayloadV2Schema = z
         code: z.ZodIssueCode.custom,
         path: ['applicationKind'],
         message: 'TCP tunnel relay authorization cannot carry Voice application authority',
+      });
+    }
+    if (payload.flowKind === 'provider_broker') {
+      if (payload.destination !== undefined || payload.providerBroker === undefined
+        || applicationFields.some((value) => value !== undefined)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['providerBroker'],
+          message: 'Provider broker relay authorization requires only an exact application binding',
+        });
+      }
+    } else if (payload.destination === undefined || payload.providerBroker !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['destination'],
+        message: 'TCP and Voice relay authorization require only a loopback destination',
       });
     }
   });
@@ -185,7 +240,7 @@ export function verifyPeerTcpTunnelRelayAuthorizationV2(input: Readonly<{
   const signingInput = new TextEncoder().encode(
     createPeerTcpTunnelRelayAuthorizationSigningInputV2(authorization.payload),
   );
-  return tweetnacl.sign.detached.verify(signingInput, signature, publicKey)
+  return verifyEd25519Signature(signingInput, signature, publicKey)
     ? { valid: true, payload: authorization.payload }
     : { valid: false, reasonCode: 'bad_signature' };
 }

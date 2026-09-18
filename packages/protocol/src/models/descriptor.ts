@@ -76,6 +76,8 @@ export const AgentModelOptionSchema = z.object({
 export type ProviderModelDescriptorV1 = Readonly<{
   id: string;
   name: string;
+  /** Provider/source-owned request spellings for this exact canonical model. */
+  aliases?: readonly string[];
   description?: string;
   contextWindowTokens?: number;
   extendedContextModelId?: string;
@@ -89,6 +91,7 @@ export type ProviderModelDescriptorV1 = Readonly<{
 export const ProviderModelDescriptorV1Schema = z.object({
   id: ProviderModelIdSchema,
   name: z.string().trim().min(1).max(256),
+  aliases: z.array(ProviderModelIdSchema).max(64).optional(),
   description: z.string().max(1024).optional(),
   contextWindowTokens: z.number().int().positive().max(100_000_000).optional(),
   extendedContextModelId: ProviderModelIdSchema.optional(),
@@ -97,6 +100,15 @@ export const ProviderModelDescriptorV1Schema = z.object({
     toolRoundTrips: CapabilitySupportSchema.optional(),
     reasoningControls: CapabilitySupportSchema.optional(),
   }).strict().optional(),
-}).strict() satisfies z.ZodType<ProviderModelDescriptorV1>;
+}).strict().superRefine((value, context) => {
+  if (value.aliases) {
+    if (new Set(value.aliases).size !== value.aliases.length) {
+      context.addIssue({ code: 'custom', path: ['aliases'], message: 'Model aliases must be unique' });
+    }
+    if (value.aliases.includes(value.id)) {
+      context.addIssue({ code: 'custom', path: ['aliases'], message: 'A canonical model id cannot alias itself' });
+    }
+  }
+}) satisfies z.ZodType<ProviderModelDescriptorV1>;
 
 export type AgentModelDescriptor = ProviderModelDescriptorV1;

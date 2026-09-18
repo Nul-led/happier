@@ -64,7 +64,6 @@ export {
   DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
   DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_CAPABILITIES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_ALLOW_V1_FALLBACK,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
@@ -248,9 +247,11 @@ export {
   SessionCapabilitiesSchema,
   SessionMessagesCapabilitiesSchema,
   SessionSystemRecordsCapabilitiesSchema,
+  SessionFollowCapabilitiesSchema,
   type SessionCapabilities,
   type SessionMessagesCapabilities,
   type SessionSystemRecordsCapabilities,
+  type SessionFollowCapabilities,
 } from './features/payload/capabilities/sessionCapabilities.js';
 
 export { CapabilitiesSchema, type Capabilities } from './features/payload/capabilities/capabilitiesSchema.js';
@@ -268,7 +269,11 @@ export {
 } from './features/payload/capabilities/connectedServicesCapabilities.js';
 export { FeatureGatesSchema, type FeatureGates } from './features/payload/featureGatesSchema.js';
 export {
+  AccountServicePresentationV1Schema,
   FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
   FeaturesResponseSchema,
+  HomeSignInServicePolicyV1Schema,
+  type AccountServicePresentationV1,
   type FeaturesResponse,
+  type HomeSignInServicePolicyV1,
 } from './features/payload/featuresResponseSchema.js';

@@ -2,12 +2,16 @@ import { z } from 'zod';
 
 import {
   defineProtocolNumber,
-  defineProtocolTrimmedNonemptyString,
+  defineProtocolString,
 } from '../plugins/actions/protocolComposableSchema.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 
 /** Stable identity of one mutable automatic trigger. */
-export const AutomationTriggerIdProtocolSchema = defineProtocolTrimmedNonemptyString(191);
+export const AutomationTriggerIdProtocolSchema = defineProtocolString({
+  minLength: 1,
+  maxLength: 191,
+  pattern: '^(?!\\s)[\\s\\S]*\\S$(?![\\s\\S])',
+});
 export const AutomationTriggerIdSchema = asProtocolZod(AutomationTriggerIdProtocolSchema)
   .brand<'AutomationTriggerId'>();
 export type AutomationTriggerId = z.infer<typeof AutomationTriggerIdSchema>;

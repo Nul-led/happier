@@ -1,17 +1,45 @@
 import { z } from 'zod';
 
-import { HomeConnectionDescriptorV1Schema, type HomeConnectionDescriptorV1 } from '../../auth/accountDirectory.js';
+import {
+  ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES,
+  HomeApplicationOriginV1Schema,
+  HomeConnectionDescriptorV1Schema,
+  type HomeConnectionDescriptorV1,
+} from '../../auth/accountDirectory.js';
 import { CapabilitiesSchema, type Capabilities } from './capabilities/capabilitiesSchema.js';
 import { FeatureGatesSchema, type FeatureGates } from './featureGatesSchema.js';
 import { isRecord } from './isRecord.js';
 import { coerceBugReportsCapabilitiesFromFeaturesPayload } from './capabilities/bugReportsCapabilities.js';
+import { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from './responseLimits.js';
 
-/**
- * Maximum encoded `/v1/features` response accepted before JSON parsing.
- * The response is a bounded capability document, and clients enforce this
- * receive-memory boundary while streaming rather than trusting Content-Length.
- */
-export const FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 = 1024 * 1024;
+export { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from './responseLimits.js';
+
+const ServerIdentityIdSchema = z.string().trim().regex(/^srv_[A-Za-z0-9._-]{1,60}$/u);
+
+export const HomeSignInServicePolicyV1Schema = z.discriminatedUnion('mode', [
+  z.object({ v: z.literal(1), mode: z.literal('disabled') }).strict(),
+  z.object({ v: z.literal(1), mode: z.literal('self') }).strict(),
+  z.object({
+    v: z.literal(1),
+    mode: z.literal('external'),
+    endpoint: HomeApplicationOriginV1Schema,
+    expectedServerIdentityId: ServerIdentityIdSchema.optional(),
+  }).strict(),
+]);
+export type HomeSignInServicePolicyV1 = z.infer<typeof HomeSignInServicePolicyV1Schema>;
+
+export const AccountServicePresentationV1Schema = z.object({
+  v: z.literal(1),
+  displayName: z.string().trim().min(1).superRefine((value, context) => {
+    if (/\p{Cc}/u.test(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Display name must not contain control characters' });
+    }
+    if (new TextEncoder().encode(value).byteLength > ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Display name exceeds its UTF-8 byte limit' });
+    }
+  }),
+}).strict();
+export type AccountServicePresentationV1 = z.infer<typeof AccountServicePresentationV1Schema>;
 
 function coerceFeaturesResponsePayload(raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
@@ -19,6 +47,16 @@ function coerceFeaturesResponsePayload(raw: unknown): unknown {
   // Robustness: malformed bugReports capabilities must not invalidate unrelated feature gates.
   // Coerce it to a safe default while preserving the rest of the payload.
   const next = { ...raw } as Record<string, unknown>;
+  for (const [key, schema] of [
+    ['signInService', HomeSignInServicePolicyV1Schema],
+    ['accountServicePresentation', AccountServicePresentationV1Schema],
+  ] as const) {
+    if (next[key] !== undefined) {
+      const parsed = schema.safeParse(next[key]);
+      if (parsed.success) next[key] = parsed.data;
+      else delete next[key];
+    }
+  }
   if (!isRecord(next.capabilities)) {
     next.capabilities = {};
   }
@@ -63,6 +101,8 @@ export const FeaturesResponseSchema = z.preprocess(
     // old servers omit the field and remain valid; a present field must parse
     // through the one canonical outer descriptor schema or the response fails.
     homeConnectionDescriptor: HomeConnectionDescriptorV1Schema.optional(),
+    signInService: HomeSignInServicePolicyV1Schema.optional(),
+    accountServicePresentation: AccountServicePresentationV1Schema.optional(),
   }),
 );
 
@@ -70,4 +110,6 @@ export type FeaturesResponse = Readonly<{
   features: FeatureGates;
   capabilities: Capabilities;
   homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+  signInService?: HomeSignInServicePolicyV1;
+  accountServicePresentation?: AccountServicePresentationV1;
 }>;

@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   DaemonExecutionRunListResponseSchema,
+  DaemonExecutionRunBrokerAuthorityRequestV1Schema,
+  DaemonExecutionRunBrokerAuthorityResponseV1Schema,
   DaemonExecutionRunMarkerPersistenceReadSchema,
   DaemonExecutionRunMarkerOwnerWriteSchema,
   DaemonExecutionRunMarkerSchema,
@@ -22,6 +24,61 @@ import {
 } from '../index.js';
 
 describe('DaemonExecutionRunMarkerSchema', () => {
+  it('binds broker authority lookup to one Home, Machine, Account, Run occurrence, and nonce', () => {
+    const request = {
+      v: 1 as const,
+      requestNonce: '11111111-1111-4111-8111-111111111111',
+      serverIdentityId: 'srv_home_one',
+      requestingAccountId: 'account-one',
+      workerMachineId: 'machine-one',
+      executionRunId: 'run-one',
+      expectedIntent: 'voice_agent' as const,
+      expectedOccurrenceId: 'occurrence-one',
+    };
+    expect(DaemonExecutionRunBrokerAuthorityRequestV1Schema.parse(request)).toEqual(request);
+    expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.parse({
+      status: 'current',
+      requestNonce: request.requestNonce,
+      serverIdentityId: request.serverIdentityId,
+      requestingAccountId: request.requestingAccountId,
+      workerMachineId: request.workerMachineId,
+      executionRunId: request.executionRunId,
+      occurrenceId: 'occurrence-one',
+      parentSessionId: 'session-one',
+      intent: 'voice_agent',
+      runtimeState: 'active_turn',
+    })).toMatchObject({ status: 'current', parentSessionId: 'session-one', intent: 'voice_agent' });
+    expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.parse({
+      status: 'current',
+      requestNonce: request.requestNonce,
+      serverIdentityId: request.serverIdentityId,
+      requestingAccountId: request.requestingAccountId,
+      workerMachineId: request.workerMachineId,
+      executionRunId: request.executionRunId,
+      occurrenceId: 'occurrence-detached',
+      parentSessionId: null,
+      intent: 'agent',
+      runtimeState: 'idle',
+    })).toMatchObject({ status: 'current', parentSessionId: null, intent: 'agent' });
+    expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.safeParse({
+      status: 'current',
+      requestNonce: request.requestNonce,
+      serverIdentityId: request.serverIdentityId,
+      requestingAccountId: request.requestingAccountId,
+      workerMachineId: request.workerMachineId,
+      executionRunId: request.executionRunId,
+      occurrenceId: 'occurrence-one',
+      parentSessionId: 'session-one',
+      runtimeState: 'active_turn',
+    }).success).toBe(false);
+    expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.safeParse({
+      status: 'not_current',
+      requestNonce: request.requestNonce,
+      reason: 'terminal',
+      parentSessionId: 'leak-not-allowed',
+    }).success).toBe(false);
+  });
+
   it('publishes the owner-write marker and cleanup-receipt contracts from the Protocol root', () => {
     expect(PublicExecutionRunConnectedServicesCleanupReceiptV1Schema)
       .toBe(ExecutionRunConnectedServicesCleanupReceiptV1Schema);
@@ -67,6 +124,45 @@ describe('DaemonExecutionRunMarkerSchema', () => {
         runKey: 'another-run',
       },
     }).success).toBe(false);
+  });
+
+  it('keeps predecessor broker occurrence bytes read-compatible but strips them from new writes', () => {
+    const marker = {
+      pid: 123,
+      happySessionId: 'session_1',
+      runId: 'run_authority',
+      callId: 'call_authority',
+      sidechainId: 'side_authority',
+      intent: 'review',
+      backendTarget: { kind: 'backend', backendId: 'codex' },
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      retentionPolicy: 'resumable',
+      status: 'running',
+      startedAtMs: 1,
+      updatedAtMs: 2,
+      executionRunBrokerAuthorityV1: {
+        occurrenceId: 'occurrence_1',
+        turnState: 'active_turn',
+      },
+    };
+    expect(DaemonExecutionRunMarkerOwnerWriteSchema.parse(marker))
+      .not.toHaveProperty('executionRunBrokerAuthorityV1');
+    expect(DaemonExecutionRunMarkerPersistenceReadSchema.parse(marker))
+      .toHaveProperty('executionRunBrokerAuthorityV1.occurrenceId', 'occurrence_1');
+    expect(DaemonExecutionRunMarkerSchema.parse(marker))
+      .not.toHaveProperty('executionRunBrokerAuthorityV1');
+    const { executionRunBrokerAuthorityV1: _brokerAuthority, ...terminalMarker } = marker;
+    expect(DaemonExecutionRunMarkerOwnerWriteSchema.parse({
+      ...terminalMarker,
+      status: 'succeeded',
+      finishedAtMs: 3,
+    })).not.toHaveProperty('executionRunBrokerAuthorityV1');
+    expect(DaemonExecutionRunMarkerOwnerWriteSchema.parse({
+      ...marker,
+      status: 'succeeded',
+      finishedAtMs: 3,
+    })).not.toHaveProperty('executionRunBrokerAuthorityV1');
   });
 
   it('accepts an explicit detached execution-run marker without inventing a Session id', () => {
@@ -174,7 +270,7 @@ describe('DaemonExecutionRunMarkerSchema', () => {
         agentId: 'codex',
         materializationKey: 'run_marker_privacy',
         connectedServicesBindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': { source: 'connected', selection: 'profile', profileId: 'private-profile' },
           },
@@ -257,7 +353,7 @@ describe('DaemonExecutionRunMarkerSchema', () => {
         agentId: 'codex',
         materializationKey: 'execution_run:11111111-1111-4111-8111-111111111111',
         connectedServicesBindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'happier.agent.codex/openai-codex': {
               source: 'connected',

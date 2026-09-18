@@ -9,6 +9,7 @@ import {
 } from '../../runtime/input/composerAttachmentV1.js';
 import { ComposerStagedMediaContentV1Schema } from '../../runtime/input/composerContentV1.js';
 import { SessionIdSchema } from '../../sessions/idsV1.js';
+import { PluginExecutionScopeV1Schema, type PluginExecutionScopeV1 } from '../invocationScopeV1.js';
 import { PendingLocalIdSchema } from '../../sessions/pending/pendingLocalId.js';
 import type { JsonValue } from '../../json/strictJsonValue.js';
 import type { PluginJsonValueV2 } from './publicTypes.js';
@@ -125,6 +126,34 @@ export type ComposerAttachmentResolveRequestV1<
   & Readonly<{
     attachments: readonly ComposerAttachmentValueReplacedV1<
       ComposerAttachmentResolveRequestWireV1['attachments'][number],
+      TPrepared
+    >[];
+  }>
+>;
+
+/** Host-stamped scope for the run-capable attachment resolution callback. */
+export const ComposerAttachmentInvocationScopeV2Schema = PluginExecutionScopeV1Schema;
+export type ComposerAttachmentInvocationScopeV2 = PluginExecutionScopeV1;
+
+/**
+ * Additive run-capable resolution request. V1 remains the exact Session-only
+ * callback contract; detached execution is never represented by a Session id.
+ */
+export const ComposerAttachmentResolveRequestV2Schema = z.object({
+  scope: ComposerAttachmentInvocationScopeV2Schema,
+  localId: PendingLocalIdSchema,
+  attachments: z.array(ComposerAttachmentResolvedInstanceV1Schema)
+    .max(MAX_COMPOSER_ATTACHMENT_INSTANCES_V1)
+    .superRefine(rejectDuplicateAttachmentInstanceIds),
+}).strict();
+type ComposerAttachmentResolveRequestWireV2 = z.infer<typeof ComposerAttachmentResolveRequestV2Schema>;
+export type ComposerAttachmentResolveRequestV2<
+  TPrepared extends JsonValue = JsonValue,
+> = Readonly<
+  Omit<ComposerAttachmentResolveRequestWireV2, 'attachments'>
+  & Readonly<{
+    attachments: readonly ComposerAttachmentValueReplacedV1<
+      ComposerAttachmentResolveRequestWireV2['attachments'][number],
       TPrepared
     >[];
   }>

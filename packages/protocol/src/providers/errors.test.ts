@@ -31,6 +31,20 @@ describe('provider stable errors and compatibility envelopes', () => {
     });
   });
 
+  it('keeps a temporarily unavailable Provider credential distinct from authoritative absence', () => {
+    expect(createProviderErrorV1('provider_secret_unavailable', {
+      connectionId: 'pc_gateway',
+      machineId: 'machine-a',
+    })).toEqual({
+      v: 1,
+      code: 'provider_secret_unavailable',
+      connectionId: 'pc_gateway',
+      machineId: 'machine-a',
+      retryable: true,
+      action: 'retry',
+    });
+  });
+
   it('represents an invalid Provider RPC response independently from endpoint availability', () => {
     expect(createProviderErrorV1('provider_rpc_response_invalid', {
       machineId: 'machine-a',

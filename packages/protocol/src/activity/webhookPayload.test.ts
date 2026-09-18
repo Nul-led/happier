@@ -75,4 +75,71 @@ describe('buildActivityWebhookPayload', () => {
       expect(ActivityWebhookPayloadV1Schema.parse(payload).topic).toBe(topic);
     }
   });
+
+  it('builds a strict workflow Run update with exact Run navigation and no private content', () => {
+    const payload = buildActivityWebhookPayload({
+      channelId: 'webhook-primary',
+      createdAt: 790,
+      topic: 'workflow_run_update',
+      content: {
+        title: 'Workflow needs attention',
+        body: 'A workflow Run was interrupted and needs attention.',
+      },
+      workflowRun: {
+        runId: 'run-42',
+        updateKind: 'interrupted',
+        reason: { code: 'approval_required' },
+      },
+    });
+
+    expect(ActivityWebhookPayloadV1Schema.parse(payload)).toEqual(payload);
+    if (payload.topic !== 'workflow_run_update') throw new Error('Expected workflow webhook payload');
+    expect(payload).toEqual({
+      v: 1,
+      channelId: 'webhook-primary',
+      createdAt: 790,
+      topic: 'workflow_run_update',
+      content: {
+        title: 'Workflow needs attention',
+        body: 'A workflow Run was interrupted and needs attention.',
+      },
+      workflowRun: {
+        runId: 'run-42',
+        updateKind: 'interrupted',
+        reason: { code: 'approval_required' },
+      },
+      navigation: { runId: 'run-42' },
+    });
+    expect(ActivityWebhookPayloadV1Schema.safeParse({
+      ...payload,
+      workflowRun: { ...payload.workflowRun, prompt: 'private prompt' },
+    }).success).toBe(false);
+    expect(ActivityWebhookPayloadV1Schema.safeParse({
+      ...payload,
+      workflowRun: {
+        ...payload.workflowRun,
+        reason: { code: 'approval_required', message: 'private diagnostic' },
+      },
+    }).success).toBe(false);
+    expect(ActivityWebhookPayloadV1Schema.safeParse({
+      ...payload,
+      workflowRun: { ...payload.workflowRun, updateKind: 'invented' },
+    }).success).toBe(false);
+  });
+
+  it('rejects a workflow topic without the workflow arm', () => {
+    const ordinary = buildActivityWebhookPayload({
+      channelId: 'webhook-primary',
+      createdAt: 791,
+      topic: 'ready',
+      content: { title: 'Ready', body: 'Ready.' },
+      session: { sessionId: 'session-1' },
+    });
+
+    expect(ActivityWebhookPayloadV1Schema.safeParse({
+      ...ordinary,
+      topic: 'workflow_run_update',
+      navigation: { runId: 'run-42' },
+    }).success).toBe(false);
+  });
 });

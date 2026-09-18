@@ -7,6 +7,7 @@ import {
   type AccountScopedCryptoMaterial,
 } from '../../crypto/accountScopedCipher.js';
 import { decodeBase64, encodeBase64 } from '../../crypto/base64.js';
+import { GENERATED_SESSION_PRESENTATION_COMPAT_V1 } from '../../agents/generated/sessionPresentationCompatV1.js';
 import {
   projectExternalSessionOperationSharedPresentationV1,
   projectExternalSessionOperationProgressV1,
@@ -298,7 +299,42 @@ const RemoteDevMetadataReaderAtFae505Schema = z.object({
 }).passthrough();
 
 describe('session metadata privacy envelopes v1', () => {
-  it('normalizes released bundled short Connected Account keys at Session metadata ingress', () => {
+  it('preserves provider session identity bytes in owner-native and fork metadata', () => {
+    const providerSessionId = '  provider\nses/AB+cd==  ';
+    const parsed = SessionOwnerMetadataV1Schema.parse({
+      v: 1,
+      nativeSession: {
+        codexSessionId: providerSessionId,
+        providerSessionInfoV1: {
+          v: 1,
+          provider: 'codex',
+          sessionId: providerSessionId,
+          observedAt: 1,
+        },
+      },
+      history: {
+        forkV1: {
+          v: 1,
+          parentSessionId: 'parent',
+          parentCutoffSeqInclusive: 0,
+          createdAtMs: 1,
+          strategy: 'provider_native',
+          agentHint: { agentSessionId: providerSessionId },
+        },
+      },
+    });
+    expect(parsed.nativeSession?.codexSessionId).toBe(providerSessionId);
+    expect(parsed.nativeSession?.providerSessionInfoV1?.sessionId)
+      .toBe(providerSessionId);
+    expect(parsed.history?.forkV1?.agentHint?.agentSessionId)
+      .toBe(providerSessionId);
+    expect(SessionOwnerMetadataV1Schema.safeParse({
+      v: 1,
+      nativeSession: { codexSessionId: ' \n\t ' },
+    }).success).toBe(false);
+  });
+
+  it('normalizes released v1 bundled short Connected Account keys into current v2 Session metadata', () => {
     const parsed = SessionOwnerMetadataV1Schema.parse({
       v: 1,
       connectedServices: {
@@ -316,7 +352,7 @@ describe('session metadata privacy envelopes v1', () => {
     });
 
     expect(parsed.connectedServices?.connectedServices).toEqual({
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
         'happier.agent.codex/openai-codex': {
           source: 'connected',
@@ -649,6 +685,10 @@ describe('session metadata privacy envelopes v1', () => {
     const canonicalOwnerMetadata = {
       v: 1,
       system: {
+        placementOrigin: {
+          kind: 'machine_pool',
+          poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+        },
         voiceAgentStartupInstructionsV1: {
           v: 1,
           id: 'happier.global_voice_agent',
@@ -659,6 +699,16 @@ describe('session metadata privacy envelopes v1', () => {
 
     expect(SessionOwnerMetadataV1Schema.parse(canonicalOwnerMetadata))
       .toEqual(canonicalOwnerMetadata);
+    expect(SessionOwnerMetadataV1Schema.safeParse({
+      ...canonicalOwnerMetadata,
+      system: {
+        ...canonicalOwnerMetadata.system,
+        placementOrigin: {
+          ...canonicalOwnerMetadata.system.placementOrigin,
+          name: 'Private pool',
+        },
+      },
+    }).success).toBe(false);
     expect(SessionOwnerMetadataV1Schema.safeParse({
       ...canonicalOwnerMetadata,
       system: {
@@ -786,6 +836,14 @@ describe('session metadata privacy envelopes v1', () => {
     }).success).toBe(false);
     expect(SessionMetadataTuplePatchV1Schema.parse(sharedEditorPatch))
       .toEqual(sharedEditorPatch);
+    expect(SessionMetadataTuplePatchV1Schema.parse({
+      ...sharedEditorPatch,
+      mutationIntent: 'rename_session',
+    })).toEqual({ ...sharedEditorPatch, mutationIntent: 'rename_session' });
+    expect(SessionMetadataTuplePatchV1Schema.safeParse({
+      ...sharedEditorPatch,
+      mutationIntent: 'ordinary_metadata_write',
+    }).success).toBe(false);
     expect(SessionMetadataTuplePatchV1Schema.safeParse({
       ...sharedEditorPatch,
       ownerMetadata: { ciphertext: 'must-not-be-observable' },
@@ -3410,5 +3468,45 @@ describe('released Codex runtime metadata compatibility', () => {
       v: 1,
       nativeSession: { codexBackendMode: 'appServer' },
     }).success).toBe(false);
+  });
+});
+
+/**
+ * The owner envelope already consults EVERY generated `vendorResumeIdField` to
+ * name the Agent behind a session (`resolveGeneratedSessionPresentationAgentIdV1`),
+ * so a flat key this envelope refuses to carry is a contradiction inside one
+ * owner: the runtime publishes the key for any bundled Agent whose catalog
+ * declares it, and the write is then rejected wholesale as
+ * `unsupported_owner_metadata`.
+ *
+ * Keeping the admitted set pinned to the generated projection is what makes
+ * adding a bundled Agent a loud failure here instead of a silent resume brick.
+ */
+describe('native-session vendor resume keys track the generated Agent projection', () => {
+  const GENERATED_VENDOR_RESUME_ID_FIELDS = GENERATED_SESSION_PRESENTATION_COMPAT_V1
+    .map((entry) => entry.vendorResumeIdField)
+    .filter((field): field is string => typeof field === 'string' && field.length > 0);
+
+  it('admits every generated vendor resume id field as owner metadata', () => {
+    const rejected = GENERATED_VENDOR_RESUME_ID_FIELDS.filter((field) => {
+      const created = createSessionOwnerMetadataV1({
+        metadata: { [field]: `${field}-native-1` },
+      });
+      return !created.ok;
+    });
+
+    expect(rejected).toEqual([]);
+  });
+
+  it('round-trips every generated vendor resume id field through nativeSession', () => {
+    for (const field of GENERATED_VENDOR_RESUME_ID_FIELDS) {
+      const created = createSessionOwnerMetadataV1({
+        metadata: { [field]: `${field}-native-1` },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) continue;
+      expect(created.ownerMetadata.nativeSession)
+        .toMatchObject({ [field]: `${field}-native-1` });
+    }
   });
 });

@@ -40,6 +40,18 @@ describe('hostedWebSecurity', () => {
     expect(csp).toContain("connect-src 'self' https://api.happier.test");
   });
 
+  it('can describe an inline document whose effective connect policy is none', () => {
+    const security = PluginHostedWebSecurityPolicyV1Schema.parse({
+      csp: { connectSrc: 'none', allowInlineStyles: true, allowDataUrls: true },
+    });
+
+    const csp = buildPluginHostedWebStaticAssetContentSecurityPolicyV1(security);
+
+    expect(csp).toContain("connect-src 'none'");
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("img-src 'self' data:");
+  });
+
   it('does not advertise unsupported CSP navigation enforcement', () => {
     const security = PluginHostedWebSecurityPolicyV1Schema.parse({});
 

@@ -1,10 +1,12 @@
 import { z } from 'zod';
+import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
 
 import {
   ActionExecuteFailureSchema,
   type ActionExecuteResult,
 } from './actionExecutionResult.js';
 import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
+import { getAccountScopedBlobCiphertextBase64LengthV1 } from '../crypto/accountScopedCipherEnvelope.js';
 import {
   measurePluginJsonUtf8Bytes,
   measureSerializedValidatedStrictPluginJsonUtf8Bytes,
@@ -51,13 +53,55 @@ export const ExternalActionActionIdV1Schema = z.string()
   .refine((value) => value.trim() === value, 'actionId must not have outer whitespace');
 export type ExternalActionActionIdV1 = z.infer<typeof ExternalActionActionIdV1Schema>;
 
-const ExternalActionHttpErrorCodeV1Schema = z.enum([
+export const ExternalActionRequestIdV1Schema = z.string()
+  .min(1)
+  .max(EXTERNAL_ACTION_REQUEST_ID_MAX_LENGTH_V1)
+  .refine((value) => value.trim() === value, 'requestId must not have outer whitespace');
+
+const EXTERNAL_ACTION_HTTP_ERROR_CODES_V1 = [
   'invalid_action',
   'invalid_envelope',
   'request_too_large',
   'internal_error',
-]);
+  'invalid_encrypted_envelope',
+  'encrypted_action_unsupported',
+] as const;
+const ExternalActionHttpErrorCodeV1Schema = z.enum(EXTERNAL_ACTION_HTTP_ERROR_CODES_V1);
 export type ExternalActionHttpErrorCodeV1 = z.infer<typeof ExternalActionHttpErrorCodeV1Schema>;
+
+const EXTERNAL_ACTION_HTTP_PLACEMENT_ERROR_CODES = [
+  'target_required',
+  'target_not_local',
+  'target_unavailable',
+  'session_input_target_update_required',
+] as const;
+const EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES = [
+  'invalid_token',
+  'auth_unavailable',
+  'server_unavailable',
+] as const;
+
+/**
+ * Complete bounded pre-open failure vocabulary. These values carry no Action
+ * input, execution detail, target metadata, or daemon diagnostics.
+ */
+export const ExternalActionHttpErrorCodeSchema = z.enum([
+  ...EXTERNAL_ACTION_HTTP_ERROR_CODES_V1,
+  ...EXTERNAL_ACTION_HTTP_PLACEMENT_ERROR_CODES,
+  ...EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES,
+]);
+export type ExternalActionHttpErrorCode = z.infer<typeof ExternalActionHttpErrorCodeSchema>;
+
+/**
+ * One bounded vocabulary for failures that occur before a protected Action
+ * request has been opened. HTTP adapters and the reserved daemon relay project
+ * the same codes; authentication-only failures remain at their HTTP boundary.
+ */
+export const ExternalActionPreOpenFailureCodeSchema = ExternalActionHttpErrorCodeSchema
+  .exclude(EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES);
+export type ExternalActionPreOpenFailureCode = z.infer<
+  typeof ExternalActionPreOpenFailureCodeSchema
+>;
 
 /** Stable transport failures emitted before an Action execution envelope exists. */
 export const ExternalActionHttpErrorV1Schema = z.object({
@@ -65,6 +109,29 @@ export const ExternalActionHttpErrorV1Schema = z.object({
   code: ExternalActionHttpErrorCodeV1Schema,
 }).strict();
 export type ExternalActionHttpErrorV1 = z.infer<typeof ExternalActionHttpErrorV1Schema>;
+
+const ExternalActionInvalidRequestHttpErrorSchema = z.object({
+  error: z.literal('invalid_request'),
+  code: ExternalActionPreOpenFailureCodeSchema,
+  requestId: ExternalActionRequestIdV1Schema.optional(),
+}).strict();
+
+const ExternalActionAuthenticationHttpErrorSchema = z.object({
+  error: z.enum(EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES),
+}).strict();
+
+/** One strict redacted outer error union shared by both Action HTTP origins. */
+export const ExternalActionHttpErrorSchema = z.union([
+  ExternalActionInvalidRequestHttpErrorSchema,
+  ExternalActionAuthenticationHttpErrorSchema,
+]);
+export type ExternalActionHttpError = z.infer<typeof ExternalActionHttpErrorSchema>;
+
+function isExternalActionHttpAuthenticationErrorCode(
+  code: ExternalActionHttpErrorCode,
+): code is typeof EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES[number] {
+  return EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES.some((candidate) => candidate === code);
+}
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -98,24 +165,64 @@ export function projectExternalActionExecutionResultV1(value: unknown): ActionEx
 }
 
 /** Maps a protocol transport failure to its complete HTTP representation. */
+function externalActionHttpErrorStatus(code: ExternalActionHttpErrorCode): 400 | 401 | 409 | 413 | 500 | 503 {
+  if (code === 'invalid_token') return 401;
+  if (code === 'auth_unavailable' || code === 'server_unavailable') return 503;
+  if (code === 'request_too_large') return 413;
+  if (code === 'internal_error') return 500;
+  if (
+    code === 'encrypted_action_unsupported'
+    || code === 'target_not_local'
+    || code === 'target_unavailable'
+    || code === 'session_input_target_update_required'
+  ) return 409;
+  return 400;
+}
+
 export function projectExternalActionHttpErrorV1(code: ExternalActionHttpErrorCodeV1): Readonly<{
-  statusCode: 400 | 413 | 500;
+  statusCode: 400 | 409 | 413 | 500;
   payload: ExternalActionHttpErrorV1;
 }> {
   return {
-    statusCode: code === 'request_too_large' ? 413 : code === 'internal_error' ? 500 : 400,
+    statusCode: externalActionHttpErrorStatus(code) as 400 | 409 | 413 | 500,
     payload: { error: 'invalid_request', code },
   };
+}
+
+/** Maps a bounded pre-open failure to its complete redacted HTTP representation. */
+export function projectExternalActionHttpError(
+  code: ExternalActionHttpErrorCode,
+  requestId?: string,
+): Readonly<{
+  statusCode: 400 | 401 | 409 | 413 | 500 | 503;
+  payload: ExternalActionHttpError;
+}> {
+  return isExternalActionHttpAuthenticationErrorCode(code)
+    ? { statusCode: externalActionHttpErrorStatus(code), payload: { error: code } }
+    : {
+        statusCode: externalActionHttpErrorStatus(code),
+        payload: {
+          error: 'invalid_request',
+          code,
+          ...(requestId === undefined ? {} : { requestId }),
+        },
+      };
 }
 
 /** Closed server-to-exact-daemon method; never a public Action or SDK method. */
 export const EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 =
   'daemon.actions.external.dispatch' as const;
 
-export const ExternalActionRequestIdV1Schema = z.string()
-  .min(1)
-  .max(EXTERNAL_ACTION_REQUEST_ID_MAX_LENGTH_V1)
-  .refine((value) => value.trim() === value, 'requestId must not have outer whitespace');
+/**
+ * Recovers only safe correlation from a purported protected outer frame. It
+ * deliberately does not classify the frame as valid or expose any other key.
+ */
+export function readExternalActionProtectedRequestId(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (record?.v !== 2) return undefined;
+  const requestId = ExternalActionRequestIdV1Schema.safeParse(record.requestId);
+  return requestId.success ? requestId.data : undefined;
+}
 
 const ExternalActionExecutionSuccessV1Schema = z.object({
   ok: z.literal(true),
@@ -565,13 +672,57 @@ export const ExternalActionTargetV1Schema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('machine'),
     machineId: ExternalActionTargetIdV1Schema,
-  }).strict(),
+    /** Optional machine-local project target, cryptographically bound as transport metadata. */
+    project: WorkflowProjectTargetV1Schema.optional(),
+  }).strict().superRefine((value, context) => {
+    if (value.project && value.project.machineId !== value.machineId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['project', 'machineId'],
+        message: 'project target must match machineId',
+      });
+    }
+  }),
   z.object({
     kind: z.literal('session'),
     sessionId: ExternalActionTargetIdV1Schema,
   }).strict(),
 ]);
 export type ExternalActionTargetV1 = z.infer<typeof ExternalActionTargetV1Schema>;
+
+/** One strict equality owner for cryptographically bound external Action targets. */
+export function externalActionTargetsEqualV1(
+  left: ExternalActionTargetV1,
+  right: ExternalActionTargetV1,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'session') {
+    return right.kind === 'session' && left.sessionId === right.sessionId;
+  }
+  if (right.kind !== 'machine' || left.machineId !== right.machineId) return false;
+  if (!left.project || !right.project) return left.project === right.project;
+  return left.project.machineId === right.project.machineId
+    && left.project.directory === right.project.directory
+    && left.project.workspaceRefId === right.project.workspaceRefId;
+}
+
+/**
+ * A Home authorizes one exact outer target and one selected relay Machine.
+ * That Machine may resolve its own outer Machine target to an exact Session,
+ * but it may not substitute another Machine or mutate a project target.
+ */
+export function isExternalActionResolvedTargetAllowedV1(input: Readonly<{
+  authorizedTarget: ExternalActionTargetV1;
+  resolvedTarget: ExternalActionTargetV1;
+  selectedMachineId: string;
+}>): boolean {
+  if (input.authorizedTarget.kind === 'session') {
+    return externalActionTargetsEqualV1(input.authorizedTarget, input.resolvedTarget);
+  }
+  if (input.authorizedTarget.machineId !== input.selectedMachineId) return false;
+  return input.resolvedTarget.kind === 'session'
+    || externalActionTargetsEqualV1(input.authorizedTarget, input.resolvedTarget);
+}
 
 /**
  * Public Action HTTP request envelope. Execution context is deliberately
@@ -596,6 +747,115 @@ export type ExternalActionRequestEnvelopeV1 = z.infer<
   typeof ExternalActionRequestEnvelopeV1Schema
 >;
 
+// Six bytes per code unit covers JSON escaping, including control characters.
+// These small values model only fields with an actual scalar bound. The target
+// and input already share the complete V1 request-byte ceiling and must never
+// be materialized independently to calculate a transport reserve.
+const maximumBindingId = '\u0000'.repeat(256);
+const maximumRequestId = '\u0000'.repeat(EXTERNAL_ACTION_REQUEST_ID_MAX_LENGTH_V1);
+const maximumServerIdentityId = `srv_${'s'.repeat(60)}`;
+const maximumCredentialId = '00000000-0000-4000-8000-000000000000';
+const maximumRequestPayloadDigest = 'x'.repeat(43);
+const jsonNullBytes = 4;
+
+function measureJsonUtf8Bytes(value: unknown): number {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError('External Action framing must serialize to JSON');
+  return new TextEncoder().encode(serialized).byteLength;
+}
+
+const maximumV1RequestSkeletonBytes = measureJsonUtf8Bytes({
+  v: 1, requestId: maximumRequestId, target: null, input: null,
+});
+const maximumEncryptedRequestSkeletonBytes = measureJsonUtf8Bytes({
+  v: 2, direction: 'request', serverIdentityId: maximumServerIdentityId,
+  accountId: maximumBindingId, credentialId: maximumCredentialId,
+  actionId: maximumBindingId, requestId: maximumRequestId,
+  target: null, input: null,
+});
+
+/** Largest encrypted plaintext produced from one complete valid V1 request. */
+export const EXTERNAL_ACTION_ENCRYPTED_REQUEST_PLAINTEXT_MAX_BYTES_V2 =
+  EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES
+  + maximumEncryptedRequestSkeletonBytes
+  - maximumV1RequestSkeletonBytes;
+
+const maximumV1ResponseSkeletonBytes = measureJsonUtf8Bytes({
+  v: 1, actionId: maximumBindingId, requestId: maximumRequestId, execution: null,
+});
+const maximumEncryptedResponseSkeletonBytes = measureJsonUtf8Bytes({
+  v: 2, direction: 'response', serverIdentityId: maximumServerIdentityId,
+  accountId: maximumBindingId, credentialId: maximumCredentialId,
+  actionId: maximumBindingId, requestId: maximumRequestId,
+  target: null, executedMachineId: maximumBindingId,
+  requestPayloadDigest: maximumRequestPayloadDigest, execution: null,
+});
+
+/**
+ * Largest encrypted response plaintext. Its execution retains the complete V1
+ * response budget and its authenticated target is bounded by the complete V1
+ * request envelope that produced the response.
+ */
+export const EXTERNAL_ACTION_ENCRYPTED_RESPONSE_PLAINTEXT_MAX_BYTES_V2 =
+  EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES
+  + maximumEncryptedResponseSkeletonBytes
+  - maximumV1ResponseSkeletonBytes
+  - jsonNullBytes
+  + EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES;
+
+const maximumRequestOuterFixedBytes = measureJsonUtf8Bytes({
+  v: 2, requestId: maximumRequestId, target: null,
+  payload: { t: 'encrypted', c: '' },
+}) - jsonNullBytes;
+const maximumResponseOuterFixedBytes = measureJsonUtf8Bytes({
+  v: 2, actionId: maximumBindingId, requestId: maximumRequestId,
+  payload: { t: 'encrypted', c: '' },
+});
+
+export const EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2 =
+  maximumRequestOuterFixedBytes
+  + getAccountScopedBlobCiphertextBase64LengthV1(
+    EXTERNAL_ACTION_ENCRYPTED_REQUEST_PLAINTEXT_MAX_BYTES_V2,
+  );
+export const EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2 =
+  maximumResponseOuterFixedBytes
+  + getAccountScopedBlobCiphertextBase64LengthV1(
+    EXTERNAL_ACTION_ENCRYPTED_RESPONSE_PLAINTEXT_MAX_BYTES_V2,
+  );
+export const EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2 = EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2
+  + (EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES - EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES);
+export const EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2 = EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2
+  + (EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES - EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES);
+
+/** V2 is closed at every routing and encryption boundary; content is opaque. */
+export const ExternalActionRequestEnvelopeV2Schema = z.object({
+  v: z.literal(2), requestId: ExternalActionRequestIdV1Schema,
+  target: ExternalActionTargetV1Schema.optional(),
+  payload: z.object({ t: z.literal('encrypted'), c: z.string().min(1).max(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2) }).strict(),
+}).strict();
+export type ExternalActionRequestEnvelopeV2 = z.infer<typeof ExternalActionRequestEnvelopeV2Schema>;
+export const ExternalActionRequestEnvelopeSchema = z.union([
+  ExternalActionRequestEnvelopeV1Schema, ExternalActionRequestEnvelopeV2Schema,
+]);
+export type ExternalActionRequestEnvelope = z.infer<typeof ExternalActionRequestEnvelopeSchema>;
+export const ExternalActionResponseEnvelopeV2Schema = z.object({
+  v: z.literal(2), actionId: ExternalActionActionIdV1Schema, requestId: ExternalActionRequestIdV1Schema,
+  payload: z.object({ t: z.literal('encrypted'), c: z.string().min(1).max(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2) }).strict(),
+}).strict();
+export type ExternalActionResponseEnvelopeV2 = z.infer<typeof ExternalActionResponseEnvelopeV2Schema>;
+export type PreparedExternalActionResponseEnvelope = Readonly<{
+  response: ExternalActionResponseEnvelopeV1 | ExternalActionResponseEnvelopeV2;
+  body: string;
+  byteLength: number;
+}>;
+
+/** Version-specific ceilings retain the V1 decoded-content contract. */
+export function isExternalActionRequestWithinLimit(envelope: ExternalActionRequestEnvelope): boolean {
+  return measurePluginJsonUtf8Bytes(JSON.stringify(envelope), 'externalActionRequest') <= (
+    envelope.v === 1 ? EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES : EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2
+  );
+}
+
 const ExternalActionServerPrincipalIdV1Schema = z.string()
   .min(1)
   .max(256)
@@ -609,6 +869,56 @@ export const ExternalActionServerPrincipalV1Schema = z.object({
   authority: z.literal('account_automation'),
 }).strict();
 export type ExternalActionServerPrincipalV1 = z.infer<typeof ExternalActionServerPrincipalV1Schema>;
+
+/** Home-authenticated invocation facts. The selected daemon owns plaintext transformation. */
+export const ExternalActionExecutionAuthorizationBindingV1Schema = ExternalActionServerPrincipalV1Schema
+  .omit({ authority: true }).extend({
+    serverIdentityId: ExternalActionServerPrincipalIdV1Schema,
+    machineId: ExternalActionTargetIdV1Schema,
+    actionId: ExternalActionActionIdV1Schema,
+    requestId: ExternalActionRequestIdV1Schema,
+    requestEnvelopeDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+    target: ExternalActionTargetV1Schema,
+  }).strict();
+export type ExternalActionExecutionAuthorizationBindingV1 = z.infer<typeof ExternalActionExecutionAuthorizationBindingV1Schema>;
+
+/** Authorization material: usable only together with the selected Machine's request signature. */
+export const ExternalActionExecutionAuthorizationV1Schema = z.object({
+  v: z.literal(1),
+  token: z.string().min(1),
+  binding: ExternalActionExecutionAuthorizationBindingV1Schema,
+}).strict();
+export type ExternalActionExecutionAuthorizationV1 = z.infer<typeof ExternalActionExecutionAuthorizationV1Schema>;
+
+/** Optional authenticated auxiliary arm of the incumbent socket RPC request. */
+export const ExternalActionMachineRpcExecutionV1Schema = z.object({
+  v: z.literal(1),
+  authorization: ExternalActionExecutionAuthorizationV1Schema,
+  effectActionId: ExternalActionActionIdV1Schema,
+  target: ExternalActionTargetV1Schema,
+  installationId: z.string().trim().min(1),
+  machineSignature: z.string().regex(/^[A-Za-z0-9_-]{86}$/u),
+}).strict();
+export type ExternalActionMachineRpcExecutionV1 = z.infer<typeof ExternalActionMachineRpcExecutionV1Schema>;
+
+export const EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER = 'x-happier-action-execution-authorization';
+export const EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER = 'x-happier-action-machine-signature';
+export const EXTERNAL_ACTION_EFFECT_ACTION_HEADER = 'x-happier-action-effect';
+export const EXTERNAL_ACTION_RESOLVED_TARGET_HEADER = 'x-happier-action-target';
+export const EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HTTP_PATH_TEMPLATE_V1 = '/v1/actions/:actionId/execution-authorization';
+export const EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_VERIFY_HTTP_PATH_TEMPLATE_V1 = '/v1/actions/:actionId/execution-authorization/verify';
+export function bindExternalActionExecutionAuthorizationHttpPathV1(actionId: string): string {
+  return `/v1/actions/${encodeURIComponent(ExternalActionActionIdV1Schema.parse(actionId))}/execution-authorization`;
+}
+export function bindExternalActionExecutionAuthorizationVerifyHttpPathV1(actionId: string): string {
+  return `${bindExternalActionExecutionAuthorizationHttpPathV1(actionId)}/verify`;
+}
+export const ExternalActionExecutionAuthorizationRequestV1Schema = z.object({
+  v: z.literal(1), machineId: ExternalActionTargetIdV1Schema, envelope: ExternalActionRequestEnvelopeSchema,
+}).strict();
+export type ExternalActionExecutionAuthorizationRequestV1 = z.infer<typeof ExternalActionExecutionAuthorizationRequestV1Schema>;
+export const ExternalActionExecutionAuthorizationVerifyRequestV1Schema = z.object({ v: z.literal(1) }).strict();
+export const ExternalActionExecutionAuthorizationVerifyResponseV1Schema = z.object({ ok: z.literal(true) }).strict();
 
 /** Exact server-held placement facts for the closed daemon dispatch. */
 export const ExternalActionDaemonPlacementV1Schema = z.object({
@@ -640,3 +950,49 @@ export const ExternalActionDaemonDispatchRequestV1Schema = z.object({
 export type ExternalActionDaemonDispatchRequestV1 = z.infer<
   typeof ExternalActionDaemonDispatchRequestV1Schema
 >;
+
+export const ExternalActionDaemonDispatchRequestSchema = ExternalActionDaemonDispatchRequestV1Schema.extend({
+  envelope: ExternalActionRequestEnvelopeSchema,
+  executionAuthorization: ExternalActionExecutionAuthorizationV1Schema.optional(),
+}).strict();
+export type ExternalActionDaemonDispatchRequest = z.infer<typeof ExternalActionDaemonDispatchRequestSchema>;
+
+const ExternalActionDaemonDispatchInvalidRequestSchema = ExternalActionDaemonDispatchInvalidRequestV1Schema.extend({
+  errorCode: ExternalActionPreOpenFailureCodeSchema,
+  requestId: ExternalActionRequestIdV1Schema.optional(),
+}).strict();
+
+export type ParsedExternalActionDaemonDispatchResult = Readonly<
+  | z.infer<typeof ExternalActionDaemonDispatchInvalidRequestSchema>
+  | { kind: 'response'; prepared: PreparedExternalActionResponseEnvelope }
+>;
+
+/** Same reserved binary carrier; each decoded body retains its own version ceiling. */
+export function createExternalActionDaemonDispatchResponse(prepared: PreparedExternalActionResponseEnvelope): Readonly<{
+  kind: 'response'; body: Uint8Array;
+}> {
+  const body = new TextEncoder().encode(prepared.body);
+  if (body.byteLength !== prepared.byteLength) throw new TypeError('External Action prepared response byte length mismatch');
+  return { kind: 'response', body };
+}
+
+const ExternalActionDaemonDispatchResultSchema = z.union([
+  ExternalActionDaemonDispatchInvalidRequestSchema,
+  z.object({ kind: z.literal('response'), body: z.instanceof(Uint8Array)
+    .refine((value) => value.byteLength <= EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2) }).strict(),
+]);
+
+export function parseExternalActionDaemonDispatchResult(value: unknown): ParsedExternalActionDaemonDispatchResult | null {
+  const parsed = ExternalActionDaemonDispatchResultSchema.safeParse(value);
+  if (!parsed.success) return null;
+  if (parsed.data.kind === 'invalid_request') return parsed.data;
+  try {
+    const body = new TextDecoder('utf-8', { fatal: true }).decode(parsed.data.body);
+    const raw: unknown = JSON.parse(body);
+    const encrypted = ExternalActionResponseEnvelopeV2Schema.safeParse(raw);
+    if (encrypted.success) return { kind: 'response', prepared: {
+      response: encrypted.data, body, byteLength: parsed.data.body.byteLength,
+    } };
+    return parseExternalActionDaemonDispatchResultV1(value);
+  } catch { return null; }
+}

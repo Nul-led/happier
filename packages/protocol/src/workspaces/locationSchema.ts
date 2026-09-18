@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const ABSOLUTE_WORKSPACE_PATH_MAX_LENGTH = 10_000;
+
 function isAbsoluteWorkspacePath(value: string): boolean {
   if (!value) return false;
   if (/^[A-Za-z]:[\\/]/.test(value)) return true;
@@ -12,7 +14,7 @@ function isAbsoluteWorkspacePath(value: string): boolean {
 export const AbsoluteWorkspacePathSchema = z
   .string()
   .min(1)
-  .max(10_000)
+  .max(ABSOLUTE_WORKSPACE_PATH_MAX_LENGTH)
   .refine((value) => !value.includes('\0'), 'workspace path must not contain NUL')
   .refine(isAbsoluteWorkspacePath, 'workspace path must be absolute');
 

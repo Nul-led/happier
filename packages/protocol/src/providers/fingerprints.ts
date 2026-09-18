@@ -29,6 +29,13 @@ function canonicalFingerprintSchema(prefix: string) {
     .startsWith(prefix);
 }
 
+export const ProviderConnectionSecurityFingerprintV1Schema = canonicalFingerprintSchema(
+  'connection-security:v1:',
+).brand<'ProviderConnectionSecurityFingerprintV1'>();
+export type ProviderConnectionSecurityFingerprintV1 = z.infer<
+  typeof ProviderConnectionSecurityFingerprintV1Schema
+>;
+
 export const ProviderProbeRequestFingerprintV1Schema = canonicalFingerprintSchema('probe-request:v1:')
   .brand<'ProviderProbeRequestFingerprintV1'>();
 export type ProviderProbeRequestFingerprintV1 = z.infer<typeof ProviderProbeRequestFingerprintV1Schema>;

@@ -136,6 +136,69 @@ export type HomeQrBindingParamsV2 = Readonly<HomeQrBindingContextV2 & {
   qrSecret: Uint8Array;
 }>;
 
+const CanonicalHomeQrPairingExpiryV2Schema = z.string().superRefine((value, context) => {
+  const timestamp = Date.parse(value);
+  if (!Number.isSafeInteger(timestamp) || new Date(timestamp).toISOString() !== value) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Pairing expiry must be a canonical ISO timestamp' });
+  }
+});
+
+const CanonicalHomeQrRequesterPublicKeyV2Schema = z.string().superRefine((value, context) => {
+  try {
+    const bytes = decodeBase64(value, 'base64');
+    if (bytes.length !== HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES || encodeBase64(bytes, 'base64') !== value) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Requester public key must be canonical padded base64 for 32 bytes' });
+    }
+  } catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid requester public key' });
+  }
+});
+
+const CanonicalHomeQrBindingProofV2Schema = z.string().superRefine((value, context) => {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid binding proof' });
+    return;
+  }
+  try {
+    const bytes = decodeBase64(value, 'base64url');
+    if (bytes.length !== 32 || encodeBase64(bytes, 'base64url') !== value) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Binding proof must be canonical base64url for 32 bytes' });
+    }
+  } catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid binding proof' });
+  }
+});
+
+const HomeQrPairingStatusPairIdV2Schema = z.string().min(1).max(128).superRefine((value, context) => {
+  if (UTF8_ENCODER.encode(value).byteLength > 128) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Pair ID exceeds its UTF-8 byte limit' });
+  }
+});
+
+export const HomeQrPairingStatusV2Schema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('pending'),
+    pairId: HomeQrPairingStatusPairIdV2Schema,
+    expiresAt: CanonicalHomeQrPairingExpiryV2Schema,
+  }).strict(),
+  z.object({
+    state: z.literal('requested'),
+    pairId: HomeQrPairingStatusPairIdV2Schema,
+    expiresAt: CanonicalHomeQrPairingExpiryV2Schema,
+    requestedPublicKey: CanonicalHomeQrRequesterPublicKeyV2Schema,
+    requestedDeviceLabel: z.string().max(256).nullable(),
+    bindingProof: CanonicalHomeQrBindingProofV2Schema,
+    homeServerIdentityId: z.string().min(1).max(256),
+  }).strict(),
+]);
+export type HomeQrPairingStatusV2 = z.infer<typeof HomeQrPairingStatusV2Schema>;
+
+/** Strict normalizer for the existing direct-Home pairing status response. */
+export function parseHomeQrPairingStatusV2(value: unknown): HomeQrPairingStatusV2 | null {
+  const parsed = HomeQrPairingStatusV2Schema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 function assertQrSecretV2(qrSecret: Uint8Array): void {
   if (qrSecret.length !== HOME_QR_SECRET_V2_BYTES) throw new Error('QR secret must be 32 bytes');
 }
@@ -231,6 +294,44 @@ export function verifyHomeQrBindingProofV2(params: HomeQrBindingParamsV2, proofB
   } catch {
     return false;
   }
+}
+
+/**
+ * Client-neutral trusted-device admission for a requested pairing status.
+ * Returns the exact requester key only after the wire, identity, expiry, optional
+ * expected requester, and QR-secret-bound proof all agree.
+ */
+export function verifyHomeQrRequesterProofV2(input: Readonly<Omit<HomeQrBindingParamsV2, 'requesterPublicKey'> & {
+  issuedAtMs: number;
+  nowMs: number;
+  status: Extract<HomeQrPairingStatusV2, { state: 'requested' }>;
+  expectedRequesterPublicKey?: Uint8Array;
+}>): Uint8Array | null {
+  const parsedStatus = HomeQrPairingStatusV2Schema.safeParse(input.status);
+  if (!parsedStatus.success || parsedStatus.data.state !== 'requested') return null;
+  if (!Number.isSafeInteger(input.issuedAtMs) || !Number.isSafeInteger(input.nowMs)) return null;
+  if (input.nowMs < input.issuedAtMs || input.nowMs >= input.expiresAtMs) return null;
+  if (
+    parsedStatus.data.pairId !== input.pairId
+    || parsedStatus.data.homeServerIdentityId !== input.homeServerIdentityId
+    || Date.parse(parsedStatus.data.expiresAt) !== input.expiresAtMs
+  ) return null;
+
+  const requesterPublicKey = decodeBase64(parsedStatus.data.requestedPublicKey, 'base64');
+  if (input.expectedRequesterPublicKey !== undefined) {
+    if (input.expectedRequesterPublicKey.length !== HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES) return null;
+    if (!equalBytesConstantTime(requesterPublicKey, input.expectedRequesterPublicKey)) return null;
+  }
+  return verifyHomeQrBindingProofV2({
+    direction: input.direction,
+    qrSecret: input.qrSecret,
+    pairId: input.pairId,
+    homeServerIdentityId: input.homeServerIdentityId,
+    requesterPublicKey,
+    expiresAtMs: input.expiresAtMs,
+  }, parsedStatus.data.bindingProof)
+    ? requesterPublicKey
+    : null;
 }
 
 /** Constant-time verifier check against a stored relay verifier. */

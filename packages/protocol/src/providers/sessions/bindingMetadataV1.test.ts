@@ -89,6 +89,18 @@ const runtimeBindingBasis = {
 } as const;
 
 describe('session provider binding metadata', () => {
+  it('admits an exact Team-resource runtime binding without inventing a Provider Connection', () => {
+    expect(AgentSessionProviderBindingV1Schema.parse({
+      source: { kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 3 },
+      model: { id: 'dynamic-model', name: 'Dynamic Model' },
+      upstream: { protocol: 'openai-responses', normalizedUrl: 'http://127.0.0.1:43123/v1', credential: 'apiKey' },
+      materialization: { v: 1, kind: 'spawnEnv' },
+    })).toMatchObject({
+      source: { kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 3 },
+      model: { id: 'dynamic-model' },
+    });
+  });
+
   it('strictly validates a bounded non-secret active runtime binding basis', () => {
     expect(
       ProviderRuntimeBindingBasisV1Schema.parse(runtimeBindingBasis),

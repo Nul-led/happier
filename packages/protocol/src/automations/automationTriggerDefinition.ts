@@ -12,11 +12,11 @@ import {
 } from './automationEventDeclarationV1.js';
 import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import {
-  AutomationEventFilterV1Schema,
   AutomationEventSourceConfigV1Schema,
   AutomationEventSourceDisplayLabelV1Schema,
   AutomationEventSourceInstanceIdV1Schema,
-} from './automationEventV1.js';
+} from './automationEventJsonBoundsV1.js';
+import { AutomationEventFilterV1Schema } from './automationActionSpecsV1.js';
 import {
   ENCRYPTED_STORED_CONTENT_SCHEMA,
   addAutomationStoredEnvelopeUtf8LimitIssue,

@@ -1,3 +1,4 @@
+import { NonBlankOpaqueIdentifierSchema, readNonBlankOpaqueIdentifier } from '../../strings/opaqueIdentifier.js';
 import { z } from 'zod';
 
 import type { AccountEncryptionMode } from '../../features/payload/capabilities/encryptionCapabilities.js';
@@ -13,7 +14,7 @@ import { AgentNativeResumeIdentityV1Schema } from '../../agents/nativeResumeIden
 import { resolveGeneratedSessionPresentationAgentIdV1 } from '../../agents/generated/sessionPresentationCompatV1.js';
 import {
   ConnectedServiceIdSchema,
-  BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
+  ConnectedServiceBindingsV2IngressSchema,
 } from '../../connect/connectedServiceBindings.js';
 import { ConnectedServiceCredentialRevisionV1Schema } from '../../connect/connectedServiceSchemas.js';
 import { PluginJsonValueV2Schema } from '../../plugins/contributions/jsonSchema.js';
@@ -22,6 +23,7 @@ import {
   SessionAppliedModelV1Schema,
   SessionModelSelectionIntentV1Schema,
 } from '../../providers/selection/v1.js';
+import { SessionModelSelectionV2Schema } from '../../providers/selection/v2.js';
 import { SessionProviderBindingMetadataV1Schema } from '../../providers/sessions/bindingMetadataV1.js';
 import {
   EXTERNAL_SESSION_OPERATION_METADATA_KEY,
@@ -53,6 +55,9 @@ import { AgentSessionStartupInstructionsMarkerV1Schema } from '../../runtime/age
 import { ContentPublicKeyFingerprintSchema } from '../../machines/identity/installationIdentity.js';
 import { SessionWorkspaceLocationV1Schema } from './sessionWorkspaceLocationV1.js';
 import { SessionCreationCorrespondenceV1Schema } from '../creation/sessionCreationCorrespondenceV1.js';
+import { MachinePoolSelectionOriginV1Schema } from '../../machines/pools/v1.js';
+import { SessionDiscussionSelectionSourceV1Schema } from '../discussions/content.js';
+import { SessionActionConfirmationsV1Schema } from './sessionActionConfirmationsV1.js';
 
 export const SESSION_METADATA_LAYOUT_VERSION_V1 = 1 as const;
 export const SESSION_SHARED_METADATA_VERSION_V1 = 1 as const;
@@ -238,6 +243,7 @@ export const SessionMetadataTuplePatchV1Schema = z.discriminatedUnion('mode', [
   SessionMetadataOwnerPatchV1Schema,
   z.object({
     mode: z.literal('shared_editor'),
+    mutationIntent: z.literal('rename_session').optional(),
     metadataLayoutVersion: z.literal(SESSION_METADATA_LAYOUT_VERSION_V1),
     sharedMetadata: SessionMetadataSharedPatchV1Schema,
   }).strict(),
@@ -388,6 +394,7 @@ export const SessionSharedMetadataV1Schema = z.object({
   externalSessionOperationPresentationV1:
     ExternalSessionOperationSharedPresentationV1Schema.optional(),
   publicAgentState: SessionPublicAgentStateV1Schema.optional(),
+  actionConfirmationsV1: SessionActionConfirmationsV1Schema.optional(),
 }).strict();
 export type SessionSharedMetadataV1 = z.infer<
   typeof SessionSharedMetadataV1Schema
@@ -395,6 +402,8 @@ export type SessionSharedMetadataV1 = z.infer<
 
 const OptionalOwnerStringSchema = z.string().max(100_000).nullable();
 const OptionalOwnerIdentifierSchema = z.string().trim().min(1).max(2_000).nullable();
+const OptionalOwnerOpaqueIdentifierSchema =
+  NonBlankOpaqueIdentifierSchema.max(2_000).nullable();
 
 const SessionOwnerWorkspaceV1Schema = z.object({
   path: OptionalOwnerStringSchema.optional(),
@@ -554,21 +563,24 @@ const SessionOwnerCompatibilityDirectSessionLinkV1Schema =
 const SessionOwnerNativeSessionV1Schema = z.object({
   runtimeDescriptorV1: SessionOwnerRuntimeDescriptorV1Schema.optional(),
   nativeResumeIdentityV1: AgentNativeResumeIdentityV1Schema.optional(),
-  claudeSessionId: OptionalOwnerIdentifierSchema.optional(),
-  codexSessionId: OptionalOwnerIdentifierSchema.optional(),
-  geminiSessionId: OptionalOwnerIdentifierSchema.optional(),
-  grokSessionId: OptionalOwnerIdentifierSchema.optional(),
-  opencodeSessionId: OptionalOwnerIdentifierSchema.optional(),
-  auggieSessionId: OptionalOwnerIdentifierSchema.optional(),
-  qwenSessionId: OptionalOwnerIdentifierSchema.optional(),
-  kimiSessionId: OptionalOwnerIdentifierSchema.optional(),
-  kiloSessionId: OptionalOwnerIdentifierSchema.optional(),
-  kiroSessionId: OptionalOwnerIdentifierSchema.optional(),
-  ohMyPiSessionId: OptionalOwnerIdentifierSchema.optional(),
-  piSessionId: OptionalOwnerIdentifierSchema.optional(),
-  copilotSessionId: OptionalOwnerIdentifierSchema.optional(),
-  cursorSessionId: OptionalOwnerIdentifierSchema.optional(),
-  antigravitySessionId: OptionalOwnerIdentifierSchema.optional(),
+  claudeSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  codexSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  geminiSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  grokSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  opencodeSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  auggieSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  qwenSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  kimiSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  kiloSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  kiroSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  ohMyPiSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  piSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  copilotSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  cursorSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  antigravitySessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  devinSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  droidSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
+  fxSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
   claudeTranscriptPath: OptionalOwnerStringSchema.optional(),
   claudeLastCheckpointId: OptionalOwnerIdentifierSchema.optional(),
   claudeLastAssistantUuid: OptionalOwnerIdentifierSchema.optional(),
@@ -580,7 +592,7 @@ const SessionOwnerNativeSessionV1Schema = z.object({
   providerSessionInfoV1: z.object({
     v: z.literal(1),
     provider: z.string().trim().min(1).max(128),
-    sessionId: z.string().min(1).max(1_024),
+    sessionId: NonBlankOpaqueIdentifierSchema.max(1_024),
     observedAt: TimestampSchema,
     title: z.string().trim().min(1).max(1_024).nullable().optional(),
     updatedAt: z.string().datetime({ offset: true }).max(64).nullable().optional(),
@@ -934,6 +946,7 @@ const SessionOwnerRuntimeV1Schema = z.object({
   sessionPendingQueueHoldV1: SessionPendingQueueHoldV1Schema.optional(),
   providerBindingV1: SessionProviderBindingMetadataV1Schema.optional(),
   modelSelectionIntentV1: SessionModelSelectionIntentV1Schema.optional(),
+  modelSelectionIntentV2: SessionModelSelectionV2Schema.optional(),
   sessionAppliedModelV1: SessionAppliedModelV1Schema.optional(),
   externalAgentObservationV1: ExternalAgentObservationSnapshotV1Schema.optional(),
   acpSessionModesV1: SessionOwnerModeCatalogV1Schema.optional(),
@@ -967,7 +980,7 @@ const SessionOwnerRuntimeV1Schema = z.object({
 }).strict();
 
 const SessionOwnerConnectedServicesV1Schema = z.object({
-  connectedServices: BuiltInLegacyConnectedServiceBindingsV1IngressSchema.optional(),
+  connectedServices: ConnectedServiceBindingsV2IngressSchema.optional(),
   connectedServicesUpdatedAt: TimestampSchema.optional(),
   connectedServiceMaterializationIdentityV1: z.object({
     v: z.literal(1),
@@ -1022,7 +1035,7 @@ const SessionOwnerHistoryV1Schema = z.object({
   acpHistoryImportV1: z.object({
     v: z.literal(1),
     agentId: BoundedIdentifierSchema,
-    remoteSessionId: z.string().trim().min(1).max(20_000),
+    remoteSessionId: NonBlankOpaqueIdentifierSchema.max(20_000),
     importedAt: TimestampSchema,
     lastImportedFingerprint: z.string().max(20_000).optional(),
   }).strict().optional(),
@@ -1037,7 +1050,7 @@ const SessionOwnerHistoryV1Schema = z.object({
     agentHint: z.object({
       agentId: BoundedIdentifierSchema.optional(),
       backendMode: BoundedIdentifierSchema.optional(),
-      agentSessionId: OptionalOwnerIdentifierSchema.optional(),
+      agentSessionId: OptionalOwnerOpaqueIdentifierSchema.optional(),
     }).strict().optional(),
   }).strict().optional(),
   replaySeedV1: z.object({
@@ -1067,6 +1080,7 @@ const SessionOwnerHistoryV1Schema = z.object({
     createdAtMs: TimestampSchema,
     sourceMessageIds: z.array(BoundedIdentifierSchema).max(20_000).optional(),
     sourceSessionId: OptionalOwnerIdentifierSchema.optional(),
+    source: SessionDiscussionSelectionSourceV1Schema.omit({ draftCorrelationId: true }).optional(),
   }).strict().optional(),
   sessionMediaContinuityV1: z.object({
     v: z.literal(1),
@@ -1220,18 +1234,19 @@ const SessionOwnerResumeHandleV1Schema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('provider_session.v1'),
     backendTarget: SessionOwnerBackendTargetV2Schema,
-    providerSessionId: z.string().trim().min(1).max(20_000),
+    providerSessionId: NonBlankOpaqueIdentifierSchema.max(20_000),
   }).strict(),
   z.object({
     kind: z.literal('voice_agent_sessions.v1'),
     backendTarget: SessionOwnerBackendTargetV2Schema,
-    chatProviderSessionId: z.string().trim().min(1).max(20_000),
-    commitProviderSessionId: z.string().trim().min(1).max(20_000),
+    chatProviderSessionId: NonBlankOpaqueIdentifierSchema.max(20_000),
+    commitProviderSessionId: NonBlankOpaqueIdentifierSchema.max(20_000),
   }).strict(),
 ]);
 
 const SessionOwnerSystemV1Schema = z.object({
   sessionCreationCorrespondenceV1: SessionCreationCorrespondenceV1Schema.optional(),
+  placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
   systemSessionV1: z.object({
     v: z.literal(1),
     key: z.string().trim().min(1).max(2_000),
@@ -1342,6 +1357,7 @@ export const SessionOwnerCompatibilityViewV1Schema = z.object({
   agentPresentation: SessionSharedAgentPresentationV1Schema.optional(),
   externalSessionOperationPresentationV1:
     ExternalSessionOperationSharedPresentationV1Schema.optional(),
+  actionConfirmationsV1: SessionActionConfirmationsV1Schema.optional(),
   ...SessionOwnerWorkspaceV1Schema.shape,
   path: z.string().max(100_000),
   host: z.string().max(100_000),
@@ -1606,6 +1622,9 @@ export function projectSessionSharedMetadataV1(params: Readonly<{
   const externalSessionOperationPresentationV1 =
     projectOperationPresentation(metadata);
   const publicAgentState = projectPublicAgentState(params.agentState);
+  const actionConfirmationsV1 = SessionActionConfirmationsV1Schema.safeParse(
+    metadata.actionConfirmationsV1,
+  );
 
   return SessionSharedMetadataV1Schema.parse({
     v: SESSION_SHARED_METADATA_VERSION_V1,
@@ -1615,13 +1634,18 @@ export function projectSessionSharedMetadataV1(params: Readonly<{
       ? { externalSessionOperationPresentationV1 }
       : {}),
     ...(publicAgentState ? { publicAgentState } : {}),
+    ...(actionConfirmationsV1.success
+      ? { actionConfirmationsV1: actionConfirmationsV1.data }
+      : {}),
   });
 }
 
 /**
  * Strict, pure owner-only adapter into the current flattened metadata model.
- * The public Agent-state projection is deliberately excluded because it is
- * not legacy Session metadata and the owner already reads full Agent state.
+ * The public native Agent-state projection is deliberately excluded because
+ * the owner already reads full Agent state. Action confirmations are retained:
+ * a restricted runtime writes those through shared Session-DEK custody and
+ * therefore they do not also exist in the owner's private AgentState.
  */
 export function projectSessionOwnerCompatibilityViewV1(
   params: Readonly<{
@@ -1690,6 +1714,9 @@ export function projectSessionOwnerCompatibilityViewV1(
             sharedMetadata.externalSessionOperationPresentationV1,
         }
       : {}),
+    ...(sharedMetadata.actionConfirmationsV1
+      ? { actionConfirmationsV1: sharedMetadata.actionConfirmationsV1 }
+      : {}),
     ...(ownerMetadata.workspace ?? {}),
     path: ownerMetadata.workspace?.path ?? '',
     host: ownerMetadata.workspace?.host ?? '',
@@ -1727,6 +1754,7 @@ const SHARED_ONLY_METADATA_KEYS = new Set([
   'summary',
   'agentPresentation',
   EXTERNAL_SESSION_OPERATION_PRESENTATION_METADATA_KEY,
+  'actionConfirmationsV1',
 ]);
 const WORKSPACE_OWNER_KEYS = [
   'path',
@@ -1764,6 +1792,9 @@ const NATIVE_SESSION_SCALAR_OWNER_KEYS = [
   'copilotSessionId',
   'cursorSessionId',
   'antigravitySessionId',
+  'devinSessionId',
+  'droidSessionId',
+  'fxSessionId',
   'claudeTranscriptPath',
   'claudeLastCheckpointId',
   'claudeLastAssistantUuid',
@@ -1816,6 +1847,7 @@ const RUNTIME_OWNER_KEYS = [
   'sessionPendingQueueHoldV1',
   'providerBindingV1',
   'modelSelectionIntentV1',
+  'modelSelectionIntentV2',
   'sessionAppliedModelV1',
   'externalAgentObservationV1',
   'runtimeActivityState',
@@ -1866,6 +1898,7 @@ const WORK_OWNER_KEYS = [
 ] as const;
 const SYSTEM_OWNER_KEYS = [
   'sessionCreationCorrespondenceV1',
+  'placementOrigin',
   'systemSessionV1',
   'hiddenSystemSession',
   'voiceAgentRunV1',
@@ -1979,13 +2012,10 @@ function normalizeForkAgentVocabularyRecord(
   const predecessorAgentId = typeof predecessorHint?.providerId === 'string'
     ? predecessorHint.providerId.trim()
     : '';
-  const canonicalSessionId = typeof canonicalHint?.agentSessionId === 'string'
-    ? canonicalHint.agentSessionId.trim()
-    : '';
+  const canonicalSessionId =
+    readNonBlankOpaqueIdentifier(canonicalHint?.agentSessionId) ?? '';
   const predecessorSessionId =
-    typeof predecessorHint?.vendorSessionId === 'string'
-      ? predecessorHint.vendorSessionId.trim()
-      : '';
+    readNonBlankOpaqueIdentifier(predecessorHint?.vendorSessionId) ?? '';
   const canonicalBackendMode = typeof canonicalHint?.backendMode === 'string'
     ? canonicalHint.backendMode.trim()
     : '';
@@ -2056,8 +2086,8 @@ function buildReleasedCodexRuntimeDescriptorV1(
     agentId: 'codex',
     agent: {
       backendMode,
-      ...(typeof metadata.codexSessionId === 'string' && metadata.codexSessionId.trim()
-        ? { providerSessionId: metadata.codexSessionId.trim() }
+      ...(readNonBlankOpaqueIdentifier(metadata.codexSessionId)
+        ? { providerSessionId: metadata.codexSessionId as string }
         : {}),
     },
   });

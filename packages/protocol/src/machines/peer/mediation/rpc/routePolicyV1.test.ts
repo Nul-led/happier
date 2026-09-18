@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD } from '../../../../marketplace/internal.js';
-import { RPC_METHODS, SESSION_RPC_METHODS } from '../../../../rpc/index.js';
+import {
+  RPC_METHODS,
+  SESSION_RPC_METHODS,
+  resolveEphemeralRunnerMachineRpcAuthority as resolveEphemeralRunnerMachineRpcAuthorityFromRpcSubpath,
+} from '../../../../rpc/index.js';
 import { PeerFlowKindV1Schema } from '../flowKind.js';
 import { resolveMachineRpcGovernance } from './governanceV1.js';
 
@@ -57,6 +61,25 @@ describe('MachineRpcRoutePolicyV1', () => {
     });
   });
 
+  it('routes approved Artifact replay directly to its exact daemon with a command receipt', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    expect(protocol.resolveMachineRpcRoutePolicy(
+      RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED,
+    )).toMatchObject({
+      routeClass: 'direct_medium_risk_receipted',
+      rpcClassification: 'internal_only',
+      commandReceiptRequired: true,
+      scope: {
+        accountRequired: true,
+        machineRequired: true,
+        sessionRequired: false,
+        serverRequired: false,
+      },
+    });
+  });
+
   it('keeps pending-message Composer admission on the exact Session server route', async () => {
     const protocol = await importRpcPolicy();
     if ('importError' in protocol) throw protocol.importError;
@@ -79,6 +102,30 @@ describe('MachineRpcRoutePolicyV1', () => {
     }
   });
 
+  it('keeps Team credential broker reads behind the Account server route', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    for (const method of [
+      RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT,
+      RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE,
+      RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY,
+    ]) {
+      expect(protocol.resolveMachineRpcRoutePolicy(method)).toMatchObject({
+        routeClass: 'server_required',
+        serverRequiredReason: 'ambiguous',
+        rpcClassification: 'internal_only',
+        commandReceiptRequired: false,
+        scope: {
+          accountRequired: true,
+          machineRequired: true,
+          sessionRequired: false,
+          serverRequired: true,
+        },
+      });
+    }
+  });
+
   it('keeps daemon Voice settings Actions on the authenticated local-mutation route', async () => {
     const protocol = await importRpcPolicy();
     if ('importError' in protocol) throw protocol.importError;
@@ -95,6 +142,44 @@ describe('MachineRpcRoutePolicyV1', () => {
         sessionRequired: false,
         serverRequired: true,
       }),
+    });
+  });
+
+  it('keeps detached Execution Run permission responses on the authenticated exact-Machine server route', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    expect(protocol.resolveMachineRpcRoutePolicy(
+      RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND,
+    )).toMatchObject({
+      routeClass: 'server_required',
+      serverRequiredReason: 'destructive_or_recovery_mutation',
+      commandReceiptRequired: false,
+      scope: {
+        accountRequired: true,
+        machineRequired: true,
+        sessionRequired: false,
+        serverRequired: true,
+      },
+    });
+  });
+
+  it('keeps live Execution Run broker-currentness resolution on the authenticated Session-owner route', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    expect(protocol.resolveMachineRpcRoutePolicy(
+      SESSION_RPC_METHODS.EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE_V1,
+    )).toMatchObject({
+      routeClass: 'server_required',
+      serverRequiredReason: 'auth',
+      commandReceiptRequired: false,
+      scope: {
+        accountRequired: true,
+        machineRequired: true,
+        sessionRequired: true,
+        serverRequired: true,
+      },
     });
   });
 
@@ -171,6 +256,74 @@ describe('MachineRpcRoutePolicyV1', () => {
         }),
       });
     }
+  });
+
+  it('publishes the exact Session authority for the reusable Runner Machine service surface', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    for (const method of [
+      RPC_METHODS.READ_FILE,
+      RPC_METHODS.LIST_DIRECTORY,
+      RPC_METHODS.GET_DIRECTORY_TREE,
+      RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS,
+      RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY,
+      RPC_METHODS.STAT_FILE,
+      RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT,
+      RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK,
+      RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE,
+      RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT,
+      RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE,
+      RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_WATCH,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_SNAPSHOT,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_SNAPSHOT,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_STATUS,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL,
+      RPC_METHODS.DAEMON_TERMINAL_STREAM_READ,
+      RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES,
+      RPC_METHODS.DAEMON_TERMINAL_STREAM_ACK,
+    ]) {
+      expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(method)).toBe('readTranscript');
+    }
+    for (const method of [
+      RPC_METHODS.WRITE_FILE,
+      RPC_METHODS.CREATE_DIRECTORY,
+      RPC_METHODS.RENAME_PATH,
+      RPC_METHODS.DELETE_PATH,
+      RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT,
+      RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK,
+      RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
+      RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT,
+      RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
+      RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_REFRESH,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE,
+      RPC_METHODS.DAEMON_TERMINAL_ENSURE,
+      RPC_METHODS.DAEMON_TERMINAL_STREAM_INPUT,
+      RPC_METHODS.DAEMON_TERMINAL_INPUT,
+      RPC_METHODS.DAEMON_TERMINAL_RESIZE,
+      RPC_METHODS.DAEMON_TERMINAL_CLOSE,
+      RPC_METHODS.DAEMON_TERMINAL_RESTART,
+    ]) {
+      expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(method)).toBe('submitAgentInput');
+    }
+    expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(
+      RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE,
+    )).toBe('followSourceKeyPreparation');
+    expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(RPC_METHODS.STOP_SESSION)).toBe('stopSession');
+    for (const method of [
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE,
+      RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_REVOKE,
+    ]) {
+      expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(method)).toBe('manageAccess');
+    }
+    expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(RPC_METHODS.STOP_DAEMON)).toBeNull();
+    expect(protocol.resolveEphemeralRunnerMachineRpcAuthority('unknown.method')).toBeNull();
+    expect(resolveEphemeralRunnerMachineRpcAuthorityFromRpcSubpath(RPC_METHODS.READ_FILE))
+      .toBe('readTranscript');
   });
 
   it('keeps quota recovery, connected-service auth, and terminal composer controls server-routed', async () => {
@@ -810,6 +963,29 @@ describe('MachineRpcRoutePolicyV1', () => {
       actionSpecId: 'sessions.external.unfollow',
     });
 
+    // The released `daemon.directSessions.candidate.delete` spelling dispatches
+    // the same canonical Action through the ActionSpec alias, so mediation must
+    // classify it identically to canonical delete. Left unmapped it degrades to
+    // `advisory_unclassified`/`unclassified`, which loses the Action binding the
+    // destructive mutation is governed by and makes the released method the one
+    // external-session row this table cannot classify.
+    for (const method of [
+      RPC_METHODS.DAEMON_EXTERNAL_SESSION_CANDIDATE_DELETE,
+      RPC_METHODS.DAEMON_DIRECT_SESSION_CANDIDATE_DELETE_LEGACY,
+    ]) {
+      expect(resolveMachineRpcGovernance(method)).toEqual({
+        rpcClassification: 'action_spec_bound',
+        actionSpecId: 'sessions.external.candidate.delete',
+      });
+      expect(protocol.resolveMachineRpcRoutePolicy(method)).toMatchObject({
+        routeClass: 'server_required',
+        serverRequiredReason: 'destructive_or_recovery_mutation',
+        rpcClassification: 'action_spec_bound',
+        actionSpecId: 'sessions.external.candidate.delete',
+        commandReceiptRequired: false,
+      });
+    }
+
     const operationActions = [
       [RPC_METHODS.DAEMON_EXTERNAL_SESSION_MATERIALIZE_START, 'sessions.external.materialize.start'],
       [RPC_METHODS.DAEMON_EXTERNAL_SESSION_TAKEOVER_START, 'sessions.external.takeover.start'],
@@ -896,6 +1072,18 @@ describe('MachineRpcRoutePolicyV1', () => {
       routeClass: 'server_required',
       rpcClassification: 'action_spec_bound',
       actionSpecId: 'execution.run.stream.read',
+    });
+    expect(protocol.resolveMachineRpcRoutePolicy(SESSION_RPC_METHODS.EXECUTION_RUN_WAIT)).toMatchObject({
+      routeClass: 'server_required',
+      rpcClassification: 'action_spec_bound',
+      actionSpecId: 'execution.run.wait',
+      serverRequiredReason: 'durable_session_write',
+      scope: expect.objectContaining({
+        accountRequired: true,
+        machineRequired: true,
+        sessionRequired: true,
+        serverRequired: true,
+      }),
     });
   });
 

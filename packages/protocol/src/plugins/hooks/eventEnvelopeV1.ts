@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { HookCategoryV1Schema } from '../../hooks/hookCategories.js';
 import { HookIdV1Schema } from '../../hooks/hookIds.js';
 import { HookScopeV1Schema } from '../../hooks/hookScopes.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 
 export const HookEventEnvelopeV1Schema = z.object({
   hookVersion: z.literal(1).default(1),
@@ -10,7 +11,7 @@ export const HookEventEnvelopeV1Schema = z.object({
   category: HookCategoryV1Schema,
   scope: HookScopeV1Schema,
   happySessionId: z.string().trim().min(1).optional(),
-  agentSessionId: z.string().trim().min(1).optional(),
+  agentSessionId: NonBlankOpaqueIdentifierSchema.optional(),
   agentId: z.string().trim().min(1).optional(),
   backendTarget: z.string().trim().min(1).optional(),
   machineId: z.string().trim().min(1).optional(),

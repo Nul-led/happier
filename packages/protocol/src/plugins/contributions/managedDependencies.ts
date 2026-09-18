@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-import { ManagedPypiWheelAssetInstallableSourceSchema } from '../../installables/sourceKind.js';
+import {
+  ManagedPypiWheelAssetInstallableSourceSchema,
+  PinnedArchiveInstallableSourceSchema,
+} from '../../installables/sourceKind.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import { PluginJsonValueV2Schema, PluginLocalizedStringV2Schema } from './publicTypes.js';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
@@ -17,8 +20,17 @@ const PluginManagedPypiWheelAssetSourceV2Schema = ManagedPypiWheelAssetInstallab
   })
   .strict();
 
+const PluginPinnedArchiveSourceV2Schema = PinnedArchiveInstallableSourceSchema
+  .omit({ kind: true })
+  .extend({
+    kind: z.literal('pinnedArchive'),
+    installId: z.string().trim().regex(/^dep\.[A-Za-z0-9._-]+$/),
+  })
+  .strict();
+
 const PluginManagedDependencySourceV2Schema = z.discriminatedUnion('kind', [
   PluginManagedPypiWheelAssetSourceV2Schema,
+  PluginPinnedArchiveSourceV2Schema,
   z.object({ kind: z.literal('system'), executableNames: z.array(z.string().trim().min(1)).min(1), versionArguments: z.array(z.string()).optional() }).strict(),
   z.object({ kind: z.literal('vendorRecipe'), recipeId: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('manual'), instructions: PluginLocalizedStringV2Schema }).strict(),
@@ -34,11 +46,11 @@ export const PluginManagedDependencyContributionV2Schema = z.object({
   health: PluginJsonValueV2Schema.optional(),
   metadata: z.record(z.string(), PluginJsonValueV2Schema).optional(),
 }).strict().superRefine((value, ctx) => {
-  if (value.sources.some((source) => source.kind === 'managedPypiWheelAsset') && !value.executable) {
+  if (value.sources.some((source) => source.kind === 'managedPypiWheelAsset' || source.kind === 'pinnedArchive') && !value.executable) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['executable'],
-      message: 'Managed PyPI wheel asset dependencies require an executable',
+      message: 'Managed executable dependencies require an executable',
     });
   }
 });

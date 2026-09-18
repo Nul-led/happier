@@ -40,10 +40,15 @@ const SERVER_ROUTED_FEATURE_ID_BY_FLOW_KIND: Readonly<Record<PeerFlowKindV1, Fea
   machine_rpc: 'machines.liveStream.serverRouted',
 };
 
-export function resolvePeerRouteFeatureId(input: Readonly<{
-  flowKind: PeerFlowKindV1;
-  routeKind: PeerRouteKindV1;
-}>): FeatureId {
+type PeerRouteFeatureInput =
+  | Readonly<{ flowKind: PeerFlowKindV1; routeKind: PeerRouteKindV1 }>
+  | Readonly<{ flowKind: 'provider_broker'; routeKind: 'server_relay' }>;
+
+export function resolvePeerRouteFeatureId(input: PeerRouteFeatureInput): FeatureId {
+  // Provider brokerage is a private credential-resource carrier. It has no
+  // direct-peer route today, but keeping its relay decision here prevents the
+  // server, client, and daemon from inventing feature-specific gate checks.
+  if (input.flowKind === 'provider_broker') return 'teams.credentialResources';
   return input.routeKind === 'server_relay'
     ? SERVER_ROUTED_FEATURE_ID_BY_FLOW_KIND[input.flowKind]
     : DIRECT_ROUTE_FEATURE_ID_BY_FLOW_KIND[input.flowKind];

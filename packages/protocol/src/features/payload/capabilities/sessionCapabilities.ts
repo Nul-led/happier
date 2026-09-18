@@ -40,6 +40,12 @@ export const SessionSystemRecordsCapabilitiesSchema = z.object({
 }).strict();
 export type SessionSystemRecordsCapabilities = z.infer<typeof SessionSystemRecordsCapabilitiesSchema>;
 
+/** Host-rendered Follow context accepted by the destination Session runtime. */
+export const SessionFollowCapabilitiesSchema = z.object({
+  contextVersion: z.literal(1),
+}).strict();
+export type SessionFollowCapabilities = z.infer<typeof SessionFollowCapabilitiesSchema>;
+
 export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({
   state: {},
   messages: DEFAULT_SESSION_MESSAGES_CAPABILITIES,
@@ -50,6 +56,7 @@ export const SessionCapabilitiesSchema = z
     state: SessionStateCapabilitiesV1Schema.optional().default({}),
     messages: SessionMessagesCapabilitiesSchema,
     systemRecords: SessionSystemRecordsCapabilitiesSchema.optional(),
+    follow: SessionFollowCapabilitiesSchema.optional(),
     runtimeActivity: SessionRuntimeActivityCapabilitiesSchema.optional(),
     pendingInput: SessionPendingInputCapabilitiesSchema.optional(),
     publisherAuthority: SessionPublisherAuthorityCapabilitiesSchema.optional(),

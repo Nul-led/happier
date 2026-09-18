@@ -46,6 +46,21 @@ function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
   };
 }
 
+it('seals external Action transport in its own authenticated Account domain', () => {
+  const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+  const payload = { direction: 'request', input: { message: 'private Action sentinel' } };
+  const ciphertext = sealAccountScopedBlobCiphertext({
+    kind: 'external_action_transport', material, payload,
+    randomBytes: deterministicRandomBytesFactory(),
+  });
+  expect(openAccountScopedBlobCiphertext({ kind: 'external_action_transport', material, ciphertext }))
+    .toEqual({ format: 'account_scoped_v1', kindTag: 'canonical', value: payload });
+  expect(openAccountScopedBlobCiphertext({ kind: 'account_settings', material, ciphertext })).toBeNull();
+  expect(openAccountScopedBlobCiphertext({ kind: 'external_action_transport', material: {
+    type: 'dataKey', machineKey: new Uint8Array(32).fill(8),
+  }, ciphertext })).toBeNull();
+});
+
 const FROZEN_ACCOUNT_SCOPED_VECTOR_MACHINE_KEY =
   Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 
@@ -211,6 +226,30 @@ const FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS = [
     kindByte: 26,
     ciphertext: 'oRohIiMkJSYnKCkqKywtLi8wMTIzNDU2NzgsvICo8KXTESqbTLkYvLXJG1VfHFpp6U4WHG4Bi2KldSNqd2gMLo9JnviSP6dg8vIC',
     payload: { slot: 10, source: 'dev-r4.4.8' },
+  },
+  {
+    kind: 'workflow_accepted_snapshot',
+    kindByte: 28,
+    ciphertext: 'oRwhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzi9451ebIIks89E/2YIOSlurSQE7iWyhI05fVaUk1MlQm19uHHb81tPTuQ2Z73ATB4FUygl3uNlJjvsuVo11Q==',
+    payload: { slot: 28, source: 'automation-workflows-v1' },
+  },
+  {
+    kind: 'workflow_invocation_progress',
+    kindByte: 29,
+    ciphertext: 'oR0hIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg2zr98jLRXJzJY6F6zWZsjtRHEYnCc4nEusxdWciPP4E4Od7XepTgiG+u0rfcrcHK+QtaOzPnReDzHEpQWHg==',
+    payload: { slot: 29, source: 'automation-workflows-v1' },
+  },
+  {
+    kind: 'workflow_checkpoint',
+    kindByte: 30,
+    ciphertext: 'oR4hIiMkJSYnKCkqKywtLi8wMTIzNDU2NziO7ZQvzZiDoKX4AsDTMSMNaORBXT9dt8f3vkJ3uqsOflL9ySpD2ydI/aVosDd4lBUhDGM7/HVqQiIjXa9GtA==',
+    payload: { slot: 30, source: 'automation-workflows-v1' },
+  },
+  {
+    kind: 'workflow_final_result',
+    kindByte: 31,
+    ciphertext: 'oR8hIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzjj2km9n8NviRYA48Uq0mRHXf0W69pyVSn/o2gdZTK18RVMyleCai0d6IylQE2jp/M2YN0Hn0DUg74FECq7tg==',
+    payload: { slot: 31, source: 'automation-workflows-v1' },
   },
 ] as const;
 
@@ -480,6 +519,22 @@ const CURRENT_ACCOUNT_SCOPED_KIND_ROLLBACK_DISPOSITIONS = {
   },
   account_session_draft_private_payload: {
     productionOwner: 'Account-scoped new-session draft private-payload owner',
+    remoteDev165A: 'rollback_blocking',
+  },
+  workflow_accepted_snapshot: {
+    productionOwner: 'Workflow accepted-snapshot stored-content owner',
+    remoteDev165A: 'rollback_blocking',
+  },
+  workflow_invocation_progress: {
+    productionOwner: 'Workflow invocation-progress stored-content owner',
+    remoteDev165A: 'rollback_blocking',
+  },
+  workflow_checkpoint: {
+    productionOwner: 'Workflow checkpoint stored-content owner',
+    remoteDev165A: 'rollback_blocking',
+  },
+  workflow_final_result: {
+    productionOwner: 'Workflow final-result stored-content owner',
     remoteDev165A: 'rollback_blocking',
   },
 } as const satisfies Record<AccountScopedBlobKind, AccountScopedKindRollbackDisposition>;
@@ -970,6 +1025,10 @@ describe('accountScopedCipher', () => {
         // byte 25 was never allocated. Neither is reissued.
         ...Array.from({ length: 24 }, (_, index) => index + 1).filter((byte) => byte !== 16),
         26,
+        28,
+        29,
+        30,
+        31,
       ],
     );
   });

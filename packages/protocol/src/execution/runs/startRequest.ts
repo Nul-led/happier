@@ -1,13 +1,22 @@
+import {
+  NonBlankOpaqueIdentifierSchema,
+  readNonBlankOpaqueIdentifier,
+} from '../../strings/opaqueIdentifier.js';
 import { z } from 'zod';
 
 import {
   BackendTargetRefV2Schema,
+  BackendTargetKeyV2Schema,
+  PersistedAgentTargetRefV1Schema,
+  PersistedBackendTargetRefV2Schema,
   buildBackendTargetKeyV2,
   normalizeBackendTargetRefV2InputToV2,
+  parseBackendTargetKeyV2,
 } from '../../backends/targets/backendTargetRefV2.js';
 import { ProviderBoundModelRefSchema } from '../../providers/selection/v1.js';
-import { ConnectedServiceBindingsV1Schema } from '../../connect/connectedServiceBindings.js';
+import { ConnectedServiceBindingsV2IngressSchema } from '../../connect/connectedServiceBindings.js';
 import { AcpConfigOptionOverridesV1Schema } from '../../sessions/metadata/metadataOverridesV1.js';
+import { SessionMcpSelectionV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
 import { hasLegacyCustomAcpConcreteBackendId, isLegacyCustomAcpId } from '../../backends/targets/compat/customAcp.js';
 import { HappierReplayStrategySchema } from '../../sessions/continueWithReplay.js';
 import {
@@ -22,12 +31,39 @@ import {
 import { TurnChangeSetSchema } from '../../sessions/changes/schemas.js';
 import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
 import { PluginJsonSchemaV2Schema } from '../../plugins/contributions/publicTypes.js';
+import { SessionDiscussionSelectionSourceV1Schema } from '../../sessions/discussions/content.js';
 import {
   ExecutionRunClassSchema,
   ExecutionRunIntentSchema,
   ExecutionRunIoModeSchema,
   ExecutionRunRetentionPolicySchema,
 } from './runPrimitives.js';
+import { ExecutionRunResultContractV1Schema } from './resultContractV1.js';
+import { TeamCredentialProviderModelSelectionV1Schema } from '../../teams/credentials/resourceV1.js';
+import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
+import { HappierStructuredInputV1Schema } from '../../runtime/input/structuredInputV1.js';
+
+export const ExecutionRunTeamCredentialSessionBindingConsentV1Schema = z.object({
+  v: z.literal(1),
+  sessionId: z.string().trim().min(1),
+  teamId: z.string().trim().min(1),
+  resourceId: z.string().trim().min(1),
+  expectedResourceRevision: z.number().int().nonnegative(),
+}).strict();
+export type ExecutionRunTeamCredentialSessionBindingConsentV1 = z.infer<
+  typeof ExecutionRunTeamCredentialSessionBindingConsentV1Schema
+>;
+
+/**
+ * An attached long-lived Agent Run may be created before its first turn so
+ * the caller can durably bind the Run identity, then admit the exact prompt
+ * through the owning Session Pending queue. Omission retains the ordinary
+ * start-with-instructions contract.
+ */
+export const ExecutionRunInitialInputV1Schema = z.object({
+  kind: z.literal('deferred_session_pending'),
+}).strict();
+export type ExecutionRunInitialInputV1 = z.infer<typeof ExecutionRunInitialInputV1Schema>;
 
 export {
   ExecutionRunClassSchema,
@@ -54,8 +90,10 @@ export function normalizeLegacyExecutionRunBackendTargetInput(value: unknown): u
     return value;
   }
   const record = value as Record<string, unknown>;
-  const providerSessionId = typeof record.providerSessionId === 'string' ? record.providerSessionId.trim() : '';
-  const legacyVendorSessionId = typeof record.vendorSessionId === 'string' ? record.vendorSessionId.trim() : '';
+  // Presence only: this decides which legacy field supplies the handle. The
+  // selected value is forwarded unchanged.
+  const providerSessionId = readNonBlankOpaqueIdentifier(record.providerSessionId) ?? '';
+  const legacyVendorSessionId = readNonBlankOpaqueIdentifier(record.vendorSessionId) ?? '';
   const hasProviderSessionResumeHandleKind = record.kind === PROVIDER_SESSION_RESUME_HANDLE_KIND
     || record.kind === LEGACY_VENDOR_SESSION_RESUME_HANDLE_KIND;
   const normalizedResumeHandleFields = hasProviderSessionResumeHandleKind
@@ -74,18 +112,11 @@ export function normalizeLegacyExecutionRunBackendTargetInput(value: unknown): u
       })()
     : record.kind === 'voice_agent_sessions.v1'
       ? (() => {
-          const chatProviderSessionId = typeof record.chatProviderSessionId === 'string'
-            ? record.chatProviderSessionId.trim()
-            : '';
-          const commitProviderSessionId = typeof record.commitProviderSessionId === 'string'
-            ? record.commitProviderSessionId.trim()
-            : '';
-          const legacyChatVendorSessionId = typeof record.chatVendorSessionId === 'string'
-            ? record.chatVendorSessionId.trim()
-            : '';
-          const legacyCommitVendorSessionId = typeof record.commitVendorSessionId === 'string'
-            ? record.commitVendorSessionId.trim()
-            : '';
+          // Presence only: these select which legacy field supplies each handle.
+          const chatProviderSessionId = readNonBlankOpaqueIdentifier(record.chatProviderSessionId) ?? '';
+          const commitProviderSessionId = readNonBlankOpaqueIdentifier(record.commitProviderSessionId) ?? '';
+          const legacyChatVendorSessionId = readNonBlankOpaqueIdentifier(record.chatVendorSessionId) ?? '';
+          const legacyCommitVendorSessionId = readNonBlankOpaqueIdentifier(record.commitVendorSessionId) ?? '';
           const {
             chatVendorSessionId: _legacyChatVendorSessionId,
             commitVendorSessionId: _legacyCommitVendorSessionId,
@@ -139,7 +170,7 @@ export function normalizeLegacyExecutionRunBackendTargetInput(value: unknown): u
 const ExecutionRunResumeHandleProviderSessionV1SchemaCore = z.object({
   kind: z.literal(PROVIDER_SESSION_RESUME_HANDLE_KIND),
   backendTarget: z.preprocess(normalizeBackendTargetRefV2InputToV2, BackendTargetRefV2Schema),
-  providerSessionId: z.string().min(1),
+  providerSessionId: NonBlankOpaqueIdentifierSchema,
 }).passthrough().superRefine((value, ctx) => {
   if (hasLegacyCustomAcpConcreteBackendId(value.backendTarget)) {
     ctx.addIssue({
@@ -201,11 +232,16 @@ export const ExecutionRunDisplaySchema = z.object({
 }).passthrough();
 export type ExecutionRunDisplay = z.infer<typeof ExecutionRunDisplaySchema>;
 
+export const ExecutionRunDraftCorrelationIdSchema = SessionDiscussionSelectionSourceV1Schema.shape.draftCorrelationId.unwrap();
+export type ExecutionRunDraftCorrelationId = z.infer<typeof ExecutionRunDraftCorrelationIdSchema>;
+
 export const ExecutionRunLaunchOriginSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('session'),
     sessionId: z.string().trim().min(1),
+    draftCorrelationId: ExecutionRunDraftCorrelationIdSchema.optional(),
   }).strict(),
+  SessionDiscussionSelectionSourceV1Schema,
   z.object({
     kind: z.literal('external'),
     source: z.enum(['cli', 'mcp', 'action']).optional(),
@@ -249,6 +285,22 @@ export const ExecutionRunTaskIntentInputV1Schema = z.object({
 }).strict();
 export type ExecutionRunTaskIntentInputV1 = z.infer<typeof ExecutionRunTaskIntentInputV1Schema>;
 
+export const ExecutionRunAgentIntentInputV1Schema = z.object({
+  input: StrictJsonValueSchema.optional(),
+  /** Compatibility shorthand for the initial turn's JSON result contract. */
+  resultSchema: PluginJsonSchemaV2Schema.optional(),
+  resultContract: ExecutionRunResultContractV1Schema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.resultSchema && value.resultContract) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['resultContract'],
+      message: 'agent resultSchema and resultContract are mutually exclusive',
+    });
+  }
+});
+export type ExecutionRunAgentIntentInputV1 = z.infer<typeof ExecutionRunAgentIntentInputV1Schema>;
+
 export const ExecutionRunScmCommitMessageScopeV1Schema = z.object({
   kind: z.literal('paths'),
   include: z.array(z.string().min(1)).max(200).optional(),
@@ -289,11 +341,33 @@ export type ExecutionRunScmDiffSummaryInputV1 = z.infer<typeof ExecutionRunScmDi
 export const ExecutionRunScmDiffSummaryResultV1Schema = ScmDiffSummaryGenerateOutputSchema;
 export type ExecutionRunScmDiffSummaryResultV1 = z.infer<typeof ExecutionRunScmDiffSummaryResultV1Schema>;
 
+/**
+ * Start requests retain the canonical manifest-qualified Agent identity. The
+ * daemon that owns the current plugin catalog resolves that identity to its
+ * process-local routing id exactly once at admission. Released backend and key
+ * inputs continue to normalize through the existing compatibility reader.
+ */
+export function normalizeExecutionRunStartBackendTargetInput(input: unknown): unknown {
+  const agentTarget = PersistedAgentTargetRefV1Schema.safeParse(input);
+  if (agentTarget.success) return agentTarget.data;
+
+  if (typeof input === 'string') {
+    const targetKey = BackendTargetKeyV2Schema.safeParse(input);
+    if (targetKey.success) return parseBackendTargetKeyV2(targetKey.data);
+  }
+
+  return normalizeBackendTargetRefV2InputToV2(input);
+}
+
 export const ExecutionRunStartRequestBaseSchema = z.object({
   kind: ExecutionRunKindSchema.optional(),
   intent: ExecutionRunIntentSchema,
-  backendTarget: z.preprocess(normalizeBackendTargetRefV2InputToV2, BackendTargetRefV2Schema),
+  backendTarget: z.preprocess(
+    normalizeExecutionRunStartBackendTargetInput,
+    PersistedBackendTargetRefV2Schema,
+  ),
   instructions: z.string().optional(),
+  initialInput: ExecutionRunInitialInputV1Schema.optional(),
   display: ExecutionRunDisplaySchema.optional(),
   launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
   permissionMode: z.string().min(1),
@@ -302,12 +376,24 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
   ioMode: ExecutionRunIoModeSchema,
   profileId: z.string().trim().min(1).optional(),
   profileGenerationId: z.string().trim().min(1).optional(),
+  /** Value-free Saved Secret binding overrides for this launch only. */
+  secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
   initialContext: z.string().optional(),
   initialContextMode: z.enum(['bootstrap', 'first_turn']).optional(),
   bootstrapMode: z.enum(['none', 'ready_handshake']).optional(),
   resumeHandle: ExecutionRunResumeHandleSchema.nullable().optional(),
   replay: ExecutionRunReplaySeedRequestSchema.optional(),
   intentInput: z.unknown().optional(),
+  /** Canonical host-owned structured input for the initial native turn. */
+  structuredInput: HappierStructuredInputV1Schema.optional(),
+  /** Stable host-authored identity for the initial native input. */
+  localInputId: z.string().trim().min(1).optional(),
+  /** Exact result requested for the initial native turn only. */
+  resultContract: ExecutionRunResultContractV1Schema.optional(),
+  /** Authored execution cwd; the daemon validates and binds it before start. */
+  cwd: z.string().trim().min(1).optional(),
+  /** Canonical managed MCP selection bound to this Run's working location. */
+  mcpSelection: SessionMcpSelectionV1Schema.optional(),
   /**
    * Optional model selection for the run backend, reusing the SAME canonical `modelId` vocabulary
    * as session spawn (`SessionSpawnNewInputSchema.modelId`). Omitted ⇒ the backend's default model.
@@ -321,6 +407,19 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
    * authorization/materialization state for every start or resume.
    */
   modelSelection: ProviderBoundModelRefSchema.optional(),
+  /**
+   * Exact recipient-safe Team resource/model selection for this Run. This is
+   * mutually exclusive with an Account-local Provider selection and is
+   * re-authorized by the Team resource owner for every start or resume.
+   */
+  teamCredentialModel: TeamCredentialProviderModelSelectionV1Schema.optional(),
+  /**
+   * Explicit consent for the attached parent Session transaction that may be
+   * required by the selected Team resource's visibility policy. The exact
+   * Session/resource/revision witness prevents a stale launcher decision from
+   * authorizing a different selection. Detached starts deliberately omit it.
+   */
+  teamCredentialSessionBindingConsent: ExecutionRunTeamCredentialSessionBindingConsentV1Schema.optional(),
   /** Voice's chat model; when Provider-bound it must match top-level modelSelection. */
   chatModelId: z.string().min(1).optional(),
   /** Voice's independently selected commit model. */
@@ -335,10 +434,11 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
   /**
    * Optional connected-services selection for the run backend (profile|group per serviceId),
    * mirroring session-spawn connected-services bindings. When omitted, the runtime applies the
-   * SAME account-settings defaulting as session spawn. Connected selections fail closed: the
-   * run does not start when the daemon cannot resolve + materialize the selected auth.
+   * SAME account-settings defaulting as session spawn. Null is the explicit all-services native
+   * opt-out produced by the agent-friendly `"native"` shorthand. Connected selections fail closed:
+   * the run does not start when the daemon cannot resolve + materialize the selected auth.
    */
-  connectedServices: ConnectedServiceBindingsV1Schema.optional(),
+  connectedServices: ConnectedServiceBindingsV2IngressSchema.nullable().optional(),
   /**
    * Bare per-service default tokens (RO-F5): serviceIds asking for their STORED account default. Set by
    * the action boundary alongside `connectedServices` so the run-start owner resolves each named
@@ -347,6 +447,7 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
    * this stays empty — the persisted selection already carries the resolved concrete bindings.
    */
   connectedServicesDefaultServiceIds: z.array(z.string()).optional(),
+  notifyParentOnCompletion: z.boolean().optional(),
 }).passthrough();
 
 type ExecutionRunStartRequestRefinementValue = Pick<
@@ -354,13 +455,19 @@ type ExecutionRunStartRequestRefinementValue = Pick<
   | 'backendTarget'
   | 'intent'
   | 'intentInput'
+  | 'localInputId'
+  | 'resultContract'
+  | 'structuredInput'
   | 'instructions'
+  | 'initialInput'
   | 'ioMode'
   | 'kind'
   | 'chatModelId'
   | 'commitModelId'
   | 'modelId'
   | 'modelSelection'
+  | 'teamCredentialModel'
+  | 'teamCredentialSessionBindingConsent'
   | 'permissionMode'
   | 'profileGenerationId'
   | 'profileId'
@@ -372,6 +479,13 @@ export function refineExecutionRunStartRequest(
   value: ExecutionRunStartRequestRefinementValue,
   ctx: z.RefinementCtx,
 ): void {
+  if (value.resultContract && !value.localInputId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'resultContract requires exact localInputId correspondence',
+      path: ['localInputId'],
+    });
+  }
   if (
     value.modelSelection
     && value.modelSelection.agentTargetKey
@@ -381,6 +495,47 @@ export function refineExecutionRunStartRequest(
       code: z.ZodIssueCode.custom,
       message: 'modelSelection must target the execution-run backend',
       path: ['modelSelection', 'agentTargetKey'],
+    });
+  }
+  if (
+    value.teamCredentialModel
+    && value.teamCredentialModel.agentTargetKey
+      !== buildBackendTargetKeyV2(value.backendTarget)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'teamCredentialModel must target the execution-run backend',
+      path: ['teamCredentialModel', 'agentTargetKey'],
+    });
+  }
+  if (value.teamCredentialModel && value.modelSelection) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Select exactly one Provider model source',
+      path: ['teamCredentialModel'],
+    });
+  }
+  if (value.teamCredentialSessionBindingConsent) {
+    const consent = value.teamCredentialSessionBindingConsent;
+    const selection = value.teamCredentialModel;
+    if (
+      !selection
+      || consent.teamId !== selection.teamId
+      || consent.resourceId !== selection.resourceId
+      || consent.expectedResourceRevision !== selection.expectedResourceRevision
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Session binding consent must exactly match the selected Team resource revision',
+        path: ['teamCredentialSessionBindingConsent'],
+      });
+    }
+  }
+  if (value.intent === 'voice_agent' && value.teamCredentialModel) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'voice_agent does not use the Agent execution-run Provider launch path',
+      path: ['teamCredentialModel'],
     });
   }
   if (
@@ -472,6 +627,75 @@ export function refineExecutionRunStartRequest(
       });
     }
   }
+  if (value.intent === 'agent') {
+    const instructions = typeof value.instructions === 'string' ? value.instructions.trim() : '';
+    const defersToSessionPending = value.initialInput?.kind === 'deferred_session_pending';
+    if (!defersToSessionPending && (!instructions || instructions.length > EXECUTION_RUN_TASK_INSTRUCTIONS_MAX_CHARS)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `agent instructions must be between 1 and ${EXECUTION_RUN_TASK_INSTRUCTIONS_MAX_CHARS} characters`,
+        path: ['instructions'],
+      });
+    }
+    if (defersToSessionPending) {
+      if (value.instructions !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'deferred Session Pending input must not include start instructions',
+          path: ['instructions'],
+        });
+      }
+      if (
+        value.localInputId !== undefined
+        || value.resultContract !== undefined
+        || value.structuredInput !== undefined
+        || value.intentInput !== undefined
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'deferred Session Pending input must not embed initial turn content or correspondence',
+          path: value.localInputId !== undefined
+            ? ['localInputId']
+            : value.resultContract !== undefined
+              ? ['resultContract']
+              : value.structuredInput !== undefined
+                ? ['structuredInput']
+                : ['intentInput'],
+        });
+      }
+      if (value.runClass !== 'long_lived' || value.retentionPolicy !== 'resumable') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'deferred Session Pending input requires a resumable long-lived Run',
+          path: value.runClass !== 'long_lived' ? ['runClass'] : ['retentionPolicy'],
+        });
+      }
+    }
+    const parsedInput = ExecutionRunAgentIntentInputV1Schema.safeParse(value.intentInput ?? {});
+    if (!parsedInput.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid agent intentInput',
+        path: ['intentInput'],
+      });
+    } else if (
+      value.resultContract
+      && (parsedInput.data.resultContract || parsedInput.data.resultSchema)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'agent initial result contract must have one owner',
+        path: ['resultContract'],
+      });
+    }
+  }
+  if (value.initialInput !== undefined && value.intent !== 'agent') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'deferred Session Pending input is available only for Agent runs',
+      path: ['initialInput'],
+    });
+  }
   if (
     value.modelSelection
     && value.modelId !== undefined
@@ -481,6 +705,17 @@ export function refineExecutionRunStartRequest(
       code: z.ZodIssueCode.custom,
       message: 'modelSelection modelId must match modelId',
       path: ['modelSelection', 'modelId'],
+    });
+  }
+  if (
+    value.teamCredentialModel
+    && value.modelId !== undefined
+    && value.teamCredentialModel.modelId !== value.modelId
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'teamCredentialModel modelId must match modelId',
+      path: ['teamCredentialModel', 'modelId'],
     });
   }
   if (Object.prototype.hasOwnProperty.call(value, 'agentSessionStartupInstructionsV1')) {
@@ -497,7 +732,13 @@ export function refineExecutionRunStartRequest(
       path: value.profileId ? ['profileGenerationId'] : ['profileId'],
     });
   }
-  if (hasLegacyCustomAcpConcreteBackendId(value.backendTarget)) {
+  if (
+    value.backendTarget.kind === 'backend'
+    && hasLegacyCustomAcpConcreteBackendId({
+      backendId: value.backendTarget.backendId,
+      configuredBackendId: value.backendTarget.configuredBackendId,
+    })
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'backendTarget must identify a concrete backend',
@@ -643,6 +884,7 @@ export const ExecutionRunDetachedStartRequestV1Schema = ExecutionRunStartRequest
   bootstrapMode: true,
   replay: true,
   launchOrigin: true,
+  teamCredentialSessionBindingConsent: true,
 }).extend({
   intent: z.literal('task'),
   permissionMode: z.enum(['no_tools', 'read_only']),

@@ -10,6 +10,7 @@ export const PENDING_DELIVERY_BLOCKED_REASONS = [
   'capture_style_unavailable',
   'delivery_outcome_uncertain',
   'provider_unavailable_before_acceptance',
+  'session_input_target_unavailable',
   'ambiguous_terminal_delivery',
   'terminal_host_unreachable',
   'runtime_disposed_before_delivery',

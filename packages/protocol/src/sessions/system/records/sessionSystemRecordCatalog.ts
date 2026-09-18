@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { SessionBoardLayoutV1Schema } from '../../board/layout.js';
+import { SessionSurfaceItemV1Schema } from '../../board/item.js';
 
 import { SessionSummaryShardV1Schema } from '../../../messages/structured/sessionSummaryShardV1.js';
 import { SessionSynopsisV1Schema } from '../../../messages/structured/sessionSynopsisV1.js';
@@ -37,6 +39,18 @@ function defineSessionSystemRecordCatalog<const Catalog extends SessionSystemRec
 }
 
 export const SESSION_SYSTEM_RECORD_CATALOG = defineSessionSystemRecordCatalog({
+  surface: {
+    kinds: {
+      'layout.v1': {
+        payloadSchema: SessionBoardLayoutV1Schema,
+        policy: { accountScope: 'session-owner', read: 'visible', write: 'unavailable', delete: 'unavailable', revision: 'opaque-row-version', cas: 'stored-envelope' },
+      },
+      'item.v1': {
+        payloadSchema: SessionSurfaceItemV1Schema,
+        policy: { accountScope: 'session-owner', read: 'visible', write: 'unavailable', delete: 'unavailable', revision: 'opaque-row-version', cas: 'stored-envelope' },
+      },
+    },
+  },
   [SESSION_SYSTEM_RECORD_MEMORY_NAMESPACE]: {
     kinds: {
       'summary_shard.v1': {

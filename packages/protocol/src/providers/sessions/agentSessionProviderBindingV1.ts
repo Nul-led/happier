@@ -34,12 +34,28 @@ export const AgentSessionProviderBindingUpstreamV1Schema = z.object({
   credential: z.enum(['none', 'apiKey']),
 }).strict();
 
-export const AgentSessionProviderBindingV1Schema = z.object({
-  connectionId: ProviderConnectionIdSchema,
+const AgentSessionProviderBindingCommonV1Schema = z.object({
   model: ProviderModelDescriptorV1Schema,
   upstream: AgentSessionProviderBindingUpstreamV1Schema,
   materialization: AgentProviderBindingLaunchMaterializationV1Schema,
+});
+
+const AgentSessionAccountProviderBindingV1Schema = AgentSessionProviderBindingCommonV1Schema.extend({
+  connectionId: ProviderConnectionIdSchema,
 }).strict() satisfies z.ZodType<AgentSessionProviderBindingV1>;
+
+export const AgentSessionTeamProviderBindingV1Schema = AgentSessionProviderBindingCommonV1Schema.extend({
+  source: z.object({
+    kind: z.literal('team_resource'),
+    resourceId: z.string().trim().min(1).max(256),
+    resourceRevision: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+
+export const AgentSessionProviderBindingV1Schema = z.union([
+  AgentSessionAccountProviderBindingV1Schema,
+  AgentSessionTeamProviderBindingV1Schema,
+]);
 
 export type AgentSessionProviderBindingUpstream = Readonly<{
   protocol: ProviderWireProtocol;
@@ -48,10 +64,19 @@ export type AgentSessionProviderBindingUpstream = Readonly<{
 }>;
 
 export type AgentSessionProviderBinding = Readonly<{
-  connectionId: ProviderConnectionId;
   model: AgentModelDescriptor;
   upstream: AgentSessionProviderBindingUpstream;
   materialization: AgentProviderBindingLaunchMaterialization;
-}>;
+}> & (
+  | Readonly<{ connectionId: ProviderConnectionId; source?: never }>
+  | Readonly<{
+      connectionId?: never;
+      source: Readonly<{
+        kind: 'team_resource';
+        resourceId: string;
+        resourceRevision: number;
+      }>;
+    }>
+);
 
 export type AgentSessionProviderBindingV1 = AgentSessionProviderBinding;

@@ -14,6 +14,7 @@ describe('parseHappierToolsShellBridgeCommand', () => {
       sessionId: 'sess-1',
       directory: '/tmp/workspace',
       json: true,
+      agentBridge: false,
     });
   });
 
@@ -29,6 +30,7 @@ describe('parseHappierToolsShellBridgeCommand', () => {
       sessionId: 'sess-1',
       directory: '/tmp/workspace',
       json: true,
+      agentBridge: false,
     });
   });
 
@@ -48,6 +50,7 @@ describe('parseHappierToolsShellBridgeCommand', () => {
       argsJson: '{"title":"Renamed"}',
       args: { title: 'Renamed' },
       json: true,
+      agentBridge: false,
     });
   });
 
@@ -71,6 +74,7 @@ describe('parseHappierToolsShellBridgeCommand', () => {
       sessionId: 'sess-1',
       directory: '/tmp/workspace',
       json: true,
+      agentBridge: false,
     });
   });
 
@@ -106,6 +110,37 @@ describe('parseHappierToolsShellBridgeCommand', () => {
       parseHappierToolsShellBridgeCommand(
         `happier tools call --source happier --tool save_memory --args-json '{'`,
       ),
+    ).toBeNull();
+  });
+
+  it('recognizes the Agent bridge provenance marker on call invocations', () => {
+    expect(
+      parseHappierToolsShellBridgeCommand(
+        `happier tools call --agent-bridge --session-id "sess-1" --source happier --tool change_title --args-json '{"title":"Renamed"}' --json`,
+      ),
+    ).toMatchObject({
+      kind: 'call',
+      agentBridge: true,
+      source: 'happier',
+      tool: 'change_title',
+    });
+  });
+
+  it('recognizes the Agent bridge provenance marker on list invocations', () => {
+    expect(
+      parseHappierToolsShellBridgeCommand('happier tools list --agent-bridge --json'),
+    ).toMatchObject({ kind: 'list', agentBridge: true });
+  });
+
+  it('reports an absent Agent bridge marker rather than omitting the fact', () => {
+    expect(
+      parseHappierToolsShellBridgeCommand('happier tools list --json'),
+    ).toMatchObject({ kind: 'list', agentBridge: false });
+  });
+
+  it('rejects a duplicated Agent bridge marker', () => {
+    expect(
+      parseHappierToolsShellBridgeCommand('happier tools list --agent-bridge --agent-bridge --json'),
     ).toBeNull();
   });
 });

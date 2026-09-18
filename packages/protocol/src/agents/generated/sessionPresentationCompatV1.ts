@@ -38,6 +38,21 @@ export const GENERATED_SESSION_PRESENTATION_COMPAT_V1 = Object.freeze([
     vendorResumeIdField: 'cursorSessionId',
   }),
   Object.freeze({
+    agentId: 'devin',
+    flavorAliases: Object.freeze(['devin', 'devin-cli']),
+    vendorResumeIdField: 'devinSessionId',
+  }),
+  Object.freeze({
+    agentId: 'droid',
+    flavorAliases: Object.freeze(['droid', 'factory', 'factory-droid']),
+    vendorResumeIdField: 'droidSessionId',
+  }),
+  Object.freeze({
+    agentId: 'fx',
+    flavorAliases: Object.freeze(['fx', 'vercel-fx']),
+    vendorResumeIdField: 'fxSessionId',
+  }),
+  Object.freeze({
     agentId: 'gemini',
     flavorAliases: Object.freeze(['gemini']),
     vendorResumeIdField: 'geminiSessionId',

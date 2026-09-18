@@ -2,7 +2,11 @@ import { z } from 'zod';
 
 import {
   BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
+  ConnectedAccountServiceKeySchema,
+  ConnectedServiceBindingSelectionV1Schema,
   ConnectedServiceBindingsV1Schema,
+  TeamResourceBrokeredConnectedServiceSelectionV2Schema,
+  TeamResourceDirectConnectedServiceSelectionV2Schema,
   type ConnectedServiceBindingsV1,
 } from '../../connect/connectedServiceBindings.js';
 import {
@@ -12,15 +16,64 @@ import {
 
 const AgentIdSettingsKeySchema = z.string().trim().min(1);
 
+const ConnectedServicesDefaultAuthTeamResourceQualifierV2Shape = {
+  serverId: z.string().trim().min(1),
+  accountId: z.string().trim().min(1),
+  teamId: z.string().trim().min(1),
+  expectedResourceRevision: z.number().int().nonnegative(),
+} as const;
+
+export const ConnectedServicesDefaultAuthTeamResourceBindingV2Schema = z.union([
+  TeamResourceBrokeredConnectedServiceSelectionV2Schema.extend(
+    ConnectedServicesDefaultAuthTeamResourceQualifierV2Shape,
+  ),
+  TeamResourceDirectConnectedServiceSelectionV2Schema.extend(
+    ConnectedServicesDefaultAuthTeamResourceQualifierV2Shape,
+  ),
+]);
+export type ConnectedServicesDefaultAuthTeamResourceBindingV2 = z.infer<
+  typeof ConnectedServicesDefaultAuthTeamResourceBindingV2Schema
+>;
+
+const ConnectedServicesDefaultAuthBindingsByServiceIdV2Schema = z.record(
+  z.string(),
+  z.union([
+    ConnectedServiceBindingSelectionV1Schema,
+    ConnectedServicesDefaultAuthTeamResourceBindingV2Schema,
+  ]),
+).superRefine((bindings, context) => {
+  for (const serviceId of Object.keys(bindings)) {
+    if (ConnectedAccountServiceKeySchema.safeParse(serviceId).success) continue;
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Invalid qualified Connected Account service key',
+      path: [serviceId],
+    });
+  }
+});
+
+export const ConnectedServicesDefaultAuthBindingsV2Schema = z.object({
+  v: z.literal(2),
+  bindingsByServiceId: ConnectedServicesDefaultAuthBindingsByServiceIdV2Schema.default({}),
+}).strict();
+export type ConnectedServicesDefaultAuthBindingsV2 = z.infer<
+  typeof ConnectedServicesDefaultAuthBindingsV2Schema
+>;
+
+const ConnectedServicesDefaultAuthBindingsIngressSchema = z.union([
+  ConnectedServicesDefaultAuthBindingsV2Schema,
+  ConnectedServiceBindingsV1Schema,
+]);
+
 export const ConnectedServicesDefaultAuthByAgentIdV1Schema = z
   .object({
     v: z.literal(1).default(1),
-    bindingsByAgentId: z.record(AgentIdSettingsKeySchema, ConnectedServiceBindingsV1Schema).default({}),
+    bindingsByAgentId: z.record(AgentIdSettingsKeySchema, ConnectedServicesDefaultAuthBindingsIngressSchema).default({}),
   })
   .strict();
 
 /** Released bundled account settings used scalar service ids before qualified service identity. */
-export const BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema = z
+const BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1Schema = z
   .object({
     v: z.literal(1).default(1),
     bindingsByAgentId: z.record(
@@ -29,7 +82,13 @@ export const BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema =
     ).default({}),
   })
   .strict()
-  .transform((value) => ConnectedServicesDefaultAuthByAgentIdV1Schema.parse(value))
+  .transform((value) => ConnectedServicesDefaultAuthByAgentIdV1Schema.parse(value));
+
+export const BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema = z
+  .union([
+    ConnectedServicesDefaultAuthByAgentIdV1Schema,
+    BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1Schema,
+  ])
   .catch({ v: 1 as const, bindingsByAgentId: {} });
 
 export type ConnectedServicesDefaultAuthByAgentIdV1 = z.infer<
@@ -138,4 +197,7 @@ export function resolveConnectedServicesProviderStateSharingPolicyV1(
   };
 }
 
-export type ConnectedServicesDefaultAuthBindingByAgentIdV1 = Record<string, ConnectedServiceBindingsV1>;
+export type ConnectedServicesDefaultAuthBindingByAgentIdV1 = Record<
+  string,
+  ConnectedServiceBindingsV1 | ConnectedServicesDefaultAuthBindingsV2
+>;

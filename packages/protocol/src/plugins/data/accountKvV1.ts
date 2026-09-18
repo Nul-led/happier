@@ -444,7 +444,8 @@ export async function commitPluginAccountKvMutationV1<
 }>): Promise<void> {
   await input.assertCurrent();
   const outcome = await input.write(input.snapshot, input.pendingRow);
-  await input.assertCurrent();
+  // Currentness admits the CAS; it cannot undo an already-settled write or
+  // replace an exact physical conflict with a later cancellation.
   if (outcome === 'conflict') {
     throw new PluginAccountKvRowError(
       'plugin_account_kv_conflict',

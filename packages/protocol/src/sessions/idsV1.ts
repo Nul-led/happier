@@ -20,8 +20,11 @@ export type SubagentId = z.infer<typeof SubagentIdSchema>;
 export const SidechainIdSchema = z.string().trim().min(1).max(SessionIndexedIdentifierMaxLengthV1);
 export type SidechainId = z.infer<typeof SidechainIdSchema>;
 
-export const ExecutionRunIdSchema = z.string().trim().min(1);
+export const ExecutionRunIdSchema = z.string().trim().min(1).max(SessionIndexedIdentifierMaxLengthV1);
 export type ExecutionRunId = z.infer<typeof ExecutionRunIdSchema>;
+
+export const SessionDiscussionIdSchema = z.string().trim().min(1).max(SessionIndexedIdentifierMaxLengthV1);
+export type SessionDiscussionId = z.infer<typeof SessionDiscussionIdSchema>;
 
 export const TurnIdSchema = z.string()
   .min(1)

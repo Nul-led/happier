@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  resolveAgentRequestKind,
   buildAgentRequestSemanticSummary,
   classifyPermissionRequestRisk,
   extractFirstUserActionQuestion,
@@ -204,25 +205,62 @@ describe('extractFirstUserActionQuestion', () => {
 });
 
 describe('summarizeToolInputForNotification', () => {
-  it('sanitizes shell tool details down to the command name', () => {
-    expect(
-      summarizeToolInputForNotification('Bash', { command: 'git status --short && echo secret-token' }),
-    ).toBe('Command: git');
+  it.each([
+    ['ExitPlanMode', { name: 'Migration', overview: 'Preserve existing data', plan: '1. Back up\n2. Apply migration' }, ['Migration', 'Preserve existing data', '1. Back up', '2. Apply migration']],
+    ['AcpHistoryImport', { note: 'History differs. Importing may duplicate messages.', reason: 'no_overlap' }, ['History differs. Importing may duplicate messages.']],
+    ['WebFetch', { url: 'https://example.test/documentation' }, ['https://example.test/documentation']],
+    ['WebSearch', { query: 'How to migrate SQLite data' }, ['How to migrate SQLite data']],
+  ])('includes the supplied context for %s', (toolName, toolInput, expected) => {
+    const details = summarizeToolInputForNotification(toolName, toolInput);
+    for (const text of expected) expect(details).toContain(text);
   });
 
-  it('summarizes AskUserQuestion payloads by count for transport surfaces', () => {
+  it('retains all arguments in script arrays', () => {
+    expect(summarizeToolInputForNotification('Execute', { script: ['git', 'diff', '--stat'] })).toBe('Command: git diff --stat');
+  });
+
+  it('retains complete file names and rationale from permission requests', () => {
+    const details = summarizeToolInputForNotification('Edit', {
+      filename: 'C:\\Users\\alice\\work\\project\\src\\main.ts',
+      rationale: 'Apply the reviewed change',
+    });
+    expect(details).toContain('C:\\Users\\alice\\work\\project\\src\\main.ts');
+    expect(details).toContain('Apply the reviewed change');
+  });
+
+  it('retains full shell details', () => {
+    expect(
+      summarizeToolInputForNotification('Bash', { command: 'git status --short && echo secret-token' }),
+    ).toBe('Command: git status --short && echo secret-token');
+  });
+
+  it('summarizes AskUserQuestion payloads with complete text for transport surfaces', () => {
     expect(
       summarizeToolInputForNotification('AskUserQuestion', {
         questions: [{ question: 'A?' }, { question: 'B?' }],
       }),
-    ).toBe('2 questions');
+    ).toContain('A?\nCustom answer allowed\n\nB?');
   });
 
-  it('summarizes ask_user_question payloads by count for transport surfaces', () => {
+  it('summarizes ask_user_question payloads with complete text for transport surfaces', () => {
     expect(
       summarizeToolInputForNotification('ask_user_question', {
         questions: [{ question: 'A?' }, { question: 'B?' }],
       }),
-    ).toBe('2 questions');
+    ).toContain('A?\nCustom answer allowed\n\nB?');
+  });
+});
+
+
+describe('resolveAgentRequestKind', () => {
+  it.each(['AskUserQuestion', 'ask_user_question', 'ExitPlanMode', 'exit_plan_mode', 'AcpHistoryImport'])(
+    'preserves legacy user-action classification for %s', (toolName) => {
+      expect(resolveAgentRequestKind({ toolName })).toBe('user_action');
+      expect(resolveAgentRequestKind({ toolName, requestKind: 'permission' })).toBe('permission');
+    },
+  );
+  it('uses explicit action kind and defaults unrecognized tools to permission', () => {
+    expect(resolveAgentRequestKind({ toolName: 'Bash', requestKind: 'user_action' })).toBe('user_action');
+    expect(resolveAgentRequestKind({ toolName: 'Bash', requestKind: 'unknown' })).toBe('permission');
   });
 });

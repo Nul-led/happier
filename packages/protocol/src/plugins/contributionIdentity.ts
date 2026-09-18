@@ -12,9 +12,9 @@ import {
   PluginIdSchema,
 } from './pluginId.js';
 
-const PLUGIN_CONTRIBUTION_LOCAL_ID_PATTERN = '^[a-z0-9]+(?:[-/][a-z0-9]+)*$';
-const PLUGIN_CONTRIBUTION_PROTOCOL_ID_V1_PATTERN = '^(?:[a-z0-9]+(?:[-/][a-z0-9]+)*|(?!(?:[a-z0-9-]+\\.)*(?:__proto__|constructor|prototype)(?:\\.|/))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9]+(?:[-/][a-z0-9]+)*)$';
-const PluginContributionOperationRoleV1Pattern = /^[a-z0-9][A-Za-z0-9]*(?:[-/][a-z0-9][A-Za-z0-9]*)*$/u;
+const PLUGIN_CONTRIBUTION_LOCAL_ID_PATTERN = '^[a-z0-9]+(?:[-/][a-z0-9]+)*$(?![\\s\\S])';
+const PLUGIN_CONTRIBUTION_PROTOCOL_ID_V1_PATTERN = '^(?:[a-z0-9]+(?:[-/][a-z0-9]+)*|(?!(?:[a-z0-9-]+\\.)*(?:__proto__|constructor|prototype)(?:\\.|/))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9]+(?:[-/][a-z0-9]+)*)$(?![\\s\\S])';
+const PluginContributionOperationRoleV1Pattern = /^[a-z0-9][A-Za-z0-9]*(?:[-/][a-z0-9][A-Za-z0-9]*)*$(?![\s\S])/u;
 
 export const PluginContributionLocalIdSchema = defineProtocolString({
   minLength: 1,

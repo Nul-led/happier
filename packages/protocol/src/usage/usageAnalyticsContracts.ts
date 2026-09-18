@@ -123,6 +123,8 @@ export type UsageAnalyticsQueryRequest = z.infer<typeof UsageAnalyticsQueryReque
 
 export const UsageAnalyticsTotalsSchema = z.object({
   eventCount: z.number().int().min(0),
+  /** Number of admitted inference requests; omitted for legacy/personal responses. */
+  requestCount: z.number().int().min(0).optional(),
   tokens: UsageObservationTokensSchema,
   cost: UsageObservationCostSchema,
   context: UsageObservationContextSchema.optional(),
@@ -133,6 +135,7 @@ export const UsageAnalyticsSeriesBucketSchema = z.object({
   bucketStartMs: z.number().int().min(0),
   bucketEndMs: z.number().int().min(0),
   eventCount: z.number().int().min(0),
+  requestCount: z.number().int().min(0).optional(),
   tokens: UsageObservationTokensSchema,
   cost: UsageObservationCostSchema,
   context: UsageObservationContextSchema.optional(),
@@ -143,6 +146,7 @@ export const UsageAnalyticsBreakdownEntrySchema = z.object({
   key: z.string().trim().min(1),
   label: z.string().trim().min(1).optional(),
   eventCount: z.number().int().min(0),
+  requestCount: z.number().int().min(0).optional(),
   tokens: UsageObservationTokensSchema,
   cost: UsageObservationCostSchema,
   context: UsageObservationContextSchema.optional(),

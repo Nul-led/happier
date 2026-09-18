@@ -40,34 +40,11 @@ export type ExecutionRunWaitLoopResult<TData, TFailure extends ExecutionRunWaitF
     }>
   | TFailure;
 
-const DEFAULT_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS = 1_000;
-const MIN_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS = 250;
-const MAX_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS = 60_000;
-
 export function normalizeExecutionRunWaitTimeoutMs(timeoutSeconds: unknown): number | null {
   if (typeof timeoutSeconds !== 'number' || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
     return null;
   }
   return Math.max(1, Math.floor(timeoutSeconds * 1_000));
-}
-
-export function normalizeExecutionRunWaitPollIntervalMs(
-  pollIntervalMs: unknown,
-  fallbackMs = DEFAULT_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS,
-): number {
-  const parsed =
-    typeof pollIntervalMs === 'number'
-      ? pollIntervalMs
-      : Number.parseInt(String(pollIntervalMs ?? '').trim(), 10);
-  const fallback =
-    Number.isFinite(fallbackMs) && fallbackMs > 0
-      ? Math.trunc(fallbackMs)
-      : DEFAULT_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS;
-  const candidate = Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
-  return Math.max(
-    MIN_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS,
-    Math.min(MAX_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS, candidate),
-  );
 }
 
 export function isExecutionRunTerminalStatus(status: unknown): status is ExecutionRunTerminalStatus {
@@ -87,66 +64,81 @@ function createAbortError(): Error {
   return error;
 }
 
-async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw createAbortError();
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onAbort);
-      reject(createAbortError());
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 /**
- * The shared observation loop for an already admitted execution-run transport.
+ * The shared event-driven observer for an already admitted execution run.
  * It never starts, stops, retries, or retargets a run; a timeout only ends this
- * caller's observation. The host-specific transport supplies the exact read.
+ * caller's observation. The host supplies its canonical terminal promise and
+ * exact snapshot read, so callers do not create polling sockets or duplicate
+ * run-lifecycle state.
  */
 export async function waitForExecutionRunTerminal<TData, TFailure extends ExecutionRunWaitFailure>(args: Readonly<{
   runId: string;
   timeoutMs: number | null;
-  pollIntervalMs: unknown;
   signal?: AbortSignal;
   readRun: (request: Readonly<{ runId: string }>) => Promise<ExecutionRunWaitReadResult<TData, TFailure>>;
-  delay?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  waitForTerminal: (runId: string, signal?: AbortSignal) => Promise<void>;
   now?: () => number;
 }>): Promise<ExecutionRunWaitLoopResult<TData, TFailure>> {
   const timeoutMs =
     typeof args.timeoutMs === 'number' && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
       ? args.timeoutMs
       : null;
-  const pollIntervalMs = normalizeExecutionRunWaitPollIntervalMs(args.pollIntervalMs);
   const now = args.now ?? Date.now;
   const deadlineMs = timeoutMs === null ? null : now() + timeoutMs;
-  const delay = args.delay ?? delayWithAbort;
 
-  while (deadlineMs === null || now() <= deadlineMs) {
-    args.signal?.throwIfAborted();
-    const result = await args.readRun({ runId: args.runId });
-    if (!result.ok) return result;
-    const status = readExecutionRunStatus(result.data);
-    if (isExecutionRunTerminalStatus(status)) {
-      return { ok: true, status, result: result.data };
+  args.signal?.throwIfAborted();
+  const initial = await args.readRun({ runId: args.runId });
+  if (!initial.ok) return initial;
+  const initialStatus = readExecutionRunStatus(initial.data);
+  if (isExecutionRunTerminalStatus(initialStatus)) {
+    return { ok: true, status: initialStatus, result: initial.data };
+  }
+  // The initial snapshot is asynchronous. Re-check before creating the terminal
+  // observation so an abort delivered during that read cannot be lost before
+  // the listener below is attached.
+  args.signal?.throwIfAborted();
+
+  const terminalObserverAbort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let onAbort: (() => void) | null = null;
+  const terminal = args.waitForTerminal(args.runId, terminalObserverAbort.signal).then(() => 'terminal' as const);
+  const observationEnd = new Promise<'timeout'>((resolve, reject) => {
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => resolve('timeout'), Math.max(0, deadlineMs! - now()));
     }
-    // Sleep at most until the observation deadline: a full poll interval must
-    // never overshoot the caller's timeout (e.g. timeoutMs=1s, poll=60s).
-    const delayMs =
-      deadlineMs === null
-        ? pollIntervalMs
-        : Math.min(pollIntervalMs, Math.max(0, deadlineMs - now()));
-    await delay(delayMs, args.signal);
-    args.signal?.throwIfAborted();
+    if (args.signal) {
+      onAbort = () => reject(createAbortError());
+      args.signal.addEventListener('abort', onAbort, { once: true });
+      if (args.signal.aborted) onAbort();
+    }
+  });
+
+  let disposition: 'terminal' | 'timeout';
+  try {
+    disposition = timeoutMs === null && !args.signal
+      ? await terminal
+      : await Promise.race([terminal, observationEnd]);
+  } finally {
+    terminalObserverAbort.abort(createAbortError());
+    if (timer !== null) clearTimeout(timer);
+    if (onAbort && args.signal) args.signal.removeEventListener('abort', onAbort);
   }
 
-  if (deadlineMs === null || timeoutMs === null) {
-    throw new Error('Execution-run wait exited without an observation deadline');
+  args.signal?.throwIfAborted();
+  const final = await args.readRun({ runId: args.runId });
+  if (!final.ok) return final;
+  const finalStatus = readExecutionRunStatus(final.data);
+  if (isExecutionRunTerminalStatus(finalStatus)) {
+    return { ok: true, status: finalStatus, result: final.data };
   }
+
+  if (disposition === 'terminal') {
+    throw new Error('Execution-run terminal signal resolved before its canonical state became terminal');
+  }
+  if (deadlineMs === null || timeoutMs === null) {
+    throw new Error('Execution-run wait timed out without an observation deadline');
+  }
+
   const observedAtMs = now();
   return {
     ok: true,

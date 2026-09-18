@@ -19,7 +19,7 @@ export type ResolveActionApprovalRoutingArgs = Readonly<{
   actionId: ActionId;
   spec: ActionSpec;
   settings?: ActionsSettingsV1 | null;
-  context?: Pick<ActionExecutorContext, 'surface'> | null;
+  context?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null;
   requiredByPolicy?: boolean;
 }>;
 
@@ -83,13 +83,12 @@ const DERIVED_DANGER_AGENT_FLOOR_IDS: readonly ActionId[] = ACTION_IDS.filter(
  *
  * Per FINALIZATION-PLAN §4.2 / §12.8 / §15-Δ1 / §16-Δ1 this is a SURFACE-KEYED default — NOT a
  * global `RESULT_REQUIRED_APPROVAL_ACTION_IDS` addition (that set is a blocking-result contract,
- * not a human-approval gate, and a global add would wrongly prompt user-initiated invocations).
- * Human approval is decided here, via the persisted/`agent`-keyed ActionsSettings policy:
- * user-initiated forms (`surface: 'ui'`) never prompt; agent-initiated forms are approval-gated.
+ * not a human-approval gate). Human approval is decided here, via the persisted
+ * surface-keyed ActionsSettings policy: dangerous exposed Actions prompt by default on every
+ * user-configurable surface, while non-danger egress forms remain agent-gated.
  *
- * Persisted `approvalRequiredSurfaces` overrides are additive on top of this floor (a user may
- * require approval on additional surfaces); the dangerous agent default cannot be silently
- * dropped (fail-closed).
+ * Persisted overrides may require or explicitly waive confirmation on a known surface.
+ * Missing or malformed policy retains this default. Egress redaction is independent.
  *
  * Note: `network.intercept` (named in §4.2) is a plugin GRANT capability, not an ActionSpec id,
  * so it is gated by the durable plugin-grants store (§12.2), not by this approval policy.
@@ -98,6 +97,17 @@ export const AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS: readonly ActionId[] =
   ...DERIVED_DANGER_AGENT_FLOOR_IDS,
   ...EGRESS_SENSITIVE_AGENT_FLOOR,
 ];
+
+/**
+ * Dangerous Actions are confirmation-floored on every user-configurable surface
+ * where the Action is actually exposed. This is separate from the agent egress
+ * floor above: safe capture/egress Actions remain agent-only, while destructive
+ * Actions keep the same default-on, user-overridable confirmation contract for
+ * UI, CLI, MCP, API, plugin, voice, and Agent callers.
+ */
+const DANGEROUS_ACTION_APPROVAL_REQUIRED_ACTION_ID_SET: ReadonlySet<ActionId> = new Set(
+  ACTION_IDS.filter((id) => getActionSpec(id).safety === 'danger'),
+);
 
 const AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_ID_SET: ReadonlySet<ActionId> = new Set(
   AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS,
@@ -170,18 +180,38 @@ export function requiresAgentEgressRedaction(
 /**
  * True when `actionId` is in the dangerous agent-initiated subset that requires human approval
  * by default. Exported so the action-settings UI (Phase 3.3) can surface the default and let a
- * user ADD further approval-required surfaces (it must never remove the agent default).
+ * user require, waive, or restore the default confirmation policy.
  */
 export function isAgentInitiatedApprovalRequiredByDefault(actionId: ActionId): boolean {
   return AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_ID_SET.has(actionId);
 }
 
-function requiresAgentApprovalFloor(
+function requiresDefaultApprovalFloor(
   actionId: ActionId,
-  ctx?: Pick<ActionExecutorContext, 'surface'> | null,
+  ctx?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null,
 ): boolean {
-  if (!isAgentInitiatedApprovalRequiredByDefault(actionId)) return false;
-  return isAgentOrUnresolvedSurface(ctx);
+  const surface = resolveApprovalSurface(ctx);
+  // UI already owns its direct present-user confirmation host. CLI suppresses
+  // the duplicate default only when its host records a completed confirmation
+  // for this exact Action. Explicit settings are evaluated first and still win.
+  if (
+    surface.kind === 'non_agent'
+    && (
+      surface.surface === 'ui'
+      || (surface.surface === 'cli' && ctx?.presentUserConfirmation?.actionId === actionId)
+    )
+    && ctx?.authority === 'present_user'
+  ) {
+    return false;
+  }
+  if (DANGEROUS_ACTION_APPROVAL_REQUIRED_ACTION_ID_SET.has(actionId)) {
+    if (surface.kind === 'ambiguous') return true;
+    // RPC is an internal transport surface; it has no human confirmation host.
+    if (surface.surface !== 'rpc') {
+      return getActionSpec(actionId).surfaces[surface.surface] === true;
+    }
+  }
+  return isAgentOrUnresolvedSurface(ctx) && isAgentInitiatedApprovalRequiredByDefault(actionId);
 }
 
 /**
@@ -190,39 +220,43 @@ function requiresAgentApprovalFloor(
  * Notes:
  * - This answers “should this action be routed through approvals on this surface?”
  * - It does not decide enablement (use `isActionEnabledByActionsSettings` separately).
- * - Missing/unknown surfaces fail closed by applying the agent danger/egress floor when the
- *   action is agent-reachable and floored. Explicit known non-agent surfaces remain unprompted
- *   unless a persisted override requires them.
+ * - Missing/unknown surfaces fail closed by applying the danger/egress floor. Known exposed
+ *   surfaces use the dangerous default unless a persisted waiver explicitly opts out.
  */
 export function isApprovalRequiredByActionsSettings(
   actionId: ActionSettingsActionId,
   settings: ActionsSettingsV1,
-  ctx?: Pick<ActionExecutorContext, 'surface'> | null,
+  ctx?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null,
 ): boolean {
   const surface = resolveApprovalSurface(ctx);
   const rawSurface = ctx?.surface;
   const override: ActionSettingsOverride | undefined = settings.actions?.[actionId];
   const required = Array.isArray(override?.approvalRequiredSurfaces) ? override.approvalRequiredSurfaces : [];
   if (typeof rawSurface === 'string' && required.some((requiredSurface) => requiredSurface === rawSurface)) return true;
+  const waived = Array.isArray(settings.approvalWaivedSurfaces?.[actionId])
+    ? settings.approvalWaivedSurfaces[actionId]
+    : [];
+  if (surface.kind !== 'ambiguous' && waived.includes(surface.surface)) return false;
 
   const builtInActionId = ActionIdSchema.safeParse(actionId);
-  return builtInActionId.success && requiresAgentApprovalFloor(builtInActionId.data, ctx);
+  return builtInActionId.success && requiresDefaultApprovalFloor(builtInActionId.data, ctx);
 }
 
 /**
  * Fail-safe default when no approval-requirement signal is supplied (neither an explicit
  * `requiredByPolicy` boolean nor persisted `settings`). A host that never wired the approval
- * policy must NOT silently fall open for dangerous agent-initiated actions: the surface-keyed
- * danger floor still applies on `agent`. All other surfaces remain un-prompted.
+ * policy must NOT silently fall open for dangerous Actions: the surface-keyed danger floor
+ * still applies on every recognized exposed surface. Unknown surfaces retain the fail-closed
+ * result, while internal RPC has no human confirmation host.
  *
  * Centralized here (rather than coerced at the executor call site with `=== true`) so the safe
  * default is applied in exactly one place. F7 (Runtime Unification v2 finalization).
  */
 function resolveUnwiredApprovalDefault(
   actionId: ActionId,
-  context: Pick<ActionExecutorContext, 'surface'> | null | undefined,
+  context: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null | undefined,
 ): boolean {
-  return requiresAgentApprovalFloor(actionId, context);
+  return requiresDefaultApprovalFloor(actionId, context);
 }
 
 export function resolveActionApprovalRouting(args: ResolveActionApprovalRoutingArgs): ActionApprovalRoutingDecision {
@@ -235,9 +269,22 @@ export function resolveActionApprovalRouting(args: ResolveActionApprovalRoutingA
 
   // The public Action API reports a created approval artifact to its caller;
   // it cannot retain an HTTP or server-relay request as the blocking waiter.
-  // Keep the action's required-result metadata for artifact/replay semantics,
-  // while the API surface owns the asynchronous handoff to a present user.
-  const flow = required && args.context?.surface === 'api'
+  // The present-user UI ordinarily has the same lifecycle shape: its mounted
+  // continuation follows the Artifact and consumes the replayed typed result,
+  // while the original invocation returns immediately. A live-only result is
+  // the deliberate exception: the exact invocation stays as the blocking
+  // waiter because its raw result must never become durable Artifact custody.
+  // Keep required-result metadata for replay/settlement, and leave Agent/CLI/
+  // MCP blocking callers unchanged.
+  const mustReturnApprovalCustody = args.spec.approvalResultCustody !== 'live_only'
+    && (
+      args.context?.surface === 'api'
+      || (
+        args.context?.surface === 'ui'
+        && args.context?.authority === 'present_user'
+      )
+    );
+  const flow = required && mustReturnApprovalCustody
     ? 'deferred'
     : resolveActionApprovalFlow(args.spec.approval);
 

@@ -47,6 +47,24 @@ describe('updates protocol automation payloads', () => {
         expect(parsed.attempt).toBe(2);
     });
 
+    it('accepts a machine-targeted direct Workflow Run invalidation without fabricating an Automation id', () => {
+        expect(UpdateBodySchema.parse({
+            t: 'automation-run-updated',
+            runId: 'workflow_run_1',
+            automationId: null,
+            state: 'running',
+            scheduledAt: 1,
+            updatedAt: 2,
+            machineId: 'machine_1',
+            attempt: 0,
+            targetMachineId: 'machine_1',
+            workflowControl: 'cancel_requested',
+        })).toMatchObject({
+            automationId: null,
+            workflowControl: 'cancel_requested',
+        });
+    });
+
     it('accepts every canonical Automation Run state in the legacy invalidation', () => {
         for (const state of AutomationRunStateV3Schema.options) {
             expect(UpdateBodySchema.safeParse({

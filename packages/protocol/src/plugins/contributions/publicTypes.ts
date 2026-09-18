@@ -26,6 +26,14 @@ export const PluginLocalizedStringV2Schema = z.union([
 ]);
 export type PluginLocalizedStringV2 = z.infer<typeof PluginLocalizedStringV2Schema>;
 
+// Markdown indentation and trailing spaces carry formatting semantics. Keep the
+// existing nonblank admission rule without transforming the authored content.
+const PluginMarkdownTextV2Schema = z.string().refine((value) => value.trim().length > 0);
+export const PluginLocalizedMarkdownV2Schema = z.union([
+  PluginMarkdownTextV2Schema,
+  z.object({ key: z.string().trim().min(1), fallback: PluginMarkdownTextV2Schema }).strict(),
+]);
+
 export const PluginContributionReferenceV2Schema = defineProtocolUnion([
   PluginContributionLocalIdSchema,
   defineProtocolObject({ pluginId: PluginIdSchema, localId: PluginContributionLocalIdSchema }, { policy: 'closed' }),

@@ -10,6 +10,7 @@ export const AUTH_ERROR_CODES = [
   'unsupported-provider',
   'signup-provider-disabled',
   'signup-disabled',
+  'account-disabled',
   'provider-required',
   'not-eligible',
   AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required,

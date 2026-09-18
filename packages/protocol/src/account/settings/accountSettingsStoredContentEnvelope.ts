@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { getAccountScopedBlobCiphertextBase64LengthV1 } from '../../crypto/accountScopedCipher.js';
-import { AccountSettingsPersistedObjectSchema } from './accountSettings.js';
+import { getAccountScopedBlobCiphertextBase64LengthV1 } from '../../crypto/accountScopedCipherEnvelope.js';
+import { AccountSettingsPersistedObjectSchema } from './accountSettingsPersistedObject.js';
 import { ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES } from './catalog/accountSettingBounds.js';
 
 const textEncoder = new TextEncoder();

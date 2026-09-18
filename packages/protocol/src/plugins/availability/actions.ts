@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
-import { PluginCollectionContractRefV1Schema } from '../data/collectionsV1.js';
+import { PluginCollectionContractRefV1Schema } from '../data/collectionContractRefV1.js';
 import { PluginIdSchema } from '../pluginId.js';
 import { PluginUiArtifactCompatibilityKeyV1Schema } from '../ui/artifactCompatibility.js';
 import { PluginUiArtifactDigestV1Schema } from '../ui/artifactIntegrity.js';
@@ -42,6 +42,7 @@ export const PLUGIN_AVAILABILITY_ACTION_IDS_V1 = Object.freeze([
   'account.plugins.availability.uiArtifact.browserFrame.issue',
   'account.plugins.availability.packageAsset.publish',
   'account.plugins.availability.packageAsset.read',
+  'account.plugins.availability.packageAsset.remove',
 ] as const);
 export const PluginAvailabilityActionIdV1Schema = z.enum(PLUGIN_AVAILABILITY_ACTION_IDS_V1);
 export type PluginAvailabilityActionIdV1 = z.infer<typeof PluginAvailabilityActionIdV1Schema>;
@@ -65,6 +66,7 @@ export const PluginAvailabilityActionHttpPathsV1 = Object.freeze({
   'account.plugins.availability.uiArtifact.browserFrame.issue': '/v1/plugins/availability/ui-artifacts/browser-frame/issue',
   'account.plugins.availability.packageAsset.publish': '/v1/plugins/availability/package-assets/publish',
   'account.plugins.availability.packageAsset.read': '/v1/plugins/availability/package-assets/read',
+  'account.plugins.availability.packageAsset.remove': '/v1/plugins/availability/package-assets/remove',
 } as const satisfies Readonly<Record<PluginAvailabilityActionIdV1, string>>);
 export type PluginAvailabilityActionHttpPathV1 =
   (typeof PluginAvailabilityActionHttpPathsV1)[PluginAvailabilityActionIdV1];
@@ -282,6 +284,19 @@ export const PluginAvailabilityPackageAssetReadActionOutputV1Schema = z.object({
 export type PluginAvailabilityPackageAssetReadActionOutputV1 =
   z.infer<typeof PluginAvailabilityPackageAssetReadActionOutputV1Schema>;
 
+export const PluginAvailabilityPackageAssetRemoveActionInputV1Schema = z.object({
+  release: PluginReleaseRefV1Schema,
+}).strict();
+export type PluginAvailabilityPackageAssetRemoveActionInputV1 =
+  z.infer<typeof PluginAvailabilityPackageAssetRemoveActionInputV1Schema>;
+
+export const PluginAvailabilityPackageAssetRemoveActionOutputV1Schema = z.object({
+  removed: z.literal(true),
+  link: PluginAccountPluginPackageAssetLinkV1Schema,
+}).strict();
+export type PluginAvailabilityPackageAssetRemoveActionOutputV1 =
+  z.infer<typeof PluginAvailabilityPackageAssetRemoveActionOutputV1Schema>;
+
 /**
  * The authenticated control-plane request names only the already-selected
  * Artifact. Availability derives its fixed generated-V2 path/CSP policy from
@@ -346,6 +361,7 @@ export const PluginAvailabilityActionInputSchemasV1: Readonly<
   'account.plugins.availability.uiArtifact.browserFrame.issue': PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1Schema,
   'account.plugins.availability.packageAsset.publish': PluginAvailabilityPackageAssetPublishActionInputV1Schema,
   'account.plugins.availability.packageAsset.read': PluginAvailabilityPackageAssetReadActionInputV1Schema,
+  'account.plugins.availability.packageAsset.remove': PluginAvailabilityPackageAssetRemoveActionInputV1Schema,
 });
 
 export const PluginAvailabilityActionOutputSchemasV1: Readonly<
@@ -364,4 +380,5 @@ export const PluginAvailabilityActionOutputSchemasV1: Readonly<
   'account.plugins.availability.uiArtifact.browserFrame.issue': PluginAvailabilityUiArtifactBrowserFrameIssueActionOutputV1Schema,
   'account.plugins.availability.packageAsset.publish': PluginAvailabilityPackageAssetPublishActionOutputV1Schema,
   'account.plugins.availability.packageAsset.read': PluginAvailabilityPackageAssetReadActionOutputV1Schema,
+  'account.plugins.availability.packageAsset.remove': PluginAvailabilityPackageAssetRemoveActionOutputV1Schema,
 });

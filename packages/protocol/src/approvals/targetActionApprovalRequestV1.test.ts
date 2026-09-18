@@ -29,20 +29,40 @@ describe('TargetActionApprovalRequestV1Schema', () => {
     };
 
     expect(() => TargetActionApprovalRequestV1Schema.parse(request)).toThrow();
-    expect(TargetActionApprovalRequestV1Schema.parse({
+    const admitted = TargetActionApprovalRequestV1Schema.parse({
       ...request,
       replayPlacement: {
         serverId: 'server-1',
         machineId: 'machine-1',
         defaultSessionId: 'session-1',
       },
-    })).toMatchObject({
+      executionOriginV1: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'api',
+        caller: { kind: 'host' },
+        serverId: 'server-1',
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+        machineId: 'machine-1',
+        sessionId: 'session-1',
+        actionId: 'action.invoke',
+        requestId: 'request-1',
+      },
+    });
+    expect(admitted).toMatchObject({
       replayPlacement: {
         serverId: 'server-1',
         machineId: 'machine-1',
         defaultSessionId: 'session-1',
       },
+      executionOriginV1: expect.objectContaining({ actionId: 'action.invoke' }),
     });
+    expect(TargetActionApprovalRequestV1Schema.safeParse({
+      ...admitted,
+      executionOriginV1: { ...admitted.executionOriginV1!, machineId: 'other-machine' },
+    }).success).toBe(false);
   });
 
   it('retains bounded host-rendered confirmation detail in the durable subject', () => {
@@ -71,5 +91,15 @@ describe('TargetActionApprovalRequestV1Schema', () => {
     expect(() => TargetActionApprovalRequestV1Schema.parse({
       ...request, status: 'approved', decision: { kind: 'approve', decidedAtMs: 2, hidden: undefined },
     })).toThrow();
+    // Target Action approval is unreleased WIP and uses a durable effect claim.
+    expect(TargetActionApprovalRequestV1Schema.safeParse({
+      ...request, status: 'executing', decision: { kind: 'approve', decidedAtMs: 2 },
+    }).success).toBe(true);
+    expect(TargetActionApprovalRequestV1Schema.safeParse({
+      ...request,
+      status: 'executing',
+      decision: { kind: 'approve', decidedAtMs: 2 },
+      execution: { executedAtMs: 2, ok: true },
+    }).success).toBe(false);
   });
 });

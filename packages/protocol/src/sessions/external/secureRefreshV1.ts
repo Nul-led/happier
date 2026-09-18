@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema } from '../idsV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { AgentExternalSessionTranscriptRawRecordSchema } from '../messages/agentExternalSessionTranscriptRawRecord.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
 import {
@@ -14,7 +15,8 @@ export const EXTERNAL_SESSION_TRANSCRIPT_INVALIDATION_EVENT_V1 =
 
 const ExternalSessionRefreshMachineIdV1Schema = z.string().trim().min(1).max(256);
 const ExternalSessionRefreshGenerationV1Schema = z.string().trim().min(1).max(256);
-const ExternalSessionRefreshRemoteSessionIdV1Schema = z.string().trim().min(1).max(2_000);
+/** Agent-minted: presence decided by the opaque-identifier owner, bytes kept. */
+const ExternalSessionRefreshRemoteSessionIdV1Schema = NonBlankOpaqueIdentifierSchema.max(2_000);
 export const ExternalSessionRefreshCursorV1Schema = z.string()
   .trim()
   .min(1)
@@ -87,6 +89,21 @@ export const ExternalSessionTranscriptInvalidationV1Schema = z.object({
 }).strict();
 export type ExternalSessionTranscriptInvalidationV1 = z.infer<
   typeof ExternalSessionTranscriptInvalidationV1Schema
+>;
+
+export const EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1 =
+  'external-session-source-unavailable' as const;
+
+/** Content-free committed Follow-status transition emitted by its exact source Machine. */
+export const ExternalSessionSourceUnavailableOccurrenceV1Schema = z.object({
+  v: z.literal(1),
+  type: z.literal(EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1),
+  sessionId: z.string().trim().min(1),
+  machineId: z.string().trim().min(1),
+  observedAtMs: z.number().int().nonnegative(),
+}).strict();
+export type ExternalSessionSourceUnavailableOccurrenceV1 = z.infer<
+  typeof ExternalSessionSourceUnavailableOccurrenceV1Schema
 >;
 
 /**

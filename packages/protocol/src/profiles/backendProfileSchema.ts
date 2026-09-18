@@ -114,7 +114,7 @@ export const SavedSecretSchema = z.object({
   createdAt: z.number().default(() => Date.now()),
   updatedAt: z.number().default(() => Date.now()),
 }).refine((key) => {
-  const hasValue = typeof key.encryptedValue.value === 'string' && key.encryptedValue.value.trim().length > 0;
+  const hasValue = typeof key.encryptedValue.value === 'string' && key.encryptedValue.value.length > 0;
   const hasEnc = Boolean(
     key.encryptedValue.encryptedValue
       && typeof key.encryptedValue.encryptedValue.c === 'string'

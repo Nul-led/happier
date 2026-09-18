@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { OperationUpdateRequiredV1Schema } from '../compat/operationUpdateRequiredV1.js';
 
 import {
   CONNECTED_SERVICE_UX_DIAGNOSTIC_ACTIONS,
@@ -33,6 +34,12 @@ export const SPAWN_SESSION_ERROR_CODES = {
   SPAWN_FAILED: 'SPAWN_FAILED',
   ACCOUNT_SCOPE_CHANGED: 'ACCOUNT_SCOPE_CHANGED',
   DAEMON_RPC_UNAVAILABLE: 'DAEMON_RPC_UNAVAILABLE',
+  SESSION_INITIAL_ACCESS_NOT_AUTHENTICATED: 'not_authenticated',
+  SESSION_INITIAL_ACCESS_RECIPIENT_KEY_UNAVAILABLE: 'recipient_key_unavailable',
+  SESSION_INITIAL_ACCESS_INVALID_RECIPIENT_ENVELOPE: 'session_access_invalid_recipient_envelope',
+  SESSION_INITIAL_ACCESS_REQUEST_FAILED: 'session_access_request_failed',
+  SESSION_INITIAL_ACCESS_SUBJECT_NOT_FOUND: 'session_access_subject_not_found',
+  SESSION_INITIAL_ACCESS_DATA_KEY_UNAVAILABLE: 'session_data_key_unavailable',
   UNEXPECTED: 'UNEXPECTED',
 } as const;
 
@@ -51,6 +58,12 @@ export const SpawnSessionErrorCodeSchema = z.enum([
   SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
   SPAWN_SESSION_ERROR_CODES.ACCOUNT_SCOPE_CHANGED,
   SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_NOT_AUTHENTICATED,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_RECIPIENT_KEY_UNAVAILABLE,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_INVALID_RECIPIENT_ENVELOPE,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_REQUEST_FAILED,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_SUBJECT_NOT_FOUND,
+  SPAWN_SESSION_ERROR_CODES.SESSION_INITIAL_ACCESS_DATA_KEY_UNAVAILABLE,
   SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
 ]);
 
@@ -93,6 +106,8 @@ export const SPAWN_SESSION_ERROR_DETAIL_KINDS = {
    * placement and must terminate the losing creation attempt.
    */
   SESSION_CREATION_CORRESPONDENCE_CONFLICT: 'session_creation_correspondence_conflict',
+  /** A strict no-effect initial-access refusal requiring a newer server or daemon. */
+  SESSION_INITIAL_ACCESS_UPDATE_REQUIRED: 'update_required',
 } as const;
 
 export type SpawnSessionErrorDetailKind =
@@ -153,10 +168,15 @@ export type SessionCreationCorrespondenceConflictSpawnErrorDetail = z.infer<
   typeof SessionCreationCorrespondenceConflictSpawnErrorDetailSchema
 >;
 
-/** The only two exact server/API terminal creation refusals carried to a daemon spawn waiter. */
+/** Exact no-effect creation refusals carried to a daemon spawn waiter. */
 export const SessionCreationTerminalSpawnErrorDetailSchema = z.union([
   SessionCreationOrganizationInvalidSpawnErrorDetailSchema,
   SessionCreationCorrespondenceConflictSpawnErrorDetailSchema,
+  OperationUpdateRequiredV1Schema.extend({
+    operation: z.literal('session.spawn_new'),
+    component: z.enum(['server', 'daemon']),
+    reason: z.literal('session_initial_access_update_required'),
+  }),
 ]);
 export type SessionCreationTerminalSpawnErrorDetail = z.infer<
   typeof SessionCreationTerminalSpawnErrorDetailSchema
@@ -419,8 +439,7 @@ export function isSessionCreationCorrespondenceConflictSpawnErrorDetail(
 export function isSessionCreationTerminalSpawnErrorDetail(
   value: unknown,
 ): value is SessionCreationTerminalSpawnErrorDetail {
-  return isSessionCreationOrganizationInvalidSpawnErrorDetail(value)
-    || isSessionCreationCorrespondenceConflictSpawnErrorDetail(value);
+  return SessionCreationTerminalSpawnErrorDetailSchema.safeParse(value).success;
 }
 
 export function isSpawnSessionErrorDetail(value: unknown): value is SpawnSessionErrorDetail {
@@ -436,8 +455,7 @@ export function normalizeSpawnSessionErrorDetail(value: unknown): SpawnSessionEr
   return normalizeConnectedServiceResumeUnreachableDetail(detail)
     ?? normalizeConnectedServiceUxDiagnosticDetail(detail)
     ?? normalizeProviderSpawnErrorDetail(detail)
-    ?? normalizeSessionCreationOrganizationInvalidSpawnErrorDetail(detail)
-    ?? normalizeSessionCreationCorrespondenceConflictSpawnErrorDetail(detail);
+    ?? SessionCreationTerminalSpawnErrorDetailSchema.safeParse(detail).data;
 }
 
 export type SpawnSessionResult =

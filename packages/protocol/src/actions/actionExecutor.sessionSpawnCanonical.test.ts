@@ -27,7 +27,96 @@ const apiSpawnInput = {
   },
 } as const;
 
+function createExternalSpawnApprovalContext(requestId: string) {
+  const target = { kind: 'machine' as const, machineId: 'machine-host' };
+  const credentialId = '11111111-1111-4111-8111-111111111111';
+  return {
+    surface: 'api' as const,
+    authority: 'account_automation' as const,
+    actionCaller: { kind: 'host' as const },
+    serverId: 'server-host',
+    actionRequestId: requestId,
+    externalActionCredential: { accountId: 'account-1', principalId: 'account-1', credentialId },
+    externalActionTarget: target,
+    externalActionExecutionAuthorization: {
+      v: 1 as const,
+      token: 'opaque-authorization',
+      binding: {
+        serverIdentityId: 'stable-home-1',
+        accountId: 'account-1',
+        principalId: 'account-1',
+        credentialId,
+        machineId: target.machineId,
+        actionId: 'session.spawn_new' as const,
+        requestId,
+        requestEnvelopeDigest: 'a'.repeat(43),
+        target,
+      },
+    },
+    signExternalActionApprovalInput: () => 'a'.repeat(86),
+  };
+}
+
 describe('session.spawn_new canonical execution', () => {
+  it('signs the exact materialized API spawn input persisted for deferred replay', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval-api-spawn' }));
+    const signExternalActionApprovalInput = vi.fn(() => 'a'.repeat(86));
+    const executor = createActionExecutor({
+      approvalsCreate,
+      sessionSpawnNew: vi.fn(),
+      isActionApprovalRequired: () => true,
+    } as unknown as ActionExecutorDeps);
+    const { creationKey: _creationKey, ...input } = apiSpawnInput;
+    const target = { kind: 'machine' as const, machineId: 'machine-1' };
+
+    const result = await executor.execute('session.spawn_new', input, {
+      surface: 'api',
+      authority: 'account_automation',
+      serverId: 'server-1',
+      actionRequestId: 'spawn-request-1',
+      actionCaller: { kind: 'host' },
+      externalActionCredential: {
+        accountId: 'account-1',
+        principalId: 'account-1',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+      },
+      externalActionTarget: target,
+      externalActionExecutionAuthorization: {
+        v: 1,
+        token: 'opaque-authorization',
+        binding: {
+          serverIdentityId: 'stable-home-1',
+          accountId: 'account-1',
+          principalId: 'account-1',
+          credentialId: '11111111-1111-4111-8111-111111111111',
+          machineId: 'machine-1',
+          actionId: 'session.spawn_new',
+          requestId: 'spawn-request-1',
+          requestEnvelopeDigest: 'a'.repeat(43),
+          target,
+        },
+      },
+      signExternalActionApprovalInput,
+    });
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        kind: 'approval_request_created',
+        artifactId: 'approval-api-spawn',
+        actionId: 'session.spawn_new',
+      },
+    });
+
+    const persistedRequest = approvalsCreate.mock.calls[0]?.[0].request;
+    expect(persistedRequest.actionArgs).toMatchObject({
+      creationKey: 'action-request:spawn-request-1',
+    });
+    expect(signExternalActionApprovalInput).toHaveBeenCalledWith(expect.objectContaining({
+      actionId: 'session.spawn_new',
+      input: persistedRequest.actionArgs,
+    }));
+  });
+
   it('enforces the live Agent spawn policy before creating an approval artifact', async () => {
     const approvalsCreate = vi.fn();
     const sessionSpawnNew = vi.fn();
@@ -274,18 +363,17 @@ describe('session.spawn_new canonical execution', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
       isActionApprovalRequired: (actionId, context) => (
         actionId === 'session.spawn_new' && context.surface === 'api'
       ),
     } as unknown as ActionExecutorDeps);
 
-    await expect(executor.execute('session.spawn_new', apiSpawnInput, {
-      surface: 'api',
-      authority: 'present_user',
-      actionCaller: { kind: 'host' },
-      serverId: 'server-host',
-      externalActionTarget: { kind: 'machine', machineId: 'machine-host' },
-    })).resolves.toMatchObject({
+    await expect(executor.execute(
+      'session.spawn_new',
+      apiSpawnInput,
+      createExternalSpawnApprovalContext('api-spawn-approval-1'),
+    )).resolves.toMatchObject({
       ok: true,
       result: { kind: 'approval_request_created', artifactId: 'approval-api-spawn-1' },
     });
@@ -326,20 +414,18 @@ describe('session.spawn_new canonical execution', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
       isActionApprovalRequired: (actionId, context) => (
         actionId === 'session.spawn_new' && context.surface === 'api'
       ),
     } as unknown as ActionExecutorDeps);
     const { creationKey: _creationKey, ...apiInputWithoutCreationKey } = apiSpawnInput;
 
-    await expect(executor.execute('session.spawn_new', apiInputWithoutCreationKey, {
-      surface: 'api',
-      authority: 'present_user',
-      actionCaller: { kind: 'host' },
-      serverId: 'server-host',
-      externalActionTarget: { kind: 'machine', machineId: 'machine-host' },
-      actionRequestId: 'api-request-identity-7',
-    })).resolves.toMatchObject({
+    await expect(executor.execute(
+      'session.spawn_new',
+      apiInputWithoutCreationKey,
+      createExternalSpawnApprovalContext('api-request-identity-7'),
+    )).resolves.toMatchObject({
       ok: true,
       result: { kind: 'approval_request_created', artifactId: 'approval-api-request-id-spawn-1' },
     });
@@ -386,6 +472,7 @@ describe('session.spawn_new canonical execution', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
     } as unknown as ActionExecutorDeps);
     const { creationKey: _creationKey, ...inputWithoutCreationKey } = canonicalInput;
 
@@ -705,7 +792,7 @@ describe('session.spawn_new canonical execution', () => {
     expect(sessionSpawnNew).not.toHaveBeenCalled();
   });
 
-  it('replays a provenance-pinned predecessor approval only through the host normalizer', async () => {
+  it('reads but never replays a provenance-pinned predecessor approval', async () => {
     const sessionSpawnNew = vi.fn(async () => ({
       type: 'pending' as const,
       retryWithSameCreationKey: true as const,
@@ -737,19 +824,11 @@ describe('session.spawn_new canonical execution', () => {
       persistedApproval = request;
       return { ok: true as const };
     });
-    const normalizeSessionSpawnNewLegacyApprovalReplay = vi.fn(async () => ({
-      input: {
-        ...canonicalInput,
-        creationKey: 'approval-artifact:approval-remote-dev-1',
-        initialInput: { text: predecessorActionArgs.prompt },
-      },
-      legacyMetadataLabel: predecessorActionArgs.tag,
-    }));
     const executor = createActionExecutor({
       sessionSpawnNew,
       approvalsGet,
       approvalsUpdate,
-      normalizeSessionSpawnNewLegacyApprovalReplay,
+      isApprovalExecutionOriginCurrent: async () => true,
     } as unknown as ActionExecutorDeps);
 
     const decisionResult = await executor.execute('approval.request.decide', {
@@ -758,31 +837,21 @@ describe('session.spawn_new canonical execution', () => {
     }, { surface: 'cli', authority: 'present_user' });
 
     expect(decisionResult.ok).toBe(true);
-    expect(normalizeSessionSpawnNewLegacyApprovalReplay).toHaveBeenCalledWith(expect.objectContaining({
-      artifactId: 'approval-remote-dev-1',
-      serverId: 'server-1',
-      request: expect.objectContaining({ actionArgs: predecessorActionArgs }),
-    }));
-    expect(sessionSpawnNew).toHaveBeenCalledWith(expect.objectContaining({
-      creationKey: 'approval-artifact:approval-remote-dev-1',
-      legacyMetadataLabel: 'predecessor metadata label',
-      sessionCreationTag: deriveSessionCreationTagV1({
-        callerCreationNamespace: 'user',
-        creationKey: 'approval-artifact:approval-remote-dev-1',
-      }),
-    }));
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+    expect(persistedApproval).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'approval_stale' },
+    });
   });
 
-  it('does not invoke the approval replay normalizer for a live canonical Action', async () => {
+  it('executes a live canonical Action without a legacy approval compatibility path', async () => {
     const sessionSpawnNew = vi.fn(async () => ({
       type: 'pending' as const,
       retryWithSameCreationKey: true as const,
       outcome: 'accepted' as const,
     }));
-    const normalizeSessionSpawnNewLegacyApprovalReplay = vi.fn(async () => null);
     const executor = createActionExecutor({
       sessionSpawnNew,
-      normalizeSessionSpawnNewLegacyApprovalReplay,
     } as unknown as ActionExecutorDeps);
 
     const result = await executor.execute('session.spawn_new', {
@@ -797,7 +866,6 @@ describe('session.spawn_new canonical execution', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(normalizeSessionSpawnNewLegacyApprovalReplay).not.toHaveBeenCalled();
   });
 
   it('does not expose an unsupported legacy approval artifact to Session-spawn observers', async () => {
@@ -830,12 +898,10 @@ describe('session.spawn_new canonical execution', () => {
       persistedApproval = request;
       return { ok: true as const };
     });
-    const normalizeSessionSpawnNewLegacyApprovalReplay = vi.fn(async () => null);
     const executor = createActionExecutor({
       sessionSpawnNew,
       approvalsGet,
       approvalsUpdate,
-      normalizeSessionSpawnNewLegacyApprovalReplay,
       observeActionExecution,
     } as unknown as ActionExecutorDeps);
 
@@ -845,7 +911,6 @@ describe('session.spawn_new canonical execution', () => {
     }, { surface: 'cli', authority: 'present_user' });
 
     expect(result.ok).toBe(true);
-    expect(normalizeSessionSpawnNewLegacyApprovalReplay).toHaveBeenCalledOnce();
     expect(sessionSpawnNew).not.toHaveBeenCalled();
     expect(observeActionExecution).not.toHaveBeenCalledWith(expect.objectContaining({
       actionId: 'session.spawn_new',
@@ -853,7 +918,7 @@ describe('session.spawn_new canonical execution', () => {
     }));
     expect(persistedApproval).toMatchObject({
       status: 'failed',
-      execution: { ok: false, errorCode: 'invalid_parameters' },
+      execution: { ok: false, errorCode: 'approval_stale' },
     });
   });
 
@@ -888,6 +953,7 @@ describe('session.spawn_new canonical execution', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
     } as unknown as ActionExecutorDeps);
 
     await expect(executor.execute('session.spawn_new', canonicalInput, {
@@ -920,25 +986,15 @@ describe('session.spawn_new canonical execution', () => {
     }));
   });
 
-  it('forwards a UI directory-approval replay to the exact target Action owner before it mutates the artifact', async () => {
+  it('does not forward a legacy V1 directory approval to the target Action owner', async () => {
     const directoryApproval = {
       v: 1 as const,
       executionTarget: canonicalInput.executionTarget,
       directory: canonicalInput.directory,
     };
-    const targetDecisionResult = {
-      ok: true,
-      status: 'executed',
-      execution: {
-        executedAtMs: 3,
-        ok: true,
-        result: { type: 'pending', retryWithSameCreationKey: true, outcome: 'accepted' },
-      },
-    };
     const sessionSpawnNew = vi.fn(async () => {
       throw new Error('ui_must_not_forward_directory_approval_as_spawn_input');
     });
-    const sessionSpawnNewDirectoryApprovalReplay = vi.fn(async () => targetDecisionResult);
     let persistedApproval: Record<string, unknown> = {
       v: 1,
       status: 'open',
@@ -959,7 +1015,6 @@ describe('session.spawn_new canonical execution', () => {
     });
     const executor = createActionExecutor({
       sessionSpawnNew,
-      sessionSpawnNewDirectoryApprovalReplay,
       approvalsGet,
       approvalsUpdate,
     } as unknown as ActionExecutorDeps);
@@ -973,16 +1028,17 @@ describe('session.spawn_new canonical execution', () => {
       authority: 'present_user',
       serverId: canonicalInput.executionTarget.serverId,
       signal: controller.signal,
-    })).resolves.toEqual({ ok: true, result: targetDecisionResult });
-
-    expect(sessionSpawnNewDirectoryApprovalReplay).toHaveBeenCalledExactlyOnceWith({
-      artifactId: 'approval-directory-target-1',
-      executionTarget: canonicalInput.executionTarget,
-      signal: controller.signal,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } },
     });
+
     expect(sessionSpawnNew).not.toHaveBeenCalled();
-    expect(approvalsUpdate).not.toHaveBeenCalled();
-    expect(persistedApproval).toMatchObject({ status: 'open' });
+    expect(approvalsUpdate).toHaveBeenCalledTimes(2);
+    expect(persistedApproval).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'approval_stale' },
+    });
   });
 
   it('lets the canonical target-action approval owner claim a decision before generic Artifact handling', async () => {

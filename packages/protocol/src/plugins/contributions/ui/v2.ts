@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PluginInvocableActionIdSchema } from '../../../actions/pluginActionSurface.js';
 import { asProtocolZod } from "../../actions/internalProtocolZodAdapter.js";
 
 import { PluginContributionLocalIdSchema } from '../../contributionIdentity.js';
@@ -21,15 +22,20 @@ import {
   PluginContributionReferenceV2Schema,
   PluginJsonValueV2Schema,
   PluginLocalizedStringV2Schema,
+  PluginLocalizedMarkdownV2Schema,
   type PluginLocalizedStringV2,
 } from '../publicTypes.js';
 import {
   PluginUiDestinationInstancePolicyV1Schema,
   PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1,
   PLUGIN_UI_INLINE_SURFACE_SLOTS_V1,
+  isPluginUiAuthoredViewInlineSurfaceRoleV1,
+  type PluginUiAuthoredViewInlineSurfaceRoleV1,
   type PluginUiDestinationInstancePolicyV1,
 } from './surfaceRegistry.js';
 import { preflightPluginDeclarativeDocumentV1 } from './declarativeDocumentPreflightV1.js';
+import { PluginHostedHtmlSourceV1Schema } from './hostedHtmlSourceV1.js';
+import { PluginUiHostedHtmlRequestedCapabilitiesV1Schema } from './hostedHtmlCapabilitiesV1.js';
 import {
   PluginUiPageHeaderActionV1Schema,
   type PluginUiPageHeaderActionV1,
@@ -109,7 +115,7 @@ export type PluginDeclarativeMetadataEntryV2 = z.infer<typeof PluginDeclarativeM
  * `stack` and `group` stay free-form — that is what they are for.
  */
 /**
- * The only declarative mutation that is not a contributed Action. The mounted
+ * The declarative Composer mutation uses an explicit effect. The mounted
  * host supplies the Composer ref; author data can name only the exact CAS
  * transaction it wants applied through the incumbent Composer owner.
  */
@@ -122,16 +128,18 @@ export type PluginDeclarativeComposerApplyEffectV1 =
 const DeclarativeActionNodeSchema = z.object({
   kind: z.literal('action'),
   action: asProtocolZod(PluginContributionReferenceV2Schema).optional(),
+  /** A request only: the mounted source adapter supplies current caller and Action policy. */
+  hostAction: z.lazy(() => PluginInvocableActionIdSchema).optional(),
   effect: PluginDeclarativeComposerApplyEffectV1Schema.optional(),
   label: PluginLocalizedStringV2Schema,
   variant: PluginDeclarativeActionVariantV2Schema.optional(),
   input: PluginJsonValueV2Schema.optional(),
 }).strict().superRefine((node, ctx) => {
-  if ((node.action === undefined) === (node.effect === undefined)) {
+  if ([node.action, node.hostAction, node.effect].filter((value) => value !== undefined).length !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['action'],
-      message: 'A declarative action must name exactly one Action or effect.',
+      message: 'A declarative action must name exactly one contributed Action, host Action, or effect.',
     });
   }
   if (node.effect !== undefined && node.input !== undefined) {
@@ -276,7 +284,7 @@ export type PluginDeclarativeNodeV2 =
 
 export const PluginDeclarativeNodeV2Schema: z.ZodType<PluginDeclarativeNodeV2> = z.lazy(() => z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('text'), text: PluginLocalizedStringV2Schema, tone: PluginDeclarativeToneV2Schema.optional() }).strict(),
-  z.object({ kind: z.literal('markdown'), text: PluginLocalizedStringV2Schema }).strict(),
+  z.object({ kind: z.literal('markdown'), text: PluginLocalizedMarkdownV2Schema }).strict(),
   z.object({ kind: z.literal('stack'), direction: z.enum(['vertical', 'horizontal']).optional(), gap: z.enum(['small', 'medium', 'large']).optional(), children: z.array(PluginDeclarativeNodeV2Schema) }).strict(),
   z.object({ kind: z.literal('group'), title: PluginLocalizedStringV2Schema.optional(), description: PluginLocalizedStringV2Schema.optional(), children: z.array(PluginDeclarativeNodeV2Schema) }).strict(),
   z.object({ kind: z.literal('field'), label: PluginLocalizedStringV2Schema, description: PluginLocalizedStringV2Schema.optional(), control: PluginDeclarativeControlV2Schema }).strict(),
@@ -322,6 +330,10 @@ export const PluginDeclarativeDocumentSourceV1Schema = z.object({
 export type PluginDeclarativeDocumentSourceV1 = z.infer<typeof PluginDeclarativeDocumentSourceV1Schema>;
 
 export const PluginUiRendererV2Schema = z.discriminatedUnion('kind', [
+  // Only the self-contained by-value document declares requested capabilities:
+  // an Artifact-backed or host-rendered renderer resolves its reach through the
+  // installed plugin's own manifest and grants.
+  z.object({ id: asProtocolZod(PluginContributionLocalIdSchema), kind: z.literal('hostedHtml'), source: PluginHostedHtmlSourceV1Schema, requiredHostMethods: RequiredMethodsSchema, requestedCapabilities: PluginUiHostedHtmlRequestedCapabilitiesV1Schema.optional() }).strict(),
   z.object({ id: asProtocolZod(PluginContributionLocalIdSchema), kind: z.literal('reactNative'), artifact: asProtocolZod(PluginContributionLocalIdSchema), requiredHostMethods: RequiredMethodsSchema }).strict(),
   z.object({ id: asProtocolZod(PluginContributionLocalIdSchema), kind: z.literal('hostedWeb'), source: z.object({ kind: z.literal('artifact'), artifact: asProtocolZod(PluginContributionLocalIdSchema) }).strict(), requiredHostMethods: RequiredMethodsSchema }).strict(),
   z.object({ id: asProtocolZod(PluginContributionLocalIdSchema), kind: z.literal('declarative'), root: PluginDeclarativeRendererRootV2Schema, documentSource: PluginDeclarativeDocumentSourceV1Schema.optional() }).strict(),
@@ -445,7 +457,7 @@ function createPluginUiViewBindingSchemaV2() {
       target: PluginUiViewTargetSchemaByKindV1[slot.targetKind],
     }).strict());
   const inlineVariants = Object.values(PLUGIN_UI_INLINE_SURFACE_SLOTS_V1)
-    .filter((slot) => slot.role !== 'sessionInfoSection')
+    .filter((slot) => isPluginUiAuthoredViewInlineSurfaceRoleV1(slot.role))
     .map((slot) => z.object({
       ...PluginUiViewInlineCommonShapeV2,
       container: z.literal(slot.role),
@@ -502,10 +514,8 @@ export type PluginUiViewDestinationBindingInputV2 = {
     Readonly<{ container: 'settingsPage' }>
   > as `${TSlot['container']}:${TSlot['targetKind']}`]: TSlot;
 }];
-type PluginUiViewInlineSlotV1 = Exclude<
-  typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[keyof typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1],
-  Readonly<{ role: 'sessionInfoSection' }>
->;
+type PluginUiViewInlineSlotV1 =
+  typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[PluginUiAuthoredViewInlineSurfaceRoleV1];
 export type PluginUiViewInlineBindingInputV2 = {
   [TSlot in PluginUiViewInlineSlotV1 as TSlot['role']]: Readonly<{
     container: TSlot['role'];

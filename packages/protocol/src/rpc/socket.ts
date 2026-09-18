@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { SocketRpcAuthorizationContext } from './index.js';
+import type { ExternalActionMachineRpcExecutionV1 } from '../actions/externalActionApi.js';
 
 export const SOCKET_RPC_EVENTS = {
   REGISTER: 'rpc-register',
@@ -40,6 +41,7 @@ export type SocketRpcRequestPayload = Readonly<{
    */
   requestId?: string;
   authorization?: SocketRpcAuthorizationContext;
+  externalActionExecution?: ExternalActionMachineRpcExecutionV1;
   timeoutMs?: number;
   transportResponseEnvelopeVersion?: typeof SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1;
 }>;

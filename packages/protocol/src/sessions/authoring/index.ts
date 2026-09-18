@@ -4,6 +4,7 @@ import { buildSessionAuthoringFieldArtifacts } from './buildFieldArtifacts.js';
 import { SESSION_AUTHORING_CONTEXT_KINDS } from './contextKinds.js';
 import {
   SESSION_AUTHORING_FIELD_CATALOG,
+  SessionAuthoringExecutionTargetV2Schema,
   SessionAuthoringAutomationV1Schema,
   SyncedSessionAuthoringConnectedServicesV1Schema,
   SyncedSessionAuthoringTerminalV1Schema,
@@ -38,10 +39,15 @@ export {
 } from './buildFieldArtifacts.js';
 export {
   SESSION_AUTHORING_FIELD_CATALOG,
+  SessionAuthoringExecutionTargetV2Schema,
   SessionAuthoringAutomationV1Schema,
   SyncedSessionAuthoringConnectedServicesV1Schema,
   SyncedSessionAuthoringTerminalV1Schema,
 } from './fieldCatalog.js';
+export type { SessionAuthoringExecutionTargetV2, TemporaryComputerActivationRefV1 } from './fieldCatalog.js';
+export { TemporaryComputerWorkspaceV1Schema } from './temporaryComputerWorkspaceV1.js';
+export type { TemporaryComputerWorkspaceV1 } from './temporaryComputerWorkspaceV1.js';
+export { TemporaryComputerActivationRefV1Schema } from './fieldCatalog.js';
 export {
   SessionAuthoringCheckoutCreationDraftV1Schema,
   SessionAuthoringTerminalV1Schema,
@@ -57,15 +63,25 @@ export type SessionAuthoringFieldId = keyof typeof SESSION_AUTHORING_FIELD_CATAL
 
 export const SESSION_AUTHORING_FIELD_DESCRIPTORS = SESSION_AUTHORING_FIELD_ARTIFACTS.definitions;
 export const SessionAuthoringValueV1Schema = SESSION_AUTHORING_FIELD_ARTIFACTS.valueSchema;
-export const SYNCED_SESSION_AUTHORING_FIELD_IDS_V1 = Object.freeze(
+export const SYNCED_SESSION_AUTHORING_FIELD_IDS_V2 = Object.freeze(
   SESSION_AUTHORING_FIELD_ARTIFACTS.syncedFieldIds,
 );
-export type SyncedSessionAuthoringFieldIdV1 = (typeof SYNCED_SESSION_AUTHORING_FIELD_IDS_V1)[number];
-export const SyncedSessionAuthoringFieldIdV1Schema = z.enum(
-  SYNCED_SESSION_AUTHORING_FIELD_IDS_V1 as [SyncedSessionAuthoringFieldIdV1, ...SyncedSessionAuthoringFieldIdV1[]],
+export type SyncedSessionAuthoringFieldIdV2 = (typeof SYNCED_SESSION_AUTHORING_FIELD_IDS_V2)[number];
+export const SyncedSessionAuthoringFieldIdV2Schema = z.enum(
+  SYNCED_SESSION_AUTHORING_FIELD_IDS_V2 as [SyncedSessionAuthoringFieldIdV2, ...SyncedSessionAuthoringFieldIdV2[]],
 );
-export const SyncedSessionAuthoringValueV1Schema = SESSION_AUTHORING_FIELD_ARTIFACTS.syncedValueSchema;
-export type SyncedSessionAuthoringValueV1 = typeof SyncedSessionAuthoringValueV1Schema['_output'];
+export const SyncedSessionAuthoringValueV2Schema = SESSION_AUTHORING_FIELD_ARTIFACTS.syncedValueSchema;
+export type SyncedSessionAuthoringValueV2 = typeof SyncedSessionAuthoringValueV2Schema['_output'];
+
+export {
+  SYNCED_SESSION_AUTHORING_FIELD_IDS_V1,
+  SyncedSessionAuthoringFieldIdV1Schema,
+  SyncedSessionAuthoringValueV1Schema,
+} from './syncedSessionAuthoringV1.js';
+export type {
+  SyncedSessionAuthoringFieldIdV1,
+  SyncedSessionAuthoringValueV1,
+} from './syncedSessionAuthoringV1.js';
 export type SessionAuthoringValueV1 = typeof SessionAuthoringValueV1Schema['_output'];
 export type SessionAuthoringAutomationV1 = typeof SessionAuthoringAutomationV1Schema['_output'];
 export type SessionAuthoringCheckoutCreationDraftV1 = typeof SessionAuthoringCheckoutCreationDraftV1Schema['_output'];

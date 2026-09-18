@@ -13,6 +13,7 @@ import {
   PluginAgentExternalSessionLinkDataSchema,
   type PluginAgentExternalSessionLinkData,
 } from '../../plugins/contributions/agentExternalSessions.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 
 type ExternalSessionWhenDeclaration = Readonly<{ field: string; equals: string }>;
 type ExternalSessionSchemaFieldDeclaration = Readonly<{
@@ -236,13 +237,13 @@ export const ExternalSessionSourceIdSchema = z.string()
   );
 export type ExternalSessionSourceId = z.infer<typeof ExternalSessionSourceIdSchema>;
 
-const ExternalSessionRemoteSessionIdSchema = z.string()
-  .min(1)
-  .max(2_000)
-  .refine(
-    (value) => value === value.trim(),
-    'External-session remote Session id must already be trimmed.',
-  );
+/**
+ * The Agent mints this id and Happier only ever hands it back, so presence is
+ * decided by the opaque-identifier owner and the released 2,000-code-unit
+ * bound is measured on the preserved bytes rather than on a trimmed
+ * projection of them.
+ */
+const ExternalSessionRemoteSessionIdSchema = NonBlankOpaqueIdentifierSchema.max(2_000);
 
 export const ExternalSessionRefSchema = z.object({
   agentId: ExternalSessionAgentIdSchema,

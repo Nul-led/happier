@@ -6,31 +6,48 @@ import { describe, expect, it } from 'vitest';
 
 // This test intentionally pays the full startup cost of a fresh `node --import tsx` process.
 // Keep ample headroom so full-suite lane contention does not look like an import-cycle regression.
-const EXECUTION_RUNS_IMPORT_TIMEOUT_MS = 60_000;
+const MODULE_IMPORT_TIMEOUT_MS = 60_000;
+
+function importInFreshProcess(relativeEntryPath: string): ReturnType<typeof spawnSync> {
+  const entryUrl = pathToFileURL(path.join(__dirname, relativeEntryPath)).href;
+  const script = `import(${JSON.stringify(entryUrl)})`;
+
+  return spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    timeout: MODULE_IMPORT_TIMEOUT_MS,
+  });
+}
+
+function expectSuccessfulImport(result: ReturnType<typeof spawnSync>): void {
+  const diagnostics = [
+    `status=${String(result.status)}`,
+    `signal=${String(result.signal)}`,
+    `error=${result.error ? result.error.message : 'none'}`,
+    `stderr=${result.stderr?.trim() || '<empty>'}`,
+  ].join('\n');
+
+  expect(result.error, diagnostics).toBeUndefined();
+  expect(result.signal, diagnostics).toBeNull();
+  expect(result.status, diagnostics).toBe(0);
+}
 
 describe('protocol ESM import safety', () => {
   it(
     'imports executionRuns under node + tsx without initialization errors',
     () => {
-      const entryUrl = pathToFileURL(path.join(__dirname, 'execution/runs/index.ts')).href;
-      const script = `import(${JSON.stringify(entryUrl)})`;
-
-      const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
-        encoding: 'utf8',
-        timeout: EXECUTION_RUNS_IMPORT_TIMEOUT_MS,
-      });
-
-      const diagnostics = [
-        `status=${String(result.status)}`,
-        `signal=${String(result.signal)}`,
-        `error=${result.error ? result.error.message : 'none'}`,
-        `stderr=${result.stderr?.trim() || '<empty>'}`,
-      ].join('\n');
-
-      expect(result.error, diagnostics).toBeUndefined();
-      expect(result.signal, diagnostics).toBeNull();
-      expect(result.status, diagnostics).toBe(0);
+      expectSuccessfulImport(importInFreshProcess('execution/runs/index.ts'));
     },
-    EXECUTION_RUNS_IMPORT_TIMEOUT_MS + 5_000
+    MODULE_IMPORT_TIMEOUT_MS + 5_000
+  );
+
+  it.each([
+    'connect/connectedAccountPurposes.ts',
+    'connect/connectedServiceSchemas.ts',
+  ])(
+    'imports %s in a fresh process without connected-service initialization errors',
+    (entryPath) => {
+      expectSuccessfulImport(importInFreshProcess(entryPath));
+    },
+    MODULE_IMPORT_TIMEOUT_MS + 5_000,
   );
 });

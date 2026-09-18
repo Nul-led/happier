@@ -2,24 +2,16 @@ import type {
   ChangeConfidence,
   ChangeEvidenceSource,
   FileChangeEvidence,
-  FileChangeKind,
   RepositoryCheckpointTurnMetadata,
 } from '../changes/schemas.js';
-import { RepositoryCheckpointTurnMetadataSchema } from '../changes/schemas.js';
+import {
+  ChangeConfidenceSchema,
+  ChangeEvidenceSourceSchema,
+  FileChangeEvidenceSchema,
+  TurnChangeSetSchema,
+} from '../changes/schemas.js';
 
 type RecordLike = Record<string, unknown>;
-
-const FILE_CHANGE_KINDS = new Set<FileChangeKind>(['added', 'modified', 'deleted', 'renamed', 'copied', 'unknown']);
-const CHANGE_SOURCES = new Set<ChangeEvidenceSource>([
-  'provider_native',
-  'provider_tool',
-  'canonical_diff_tool',
-  'canonical_patch_tool',
-  'scm_checkpoint',
-  'scm_reconciled',
-  'inferred',
-]);
-const CHANGE_CONFIDENCES = new Set<ChangeConfidence>(['exact', 'strong', 'best_effort']);
 
 function asRecord(value: unknown): RecordLike | null {
   if (typeof value === 'string') {
@@ -50,6 +42,13 @@ function readStringField(record: RecordLike | null, keys: readonly string[]): st
   return null;
 }
 
+function firstDefined(record: RecordLike, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined) return record[key];
+  }
+  return undefined;
+}
+
 export type TurnChangeToolMetadata = Readonly<{
   turnId: string;
   sessionId: string;
@@ -74,31 +73,30 @@ export function readTurnChangeToolMetadata(input: unknown): TurnChangeToolMetada
     const turnId = readNonEmptyString(meta.turnId);
     const sessionId = readNonEmptyString(meta.sessionId);
     const provider = readNonEmptyString(meta.provider);
-    const source = readNonEmptyString(meta.source);
-    const confidence = readNonEmptyString(meta.confidence);
-    const seqRange = asRecord(meta.seqRange);
-    const startSeqInclusive = typeof seqRange?.startSeqInclusive === 'number' ? seqRange.startSeqInclusive : null;
-    const endSeqInclusive = typeof seqRange?.endSeqInclusive === 'number' ? seqRange.endSeqInclusive : null;
-    if (!turnId || !sessionId || !provider || !source || !confidence) return null;
-    if (!CHANGE_SOURCES.has(source as ChangeEvidenceSource)) return null;
-    if (!CHANGE_CONFIDENCES.has(confidence as ChangeConfidence)) return null;
-    if (startSeqInclusive == null || endSeqInclusive == null) return null;
-    const repositoryCheckpoint = RepositoryCheckpointTurnMetadataSchema.safeParse(meta.repositoryCheckpoint);
-    const turnStatus = readNonEmptyString(meta.turnStatus);
+    if (!turnId || !sessionId || !provider) return null;
+    const source = ChangeEvidenceSourceSchema.safeParse(meta.source);
+    const confidence = ChangeConfidenceSchema.safeParse(meta.confidence);
+    if (!source.success || !confidence.success) return null;
+    const parsed = TurnChangeSetSchema.safeParse({
+      sessionId,
+      turnId,
+      seqRange: meta.seqRange,
+      status: meta.turnStatus,
+      files: [],
+      provider,
+      derivedAt: 0,
+      ...(meta.repositoryCheckpoint === undefined ? {} : { repositoryCheckpoint: meta.repositoryCheckpoint }),
+    });
+    if (!parsed.success) return null;
     return {
       turnId,
       sessionId,
       provider,
-      source: source as ChangeEvidenceSource,
-      confidence: confidence as ChangeConfidence,
-      turnStatus: turnStatus === 'aborted' || turnStatus === 'interrupted' || turnStatus === 'unknown'
-        ? turnStatus
-        : 'completed',
-      seqRange: {
-        startSeqInclusive,
-        endSeqInclusive,
-      },
-      ...(repositoryCheckpoint.success ? { repositoryCheckpoint: repositoryCheckpoint.data } : {}),
+      source: source.data,
+      confidence: confidence.data,
+      turnStatus: parsed.data.status,
+      seqRange: parsed.data.seqRange,
+      ...(parsed.data.repositoryCheckpoint ? { repositoryCheckpoint: parsed.data.repositoryCheckpoint } : {}),
     };
   }
 
@@ -133,30 +131,35 @@ export function extractCanonicalDiffFiles(input: unknown, metadata: TurnChangeTo
     .flatMap((file) => {
       const filePath = readStringField(file, ['file_path', 'filePath', 'path']) ?? '';
       if (!filePath) return [];
-      const changeKind = readStringField(file, ['change_kind', 'changeKind']);
-      const source = readStringField(file, ['source']);
-      const confidence = readStringField(file, ['confidence']);
-      const provider = readStringField(file, ['provider']);
-      const previousFilePath = readStringField(file, ['previous_file_path', 'previousFilePath']);
-      return [{
+      const correlationAliases = ['provider_turn_id', 'agentTurnId', 'providerTurnId']
+        .map((key) => file[key])
+        .filter((value) => value !== undefined);
+      if (correlationAliases.some((value) => value !== correlationAliases[0])) return [];
+      const candidate = {
         filePath,
-        ...(previousFilePath ? { previousFilePath } : {}),
-        changeKind: changeKind && FILE_CHANGE_KINDS.has(changeKind as FileChangeKind)
-          ? changeKind as FileChangeKind
-          : 'modified',
-        unifiedDiff: typeof file.unified_diff === 'string' ? file.unified_diff : undefined,
-        oldText: typeof file.oldText === 'string' ? file.oldText : typeof file.old_text === 'string' ? file.old_text : undefined,
-        newText: typeof file.newText === 'string' ? file.newText : typeof file.new_text === 'string' ? file.new_text : undefined,
-        ...(typeof file.binary === 'boolean' ? { binary: file.binary } : {}),
-        source: source && CHANGE_SOURCES.has(source as ChangeEvidenceSource)
-          ? source as ChangeEvidenceSource
-          : metadata.source,
-        confidence: confidence && CHANGE_CONFIDENCES.has(confidence as ChangeConfidence)
-          ? confidence as ChangeConfidence
-          : metadata.confidence,
-        provider: provider ?? metadata.provider,
-        agentTurnId: metadata.turnId,
-      }];
+        changeKind: firstDefined(file, ['change_kind', 'changeKind']) ?? 'modified',
+        source: file.source ?? metadata.source,
+        confidence: file.confidence ?? metadata.confidence,
+        provider: file.provider ?? metadata.provider,
+        ...(firstDefined(file, ['previous_file_path', 'previousFilePath']) === undefined ? {} : {
+          previousFilePath: firstDefined(file, ['previous_file_path', 'previousFilePath']),
+        }),
+        ...(firstDefined(file, ['unified_diff', 'unifiedDiff']) === undefined ? {} : {
+          unifiedDiff: firstDefined(file, ['unified_diff', 'unifiedDiff']),
+        }),
+        ...(firstDefined(file, ['oldText', 'old_text']) === undefined ? {} : { oldText: firstDefined(file, ['oldText', 'old_text']) }),
+        ...(firstDefined(file, ['newText', 'new_text']) === undefined ? {} : { newText: firstDefined(file, ['newText', 'new_text']) }),
+        ...(file.binary === undefined ? {} : { binary: file.binary }),
+        ...(correlationAliases.length === 0 ? {} : { agentTurnId: correlationAliases[0] }),
+        ...(firstDefined(file, ['provider_message_id', 'providerMessageId']) === undefined ? {} : {
+          providerMessageId: firstDefined(file, ['provider_message_id', 'providerMessageId']),
+        }),
+        ...(file.description === undefined ? {} : { description: file.description }),
+        ...(file.truncated === undefined ? {} : { truncated: file.truncated }),
+        ...(file.stats === undefined ? {} : { stats: file.stats }),
+      };
+      const parsed = FileChangeEvidenceSchema.safeParse(candidate);
+      return parsed.success ? [parsed.data] : [];
     });
 }
 
@@ -171,6 +174,8 @@ function hasCanonicalDiffEvidenceForMetadata(input: unknown, metadata: TurnChang
   const evidenceInput = record ?? input;
 
   if (extractCanonicalDiffFiles(evidenceInput, metadata).length > 0) return true;
+
+  if (metadata.repositoryCheckpoint) return true;
 
   if (!record) return false;
 

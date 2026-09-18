@@ -7,6 +7,7 @@ import {
 } from './sessionSystemRecordCatalog.js';
 import { SessionSystemRecordAddressSchema, SessionSystemRecordLocalIdSchema } from './sessionSystemRecordAddress.js';
 import { SessionSystemRecordContentSchema } from './sessionSystemRecordContent.js';
+import { SessionStoredMessageContentSchema } from '../../messages/sessionStoredMessageContent.js';
 import { SessionSystemRecordKindSchema } from './sessionSystemRecordKind.js';
 import { SessionSystemRecordNamespaceSchema } from './sessionSystemRecordNamespace.js';
 import { SessionSystemRecordSchema } from './sessionSystemRecord.js';
@@ -17,7 +18,14 @@ import {
 } from '../../permissions/mediationRecordsV1.js';
 
 const SessionSystemRecordCursorSchema = z.string().trim().min(1).nullable().optional();
-const SessionSystemRecordLimitSchema = z.coerce.number().int().min(1).max(500).default(100);
+/** The canonical record page ceiling; typed readers over these routes bound their own requests by it. */
+export const SESSION_SYSTEM_RECORD_LIST_LIMIT_MAX = 500;
+const SessionSystemRecordLimitSchema = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(SESSION_SYSTEM_RECORD_LIST_LIMIT_MAX)
+  .default(100);
 
 // Released/predecessor host records accepted trimmed, otherwise-unbounded local ids.
 // Keep this seam distinct from the strict author-v1 address schema.
@@ -184,20 +192,28 @@ export type SessionPermissionMediationRecordListResponse = z.infer<
   typeof SessionPermissionMediationRecordListResponseSchema
 >;
 
+export const SessionSystemRecordErrorResponseSchema = z.object({
+  error: z.string(),
+  code: z.string(),
+  currentRevision: z.string().optional(),
+}).strict();
+
 export const SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER = 'x-happier-plugin-id' as const;
+
+const LegacyHostNamespaceSchema = SessionSystemRecordNamespaceSchema.exclude(['surface']);
 
 // Released/predecessor host-record transport. This remains seam-local during expansion and
 // is intentionally not the author-facing record contract.
 export const LegacyHostSessionSystemRecordUpsertRequestSchema = z.object({
-  namespace: SessionSystemRecordNamespaceSchema,
+  namespace: LegacyHostNamespaceSchema,
   kind: SessionSystemRecordKindSchema,
   localId: LegacyHostSessionSystemRecordLocalIdSchema,
-  content: SessionSystemRecordContentSchema,
+  content: SessionStoredMessageContentSchema,
 }).passthrough().superRefine(addSessionSystemRecordPlainContentPayloadIssue);
 export type LegacyHostSessionSystemRecordUpsertRequest = z.infer<typeof LegacyHostSessionSystemRecordUpsertRequestSchema>;
 
 export const LegacyHostSessionSystemRecordListQuerySchema = z.object({
-  namespace: SessionSystemRecordNamespaceSchema.optional(),
+  namespace: LegacyHostNamespaceSchema.optional(),
   kind: SessionSystemRecordKindSchema.optional(),
   localId: LegacyHostSessionSystemRecordLocalIdSchema.optional(),
   limit: SessionSystemRecordLimitSchema,
@@ -208,13 +224,13 @@ export const LegacyHostSessionSystemRecordListQuerySchema = z.object({
 export type LegacyHostSessionSystemRecordListQuery = z.infer<typeof LegacyHostSessionSystemRecordListQuerySchema>;
 
 export const LegacyHostSessionSystemRecordLookupQuerySchema = z.object({
-  namespace: SessionSystemRecordNamespaceSchema,
+  namespace: LegacyHostNamespaceSchema,
   localId: LegacyHostSessionSystemRecordLocalIdSchema,
 }).passthrough();
 export type LegacyHostSessionSystemRecordLookupQuery = z.infer<typeof LegacyHostSessionSystemRecordLookupQuerySchema>;
 
 export const LegacyHostSessionSystemRecordLatestQuerySchema = z.object({
-  namespace: SessionSystemRecordNamespaceSchema,
+  namespace: LegacyHostNamespaceSchema,
   kind: SessionSystemRecordKindSchema,
 }).passthrough().superRefine(addRegisteredSessionSystemRecordKindIssue);
 export type LegacyHostSessionSystemRecordLatestQuery = z.infer<typeof LegacyHostSessionSystemRecordLatestQuerySchema>;
@@ -225,10 +241,10 @@ export const LegacyHostSessionSystemRecordSchema = z.object({
   id: z.string().trim().min(1),
   accountId: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1),
-  namespace: SessionSystemRecordNamespaceSchema,
+  namespace: LegacyHostNamespaceSchema,
   kind: SessionSystemRecordKindSchema,
   localId: LegacyHostSessionSystemRecordLocalIdSchema,
-  content: SessionSystemRecordContentSchema,
+  content: SessionStoredMessageContentSchema,
   createdAt: z.string().trim().min(1),
   updatedAt: z.string().trim().min(1),
 }).passthrough().superRefine(addSessionSystemRecordPlainContentPayloadIssue);

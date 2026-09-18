@@ -69,6 +69,7 @@ const ACTION_SPEC_RPC_METHOD_IDS = Object.freeze({
   [SESSION_RPC_METHODS.EXECUTION_RUN_START]: 'execution.run.start',
   [SESSION_RPC_METHODS.EXECUTION_RUN_LIST]: 'execution.run.list',
   [SESSION_RPC_METHODS.EXECUTION_RUN_GET]: 'execution.run.get',
+  [SESSION_RPC_METHODS.EXECUTION_RUN_WAIT]: 'execution.run.wait',
   [SESSION_RPC_METHODS.EXECUTION_RUN_SEND]: 'execution.run.send',
   [SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE]: 'execution.run.ensure',
   [SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START]: 'execution.run.ensure_or_start',
@@ -81,6 +82,7 @@ const ACTION_SPEC_RPC_METHOD_IDS = Object.freeze({
   [SESSION_RPC_METHODS.EXECUTION_RUN_STOP]: 'execution.run.stop',
   [SESSION_RPC_METHODS.EXECUTION_RUN_ACTION]: 'execution.run.action',
   [RPC_METHODS.DAEMON_EXTERNAL_SESSIONS_CANDIDATES_LIST]: 'sessions.external.candidates.list',
+  [RPC_METHODS.DAEMON_EXTERNAL_SESSION_CANDIDATE_DELETE]: 'sessions.external.candidate.delete',
   [RPC_METHODS.DAEMON_EXTERNAL_SESSION_LINK_ENSURE]: 'sessions.external.link.ensure',
   [RPC_METHODS.DAEMON_EXTERNAL_SESSION_ATTACH]: 'sessions.external.follow',
   [RPC_METHODS.DAEMON_EXTERNAL_SESSION_DETACH]: 'sessions.external.unfollow',
@@ -90,6 +92,7 @@ const ACTION_SPEC_RPC_METHOD_IDS = Object.freeze({
   [RPC_METHODS.DAEMON_EXTERNAL_SESSION_TRANSCRIPT_READ_AFTER]: 'sessions.external.transcript.readAfter',
   [RPC_METHODS.DAEMON_EXTERNAL_SESSION_TAKEOVER]: 'sessions.external.takeover',
   [RPC_METHODS.DAEMON_DIRECT_SESSIONS_CANDIDATES_LIST_LEGACY]: 'sessions.external.candidates.list',
+  [RPC_METHODS.DAEMON_DIRECT_SESSION_CANDIDATE_DELETE_LEGACY]: 'sessions.external.candidate.delete',
   [RPC_METHODS.DAEMON_DIRECT_SESSION_LINK_ENSURE_LEGACY]: 'sessions.external.link.ensure',
   [RPC_METHODS.DAEMON_DIRECT_SESSION_ATTACH_LEGACY]: 'sessions.external.follow',
   [RPC_METHODS.DAEMON_DIRECT_SESSION_DETACH_LEGACY]: 'sessions.external.unfollow',
@@ -143,7 +146,10 @@ const SESSION_SPAWN_PRIVATE_INTERNAL_METHODS = new Set<string>([
 ]);
 
 const PMS5_DIRECT_INTERNAL_METHODS = new Set<string>([
+  RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED,
+  RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE,
   RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST,
+  RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE,
   RPC_METHODS.DAEMON_MEMORY_STATUS,
   RPC_METHODS.DAEMON_MEMORY_SETTINGS_GET,
   RPC_METHODS.DAEMON_VOICE_INFERENCE_STATUS,
@@ -226,6 +232,12 @@ const A16X_PLUGIN_UI_INTERNAL_METHODS = new Set<string>([
   RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT,
 ]);
 
+const TEAM_CREDENTIAL_BROKER_INTERNAL_METHODS = new Set<string>([
+  RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT,
+  RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE,
+  RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY,
+]);
+
 // L1 simulator-relay (SIM-P0-1): the viewer→daemon delivery of the server-minted, signed
 // live-stream startRequest is bounded internal transport (the server re-verifies the Ed25519
 // authorization when the daemon echoes the start), not an ActionSpec action surface.
@@ -299,6 +311,7 @@ export function resolveMachineRpcGovernance(method: string): MachineRpcGovernanc
     || SESSION_SPAWN_PRIVATE_INTERNAL_METHODS.has(method)
     || PMS5_DIRECT_INTERNAL_METHODS.has(method)
     || A16X_PLUGIN_UI_INTERNAL_METHODS.has(method)
+    || TEAM_CREDENTIAL_BROKER_INTERNAL_METHODS.has(method)
     || SIMULATOR_RELAY_INTERNAL_METHODS.has(method)
     || PROMPT_TRANSFER_INTERNAL_METHODS.has(method)
     || A12_VOICE_CLEANUP_INTERNAL_METHODS.has(method)

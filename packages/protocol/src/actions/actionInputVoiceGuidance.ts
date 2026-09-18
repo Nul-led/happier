@@ -135,10 +135,11 @@ const FIELD_GUIDANCE_BY_ACTION_ID: Readonly<Record<string, Readonly<Record<strin
     sessionId: [{ text: 'Optional when the active target session is already correct' }],
   },
   'session.target.primary.set': {
-    sessionId: [{ text: 'Use listSessions to discover sessions by title before choosing sessionId internally', requiresActionIds: ['session.list'] }],
+    serverId: [{ text: 'Use listSessions to discover the exact Home-qualified session address', requiresActionIds: ['session.list'] }],
+    sessionId: [{ text: 'Use listSessions to discover the exact Home-qualified session address', requiresActionIds: ['session.list'] }],
   },
   'session.target.tracked.set': {
-    sessionIds: [{ text: 'Use listSessions to discover sessions by title before choosing sessionIds internally', requiresActionIds: ['session.list'] }],
+    sessionAddresses: [{ text: 'Use listSessions to discover exact Home-qualified sessions to Include in Voice', requiresActionIds: ['session.list'] }],
   },
   'session.activity.get': {
     sessionId: [{ text: 'Use listSessions to discover sessions by title before choosing sessionId internally', requiresActionIds: ['session.list'] }],
@@ -196,12 +197,11 @@ const WORKFLOW_NOTES_BY_ACTION_ID: Readonly<Record<string, readonly VoiceGuidanc
     { text: 'Use listAgentModels before setting modelSelection internally', requiresActionIds: ['agents.models.list'] },
   ],
   'session.target.primary.set': [
-    { text: 'If you already know the exact human session title, pass sessionTitle directly instead of asking for a raw session id', requiresActionIds: ['session.list'] },
-    { text: 'Use listSessions before choosing sessionId internally', requiresActionIds: ['session.list'] },
+    { text: 'Use listSessions before choosing the exact serverId and sessionId internally', requiresActionIds: ['session.list'] },
     { text: 'If the exact session title is not in the first listSessions page, continue with its next cursor', requiresActionIds: ['session.list'] },
   ],
   'session.target.tracked.set': [
-    { text: 'Use listSessions before choosing sessionIds internally', requiresActionIds: ['session.list'] },
+    { text: 'Use listSessions before choosing exact Home-qualified sessions to Include in Voice', requiresActionIds: ['session.list'] },
     { text: 'If the exact session title is not in the first listSessions page, continue with its next cursor', requiresActionIds: ['session.list'] },
   ],
   'session.activity.get': [

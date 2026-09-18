@@ -6,6 +6,7 @@ import {
   ACCOUNT_SETTINGS_SUPPORTED_SCHEMA_VERSION,
   accountCatalogDefinition,
   accountSettingsParse,
+  assertAccountWorkspaceSettingsTransition,
   DEFAULT_SESSION_HANDOFF_DEFAULTS_V1,
   isExpoPushNotificationChannelEnabled,
   SessionHandoffDefaultsV1Schema,
@@ -31,6 +32,41 @@ function expectActionSurfaceEnabled(
 }
 
 describe('accountSettings', () => {
+  it('owns tolerant ordered semantic reminder presets as an account preference', () => {
+    const longLabel = `A detailed reminder preset ${'with useful context '.repeat(12)}`.trim();
+    expect(longLabel.length).toBeGreaterThan(80);
+    expect(accountSettingsParse({}).sessionReminderPresetsV1).toEqual([]);
+    const parsed = accountSettingsParse({ sessionReminderPresetsV1: [
+      { rule: { kind: 'relative_day', daysAhead: 1, minuteOfDay: 840 }, label: longLabel },
+      { rule: { kind: 'next_calendar_weekday', weekday: 0, minuteOfDay: 540 } },
+      { rule: { kind: 'next_calendar_weekday', weekday: 0, weeksAhead: 2, minuteOfDay: 540 } },
+      { rule: { kind: 'next_calendar_weekday', weekday: 0, weeksAhead: 0, minuteOfDay: 540 } },
+      { rule: { kind: 'next_weekday', weekday: 9, minuteOfDay: 840 } },
+    ] });
+    expect(parsed.sessionReminderPresetsV1).toEqual([
+      { rule: { kind: 'relative_day', daysAhead: 1, minuteOfDay: 840 }, label: longLabel },
+      { rule: { kind: 'next_calendar_weekday', weekday: 0, minuteOfDay: 540 } },
+      { rule: { kind: 'next_calendar_weekday', weekday: 0, weeksAhead: 2, minuteOfDay: 540 } },
+    ]);
+    expect(accountSettingsParse(JSON.parse(JSON.stringify(parsed))).sessionReminderPresetsV1)
+      .toEqual(parsed.sessionReminderPresetsV1);
+
+    const definition = ACCOUNT_SETTING_DEFINITIONS.sessionReminderPresetsV1;
+    expect(definition.maximumSerializedValueBytes).toBe(16 * 1024);
+    expect(definition.parseMutationValue([{ rule: { kind: 'relative_day', daysAhead: 1, minuteOfDay: 840 }, label: 'x'.repeat(16 * 1024) }]))
+      .toMatchObject({ success: false, reason: 'tooLarge' });
+  });
+  it('defaults execution-run parent completion notifications off and accepts an explicit value', () => {
+    expect(accountSettingsParse({}).executionRunsNotifyParentOnCompletionDefault).toBe(false);
+    expect(accountSettingsParse({ executionRunsNotifyParentOnCompletionDefault: true }).executionRunsNotifyParentOnCompletionDefault).toBe(true);
+  });
+  it('requires explicit opt-in to disclose remote alert policy', () => {
+    expect(accountSettingsParse({}).sessionRemoteAlertsEnabled).toBe(false);
+    expect(accountSettingsParse({ sessionRemoteAlertsEnabled: true }).sessionRemoteAlertsEnabled).toBe(true);
+    expect(accountSettingsParse({ sessionRemoteAlertsEnabled: false }).sessionRemoteAlertsEnabled).toBe(false);
+    expect(accountSettingsParse({ sessionRemoteAlertsEnabled: 'true' }).sessionRemoteAlertsEnabled).toBe(false);
+  });
+
   it('owns the current schema version for a blank Account Settings document', () => {
     expect(ACCOUNT_SETTINGS_SUPPORTED_SCHEMA_VERSION).toBe(7);
     expect(accountSettingsParse({}).schemaVersion).toBe(ACCOUNT_SETTINGS_SUPPORTED_SCHEMA_VERSION);
@@ -38,6 +74,11 @@ describe('accountSettings', () => {
 
   it('projects the UI feature-toggle default through the canonical Protocol snapshot', () => {
     expect(accountSettingsParse({}).featureToggles).toEqual({});
+  });
+
+  it('defaults an omitted session-list layout to the single Projects view', () => {
+    expect(accountSettingsParse({}).sessionListSectionModeV1).toBe('single');
+    expect(accountSettingsParse({ sessionListSectionModeV1: 'activity' }).sessionListSectionModeV1).toBe('activity');
   });
 
   it('defaults Happier run instructions on while retaining an explicit opt-out', () => {
@@ -629,6 +670,81 @@ describe('accountSettings', () => {
       });
   });
 
+  it('preserves an exact Home-qualified Team resource default with route currentness', () => {
+    const parsed = accountSettingsParse({
+      connectedServicesDefaultAuthByAgentIdV1: {
+        v: 1,
+        bindingsByAgentId: {
+          codex: {
+            v: 2,
+            bindingsByServiceId: {
+              'happier.agent.codex/openai-codex': {
+                source: 'team_resource',
+                serverId: 'home-a',
+                accountId: 'recipient-account',
+                teamId: 'team-a',
+                resourceId: 'resource-a',
+                expectedResourceRevision: 7,
+                deliveryMode: 'direct',
+                disclosedMember: {
+                  service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+                  accountId: 'account-a',
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.connectedServicesDefaultAuthByAgentIdV1.bindingsByAgentId.codex).toEqual({
+      v: 2,
+      bindingsByServiceId: {
+        'happier.agent.codex/openai-codex': {
+          source: 'team_resource',
+          serverId: 'home-a',
+          accountId: 'recipient-account',
+          teamId: 'team-a',
+          resourceId: 'resource-a',
+          expectedResourceRevision: 7,
+          deliveryMode: 'direct',
+          disclosedMember: {
+            service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+            accountId: 'account-a',
+          },
+        },
+      },
+    });
+  });
+
+  it('rejects a Team resource default that omits its exact Account qualifier', () => {
+    const parsed = accountSettingsParse({
+      connectedServicesDefaultAuthByAgentIdV1: {
+        v: 1,
+        bindingsByAgentId: {
+          codex: {
+            v: 2,
+            bindingsByServiceId: {
+              'happier.agent.codex/openai-codex': {
+                source: 'team_resource',
+                serverId: 'home-a',
+                teamId: 'team-a',
+                resourceId: 'resource-a',
+                expectedResourceRevision: 7,
+                deliveryMode: 'brokered',
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.connectedServicesDefaultAuthByAgentIdV1).toEqual({
+      v: 1,
+      bindingsByAgentId: {},
+    });
+  });
+
   it('falls back to native defaults when connected-service default auth settings are malformed', () => {
     const parsed = accountSettingsParse({
       connectedServicesDefaultAuthByAgentIdV1: {
@@ -1172,12 +1288,79 @@ describe('accountSettings', () => {
     expect(parsed.futureAccountField).toBe(true);
   });
 
-  it('falls back to an empty workspace reference list for malformed refs', () => {
-    const parsed = accountSettingsParse({
+  it('fails closed for malformed workspace refs instead of silently dropping them', () => {
+    expect(() => accountSettingsParse({
       workspaceRefsV1: [{ id: 'workspace_missing_scope' }],
-    });
+    })).toThrow();
+    expect(() => accountSettingsParse({
+      workspaceRefsV1: [
+        { id: 'one', serverId: 'server', machineId: 'machine', rootPath: '/repo', createdAtMs: 1 },
+        { id: 'two', serverId: 'server', machineId: 'machine', rootPath: '/repo/', createdAtMs: 1 },
+      ],
+    })).toThrow();
+  });
 
-    expect(parsed.workspaceRefsV1).toEqual([]);
+  it('rejects rebinding retained workspace and relationship identities in place', () => {
+    const policyFields = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const base = {
+      workspaceRefsV1: [
+        { id: 'alpha', serverId: 'server', machineId: 'machine-a', rootPath: '/a', createdAtMs: 1 },
+        { id: 'beta', serverId: 'server', machineId: 'machine-b', rootPath: '/b', createdAtMs: 1 },
+      ],
+      workspaceSyncRelationshipsV1: [{
+        v: 1 as const,
+        relationshipId: 'relationship',
+        controllerMachineId: 'machine-a',
+        alphaWorkspaceRefId: 'alpha',
+        betaWorkspaceRefId: 'beta',
+        mode: 'keep_synced' as const,
+        contentPolicy: {
+          ...policyFields,
+          policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+        },
+        enabled: true,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      }],
+    };
+
+    expect(() => assertAccountWorkspaceSettingsTransition(base, {
+      ...base,
+      workspaceRefsV1: base.workspaceRefsV1.map((ref) => ref.id === 'alpha' ? { ...ref, rootPath: '/moved' } : ref),
+    })).toThrow(expect.objectContaining({ code: 'workspace_ref_in_use' }));
+    const unreferenced = {
+      ...base,
+      workspaceRefsV1: [...base.workspaceRefsV1, {
+        id: 'spare', serverId: 'server-1', machineId: 'machine-c', rootPath: '/spare',
+        createdAtMs: 1,
+      }],
+    };
+    expect(() => assertAccountWorkspaceSettingsTransition(unreferenced, {
+      ...unreferenced,
+      workspaceRefsV1: unreferenced.workspaceRefsV1.map((ref) => (
+        ref.id === 'spare' ? { ...ref, rootPath: '/rebound' } : ref
+      )),
+    })).toThrow(expect.objectContaining({ code: 'workspace_ref_in_use' }));
+    expect(() => assertAccountWorkspaceSettingsTransition(base, {
+      ...base,
+      workspaceSyncRelationshipsV1: base.workspaceSyncRelationshipsV1.map((relationship) => ({
+        ...relationship,
+        mode: 'mirror_exactly' as const,
+      })),
+    })).toThrow(expect.objectContaining({ code: 'relationship_definition_conflict' }));
+    expect(() => assertAccountWorkspaceSettingsTransition(base, {
+      ...base,
+      workspaceSyncRelationshipsV1: base.workspaceSyncRelationshipsV1.map((relationship) => ({
+        ...relationship,
+        enabled: false,
+        updatedAtMs: 2,
+      })),
+    })).not.toThrow();
   });
 
   it('preserves more than 32 valid relationships and rejects malformed relationship authority', () => {
@@ -1203,12 +1386,42 @@ describe('accountSettings', () => {
       createdAtMs: index,
       updatedAtMs: index,
     }));
+    const workspaceRefsV1 = relationships.flatMap((relationship, index) => [
+      { id: relationship.alphaWorkspaceRefId, serverId: 'server', machineId: 'machine-controller', rootPath: `/alpha-${index}`, createdAtMs: index },
+      { id: relationship.betaWorkspaceRefId, serverId: 'server', machineId: `machine-beta-${index}`, rootPath: `/beta-${index}`, createdAtMs: index },
+    ]);
 
-    expect(accountSettingsParse({ workspaceSyncRelationshipsV1: relationships }).workspaceSyncRelationshipsV1)
+    expect(accountSettingsParse({ workspaceRefsV1, workspaceSyncRelationshipsV1: relationships }).workspaceSyncRelationshipsV1)
       .toHaveLength(33);
     expect(() => accountSettingsParse({
       workspaceSyncRelationshipsV1: [{ relationshipId: 'malformed' }],
     })).toThrow();
+  });
+
+  it('validates workspace identity, scope, relationship references, and endpoint-pair ownership together', () => {
+    const refs = [
+      { id: 'alpha', serverId: 'server', machineId: 'machine-a', rootPath: '/alpha', createdAtMs: 1 },
+      { id: 'beta', serverId: 'server', machineId: 'machine-b', rootPath: '/beta', createdAtMs: 1 },
+    ];
+    const policyFields = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
+    const contentPolicy = { ...policyFields, policyDigest: computeWorkspaceSyncPolicyDigest(policyFields) };
+    const relationship = {
+      v: 1 as const, relationshipId: 'relationship-1', controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'alpha', betaWorkspaceRefId: 'beta', mode: 'keep_synced' as const,
+      contentPolicy, enabled: true, createdAtMs: 1, updatedAtMs: 1,
+    };
+
+    expect(accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [relationship] }))
+      .toMatchObject({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [relationship] });
+    expect(() => accountSettingsParse({ workspaceRefsV1: [...refs, { ...refs[1], id: 'beta-2' }] })).toThrow(/scope/i);
+    expect(() => accountSettingsParse({ workspaceRefsV1: [...refs, { ...refs[1], rootPath: '/other' }] })).toThrow(/id/i);
+    expect(() => accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, betaWorkspaceRefId: 'missing' }] })).toThrow(/reference/i);
+    expect(() => accountSettingsParse({
+      workspaceRefsV1: refs,
+      workspaceSyncRelationshipsV1: [relationship, { ...relationship, relationshipId: 'relationship-2' }],
+    })).toThrow(/endpoint pair/i);
+    expect(() => accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, controllerMachineId: 'machine-b' }] }))
+      .toThrow(/controller/i);
   });
 
   it('fills sparse prompt-library Account roots through their shared Protocol schemas', () => {
@@ -1389,5 +1602,39 @@ describe('isExpoPushNotificationChannelEnabled', () => {
         channels: { expo_push: { enabled: false }, local_notification: { enabled: true } },
       },
     })).toBe(false);
+  });  it('uses request previews after an older UI rewrites its known notification fields', () => {
+    // ui-mobile-v0.2.11 / ui-web-v0.2.11-preview.186, 98ea8fb76733b1dd785d38c31360179cafa84824:
+    // NotificationsSettingsV1Schema strips unknown fields before the UI replaces the stored object.
+    const parsed = accountSettingsParse({ notificationsSettingsV1: {
+      v: 1, pushEnabled: true, ready: true, readyIncludeMessageText: true,
+      permissionRequest: true, userActionRequest: true, foregroundBehavior: 'full',
+    } });
+    expect(parsed.notificationsSettingsV1.requestIncludeMessageText).toBe(true);
+    expect(parsed.notificationsSettingsV1.permissionRequest).toBe(true);
+    expect(parsed.notificationsSettingsV1.userActionRequest).toBe(true);
   });
+
+  it('defaults request notification preview settings to enabled', () => {
+    const parsed = accountSettingsParse({});
+
+    expect(parsed.notificationsSettingsV1.requestIncludeMessageText).toBe(true);
+  });
+
+  it('accepts explicit request notification preview settings', () => {
+    const parsed = accountSettingsParse({
+      notificationsSettingsV1: {
+        v: 1,
+        pushEnabled: true,
+        ready: true,
+        requestIncludeMessageText: false,
+        permissionRequest: true,
+        userActionRequest: true,
+        foregroundBehavior: 'full',
+      },
+    });
+
+    expect(parsed.notificationsSettingsV1.requestIncludeMessageText).toBe(false);
+  });
+
+
 });

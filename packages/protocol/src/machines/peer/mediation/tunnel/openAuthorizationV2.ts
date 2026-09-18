@@ -18,7 +18,6 @@ export const PeerTcpTunnelOpenV2Schema = z.object({
   proof: PeerRouteEphemeralProofV2Schema,
   supportedEncodings: z.array(PeerTcpTunnelEncodingSchema).min(1).optional(),
   selectedEncoding: PeerTcpTunnelEncodingSchema.optional(),
-  allowV1Fallback: z.boolean().optional(),
 }).strict();
 
 export type PeerTcpTunnelOpenV2 = z.infer<typeof PeerTcpTunnelOpenV2Schema>;

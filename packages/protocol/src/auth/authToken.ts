@@ -10,6 +10,7 @@ export const AuthTokenKindSchema = z.enum([
   'account_directory',
   'terminal',
   'api_token',
+  'ephemeral_session_runner',
 ]);
 export type AuthTokenKind = z.infer<typeof AuthTokenKindSchema>;
 
@@ -17,8 +18,61 @@ export type AuthTokenKind = z.infer<typeof AuthTokenKindSchema>;
 export const AuthTokenAuthoritySchema = z.enum([
   'present_user',
   'account_automation',
+  'session_runtime',
 ]);
 export type AuthTokenAuthority = z.infer<typeof AuthTokenAuthoritySchema>;
+
+const AuthTokenEvidenceString = z.string().trim().min(1).max(512);
+
+/**
+ * A server-produced authentication fact attached to one ordinary credential.
+ * It identifies the exact method or provider identity that authenticated the
+ * credential; it carries no Team role, grant, profile, token, or client input.
+ */
+export const AuthTokenAuthenticationEvidenceV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('home_method'),
+    methodId: AuthTokenEvidenceString,
+  }).strict(),
+  z.object({
+    kind: z.literal('provider'),
+    providerId: AuthTokenEvidenceString,
+    identityId: AuthTokenEvidenceString,
+    runtimeFingerprint: AuthTokenEvidenceString,
+    teamConnectionId: AuthTokenEvidenceString.optional(),
+  }).strict(),
+]);
+export type AuthTokenAuthenticationEvidenceV1 = z.infer<typeof AuthTokenAuthenticationEvidenceV1Schema>;
+
+export const AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS = 32;
+
+/** Canonical identity key shared by strict decoding and server-side merge/dedup. */
+export function authTokenAuthenticationEvidenceIdentityV1(value: AuthTokenAuthenticationEvidenceV1): string {
+  return value.kind === 'home_method'
+    ? `home_method:${value.methodId.toLowerCase()}`
+    : `provider:${value.providerId.toLowerCase()}:${value.identityId}:${value.teamConnectionId ?? ''}:${value.runtimeFingerprint}`;
+}
+
+const AuthTokenAuthenticationEvidenceSetV1Schema = z.array(AuthTokenAuthenticationEvidenceV1Schema)
+  .min(1)
+  .max(AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS)
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    for (const evidence of value) {
+      const key = authTokenAuthenticationEvidenceIdentityV1(evidence);
+      if (seen.has(key)) ctx.addIssue({ code: 'custom', message: 'authentication evidence must be deduplicated' });
+      seen.add(key);
+    }
+  });
+
+/** Closed persisted snapshot used when an existing unattended credential is explicitly authorized. */
+export const AuthTokenAuthenticationEvidenceSnapshotV1Schema = z.object({
+  v: z.literal(1),
+  evidence: AuthTokenAuthenticationEvidenceSetV1Schema,
+}).strict();
+export type AuthTokenAuthenticationEvidenceSnapshotV1 = z.infer<
+  typeof AuthTokenAuthenticationEvidenceSnapshotV1Schema
+>;
 
 /**
  * The one canonical kind→authority mapping. Every mint and every
@@ -30,6 +84,7 @@ export const AUTH_TOKEN_KIND_AUTHORITIES: Readonly<Record<AuthTokenKind, AuthTok
   account_directory: 'present_user',
   terminal: 'account_automation',
   api_token: 'account_automation',
+  ephemeral_session_runner: 'session_runtime',
 });
 
 /**
@@ -52,3 +107,26 @@ export const AuthTokenProvenanceSchema = z.object({
   }
 });
 export type AuthTokenProvenance = z.infer<typeof AuthTokenProvenanceSchema>;
+
+/** Current additive provenance marker for credentials with authentication facts. */
+export const AuthTokenProvenanceV2Schema = z.object({
+  v: z.literal(2),
+  kind: AuthTokenKindSchema,
+  authority: AuthTokenAuthoritySchema,
+  evidence: AuthTokenAuthenticationEvidenceSetV1Schema,
+}).strict().superRefine((value, ctx) => {
+  if (AUTH_TOKEN_KIND_AUTHORITIES[value.kind] !== value.authority) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['authority'],
+      message: `authority "${value.authority}" is not canonical for token kind "${value.kind}"`,
+    });
+  }
+});
+export type AuthTokenProvenanceV2 = z.infer<typeof AuthTokenProvenanceV2Schema>;
+
+export const AuthTokenProvenanceAnySchema = z.union([
+  AuthTokenProvenanceSchema,
+  AuthTokenProvenanceV2Schema,
+]);
+export type AuthTokenProvenanceAny = z.infer<typeof AuthTokenProvenanceAnySchema>;

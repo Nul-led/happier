@@ -7,6 +7,11 @@ async function importCreationAfterAutomation() {
   return { spawn, preparation };
 }
 
+async function importCreationSettlementAfterActionSpecs() {
+  await import('../../actions/actionSpecs.js');
+  return await import('./sessionSpawnNewResultV1.js');
+}
+
 async function importAutomationAfterCreation() {
   const preparation = await import('./sessionCreationTargetPreparationV1.js');
   const spawn = await import('./sessionSpawnNewInputV2.js');
@@ -30,4 +35,10 @@ describe('Session creation source import order', () => {
     expect(spawn.SessionServerStartSpawnDraftV1Schema).toBeDefined();
     expect(preparation.SessionCreationTargetPreparationRequestV1Schema).toBeDefined();
   });
+
+  it('initializes creation settlement after the Action-spec graph', async () => {
+    vi.resetModules();
+    const settlement = await importCreationSettlementAfterActionSpecs();
+    expect(settlement.SessionSpawnNewResultV1Schema).toBeDefined();
+  }, 30_000);
 });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ExecutionRunIdSchema } from '../../sessions/idsV1.js';
 
 /**
  * Provider-agnostic structured payload for user messages that are routed to a specific participant
@@ -9,24 +10,88 @@ import { z } from 'zod';
  * - The backend may use this meta to perform provider-specific routing (e.g. Claude Agent Teams).
  */
 
-export const ParticipantRecipientV1Schema = z.discriminatedUnion('kind', [
-  z.object({
+const executionRunRecipient = z.object({
     kind: z.literal('execution_run'),
     runId: z.string().min(1),
     label: z.string().min(1).max(200).optional(),
-  }).passthrough(),
-  z.object({
+  });
+const teamMemberRecipient = z.object({
     kind: z.literal('agent_team_member'),
     teamId: z.string().min(1),
     memberId: z.string().min(1),
     memberLabel: z.string().min(1).max(200).optional(),
-  }).passthrough(),
-  z.object({
+  });
+const teamBroadcastRecipient = z.object({
     kind: z.literal('agent_team_broadcast'),
     teamId: z.string().min(1),
-  }).passthrough(),
+  });
+
+export const ParticipantRecipientV1Schema = z.discriminatedUnion('kind', [
+  executionRunRecipient.passthrough(),
+  teamMemberRecipient.passthrough(),
+  teamBroadcastRecipient.passthrough(),
 ]);
 export type ParticipantRecipientV1 = z.infer<typeof ParticipantRecipientV1Schema>;
+
+export const ParticipantExecutionRunRecipientRoutingIdentityV1Schema = executionRunRecipient
+  .omit({ label: true }).extend({ runId: ExecutionRunIdSchema }).strict();
+export type ParticipantExecutionRunRecipientRoutingIdentityV1 = z.infer<
+  typeof ParticipantExecutionRunRecipientRoutingIdentityV1Schema
+>;
+export const ParticipantRecipientRoutingIdentityV1Schema = z.discriminatedUnion('kind', [
+  ParticipantExecutionRunRecipientRoutingIdentityV1Schema,
+  teamMemberRecipient.omit({ memberLabel: true }).extend({
+    teamId: z.string().trim().min(1), memberId: z.string().trim().min(1),
+  }).strict(),
+  teamBroadcastRecipient.extend({ teamId: z.string().trim().min(1) }).strict(),
+]);
+export type ParticipantRecipientRoutingIdentityV1 = z.infer<typeof ParticipantRecipientRoutingIdentityV1Schema>;
+
+const authoredRecipientSchema = z.discriminatedUnion('kind', [
+  executionRunRecipient.strict(), teamMemberRecipient.strict(), teamBroadcastRecipient.strict(),
+]);
+
+/** Known display labels may be consumed at authoring, but never enter operational routing. */
+export function normalizeParticipantRecipientRoutingIdentityV1(input: unknown): ParticipantRecipientRoutingIdentityV1 {
+  const recipient = authoredRecipientSchema.parse(input);
+  if (recipient.kind === 'execution_run') {
+    return ParticipantRecipientRoutingIdentityV1Schema.parse({ kind: recipient.kind, runId: recipient.runId });
+  }
+  if (recipient.kind === 'agent_team_member') {
+    return ParticipantRecipientRoutingIdentityV1Schema.parse({ kind: recipient.kind, teamId: recipient.teamId, memberId: recipient.memberId });
+  }
+  return ParticipantRecipientRoutingIdentityV1Schema.parse(recipient);
+}
+
+/** Derives the one authored routing fact; omission leaves the main record untouched. */
+export function withParticipantRecipientV1(
+  meta: Record<string, unknown>,
+  input: ParticipantRecipientV1 | undefined,
+): Record<string, unknown> {
+  if (input === undefined) return meta;
+  const recipient = normalizeParticipantRecipientRoutingIdentityV1(input);
+  if (meta.happier !== undefined) {
+    const envelope = z.object({
+      kind: z.literal('participant_message.v1'),
+      payload: z.object({ recipient: authoredRecipientSchema }).strict(),
+    }).strict().parse(meta.happier);
+    const existing = normalizeParticipantRecipientRoutingIdentityV1(envelope.payload.recipient);
+    if (JSON.stringify(existing) !== JSON.stringify(recipient)) {
+      throw new Error('Session input recipient contradicts authored participant metadata');
+    }
+  }
+  return { ...meta, happier: { kind: 'participant_message.v1', payload: { recipient } } };
+}
+
+/** Reads only closed operational metadata, independently of the historical display parser. */
+export function readParticipantRecipientRoutingIdentityV1(meta: unknown): ParticipantRecipientRoutingIdentityV1 | null {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  const parsed = z.object({
+    kind: z.literal('participant_message.v1'),
+    payload: z.object({ recipient: ParticipantRecipientRoutingIdentityV1Schema }).strict(),
+  }).strict().safeParse((meta as Record<string, unknown>).happier);
+  return parsed.success ? parsed.data.payload.recipient : null;
+}
 
 export const ParticipantMessageV1Schema = z.object({
   recipient: ParticipantRecipientV1Schema,
@@ -37,4 +102,3 @@ export function parseParticipantMessageV1(input: unknown): ParticipantMessageV1 
   const parsed = ParticipantMessageV1Schema.safeParse(input);
   return parsed.success ? parsed.data : null;
 }
-

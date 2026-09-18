@@ -33,6 +33,7 @@ export type ActionExecuteResult =
   | Readonly<{ ok: true; result: unknown }>
   | ActionExecuteFailure;
 
+
 /**
  * Projects an Action failure onto the public envelope. This is intentionally
  * not a generic error parser: known Action fields and opaque details survive,

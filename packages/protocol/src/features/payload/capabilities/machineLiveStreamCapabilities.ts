@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   MachineLiveStreamRelayCapsV1Schema,
   type MachineLiveStreamRelayCaps,
-} from '../../../machines/peer/mediation/stream/index.js';
+} from '../../../machines/peer/mediation/stream/v1.js';
 import type { FeaturesResponse } from '../featuresResponseSchema.js';
 import { isRecord } from '../isRecord.js';
 

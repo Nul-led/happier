@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -12,7 +12,7 @@ const fixturePath = join(
 );
 const typeScriptCliPath = join(repositoryRoot, 'scripts/workspaces/runTypeScriptCli.mjs');
 
-it('emits portable declarations for inferred composable Protocol schemas', async () => {
+it('emits declarations that remain valid for an external NodeNext consumer', async () => {
   const outputDirectory = await mkdtemp(join(tmpdir(), 'happier-protocol-declaration-portability-'));
   try {
     const result = spawnSync(process.execPath, [
@@ -43,7 +43,30 @@ it('emits portable declarations for inferred composable Protocol schemas', async
     );
     expect(declaration).toContain('export declare const DeclarationPortableStringSchema');
     expect(declaration).toContain('export declare const DeclarationPortableNestedSchema');
+    expect(declaration).toContain('export declare const DeclarationPortableSessionDraftAuthoringFieldsSchema');
+
+    await symlink(
+      join(repositoryRoot, 'packages/protocol/node_modules'),
+      join(outputDirectory, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const consumerResult = spawnSync(process.execPath, [
+      typeScriptCliPath,
+      join(outputDirectory, 'fixtures/jsonSchemaValidation.declarationPortability.d.ts'),
+      '--noEmit',
+      '--pretty', 'false',
+      '--module', 'NodeNext',
+      '--moduleResolution', 'NodeNext',
+      '--target', 'ES2022',
+      '--strict',
+      '--skipLibCheck', 'false',
+      '--types', 'node',
+    ], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+    });
+    expect(consumerResult.status, `${consumerResult.stdout}\n${consumerResult.stderr}`).toBe(0);
   } finally {
     await rm(outputDirectory, { recursive: true, force: true });
   }
-}, 15_000);
+}, 60_000);

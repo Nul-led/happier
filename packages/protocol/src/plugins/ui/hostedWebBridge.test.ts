@@ -9,103 +9,67 @@ import {
 } from './hostedWebBridge.js';
 
 describe('hosted web bridge protocol', () => {
-  it('carries the canonical UI host wire through the existing hosted-web bridge', () => {
-    const parsed = PluginHostedWebBridgeEnvelopeV1Schema.parse({
+  it('addresses frames with an opaque identity without plugin or Session authority', () => {
+    const identity = { instanceId: 'mount-a', mountNonce: 'nonce-a' };
+    const message = {
       version: 1,
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'preview-surface',
-      nonce: 'nonce-1',
-      sequence: 2,
-      kind: 'hostApi',
-      payload: {
+      identity,
+      sequence: 1,
+      kind: 'ready',
+      payload: {},
+    };
+    expect(PluginHostedWebBridgeEnvelopeV1Schema.parse(message)).toEqual(message);
+    expect(PluginHostedWebBridgeEnvelopeV1Schema.safeParse({
+      ...message, pluginId: 'acme.preview',
+    }).success).toBe(false);
+    expect(PluginHostedWebBridgeEnvelopeV1Schema.safeParse({
+      ...message, identity: { ...identity, sessionId: 'session-1' },
+    }).success).toBe(false);
+    expect(PluginHostedWebBridgeBootstrapEnvelopeV1Schema.parse({
+      ...message,
+      direction: 'hostToFrame',
+      origin: 'https://frame.example',
+      kind: 'bootstrap',
+      payload: { apiVersion: '1.0.0', wireVersion: 1, identity, authorPlugin: { id: 'acme.preview', version: '1.0.0' } },
+    }).payload.authorPlugin).toEqual({ id: 'acme.preview', version: '1.0.0' });
+  });
+  it('carries the canonical UI host wire through the existing hosted-web bridge', () => {
+    const parsed = PluginHostedWebBridgeEnvelopeV1Schema.parse({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 2, kind: 'hostApi', payload: {
         wireVersion: 1,
         kind: 'negotiate',
-        identity: {
-          pluginId: 'acme.preview',
-          pluginVersion: '1.0.0',
-          viewId: 'preview',
-          generation: '7',
-        },
+        identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
         apiRange: '^1.0.0',
-      },
-    });
+      } });
 
     expect(parsed.kind).toBe('hostApi');
   });
 
   it('accepts nonce-bound hosted web bridge messages with JSON payloads', () => {
-    const parsed = PluginHostedWebBridgeEnvelopeV1Schema.parse({
-      version: 1,
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'sessionSurface:acme.preview:preview-pane',
-      sessionId: 'session-1',
-      nonce: 'nonce-1',
-      sequence: 1,
-      kind: 'ready',
-      payload: { height: 480 },
-    });
+    const parsed = PluginHostedWebBridgeEnvelopeV1Schema.parse({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 1, kind: 'ready', payload: { height: 480 } });
 
     expect(parsed.kind).toBe('ready');
     expect(parsed.payload).toEqual({ height: 480 });
   });
 
   it('rejects executable-looking bridge payloads and empty nonces', () => {
-    const result = PluginHostedWebBridgeEnvelopeV1Schema.safeParse({
-      version: 1,
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'sessionSurface:acme.preview:preview-pane',
-      nonce: '',
-      sequence: 1,
-      kind: 'requestHostAction',
-      payload: { callback: () => undefined },
-    });
+    const result = PluginHostedWebBridgeEnvelopeV1Schema.safeParse({ identity: { instanceId: 'mount-1', mountNonce: '' }, version: 1, sequence: 1, kind: 'requestHostAction', payload: { callback: () => undefined } });
 
     expect(result.success).toBe(false);
   });
 
   it('models host responses without exposing arbitrary RPC payloads', () => {
-    const parsed = PluginHostedWebBridgeResponseEnvelopeV1Schema.parse({
-      version: 1,
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'sessionSurface:acme.preview:preview-pane',
-      nonce: 'nonce-1',
-      sequence: 2,
-      requestSequence: 1,
-      kind: 'result',
-      payload: { ok: true },
-    });
+    const parsed = PluginHostedWebBridgeResponseEnvelopeV1Schema.parse({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 2, requestSequence: 1, kind: 'result', payload: { ok: true } });
 
     expect(parsed.requestSequence).toBe(1);
   });
 
-  const hostPush = {
-    version: 1,
-    direction: 'hostToFrame',
-    pluginId: 'acme.preview',
-    contributionId: 'preview-web',
-    surfaceId: 'sessionSurface:acme.preview:preview-pane',
-    sessionId: 'session-1',
-    nonce: 'nonce-1',
-    sequence: 3,
-    kind: 'hostApi',
-    payload: {
+  const hostPush = { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 3, kind: 'hostApi', payload: {
       wireVersion: 1,
       kind: 'subscription',
-      identity: {
-        pluginId: 'acme.preview',
-        pluginVersion: '1.0.0',
-        viewId: 'preview',
-        generation: '7',
-        sessionId: 'session-1',
-      },
+      identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
       subscriptionId: 'subscription-1',
       event: { placement: 'session.details' },
-    },
-  } as const;
+    } } as const;
 
   it('carries an unsolicited host->frame message whose payload is a canonical wire envelope', () => {
     const parsed = PluginHostedWebBridgeHostMessageEnvelopeV1Schema.parse(hostPush);
@@ -129,16 +93,7 @@ describe('hosted web bridge protocol', () => {
     // A frame that reflects a host push back at the host must not be read as a
     // guest request, and a guest request must not be mistaken for a push.
     expect(PluginHostedWebBridgeEnvelopeV1Schema.safeParse(hostPush).success).toBe(false);
-    expect(PluginHostedWebBridgeHostMessageEnvelopeV1Schema.safeParse({
-      version: 1,
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'sessionSurface:acme.preview:preview-pane',
-      nonce: 'nonce-1',
-      sequence: 1,
-      kind: 'ready',
-      payload: null,
-    }).success).toBe(false);
+    expect(PluginHostedWebBridgeHostMessageEnvelopeV1Schema.safeParse({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, sequence: 1, kind: 'ready', payload: null }).success).toBe(false);
   });
 
   it('rejects a host push that names a non-push envelope kind', () => {
@@ -151,30 +106,14 @@ describe('hosted web bridge protocol', () => {
   });
 
   it('bootstraps a hosted Composer frame with its exact host-stamped mount ref outside launch input', () => {
-    const bootstrap = PluginHostedWebBridgeBootstrapEnvelopeV1Schema.parse({
-      version: 1,
-      direction: 'hostToFrame',
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'surface:acme.preview:preview',
-      nonce: 'nonce-1',
-      sequence: 0,
-      origin: 'https://assets.happier.test',
-      kind: 'bootstrap',
-      payload: {
+    const bootstrap = PluginHostedWebBridgeBootstrapEnvelopeV1Schema.parse({ identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 0, origin: 'https://assets.happier.test', kind: 'bootstrap', payload: {
         apiVersion: '1.0.0',
         wireVersion: 1,
-        identity: {
-          pluginId: 'acme.preview',
-          pluginVersion: '1.0.0',
-          viewId: 'preview',
-          generation: '7',
-        },
+        identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
         subPath: '/review/42/',
         launchInput: { reviewId: '42' },
         composerRef: { kind: 'session', sessionId: 'session-1' },
-      },
-    });
+      } });
 
     expect(bootstrap.payload.subPath).toBe('review/42');
     expect(bootstrap.payload.composerRef).toEqual({ kind: 'session', sessionId: 'session-1' });
@@ -196,26 +135,11 @@ describe('hosted web bridge protocol', () => {
   });
 
   it('accepts only the exact token-scoped iOS frame address as a non-HTTP bridge origin', () => {
-    const bootstrap = {
-      version: 1,
-      direction: 'hostToFrame',
-      pluginId: 'acme.preview',
-      contributionId: 'preview-web',
-      surfaceId: 'surface:acme.preview:preview',
-      nonce: 'nonce-1',
-      sequence: 0,
-      kind: 'bootstrap',
-      payload: {
+    const bootstrap = { identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' }, version: 1, direction: 'hostToFrame', sequence: 0, kind: 'bootstrap', payload: {
         apiVersion: '1.0.0',
         wireVersion: 1,
-        identity: {
-          pluginId: 'acme.preview',
-          pluginVersion: '1.0.0',
-          viewId: 'preview',
-          generation: '7',
-        },
-      },
-    } as const;
+        identity: { instanceId: 'mount-1', mountNonce: 'nonce-1' },
+      } } as const;
     const origin = 'happier-hosted-artifact://hpa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
     expect(PluginHostedWebBridgeBootstrapEnvelopeV1Schema.safeParse({

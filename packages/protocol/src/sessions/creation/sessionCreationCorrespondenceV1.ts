@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { AgentExecutionTargetV1Schema } from '../../agents/executionTargetV1.js';
-import { ConnectedServiceBindingsV1Schema } from '../../connect/connectedServiceBindings.js';
+import { ConnectedServiceBindingsV2IngressSchema } from '../../connect/connectedServiceBindings.js';
 import { decodeBase64, encodeBase64 } from '../../crypto/base64.js';
 import { SessionMcpSelectionV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
 import { SessionModelSelectionV1Schema } from '../../providers/selection/v1.js';
@@ -10,6 +10,7 @@ import { AgentSessionStartupInstructionsMarkerV1Schema } from '../../runtime/age
 import { SessionAuthoringTerminalV1Schema } from '../authoring/creationFieldsV1.js';
 import { SessionCreationTagV1Schema } from './sessionCreationIdentityV1.js';
 import { SessionOrganizationPlacementV1Schema } from './sessionSpawnNewResultV1.js';
+import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
 
 export const SessionCreationImmutableRecipeV1Schema = z.object({
   execution: z.object({
@@ -20,10 +21,11 @@ export const SessionCreationImmutableRecipeV1Schema = z.object({
   agentTarget: AgentExecutionTargetV1Schema,
   modelSelection: SessionModelSelectionV1Schema.nullable(),
   profileId: z.string().trim().min(1).nullable(),
+  secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
   requestedPermissionMode: z.string().trim().min(1).nullable(),
   agentModeId: z.string().trim().min(1).nullable(),
   configuration: AgentSessionConfigurationSnapshotV1Schema.nullable(),
-  connectedServices: ConnectedServiceBindingsV1Schema.nullable(),
+  connectedServices: ConnectedServiceBindingsV2IngressSchema.nullable(),
   mcpSelection: SessionMcpSelectionV1Schema.nullable(),
   transcriptStorage: z.enum(['persisted', 'direct']).nullable(),
   terminal: SessionAuthoringTerminalV1Schema.nullable(),
@@ -69,7 +71,20 @@ export function sessionCreationCorrespondenceMatchesV1(
   const parsedRight = SessionCreationCorrespondenceV1Schema.safeParse(right);
   return parsedLeft.success
     && parsedRight.success
-    && JSON.stringify(parsedLeft.data) === JSON.stringify(parsedRight.data);
+    && JSON.stringify(semanticCorrespondence(parsedLeft.data)) === JSON.stringify(semanticCorrespondence(parsedRight.data));
+}
+
+function semanticCorrespondence(value: SessionCreationCorrespondenceV1) {
+  const selection = value.recipe.modelSelection;
+  return {
+    ...value,
+    recipe: {
+      ...value.recipe,
+      // Selection time orders later model updates; it does not change the
+      // initial model/provider binding. Keep the stored carrier unchanged.
+      modelSelection: selection ? { v: selection.v, ref: selection.ref } : null,
+    },
+  };
 }
 
 const SESSION_CREATION_CORRESPONDENCE_V1_TRANSPORT_PREFIX = 'scv1:';

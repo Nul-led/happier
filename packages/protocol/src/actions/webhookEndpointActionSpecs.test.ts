@@ -1,9 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { z } from 'zod';
+import { serializeActionSpec } from './actionCatalog.js';
 
 import {
   getActionSpec,
   isPluginProvenanceOnlyActionId,
+  PublicActionIdSchema,
   type PluginActionInputById,
   type PluginActionResultById,
   type PluginInvocableActionId,
@@ -35,6 +37,14 @@ const PRESENT_USER_ACTION_IDS = [
 ] as const;
 
 describe('webhook endpoint ActionSpecs', () => {
+  it('declares domain HTTP transport without publishing it as an Action wire contract', () => {
+    const spec = getActionSpec('plugin.webhook.endpoint.read');
+    expect(spec.serverTransport).toEqual({
+      method: 'POST',
+      path: PluginWebhookActionHttpPathsV1['plugin.webhook.endpoint.read'],
+    });
+    expect(serializeActionSpec(spec)).not.toHaveProperty('serverTransport');
+  });
   it('exposes lifecycle and Account-route credential operations only to present-user surfaces', () => {
     // Present-user authority is host-stamped, so openness never implies a
     // plugin caller can satisfy the Action: automation callers receive the
@@ -53,7 +63,8 @@ describe('webhook endpoint ActionSpecs', () => {
       expect(spec.surfaces).toEqual(expect.objectContaining({
         ui: true,
         cli: true,
-        ...(hostExposed ? { api: true, plugin: true } : { api: false, plugin: false }),
+        api: false,
+        plugin: hostExposed,
       }));
       expect(spec.inputSchema).toBeDefined();
       expect(spec.outputSchema).toBeDefined();
@@ -83,6 +94,8 @@ describe('webhook endpoint ActionSpecs', () => {
         plugin: true,
       }));
     }
+    expect(isPluginProvenanceOnlyActionId('plugin.webhook.endpoint.checkCorrespondence')).toBe(true);
+    expect(PublicActionIdSchema.safeParse('plugin.webhook.endpoint.checkCorrespondence').success).toBe(false);
   });
 
   /**

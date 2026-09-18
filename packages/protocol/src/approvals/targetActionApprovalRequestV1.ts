@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { ApprovalDecisionV1Schema, ApprovalExecutionV1Schema, ApprovalRequestCreatedBySchema, ApprovalRequestStatusSchema } from './approvalRequestV1.js';
+import {
+  ApprovalDecisionV1Schema,
+  ApprovalExecutionOriginV1Schema,
+  ApprovalExecutionV1Schema,
+  ApprovalRequestCreatedBySchema,
+} from './approvalRequestV1.js';
 import { AgentRuntimeJsonValueV1Schema } from '../runtime/agentSessionV1.js';
 
 export const TARGET_ACTION_APPROVAL_LIMITS_V1 = Object.freeze({
@@ -11,6 +16,10 @@ export const TARGET_ACTION_APPROVAL_LIMITS_V1 = Object.freeze({
 });
 
 const boundedId = z.string().min(1).max(TARGET_ACTION_APPROVAL_LIMITS_V1.idUtf16Units);
+
+const TargetActionApprovalStatusV1Schema = z.enum([
+  'open', 'approved', 'executing', 'rejected', 'executed', 'failed', 'canceled',
+]);
 
 /**
  * Host-stamped routing evidence for a deferred API Action approval. It is
@@ -26,7 +35,7 @@ export type TargetActionApprovalReplayPlacementV1 = z.infer<
 >;
 
 export const TargetActionApprovalRequestV1Schema = z.object({
-  v: z.literal(1), kind: z.literal('plugin_target_action'), status: ApprovalRequestStatusSchema,
+  v: z.literal(1), kind: z.literal('plugin_target_action'), status: TargetActionApprovalStatusV1Schema,
   createdAtMs: z.number().int().min(0), updatedAtMs: z.number().int().min(0),
   createdBy: ApprovalRequestCreatedBySchema,
   requestedSurface: z.string().min(1).max(TARGET_ACTION_APPROVAL_LIMITS_V1.surfaceUtf16Units),
@@ -35,12 +44,13 @@ export const TargetActionApprovalRequestV1Schema = z.object({
   generation: boundedId, policyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   subjectFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   replayPlacement: TargetActionApprovalReplayPlacementV1Schema.optional(),
+  executionOriginV1: ApprovalExecutionOriginV1Schema.optional(),
   summary: z.string().min(1).max(TARGET_ACTION_APPROVAL_LIMITS_V1.summaryUtf16Units),
   detail: z.string().min(1).max(TARGET_ACTION_APPROVAL_LIMITS_V1.detailUtf16Units).optional(),
   decision: ApprovalDecisionV1Schema.optional(), execution: ApprovalExecutionV1Schema.optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.status === 'open' && (value.decision || value.execution)) ctx.addIssue({ code: 'custom', message: 'open target-action approval cannot contain a decision or execution' });
-  if ((value.status === 'approved' || value.status === 'executed' || value.status === 'failed') && value.decision?.kind !== 'approve') ctx.addIssue({ code: 'custom', message: `${value.status} target-action approval requires approve` });
+  if ((value.status === 'approved' || value.status === 'executing' || value.status === 'executed' || value.status === 'failed') && value.decision?.kind !== 'approve') ctx.addIssue({ code: 'custom', message: `${value.status} target-action approval requires approve` });
   if (value.status === 'rejected' && value.decision?.kind !== 'reject') ctx.addIssue({ code: 'custom', message: 'rejected target-action approval requires reject' });
   if (value.status === 'canceled' && value.decision) ctx.addIssue({ code: 'custom', message: 'canceled target-action approval cannot contain a decision' });
   if ((value.status === 'executed' || value.status === 'failed') !== Boolean(value.execution)) ctx.addIssue({ code: 'custom', message: 'target-action approval execution/status mismatch' });
@@ -50,6 +60,20 @@ export const TargetActionApprovalRequestV1Schema = z.object({
       path: ['replayPlacement'],
       message: 'API target-action approval requires an exact daemon replay placement',
     });
+  }
+  if (value.requestedSurface === 'api' && value.executionOriginV1 === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['executionOriginV1'], message: 'API target-action approval requires its immutable execution origin' });
+  }
+  if (value.executionOriginV1 !== undefined && value.executionOriginV1.actionId !== 'action.invoke') {
+    ctx.addIssue({ code: 'custom', path: ['executionOriginV1', 'actionId'], message: 'Target-action approval origin must bind action.invoke' });
+  }
+  if (value.replayPlacement && value.executionOriginV1 && (
+    value.executionOriginV1.serverId !== value.replayPlacement.serverId
+    || value.executionOriginV1.machineId !== value.replayPlacement.machineId
+    || (value.replayPlacement.defaultSessionId !== undefined
+      && value.executionOriginV1.sessionId !== value.replayPlacement.defaultSessionId)
+  )) {
+    ctx.addIssue({ code: 'custom', path: ['executionOriginV1'], message: 'Target-action approval origin must match its exact replay placement' });
   }
   const strictJson = AgentRuntimeJsonValueV1Schema.safeParse(value);
   if (!strictJson.success) {

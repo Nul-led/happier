@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
+import { buildSessionAwarenessListResultV1 } from '../sessions/awareness/action.js';
 
 function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
   return createActionExecutor({
     executionRunStart: async () => ({}),
     executionRunList: async () => ({}),
     executionRunGet: async () => ({}),
-    executionRunSend: async () => ({}),
+    detachedExecutionRunSend: async () => ({}),
     executionRunStop: async () => ({}),
     executionRunAction: async () => ({}),
     executionRunWait: async () => ({}),
@@ -35,6 +36,8 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
     daemonMemoryGetWindow: async () => ({ v: 1, snippets: [], citations: [] }),
     daemonMemoryEnsureUpToDate: async () => ({}),
     resetGlobalVoiceAgent: async () => {},
+    // Most cases isolate Session routing; approval-specific cases override this.
+    isActionApprovalRequired: () => false,
     ...overrides,
   });
 }
@@ -50,9 +53,9 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (session control)', () => {
-  it('clamps every agent Session mutation to the admitted causal permission ceiling', async () => {
+  it('carries the admitted causal permission ceiling without turning it into a message override', async () => {
     const sessionSpawnNew = vi.fn(async () => ({ type: 'success' as const }));
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted', localId: 'input-1' }));
     const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
     const executor = createExecutor({
       sessionSpawnNew,
@@ -79,9 +82,8 @@ describe('createActionExecutor (session control)', () => {
       'session.message.send' as any,
       { sessionId: 'target', message: 'Continue' },
       agentContext,
-    )).resolves.toEqual({ ok: true, result: { ok: true } });
+    )).resolves.toEqual({ ok: true, result: { status: 'accepted', localId: 'input-1' } });
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      permissionModeOverride: 'read-only',
       callerSurface: 'agent',
       sessionInputSource: {
         sourceSessionId: 'caller',
@@ -93,10 +95,11 @@ describe('createActionExecutor (session control)', () => {
         },
       },
     }));
+    expect(sessionSendMessage.mock.calls[0]?.[0]).not.toHaveProperty('permissionModeOverride');
 
     await expect(executor.execute(
       'session.permission_mode.set' as any,
-      { sessionId: 'target', permissionMode: 'yolo' },
+      { sessionId: 'caller', permissionMode: 'yolo' },
       agentContext,
     )).resolves.toMatchObject({
       ok: false,
@@ -139,6 +142,26 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
+  it('keeps an external MCP caller with current-Session access bound to that Session', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target', message: 'Continue' },
+      {
+        surface: 'mcp',
+        defaultSessionId: 'caller',
+        sessionListAccess: 'current_session',
+      },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.message.send',
+    });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
   it('fails every agent Session mutation closed when causal permission authority is malformed', async () => {
     const sessionSpawnNew = vi.fn(async () => ({ type: 'success' as const }));
     const sessionSendMessage = vi.fn(async () => ({ ok: true }));
@@ -161,7 +184,7 @@ describe('createActionExecutor (session control)', () => {
 
     for (const [actionId, input] of [
       ['session.message.send', { sessionId: 'target', message: 'Continue' }],
-      ['session.permission_mode.set', { sessionId: 'target', permissionMode: 'read-only' }],
+      ['session.permission_mode.set', { sessionId: 'caller', permissionMode: 'read-only' }],
       ['session.spawn_new', { ...canonicalSessionSpawnInput, permissionMode: 'read-only' }],
     ] as const) {
       await expect(executor.execute(actionId as any, input, agentContext)).resolves.toEqual({
@@ -198,7 +221,7 @@ describe('createActionExecutor (session control)', () => {
   });
 
   it('executes session.message.send via deps.sessionSendMessage (including optional overrides)', async () => {
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
     const executor = createExecutor({ sessionSendMessage });
     const cancellation = new AbortController();
 
@@ -218,7 +241,7 @@ describe('createActionExecutor (session control)', () => {
       { surface: 'cli', defaultSessionId: null, signal: cancellation.signal },
     );
 
-    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(res).toEqual({ ok: true, result: { status: 'accepted', localId: 'input-1' } });
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 's1',
       message: 'Hello',
@@ -579,7 +602,7 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).toHaveBeenCalledOnce();
   });
 
-  it('keeps a plugin Session message failure before dispatch generic and does not fabricate admission identity', async () => {
+  it('fails a deferred plugin Session message without a complete durable origin before dispatch', async () => {
     const approvalsCreate = vi.fn(async () => {
       throw new Error('Approval store unavailable');
     });
@@ -599,6 +622,8 @@ describe('createActionExecutor (session control)', () => {
       },
       {
         surface: 'plugin',
+        serverId: 'server-1',
+        actionRequestId: 'action-request-1',
         actionCaller: {
           kind: 'plugin',
           pluginId: 'acme.channels',
@@ -607,9 +632,9 @@ describe('createActionExecutor (session control)', () => {
       },
     );
 
-    expect(result).toMatchObject({ ok: false, errorCode: 'action_failed' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'approval_origin_unavailable' });
     expect(result).not.toHaveProperty('result');
-    expect(approvalsCreate).toHaveBeenCalledOnce();
+    expect(approvalsCreate).not.toHaveBeenCalled();
     expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
@@ -632,8 +657,8 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
-  it('clamps an agent message without an explicit override to the caller permission', async () => {
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+  it('keeps an agent message override implicit while forwarding its causal permission authority', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
     const executor = createExecutor({ sessionSendMessage });
 
     const res = await executor.execute(
@@ -658,11 +683,16 @@ describe('createActionExecutor (session control)', () => {
       },
     );
 
-    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(res).toEqual({ ok: true, result: { status: 'accepted', localId: 'input-1' } });
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      permissionModeOverride: 'read-only',
       callerSurface: 'agent',
+      sessionInputSource: expect.objectContaining({
+        causalPermissionAuthority: expect.objectContaining({
+          admittedPermissionCeiling: 'read-only',
+        }),
+      }),
     }));
+    expect(sessionSendMessage.mock.calls[0]?.[0]).not.toHaveProperty('permissionModeOverride');
   });
 
   it('rejects provider identity without a concrete model override', async () => {
@@ -716,7 +746,11 @@ describe('createActionExecutor (session control)', () => {
     );
 
     expect(res).toEqual({ ok: true, result: { ok: true } });
-    expect(sessionTitleSet).toHaveBeenCalledWith({ sessionId: 's1', title: 'New title' });
+    expect(sessionTitleSet).toHaveBeenCalledWith({
+      sessionId: 's1',
+      title: 'New title',
+      context: { surface: 'cli', defaultSessionId: null },
+    });
   });
 
   it('executes session.stop via deps.sessionStop', async () => {
@@ -772,7 +806,7 @@ describe('createActionExecutor (session control)', () => {
     const res = await executor.execute(
       'session.terminalComposer.clear' as any,
       { sessionId: 's1', expectedStateAtMs: 42 },
-      { surface: 'cli', defaultSessionId: null },
+      { surface: 'ui', defaultSessionId: null, serverId: 'server-b' },
     );
 
     expect(res).toEqual({
@@ -786,7 +820,37 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionTerminalComposerClear).toHaveBeenCalledWith({
       sessionId: 's1',
       expectedStateAtMs: 42,
-      serverId: 'server-a',
+      serverId: 'server-b',
+    });
+  });
+
+  it('executes session.pendingInput.interruptAndRun against the exact context Home', async () => {
+    const sessionPendingInputInterruptAndRun = vi.fn(async () => ({
+      ok: true as const,
+      status: 'interrupted' as const,
+      sessionId: 's1',
+      localId: 'pending-b',
+    }));
+    const executor = createExecutor({
+      sessionPendingInputInterruptAndRun,
+      resolveServerIdForSessionId: (sessionId) => sessionId === 's1' ? 'server-a' : null,
+    } as Partial<ActionExecutorDeps>);
+
+    const res = await executor.execute(
+      'session.pendingInput.interruptAndRun' as any,
+      { sessionId: 's1', localId: 'pending-b', expectedStateAtMs: 42 },
+      { surface: 'ui', defaultSessionId: null, serverId: 'server-b' },
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      result: { ok: true, status: 'interrupted', sessionId: 's1', localId: 'pending-b' },
+    });
+    expect(sessionPendingInputInterruptAndRun).toHaveBeenCalledWith({
+      sessionId: 's1',
+      localId: 'pending-b',
+      expectedStateAtMs: 42,
+      serverId: 'server-b',
     });
   });
 
@@ -820,7 +884,7 @@ describe('createActionExecutor (session control)', () => {
     expect(res).toEqual({ ok: true, result: { ok: true } });
     expect(sessionPermissionModeSet).toHaveBeenCalledWith({
       sessionId: 's1',
-      permissionMode: 'read_only',
+      permissionMode: 'read-only',
       serverId: 'server-a',
     });
   });
@@ -858,6 +922,64 @@ describe('createActionExecutor (session control)', () => {
       modelId: 'model-a',
       providerConnectionId: 'pc_work',
     });
+  });
+
+  it('preserves the exact Team resource catalog selection through session.model.set', async () => {
+    const sessionModelSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionModelSet,
+      resolveServerIdForSessionId: () => 'server-team',
+    });
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+      agentTargetKey: 'backend:codex',
+      modelId: 'team-model',
+      deliveryMode: 'brokered' as const,
+    };
+
+    const res = await executor.execute(
+      'session.model.set' as any,
+      { sessionId: 's1', teamCredentialModel, teamVisibilityGrantConsent: { teamId: 'team-1' } },
+      { surface: 'ui', defaultSessionId: 's1' },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionModelSet).toHaveBeenCalledWith({
+      sessionId: 's1',
+      teamCredentialModel,
+      teamVisibilityGrantConsent: { teamId: 'team-1' },
+      serverId: 'server-team',
+    });
+  });
+
+  it('rejects mixed Team-resource and Provider-connection model identities', async () => {
+    const sessionModelSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionModelSet });
+
+    const res = await executor.execute(
+      'session.model.set' as any,
+      {
+        sessionId: 's1',
+        modelId: 'native-model',
+        providerConnectionId: 'pc-work',
+        teamCredentialModel: {
+          kind: 'team_credential_provider_model',
+          teamId: 'team-1',
+          resourceId: 'resource-1',
+          expectedResourceRevision: 7,
+          agentTargetKey: 'backend:codex',
+          modelId: 'team-model',
+          deliveryMode: 'brokered',
+        },
+      },
+      { surface: 'ui', defaultSessionId: 's1' },
+    );
+
+    expect(res).toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(sessionModelSet).not.toHaveBeenCalled();
   });
 
   it('preserves a literal provider model id named default', async () => {
@@ -986,6 +1108,7 @@ describe('createActionExecutor (session control)', () => {
       roles: ['user', 'assistant'],
       includeTools: true,
       serverId: 'server-a',
+      context: { surface: 'cli', defaultSessionId: null },
     });
   });
 
@@ -1025,6 +1148,11 @@ describe('createActionExecutor (session control)', () => {
       projection: 'externalShareableV1',
       cursor: '7',
       callerPluginId: 'com.example.channel',
+      context: {
+        surface: 'plugin',
+        defaultSessionId: null,
+        actionCaller: { kind: 'plugin', pluginId: 'com.example.channel' },
+      },
     });
   });
 
@@ -1125,11 +1253,40 @@ describe('createActionExecutor (session control)', () => {
       cursor: 'cursor-1',
       roles: ['user'],
       maxCharsPerMessage: 80,
+      context: { surface: 'cli', defaultSessionId: null },
+    });
+  });
+
+  it('binds the resolved Home for session.messages.recent.get like the canonical transcript action', async () => {
+    const sessionTranscriptGet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionTranscriptGet,
+      resolveServerIdForSessionId: (sessionId) => sessionId === 's1' ? 'server-a' : null,
+    });
+
+    const res = await executor.execute(
+      'session.messages.recent.get' as any,
+      { sessionId: 's1', limit: 3 },
+      { surface: 'cli', defaultSessionId: null },
+    );
+
+    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(sessionTranscriptGet).toHaveBeenCalledWith({
+      sessionId: 's1',
+      limit: 3,
+      roles: ['user', 'assistant'],
+      serverId: 'server-a',
+      context: { surface: 'cli', defaultSessionId: null },
     });
   });
 
   it('executes session.wait.idle via deps.sessionWaitIdle', async () => {
-    const sessionWaitIdle = vi.fn(async () => ({ ok: true }));
+    const sessionWaitIdle = vi.fn(async () => ({
+      ok: true as const,
+      sessionId: 's1',
+      idle: true as const,
+      observedAt: 42,
+    }));
     const executor = createExecutor({
       sessionWaitIdle,
       resolveServerIdForSessionId: (sessionId) => sessionId === 's1' ? 'server-a' : null,
@@ -1141,7 +1298,10 @@ describe('createActionExecutor (session control)', () => {
       { surface: 'cli', defaultSessionId: null },
     );
 
-    expect(res).toEqual({ ok: true, result: { ok: true } });
+    expect(res).toEqual({
+      ok: true,
+      result: { ok: true, sessionId: 's1', idle: true, observedAt: 42 },
+    });
     expect(sessionWaitIdle).toHaveBeenCalledWith({ sessionId: 's1', timeoutSeconds: 42, serverId: 'server-a' });
   });
 
@@ -1620,30 +1780,49 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSpawnNew).not.toHaveBeenCalled();
   });
 
-  it('executes session.list via deps.sessionList (including cli filter flags)', async () => {
-    const sessionList = vi.fn(async () => ({ sessions: [] }));
+  it('executes session.list via deps.sessionList with the validated query, view, and host scope', async () => {
+    const awarenessResult = buildSessionAwarenessListResultV1({
+      sessions: [],
+      nextCursor: null,
+      hasNext: false,
+      attentionNextCursor: null,
+      attentionHasNext: false,
+    });
+    const sessionList = vi.fn(async () => awarenessResult);
     const executor = createExecutor({ sessionList });
+
+    const query = {
+      v: 1 as const,
+      storage: 'active' as const,
+      includeInactive: false,
+      scope: 'assigned_to_me' as const,
+      attention: 'needs_my_attention' as const,
+      audiences: [{ kind: 'group' as const, teamId: 'team-1', groupId: 'group-1' }],
+      tagIds: ['tag-1'],
+      cursor: 'cursor_v1_session-1',
+      limit: 10,
+      includeAttention: true,
+    };
+    const signal = new AbortController().signal;
 
     const res = await executor.execute(
       'session.list' as any,
       {
-        limit: 10,
-        cursor: 'cursor-1',
-        activeOnly: true,
-        includeSystem: true,
-        resumableOnly: true,
+        query,
+        view: 'awareness',
       },
-      { surface: 'cli', defaultSessionId: null },
+      { surface: 'cli', defaultSessionId: null, serverId: 'home-1', signal },
     );
 
-    expect(res).toEqual({ ok: true, result: { sessions: [] } });
-    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({
-      limit: 10,
-      cursor: 'cursor-1',
-      activeOnly: true,
-      includeSystem: true,
-      resumableOnly: true,
-    }));
+    // The marker is mandatory: an unmarked summary answer here would be a false success.
+    expect(res).toEqual({ ok: true, result: awarenessResult });
+    expect(sessionList).toHaveBeenCalledWith({
+      query,
+      view: 'awareness',
+      serverId: 'home-1',
+      signal,
+      context: { surface: 'cli', defaultSessionId: null, serverId: 'home-1', signal },
+    });
   });
 
   it('preserves cursor zero when reading execution-run streams', async () => {

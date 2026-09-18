@@ -30,7 +30,7 @@ export type PluginMachineMaterializationRefV1 = z.infer<
  * Collection schemas carry already-canonical identity values, rather than
  * applying Zod's boundary trimming while persisting an identity.
  */
-const CANONICAL_NON_EMPTY_TRIMMED_STRING_PATTERN = '^\\S(?:[\\s\\S]*\\S)?$';
+const CANONICAL_NON_EMPTY_TRIMMED_STRING_PATTERN = '^\\S(?:[\\s\\S]*\\S)?$(?![\\s\\S])';
 
 /**
  * Reusable public JSON-schema projection for persisted portable

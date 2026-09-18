@@ -53,6 +53,40 @@ describe('attentionDeliveryPolicyV1 quiet hours', () => {
     })).toMatchObject({ delivery: 'suppress', reason: 'quiet_hours' });
   });
 
+  it('applies an overnight window to the day on which the window starts', () => {
+    const parsed = parseAccountSettings({
+      attentionDeliveryPolicyV1: {
+        v: 1,
+        quietHours: {
+          enabled: true,
+          timezone: 'UTC',
+          windows: [{ startLocalTime: '22:00', endLocalTime: '07:00', days: ['mon'] }],
+        },
+      },
+    });
+
+    expect(resolveAttentionDecision({
+      policy: parsed.attentionDeliveryPolicyV1,
+      event: 'ready',
+      channel: 'expo_push',
+      now: new Date('2026-05-04T23:30:00.000Z'),
+    })).toMatchObject({ delivery: 'suppress', reason: 'quiet_hours' });
+
+    expect(resolveAttentionDecision({
+      policy: parsed.attentionDeliveryPolicyV1,
+      event: 'ready',
+      channel: 'expo_push',
+      now: new Date('2026-05-05T06:30:00.000Z'),
+    })).toMatchObject({ delivery: 'suppress', reason: 'quiet_hours' });
+
+    expect(resolveAttentionDecision({
+      policy: parsed.attentionDeliveryPolicyV1,
+      event: 'ready',
+      channel: 'expo_push',
+      now: new Date('2026-05-05T23:30:00.000Z'),
+    })).toMatchObject({ delivery: 'deliver', reason: 'deliver' });
+  });
+
   it('treats equal quiet-hour start and end times as a no-op window', () => {
     const parsed = parseAccountSettings({
       attentionDeliveryPolicyV1: {

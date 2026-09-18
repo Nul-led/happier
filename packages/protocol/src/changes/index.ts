@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema } from '../sessions/idsV1.js';
+import { formatSharedSavedSecretRefV1 } from '../account/settings/savedSecretReferenceV1.js';
 import { PluginDomainChangeEntrySchema } from './pluginDomain.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 
@@ -32,13 +33,45 @@ export const ChangeKindSchema = z.enum([
   'friend_accepted',
   'kv',
   'machine',
+  'machinePool',
   'pet',
   'pluginDomain',
+  'savedSecretResource',
   'session',
   'share',
 ]);
 
 export type ChangeKind = z.infer<typeof ChangeKindSchema>;
+
+/** AccountChange entity identities for reconstructible Home administration projections. */
+export const HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'home-governance' as const;
+export const TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'teams' as const;
+/**
+ * Coalescing identity for the creator's Runner-activation projection.
+ *
+ * Endpoint-driven activation transitions (claim, endpoint facts, consent,
+ * readiness, decline) are the only activation facts a creator cannot learn from
+ * its own request result. Waking on this entity lets the mounted creator refetch
+ * the canonical activation projection instead of running a timer.
+ */
+export const EPHEMERAL_RUNNER_ACTIVATION_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'ephemeral-runner-activation' as const;
+
+/** Additive-open advisory hint for the canonical Session Organization owner. */
+export const SessionOrganizationChangeHintSchema = z.object({
+  sessionOrganization: z.literal(true),
+  scope: z.enum(['pins', 'folders', 'folderAssignments', 'tags', 'tagAssignments', 'order', 'labels', 'attentionStandings']),
+  sessionIds: z.array(z.string().trim().min(1)).optional(),
+  folderIds: z.array(z.string().trim().min(1)).optional(),
+  tagIds: z.array(z.string().trim().min(1)).optional(),
+  deletedTagIds: z.array(z.string().trim().min(1)).optional(),
+  scopeKeys: z.array(z.string().trim().min(1)).optional(),
+  orderScopes: z.array(z.object({
+    scopeKind: z.enum(['pinned', 'folder', 'tag', 'workspace', 'group']),
+    scopeKey: z.string().trim().min(1),
+  })).optional(),
+}).passthrough();
+
+export type SessionOrganizationChangeHint = z.infer<typeof SessionOrganizationChangeHintSchema>;
 
 export const ChangeEntrySchema = z.object({
   cursor: z.number().int().min(0),
@@ -47,13 +80,27 @@ export const ChangeEntrySchema = z.object({
   changedAt: z.number().int().min(0),
   hint: z.unknown().nullable().optional(),
 }).strict().superRefine((entry, context) => {
-  if (entry.kind !== 'pluginDomain') return;
-  const parsed = PluginDomainChangeEntrySchema.safeParse(entry);
-  if (!parsed.success) {
+  if (entry.kind === 'pluginDomain' && !PluginDomainChangeEntrySchema.safeParse(entry).success) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Invalid pluginDomain AccountChange entry.',
     });
+  }
+  if (entry.kind === 'savedSecretResource') {
+    try {
+      formatSharedSavedSecretRefV1(entry.entityId);
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid savedSecretResource AccountChange entityId.',
+      });
+    }
+    if (entry.hint !== null && entry.hint !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'savedSecretResource AccountChange does not carry a hint.',
+      });
+    }
   }
 });
 

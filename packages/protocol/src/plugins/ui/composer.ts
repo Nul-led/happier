@@ -59,6 +59,7 @@ export const ComposerScopeKindV1Schema = z.enum([
   'pendingMessage',
   'participantMessage',
   'automationAuthoring',
+  'workflowAuthoring',
 ]);
 export type ComposerScopeKindV1 = z.infer<typeof ComposerScopeKindV1Schema>;
 

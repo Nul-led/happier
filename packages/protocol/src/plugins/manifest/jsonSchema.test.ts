@@ -30,11 +30,18 @@ const validManifest = {
   },
 } as const;
 
-const validateExternalManifest = new Ajv2020({
+const externalManifestAjv = new Ajv2020({
   strict: true,
   strictTuples: false,
   validateFormats: false,
-}).compile(createPluginManifestJsonSchemaV2());
+});
+for (const keyword of [
+  'x-happier-max-utf8-bytes',
+  'x-happier-max-serialized-utf8-bytes',
+]) {
+  externalManifestAjv.addKeyword({ keyword, valid: true });
+}
+const validateExternalManifest = externalManifestAjv.compile(createPluginManifestJsonSchemaV2());
 
 function targetForSlot(kind: string): Record<string, unknown> {
   switch (kind) {
@@ -108,6 +115,46 @@ describe('createPluginManifestJsonSchemaV2', () => {
 
     expect(PluginManifestV2Schema.safeParse(invalid).success).toBe(false);
     expect(validateExternalManifest(invalid)).toBe(false);
+  });
+
+  it('keeps hosted HTML and the Session widget role aligned at both manifest boundaries', () => {
+    const renderer = {
+      id: 'inline-status',
+      kind: 'hostedHtml',
+      source: { kind: 'html', html: '<main>Status</main>' },
+      requiredHostMethods: ['context'],
+      requestedCapabilities: { networkOrigins: ['https://status.example.com'] },
+    } as const;
+    const valid = {
+      ...validManifest,
+      contributes: {
+        ui: {
+          renderers: [renderer],
+          views: [{
+            id: 'session-status',
+            container: 'sessionWidget',
+            target: { kind: 'session' },
+            renderer: renderer.id,
+            title: 'Session status',
+          }],
+        },
+      },
+    } as const;
+
+    expect(PluginManifestV2Schema.safeParse(valid).success).toBe(true);
+    expect(validateExternalManifest(valid)).toBe(true);
+
+    for (const view of [
+      { ...valid.contributes.ui.views[0], target: { kind: 'app' } },
+      { ...valid.contributes.ui.views[0], instancePolicy: 'singleton' },
+    ]) {
+      const invalid = {
+        ...valid,
+        contributes: { ui: { ...valid.contributes.ui, views: [view] } },
+      };
+      expect(PluginManifestV2Schema.safeParse(invalid).success).toBe(false);
+      expect(validateExternalManifest(invalid)).toBe(false);
+    }
   });
 
   it('keeps targeted protocol identifier admission aligned between the executable and generated manifest schemas', () => {

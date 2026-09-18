@@ -23,6 +23,7 @@ import {
 import {
   AutomationStoredDefinitionExecutionRecipeV1Schema,
 } from './automationRunExecutionRecipeV1.js';
+import { AutomationStoredWorkflowDefinitionRecipeV2Schema } from './automationWorkflowRecipeV2.js';
 import { ExecutionRunWaitResultSchema } from '../execution/runs/index.js';
 import { AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS } from './automationTemplateEnvelope.js';
 import {
@@ -125,7 +126,7 @@ export {
 } from './automationRunStateV3.js';
 
 export const AutomationV2ScheduleSchema = z.object({
-  kind: z.enum(['cron', 'interval']),
+  kind: z.enum(['cron', 'interval', 'manual']),
   scheduleExpr: z.string().nullable(),
   everyMs: z.number().int().nullable(),
   timezone: z.string().nullable(),
@@ -218,8 +219,10 @@ export type AutomationAssignmentUpdateRequest = z.infer<typeof AutomationAssignm
  * adding kind-owned evidence only when the cause has private input. The rule
  * belongs to the recipe owner so every authoring surface shares it.
  */
-const AutomationDefinitionExecutionRecipeSchema =
-  AutomationStoredDefinitionExecutionRecipeV1Schema;
+const AutomationDefinitionExecutionRecipeSchema = z.union([
+  AutomationStoredDefinitionExecutionRecipeV1Schema,
+  AutomationStoredWorkflowDefinitionRecipeV2Schema,
+]);
 
 export const AutomationTriggerCreateRequestSchema = z.object({
   triggerId: AutomationTriggerIdSchema,
@@ -506,7 +509,8 @@ const AutomationDefinitionBaseSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
   enabled: z.boolean(),
-  targetType: AutomationTargetTypeV3Schema,
+  /** Null only for a strict V2 managed-workflow recipe, which has no single legacy target. */
+  targetType: AutomationTargetTypeV3Schema.nullable(),
   /**
    * Bounded existing-Session association projected by the definition owner
    * from the current strict recipe. It is `null` for every other target and
@@ -537,7 +541,7 @@ const AutomationDefinitionDetailContentShape = {
   /** Direct-reader-only predecessor bytes. Current writers never send this field. */
   templateCiphertext: z.string().min(1).optional(),
   /** Direct-reader-only current recipe; definition lists never disclose it. */
-  executionRecipe: AutomationStoredDefinitionExecutionRecipeV1Schema.optional(),
+  executionRecipe: AutomationDefinitionExecutionRecipeSchema.optional(),
 };
 
 /** Bounded definition list item; no private source/configuration envelope. */
@@ -747,21 +751,83 @@ function addRunTriggerCauseCorrespondenceIssue(
   }
 }
 
-/** Private worker payload; public Run reads remain bounded separately. */
-export const AutomationV3WorkerClaimedRunSchema = z.object({
+const AutomationV3WorkerClaimedAutomationRunSchema = z.object({
   id: IDENTIFIER_SCHEMA,
   automationId: IDENTIFIER_SCHEMA,
   attempt: z.number().int().positive().safe(),
+  /** Exact post-claim parent CAS revision for workflow snapshot finalization. */
+  revision: z.number().int().nonnegative().safe(),
+  /** Explicit program epoch; workers never infer execution semantics from optional envelopes. */
+  recipeKind: z.enum(['legacy', 'workflow-v2']),
   // Retained predecessor Runs may lack a recipe. A V3 worker must fail those
   // closed rather than consulting the mutable Automation definition.
   executionInputEnvelope: AutomationRunExecutionInputEnvelopeSchema.nullable(),
+  /** Automation-origin workflow input evidence, kept separate from the immutable accepted definition. */
+  automationEvidenceEnvelope: AutomationRunExecutionInputEnvelopeSchema.nullable().optional(),
   triggerId: AutomationTriggerIdSchema.nullable(),
   triggerRetired: z.boolean(),
   /** Immutable Run-owned cause consumed by the strict recipe materializer. */
   cause: AutomationRunCauseSchema,
   /** Omitted for ordinary claims. */
   resultDelivery: AutomationV3WorkerResultDeliverySchema.optional(),
-}).strict().superRefine(addRunTriggerCauseCorrespondenceIssue);
+}).strict().superRefine((value, context) => {
+  addRunTriggerCauseCorrespondenceIssue(value, context);
+  if (value.recipeKind === 'workflow-v2') {
+    if (value.executionInputEnvelope === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['executionInputEnvelope'],
+        message: 'A workflow-v2 claim requires its frozen workflow definition envelope',
+      });
+    }
+    if (!Object.hasOwn(value, 'automationEvidenceEnvelope')) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['automationEvidenceEnvelope'],
+        message: 'A workflow-v2 claim requires explicit frozen trigger evidence, including null',
+      });
+    }
+  } else if (Object.hasOwn(value, 'automationEvidenceEnvelope')) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['automationEvidenceEnvelope'],
+      message: 'A legacy claim cannot carry workflow trigger evidence',
+    });
+  }
+});
+
+const AutomationV3WorkerClaimedDirectWorkflowRunSchema = z.object({
+  id: IDENTIFIER_SCHEMA,
+  automationId: z.null(),
+  attempt: z.number().int().positive().safe(),
+  revision: z.number().int().nonnegative().safe(),
+  recipeKind: z.literal('workflow-v2'),
+  origin: z.object({
+    kind: z.literal('direct'),
+    originSessionId: IDENTIFIER_SCHEMA.optional(),
+  }).strict(),
+  workflowAcceptedSnapshotEnvelope: AutomationRunExecutionInputEnvelopeSchema,
+  triggerId: z.null(),
+  triggerRetired: z.literal(false),
+}).strict();
+
+/**
+ * Receipt-safe claim projection. Private Run envelopes remain null in the
+ * receipt and are re-read from their transition-censused Run row on replay.
+ */
+export const AutomationV3WorkerClaimReceiptRunSchema = z.union([
+  AutomationV3WorkerClaimedAutomationRunSchema,
+  AutomationV3WorkerClaimedDirectWorkflowRunSchema.extend({
+    workflowAcceptedSnapshotEnvelope: AutomationRunExecutionInputEnvelopeSchema.nullable(),
+  }).strict(),
+]);
+export type AutomationV3WorkerClaimReceiptRun = z.infer<typeof AutomationV3WorkerClaimReceiptRunSchema>;
+
+/** Private worker payload; public Run reads remain bounded separately. */
+export const AutomationV3WorkerClaimedRunSchema = z.union([
+  AutomationV3WorkerClaimedAutomationRunSchema,
+  AutomationV3WorkerClaimedDirectWorkflowRunSchema,
+]);
 export type AutomationV3WorkerClaimedRun = z.infer<typeof AutomationV3WorkerClaimedRunSchema>;
 
 export const AutomationV3WorkerClaimedAutomationSchema = z.object({
@@ -779,14 +845,14 @@ export const AutomationV3WorkerClaimResponseSchema = z.object({
   /** C: exact Account witness observed atomically with the successful claim. */
   accountCurrentness: AutomationAccountCurrentnessWitnessV1Schema.nullable(),
 }).strict().superRefine((value, context) => {
-  if (
-    (value.run === null) !== (value.automation === null)
-    || (value.run === null) !== (value.accountCurrentness === null)
-  ) {
+  const runNeedsAutomation = value.run?.automationId !== null;
+  if ((value.run === null) !== (value.accountCurrentness === null)
+    || (value.run !== null && runNeedsAutomation !== (value.automation !== null))
+    || (value.run === null && value.automation !== null)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['accountCurrentness'],
-      message: 'A worker claim contains Run, Automation, and Account currentness together or none',
+      message: 'A worker claim contains Account currentness with its Run and an Automation only for Automation origin',
     });
   }
 });
@@ -1025,7 +1091,19 @@ export type AutomationV3RunReplyHandoffRedeliverRequest = z.infer<
 
 export const AutomationV3RunMutationResponseSchema = z.object({
   run: AutomationV3RunListItemSchema,
-}).strict();
+  workflowRun: z.object({
+    recipeKind: z.literal('workflow-v2'),
+    workflowRunId: IDENTIFIER_SCHEMA,
+  }).strict().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.workflowRun && value.workflowRun.workflowRunId !== value.run.id) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['workflowRun', 'workflowRunId'],
+      message: 'Workflow Run correspondence must identify the returned Run',
+    });
+  }
+});
 export type AutomationV3RunMutationResponse = z.infer<typeof AutomationV3RunMutationResponseSchema>;
 
 export const AutomationDeleteResponseSchema = z.object({ ok: z.literal(true) }).strict();

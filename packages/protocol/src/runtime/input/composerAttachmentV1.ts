@@ -168,6 +168,19 @@ function withComposerAttachmentRecordSizeLimit<TSchema extends z.ZodTypeAny>(sch
   }) as TSchema;
 }
 
+/**
+ * The contentless record projection a saved, portable authoring document may
+ * carry across devices. It keeps this owner's identity, value, presentation and
+ * record-size bounds and deliberately admits no `content` member: a
+ * transfer-owned staged-media claim is device-local and is not durable saved
+ * content, while a durable SessionMedia reference belongs to an admitted
+ * Session input rather than a portable definition.
+ */
+export const PortableComposerAttachmentV1Schema = withComposerAttachmentRecordSizeLimit(
+  ComposerAttachmentRecordBaseV1Schema,
+);
+export type PortableComposerAttachmentV1 = DeepReadonly<z.infer<typeof PortableComposerAttachmentV1Schema>>;
+
 /** A draft may retain only a transfer-owned opaque staged-media claim. */
 export const ComposerAttachmentDraftV1Schema = withComposerAttachmentRecordSizeLimit(
   ComposerAttachmentRecordBaseV1Schema.extend({

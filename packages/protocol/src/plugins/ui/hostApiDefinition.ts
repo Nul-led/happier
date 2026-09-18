@@ -64,6 +64,36 @@ export const PluginUiHostMethodV1Schema = z.enum(PLUGIN_UI_HOST_METHODS_V1);
 export type PluginUiHostMethodV1 = z.infer<typeof PluginUiHostMethodV1Schema>;
 
 /**
+ * The closed declarable ceiling for caller-authored hosted HTML.
+ *
+ * Installed code is admitted through a manifest, an immutable generation and
+ * its grants, so its negotiated subset is decided by the plugin authority
+ * owner. A by-value document authored inside a Session has none of those, so
+ * the vocabulary it may even ASK for is capped here, beside the one method
+ * tuple. It is read/act/notify only: no clipboard, Composer, navigation,
+ * open-content, connected-account or current-UI-publication authority can be
+ * requested, advertised or dispatched, whatever an outer message claims.
+ *
+ * This is a ceiling, not a grant. The mounting host still intersects it with
+ * the document's own request and the currently admitted set, and every
+ * individual Resource and Action keeps its ordinary admission and confirmation
+ * policy.
+ */
+export const PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1 = Object.freeze([
+  'context',
+  'watchContext',
+  'readResource',
+  'watchResource',
+  'executeAction',
+  'notify',
+] as const satisfies readonly PluginUiHostMethodV1[]);
+export const PluginUiCallerHostedHtmlHostMethodV1Schema = z.enum(
+  PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1,
+);
+export type PluginUiCallerHostedHtmlHostMethodV1 =
+  z.infer<typeof PluginUiCallerHostedHtmlHostMethodV1Schema>;
+
+/**
  * Transport operations are not host API methods. `disposeHostResource` retires
  * an established context, Resource, Composer observation, or input-lock lease;
  * it is never declarable, advertised, or a public SDK member.

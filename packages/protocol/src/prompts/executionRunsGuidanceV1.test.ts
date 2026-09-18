@@ -16,6 +16,8 @@ describe('executionRunsGuidanceV1', () => {
     expect(result.text).toContain('Happier execution run');
     expect(result.text).toContain('omit `sessionId`');
     expect(result.text).toContain('intentional explicit cross-session target');
+    expect(result.text).toContain('Do not poll `execution.run.get` or `execution.run.list`');
+    expect(result.text).toContain('one event-driven observation');
     expect(result.text.toLowerCase()).not.toContain('custom rule');
   });
 

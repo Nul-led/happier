@@ -1145,7 +1145,10 @@ export type AutomationReplyHandoffTargetV1 = z.infer<
  * summary arm retains its released bound; current plain/E2EE result content
  * does not acquire a second transport-specific ceiling.
  */
-export const AutomationReplyHandoffResultEnvelopeTransportV1Schema = AutomationRunResultStoredV1Schema;
+export const AutomationReplyHandoffResultEnvelopeTransportV1Schema = z.union([
+  AutomationRunResultStoredV1Schema,
+  z.object({ t: z.literal('plain'), v: z.unknown() }).strict(),
+]);
 export type AutomationReplyHandoffResultEnvelopeTransportV1 = z.infer<
   typeof AutomationReplyHandoffResultEnvelopeTransportV1Schema
 >;
@@ -1162,6 +1165,9 @@ export const AutomationReplyHandoffClaimV1Schema = z.object({
   occurrenceKey: AutomationOccurrenceKeyV1Schema,
   cause: AutomationRunCauseSchema,
   accountCurrentness: AutomationAccountCurrentnessWitnessV1Schema,
+  // Absent is the released one-shot producer; current servers always publish
+  // the explicit recipe discriminator.
+  recipeKind: z.enum(['legacy', 'workflow-v2']).optional(),
   resultEnvelope: AutomationReplyHandoffResultEnvelopeTransportV1Schema,
   replyContextEnvelope: AutomationStoredContentEnvelopeV1Schema,
 }).strict().superRefine((value, context) => {

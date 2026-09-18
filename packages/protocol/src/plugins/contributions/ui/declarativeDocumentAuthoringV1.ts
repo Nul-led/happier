@@ -23,7 +23,9 @@ export type PluginDeclarativeDocumentV1 = Readonly<{
 
 export const PluginDeclarativeDocumentV1Schema: z.ZodType<PluginDeclarativeDocumentV1> = z.object({
   version: z.literal(1),
-  root: PluginDeclarativeNodeV2Schema,
+  // UI contribution schemas consume this document while their Action grammar
+  // is still initializing. Defer the reverse edge until a document is parsed.
+  root: z.lazy(() => PluginDeclarativeNodeV2Schema),
 }).strict();
 
 /** The exact Resource media type and validator for the author-facing envelope. */

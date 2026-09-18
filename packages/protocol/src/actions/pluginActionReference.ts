@@ -117,6 +117,13 @@ export function renderPluginActionReferenceMarkdown(): string {
     '',
     'Every row carries its canonical **Caller authority** from the ActionSpec registry. Being listed here proves the Action is discoverable on the Plugin surface; it does not imply a plugin caller can satisfy it. A row marked `present_user` is admitted only when the host stamps present-user caller authority — a plugin or API-token caller carries automation authority and receives the typed `present_user_required` failure instead of a result. Caller authority is host-stamped: Action input can never supply, widen, or narrow it.',
     '',
+    'Authority comes from the admitted invocation, never from Session content. A plugin running on someone\'s Session runtime keeps its own host-stamped principal no matter who wrote the latest message: the newest input author is correlation, and neither a `requestedBy`-style field nor input authorship delegates that person\'s Account. Host operations a plugin performs on a Session are recorded with the actual admitted execution Account plus Agent producer provenance, so an Agent post is visibly Agent-produced rather than attributed to the person who asked for it. Confirmation is a separate decision from authorization: an approval or an explicit user waiver can satisfy the Action\'s confirmation requirement, but it never grants missing Session access, surface enablement, or endpoint consent.',
+    '',
+    'Bundled and externally installed plugins reach these Actions through the same `activate(api)` ABI, the same public SDK services seam, and the same Account Action settings. Trust is a user decision, not a packaging one: there is no smaller allowlist for an external plugin and no host-internal import that makes a first-party example work. Two surface distinctions are worth knowing before you pick a call site:',
+    '',
+    '- `session.message.send` accepts an optional `recipient`. Omit it for the main Session; `{ kind: \'execution_run\', runId }` addresses one Session-owned run through the Session\'s own Pending queue and target admission. The separate `execution.run.send` Action is only for a **detached** run with `sessionId: null`.',
+    '- The trusted plugin `userText` binding additionally carries manifest-declared attachments and host-stamped source provenance. The public API-Token/SDK binding for the same Action is intentionally strict and smaller: it rejects `source`, attachments, structured launch and `idempotencyKey` rather than accepting them as untyped JSON. That is an authority boundary, not a reduced capability set. See [Actions, tools and commands](/plugins/api/actions-tools-commands#calling-host-actions).',
+    '',
     ...actionSpecs.map(renderAction),
   ].join('\n');
 }

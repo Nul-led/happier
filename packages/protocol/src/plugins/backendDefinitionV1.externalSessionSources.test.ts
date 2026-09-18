@@ -32,6 +32,17 @@ const validSourceDeclaration = {
 } as const;
 
 describe('PluginBackendExternalSessionSourceDeclarationV1Schema', () => {
+  it('admits an explicit resume-only source without implying link or follow support', () => {
+    expect(PluginBackendExternalSessionSourceDeclarationV1Schema.parse({
+      ...validSourceDeclaration,
+      resumeOnly: true,
+    })).toMatchObject({ resumeOnly: true });
+    expect(PluginBackendExternalSessionSourceDeclarationV1Schema.safeParse({
+      ...validSourceDeclaration,
+      resumeOnly: false,
+    }).success).toBe(false);
+  });
+
   it('accepts source declarations whose keys and refinements reference declared fields', () => {
     expect(PluginBackendExternalSessionSourceDeclarationV1Schema.safeParse(validSourceDeclaration).success).toBe(true);
   });

@@ -25,12 +25,36 @@ describe('plugin contribution catalog', () => {
       },
       definition: {
         modelConfigOptionId: 'model',
+        models: {
+          suffixOption: {
+            id: 'reasoning_effort',
+            name: 'Reasoning effort',
+            values: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+            ],
+            trailingOption: {
+              id: 'service_tier',
+              name: 'Speed',
+              defaultValue: { value: 'standard', name: 'Standard' },
+              values: [
+                { segment: 'fast', value: 'fast', name: 'Fast' },
+                { segment: 'priority', value: 'priority', name: 'Fast' },
+              ],
+            },
+          },
+        },
         stderrRules: {
+          authenticationErrorDetail: 'Authenticate with the provider CLI.',
           suppress: [{
             includes: ['known harmless ACP notification'],
           }],
         },
         mcp: { policy: 'pass_through' as const },
+        permissionModeMapping: {
+          default: null,
+          'safe-yolo': 'smart',
+        },
       },
     };
 
@@ -430,6 +454,11 @@ describe('plugin contribution catalog', () => {
     expect(derivePluginDaemonContributionRegistrationRights({
       agents: [
         {
+          id: 'acp-terminal',
+          runtime: { kind: 'acp' },
+          capabilities: { surfaces: ['terminal'] },
+        },
+        {
           id: 'acp-external',
           runtime: { kind: 'acp' },
           capabilities: { surfaces: ['externalSessions'] },
@@ -442,8 +471,34 @@ describe('plugin contribution catalog', () => {
         },
       ],
     })).toEqual([
+      { family: 'agents', localId: 'acp-terminal', target: { realm: 'daemon' }, requiredFields: ['terminal'] },
       { family: 'agents', localId: 'acp-external', target: { realm: 'daemon' }, requiredFields: ['externalSessions'] },
       { family: 'agents', localId: 'external-only', target: { realm: 'daemon' }, requiredFields: ['externalSessions'] },
+    ]);
+
+    // A `custom` runtime owns its terminal inside the Agent runtime it returns
+    // (`AgentRuntime.surfaces.terminal`), and the runtime lease rejects an
+    // Agent that carries both that surface and a registered contribution. The
+    // terminal capability therefore demands a registered contribution only for
+    // host-owned runtimes.
+    expect(derivePluginDaemonContributionRegistrationRights({
+      agents: [
+        {
+          id: 'custom-terminal',
+          runtime: { kind: 'custom' },
+          capabilities: {
+            surfaces: ['terminal'],
+            sessions: { open: ['create'], delivery: ['newTurn'] },
+          },
+        },
+      ],
+    })).toEqual([
+      {
+        family: 'agents',
+        localId: 'custom-terminal',
+        target: { realm: 'daemon' },
+        requiredFields: ['factory', 'sessionRunnerFactory'],
+      },
     ]);
 
     expect(derivePluginDaemonContributionRegistrationRights({
@@ -485,6 +540,90 @@ describe('plugin contribution catalog', () => {
         { id: 'capability-only', capabilities: { surfaces: ['externalSessions'] } },
         { id: 'descriptor-only', surfaces: { externalSession: { sources: [{}] } } },
       ],
+    })).toEqual([]);
+  });
+
+  it('exempts only a valid all-resume-only ACP declaration from the External Sessions contribution', () => {
+    // The host synthesizes exactly one generic ACP `session/list` producer for
+    // a valid all-resume-only declaration, so demanding a plugin contribution
+    // there rejects the declaration the host itself serves, and accepting one
+    // would install a competing owner. Every weaker shape below keeps owing the
+    // contribution and stays fail-closed.
+    const source = (extra: Readonly<Record<string, unknown>> = {}) => ({
+      sourceKind: 'acpSessions',
+      schema: { fields: [{ name: 'kind', kind: 'literal', value: 'acpSessions' }] },
+      key: { segments: [{ kind: 'literal', value: 'acpSessions' }] },
+      ...extra,
+    });
+    const resumeOnlyAgent = (
+      id: string,
+      overrides: Readonly<Record<string, unknown>> = {},
+    ) => ({
+      id,
+      runtime: { kind: 'acp' },
+      primary: 'sessions',
+      capabilities: {
+        surfaces: ['externalSessions'],
+        sessions: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+      },
+      surfaces: { externalSession: { sources: [source({ resumeOnly: true })] } },
+      ...overrides,
+    });
+
+    expect(derivePluginDaemonContributionRegistrationRights({
+      agents: [
+        // The FX/Kimi shape: the plugin still owes its terminal contribution
+        // and nothing for External Sessions.
+        resumeOnlyAgent('resume-only-terminal', {
+          capabilities: {
+            surfaces: ['terminal', 'externalSessions'],
+            sessions: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+          },
+        }),
+        // One non-resume-only source is one source the host cannot produce.
+        resumeOnlyAgent('mixed-sources', {
+          surfaces: {
+            externalSession: { sources: [source({ resumeOnly: true }), source()] },
+          },
+        }),
+        // Ordinary (no resume-only source at all).
+        resumeOnlyAgent('ordinary-sources', {
+          surfaces: { externalSession: { sources: [source()] } },
+        }),
+        // Resume-only without an explicitly open `resume` route cannot be
+        // fulfilled, so the host synthesizes nothing and the plugin still owes
+        // the contribution.
+        resumeOnlyAgent('resume-only-without-resume-capability', {
+          capabilities: {
+            surfaces: ['externalSessions'],
+            sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
+          },
+        }),
+        // Only the declarative ACP runtime has a host-owned session listing.
+        resumeOnlyAgent('custom-runtime-resume-only', { runtime: { kind: 'custom' } }),
+      ],
+    })).toEqual([
+      { family: 'agents', localId: 'resume-only-terminal', target: { realm: 'daemon' }, requiredFields: ['terminal'] },
+      { family: 'agents', localId: 'mixed-sources', target: { realm: 'daemon' }, requiredFields: ['externalSessions'] },
+      { family: 'agents', localId: 'ordinary-sources', target: { realm: 'daemon' }, requiredFields: ['externalSessions'] },
+      {
+        family: 'agents',
+        localId: 'resume-only-without-resume-capability',
+        target: { realm: 'daemon' },
+        requiredFields: ['externalSessions'],
+      },
+      {
+        family: 'agents',
+        localId: 'custom-runtime-resume-only',
+        target: { realm: 'daemon' },
+        requiredFields: ['factory', 'sessionRunnerFactory', 'externalSessions'],
+      },
+    ]);
+
+    // A host-synthesized declaration with no other plugin-owned facet demands
+    // no daemon registration at all.
+    expect(derivePluginDaemonContributionRegistrationRights({
+      agents: [resumeOnlyAgent('resume-only-alone')],
     })).toEqual([]);
   });
 
@@ -532,6 +671,10 @@ describe('plugin contribution catalog', () => {
 
   it('extracts nested references with their exact owning paths', () => {
     const entry = (key: string) => PLUGIN_CONTRIBUTION_CATALOG_V2.find((candidate) => candidate.manifestKey === key)!;
+    expect(entry('ui.renderers').extractReferences({
+      kind: 'declarative',
+      root: { kind: 'action', hostAction: 'session.message.send', label: 'Send' },
+    })).toEqual([]);
     expect(entry('promptAssets').extractReferences({ resource: 'prompt', target: { kind: 'agent', agent: 'agent' } })).toEqual([
       { targetFamily: 'resources', reference: 'prompt', path: ['resource'] },
       { targetFamily: 'agents', reference: 'agent', path: ['target', 'agent'] },

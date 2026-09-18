@@ -158,7 +158,7 @@ describe('createActionExecutor (plugin Settings administration)', () => {
       'plugins.settings.secret.bind',
       inputs['plugins.settings.secret.bind'],
       {
-        surface: 'api',
+        surface: 'cli',
         authority: 'present_user',
         actionCaller: { kind: 'host' },
       },
@@ -180,7 +180,7 @@ describe('createActionExecutor (plugin Settings administration)', () => {
       actionId: 'plugins.settings.secret.bind',
       input: inputs['plugins.settings.secret.bind'],
       context: {
-        surface: 'api',
+        surface: 'cli',
         authority: 'present_user',
         actionCaller: { kind: 'host' },
       },

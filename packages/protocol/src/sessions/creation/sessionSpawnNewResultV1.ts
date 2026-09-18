@@ -1,6 +1,9 @@
 import { z } from 'zod';
+import { OperationUpdateRequiredV1Schema } from '../../compat/operationUpdateRequiredV1.js';
+import { ProviderErrorV1Schema } from '../../providers/errors.js';
 
-import { SessionInputAdmissionRejectionCodeV1Schema } from '../messages/sessionInputAdmission.js';
+import { SessionInputAdmissionRejectionCodeV1Schema } from '../messages/sessionInputAdmissionRejectionV1.js';
+import { SessionAccessErrorCodeV1Schema } from '../access/sessionAccessOperationsV1.js';
 import {
   SESSION_ORGANIZATION_MAX_ASSIGNMENTS_PER_MUTATION,
 } from '../organization/constants.js';
@@ -59,18 +62,23 @@ export type SessionSpawnNewInitialInputDispositionV1 = z.infer<
   typeof SessionSpawnNewInitialInputDispositionV1Schema
 >;
 
-const SessionSpawnNewErrorCodeV1Schema = z.enum([
-  'invalid_input',
-  'target_required',
-  'target_unavailable',
-  'machine_offline',
-  'incompatible_target',
-  'organization_unavailable',
-  'organization_invalid',
-  'creation_conflict',
-  'permission_denied',
-  'cancelled',
-  'spawn_failed',
+const SessionSpawnNewErrorCodeV1Schema = z.union([
+  z.enum([
+    'invalid_input',
+    'target_required',
+    'target_unavailable',
+    'machine_offline',
+    'incompatible_target',
+    'organization_unavailable',
+    'organization_invalid',
+    'creation_conflict',
+    'permission_denied',
+    'session_access_request_failed',
+    'session_data_key_unavailable',
+    'cancelled',
+    'spawn_failed',
+  ]),
+  SessionAccessErrorCodeV1Schema,
 ]);
 export type SessionSpawnNewErrorCodeV1 = z.infer<typeof SessionSpawnNewErrorCodeV1Schema>;
 
@@ -79,7 +87,7 @@ export type SessionSpawnNewErrorCodeV1 = z.infer<typeof SessionSpawnNewErrorCode
  * initial-input admission stays nested so callers cannot mistake a rejected
  * input for a failed Session create.
  */
-export const SessionSpawnNewResultV1Schema = z.discriminatedUnion('type', [
+export const SessionSpawnNewResultV1Schema = z.union([
   z.object({
     type: z.literal('success'),
     disposition: z.enum(['created', 'rejoined']),
@@ -97,6 +105,40 @@ export const SessionSpawnNewResultV1Schema = z.discriminatedUnion('type', [
     type: z.literal('error'),
     code: SessionSpawnNewErrorCodeV1Schema,
     retryable: z.boolean(),
+    providerError: ProviderErrorV1Schema.optional(),
+  }).strict().superRefine((value, context) => {
+    const localInitialAccessRetryability = {
+      session_access_request_failed: true,
+      session_data_key_unavailable: false,
+    } as const;
+    const expectedInitialAccessRetryability = SessionAccessErrorCodeV1Schema.safeParse(value.code).success
+      ? false
+      : value.code in localInitialAccessRetryability
+        ? localInitialAccessRetryability[value.code as keyof typeof localInitialAccessRetryability]
+        : undefined;
+    if (
+      expectedInitialAccessRetryability !== undefined
+      && value.retryable !== expectedInitialAccessRetryability
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['retryable'],
+        message: 'Retryability must match the initial-access failure.',
+      });
+    }
+    if (!value.providerError) return;
+    if (value.code !== 'spawn_failed') {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['code'], message: 'Provider recovery requires a spawn failure.' });
+    }
+    if (value.retryable !== value.providerError.retryable) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['retryable'], message: 'Retryability must match the Provider failure.' });
+    }
+  }),
+  z.object({
+    type: z.literal('error'),
+    code: z.literal('update_required'),
+    retryable: z.literal(false),
+    details: OperationUpdateRequiredV1Schema,
   }).strict(),
 ]);
 export type SessionSpawnNewResultV1 = z.infer<typeof SessionSpawnNewResultV1Schema>;

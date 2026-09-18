@@ -9,24 +9,21 @@ import {
 } from './index';
 
 describe('Peer TCP tunnel V2 encoding', () => {
-  it('negotiates binary_frame_v2 ahead of json_base64_v1 when both peers support it', () => {
+  it('negotiates the single binary frame encoding when both peers support it', () => {
     expect(negotiatePeerTcpTunnelEncoding({
-      clientSupported: ['json_base64_v1', 'binary_frame_v2'],
-      serverSupported: ['json_base64_v1', 'binary_frame_v2'],
-      allowV1Fallback: true,
+      clientSupported: ['binary_frame_v2'],
+      serverSupported: ['binary_frame_v2'],
     })).toEqual({ ok: true, encoding: 'binary_frame_v2' });
   });
 
-  it('falls back to json_base64_v1 only when fallback is explicitly allowed', () => {
+  it('rejects the unreleased JSON/base64 encoding without a fallback', () => {
+    expect(negotiatePeerTcpTunnelEncoding({
+      clientSupported: ['json_base64_v1'],
+      serverSupported: ['json_base64_v1'],
+    })).toEqual({ ok: false, reasonCode: 'encoding_unsupported' });
     expect(negotiatePeerTcpTunnelEncoding({
       clientSupported: ['json_base64_v1'],
       serverSupported: ['json_base64_v1', 'binary_frame_v2'],
-      allowV1Fallback: true,
-    })).toEqual({ ok: true, encoding: 'json_base64_v1' });
-    expect(negotiatePeerTcpTunnelEncoding({
-      clientSupported: ['json_base64_v1'],
-      serverSupported: ['json_base64_v1', 'binary_frame_v2'],
-      allowV1Fallback: false,
     })).toEqual({ ok: false, reasonCode: 'encoding_unsupported' });
   });
 

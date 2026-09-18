@@ -58,6 +58,16 @@ function getLocalTimeParts(now: Date, timezone: string): { minuteOfDay: number; 
   };
 }
 
+const PREVIOUS_WEEKDAY = {
+  mon: 'sun',
+  tue: 'mon',
+  wed: 'tue',
+  thu: 'wed',
+  fri: 'thu',
+  sat: 'fri',
+  sun: 'sat',
+} as const;
+
 function isQuietHoursActive(
   policy: AttentionDeliveryPolicyV1,
   now: Date,
@@ -75,13 +85,15 @@ function isQuietHoursActive(
     const start = timeToMinutes(window.startLocalTime);
     const end = timeToMinutes(window.endLocalTime);
     if (start === end) return false;
-    if (window.days && window.days.length > 0 && !window.days.includes(day as typeof window.days[number])) {
-      return false;
-    }
+    const days = window.days;
+    const includesDay = (candidate: string): boolean =>
+      !days || days.length === 0 || days.includes(candidate as typeof days[number]);
     if (start < end) {
-      return minuteOfDay >= start && minuteOfDay < end;
+      return includesDay(day) && minuteOfDay >= start && minuteOfDay < end;
     }
-    return minuteOfDay >= start || minuteOfDay < end;
+    if (minuteOfDay >= start) return includesDay(day);
+    if (minuteOfDay >= end) return false;
+    return includesDay(PREVIOUS_WEEKDAY[day as keyof typeof PREVIOUS_WEEKDAY] ?? day);
   });
 }
 
@@ -174,6 +186,27 @@ function parseAttentionDeliveryPolicyForDecision(policy: unknown): AttentionDeli
   return parsed.success ? parsed.data : DEFAULT_ATTENTION_DELIVERY_POLICY_V1;
 }
 
+export function resolveAttentionDeliveryPreviewBehavior(params: Readonly<{
+  policy: unknown;
+  event: string;
+  channel: string;
+}>): AttentionPreviewBehavior {
+  const policy = parseAttentionDeliveryPolicyForDecision(params.policy);
+  const event = normalizeDecisionEventId(params.event);
+  const channel = params.channel;
+  const eventConfig = policy.events[event] ?? AttentionDeliveryEventConfigSchema.parse({});
+  const channelConfig = policy.channels[channel] ?? AttentionDeliveryChannelConfigSchema.parse({});
+  const channelEventConfig = channelConfig.events[event] ?? AttentionDeliveryEventConfigSchema.parse({});
+  return channelEventConfig.previewBehavior
+    ?? eventConfig.previewBehavior
+    // Keep request previews independent of ready previews; explicit request policies take precedence.
+    ?? ((channel === 'expo_push' || channel === 'webhook' || channel === 'live_activity')
+      && (event === 'permission_request' || event === 'user_action_request') ? 'include_preview' : undefined)
+    ?? channelConfig.previewBehavior
+    ?? policy.privacy.surfaces[channel]
+    ?? policy.privacy.defaultPreviewBehavior;
+}
+
 export function resolveAttentionDeliveryPolicyDecision(
   params: ResolveAttentionDeliveryPolicyDecisionParams,
 ): AttentionDeliveryDecision {
@@ -186,12 +219,7 @@ export function resolveAttentionDeliveryPolicyDecision(
   const channelConfig = policy.channels[channel] ?? AttentionDeliveryChannelConfigSchema.parse({});
   const channelEventConfig = channelConfig.events[event] ?? AttentionDeliveryEventConfigSchema.parse({});
   const quietHoursActive = isQuietHoursActive(policy, now, params.currentTimezone);
-  const previewBehavior =
-    channelEventConfig.previewBehavior
-    ?? eventConfig.previewBehavior
-    ?? channelConfig.previewBehavior
-    ?? policy.privacy.surfaces[channel]
-    ?? policy.privacy.defaultPreviewBehavior;
+  const previewBehavior = resolveAttentionDeliveryPreviewBehavior({ policy, event, channel });
   const sound = resolveSound({ policy, eventConfig, channelConfig, channelEventConfig, event });
 
   const base = {

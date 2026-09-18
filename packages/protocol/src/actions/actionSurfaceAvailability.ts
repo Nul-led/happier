@@ -1,5 +1,6 @@
 import { ActionIdSchema, type ActionId } from './actionIds.js';
 import { isActionEnabledByActionsSettings, type ActionsSettingsV1 } from './actionSettings.js';
+import { isApprovalRequiredByActionsSettings } from './actionApprovalPolicy.js';
 import {
   getActionSpec,
   type ActionSpec,
@@ -14,7 +15,25 @@ export const AGENT_DIRECT_ACTION_TOOL_ALLOW_LIST = [
   'action.spec.search',
   'action.spec.get',
   'action.options.resolve',
+  'execution.run.list',
+  'execution.run.get',
+  'execution.run.wait',
   'plugins.reload',
+  // The current-viewer presentation command is a first-class Agent tool: its
+  // exact Session target, principal, binding, currentness, acknowledgement and
+  // idempotency are all host-stamped below the generic Action boundary.
+  'session.presentation.apply',
+  // Board authoring is a first-class Session Agent vertical. The exact Home
+  // feature decision and Session authority are enforced by the host/executor;
+  // this catalog row only makes the already-admitted Actions directly usable.
+  'session.board.get',
+  'session.board.item.upsert',
+  'session.board.item.remove',
+  'session.board.layout.update',
+  'workflow.run.start',
+  'workflow.run.get',
+  'workflow.run.wait',
+  'workflow.run.cancel',
 ] as const satisfies readonly ActionId[];
 
 const AGENT_DIRECT_ACTION_TOOL_ALLOW_SET = new Set<ActionId>(AGENT_DIRECT_ACTION_TOOL_ALLOW_LIST);
@@ -125,7 +144,7 @@ function getSettingsState(
   if (override?.enabled === false || override?.disabledSurfaces.some((disabledSurface) => disabledSurface === surface)) {
     return 'disabled';
   }
-  if (override?.approvalRequiredSurfaces.some((approvalSurface) => approvalSurface === surface)) {
+  if (isApprovalRequiredByActionsSettings(actionId, settings, { surface })) {
     return 'approval_required';
   }
   return 'enabled';

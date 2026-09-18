@@ -1,5 +1,20 @@
 import { z } from 'zod';
 
+import {
+  DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
+  SessionAgentSpawnPolicyV1Schema,
+  SessionAgentSpawnPolicyV1StrictSchema,
+  type SessionAgentSpawnPolicyV1,
+} from './sessionAgentSpawnPolicyV1.js';
+export {
+  DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
+  SessionAgentSpawnPolicyV1Schema,
+  SessionAgentSpawnPolicyV1StrictSchema,
+  type SessionAgentSpawnPolicyV1,
+} from './sessionAgentSpawnPolicyV1.js';
+
+import { AccountSettingsPersistedObjectSchema } from './accountSettingsPersistedObject.js';
+import { SessionReminderPresetsV1Schema } from './sessionReminderPresetsV1.js';
 import { buildSettingArtifacts } from '../../settings/registry/buildSettingArtifacts.js';
 import {
   BackendTargetKeyV2InputSchema,
@@ -51,7 +66,11 @@ import {
 } from './connectedServicesSettings.js';
 import { QualifiedConnectedAccountPurposeBindingsV1Schema } from '../../connect/connectedAccountPurposeBindings.js';
 import { WorkspaceRefV1Schema } from '../../workspaces/workspaceRefV1.js';
-import { WorkspaceSyncRelationshipV1Schema } from '../../sessions/control/handoff/workspaceSyncSchemas.js';
+import {
+  WorkspaceSyncRelationshipV1Schema,
+  areWorkspaceSyncRelationshipDefinitionsEqual,
+} from '../../sessions/control/handoff/workspaceSyncSchemas.js';
+import { normalizeSessionHandoffWorkspaceRootPath } from '../../sessions/control/handoff/workspaceTransferSourcePathSafety.js';
 import {
   AttentionDeliveryPolicyV1Schema,
   DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
@@ -102,6 +121,10 @@ import {
   BoundedLegacyJsonValueSchema,
   ProviderSettingsLegacySubtreeV1Schema,
 } from './catalog/legacyJson.js';
+import { ClientEncryptionRequirementSchema } from '../../encryption/clientEncryptionRequirement.js';
+
+export { AccountSettingsPersistedObjectSchema } from './accountSettingsPersistedObject.js';
+export type { AccountSettingsPersistedObject } from './accountSettingsPersistedObject.js';
 export {
   DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
   SESSION_PENDING_QUEUE_DELIVERY_TIMINGS,
@@ -151,6 +174,7 @@ export const NotificationsSettingsV1Schema = z
       pushEnabled: z.boolean().default(true),
       ready: z.boolean().default(true),
       readyIncludeMessageText: z.boolean().default(true),
+      requestIncludeMessageText: z.boolean().default(true),
       permissionRequest: z.boolean().default(true),
       userActionRequest: z.boolean().default(true),
       connectedServiceAccountSwitch: z.boolean().default(true),
@@ -164,6 +188,7 @@ export const NotificationsSettingsV1Schema = z
     pushEnabled: true,
     ready: true,
     readyIncludeMessageText: true,
+    requestIncludeMessageText: true,
     permissionRequest: true,
     userActionRequest: true,
     connectedServiceAccountSwitch: true,
@@ -175,50 +200,6 @@ export const NotificationsSettingsV1Schema = z
 export type NotificationsSettingsV1 = z.infer<typeof NotificationsSettingsV1Schema>;
 
 export const DEFAULT_NOTIFICATIONS_SETTINGS_V1: NotificationsSettingsV1 = NotificationsSettingsV1Schema.parse({});
-
-const SessionAgentSpawnPermissionCeilingV1Schema = z
-  .enum(SESSION_PERMISSION_MODES)
-  .nullable()
-  .default(null)
-  .catch(null);
-
-export const SessionAgentSpawnPolicyV1Schema = z
-  .object({
-    v: z.literal(1).default(1),
-    allowCustomDirectory: z.boolean().default(true),
-    allowCrossMachine: z.boolean().default(true),
-    allowBackendTargetOverride: z.boolean().default(true),
-    allowModelOverride: z.boolean().default(true),
-    allowPermissionModeOverride: z.boolean().default(true),
-    allowAgentModeOverride: z.boolean().default(true),
-    allowConfigOptionOverrides: z.boolean().default(true),
-    allowProfileOverride: z.boolean().default(true),
-    allowConnectedServicesOverride: z.boolean().default(true),
-    allowMcpSelectionOverride: z.boolean().default(true),
-    allowTranscriptStorageOverride: z.boolean().default(true),
-    permissionCeiling: SessionAgentSpawnPermissionCeilingV1Schema,
-  })
-  .strict()
-  .catch({
-    v: 1,
-    allowCustomDirectory: true,
-    allowCrossMachine: true,
-    allowBackendTargetOverride: true,
-    allowModelOverride: true,
-    allowPermissionModeOverride: true,
-    allowAgentModeOverride: true,
-    allowConfigOptionOverrides: true,
-    allowProfileOverride: true,
-    allowConnectedServicesOverride: true,
-    allowMcpSelectionOverride: true,
-    allowTranscriptStorageOverride: true,
-    permissionCeiling: null,
-  });
-
-export type SessionAgentSpawnPolicyV1 = z.infer<typeof SessionAgentSpawnPolicyV1Schema>;
-
-export const DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1: SessionAgentSpawnPolicyV1 =
-  SessionAgentSpawnPolicyV1Schema.parse({});
 
 export const DEFAULT_ACTIONS_SETTINGS_V1: ActionsSettingsV1 = ActionsSettingsV1Schema.parse({
   v: 1,
@@ -937,7 +918,7 @@ const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
   groupInactiveSessionsByProject: accountPreference(z.boolean(), false, 'session list presentation'),
   sessionListActiveGroupingV1: accountPreference(z.enum(['project', 'date']), 'project', 'session list presentation'),
   sessionListInactiveGroupingV1: accountPreference(z.enum(['project', 'date']), 'date', 'session list presentation'),
-  sessionListSectionModeV1: accountPreference(z.enum(['activity', 'single']), 'activity', 'session list presentation'),
+  sessionListSectionModeV1: accountPreference(z.enum(['activity', 'single']), 'single', 'session list presentation'),
   sessionListActiveColorModeV1: accountPreference(
     z.enum(['activityAndAttention', 'attentionOnly', 'allActive']),
     'activityAndAttention',
@@ -979,6 +960,7 @@ const ACCOUNT_DISPLAY_CATALOG_DEFINITIONS = {
   sessionReplayRecentMessagesCount: accountPreference(HappierReplayRecentMessagesCountSchema, 250, 'session replay'),
   sessionReplayMaxSeedChars: accountPreference(HappierReplayWritableMaxSeedCharsSchema, 120_000, 'session replay'),
   executionRunsGuidanceEnabled: accountPreference(z.boolean(), true, 'execution guidance'),
+  executionRunsNotifyParentOnCompletionDefault: accountPreference(z.boolean(), false, 'execution guidance'),
   executionRunsGuidanceMaxChars: accountPreference(z.number().int().min(1).max(64 * 1024), 4_000, 'execution guidance'),
   attachmentsUploadsUploadLocation: accountPreference(z.enum(['workspace', 'os_temp']), 'workspace', 'attachment uploads'),
   attachmentsUploadsWorkspaceRelativeDir: accountPreference(z.string().min(1).max(4 * 1024), '.happier/uploads', 'attachment uploads'),
@@ -1084,10 +1066,11 @@ const ACCOUNT_LEGACY_ROOT_CATALOG_DEFINITIONS = {
   ),
   executionRunsGuidanceEntries: accountLegacy(BoundedLegacyArraySchema, [], 'execution guidance records', 128 * 1024),
   workspaceRefsV1: accountLegacy(
-    z.array(WorkspaceRefV1Schema).catch([]).default([]),
+    z.array(WorkspaceRefV1Schema).default([]),
     [],
     'workspace references',
     64 * 1024,
+    false,
   ),
   workspaceSyncRelationshipsV1: accountLegacy(
     z.array(WorkspaceSyncRelationshipV1Schema).default([]),
@@ -1588,6 +1571,12 @@ const ACCOUNT_TRANSCRIPT_AND_TOOL_CATALOG_DEFINITIONS = {
 } as const;
 
 const ACCOUNT_RUNTIME_AND_WORKFLOW_CATALOG_DEFINITIONS = {
+  sessionReminderPresetsV1: accountPreference(
+    SessionReminderPresetsV1Schema,
+    [],
+    'session reminders',
+    16 * 1024,
+  ),
   externalSessionsSettingsV1: accountPreference(
     ExternalSessionsSettingsV1Schema,
     ExternalSessionsSettingsV1Schema.parse({}),
@@ -1659,6 +1648,11 @@ export const ACCOUNT_SETTING_DEFINITIONS = defineAccountSettingDefinitions({
     ACCOUNT_SETTINGS_SUPPORTED_SCHEMA_VERSION,
     { semanticDomain: 'settings compatibility', classification: 'policy', maximumSerializedValueBytes: 32 },
   ),
+  clientEncryptionRequirementV1: accountCatalogDefinition(
+    ClientEncryptionRequirementSchema,
+    'follow_account',
+    { semanticDomain: 'client encryption policy', classification: 'policy', maximumSerializedValueBytes: 32 },
+  ),
   featureToggles: accountCatalogDefinition(
     FeatureTogglesSchema,
     {},
@@ -1701,6 +1695,11 @@ export const ACCOUNT_SETTING_DEFINITIONS = defineAccountSettingDefinitions({
     CodingPromptBehaviorV1Schema.default(DEFAULT_CODING_PROMPT_BEHAVIOR_V1),
     DEFAULT_CODING_PROMPT_BEHAVIOR_V1,
     { semanticDomain: 'coding prompts', classification: 'preference', maximumSerializedValueBytes: 4 * 1024 },
+  ),
+  sessionRemoteAlertsEnabled: accountCatalogDefinition(
+    z.boolean().default(false).catch(false),
+    false,
+    { semanticDomain: 'remote alert policy disclosure', classification: 'policy', maximumSerializedValueBytes: 5 },
   ),
   attentionDeliveryPolicyV1: accountCatalogDefinition(
     AttentionDeliveryPolicyV1Schema.catch(DEFAULT_ATTENTION_DELIVERY_POLICY_V1)
@@ -1803,16 +1802,107 @@ export const AccountSettingsSchema = z.preprocess(
   },
   z
     .object(ACCOUNT_SETTING_ARTIFACTS.shape)
-    .passthrough(),
-);
+    .passthrough()
+    .superRefine((settings, context) => {
+      const refsById = new Map<string, (typeof settings.workspaceRefsV1)[number]>();
+      const refScopes = new Set<string>();
+      for (const [index, ref] of settings.workspaceRefsV1.entries()) {
+        if (refsById.has(ref.id)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceRefsV1', index, 'id'], message: 'workspace reference id must be unique' });
+        } else {
+          refsById.set(ref.id, ref);
+        }
+        const scope = JSON.stringify([
+          ref.serverId.trim(),
+          ref.machineId.trim(),
+          normalizeSessionHandoffWorkspaceRootPath(ref.rootPath) ?? ref.rootPath.trim(),
+        ]);
+        if (refScopes.has(scope)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceRefsV1', index], message: 'workspace reference scope must be unique' });
+        } else {
+          refScopes.add(scope);
+        }
+      }
 
-export const AccountSettingsPersistedObjectSchema = z.object({}).passthrough();
-export type AccountSettingsPersistedObject = z.infer<typeof AccountSettingsPersistedObjectSchema>;
+      const relationshipIds = new Set<string>();
+      const endpointPairs = new Set<string>();
+      for (const [index, relationship] of settings.workspaceSyncRelationshipsV1.entries()) {
+        if (relationshipIds.has(relationship.relationshipId)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'relationshipId'], message: 'workspace relationship id must be unique' });
+        } else {
+          relationshipIds.add(relationship.relationshipId);
+        }
+        const alpha = refsById.get(relationship.alphaWorkspaceRefId);
+        const beta = refsById.get(relationship.betaWorkspaceRefId);
+        if (!alpha) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'alphaWorkspaceRefId'], message: 'workspace relationship reference must exist' });
+        }
+        if (!beta) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'betaWorkspaceRefId'], message: 'workspace relationship reference must exist' });
+        }
+        const pair = [relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId].sort().join('\u0000');
+        if (endpointPairs.has(pair)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index], message: 'workspace endpoint pair must have one owner' });
+        } else {
+          endpointPairs.add(pair);
+        }
+        if (alpha && beta) {
+          const controllerIsEndpoint = relationship.controllerMachineId === alpha.machineId
+            || relationship.controllerMachineId === beta.machineId;
+          const controllerIsValid = relationship.mode === 'keep_both_in_sync'
+            ? controllerIsEndpoint
+            : relationship.controllerMachineId === alpha.machineId;
+          if (!controllerIsValid) {
+            context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'controllerMachineId'], message: 'workspace relationship controller is invalid for its endpoints and mode' });
+          }
+        }
+      }
+    }),
+);
 
 export type AccountSettings = z.infer<typeof AccountSettingsSchema>;
 
 export function accountSettingsParse(raw: unknown): AccountSettings {
   return AccountSettingsSchema.parse(raw);
+}
+
+/**
+ * Enforces the immutable workspace identities at the Account Settings write
+ * boundary. Snapshot validation proves internal integrity; this transition
+ * check additionally prevents an existing id from being rebound in place.
+ */
+export function assertAccountWorkspaceSettingsTransition(
+  previousRaw: unknown,
+  nextRaw: unknown,
+): void {
+  const previous = accountSettingsParse(previousRaw);
+  const next = accountSettingsParse(nextRaw);
+  const nextRefs = new Map(next.workspaceRefsV1.map((ref) => [ref.id, ref] as const));
+
+  for (const previousRef of previous.workspaceRefsV1) {
+    const nextRef = nextRefs.get(previousRef.id);
+    if (nextRef && (
+      nextRef.serverId !== previousRef.serverId
+      || nextRef.machineId !== previousRef.machineId
+      || nextRef.rootPath !== previousRef.rootPath
+    )) {
+      throw Object.assign(new Error('Workspace identity cannot be rebound'), {
+        code: 'workspace_ref_in_use',
+      });
+    }
+  }
+
+  const previousRelationships = new Map(
+    previous.workspaceSyncRelationshipsV1.map((relationship) => [relationship.relationshipId, relationship] as const),
+  );
+  for (const relationship of next.workspaceSyncRelationshipsV1) {
+    const prior = previousRelationships.get(relationship.relationshipId);
+    if (prior && !areWorkspaceSyncRelationshipDefinitionsEqual(prior, relationship)) {
+      throw Object.assign(new Error('Workspace relationship immutable definition cannot change'), {
+        code: 'relationship_definition_conflict',
+      });
+    }
+  }
 }
 
 /**

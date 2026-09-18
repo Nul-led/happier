@@ -11,6 +11,9 @@ import {
   ReadWorkspaceSyncFileResultV1Schema,
   WorkspaceContentPolicyV1Schema,
   WorkspaceSyncConflictListV1Schema,
+  WorkspaceSyncConflictPageRequestV1Schema,
+  WorkspaceSyncConflictPageV1Schema,
+  WorkspaceSyncConflictResolveRpcInputV1Schema,
   WorkspaceSyncLegacyStateInspectionV1Schema,
   WorkspaceSyncRelationshipV1Schema,
   WorkspaceSyncTargetBootstrapPrepareResultV1Schema,
@@ -243,10 +246,61 @@ describe('workspace sync protocol schemas', () => {
       conflicts: [{
         relationshipId: 'rel-1',
         path: 'src/index.ts',
-        alpha: { kind: 'file', digest: 'a', size: 10 },
-        beta: { kind: 'file', digest: 'b', size: 12 },
+        alpha: { kind: 'file', digest: 'a'.repeat(40), size: 10 },
+        beta: { kind: 'file', digest: 'b'.repeat(40), size: 12 },
       }],
     }).success).toBe(true);
+    expect(WorkspaceSyncConflictPageRequestV1Schema.parse({
+      relationshipId: 'rel-1',
+      cursor: 'opaque-page-2',
+      limit: 50,
+    })).toEqual({ relationshipId: 'rel-1', cursor: 'opaque-page-2', limit: 50 });
+    expect(WorkspaceSyncConflictPageRequestV1Schema.safeParse({
+      relationshipId: 'rel-1',
+      limit: 101,
+    }).success).toBe(false);
+    expect(WorkspaceSyncConflictPageV1Schema.parse({
+      status: 'page',
+      relationshipId: 'rel-1',
+      totalCount: 2,
+      nextCursor: 'opaque-page-2',
+      conflicts: [{
+        relationshipId: 'rel-1',
+        path: 'src/index.ts',
+        alpha: { kind: 'file', digest: 'a'.repeat(40), size: 10 },
+        beta: { kind: 'file', digest: 'b'.repeat(40), size: 12 },
+      }],
+    })).toMatchObject({ status: 'page', totalCount: 2, nextCursor: 'opaque-page-2' });
+    expect(WorkspaceSyncConflictPageV1Schema.parse({
+      status: 'page',
+      relationshipId: 'rel-1',
+      totalCount: 1,
+      nextCursor: null,
+      conflicts: [{
+        relationshipId: 'rel-1',
+        path: 'ignored.sock',
+        alpha: { kind: 'unsupported', sourceKind: 'untracked' },
+        beta: { kind: 'file', digest: 'b'.repeat(40) },
+      }],
+    })).toMatchObject({
+      conflicts: [{ alpha: { kind: 'unsupported', sourceKind: 'untracked' } }],
+    });
+    expect(WorkspaceSyncConflictPageV1Schema.safeParse({
+      status: 'page',
+      relationshipId: 'rel-1',
+      totalCount: 1,
+      nextCursor: null,
+      conflicts: [{
+        relationshipId: 'rel-1',
+        path: 'ignored.sock',
+        alpha: { kind: 'unsupported' },
+        beta: { kind: 'missing' },
+      }],
+    }).success).toBe(false);
+    expect(WorkspaceSyncConflictPageV1Schema.parse({
+      status: 'cursor_invalidated',
+      relationshipId: 'rel-1',
+    })).toEqual({ status: 'cursor_invalidated', relationshipId: 'rel-1' });
     expect(WorkspaceSyncStatusV1Schema.safeParse({
       relationshipId: 'rel-1',
       controllerMachineId: 'machine-a',
@@ -262,6 +316,10 @@ describe('workspace sync protocol schemas', () => {
 
     expect(WorkspaceSyncRuntimeEventV1Schema.parse({
       v: 1,
+      readiness: {
+        engine: { state: 'ready' },
+        carrier: { state: 'unavailable', errorCode: 'machine_carrier_unavailable' },
+      },
       status: {
         relationshipId: 'rel-1',
         controllerMachineId: 'machine-a',
@@ -273,9 +331,33 @@ describe('workspace sync protocol schemas', () => {
         conflictCount: 0,
         lastSuccessfulSyncAtMs: null,
       },
-    })).toMatchObject({ v: 1, status: { state: 'paused' } });
+    })).toMatchObject({
+      v: 1,
+      readiness: {
+        engine: { state: 'ready' },
+        carrier: { state: 'unavailable', errorCode: 'machine_carrier_unavailable' },
+      },
+      status: { state: 'paused' },
+    });
+    expect(WorkspaceSyncRuntimeEventV1Schema.parse({
+      v: 1,
+      readiness: {
+        engine: { state: 'unavailable', errorCode: 'engine_unavailable' },
+        carrier: { state: 'ready' },
+      },
+    })).toEqual({
+      v: 1,
+      readiness: {
+        engine: { state: 'unavailable', errorCode: 'engine_unavailable' },
+        carrier: { state: 'ready' },
+      },
+    });
     expect(WorkspaceSyncRuntimeEventV1Schema.safeParse({
       v: 1,
+      readiness: {
+        engine: { state: 'ready' },
+        carrier: { state: 'ready' },
+      },
       status: {
         relationshipId: 'rel-1',
         controllerMachineId: 'machine-a',
@@ -317,21 +399,91 @@ describe('workspace sync protocol schemas', () => {
     }).success).toBe(false);
   });
 
-  it('keeps target conflict mutation authority root-free', () => {
-    expect(WorkspaceSyncTargetConflictDeleteV1Schema.safeParse({
+  it('preserves exact engine-relative path text while rejecting universally unsafe components', () => {
+    const spacedPath = ' nested/ note.txt ';
+    expect(WorkspaceSyncConflictListV1Schema.parse({
       relationshipId: 'rel-1',
-      workspaceRefId: 'workspace-beta',
-      path: 'src/index.ts',
+      totalCount: 1,
+      shownCount: 1,
+      truncatedCount: 0,
+      conflicts: [{
+        relationshipId: 'rel-1',
+        path: spacedPath,
+        alpha: { kind: 'file', digest: 'a'.repeat(40), size: 4 },
+        beta: { kind: 'file', digest: 'b'.repeat(40), size: 4 },
+      }],
+    }).conflicts[0]?.path).toBe(spacedPath);
+    expect(ReadWorkspaceSyncFileV1Schema.parse({
+      relationshipId: 'rel-1',
+      side: 'alpha',
+      path: spacedPath,
+    }).path).toBe(spacedPath);
+    expect(DeleteWorkspaceSyncConflictLoserV1Schema.parse({
+      relationshipId: 'rel-1',
+      path: spacedPath,
+      keep: 'alpha',
       expectedKind: 'file',
       expectedDigest: 'a'.repeat(40),
-    }).success).toBe(true);
-    expect(WorkspaceSyncTargetConflictDeleteV1Schema.safeParse({
+    }).path).toBe(spacedPath);
+
+    for (const path of ['', '.', '..', '/absolute', 'nested//file', 'nested/./file', 'nested/../file', 'nested/file\0tail']) {
+      expect(ReadWorkspaceSyncFileV1Schema.safeParse({
+        relationshipId: 'rel-1',
+        side: 'alpha',
+        path,
+      }).success).toBe(false);
+    }
+
+    // Backslash is filename data on POSIX. The target platform's confinement
+    // owner applies Windows separator and absolute-path rules when applicable.
+    expect(ReadWorkspaceSyncFileV1Schema.parse({
       relationshipId: 'rel-1',
-      workspaceRefId: 'workspace-beta',
-      rootPath: '/caller/chosen/root',
+      side: 'alpha',
+      path: String.raw`nested\..\note.txt`,
+    }).path).toBe(String.raw`nested\..\note.txt`);
+  });
+
+  it('keeps target conflict mutation authority root-free', () => {
+    const request = {
+      relationshipId: 'rel-1',
       path: 'src/index.ts',
+      keep: 'alpha' as const,
       expectedKind: 'file',
+      expectedDigest: 'a'.repeat(40),
+    };
+    const targetRequest = {
+      actionReceiptId: 'approved-action-artifact-1',
+      actionInput: { controllerMachineId: 'machine-controller', request },
+      relationshipId: request.relationshipId,
+      workspaceRefId: 'workspace-beta',
+      path: request.path,
+      expectedKind: request.expectedKind,
+      expectedDigest: request.expectedDigest,
+    };
+    expect(WorkspaceSyncTargetConflictDeleteV1Schema.safeParse(targetRequest).success).toBe(true);
+    expect(WorkspaceSyncTargetConflictDeleteV1Schema.safeParse({
+      ...targetRequest,
+      rootPath: '/caller/chosen/root',
     }).success).toBe(false);
+  });
+
+  it('requires an exact persisted Action receipt envelope for the controller conflict RPC', () => {
+    const envelope = {
+      actionReceiptId: 'approved-action-artifact-1',
+      actionInput: {
+        controllerMachineId: 'machine-controller',
+        request: {
+          relationshipId: 'rel-1',
+          path: 'src/index.ts',
+          keep: 'alpha' as const,
+          expectedKind: 'file' as const,
+          expectedDigest: 'a'.repeat(40),
+        },
+      },
+    };
+    expect(WorkspaceSyncConflictResolveRpcInputV1Schema.parse(envelope)).toEqual(envelope);
+    expect(WorkspaceSyncConflictResolveRpcInputV1Schema.safeParse(envelope.actionInput).success).toBe(false);
+    expect(WorkspaceSyncConflictResolveRpcInputV1Schema.safeParse({ ...envelope, approved: true }).success).toBe(false);
   });
 
   it('requires a digest precondition for file conflict deletion and only a type precondition otherwise', () => {
@@ -348,6 +500,14 @@ describe('workspace sync protocol schemas', () => {
     }).success).toBe(true);
     expect(DeleteWorkspaceSyncConflictLoserV1Schema.safeParse({
       ...fileRequest,
+      expectedDigest: 'a'.repeat(64),
+    }).success).toBe(false);
+    expect(DeleteWorkspaceSyncConflictLoserV1Schema.safeParse({
+      ...fileRequest,
+      expectedDigest: 'A'.repeat(40),
+    }).success).toBe(false);
+    expect(DeleteWorkspaceSyncConflictLoserV1Schema.safeParse({
+      ...fileRequest,
       expectedKind: 'directory',
     }).success).toBe(true);
     expect(DeleteWorkspaceSyncConflictLoserV1Schema.safeParse({
@@ -355,8 +515,17 @@ describe('workspace sync protocol schemas', () => {
       expectedKind: 'directory',
       expectedDigest: 'a'.repeat(40),
     }).success).toBe(false);
+    expect(DeleteWorkspaceSyncConflictLoserV1Schema.safeParse({
+      ...fileRequest,
+      expectedKind: 'unsupported',
+    }).success).toBe(false);
 
     const targetFileRequest = {
+      actionReceiptId: 'approved-action-artifact-1',
+      actionInput: {
+        controllerMachineId: 'machine-controller',
+        request: { ...fileRequest, expectedDigest: 'a'.repeat(40) },
+      },
       relationshipId: 'rel-1',
       workspaceRefId: 'workspace-beta',
       path: 'src/index.ts',
@@ -553,9 +722,23 @@ describe('workspace sync protocol schemas', () => {
         rootFingerprint: 'a'.repeat(64),
         operationId: 'relationship-transient',
       },
+      targetReplacementApprovalReceiptId: 'approval-receipt-1',
+      targetReplacementApprovalActionInput: {
+        sessionId: 'session-1',
+        targetMachineId: 'machine-beta',
+        targetPath: '/workspace/beta',
+      },
     };
 
     expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.parse(request)).toEqual(request);
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
+      ...request,
+      targetReplacementApprovalReceiptId: undefined,
+    }).success).toBe(false);
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
+      ...request,
+      targetReplacementApprovalActionInput: undefined,
+    }).success).toBe(false);
     expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
       ...request,
       owner: { kind: 'relationship', relationshipId: 'another-relationship' },

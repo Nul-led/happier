@@ -82,9 +82,25 @@ function redactDoctorDiagnosticSecrets(value: string): string {
     // Keyed secrets, including common compound and camel-case forms emitted by
     // HTTP/OAuth libraries (`access_token`, `api_key`, `authToken`, ...).
     .replace(
-      /(["']?)\b(access[-_]?token|refresh[-_]?token|auth[-_]?token|api[-_]?key|client[-_]?secret|token|password|secret|private[-_ ]?key|proof)\b\1\s*[:=]\s*(["']?)[^\s,;}"']+\3/giu,
+      /(["']?)\b(access[-_]?token|refresh[-_]?token|auth[-_]?token|api[-_]?key|client[-_]?secret|token|key|password|secret|private[-_ ]?key|proof)\b\1\s*[:=]\s*(["']?)[^\s,;}"']+\3/giu,
       '$2=[redacted]',
     );
+}
+
+/**
+ * Canonical privacy boundary for copied/exported diagnostic text. It retains
+ * useful technical detail and line structure while removing credential-shaped
+ * values and URL userinfo/query/fragment data.
+ */
+export function sanitizeDoctorDiagnosticText(value: string): string {
+  const withoutSecrets = redactDoctorDiagnosticSecrets(String(value ?? ''));
+  const withoutUrlSecrets = withoutSecrets.replace(
+    /https?:\/\/[^\s]+/giu,
+    (url) => sanitizeBugReportUrl(url) ?? '[invalid-url]',
+  );
+  return withoutUrlSecrets
+    .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/gu, '')
+    .trim();
 }
 
 export function sanitizeDoctorDiagnosticErrorCode(code: string): string {
@@ -95,12 +111,7 @@ export function sanitizeDoctorDiagnosticErrorCode(code: string): string {
 }
 
 export function sanitizeDoctorDiagnosticErrorMessage(message: string): string {
-  const withoutSecrets = redactDoctorDiagnosticSecrets(String(message ?? ''));
-  const withoutUrlSecrets = withoutSecrets.replace(
-    /https?:\/\/[^\s]+/giu,
-    (url) => sanitizeBugReportUrl(url) ?? '[invalid-url]',
-  );
-  return withoutUrlSecrets.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 1_024)
+  return sanitizeDoctorDiagnosticText(message).replace(/[\r\n]+/gu, ' ').trim().slice(0, 1_024)
     || 'Unknown transport error';
 }
 

@@ -45,6 +45,18 @@ describe('CapabilitiesSchema (server capabilities)', () => {
     expect(parsed.serverIdentity.serverIdentityId).toBe('srv_identity_123');
   });
 
+  it('parses the host Follow context capability as a strict versioned session child', () => {
+    expect(CapabilitiesSchema.parse({
+      session: { follow: { contextVersion: 1 } },
+    }).session.follow).toEqual({ contextVersion: 1 });
+    expect(CapabilitiesSchema.safeParse({
+      session: { follow: { contextVersion: 2 } },
+    }).success).toBe(false);
+    expect(CapabilitiesSchema.safeParse({
+      session: { follow: { contextVersion: 1, extra: true } },
+    }).success).toBe(false);
+  });
+
   it('defaults missing server identity capabilities for older servers', () => {
     const parsed = CapabilitiesSchema.parse({});
 
@@ -98,9 +110,8 @@ describe('CapabilitiesSchema (server capabilities)', () => {
             maxBytes: 4096,
             maxActiveTunnelsPerSocket: 2,
             maxFrameBytes: 1024,
-            supportedEncodings: ['json_base64_v1', 'binary_frame_v2'],
+            supportedEncodings: ['binary_frame_v2'],
             preferredEncoding: 'binary_frame_v2',
-            allowV1Fallback: true,
             maxBinaryHeaderBytes: 512,
             maxRawPayloadBytes: 2048,
             maxFramedMessageBytes: 4096,
@@ -132,7 +143,6 @@ describe('CapabilitiesSchema (server capabilities)', () => {
       disabledReason: 'relay_disabled_by_server_policy',
     });
     expect(parsed.machines.tunnel.serverRouted.supportedEncodings).toEqual([
-      'json_base64_v1',
       'binary_frame_v2',
     ]);
     expect(parsed.machines.tunnel.serverRouted.substreams).toMatchObject({

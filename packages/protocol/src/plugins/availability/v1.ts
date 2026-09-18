@@ -3,7 +3,7 @@ import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { SERVER_IDENTITY_ID_PATTERN } from '../../features/payload/capabilities/serverIdentityCapabilities.js';
-import { PluginCollectionContractRefV1Schema } from '../data/collectionsV1.js';
+import { PluginCollectionContractRefV1Schema } from '../data/collectionContractRefV1.js';
 import { PluginManifestV2Schema } from '../manifest/v2.js';
 import { PluginIdSchema } from '../pluginId.js';
 import {
@@ -534,6 +534,7 @@ export const PluginAccountAvailabilityIntentReadResponseV1Schema = z.object({
   intent: PluginAccountPluginIntentV1Schema.nullable(),
   release: PluginReleaseFactsV1Schema.nullable(),
   uiArtifacts: z.array(PluginAccountPluginUiArtifactLinkV1Schema).readonly(),
+  packageAssets: z.array(PluginAccountPluginPackageAssetLinkV1Schema).readonly(),
 }).strict();
 export type PluginAccountAvailabilityIntentReadResponseV1 =
   z.infer<typeof PluginAccountAvailabilityIntentReadResponseV1Schema>;

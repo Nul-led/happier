@@ -31,7 +31,6 @@ export const SETUP_REPAIR_THIS_COMPUTER_SYSTEM_TASK_STEP_IDS_V1 = [
   'setup.repairThisComputer.configureRelay',
   'setup.repairThisComputer.authenticate',
   'setup.repairThisComputer.authRequest',
-  'setup.repairThisComputer.verifyMachine',
   'setup.repairThisComputer.installService',
   'setup.repairThisComputer.startService',
   'setup.repairThisComputer.waitForReady',
@@ -55,16 +54,3 @@ export const REMOTE_SSH_BOOTSTRAP_MACHINE_SYSTEM_TASK_STEP_IDS_V1 = [
 export const RemoteSshBootstrapMachineSystemTaskStepIdSchema = z.enum(REMOTE_SSH_BOOTSTRAP_MACHINE_SYSTEM_TASK_STEP_IDS_V1);
 export type RemoteSshBootstrapMachineSystemTaskStepId = z.infer<typeof RemoteSshBootstrapMachineSystemTaskStepIdSchema>;
 
-export const RELAY_CONNECT_BACKGROUND_SERVICE_SYSTEM_TASK_STEP_IDS_V1 = [
-  'relay.connectBackgroundService.prepare',
-  'relay.connectBackgroundService.configureRelay',
-  'relay.connectBackgroundService.authenticate',
-  'relay.connectBackgroundService.finish',
-] as const;
-
-export const RelayConnectBackgroundServiceSystemTaskStepIdSchema = z.enum(
-  RELAY_CONNECT_BACKGROUND_SERVICE_SYSTEM_TASK_STEP_IDS_V1,
-);
-export type RelayConnectBackgroundServiceSystemTaskStepId = z.infer<
-  typeof RelayConnectBackgroundServiceSystemTaskStepIdSchema
->;

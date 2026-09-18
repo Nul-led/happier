@@ -27,7 +27,7 @@ describe('PluginWebhookEndpointIdV1Schema', () => {
       type: 'string',
       minLength: 28,
       maxLength: 28,
-      pattern: '^wh_ep_[A-Za-z0-9_-]{21}[AQgw]$',
+      pattern: '^wh_ep_[A-Za-z0-9_-]{21}[AQgw]$(?![\\s\\S])',
     });
     expect(isValidPluginJsonSchemaValue(validates, canonical)).toBe(true);
     // A 22-character base64url suffix only has two payload bits in its final
@@ -50,6 +50,7 @@ describe('PluginWebhookEndpointIdV1Schema', () => {
       `${canonical}A`,
       canonical.replace('wh_ep_', 'WH_EP_'),
       `${canonical}=`,
+      `${canonical}\n`,
       canonical.replace(/A$/u, '+'),
       `${canonical.slice(0, -1)}B`,
       'wh_ep_AAAAAAAAAAAAAAAAAAAA',

@@ -38,6 +38,13 @@ import {
   VoiceCredentialBindingV1Schema,
 } from '../../voice/realtime/providerSettings.js';
 import {
+  SAVED_SECRET_REF_MAX_LENGTH_V1,
+  SHARED_SAVED_SECRET_REF_V1_PREFIX,
+  formatSharedSavedSecretRefV1,
+  parseSavedSecretRefV1,
+  type SavedSecretRefV1,
+} from './savedSecretReferenceV1.js';
+import {
   CONNECTED_ACCOUNT_SERVICE_CONFIGURATIONS_SETTINGS_KEY,
   parseConnectedAccountServiceConfigurationsV1,
   type ConnectedAccountServiceConfigurationEntryV1,
@@ -68,6 +75,55 @@ export type AccountSettingsSavedSecretReference = Readonly<{
   owner: AccountSettingsSavedSecretReferenceOwner;
   path: string;
 }>;
+
+export {
+  SAVED_SECRET_REF_MAX_LENGTH_V1,
+  SHARED_SAVED_SECRET_REF_V1_PREFIX,
+  formatSharedSavedSecretRefV1,
+  parseSavedSecretRefV1,
+  type SavedSecretRefV1,
+} from './savedSecretReferenceV1.js';
+
+function isStrictSharedSavedSecretRefV1(value: string | null): boolean {
+  if (value === null) return false;
+  try {
+    return parseSavedSecretRefV1(value).kind === 'shared_resource';
+  } catch {
+    return false;
+  }
+}
+
+export type RekeyPersonalSavedSecretInput = Readonly<{
+  secretId: string;
+  expectedUpdatedAt: number;
+  newSecretId: string;
+}>;
+
+export type PromotePersonalSavedSecretReferenceInput = Readonly<{
+  secretId: string;
+  expectedUpdatedAt: number;
+  sharedSecretRef: string;
+}>;
+
+export function rekeyPersonalSavedSecret(
+  settings: Readonly<Record<string, unknown>>,
+  input: RekeyPersonalSavedSecretInput,
+): Readonly<{ settings: Readonly<Record<string, unknown>> }> {
+  return rewritePersonalSavedSecret(settings, input, {
+    kind: 'personal',
+    ref: input.newSecretId,
+  });
+}
+
+export function promotePersonalSavedSecretReference(
+  settings: Readonly<Record<string, unknown>>,
+  input: PromotePersonalSavedSecretReferenceInput,
+): Readonly<{ settings: Readonly<Record<string, unknown>> }> {
+  return rewritePersonalSavedSecret(settings, input, {
+    kind: 'shared_resource',
+    ref: input.sharedSecretRef,
+  });
+}
 
 export type AccountSettingsSavedSecretMutation =
   | Readonly<{
@@ -248,6 +304,7 @@ export class AccountSettingsSavedSecretMutationError extends Error {
     | 'saved_secret_in_use'
     | 'saved_secret_referenced_by_connected_account_configuration'
     | 'saved_secret_reference_invalid'
+    | 'saved_secret_ref_collision_migration_required'
     | 'saved_secret_collection_full';
   readonly references: readonly AccountSettingsSavedSecretReference[];
 
@@ -514,6 +571,15 @@ function assertPluginSecretBindingExpectation(
       'Plugin SavedSecret binding changed before the mutation settled',
     );
   }
+  if (isStrictSharedSavedSecretRefV1(expectedSecretId)) {
+    if (expectedSecretUpdatedAt !== null) {
+      throw new AccountSettingsSavedSecretMutationError(
+        'saved_secret_conflict',
+        'Shared Plugin SavedSecret binding has no personal record revision',
+      );
+    }
+    return;
+  }
   assertVoiceCredentialSecretExpectation(
     secrets,
     expectedSecretId,
@@ -626,6 +692,25 @@ export function resolveAccountSettingsPluginSecret(
     pluginSecretBindingError('Plugin SavedSecret binding points at a missing SavedSecret');
   }
   return Object.freeze({ binding: targetState.binding, secret });
+}
+
+/**
+ * Resolves the strict host-owned plugin binding without claiming its target is
+ * a personal Account Settings row. Shared material is authorized and opened by
+ * the unified Saved Secret catalog/materializer at the operation boundary.
+ */
+export function resolveAccountSettingsPluginSecretBinding(
+  settings: Readonly<Record<string, unknown>>,
+  target: PluginAccountSecretBindingTarget,
+): PluginAccountSecretBinding | null {
+  const targetState = readPluginAccountSecretBindingTarget(settings, target);
+  if (!targetState.binding) return null;
+  try {
+    parseSavedSecretRefV1(targetState.binding.savedSecretId);
+  } catch {
+    pluginSecretBindingError('Plugin SavedSecret binding reference is invalid');
+  }
+  return targetState.binding;
 }
 
 function collectSlotBindingReferences(input: Readonly<{
@@ -958,7 +1043,10 @@ export function resolveAccountSettingsVoiceCredentialSecret(
         })
       : null;
   const reference = candidate
-    && readSavedSecrets(settings).some((secret) => secret.id === candidate.secretId)
+    && (
+      isStrictSharedSavedSecretRefV1(candidate.secretId)
+      || readSavedSecrets(settings).some((secret) => secret.id === candidate.secretId)
+    )
     ? candidate
     : null;
   const digest = state.binding?.approvedRecipientContractDigest;
@@ -1458,8 +1546,14 @@ export function resolveAccountSettingsVoiceCredentialSource(
         })
       : null;
   const secrets = readSavedSecrets(settings);
+  const selectedIsSharedReference = selected
+    ? isStrictSharedSavedSecretRefV1(selected.secretId)
+    : false;
   const savedSecret = selected
-    && secrets.some((candidate) => candidate.id === selected.secretId)
+    && (
+      selectedIsSharedReference
+      || secrets.some((candidate) => candidate.id === selected.secretId)
+    )
     ? selected
     : null;
   return Object.freeze({
@@ -1724,6 +1818,372 @@ export function listAccountSettingsSavedSecretReferences(
   return Object.freeze(output);
 }
 
+function rewriteStringMapReferences(
+  value: unknown,
+  sourceRef: string,
+  targetRef: string,
+): unknown {
+  const record = ownRecord(value);
+  if (!record) return value;
+  let changed = false;
+  const rewritten = Object.fromEntries(Object.entries(record).map(([key, candidate]) => {
+    if (candidate !== sourceRef) return [key, candidate];
+    changed = true;
+    return [key, targetRef];
+  }));
+  return changed ? rewritten : value;
+}
+
+function rewriteSlotBindingReferences(
+  value: unknown,
+  sourceRef: string,
+  targetRef: string,
+): unknown {
+  const root = ownRecord(value);
+  if (!root) return value;
+  const account = rewriteStringMapReferences(root.account, sourceRef, targetRef);
+  const byMachineId = ownRecord(root.byMachineId);
+  const rewrittenByMachineId = byMachineId
+    ? Object.fromEntries(Object.entries(byMachineId).map(([machineId, bindings]) => [
+        machineId,
+        rewriteStringMapReferences(bindings, sourceRef, targetRef),
+      ]))
+    : root.byMachineId;
+  if (account === root.account && rewrittenByMachineId === root.byMachineId) return value;
+  return {
+    ...root,
+    ...(root.account === undefined ? {} : { account }),
+    ...(root.byMachineId === undefined ? {} : { byMachineId: rewrittenByMachineId }),
+  };
+}
+
+function rewriteValueRefMapReferences(
+  value: unknown,
+  sourceRef: string,
+  targetRef: string,
+): unknown {
+  const record = ownRecord(value);
+  if (!record) return value;
+  let changed = false;
+  const rewritten = Object.fromEntries(Object.entries(record).map(([key, candidate]) => {
+    const valueRef = ownRecord(candidate);
+    if (valueRef?.t !== 'savedSecret' || valueRef.secretId !== sourceRef) {
+      return [key, candidate];
+    }
+    changed = true;
+    return [key, { ...valueRef, secretId: targetRef }];
+  }));
+  return changed ? rewritten : value;
+}
+
+function rewriteKnownSavedSecretReferences(
+  settings: Readonly<Record<string, unknown>>,
+  sourceRef: string,
+  targetRef: string,
+): Readonly<Record<string, unknown>> {
+  const next: Record<string, unknown> = { ...settings };
+
+  const profiles = ownRecord(settings[PROFILE_BINDINGS_KEY]);
+  if (profiles) {
+    next[PROFILE_BINDINGS_KEY] = Object.fromEntries(
+      Object.entries(profiles).map(([profileId, bindings]) => [
+        profileId,
+        rewriteStringMapReferences(bindings, sourceRef, targetRef),
+      ]),
+    );
+  }
+
+  const provider = ownRecord(settings[PROVIDER_SETTINGS_KEY]);
+  const connections = ownRecord(provider?.secretBindingsByConnectionId);
+  if (provider && connections) {
+    next[PROVIDER_SETTINGS_KEY] = {
+      ...provider,
+      secretBindingsByConnectionId: Object.fromEntries(
+        Object.entries(connections).map(([connectionId, bindings]) => [
+          connectionId,
+          rewriteSlotBindingReferences(bindings, sourceRef, targetRef),
+        ]),
+      ),
+    };
+  }
+
+  for (const rootKey of VOICE_SETTINGS_KEYS) {
+    const voice = ownRecord(settings[rootKey]);
+    if (!voice || !Array.isArray(voice.credentialBindings)) continue;
+    next[rootKey] = {
+      ...voice,
+      credentialBindings: voice.credentialBindings.map((candidate) => {
+        const binding = ownRecord(candidate)!;
+        return {
+          ...binding,
+          credentialBindings: rewriteSlotBindingReferences(
+            binding.credentialBindings,
+            sourceRef,
+            targetRef,
+          ),
+        };
+      }),
+    };
+  }
+
+  const mcp = ownRecord(settings[MCP_SETTINGS_KEY]);
+  if (mcp) {
+    next[MCP_SETTINGS_KEY] = {
+      ...mcp,
+      ...(Array.isArray(mcp.servers) ? {
+        servers: mcp.servers.map((candidate) => {
+          const server = ownRecord(candidate)!;
+          const remote = ownRecord(server.remote);
+          return {
+            ...server,
+            ...(server.env === undefined ? {} : {
+              env: rewriteValueRefMapReferences(server.env, sourceRef, targetRef),
+            }),
+            ...(remote ? {
+              remote: {
+                ...remote,
+                ...(remote.headers === undefined ? {} : {
+                  headers: rewriteValueRefMapReferences(
+                    remote.headers,
+                    sourceRef,
+                    targetRef,
+                  ),
+                }),
+              },
+            } : {}),
+          };
+        }),
+      } : {}),
+      ...(Array.isArray(mcp.bindings) ? {
+        bindings: mcp.bindings.map((candidate) => {
+          const binding = ownRecord(candidate)!;
+          const overrides = ownRecord(binding.overrides);
+          if (!overrides) return candidate;
+          const remote = ownRecord(overrides.remote);
+          return {
+            ...binding,
+            overrides: {
+              ...overrides,
+              ...(overrides.envPatch === undefined ? {} : {
+                envPatch: rewriteValueRefMapReferences(
+                  overrides.envPatch,
+                  sourceRef,
+                  targetRef,
+                ),
+              }),
+              ...(remote ? {
+                remote: {
+                  ...remote,
+                  ...(remote.headersPatch === undefined ? {} : {
+                    headersPatch: rewriteValueRefMapReferences(
+                      remote.headersPatch,
+                      sourceRef,
+                      targetRef,
+                    ),
+                  }),
+                },
+              } : {}),
+            },
+          };
+        }),
+      } : {}),
+    };
+  }
+
+  const acp = ownRecord(settings[ACP_SETTINGS_KEY]);
+  if (acp && Array.isArray(acp.backends)) {
+    next[ACP_SETTINGS_KEY] = {
+      ...acp,
+      backends: acp.backends.map((candidate) => {
+        const backend = ownRecord(candidate)!;
+        return {
+          ...backend,
+          ...(backend.env === undefined ? {} : {
+            env: rewriteValueRefMapReferences(backend.env, sourceRef, targetRef),
+          }),
+        };
+      }),
+    };
+  }
+
+  const pluginBindings = ownRecord(settings[PLUGIN_SECRET_BINDINGS_SETTINGS_KEY]);
+  if (pluginBindings) {
+    next[PLUGIN_SECRET_BINDINGS_SETTINGS_KEY] = Object.fromEntries(
+      Object.entries(pluginBindings).map(([key, candidate]) => {
+        const binding = ownRecord(candidate)!;
+        return [key, binding.savedSecretId === sourceRef
+          ? { ...binding, savedSecretId: targetRef }
+          : candidate];
+      }),
+    );
+  }
+
+  const connectedAccountConfigurations = ownRecord(
+    settings[CONNECTED_ACCOUNT_SERVICE_CONFIGURATIONS_SETTINGS_KEY],
+  );
+  if (connectedAccountConfigurations && Array.isArray(connectedAccountConfigurations.entries)) {
+    next[CONNECTED_ACCOUNT_SERVICE_CONFIGURATIONS_SETTINGS_KEY] = {
+      ...connectedAccountConfigurations,
+      entries: connectedAccountConfigurations.entries.map((candidate) => {
+        const entry = ownRecord(candidate)!;
+        return {
+          ...entry,
+          secretRefs: rewriteStringMapReferences(entry.secretRefs, sourceRef, targetRef),
+        };
+      }),
+    };
+  }
+
+  return Object.freeze(next);
+}
+
+function invalidPersonalSavedSecretTarget(message: string): never {
+  throw new AccountSettingsSavedSecretMutationError('saved_secret_invalid', message);
+}
+
+function assertCanonicalNewPersonalSavedSecretId(newSecretId: unknown): asserts newSecretId is string {
+  if (
+    typeof newSecretId !== 'string'
+    || newSecretId.length === 0
+    || newSecretId.length > SAVED_SECRET_REF_MAX_LENGTH_V1
+    || newSecretId.trim() !== newSecretId
+    || /[\u0000-\u001f\u007f]/u.test(newSecretId)
+    || newSecretId.startsWith(SHARED_SAVED_SECRET_REF_V1_PREFIX)
+  ) {
+    invalidPersonalSavedSecretTarget('Replacement personal SavedSecret id is invalid');
+  }
+}
+
+function parseSharedSavedSecretPromotionRef(sharedSecretRef: unknown): string {
+  if (typeof sharedSecretRef !== 'string') {
+    invalidReferenceRoot('Shared SavedSecret reference is invalid');
+  }
+  try {
+    const parsed = parseSavedSecretRefV1(sharedSecretRef);
+    if (parsed.kind !== 'shared_resource') {
+      invalidReferenceRoot('Promotion target must be a shared SavedSecret reference');
+    }
+    return formatSharedSavedSecretRefV1(parsed.resourceId);
+  } catch (error) {
+    if (error instanceof AccountSettingsSavedSecretMutationError) throw error;
+    invalidReferenceRoot('Shared SavedSecret reference is invalid');
+  }
+}
+
+function isSharedSavedSecretCollision(value: string): boolean {
+  // Once the namespace is activated, every string carrying its reserved
+  // prefix is ambiguous until rekeyed. This includes malformed refs (for
+  // example a bare prefix), which must not remain silently personal IDs.
+  return value.startsWith(SHARED_SAVED_SECRET_REF_V1_PREFIX);
+}
+
+function rewritePersonalSavedSecret(
+  settings: Readonly<Record<string, unknown>>,
+  input: RekeyPersonalSavedSecretInput | PromotePersonalSavedSecretReferenceInput,
+  target: Readonly<{ kind: 'personal' | 'shared_resource'; ref: string }>,
+): Readonly<{ settings: Readonly<Record<string, unknown>> }> {
+  const rawInput = ownRecord(input);
+  const allowedKeys = target.kind === 'personal'
+    ? ['secretId', 'expectedUpdatedAt', 'newSecretId']
+    : ['secretId', 'expectedUpdatedAt', 'sharedSecretRef'];
+  if (
+    !rawInput
+    || !hasOnlyOwnKeys(rawInput, allowedKeys)
+    || typeof rawInput.secretId !== 'string'
+    || rawInput.secretId.length === 0
+    || typeof rawInput.expectedUpdatedAt !== 'number'
+    || !Number.isFinite(rawInput.expectedUpdatedAt)
+  ) {
+    throw new AccountSettingsSavedSecretMutationError(
+      'saved_secret_invalid',
+      'SavedSecret reference rewrite input is invalid',
+    );
+  }
+
+  const secrets = readSavedSecrets(settings);
+  // The census validates every known root before any replacement object is
+  // constructed. This keeps malformed or unknown owner representations from
+  // producing a partially rewritten Settings document.
+  const sourceReferences = listAccountSettingsSavedSecretReferences(
+    settings,
+    rawInput.secretId,
+  );
+  const current = findSecret(
+    secrets,
+    rawInput.secretId,
+    rawInput.expectedUpdatedAt,
+  );
+
+  let targetRef: string;
+  if (target.kind === 'personal') {
+    assertCanonicalNewPersonalSavedSecretId(target.ref);
+    if (
+      secrets.some((candidate) => candidate.id === target.ref)
+      || listAccountSettingsSavedSecretReferences(settings, target.ref).length > 0
+    ) {
+      throw new AccountSettingsSavedSecretMutationError(
+        'saved_secret_conflict',
+        'Replacement personal SavedSecret identity is already in use',
+      );
+    }
+    targetRef = target.ref;
+  } else {
+    if (isSharedSavedSecretCollision(current.secret.id)) {
+      throw new AccountSettingsSavedSecretMutationError(
+        'saved_secret_ref_collision_migration_required',
+        'Personal SavedSecret identity collides with the shared reference namespace',
+      );
+    }
+    targetRef = parseSharedSavedSecretPromotionRef(target.ref);
+    if (secrets.some((candidate) => candidate.id === targetRef)) {
+      throw new AccountSettingsSavedSecretMutationError(
+        'saved_secret_ref_collision_migration_required',
+        'Promotion target collides with a personal SavedSecret identity',
+      );
+    }
+  }
+
+  const targetReferencesBefore = listAccountSettingsSavedSecretReferences(
+    settings,
+    targetRef,
+  ).length;
+  const withRewrittenReferences = rewriteKnownSavedSecretReferences(
+    settings,
+    current.secret.id,
+    targetRef,
+  );
+  const nextSecrets = target.kind === 'personal'
+    ? secrets.map((candidate, index) => (
+        index === current.index ? { ...candidate, id: targetRef } : candidate
+      ))
+    : secrets.filter((_candidate, index) => index !== current.index);
+  const nextSettings = Object.freeze({
+    ...withRewrittenReferences,
+    secrets: Object.freeze(nextSecrets),
+  });
+
+  readSavedSecrets(nextSettings);
+  const remainingSourceReferences = listAccountSettingsSavedSecretReferences(
+    nextSettings,
+    current.secret.id,
+  );
+  const targetReferencesAfter = listAccountSettingsSavedSecretReferences(
+    nextSettings,
+    targetRef,
+  ).length;
+  if (
+    remainingSourceReferences.length > 0
+    || targetReferencesAfter - targetReferencesBefore !== sourceReferences.length
+  ) {
+    throw new AccountSettingsSavedSecretMutationError(
+      'saved_secret_reference_invalid',
+      'SavedSecret reference rewrite did not cover every canonical owner',
+      remainingSourceReferences,
+    );
+  }
+  return Object.freeze({ settings: nextSettings });
+}
+
 function findSecret(
   secrets: readonly SavedSecret[],
   secretId: string,
@@ -1935,7 +2395,10 @@ function applySavedSecretMutation(
     });
   }
   if (mutation.kind === 'bindPluginSecret') {
-    if (typeof mutation.secretId !== 'string' || mutation.secretId.length === 0) {
+    let selectedRef: SavedSecretRefV1;
+    try {
+      selectedRef = parseSavedSecretRefV1(mutation.secretId);
+    } catch {
       throw new AccountSettingsSavedSecretMutationError(
         'saved_secret_invalid',
         'Plugin SavedSecret id is invalid',
@@ -1948,7 +2411,10 @@ function applySavedSecretMutation(
       mutation.expectedSecretId,
       mutation.expectedSecretUpdatedAt,
     );
-    if (!secrets.some((candidate) => candidate.id === mutation.secretId)) {
+    if (
+      selectedRef.kind === 'personal'
+      && !secrets.some((candidate) => candidate.id === mutation.secretId)
+    ) {
       throw new AccountSettingsSavedSecretMutationError(
         'saved_secret_not_found',
         'The selected Plugin SavedSecret does not exist',
@@ -2085,12 +2551,15 @@ function applySavedSecretMutation(
         'Target-local Voice credential changed',
       );
     }
-    assertVoiceCredentialSecretExpectation(
-      secrets,
-      mutation.expectedSecretId,
-      mutation.expectedSecretUpdatedAt,
-    );
-    if (!secrets.some((candidate) => candidate.id === mutation.secretId)) {
+    if (!isStrictSharedSavedSecretRefV1(mutation.expectedSecretId)) {
+      assertVoiceCredentialSecretExpectation(
+        secrets,
+        mutation.expectedSecretId,
+        mutation.expectedSecretUpdatedAt,
+      );
+    }
+    if (!secrets.some((candidate) => candidate.id === mutation.secretId)
+      && !isStrictSharedSavedSecretRefV1(mutation.secretId)) {
       throw new AccountSettingsSavedSecretMutationError(
         'saved_secret_not_found',
         'The selected SavedSecret does not exist',
@@ -2136,11 +2605,13 @@ function applySavedSecretMutation(
         'Target-local Voice credential changed',
       );
     }
-    findSecret(
-      secrets,
-      mutation.expectedSecretId,
-      mutation.expectedSecretUpdatedAt,
-    );
+    if (!isStrictSharedSavedSecretRefV1(mutation.expectedSecretId)) {
+      findSecret(
+        secrets,
+        mutation.expectedSecretId,
+        mutation.expectedSecretUpdatedAt,
+      );
+    }
     const approved = writeVoiceCredentialTarget({
       settings,
       target: mutation.target,
@@ -2164,11 +2635,13 @@ function applySavedSecretMutation(
         'Target-local Voice credential changed',
       );
     }
-    findSecret(
-      secrets,
-      mutation.expectedSecretId,
-      mutation.expectedSecretUpdatedAt,
-    );
+    if (!isStrictSharedSavedSecretRefV1(mutation.expectedSecretId)) {
+      findSecret(
+        secrets,
+        mutation.expectedSecretId,
+        mutation.expectedSecretUpdatedAt,
+      );
+    }
     const unbound = writeVoiceCredentialTarget({
       settings,
       target: mutation.target,

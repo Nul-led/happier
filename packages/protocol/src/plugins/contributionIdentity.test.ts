@@ -51,6 +51,10 @@ describe('PluginContributionLocalIdSchema', () => {
       ...valid,
       localId: 'git hosting',
     })).toBe(false);
+    expect(isValidPluginJsonSchemaValue(validates, {
+      ...valid,
+      localId: 'git/hosting\n',
+    })).toBe(false);
     expect(isValidPluginJsonSchemaValue(validates, 'git/hosting')).toBe(false);
     expect(isValidPluginJsonSchemaValue(validates, {
       ...valid,
@@ -123,6 +127,7 @@ describe('PluginContributionProtocolIdV1Schema', () => {
       'happier.channels//providers',
       'happier.channels/providers.',
       'Happier.channels/providers',
+      'connection/setup\n',
       'happier.channels/providers name',
       'happier.channels\\providers',
       'happier.channels/../providers',
@@ -150,6 +155,7 @@ describe('PluginContributionOperationRoleV1Schema', () => {
       '../connectionTest',
       'ConnectionTest',
       '_connectionTest',
+      'connectionTest\n',
       `${atLimit}a`,
     ]) {
       expect(PluginContributionOperationRoleV1Schema.safeParse(invalid).success, invalid).toBe(false);

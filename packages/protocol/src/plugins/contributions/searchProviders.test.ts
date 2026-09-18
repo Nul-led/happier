@@ -11,6 +11,11 @@ import {
 import { PluginComposerReferenceProviderContributionV1Schema } from './composerReferenceProviders.js';
 import { PluginContributesV2Schema } from './v2.js';
 import { getPluginContributionCatalogEntryV2 } from './catalog.js';
+import {
+  compilePluginJsonSchema,
+  rehydrateCanonicalProtocolComposableSchema,
+} from '../actions/jsonSchemaValidation.js';
+import { normalizePluginUiSemanticCommandV1 } from '../ui/semanticCommands.js';
 
 const searchAction = Object.freeze({
   id: 'search',
@@ -127,6 +132,46 @@ describe('searchProviders contribution family', () => {
 });
 
 describe('plugin search query and result schemas', () => {
+  it('rehydrates the full nested command grammar and preserves normalization through the cold boundary', () => {
+    const cold = rehydrateCanonicalProtocolComposableSchema(PluginSearchResultV1Schema.jsonSchema);
+    if (!cold) throw new Error('Search result must rehydrate');
+    const validate = compilePluginJsonSchema(PluginSearchResultV1Schema.jsonSchema);
+    const result = (command: unknown) => ({ items: [{ id: 'entry', title: 'Entry', command }], truncated: false });
+    for (const command of [
+      {},
+      { kind: 'navigate', destination: 'entry' },
+      { kind: 'executeAction', action: 'open', href: '/escape' },
+      { kind: 'openSurface', destination: 'entry', subPath: '//../escape' },
+      { kind: 'openSurface', destination: 'entry', subPath: 'a/./b' },
+      { kind: 'openSurface', destination: 'entry', subPath: 'a\nb' },
+      { kind: 'openSurface', destination: 'entry', instanceKey: ` ${'é'.repeat(129)} ` },
+      { kind: 'openSurface', destination: 'entry', instanceKey: ` ${'é'.repeat(128)} ` },
+      { kind: 'openSurface', destination: 'entry', instanceKey: ' \t ' },
+      { kind: 'openSurface', destination: 'entry', instanceKey: `${' '.repeat(MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1)}key` },
+    ]) {
+      expect(PluginSearchResultV1Schema.safeParse(result(command)).success).toBe(false);
+      expect(cold.safeParse(result(command)).success).toBe(false);
+      expect(validate(result(command))).toBe(false);
+    }
+    const command = {
+      kind: 'openSurface', destination: 'entry', subPath: '//a///b/',
+      instanceKey: 'entry-instance',
+    };
+    const expected = result(command);
+    expect(PluginSearchResultV1Schema.parse(result(command))).toEqual(expected);
+    expect(cold.parse(result(command))).toEqual(expected);
+    const validationInput = result(command);
+    expect(validate(validationInput)).toBe(true);
+    // JSON Schema compilation is admission-only, not an in-place normalizer.
+    expect(validationInput).toEqual(result(command));
+    expect(normalizePluginUiSemanticCommandV1({ pluginId: 'acme.search', command })).toEqual({
+      ...command,
+      destination: { pluginId: 'acme.search', localId: 'entry' },
+      subPath: 'a/b',
+      instanceKey: 'entry-instance',
+    });
+  });
+
   it('is one composable owner an author declares and the host parses', () => {
     expect(PluginSearchQueryV1Schema.jsonSchema.type).toBe('object');
     expect(PluginSearchResultV1Schema.jsonSchema.type).toBe('object');

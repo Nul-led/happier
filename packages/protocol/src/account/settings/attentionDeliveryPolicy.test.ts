@@ -1,8 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  AttentionDeliveryEventIdSchema,
+  DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
+  REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS,
+} from './attentionDeliveryPolicy.js';
 import { parseAccountSettings, resolveAttentionDecision } from './attentionDeliveryPolicy.testkit.js';
 
 describe('attentionDeliveryPolicyV1 resolver', () => {
+  it('owns the complete remote-alert policy event vocabulary and default projections', () => {
+    expect(AttentionDeliveryEventIdSchema.safeParse('follow_update').success).toBe(true);
+    expect(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS).toEqual([
+      'ready',
+      'permission_request',
+      'user_action_request',
+      'follow_update',
+    ]);
+
+    for (const eventId of REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS) {
+      expect(DEFAULT_ATTENTION_DELIVERY_POLICY_V1.events[eventId]).toEqual({ enabled: true });
+      expect(DEFAULT_ATTENTION_DELIVERY_POLICY_V1.channels.expo_push.events[eventId]).toEqual({ enabled: true });
+    }
+  });
+
+  it('shows remote request previews by default while preserving explicit policy overrides', () => {
+    const decide = (policy: unknown, channel = 'expo_push', event = 'permission_request') => resolveAttentionDecision({
+      policy, event, channel, now: new Date('2026-05-03T12:00:00.000Z'),
+    });
+    const broad = { channels: { expo_push: { previewBehavior: 'include_preview' } } };
+    expect(decide(broad).previewBehavior).toBe('include_preview');
+    expect(decide(broad, 'live_activity').previewBehavior).toBe('include_preview');
+    expect(decide({ events: { permission_request: { previewBehavior: 'include_preview' } } }, 'live_activity').previewBehavior).toBe('include_preview');
+    expect(decide(broad, 'expo_push', 'ready').previewBehavior).toBe('include_preview');
+    expect(decide(broad, 'local_notification').previewBehavior).toBe('include_preview');
+    expect(decide({ ...broad, events: { permission_request: { previewBehavior: 'include_preview' } } }).previewBehavior).toBe('include_preview');
+    expect(decide({ events: { permission_request: { previewBehavior: 'title_only' } } }, 'live_activity').previewBehavior).toBe('title_only');
+  });
+
   it('delivers enabled events to enabled channels by default', () => {
     const parsed = parseAccountSettings();
 

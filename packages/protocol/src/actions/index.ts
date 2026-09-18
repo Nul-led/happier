@@ -1,5 +1,38 @@
 export {
+  computeExternalActionRequestEnvelopeDigestV1,
+  signExternalActionMachineRequestV1,
+  verifyExternalActionMachineRequestV1,
+  signExternalActionMachineRpcRequestV1,
+  verifyExternalActionMachineRpcRequestV1,
+  signExternalActionApprovalInputV1,
+  verifyExternalActionApprovalInputV1,
+  encodeExternalActionResolvedTargetV1,
+  decodeExternalActionResolvedTargetV1,
+} from './externalActionExecutionAuthorization.js';
+export {
+  ExternalActionExecutionAuthorizationBindingV1Schema,
+  ExternalActionExecutionAuthorizationV1Schema,
+  ExternalActionMachineRpcExecutionV1Schema,
+  type ExternalActionMachineRpcExecutionV1,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
+  EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
+  EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
+  EXTERNAL_ACTION_RESOLVED_TARGET_HEADER,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HTTP_PATH_TEMPLATE_V1,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_VERIFY_HTTP_PATH_TEMPLATE_V1,
+  bindExternalActionExecutionAuthorizationHttpPathV1,
+  bindExternalActionExecutionAuthorizationVerifyHttpPathV1,
+  ExternalActionExecutionAuthorizationRequestV1Schema,
+  ExternalActionExecutionAuthorizationVerifyRequestV1Schema,
+  ExternalActionExecutionAuthorizationVerifyResponseV1Schema,
+  type ExternalActionExecutionAuthorizationRequestV1,
+  type ExternalActionExecutionAuthorizationBindingV1,
+  type ExternalActionExecutionAuthorizationV1,
+} from './externalActionApi.js';
+export {
   ACTION_ID_FAMILIES_V1,
+  isSessionAccessActionId,
+  type SessionAccessActionId,
   ACTION_IDS,
   ActionIdSchema,
   PLUGIN_DEV_LOOP_ACTION_IDS_V1,
@@ -13,6 +46,36 @@ export {
   type RuntimeActionIdV1,
 } from './actionIds.js';
 export {
+  bindHomeDomainHttpRequestV1,
+  type HomeDomainHttpRequestV1,
+} from './homeDomainHttpBinding.js';
+export {
+  bindSessionAccessActionHttpRequestV1,
+  isSessionAccessActionIdV1,
+  sessionAccessActionInputSchemaV1,
+  sessionAccessActionOutputSchemaV1,
+} from './sessionAccessActionFamily.js';
+export { getActionRequiredServerFeatureId } from './actionRequiredServerFeature.js';
+export {
+  bindSessionDiscussionActionHttpRequestV1,
+  isSessionDiscussionActionIdV1,
+  sessionDiscussionActionInputSchemaV1,
+  sessionDiscussionActionOutputSchemaV1,
+} from './sessionDiscussionActionFamily.js';
+export {
+  HOME_DOMAIN_ACTION_IDS_V1,
+  HomeDomainActionIdV1Schema,
+  homeDomainActionInputSchemaV1,
+  bindHomeDomainActionHttpRequestV1,
+  homeDomainActionOutputSchemaV1,
+  homeDomainActionTransportV1,
+  isHomeDomainActionIdV1,
+  readHomeDomainActionErrorV1,
+  type HomeDomainActionErrorCodeV1,
+  type HomeDomainActionIdV1,
+  type HomeDomainActionTransportV1,
+} from './homeDomainActionFamily.js';
+export {
   ActionApprovalRequestCreatedResultSchema,
   ActionExecuteFailureSchema,
   projectActionExecuteFailure,
@@ -20,9 +83,41 @@ export {
   type ActionExecuteFailure,
   type ActionExecuteResult,
 } from './actionExecutionResult.js';
+export {
+  createBlockingApprovalCoordinator,
+  getSharedBlockingApprovalCoordinator,
+  type BlockingApprovalCoordinator,
+  type BlockingApprovalRequest,
+  type BlockingApprovalWaitDecision,
+} from './blockingApprovalCoordinator.js';
 export { resolveLocalServiceActionKindForRuntimeActionId } from './specs/localServices.js';
 export {
   EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+  EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
+  EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2,
+  EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2,
+  EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2,
+  ExternalActionRequestEnvelopeSchema,
+  ExternalActionHttpErrorSchema,
+  ExternalActionHttpErrorCodeSchema,
+  ExternalActionPreOpenFailureCodeSchema,
+  ExternalActionRequestEnvelopeV2Schema,
+  ExternalActionResponseEnvelopeV2Schema,
+  ExternalActionDaemonDispatchRequestSchema,
+  createExternalActionDaemonDispatchResponse,
+  parseExternalActionDaemonDispatchResult,
+  isExternalActionRequestWithinLimit,
+  projectExternalActionHttpError,
+  readExternalActionProtectedRequestId,
+  type ExternalActionRequestEnvelope,
+  type ExternalActionRequestEnvelopeV2,
+  type ExternalActionResponseEnvelopeV2,
+  type ExternalActionDaemonDispatchRequest,
+  type ParsedExternalActionDaemonDispatchResult,
+  type PreparedExternalActionResponseEnvelope,
+  type ExternalActionHttpError,
+  type ExternalActionHttpErrorCode,
+  type ExternalActionPreOpenFailureCode,
   EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1,
   EXTERNAL_ACTION_ACTION_ID_MAX_LENGTH,
   EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES,
@@ -43,6 +138,8 @@ export {
   ExternalActionResponseEnvelopeV1Schema,
   ExternalActionServerPrincipalV1Schema,
   ExternalActionTargetV1Schema,
+  externalActionTargetsEqualV1,
+  isExternalActionResolvedTargetAllowedV1,
   type ExternalActionDaemonDispatchRequestV1,
   type ExternalActionDaemonDispatchResultV1,
   type ParsedExternalActionDaemonDispatchResultV1,
@@ -73,12 +170,18 @@ export {
   projectExternalActionHttpErrorV1,
   serializeExternalActionResponseEnvelopeV1,
 } from './externalActionApi.js';
+export {
+  sealExternalActionRequestV2, openExternalActionRequestV2,
+  prepareExternalActionResponseV2, openExternalActionResponseV2,
+  type ExternalActionEncryptionBindingV2,
+} from './externalActionEncryption.js';
 export * from './operations/index.js';
 export { ACTION_UI_PLACEMENTS, ActionUiPlacementSchema, type ActionUiPlacement } from './actionUiPlacements.js';
 export {
   ACTION_SETTINGS_OPT_IN_PLACEMENTS,
   ActionsSettingsV1Schema,
   normalizeActionsSettingsV1,
+  setActionApprovalOverride,
   tryNormalizeActionsSettingsV1,
   isActionSettingsOptInPlacement,
   isActionEnabledByActionsSettings,
@@ -114,13 +217,18 @@ export {
   PUBLIC_ACTION_INPUT_SCHEMAS,
   PUBLIC_ACTION_OUTPUT_SCHEMAS,
   PUBLIC_ACTION_IDS,
+  SIGNED_ROOT_ACTION_IDS,
+  SIGNED_ROOT_ACTION_OUTPUT_SCHEMAS,
   PluginInvocableActionIdSchema,
   PublicActionIdSchema,
+  SignedRootActionIdSchema,
   ActionApprovalFlowSchema,
   ActionApprovalResultSchema,
   ActionApprovalSchema,
   ActionSafetySchema,
   ActionSpecSchema,
+  ActionServerTransportSchema,
+  type ActionServerTransport,
   ActionSpecSurfaceBindingsSchema,
   ActionSurfaceSchema,
   ActionToolExposureModeSchema,
@@ -142,6 +250,7 @@ export {
   getActionSpec,
   isInternalActionId,
   isPluginProvenanceOnlyActionId,
+  isInteractiveDiscussionApiExcludedActionId,
   projectSessionSpawnNewApiRequest,
   getActionContextualDefaults,
   isVoicePromptHotPathSpec,
@@ -181,6 +290,7 @@ export {
   type PluginInvocableActionId,
   type PluginInvocableActionSpecDefinition,
   type PublicActionId,
+  type SignedRootActionId,
   type PublicActionInputById,
   type PublicActionResultById,
   type PublicActionSpecDefinition,
@@ -195,6 +305,8 @@ export {
   type SessionTranscriptGetItem,
   type SessionTranscriptGetOutput,
   type SessionTranscriptGetResult,
+  listActionCliCommandDeclarations,
+  type ActionCliCommandDeclaration,
 } from './actionSpecs.js';
 
 /**
@@ -226,17 +338,22 @@ export {
   type ActionSurfaceSettingsState,
 } from './actionSurfaceAvailability.js';
 
+export { resolveActionSessionListAccessFailure } from './executor/sessionListAccess.js';
 export {
   createActionExecutor,
   type ActionAutomationRunCaller,
   type ActionCaller,
   type ActionExecutorContext,
   type ActionExecutorDeps,
+  type ActionSessionAddress,
+  type ActionSessionReferenceResolution,
   type ActionPreparedInvocation,
   type ActionPrepareResult,
   type ActionPluginCaller,
   type ScmActionExecute,
   type ScmActionId,
+  type WorkflowActionExecute,
+  type WorkflowActionExecuteArgs,
   type ApprovalQueueListItemV1,
   type ApprovalQueueListResultV1,
   type ApprovalQueueQueryPlanV1,
@@ -303,6 +420,22 @@ export {
 } from './actionInputPredicates.js';
 export { buildActionDraftSeedInput } from './actionDraftSeed.js';
 export {
+  describeApprovalActionFields,
+  describeApprovalRequestFields,
+  formatApprovalFieldValues,
+  getApprovalFieldValues,
+  projectApprovalStructuredAnswers,
+  resolveApprovalRequestApproveAdmission,
+  resolveApprovalPresentationInput,
+  shouldHideApprovalField,
+  type ApprovalActionFieldRow,
+  type ApprovalActionFieldsPresentation,
+  type ApprovalRequestApproveAdmission,
+  type ApprovalStructuredAnswer,
+  type ApprovalStructuredAnswersProjection,
+  type ApprovalUnrepresentableReason,
+} from './actionApprovalPresentation.js';
+export {
   describeActionInputFieldForVoice,
   getActionInputFieldVoiceNotes,
   getActionVoiceWorkflowNotes,
@@ -331,7 +464,45 @@ export {
   zodSchemaToJsonSchemaObject,
   type JsonSchemaObject,
 } from './actionInputJsonSchema.js';
+export {
+  ActionCliCommandBindingSchema,
+  ActionCliProjectionSchema,
+  actionCliFlagNameForField,
+  readActionSchemaTopLevelFieldNames,
+  type ActionCliBindContext,
+  type ActionCliBindInput,
+  type ActionCliCommandBinding,
+  type ActionCliProjection,
+} from './actionCliProjection.js';
+export {
+  SESSION_WAIT_DEFAULT_TIMEOUT_SECONDS,
+  resolveSessionWaitTimeoutSeconds,
+} from './specs/sessionCommandCli.js';
+export {
+  SessionListCliInputSchema,
+  bindSessionListCliInput,
+  type SessionListCliInput,
+} from './specs/sessionListCli.js';
+export {
+  SessionDiscussionCreateCliInputSchema,
+  SessionDiscussionPostCliInputSchema,
+  bindSessionDiscussionCreateCliInput,
+  bindSessionDiscussionPostCliInput,
+  type SessionDiscussionCreateCliInput,
+  type SessionDiscussionPostCliInput,
+} from './specs/sessionDiscussionCli.js';
+export {
+  defaultExecutionRunClass,
+  defaultExecutionRunIoMode,
+  defaultExecutionRunPermissionMode,
+  defaultExecutionRunRetention,
+  readExecutionRunCliBackendTarget,
+} from './specs/executionRunCli.js';
 export { resolveRequestedSessionModeId } from './sessionModeIds.js';
+export { TEAM_IDENTITY_ACTION_PATHS_V1 } from './specs/teamsIdentity.js';
+export { MANAGED_IDENTITY_PROVIDER_ACTION_PATHS_V1 } from '../identity/providers.js';
+export { TEAM_DIRECTORY_ACTION_PATHS_V1 } from '../teams/directory/v1.js';
+export { TEAM_EXTERNAL_GROUP_BINDING_ACTION_PATHS_V1 } from '../teams/externalGroupBindings/v1.js';
 
 export {
   ExecutionRunStartFailureDetailsV1Schema,
@@ -341,3 +512,12 @@ export {
   type ExecutionRunStartFailureDetailsV1,
   type ExecutionRunStartRunCreation,
 } from '../execution/runs/index.js';
+
+export {
+  SESSION_LIST_QUERY_RESULT_VERSION_V1,
+  SESSION_LIST_QUERY_UPDATE_REQUIRED_ERROR_CODE,
+  SessionListQueryActionResultV1Schema,
+  markSessionListQueryResultV1,
+  parseSessionListQueryActionResultV1,
+  type SessionListQueryActionResultV1,
+} from '../sessions/awareness/action.js';

@@ -12,6 +12,12 @@ const base = {
 };
 
 describe('Session Pending admission settlement V1', () => {
+  it('carries only host-derived encrypted equality for an admitted target replacement', () => {
+    const decision = { kind: 'admit', finalContent: { t: 'encrypted', c: 'final-cipher' }, requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: 'A'.repeat(43) } };
+    expect(SessionPendingAdmissionSettlementRequestV1Schema.safeParse({ ...base, decision }).success).toBe(true);
+    expect(SessionPendingAdmissionSettlementRequestV1Schema.safeParse({ ...base, decision: { ...decision, finalContent: { t: 'plain', v: {} } } }).success).toBe(false);
+    expect(SessionPendingAdmissionSettlementRequestV1Schema.safeParse({ ...base, decision: { ...decision, requestEqualityEvidenceV1: { kind: 'plainDigest', digest: 'A'.repeat(43) } } }).success).toBe(false);
+  });
   it('accepts one strict admitted final envelope plus server-validation facts', () => {
     expect(SessionPendingAdmissionSettlementRequestV1Schema.parse({
       ...base,

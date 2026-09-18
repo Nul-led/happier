@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  SYNCED_SESSION_AUTHORING_FIELD_IDS_V1,
   SyncedSessionAuthoringFieldIdV1Schema,
   SyncedSessionAuthoringValueV1Schema,
 } from '../sessions/authoring/index.js';
@@ -48,6 +49,15 @@ const pluralAutomation = {
     },
   ],
 };
+const releasedAutomation = {
+  enabled: true,
+  name: 'Review',
+  description: 'Run every hour',
+  scheduleKind: 'interval' as const,
+  everyMinutes: 60,
+  cronExpr: '',
+  timezone: null,
+};
 
 function newSessionDocument() {
   return {
@@ -60,23 +70,10 @@ function newSessionDocument() {
     target: {
       kind: 'newSession' as const,
       authoring: {
-        executionTarget: {
-          mutationId,
-          value: { serverId: 'server-1', machineId: 'machine-1' },
-        },
+        machineId: { mutationId, value: 'machine-1' },
+        serverId: { mutationId, value: 'server-1' },
         directory: { mutationId, value: '/tmp/project' },
-        organizationPlacement: {
-          mutationId,
-          value: { folderId: null, tagIds: [] },
-        },
-        agentTarget: {
-          mutationId,
-          value: {
-            kind: 'agent',
-            identity: { pluginId: 'example.agents', localId: 'codex' },
-          },
-        },
-        modelSelection: { mutationId, value: null },
+        modelId: { mutationId, value: null },
       },
     },
     extensions: {},
@@ -84,14 +81,41 @@ function newSessionDocument() {
 }
 
 describe('session draft protocol', () => {
-  it('uses the canonical Session id schema and reversibly canonicalizes valid ids', () => {
+  it('pins the complete synchronized field inventory to server-v0.2.11', () => {
+    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V1).toEqual([
+      'machineId',
+      'serverId',
+      'targetType',
+      'directory',
+      'checkoutCreationDraft',
+      'agentId',
+      'backendTarget',
+      'transcriptStorage',
+      'profileId',
+      'resumeSessionId',
+      'permissionMode',
+      'modelId',
+      'mcpSelection',
+      'connectedServices',
+      'terminal',
+      'windowsRemoteSessionLaunchMode',
+      'windowsRemoteSessionConsole',
+      'windowsTerminalWindowName',
+      'codexBackendMode',
+      'acpSessionModeId',
+      'automation',
+    ]);
+  });
+
+  it('keeps the released bounded Session draft address parser and canonicalizes reversibly', () => {
     expect(SessionDraftAddressV1Schema.parse({ kind: 'newSession', draftId })).toEqual({ kind: 'newSession', draftId });
     const sessionId = 'session/with spaces?and=%unicode-ä';
     expect(canonicalSessionDraftAddressV1({ kind: 'session', sessionId })).toBe(
       `session/${encodeURIComponent(sessionId)}`,
     );
     expect(() => SessionDraftAddressV1Schema.parse({ kind: 'newSession', draftId: 'not-a-uuid' })).toThrow();
-    expect(() => SessionDraftAddressV1Schema.parse({ kind: 'session', sessionId: ' leading' })).toThrow();
+    expect(SessionDraftAddressV1Schema.parse({ kind: 'session', sessionId: ' leading' }))
+      .toEqual({ kind: 'session', sessionId: ' leading' });
   });
 
   it('binds the private address to the target and preserves open semantic values', () => {
@@ -126,18 +150,31 @@ describe('session draft protocol', () => {
     })).toThrow();
   });
 
-  it('validates synchronized authoring values through the generated 0.3 projection', () => {
+  it('keeps the released synchronized authoring projection closed', () => {
     expect(SessionDraftDocumentV1Schema.parse(newSessionDocument()).target.kind).toBe('newSession');
-    expect(() => SessionDraftDocumentV1Schema.parse({
-      ...newSessionDocument(),
-      target: {
-        kind: 'newSession',
-        authoring: { environmentVariables: { mutationId, value: { SECRET: 'no' } } },
-      },
-    })).toThrow();
+    const excludedFields = {
+      displayText: 'display-only',
+      environmentVariables: { SECRET: 'no' },
+      permissionModeUpdatedAt: 1,
+      modelUpdatedAt: 1,
+      sessionConfigOptionOverrides: null,
+      existingSessionId: 'session-1',
+      sessionEncryptionMode: 'plain',
+      sessionEncryptionKeyBase64: 'key',
+      sessionEncryptionVariant: 'dataKey',
+    };
+    for (const [fieldId, value] of Object.entries(excludedFields)) {
+      expect(() => SessionDraftDocumentV1Schema.parse({
+        ...newSessionDocument(),
+        target: {
+          kind: 'newSession',
+          authoring: { [fieldId]: { mutationId, value } },
+        },
+      }), fieldId).toThrow();
+    }
   });
 
-  it('reads and preserves the published 0.2 authoring fields without restoring them as 0.3 write fields', () => {
+  it('reads and preserves the published 0.2 authoring fields', () => {
     const predecessorAuthoring = {
       machineId: { mutationId, value: 'machine-1' },
       serverId: { mutationId, value: 'server-1' },
@@ -153,8 +190,31 @@ describe('session draft protocol', () => {
 
     expect(parsed.target).toEqual({ kind: 'newSession', authoring: predecessorAuthoring });
     for (const predecessorField of Object.keys(predecessorAuthoring)) {
-      expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse(predecessorField).success).toBe(false);
+      expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse(predecessorField).success).toBe(true);
     }
+  });
+
+  it('strictly composes current and predecessor authoring fields without treating either as an unknown key', () => {
+    const mixedAuthoring = {
+      machineId: { mutationId, value: 'machine-1' },
+      directory: { mutationId, value: '/tmp/project' },
+    };
+    const parsed = SessionDraftDocumentV1Schema.parse({
+      ...newSessionDocument(),
+      target: { kind: 'newSession', authoring: mixedAuthoring },
+    });
+
+    expect(parsed.target).toEqual({ kind: 'newSession', authoring: mixedAuthoring });
+    expect(SessionDraftDocumentV1Schema.safeParse({
+      ...newSessionDocument(),
+      target: {
+        kind: 'newSession',
+        authoring: {
+          ...mixedAuthoring,
+          unsupportedMachineAlias: { mutationId, value: 'machine-1' },
+        },
+      },
+    }).success).toBe(false);
   });
 
   it('reads and preserves the remote-dev predecessor model id without restoring it as a canonical write', () => {
@@ -177,10 +237,10 @@ describe('session draft protocol', () => {
       kind: 'newSession',
       authoring: { modelId: { mutationId, value: 'gpt-5' } },
     });
-    expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse('modelId').success).toBe(false);
+    expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse('modelId').success).toBe(true);
   });
 
-  it('reads and preserves a plural Automation authoring draft', () => {
+  it('reads the released schedule Automation and rejects the successor plural shape', () => {
     const parsed = SessionDraftPrivatePayloadV1Schema.parse({
       v: 1,
       address: { kind: 'newSession', draftId },
@@ -190,7 +250,7 @@ describe('session draft protocol', () => {
           kind: 'newSession',
           authoring: {
             directory: { mutationId, value: '/tmp/project' },
-            automation: { mutationId, value: pluralAutomation },
+            automation: { mutationId, value: releasedAutomation },
           },
         },
       },
@@ -199,10 +259,33 @@ describe('session draft protocol', () => {
     expect(parsed.document.target).toMatchObject({
       kind: 'newSession',
       authoring: {
-        automation: { mutationId, value: pluralAutomation },
+        automation: { mutationId, value: releasedAutomation },
       },
     });
-    expect(SyncedSessionAuthoringValueV1Schema.shape.automation.safeParse(pluralAutomation).success).toBe(true);
+    expect(SyncedSessionAuthoringValueV1Schema.shape.automation.safeParse(releasedAutomation).success).toBe(true);
+    expect(SyncedSessionAuthoringValueV1Schema.shape.automation.safeParse(pluralAutomation).success).toBe(false);
+  });
+
+  it('keeps the released synchronized connected-service binding strict', () => {
+    const releasedBinding = {
+      v: 1 as const,
+      bindingsByServiceId: {
+        'openai-codex': { source: 'native' as const },
+      },
+    };
+    expect(SyncedSessionAuthoringValueV1Schema.shape.connectedServices.safeParse(releasedBinding).success).toBe(true);
+    expect(SyncedSessionAuthoringValueV1Schema.shape.connectedServices.safeParse({
+      ...releasedBinding,
+      bindingsByServiceId: {
+        'openai-codex': { source: 'native', successorOnly: true },
+      },
+    }).success).toBe(false);
+  });
+
+  it('keeps the released synchronized authoring object closed', () => {
+    expect(SyncedSessionAuthoringValueV1Schema.partial().safeParse({
+      successorOnly: null,
+    }).success).toBe(false);
   });
 
   it('limits predecessor draft compatibility to the published reader shapes', () => {

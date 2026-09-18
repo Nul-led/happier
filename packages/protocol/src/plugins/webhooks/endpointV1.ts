@@ -8,7 +8,7 @@ import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
 export const PLUGIN_WEBHOOK_ENDPOINT_ID_V1_PREFIX = 'wh_ep_' as const;
 
-const PLUGIN_WEBHOOK_ENDPOINT_ID_V1_JSON_SCHEMA_PATTERN = '^wh_ep_[A-Za-z0-9_-]{21}[AQgw]$';
+const PLUGIN_WEBHOOK_ENDPOINT_ID_V1_JSON_SCHEMA_PATTERN = '^wh_ep_[A-Za-z0-9_-]{21}[AQgw]$(?![\\s\\S])';
 const PLUGIN_WEBHOOK_ENDPOINT_ID_V1_PATTERN = new RegExp(
   PLUGIN_WEBHOOK_ENDPOINT_ID_V1_JSON_SCHEMA_PATTERN,
   'u',

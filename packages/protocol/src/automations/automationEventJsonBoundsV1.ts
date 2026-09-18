@@ -12,7 +12,7 @@ export const MAX_AUTOMATION_SOURCE_DISPLAY_LABEL_CODE_POINTS = 256;
 export const MAX_AUTOMATION_SOURCE_OR_OCCURRENCE_ID_UTF8_BYTES = 512;
 export const MAX_AUTOMATION_REPLY_CONTEXT_UTF8_BYTES = 64 * 1024;
 
-const AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+const AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])';
 
 /** Portable source-selector identity used by declaration and Action schemas. */
 export const AutomationSourceSelectorIdV1ProtocolSchema = defineProtocolString({

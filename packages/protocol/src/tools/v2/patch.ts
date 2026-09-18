@@ -1,7 +1,11 @@
+import type { FileChangeKind } from '../../sessions/changes/types.js';
+
 type UnknownRecord = Record<string, unknown>;
 
 export type CanonicalPatchFileDiff = Readonly<{
   filePath: string;
+  previousFilePath?: string;
+  changeKind: FileChangeKind;
   oldText?: string;
   newText?: string;
   unifiedDiff?: string;
@@ -75,34 +79,89 @@ function parsePatchHunk(diff: string): { oldText: string; newText: string } | nu
   };
 }
 
+function buildApplyPatchChange(params: Readonly<{
+  operation: 'add' | 'update' | 'delete';
+  sourceFilePath: string;
+  targetFilePath: string;
+  body: string;
+}>): UnknownRecord {
+  const parsed = parsePatchHunk(params.body);
+  const common: UnknownRecord = {
+    type: params.operation,
+    ...(params.body.length > 0 ? { unified_diff: params.body } : {}),
+    ...(params.targetFilePath !== params.sourceFilePath
+      ? { previous_file_path: params.sourceFilePath }
+      : {}),
+  };
+
+  if (params.operation === 'add') {
+    return {
+      ...common,
+      add: { content: parsed?.newText ?? '' },
+    };
+  }
+  if (params.operation === 'delete') {
+    return {
+      ...common,
+      delete: { content: parsed?.oldText ?? '' },
+    };
+  }
+  if (parsed) {
+    return {
+      ...common,
+      modify: {
+        old_content: parsed.oldText,
+        new_content: parsed.newText,
+      },
+    };
+  }
+  return common;
+}
+
 function parseApplyPatchTextChanges(patchText: string): Record<string, unknown> | null {
   const lines = patchText.replace(/\r\n/g, '\n').split('\n');
   const changes: Record<string, unknown> = {};
-  let currentFilePath: string | null = null;
+  let index = 0;
 
-  for (const line of lines) {
-    const match = line.match(/^\*\*\*\s+(Update File|Add File|Delete File):\s+(.+)\s*$/);
-    if (match) {
-      const filePath = match[2]?.trim();
-      if (!filePath) continue;
-
-      const label = String(match[1]).toLowerCase();
-      const type = label.startsWith('add') ? 'add' : label.startsWith('delete') ? 'delete' : 'update';
-      changes[filePath] = { type };
-      currentFilePath = filePath;
+  while (index < lines.length) {
+    const header = lines[index]?.match(/^\*\*\*\s+(Update File|Add File|Delete File):\s+(.+)\s*$/);
+    if (!header) {
+      index += 1;
       continue;
     }
 
-    const moveMatch = line.match(/^\*\*\*\s+Move to:\s+(.+)\s*$/);
-    if (!moveMatch || !currentFilePath) continue;
-    const movedPath = moveMatch[1]?.trim();
-    if (!movedPath) continue;
+    const sourceFilePath = header[2]?.trim();
+    if (!sourceFilePath) {
+      index += 1;
+      continue;
+    }
+    const label = String(header[1]).toLowerCase();
+    const operation = label.startsWith('add') ? 'add' : label.startsWith('delete') ? 'delete' : 'update';
+    let targetFilePath = sourceFilePath;
+    const bodyLines: string[] = [];
+    index += 1;
 
-    const change = changes[currentFilePath];
-    if (!change) continue;
-    delete changes[currentFilePath];
-    changes[movedPath] = change;
-    currentFilePath = movedPath;
+    while (index < lines.length) {
+      const line = lines[index] ?? '';
+      if (/^\*\*\*\s+(?:Update File|Add File|Delete File):/.test(line) || /^\*\*\*\s+End Patch\s*$/.test(line)) {
+        break;
+      }
+      const move = line.match(/^\*\*\*\s+Move to:\s+(.+)\s*$/);
+      if (move) {
+        const movedPath = move[1]?.trim();
+        if (movedPath) targetFilePath = movedPath;
+      } else {
+        bodyLines.push(line);
+      }
+      index += 1;
+    }
+
+    changes[targetFilePath] = buildApplyPatchChange({
+      operation,
+      sourceFilePath,
+      targetFilePath,
+      body: bodyLines.join('\n'),
+    });
   }
 
   return Object.keys(changes).length > 0 ? changes : null;
@@ -178,10 +237,15 @@ function parseUnifiedDiffFileBlock(unifiedDiff: string): {
   } else if (isAdd || oldPath === '/dev/null') {
     change.type = 'add';
     change.add = { content: newText };
+  } else if (oldPath && newPath && oldPath !== newPath) {
+    change.type = 'update';
+    change.previous_file_path = oldPath;
+    change.modify = { old_content: oldText, new_content: newText };
   } else {
     change.type = 'update';
     change.modify = { old_content: oldText, new_content: newText };
   }
+  change.unified_diff = unifiedDiff;
 
   return { filePath, change };
 }
@@ -243,9 +307,14 @@ function normalizePatchChangeArray(input: Record<string, unknown>): Record<strin
     const type = firstNonEmptyString(kind?.type)?.toLowerCase() ?? 'update';
     const targetPath = firstNonEmptyString(kind?.move_path) ?? path;
     const diff = typeof record.diff === 'string' ? record.diff : '';
+    const common = {
+      ...(diff.length > 0 ? { unified_diff: diff } : {}),
+      ...(targetPath !== path ? { previous_file_path: path } : {}),
+    };
 
     if (type === 'add') {
       normalizedChanges[targetPath] = {
+        ...common,
         type: 'add',
         add: { content: diff },
       };
@@ -254,6 +323,7 @@ function normalizePatchChangeArray(input: Record<string, unknown>): Record<strin
 
     if (type === 'delete' || type === 'remove') {
       normalizedChanges[targetPath] = {
+        ...common,
         type: 'delete',
         delete: { content: diff },
       };
@@ -263,13 +333,14 @@ function normalizePatchChangeArray(input: Record<string, unknown>): Record<strin
     const parsedHunk = parsePatchHunk(diff);
     normalizedChanges[targetPath] = parsedHunk
       ? {
+          ...common,
           type: 'update',
           modify: {
             old_content: parsedHunk.oldText,
             new_content: parsedHunk.newText,
           },
         }
-      : { type: 'update' };
+      : { ...common, type: 'update' };
   }
 
   if (Object.keys(normalizedChanges).length === 0) return null;
@@ -351,27 +422,47 @@ export function deriveCanonicalPatchFileDiffs(input: unknown): CanonicalPatchFil
     const oldContent = asString(modify?.old_content) ?? asString(modify?.oldContent);
     const newContent = asString(modify?.new_content) ?? asString(modify?.newContent);
     const unifiedDiff = firstNonEmptyString(change.unified_diff) ?? firstNonEmptyString(change.unifiedDiff);
+    const previousFilePath = firstNonEmptyString(change.previous_file_path)
+      ?? firstNonEmptyString(change.previousFilePath);
+    const type = firstNonEmptyString(change.type)?.toLowerCase() ?? null;
+    const changeKind: FileChangeKind = previousFilePath
+      ? type === 'copy' ? 'copied' : 'renamed'
+      : type === 'add' || add
+        ? 'added'
+        : type === 'delete' || type === 'remove' || del
+          ? 'deleted'
+          : type === 'update' || type === 'modify'
+            ? 'modified'
+            : 'unknown';
+    const common = {
+      filePath,
+      ...(previousFilePath ? { previousFilePath } : {}),
+      changeKind,
+      ...(unifiedDiff ? { unifiedDiff } : {}),
+    };
 
     if (typeof addContent === 'string') {
-      files.push({ filePath, oldText: '', newText: addContent });
+      files.push({ ...common, oldText: '', newText: addContent });
       continue;
     }
 
     if (typeof oldContent === 'string' && typeof newContent === 'string') {
-      files.push({ filePath, oldText: oldContent, newText: newContent });
+      files.push({ ...common, oldText: oldContent, newText: newContent });
       continue;
     }
 
-    if (del || typeof change.type === 'string') {
-      const type = typeof change.type === 'string' ? String(change.type).toLowerCase() : null;
-      if (type === 'delete' || type === 'remove' || del) {
-        files.push({ filePath, oldText: deleteContent, newText: '' });
-        continue;
-      }
+    if (changeKind === 'deleted') {
+      files.push({ ...common, oldText: deleteContent, newText: '' });
+      continue;
     }
 
     if (typeof unifiedDiff === 'string') {
-      files.push({ filePath, unifiedDiff });
+      files.push(common);
+      continue;
+    }
+
+    if (changeKind !== 'unknown') {
+      files.push(common);
       continue;
     }
   }

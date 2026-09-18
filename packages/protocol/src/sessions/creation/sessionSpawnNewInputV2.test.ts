@@ -17,6 +17,107 @@ const input = {
 } as const;
 
 describe('SessionSpawnNewInputV2Schema', () => {
+  it('accepts a Team-resource Connected Service binding at the Machine spawn boundary', () => {
+    expect(SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      connectedServices: {
+        v: 2,
+        bindingsByServiceId: {
+          'happier.connected-accounts.test/service': {
+            source: 'team_resource',
+            deliveryMode: 'brokered',
+            resourceId: 'resource-1',
+          },
+        },
+      },
+    }).connectedServices).toMatchObject({ v: 2 });
+  });
+
+  it('carries explicit Team context independently of an empty access draft', () => {
+    const parsed = SessionSpawnNewInputV2Schema.parse({
+      ...input, primaryTeamId: 'team', initialAccess: { grants: [] },
+    });
+    expect(parsed.primaryTeamId).toBe('team');
+    expect(parsed.initialAccess).toEqual({ grants: [] });
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, primaryTeamId: '' }).success).toBe(false);
+  });
+  it('carries every distinct Team credential slot atomically while preserving omission compatibility', () => {
+    const providerBinding = {
+      v: 1,
+      slot: { kind: 'provider_model' },
+      resourceId: 'resource-1',
+      expectedResourceRevision: 0,
+      deliveryMode: 'brokered',
+    } as const;
+    const purposeBinding = {
+      v: 1,
+      slot: {
+        kind: 'connected_service_purpose',
+        purpose: {
+          consumer: { pluginId: 'happier.agent.codex', localId: 'codex' },
+          purpose: 'repository_api',
+        },
+      },
+      resourceId: 'resource-2',
+      expectedResourceRevision: 3,
+      deliveryMode: 'direct',
+    } as const;
+    const teamCredentialBindings = [providerBinding, purposeBinding];
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, teamCredentialBindings }).teamCredentialBindings)
+      .toEqual(teamCredentialBindings);
+    expect(SessionSpawnNewInputV2Schema.parse(input)).not.toHaveProperty('teamCredentialBindings');
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      teamCredentialBindings: [purposeBinding, purposeBinding],
+    }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      teamCredentialBindings: [{ ...providerBinding, unexpected: true }],
+    }).success)
+      .toBe(false);
+  });
+  it('preserves strict subject-keyed initial access through ordinary and browser-safe spawn', () => {
+    const initialAccess = { grants: [
+      { subject: { kind: 'account', accountId: 'reader' }, accessLevel: 'view', canApprovePermissions: false },
+      { subject: { kind: 'team', teamId: 'team' }, accessLevel: 'edit', canApprovePermissions: true },
+      { subject: { kind: 'group', teamId: 'team', groupId: 'group' }, accessLevel: 'admin', canApprovePermissions: false },
+    ] };
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, initialAccess }).initialAccess).toEqual(initialAccess);
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.parse({ ...input, initialAccess }).initialAccess)
+      .toEqual(initialAccess);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input, initialAccess: { grants: [...initialAccess.grants, initialAccess.grants[0]] },
+    }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input, initialAccess: { grants: [{ ...initialAccess.grants[1], requiredByTeamPolicy: true }] },
+    }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      initialAccess: {
+        grants: [{
+          ...initialAccess.grants[0],
+          accountEnvelopeInput: { v: 1, encryptedDataKey: Buffer.alloc(105).toString('base64') },
+        }],
+      },
+    }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input, initialAccess: { grants: [], responsibleAccountId: 'reader' },
+    }).success).toBe(false);
+  });
+
+  it('accepts only the strict informational placement origin', () => {
+    const placementOrigin = {
+      kind: 'machine_pool',
+      poolId: '11111111-1111-4111-8111-111111111111',
+    } as const;
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, placementOrigin }).placementOrigin)
+      .toEqual(placementOrigin);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      placementOrigin: { ...placementOrigin, name: 'Private Pool' },
+    }).success).toBe(false);
+  });
+
   it('admits one structured initial input atomically and rejects the retired text-only field', () => {
     const initialInput = {
       text: 'Review the selected pull request.',
@@ -76,6 +177,39 @@ describe('SessionSpawnNewInputV2Schema', () => {
       ...input,
       environmentVariables: {
         TOKEN: 'secret-value',
+      },
+    }).success).toBe(false);
+  });
+
+  it('accepts a value-free one-launch Saved Secret reference overlay', () => {
+    const secretReferenceOverlay = {
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:resource_1',
+          revision: 3,
+        },
+      },
+    } as const;
+    expect(SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      profileId: 'profile-1',
+      secretReferenceOverlay,
+    }).secretReferenceOverlay).toEqual(secretReferenceOverlay);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      profileId: 'profile-1',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: { API_KEY: { value: 'plaintext-is-not-a-reference' } },
+      },
+    }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      profileId: 'profile-1',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: { API_KEY: { ref: 'happier:shared-secret:v1:resource_1' } },
       },
     }).success).toBe(false);
   });

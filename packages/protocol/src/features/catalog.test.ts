@@ -4,6 +4,27 @@ import { FEATURE_CATALOG, FEATURE_IDS, isFeatureId, type FeatureId } from './cat
 import type { FeatureFailMode } from './catalogTypes.js';
 
 describe('feature catalog', () => {
+  it('owns Workflow activation as a fail-closed server feature behind Automations', () => {
+    expect(FEATURE_CATALOG.workflows).toMatchObject({
+      representation: 'server',
+      defaultFailMode: 'fail_closed',
+      dependencies: ['automations'],
+    });
+  });
+  it('keeps external Team credential API access fail-closed behind credential resources', () => {
+    expect(FEATURE_CATALOG['teams.credentialResources.externalApi']).toMatchObject({
+      representation: 'server',
+      defaultFailMode: 'fail_closed',
+      dependencies: ['teams.credentialResources'],
+    });
+  });
+  it('keeps Temporary computer server-represented and fail-closed behind Sessions, Machines, and synchronized drafts', () => {
+    expect(FEATURE_CATALOG['sessions.ephemeralRunner']).toMatchObject({
+      representation: 'server',
+      defaultFailMode: 'fail_closed',
+      dependencies: ['sessions', 'machines', 'sessions.drafts'],
+    });
+  });
   it('contains unique feature ids', () => {
     const unique = new Set(FEATURE_IDS);
     expect(unique.size).toBe(FEATURE_IDS.length);

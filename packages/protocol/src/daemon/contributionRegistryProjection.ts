@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
+import { PluginHostedHtmlSourceV1Schema } from '../plugins/contributions/ui/hostedHtmlSourceV1.js';
+import { PluginUiHostedHtmlRequestedCapabilitiesV1Schema } from '../plugins/contributions/ui/hostedHtmlCapabilitiesV1.js';
 
 import {
   DaemonPluginStructuredMessageActionExecuteRequestSchema,
@@ -2541,6 +2543,15 @@ const PluginProjectedUiEntryV2Schema = z.union([
  * remain with the consumers that own those lifetimes.
  */
 export const DaemonPluginUiTargetedSurfaceRendererRefV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('hostedHtml'),
+    contributionId: PluginContributionLocalIdSchema,
+    source: PluginHostedHtmlSourceV1Schema,
+    requiredHostMethods: z.array(PluginUiHostMethodV1Schema),
+    // The declared request travels with the by-value document it describes; the
+    // mounting host resolves and enforces it against current authority.
+    requestedCapabilities: PluginUiHostedHtmlRequestedCapabilitiesV1Schema.optional(),
+  }).strict(),
   z.object({
     kind: z.literal('reactNative'),
     contributionId: PluginContributionLocalIdSchema,

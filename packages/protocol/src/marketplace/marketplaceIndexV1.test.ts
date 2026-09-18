@@ -9,6 +9,7 @@ import {
   MarketplaceNpmDiscoveryProjectionV1Schema,
   MarketplaceIndexSourceSnapshotV1Schema,
   marketplaceNpmDiscoveryProjectionEqualV1,
+  parseMarketplaceIndexSourceSnapshotV1,
   readMarketplaceNpmDiscoveryProjectionV1,
   type MarketplaceIndexItemV1,
   type MarketplaceListingInstallDecisionV1,
@@ -206,6 +207,69 @@ describe('MarketplaceIndexV1', () => {
       categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
     };
     expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse({ source: { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' }, freshness: { state: 'fresh', fetchedAtMs: 1 }, entries: [entry], diagnostics: [] }).success).toBe(false);
+  });
+});
+
+describe('parseMarketplaceIndexSourceSnapshotV1', () => {
+  const entry = {
+    pluginId: 'acme.plugin',
+    publisher: { id: 'acme', displayName: 'Acme' },
+    display: { title: 'Acme', description: null },
+    distribution: {
+      kind: 'npm', registryOrigin: 'https://registry.example', packageName: '@acme/plugin',
+      version: '1.0.0', integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
+    },
+    manifestDigest: `sha256:${'a'.repeat(64)}`,
+    compatibility: { platforms: ['linux'] },
+    summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+    review: { status: 'unreviewed', reviewedAt: null },
+    categories: [], media: [], updatePolicy: 'reviewEveryUpdate', links: {},
+  };
+  const snapshot = {
+    source: { id: 'user', title: 'User', kind: 'user', sourceUrl: 'https://catalog.example/index.json' },
+    freshness: { state: 'fresh', fetchedAtMs: 1 }, entries: [entry], diagnostics: [],
+  };
+
+  it('preserves an absent author engine floor in the canonical listing and its reader', () => {
+    expect(MarketplaceIndexSourceSnapshotV1Schema.parse(snapshot)).toEqual(snapshot);
+    expect(parseMarketplaceIndexSourceSnapshotV1(snapshot)).toEqual(snapshot);
+    for (const happier of ['', '*', 'not-a-range']) {
+      expect(() => parseMarketplaceIndexSourceSnapshotV1({
+        ...snapshot, entries: [{ ...entry, compatibility: { ...entry.compatibility, happier } }],
+      })).toThrow();
+    }
+  });
+
+  it('drops only additive presentation while canonical output remains closed', () => {
+    const additive = { ...snapshot, entries: [{
+      ...entry,
+      display: { ...entry.display, badge: { label: 'New' } },
+      summary: { ...entry.summary, installFootprint: { bytes: 1_024 } },
+      links: { documentation: 'https://example.test/docs' },
+    }] };
+    expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse(additive).success).toBe(false);
+    expect(parseMarketplaceIndexSourceSnapshotV1(additive)).toEqual(snapshot);
+  });
+
+  it('keeps known presentation and all identity, authority and executable facts strict', () => {
+    for (const invalidEntry of [
+      { ...entry, display: { ...entry.display, title: 42, badge: 'New' } },
+      { ...entry, summary: { ...entry.summary, executableRealms: ['future'] } },
+      { ...entry, links: { homepage: 'javascript:alert(1)', documentation: 'https://example.test' } },
+      { ...entry, pluginId: 42 },
+      { ...entry, publisher: { ...entry.publisher, verified: true } },
+      { ...entry, distribution: { ...entry.distribution, executableUrl: 'https://example.test/code' } },
+      { ...entry, compatibility: { ...entry.compatibility, futureAuthority: true } },
+      { ...entry, review: { ...entry.review, trusted: true } },
+      { ...entry, review: { status: 'approved', reviewedAt: '2026-09-05T00:00:00.000Z' } },
+      { ...entry, activate: './future.js' },
+    ]) {
+      expect(() => parseMarketplaceIndexSourceSnapshotV1({ ...snapshot, entries: [invalidEntry] })).toThrow();
+    }
+    expect(() => parseMarketplaceIndexSourceSnapshotV1({
+      ...snapshot, source: { ...snapshot.source, credentials: 'secret' },
+    })).toThrow();
+    expect(() => parseMarketplaceIndexSourceSnapshotV1({ ...snapshot, authority: 'future' })).toThrow();
   });
 });
 

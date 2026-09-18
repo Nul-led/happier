@@ -5,6 +5,7 @@ import { PendingLocalIdSchema } from '../pending/pendingLocalId.js';
 import {
   SessionInputAdmissionRejectionCodeV1Schema,
   SessionInputAdmissionResultV1Schema,
+  SessionInputRequestEqualityEvidenceV1Schema,
 } from './sessionInputAdmission.js';
 import { SessionStoredMessageContentSchema } from './sessionStoredMessageContent.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
@@ -37,6 +38,8 @@ export const SessionPendingAdmissionSettlementRequestV1Schema = z.object({
     z.object({
       kind: z.literal('admit'),
       finalContent: SessionStoredMessageContentSchema,
+      /** Original request evidence from the exact target publisher, never from an Account request. */
+      requestEqualityEvidenceV1: SessionInputRequestEqualityEvidenceV1Schema.optional(),
       validation: SessionInputSettlementValidationV1Schema.optional(),
     }).strict(),
     z.object({
@@ -45,7 +48,12 @@ export const SessionPendingAdmissionSettlementRequestV1Schema = z.object({
       validation: SessionInputSettlementValidationV1Schema.optional(),
     }).strict(),
   ]),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.decision.kind !== 'admit' || value.decision.requestEqualityEvidenceV1 === undefined) return;
+  if (value.decision.finalContent.t !== 'encrypted' || value.decision.requestEqualityEvidenceV1.kind !== 'e2eeTag') {
+    context.addIssue({ code: 'custom', path: ['decision', 'requestEqualityEvidenceV1'], message: 'Publisher equality evidence requires encrypted target content and a host-derived E2EE tag' });
+  }
+});
 export type SessionPendingAdmissionSettlementRequestV1 = z.infer<
   typeof SessionPendingAdmissionSettlementRequestV1Schema
 >;

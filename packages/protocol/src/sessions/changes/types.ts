@@ -1,3 +1,5 @@
+import type { CheckpointAttributionScope } from './checkpointAttributionScope.js';
+
 export type ChangeEvidenceSource =
   | 'provider_native'
   | 'provider_tool'
@@ -7,7 +9,38 @@ export type ChangeEvidenceSource =
   | 'scm_reconciled'
   | 'inferred';
 
+/** How certain the recorded file content delta itself is. */
 export type ChangeConfidence = 'exact' | 'strong' | 'best_effort';
+
+/**
+ * How certain it is that this Session or turn produced the change. Exact content evidence does not
+ * imply exact authorship: a checkpoint delta can be byte-exact while overlapping writers make
+ * authorship uncertain.
+ */
+export type SessionAttributionConfidence =
+  | 'session_exact'
+  | 'session_likely'
+  | 'session_possible'
+  | 'unknown';
+
+export type SessionAttributionReason =
+  | 'provider_correlated'
+  | 'canonical_tool_correlated'
+  | 'checkpoint_no_happier_overlap_observed'
+  | 'checkpoint_overlap_observed'
+  | 'workspace_touched_path'
+  | 'unavailable';
+
+export type SessionChangeAttribution = Readonly<{
+  confidence: SessionAttributionConfidence;
+  reason: SessionAttributionReason;
+}>;
+
+/**
+ * Whether another Happier checkpoint capture interval was observed on the same resolved repository
+ * root. `not_observed` is bounded process-local evidence, never proof of exclusive access.
+ */
+export type CheckpointOverlapObservation = 'observed' | 'not_observed' | 'unknown';
 
 export type FileChangeKind =
   | 'added'
@@ -16,6 +49,14 @@ export type FileChangeKind =
   | 'renamed'
   | 'copied'
   | 'unknown';
+
+export type FileChangeEvidenceStats = Readonly<{
+  oldTextBytes?: number;
+  newTextBytes?: number;
+  unifiedDiffBytes?: number;
+  addedLines?: number;
+  removedLines?: number;
+}>;
 
 export type FileChangeEvidence = Readonly<{
   filePath: string;
@@ -31,6 +72,9 @@ export type FileChangeEvidence = Readonly<{
   agentTurnId?: string | null;
   providerMessageId?: string | null;
   description?: string | null;
+  /** The retained content is a bounded projection rather than the complete observed bytes. */
+  truncated?: true;
+  stats?: FileChangeEvidenceStats;
 }>;
 
 export type RepositoryCheckpointReceiptId =
@@ -57,7 +101,7 @@ export type RepositoryCheckpointTurnMetadata = Readonly<{
   finalRef?: string;
   baseRefSource: 'turn_start' | 'message_start' | 'previous_final' | 'unavailable';
   contentConfidence: 'exact' | 'unavailable';
-  attributionScope: 'exclusive_worktree' | 'shared_worktree' | 'unknown';
+  attributionScope: CheckpointAttributionScope;
   receipts: readonly RepositoryCheckpointReceipt[];
   unavailableReason?: string;
 }>;
@@ -78,11 +122,15 @@ export type TurnChangeSet = Readonly<{
 
 export type SessionChangeSetFile = Readonly<FileChangeEvidence & {
   turns: readonly string[];
+  attribution: SessionChangeAttribution;
+  checkpointOverlap: CheckpointOverlapObservation;
 }>;
 
 export type ChangeSetConfidenceSummary = Readonly<{
-  source: ChangeEvidenceSource;
-  confidence: ChangeConfidence;
+  source: ChangeEvidenceSource | 'unavailable';
+  confidence: ChangeConfidence | 'unavailable';
+  attribution: SessionChangeAttribution;
+  checkpointOverlap: CheckpointOverlapObservation;
 }>;
 
 export type SessionChangeSet = Readonly<{
@@ -114,4 +162,11 @@ export type SessionWorkingTreeProjection = Readonly<{
     kind: string;
   }[];
   projectionReliability: ChangeConfidence;
+}>;
+
+/** Raw repository facts supplied by a workspace-wide touched-path fallback adapter. */
+export type WorkspaceTouchedFileEvidence = Readonly<{
+  filePath: string;
+  changeKind: FileChangeKind;
+  binary?: boolean;
 }>;

@@ -9,10 +9,34 @@ function defineFeatureCatalog<
 }
 
 const FEATURE_CATALOG_DEFINITION = {
+  teams: {
+    description: 'Team membership, governance, and administration surfaces.',
+    defaultFailMode: 'fail_closed',
+    dependencies: [],
+    representation: 'server',
+  },
+  'teams.credentialResources': {
+    description: 'Team shared credential resource administration and use.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['teams'],
+    representation: 'server',
+  },
+  'teams.credentialResources.externalApi': {
+    description: 'External API access to Team credential resources.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['teams.credentialResources'],
+    representation: 'server',
+  },
   automations: {
     description: 'Automations feature surfaces and scheduling runtime.',
     defaultFailMode: 'fail_closed',
     dependencies: [],
+    representation: 'server',
+  },
+  workflows: {
+    description: 'Structured Workflow authoring, execution, inspection, and Action surfaces.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['automations'],
     representation: 'server',
   },
   'execution.runs': {
@@ -63,6 +87,12 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: [],
     representation: 'server',
   },
+  'connectedServices.subscription': {
+    description: 'Connected service subscription status snapshots and details.',
+    defaultFailMode: 'fail_closed',
+    dependencies: [],
+    representation: 'server',
+  },
   'connectedServices.accountGroups': {
     description: 'Connected service account groups and member management APIs.',
     defaultFailMode: 'fail_closed',
@@ -73,6 +103,24 @@ const FEATURE_CATALOG_DEFINITION = {
     description: 'Connected service account group fallback and automatic active account switching APIs.',
     defaultFailMode: 'fail_closed',
     dependencies: ['connectedServices.accountGroups', 'sessions.usageLimitRecovery'],
+    representation: 'server',
+  },
+  'connectedServices.autoQuotaReset': {
+    description: 'Opt-in banked quota reset spending after account pool exhaustion.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['connectedServices.accountFallback', 'connectedServices.quotas'],
+    representation: 'server',
+  },
+  'connectedServices.autoDisablePlanInvalid': {
+    description: 'Opt-in disabling of pool accounts that cannot use the selected model.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['connectedServices.accountFallback'],
+    representation: 'server',
+  },
+  'connectedServices.poolQuotaLimitSelection': {
+    description: 'Pool-specific selection of provider-reported quota allowance families.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['connectedServices.accountFallback', 'connectedServices.quotas'],
     representation: 'server',
   },
   'updates.ota': {
@@ -129,6 +177,12 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: ['sessions'],
     representation: 'server',
   },
+  'sessions.ephemeralRunner': {
+    description: 'Creator-authorized temporary-computer Session activation.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions', 'machines', 'sessions.drafts'],
+    representation: 'server',
+  },
   'sessions.agentSwitching': {
     description: 'Continue one Session in place with another coding Agent, and create configurable Sessions from a typed source-context recipe.',
     defaultFailMode: 'fail_closed',
@@ -143,6 +197,36 @@ const FEATURE_CATALOG_DEFINITION = {
   },
   'sessions.drafts': {
     description: 'Cross-device composer and new-session draft synchronization.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions'],
+    representation: 'server',
+  },
+  'sessions.following': {
+    description: 'Durable per-Account Follow of an accessible Session, its notification/Voice preferences, and the four auto-follow defaults.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions'],
+    representation: 'server',
+  },
+  'sessions.collaboration': {
+    description: 'Current Account, Team and Group Session access, responsibility and atomic initial access.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions', 'sharing.session'],
+    representation: 'server',
+  },
+  'sessions.conversations': {
+    description: 'Human conversations inside a shared Session: discussions, authored messages, mentions and private read cursors.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions.collaboration'],
+    representation: 'server',
+  },
+  'sessions.board': {
+    description: 'Shared Session Board: durable Session surface items, their organization into Board views, and the Board Actions that author them.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['sessions'],
+    representation: 'server',
+  },
+  'sessions.filteredListing': {
+    description: 'Structurally filtered Session listing before Home-local pagination.',
     defaultFailMode: 'fail_closed',
     dependencies: ['sessions'],
     representation: 'server',
@@ -164,6 +248,12 @@ const FEATURE_CATALOG_DEFINITION = {
     defaultFailMode: 'fail_closed',
     dependencies: ['machines'],
     representation: 'client',
+  },
+  'machines.pools': {
+    description: 'Personal Machine Pool administration and exact target selection.',
+    defaultFailMode: 'fail_closed',
+    dependencies: ['machines'],
+    representation: 'server',
   },
   'machines.transfer.directPeer': {
     description: 'Direct peer machine transfer capability.',

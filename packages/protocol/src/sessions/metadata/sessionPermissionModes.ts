@@ -12,6 +12,19 @@ export const SESSION_PERMISSION_MODES = [
 
 export type SessionPermissionMode = (typeof SESSION_PERMISSION_MODES)[number];
 
+/**
+ * Provider-neutral permission names presented at user and Action input boundaries.
+ * Persisted Session metadata retains its released spellings for compatibility.
+ */
+export const SESSION_PERMISSION_INTENT_INPUTS = [
+  'read_only',
+  'default',
+  'auto',
+  'yolo',
+] as const;
+
+export type SessionPermissionIntentInput = (typeof SESSION_PERMISSION_INTENT_INPUTS)[number];
+
 const SESSION_PERMISSION_MODE_SET = new Set<string>(SESSION_PERMISSION_MODES);
 
 function normalizeSessionPermissionModeToken(raw: string): string {
@@ -74,6 +87,18 @@ export function parseSessionPermissionModeAlias(raw: string): SessionPermissionM
       return null;
   }
 }
+
+/** Strict, alias-aware schema for user and Action input boundaries. */
+export function createSessionPermissionModeInputSchema(zod: typeof z) {
+  return zod.preprocess(
+    (value) => typeof value === 'string'
+      ? parseSessionPermissionModeAlias(value) ?? value
+      : value,
+    zod.enum(SESSION_PERMISSION_MODES),
+  );
+}
+
+export const SessionPermissionModeInputSchema = createSessionPermissionModeInputSchema(z);
 
 /**
  * Parse behavior:

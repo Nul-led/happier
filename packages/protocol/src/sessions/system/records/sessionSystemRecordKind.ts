@@ -6,6 +6,8 @@ import { SESSION_PERMISSION_SYSTEM_RECORD_KINDS } from '../../permissions/mediat
 
 export const SESSION_SYSTEM_RECORD_KINDS = [
   ...MEMORY_SESSION_SYSTEM_RECORD_KINDS,
+  'layout.v1',
+  'item.v1',
   ...ACTIVITY_SESSION_SYSTEM_RECORD_KINDS,
   ...SESSION_PERMISSION_SYSTEM_RECORD_KINDS,
 ] as const;

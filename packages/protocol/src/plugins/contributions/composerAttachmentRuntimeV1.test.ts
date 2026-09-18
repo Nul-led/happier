@@ -5,10 +5,31 @@ import {
   ComposerAttachmentPrepareRequestV1Schema,
   ComposerAttachmentPrepareResultV1Schema,
   ComposerAttachmentResolveRequestV1Schema,
+  ComposerAttachmentResolveRequestV2Schema,
   ComposerAttachmentResolveResultV1Schema,
 } from './composerAttachmentRuntimeV1.js';
 
 describe('composer attachment runtime V1', () => {
+  it('keeps V1 Session identity unchanged and admits host-stamped Session or execution-run V2 scope', () => {
+    const attachments = [{ instanceId: 'attachment-1', key: 'issue', value: { issueId: '42' } }];
+
+    expect(ComposerAttachmentResolveRequestV2Schema.parse({
+      scope: { kind: 'session', sessionId: 'session-1' },
+      localId: 'local-1',
+      attachments,
+    }).scope).toEqual({ kind: 'session', sessionId: 'session-1' });
+    expect(ComposerAttachmentResolveRequestV2Schema.parse({
+      scope: { kind: 'execution_run', executionRunId: 'run-1' },
+      localId: 'local-1',
+      attachments,
+    }).scope).toEqual({ kind: 'execution_run', executionRunId: 'run-1' });
+    expect(ComposerAttachmentResolveRequestV2Schema.safeParse({
+      sessionId: 'run-1',
+      localId: 'local-1',
+      attachments,
+    }).success).toBe(false);
+  });
+
   it('uses sessionId and localId as the sole attachment-runtime identity', () => {
     const attachments = [{
       instanceId: 'attachment-1',

@@ -6,10 +6,16 @@ import { PluginIdSchema } from '../pluginId.js';
 import {
   PluginCollectionFiniteNumberV1Schema,
   PluginCollectionMemberNameV1Schema,
+  PluginCollectionProjectedScalarFieldRefV1Schema,
   PluginCollectionProjectedScalarValueV1Schema,
+  PluginCollectionUiQueryParameterV1Schema,
+  PluginCollectionUiQueryValueV1Schema,
 } from './collectionContributionV1.js';
+import { PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1 } from './collectionLimitsV1.js';
 import { PluginCollectionOpaqueCursorV1Schema } from './collectionOpaqueCursorV1.js';
 import { PluginCollectionContractRefV1Schema } from './collectionContractRefV1.js';
+
+export type { PluginCollectionProjectedScalarFieldRefV1 } from './collectionContributionV1.js';
 
 const MAX_COLLECTION_ROW_ID_UTF8_BYTES = 256;
 
@@ -51,6 +57,72 @@ export const PluginCollectionUiQueryRequestV1Schema = PluginCollectionUiQueryInp
   readerContext: PluginCollectionContractRefV1Schema,
 }).strict();
 export type PluginCollectionUiQueryRequestV1 = z.infer<typeof PluginCollectionUiQueryRequestV1Schema>;
+
+/**
+ * Exact immutable UI-query descriptor emitted from a normalized collection
+ * contract. Keeping this structural wire projection beside the UI request and
+ * result avoids pulling the host-only Collection encryption codec into public
+ * declarative Action consumers.
+ */
+export const NormalizedPluginCollectionUiQueryDescriptorV1Schema = z.object({
+  collection: z.object({
+    pluginId: asProtocolZod(PluginIdSchema),
+    collectionId: asProtocolZod(PluginContributionLocalIdSchema),
+  }).strict(),
+  id: PluginCollectionMemberNameV1Schema,
+  indexId: PluginCollectionMemberNameV1Schema,
+  parameters: z.record(PluginCollectionMemberNameV1Schema, PluginCollectionUiQueryParameterV1Schema),
+  prefix: z.array(PluginCollectionUiQueryValueV1Schema).max(4),
+  range: z.object({
+    lower: PluginCollectionUiQueryValueV1Schema.optional(),
+    upper: PluginCollectionUiQueryValueV1Schema.optional(),
+  }).strict().refine((value) => value.lower !== undefined || value.upper !== undefined, 'A range needs a lower or upper bound.').optional(),
+  order: z.enum(['asc', 'desc']),
+  pageSize: z.number().int().min(1).max(PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1),
+  projectedFields: z.array(PluginCollectionProjectedScalarFieldRefV1Schema).min(1).max(16),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.projectedFields.map((field) => field.field)).size !== value.projectedFields.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['projectedFields'],
+      message: 'Projected fields must be unique.',
+    });
+  }
+});
+export type NormalizedPluginCollectionUiQueryDescriptorV1 = z.infer<
+  typeof NormalizedPluginCollectionUiQueryDescriptorV1Schema
+>;
+
+export function isCanonicalPluginCollectionIndexedInstantV1(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const epochMs = Date.parse(value);
+  return Number.isFinite(epochMs) && new Date(epochMs).toISOString() === value;
+}
+
+export function validatePluginCollectionUiQueryParametersV1(
+  descriptor: NormalizedPluginCollectionUiQueryDescriptorV1,
+  parameters: Readonly<Record<string, string | number | boolean>>,
+): void {
+  const known = descriptor.parameters;
+  for (const key of Object.keys(parameters)) {
+    if (!(key in known)) throw new Error(`UI query parameter "${key}" is not declared.`);
+  }
+  for (const [id, schema] of Object.entries(known)) {
+    const value = parameters[id];
+    if (value === undefined) throw new Error(`UI query parameter "${id}" is required.`);
+    if (schema.kind === 'string') {
+      if (typeof value !== 'string' || new TextEncoder().encode(value).length > schema.maxUtf8Bytes || (schema.enum && !schema.enum.includes(value))) {
+        throw new Error(`UI query parameter "${id}" is invalid.`);
+      }
+    } else if (schema.kind === 'finiteNumber') {
+      if (typeof value !== 'number' || !Number.isFinite(value) || (schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum)) throw new Error(`UI query parameter "${id}" is invalid.`);
+    } else if (schema.kind === 'boolean' && typeof value !== 'boolean') {
+      throw new Error(`UI query parameter "${id}" is invalid.`);
+    } else if (schema.kind === 'instant' && (typeof value !== 'string' || !isCanonicalPluginCollectionIndexedInstantV1(value))) {
+      throw new Error(`UI query parameter "${id}" is invalid.`);
+    }
+  }
+}
 
 export const PluginCollectionUiRowContextV1Schema = z.object({
   collection: z.object({

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
+import { ExecutionRunCompletionV1Schema } from '../../execution/runs/completionInputV1.js';
+import { SessionDiscussionSelectionSourceV1Schema } from '../../sessions/discussions/content.js';
 import { MAX_INTERACTION_TRANSIENT_JSON_BYTES_V1 } from '../../plugins/interactions/transientV1.js';
 import { resolveSkillCatalogOriginV1 } from '../catalog/skills.js';
 import {
@@ -376,6 +378,10 @@ const HappierStructuredInputV1ObjectSchema = z.object({
   skillMentions: z.array(SkillMentionV1Schema).optional(),
   imageInputs: z.array(StructuredImageInputV1Schema).optional(),
   composerAttachments: z.array(ComposerAttachmentInputV1Schema).max(MAX_COMPOSER_ATTACHMENT_INSTANCES_V1).optional(),
+  executionRunCompletion: ExecutionRunCompletionV1Schema.optional(),
+  sessionDiscussionSelectionSourceV1: SessionDiscussionSelectionSourceV1Schema
+    .omit({ draftCorrelationId: true })
+    .optional(),
 }).passthrough();
 
 export const HappierStructuredInputV1Schema = HappierStructuredInputV1ObjectSchema

@@ -1,4 +1,4 @@
-import type { MachineLiveStreamControlSidebandV1 } from '../../machines/peer/mediation/stream/index.js';
+import type { MachineLiveStreamControlSidebandV1 } from '../../machines/peer/mediation/stream/controlV1.js';
 import type { SimulatorSidebandKindV1 } from './sidebandV1.js';
 import type { SimulatorPreviewActionV1 } from './runtimeV1.js';
 

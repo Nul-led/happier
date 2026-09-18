@@ -73,6 +73,9 @@ describe('RPC_METHODS (daemon direct sessions)', () => {
     expect((RPC_METHODS as Record<string, string>).DAEMON_DIRECT_SESSIONS_CANDIDATES_LIST_LEGACY).toBe(
       'daemon.directSessions.candidates.list',
     );
+    expect((RPC_METHODS as Record<string, string>).DAEMON_DIRECT_SESSION_CANDIDATE_DELETE_LEGACY).toBe(
+      'daemon.directSessions.candidate.delete',
+    );
     expect((RPC_METHODS as Record<string, string>).DAEMON_DIRECT_SESSION_LINK_ENSURE_LEGACY).toBe(
       'daemon.directSessions.link.ensure',
     );

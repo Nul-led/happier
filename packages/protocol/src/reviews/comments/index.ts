@@ -3,3 +3,4 @@ export * from './actions.js';
 export * from './proposals.js';
 export * from './snapshots.js';
 export * from './content.js';
+export * from './publicationTransport.js';

@@ -225,6 +225,12 @@ export const PluginBackendExternalSessionSourceDeclarationV1Schema = z.object({
   key: PluginBackendExternalSessionSourceKeyV1Schema,
   instances: PluginBackendExternalSessionSourceInstancesV1Schema.optional(),
   /**
+   * This source can discover provider sessions only for the existing
+   * resume-in-Happier flow. It does not claim link, transcript, follow,
+   * takeover, terminal attachment, or writer-safety semantics.
+   */
+  resumeOnly: z.literal(true).optional(),
+  /**
    * Cold, declarative opt-in for terminal transcript follow. Omission is
    * deliberately unavailable: read/import remain usable, while terminal
    * follow requires provider-owned explicit user-row classification.

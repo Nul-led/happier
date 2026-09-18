@@ -10,6 +10,12 @@ import {
   AutomationHostIdentifierV1Schema as HostIdentifierV1Schema,
   AutomationIdV1Schema,
 } from './automationIdV1.js';
+import {
+  AutomationEventAdmitUnresolvedStatusV1Schema,
+  AutomationEventBlockedStatusV1Schema,
+  AutomationEventRefreshDefinitionStatusV1Schema,
+  type AutomationEventAdmitUnresolvedStatusV1,
+} from './automationEventAdmitStatusV1.js';
 import { AutomationAccountCurrentnessWitnessV1Schema } from './automationAccountCurrentnessV1.js';
 import {
   AutomationQualifiedPluginContributionRefV1Schema,
@@ -366,27 +372,10 @@ export const AutomationEventAdmitHttpInputV1Schema = z.object({
 }).strict();
 export type AutomationEventAdmitHttpInputV1 = z.infer<typeof AutomationEventAdmitHttpInputV1Schema>;
 
-const AutomationEventRefreshDefinitionStatusV1Schema = z.object({
-  kind: z.literal('refreshDefinition'),
-  reason: z.enum(['definitionStale', 'observationTargetChanged']),
-}).strict();
-const AutomationEventBlockedStatusV1Schema = z.object({
-  kind: z.literal('blocked'),
-  reason: z.enum(['capacity', 'temporarilyUnavailable', 'occurrenceConflict', 'noEnabledAssignment']),
-}).strict();
-
-/**
- * The canonical unresolved Event-admission status. Webhook dead-letter
- * diagnostics retain this exact status without the live result's
- * `checkpointSafe` member; they must not copy its reason union.
- */
-export const AutomationEventAdmitUnresolvedStatusV1Schema = z.discriminatedUnion('kind', [
-  AutomationEventRefreshDefinitionStatusV1Schema,
-  AutomationEventBlockedStatusV1Schema,
-]);
-export type AutomationEventAdmitUnresolvedStatusV1 = z.infer<
-  typeof AutomationEventAdmitUnresolvedStatusV1Schema
->;
+export {
+  AutomationEventAdmitUnresolvedStatusV1Schema,
+  type AutomationEventAdmitUnresolvedStatusV1,
+};
 
 export const AutomationEventAdmitItemResultV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('admitted'), runId: asProtocolZod(HostIdentifierV1Schema), checkpointSafe: z.literal(true) }).strict(),

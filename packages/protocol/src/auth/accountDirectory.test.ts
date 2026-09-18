@@ -16,7 +16,6 @@ import {
   AccountDirectoryHomeDeleteRequestV1Schema,
   AccountDirectoryHomeEntryV1Schema,
   AccountDirectoryHomePutRequestV1Schema,
-  AccountDirectoryHomePublishRequestV2Schema,
   AccountDirectoryHomesResponseV1Schema,
   AccountDirectoryLinkDeleteRequestV1Schema,
   AccountDirectoryLinkPutRequestV1Schema,
@@ -465,13 +464,7 @@ describe('Account Directory protocol DTOs', () => {
       canonicalServerUrl: 'https://moved-home.example.test',
       endpoints: [{ kind: 'https' as const, url: 'https://moved-home.example.test' }],
     };
-    expect(AccountDirectoryHomePublishRequestV2Schema.parse(publication)).toEqual(publication);
     expect(AccountDirectoryHomePutRequestV1Schema.safeParse(publication).success).toBe(false);
-    expect(AccountDirectoryHomePublishRequestV2Schema.safeParse({ ...publication, revision: 8 }).success).toBe(false);
-    expect(AccountDirectoryHomePublishRequestV2Schema.safeParse({
-      ...publication,
-      minimumOuterRevisionExclusive: Number.MAX_SAFE_INTEGER,
-    }).success).toBe(false);
 
     const me = AccountDirectoryMeResponseV1Schema.parse({
       v: 1,

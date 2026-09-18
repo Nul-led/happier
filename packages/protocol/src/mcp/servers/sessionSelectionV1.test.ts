@@ -8,6 +8,21 @@ import {
 } from './sessionSelectionV1.js';
 
 describe('SessionMcpSelectionV1Schema', () => {
+  it('retains permissive normalization for legacy Session selection ingress', () => {
+    expect(SessionMcpSelectionV1Schema.parse('legacy-invalid-selection')).toEqual({
+      v: 1,
+      managedServersEnabled: true,
+      forceIncludeServerIds: [],
+      forceExcludeServerIds: [],
+    });
+    expect(SessionMcpSelectionV1Schema.parse({ legacyUnknownField: true })).toEqual({
+      v: 1,
+      managedServersEnabled: true,
+      forceIncludeServerIds: [],
+      forceExcludeServerIds: [],
+    });
+  });
+
   it('defaults to enabled managed servers with empty include/exclude lists', () => {
     const parsed = SessionMcpSelectionV1Schema.parse({});
     expect(parsed).toEqual({

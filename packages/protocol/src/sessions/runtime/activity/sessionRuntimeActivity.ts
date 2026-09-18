@@ -163,3 +163,15 @@ export function isSessionRuntimeActivityProjectionIdleForPendingDrain(
   const projection = readSessionRuntimeActivityProjectionForPendingDrain(activity);
   return projection !== null && decideRuntimeIdleAdmission(projection).decision === 'allow';
 }
+
+export function refineRuntimeActivityProjectionFields(
+  value: unknown,
+  context: z.RefinementCtx,
+): void {
+  if (parseSessionRuntimeActivityProjectionFields(value).kind !== 'invalid') return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: 'Runtime Activity projection fields must form one complete valid tuple',
+    path: ['runtimeActivityState'],
+  });
+}

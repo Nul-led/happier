@@ -11,6 +11,11 @@ const VoiceGateSchema = z.object({
 });
 
 export const FeatureGatesSchema = z.object({
+  teams: FeatureGateSchema.extend({
+    credentialResources: FeatureGateSchema.extend({
+      externalApi: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+    }).optional().default({ enabled: false, externalApi: DEFAULT_GATE_DISABLED }),
+  }).optional().default({ enabled: false, credentialResources: { enabled: false, externalApi: DEFAULT_GATE_DISABLED } }),
   bugReports: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
   e2ee: z
     .object({
@@ -54,19 +59,28 @@ export const FeatureGatesSchema = z.object({
     })
     .optional()
     .default({ enabled: false }),
+  workflows: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED).catch(DEFAULT_GATE_DISABLED),
   connectedServices: z
     .object({
       enabled: z.boolean(),
       quotas: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      subscription: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       accountGroups: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       accountFallback: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      autoQuotaReset: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      autoDisablePlanInvalid: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      poolQuotaLimitSelection: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
     })
     .optional()
     .default({
       enabled: false,
       quotas: DEFAULT_GATE_DISABLED,
+      subscription: DEFAULT_GATE_DISABLED,
       accountGroups: DEFAULT_GATE_DISABLED,
       accountFallback: DEFAULT_GATE_DISABLED,
+      autoQuotaReset: DEFAULT_GATE_DISABLED,
+      autoDisablePlanInvalid: DEFAULT_GATE_DISABLED,
+      poolQuotaLimitSelection: DEFAULT_GATE_DISABLED,
     }),
   updates: z
     .object({
@@ -99,18 +113,30 @@ export const FeatureGatesSchema = z.object({
         })
         .optional()
         .default({ enabled: false }),
+      ephemeralRunner: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       agentSwitching: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      board: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       folders: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       drafts: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      filteredListing: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      following: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      collaboration: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
+      conversations: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       usageLimitRecovery: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
     })
     .optional()
     .default({
       enabled: false,
       handoff: { enabled: false },
+      ephemeralRunner: DEFAULT_GATE_DISABLED,
       agentSwitching: DEFAULT_GATE_DISABLED,
+      board: DEFAULT_GATE_DISABLED,
       folders: DEFAULT_GATE_DISABLED,
       drafts: DEFAULT_GATE_DISABLED,
+      filteredListing: DEFAULT_GATE_DISABLED,
+      following: DEFAULT_GATE_DISABLED,
+      collaboration: DEFAULT_GATE_DISABLED,
+      conversations: DEFAULT_GATE_DISABLED,
       usageLimitRecovery: DEFAULT_GATE_DISABLED,
     }),
   machines: z
@@ -134,6 +160,7 @@ export const FeatureGatesSchema = z.object({
         })
         .optional()
         .default({ enabled: false, directPeer: { enabled: false }, serverRouted: { enabled: false } }),
+      pools: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       peerMediation: z
         .object({
           enabled: z.boolean(),
@@ -169,6 +196,7 @@ export const FeatureGatesSchema = z.object({
     .default({
       enabled: false,
       transfer: { enabled: false, directPeer: { enabled: false }, serverRouted: { enabled: false } },
+      pools: DEFAULT_GATE_DISABLED,
       peerMediation: { enabled: false, observability: DEFAULT_GATE_DISABLED },
       tunnel: { enabled: false, directPeer: DEFAULT_GATE_DISABLED, serverRouted: DEFAULT_GATE_DISABLED },
       liveStream: { enabled: false, directPeer: DEFAULT_GATE_DISABLED, serverRouted: DEFAULT_GATE_DISABLED },

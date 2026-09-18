@@ -184,6 +184,16 @@ export type PluginConnectedAccountConfigurationV2 =
 const PluginConnectedAccountOutcomeReconciliationV2Schema =
   z.enum(['providerCheck', 'lateEvidence', 'none']);
 
+export const CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 =
+  'happier.team-credential-manual-connected-account-direct.v1' as const;
+
+export const PluginConnectedAccountDirectExportV2Schema = z.object({
+  contractVersion: z.literal(CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1),
+}).strict();
+export type PluginConnectedAccountDirectExportV2 = z.infer<
+  typeof PluginConnectedAccountDirectExportV2Schema
+>;
+
 export const PluginConnectedAccountAuthenticationModeV2Schema =
   z.discriminatedUnion('kind', [
     z.object({
@@ -193,6 +203,7 @@ export const PluginConnectedAccountAuthenticationModeV2Schema =
       outcomeReconciliation: z.literal('none'),
       fields: PluginConnectedAccountAuthenticationFieldsV2Schema,
       configuration: PluginConnectedAccountConfigurationV2Schema.optional(),
+      directExport: PluginConnectedAccountDirectExportV2Schema.optional(),
     }).strict(),
     z.object({
       id: asProtocolZod(PluginContributionLocalIdSchema),
@@ -253,6 +264,7 @@ export const PluginConnectedAccountDescriptorContributionV2Schema = z.object({
   title: PluginLocalizedStringV2Schema,
   description: PluginLocalizedStringV2Schema.optional(),
   authentication: PluginConnectedAccountAuthenticationV2Schema,
+  recoveryCredits: z.object({ supported: z.literal(true) }).strict().optional(),
   capabilities: z.array(z.string().trim().min(1)).optional(),
   metadata: z.record(z.string(), PluginJsonValueV2Schema).optional(),
 }).strict();

@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import {
-  SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS,
   SESSION_ORGANIZATION_MAX_FOLDERS,
   SESSION_ORGANIZATION_MAX_LABELS,
   SESSION_ORGANIZATION_MAX_PINNED_SESSIONS,
@@ -34,6 +33,7 @@ export const SessionOrganizationSnapshotRequestSchema = z
     tagIds: z.array(SessionOrganizationScopedIdSchema).max(SESSION_ORGANIZATION_MAX_SCOPED_SNAPSHOT_IDS).default([]),
     orderScopes: z.array(SessionOrganizationOrderScopeRequestSchema).max(SESSION_ORGANIZATION_MAX_SCOPED_SNAPSHOT_IDS).default([]),
     includeAttentionStandings: z.boolean().default(false),
+    includeAttentionReminderTimes: z.boolean().default(false),
   })
   .strict();
 export type SessionOrganizationSnapshotRequest = z.infer<typeof SessionOrganizationSnapshotRequestSchema>;
@@ -49,7 +49,7 @@ export const SessionOrganizationSnapshotSchema = z
     tagAssignments: z.array(SessionTagAssignmentSchema),
     orderEntries: z.array(SessionOrganizationOrderEntrySchema),
     labels: z.array(SessionOrganizationLabelSchema).max(SESSION_ORGANIZATION_MAX_LABELS),
-    attentionStandings: z.array(SessionAttentionStandingSchema).max(SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS).optional(),
+    attentionStandings: z.array(SessionAttentionStandingSchema).optional(),
   })
   .strict();
 export type SessionOrganizationSnapshot = z.infer<typeof SessionOrganizationSnapshotSchema>;

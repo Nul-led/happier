@@ -1,4 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import {
+  SessionExecutionRunPendingEnqueueRequestV1Schema,
+  SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
+  SessionPendingExecutionRunMaterializeNextRequestV2Schema,
+  SessionPendingExecutionRunAcceptedRequestV2Schema,
+  SessionPendingExecutionRunMaterializeNextResponseV2Schema,
+} from './sessionPendingExecutionRunMachineAdmissionV2.js';
 
 import {
   SessionPendingEnqueueByMachineRequestV1Schema,
@@ -6,6 +13,55 @@ import {
 } from './sessionPendingMachineAdmissionV1.js';
 
 describe('Session Pending machine admission V1', () => {
+  it('exposes a separate closed Account target resource instead of widening main admission', () => {
+    const targetSchema = SessionExecutionRunPendingEnqueueRequestV1Schema;
+    const input = { v: 1, localId: 'target-input', targetMachineId: 'machine-1', content: { t: 'encrypted', c: 'cipher' } };
+    expect(targetSchema.safeParse(input).success).toBe(true);
+    expect(targetSchema.safeParse({ ...input, requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: 'A'.repeat(43) } }).success).toBe(false);
+    expect(targetSchema.safeParse({ ...input, content: { ...input.content, recipient: { kind: 'execution_run', runId: 'other' } } }).success).toBe(false);
+  });
+
+  it('keeps target Machine identity and settlement closed and separate from V1', () => {
+    const recipient = { kind: 'execution_run', runId: 'run-1' } as const;
+    const request = {
+      v: 2, sessionId: 'session-1', targetMachineId: 'machine-1', recipient,
+      localId: 'target-input', content: { t: 'encrypted', c: 'cipher' },
+      requestedAction: { v: 1, kind: 'enqueue' },
+      requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: 'A'.repeat(43) },
+    };
+    expect(SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.safeParse(request).success).toBe(true);
+    expect(SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.safeParse({ ...request, recipient: { ...recipient, label: 'display' } }).success).toBe(false);
+    expect(SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.safeParse({ ...request, content: { t: 'plain', v: {} } }).success).toBe(false);
+    expect(SessionPendingEnqueueByMachineRequestV1Schema.safeParse({ ...request, v: 1 }).success).toBe(false);
+    const materialize = { v: 2, sessionId: 'session-1', recipient, sidechainId: 'sidechain-1', deliveryTiming: 'after_runtime_idle', foregroundState: 'ready' };
+    expect(SessionPendingExecutionRunMaterializeNextRequestV2Schema.safeParse(materialize).success).toBe(true);
+    expect(SessionPendingExecutionRunMaterializeNextRequestV2Schema.safeParse({ ...materialize, authorAccountId: 'spoofed' }).success).toBe(false);
+    expect(SessionPendingExecutionRunAcceptedRequestV2Schema.safeParse({ v: 2, sessionId: 'session-1', recipient, localId: 'target-input' }).success).toBe(false);
+  });
+
+  it('requires exact target and authenticated author evidence on materialized input', () => {
+    const ack = {
+      v: 2, ok: true, didMaterialize: true, didWrite: false,
+      recipient: { kind: 'execution_run', runId: 'run-1' }, sidechainId: 'sidechain-1',
+      authorAccountId: 'collaborator-1', pendingCount: 1, pendingBlockedCount: 0, pendingVersion: 4,
+      deliveryState: { mode: 'provider', unresolved: true },
+      message: {
+        id: null, seq: null, localId: 'input-1', content: { t: 'encrypted', c: 'cipher' },
+        requestedAction: { v: 1, kind: 'enqueue' }, providerAction: 'send',
+        inputAdmissionReceipt: { v: 1, issuer: 'authenticatedAccount', actorAccountId: 'collaborator-1', sessionRelationship: 'sharedEditor' },
+        createdAt: 1, updatedAt: 1,
+      },
+    };
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse(ack).success).toBe(true);
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse({ ...ack, authorAccountId: null }).success).toBe(false);
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse({
+      ...ack, authorAccountId: null,
+      message: { ...ack.message, inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' } },
+    }).success).toBe(true);
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse({ ...ack, authorAccountId: 'custodian' }).success).toBe(false);
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse({ ...ack, sidechainId: undefined }).success).toBe(false);
+    expect(SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse({ ...ack, recipient: { ...ack.recipient, label: 'Run title' } }).success).toBe(false);
+  });
   it('accepts the strict stored request envelope without a machine identity', () => {
     expect(SessionPendingEnqueueByMachineRequestV1Schema.parse({
       v: 1,

@@ -1,6 +1,33 @@
 import { extractShellCommand, stripShellCommandPreludeForDisplay } from './shellCommand.js';
 
 export type AgentRequestKind = 'permission' | 'user_action';
+const LEGACY_USER_ACTION_TOOLS = new Set<string>([
+  'AskUserQuestion',
+  'ask_user_question',
+  'ExitPlanMode',
+  'exit_plan_mode',
+  'AcpHistoryImport',
+]);
+
+function normalizeAgentRequestKind(rawKind: unknown): AgentRequestKind | null {
+  if (rawKind === 'permission') return 'permission';
+  if (rawKind === 'user_action') return 'user_action';
+  return null;
+}
+
+export function resolveAgentRequestKind(params: Readonly<{ toolName: string; requestKind?: unknown }>): AgentRequestKind {
+  const normalized = normalizeAgentRequestKind(params.requestKind);
+  if (normalized) return normalized;
+
+  // Back-compat / defensive fallback: older agents may not publish requestKind, so we infer using
+  // the existing "custom UI tool" list (these should never render a generic permission prompt).
+  if (LEGACY_USER_ACTION_TOOLS.has(params.toolName)) {
+    return 'user_action';
+  }
+
+  return 'permission';
+}
+
 export type AgentPermissionRisk = 'low' | 'high';
 export type AgentRequestQuestionSelection = 'text' | 'single' | 'multiple';
 
@@ -28,6 +55,8 @@ export type AgentRequestQuestionSummary = Readonly<{
   required: boolean;
   allowCustom: boolean;
   choices: readonly AgentRequestQuestionChoiceSummary[];
+  freeformDescription?: string;
+  freeformPlaceholder?: string;
 }>;
 
 export type AgentRequestSemanticSummary = Readonly<{
@@ -59,17 +88,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function firstString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-function firstStringFromUnknown(value: unknown): string | null {
-  const direct = firstString(value);
-  if (direct) return direct;
-  if (!Array.isArray(value)) return null;
-  for (const item of value) {
-    const fromItem = firstString(item);
-    if (fromItem) return fromItem;
-  }
-  return null;
 }
 
 function normalizeToolLabel(toolName: string): string {
@@ -128,6 +146,8 @@ function extractFilePathLike(input: unknown): string | null {
     firstString(obj.path) ??
     firstString(obj.filepath) ??
     firstString(obj.file) ??
+    firstString(obj.filename) ??
+    firstString(obj.fileName) ??
     null
   );
 }
@@ -172,7 +192,8 @@ function extractQuestionSummaries(
         || record?.multiple === true
         ? 'multiple'
         : 'single';
-    const hasExplicitFreeform = asRecord(record?.freeform) !== null || record?.allowCustom === true;
+    const freeform = asRecord(record?.freeform);
+    const hasExplicitFreeform = freeform !== null || record?.freeform === true || record?.allowCustom === true;
     summaries.push(Object.freeze({
       answerKey: firstString(record?.id) ?? text,
       header: firstString(record?.header),
@@ -181,24 +202,11 @@ function extractQuestionSummaries(
       required: record?.required !== false,
       allowCustom: selection === 'text' || choices.length === 0 || hasExplicitFreeform,
       choices: Object.freeze(choices),
+      ...(firstString(freeform?.description) ? { freeformDescription: firstString(freeform?.description)! } : {}),
+      ...(firstString(freeform?.placeholder) ? { freeformPlaceholder: firstString(freeform?.placeholder)! } : {}),
     }));
   }
   return Object.freeze(summaries);
-}
-
-function shortPath(raw: string): string {
-  const value = raw.trim();
-  if (!value) return value;
-  const normalized = value.replace(/\\/g, '/');
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.length <= 2) return normalized;
-  return `${parts.at(-2)}/${parts.at(-1)}`;
-}
-
-function commandName(raw: string): string {
-  const value = raw.trim();
-  if (!value) return value;
-  return value.split(/\s+/).filter(Boolean)[0] ?? '';
 }
 
 function normalizedToolName(toolName: string): string {
@@ -300,31 +308,65 @@ export function extractFirstUserActionQuestion(toolName: string, toolInput: unkn
   }).firstQuestionText;
 }
 
-export function summarizeToolInputForNotification(toolName: string, toolInput: unknown): string | null {
+export type RequestNotificationLabels = Readonly<{
+  command: string;
+  file: string;
+  selectOne: string;
+  selectMultiple: string;
+  customAnswer: string;
+  localMessages: string;
+  remoteMessages: string;
+}>;
+
+const defaultLabels: RequestNotificationLabels = {
+  command: 'Command', file: 'File', selectOne: 'Select one',
+  selectMultiple: 'Select multiple', customAnswer: 'Custom answer allowed',
+  localMessages: 'Local messages', remoteMessages: 'Remote messages',
+};
+
+export function summarizeToolInputForNotification(toolName: string, toolInput: unknown, labels?: Partial<RequestNotificationLabels>): string | null {
+  const display = { ...defaultLabels, ...labels };
   const summary = buildAgentRequestSemanticSummary({
     kind: isAskUserQuestionToolName(toolName) ? 'user_action' : 'permission',
     toolName,
     toolInput,
   });
-
-  if (summary.filePath) return `File: ${shortPath(summary.filePath)}`;
-
-  const directCommand =
-    summary.shellCommand ??
-    firstStringFromUnknown(asRecord(toolInput)?.command) ??
-    firstStringFromUnknown(asRecord(toolInput)?.cmd) ??
-    firstStringFromUnknown(asRecord(toolInput)?.script);
-  if (directCommand) {
-    const name = commandName(directCommand);
-    return name ? `Command: ${name}` : null;
+  if (summary.questions.length) {
+    return summary.questions.map((question) => [
+      question.header && question.header !== question.question ? question.header : null,
+      question.question,
+      question.choices.length ? question.selection === 'multiple' ? display.selectMultiple : display.selectOne : null,
+      ...question.choices.map((choice) => `• ${choice.label}${choice.description ? ` — ${choice.description}` : ''}`),
+      question.allowCustom ? display.customAnswer : null,
+      question.freeformDescription,
+      question.freeformPlaceholder,
+    ].filter(Boolean).join('\n')).join('\n\n');
   }
-
-  if (summary.questionCount === 1) return '1 question';
-  if (summary.questionCount > 1) return `${summary.questionCount} questions`;
-
-  const normalized = summary.normalizedToolLabel;
-  if (normalized === 'Read' || normalized === 'Write' || normalized === 'Edit' || normalized === 'Bash') {
-    return null;
+  const record = asRecord(toolInput);
+  const tool = toolName.trim().toLowerCase();
+  const actionDetails: Array<string | null> = [];
+  if (tool === 'exitplanmode' || tool === 'exit_plan_mode') {
+    actionDetails.push(firstString(record?.name), firstString(record?.overview), firstString(record?.plan));
+  } else if (tool === 'acphistoryimport') {
+    actionDetails.push(firstString(record?.note));
+    if (typeof record?.localCount === 'number') actionDetails.push(`${display.localMessages}: ${record.localCount}`);
+    if (typeof record?.remoteCount === 'number') actionDetails.push(`${display.remoteMessages}: ${record.remoteCount}`);
+  } else if (tool === 'webfetch' || tool === 'web_fetch') {
+    actionDetails.push(firstString(record?.url));
+  } else if (tool === 'websearch' || tool === 'web_search') {
+    actionDetails.push(firstString(record?.query));
   }
-  return null;
+  const permission = asRecord(record?.permission);
+  const command = summary.shellCommand ?? extractShellCommand({ command: record?.script });
+  const details = [
+    ...actionDetails,
+    summary.permissionTitle,
+    command ? `${display.command}: ${command}` : null,
+    summary.filePath ? `${display.file}: ${summary.filePath}` : null,
+    firstString(permission?.description) ?? firstString(record?.description),
+    firstString(permission?.justification) ?? firstString(record?.justification),
+    firstString(permission?.reason) ?? firstString(record?.reason),
+    firstString(permission?.rationale) ?? firstString(record?.rationale),
+  ].filter((value): value is string => value !== null);
+  return [...new Set(details)].join('\n') || null;
 }

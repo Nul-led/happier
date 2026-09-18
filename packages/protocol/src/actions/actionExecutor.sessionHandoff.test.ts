@@ -8,7 +8,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -61,7 +61,7 @@ describe('createActionExecutor (session.handoff)', () => {
   });
 
   it('delegates to sessionHandoffStart with the resolved session and server ids', async () => {
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] }, workspace: { kind: 'none' as const } }));
     const deps = createDeps({
       sessionHandoffStart,
       sessionHandoffTargetReplacementApprovalPreflight: vi.fn(async () => ({ type: 'not_required' as const })),
@@ -73,7 +73,7 @@ describe('createActionExecutor (session.handoff)', () => {
     const result = await executor.execute(
       'session.handoff',
       { targetMachineId: 'machine_2' },
-      { surface: 'ui', defaultSessionId: 'sess_1', signal },
+      { surface: 'ui', authority: 'present_user', defaultSessionId: 'sess_1', signal },
     );
 
     expect(result.ok).toBe(true);
@@ -85,8 +85,8 @@ describe('createActionExecutor (session.handoff)', () => {
     });
   });
 
-  it('passes only the canonical workspace action and never a caller-named WorkspaceRef or settings version', async () => {
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
+  it('rejects caller-named WorkspaceRefs and settings versions outside the canonical workspace action', async () => {
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] }, workspace: { kind: 'none' as const } }));
     const deps = createDeps({
       sessionHandoffStart,
       sessionHandoffTargetReplacementApprovalPreflight: vi.fn(async () => ({ type: 'not_required' as const })),
@@ -113,39 +113,21 @@ describe('createActionExecutor (session.handoff)', () => {
             policyDigest,
           },
         },
-        // Retired daemon mechanics. A caller may still put them on the wire;
-        // the public Action must ignore them so the daemon stays the only
-        // WorkspaceRef/settings-version authority.
+        // Retired daemon mechanics are not part of the strict current Action
+        // envelope. Compatibility belongs only at a named predecessor seam.
         workspaceSyncSourceWorkspaceRefId: 'workspace-source',
         workspaceSyncTargetWorkspaceRefId: 'workspace-target',
         workspaceSyncSettingsVersion: 8,
       },
-      { surface: 'ui', defaultSessionId: 'sess_1', actionRequestId: 'handoff-action-copy-1' },
+      { surface: 'ui', authority: 'present_user', defaultSessionId: 'sess_1', actionRequestId: 'handoff-action-copy-1' },
     );
 
-    expect(result.ok).toBe(true);
-    expect(sessionHandoffStart).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      targetMachineId: 'machine_2',
-      targetPath: '/home/guest/workspace',
-      targetSessionStorageMode: 'persisted',
-      workspaceAction: {
-        kind: 'copy_once',
-        contentPolicy: {
-          v: 1,
-          selection: 'git_worktree',
-          extraIgnorePatterns: [],
-          extraIncludePatterns: ['dist/**'],
-          policyDigest,
-        },
-      },
-      serverId: 'server_a',
-      actionRequestId: 'handoff-action-copy-1',
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      error: 'invalid_parameters',
     });
-    const [forwarded] = sessionHandoffStart.mock.calls[0] as [Record<string, unknown>];
-    expect(forwarded).not.toHaveProperty('workspaceSyncSourceWorkspaceRefId');
-    expect(forwarded).not.toHaveProperty('workspaceSyncTargetWorkspaceRefId');
-    expect(forwarded).not.toHaveProperty('workspaceSyncSettingsVersion');
+    expect(sessionHandoffStart).not.toHaveBeenCalled();
   });
 
   it('routes one non-empty target replacement approval and replays only its exact host proof', async () => {
@@ -171,7 +153,11 @@ describe('createActionExecutor (session.handoff)', () => {
       operationId: 'handoff-action-1',
     };
     const preflight = vi.fn(async () => ({ type: 'approval_required' as const, approval }));
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] } }));
+    const sessionHandoffStart = vi.fn(async () => ({
+      handoffId: 'handoff_1',
+      status: { handoffId: 'handoff_1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] },
+      workspace: { kind: 'none' as const },
+    }));
     let persistedApproval: Record<string, unknown> | null = null;
     const approvalsCreate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => {
       persistedApproval = request;
@@ -188,6 +174,7 @@ describe('createActionExecutor (session.handoff)', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: vi.fn(async () => true),
       resolveServerIdForSessionId: vi.fn(() => 'server_a'),
     } as Partial<ActionExecutorDeps>));
     const actionInput = {
@@ -200,6 +187,7 @@ describe('createActionExecutor (session.handoff)', () => {
     await expect(executor.execute('session.handoff', actionInput, {
       surface: 'ui',
       authority: 'present_user',
+      serverId: 'server_a',
       actionRequestId: 'handoff-action-1',
     })).resolves.toEqual({
       ok: true,
@@ -215,15 +203,23 @@ describe('createActionExecutor (session.handoff)', () => {
       handoffTargetReplacementApproval: approval,
     });
 
-    await expect(executor.execute('approval.request.decide', {
+    const decision = await executor.execute('approval.request.decide', {
       artifactId: 'handoff-target-approval-1',
       decision: 'approve',
-    }, { surface: 'ui', authority: 'present_user' })).resolves.toMatchObject({ ok: true });
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server_a' });
+    expect(decision).toMatchObject({ ok: true, result: { execution: { ok: true } } });
     expect(preflight).toHaveBeenCalledTimes(2);
     expect(sessionHandoffStart).toHaveBeenCalledWith(expect.objectContaining({
       actionRequestId: 'handoff-action-1',
       handoffTargetReplacementApproval: approval,
+      handoffTargetReplacementApprovalReceiptId: 'handoff-target-approval-1',
+      handoffTargetReplacementApprovalActionInput: actionInput,
     }));
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'handoff-target-approval-1',
+      decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server_a' })).resolves.toMatchObject({ ok: true });
+    expect(sessionHandoffStart).toHaveBeenCalledTimes(1);
     expect(approvalsCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -278,6 +274,7 @@ describe('createActionExecutor (session.handoff)', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: vi.fn(async () => true),
       resolveServerIdForSessionId: vi.fn(() => 'server_a'),
     } as Partial<ActionExecutorDeps>));
 
@@ -294,6 +291,7 @@ describe('createActionExecutor (session.handoff)', () => {
     }, {
       surface: 'ui',
       authority: 'present_user',
+      serverId: 'server_a',
       actionRequestId: 'handoff-action-mirror-1',
     })).resolves.toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
     expect(persistedApproval).toMatchObject({ handoffTargetReplacementApproval: approval });
@@ -310,7 +308,7 @@ describe('createActionExecutor (session.handoff)', () => {
   });
 
   it('passes the canonical workspaceAction through to sessionHandoffStart', async () => {
-    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] }, workspace: { kind: 'none' as const } }));
     const deps = createDeps({
       sessionHandoffStart,
       resolveServerIdForSessionId: vi.fn(() => 'server_a'),
@@ -328,7 +326,7 @@ describe('createActionExecutor (session.handoff)', () => {
         targetMachineId: 'machine_2',
         workspaceAction,
       },
-      { surface: 'ui', defaultSessionId: 'sess_1' },
+      { surface: 'ui', authority: 'present_user', defaultSessionId: 'sess_1' },
     );
 
     expect(result.ok).toBe(true);

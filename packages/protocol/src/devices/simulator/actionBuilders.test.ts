@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('simulator preview action builders', () => {
   it('builds canonical stream, lease, sideband, and stream-control events', async () => {
-    const mod = await import('./actionBuilders.js').catch(() => null);
+    const mod = await import('./actionBuilders.js');
 
     expect(mod?.createSimulatorPreviewOpenStreamEventV1).toBeTypeOf('function');
     if (!mod?.createSimulatorPreviewOpenStreamEventV1) return;
@@ -18,7 +18,7 @@ describe('simulator preview action builders', () => {
   });
 
   it('keeps capture_health as the only backed sideband kind before native producers land', async () => {
-    const mod = await import('./actionBuilders.js').catch(() => null);
+    const mod = await import('./actionBuilders.js');
 
     expect(mod?.BACKED_SIMULATOR_SIDEBAND_KINDS_V1).toEqual(['capture_health']);
     expect(mod?.normalizeBackedSimulatorSidebandKindsV1?.([

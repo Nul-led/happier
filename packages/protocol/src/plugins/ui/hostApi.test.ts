@@ -18,11 +18,13 @@ import {
 } from './hostApiRequests.js';
 import { PluginUiHostApiWireEnvelopeV1Schema } from './hostApiWire.js';
 import {
+  PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1,
   PLUGIN_UI_HOST_API_VERSION_V1,
   PLUGIN_UI_HOST_API_COMPATIBLE_RANGE_V1,
   PLUGIN_UI_HOST_METHODS_V1,
   PLUGIN_UI_HOST_SUBSCRIPTION_METHODS_V1,
   PLUGIN_UI_HOST_TRANSPORT_OPERATIONS_V1,
+  PluginUiCallerHostedHtmlHostMethodV1Schema,
   PluginUiHostMethodV1Schema,
   isPluginUiHostApiVersionCompatibleV1,
 } from './hostApi.js';
@@ -40,10 +42,8 @@ const surface = {
 } as const;
 
 const wireIdentity = {
-  pluginId: 'acme.preview',
-  pluginVersion: '1.0.0',
-  viewId: 'preview-pane',
-  generation: 'gen-1',
+  instanceId: 'mount-1',
+  mountNonce: 'nonce-1',
 } as const;
 
 function parseRendererWithRequiredMethods(method: string): boolean {
@@ -214,6 +214,7 @@ describe('plugin UI initial host-method vocabulary closure', () => {
     expect(PluginHostedWebBridgeMessageKindV1Schema.safeParse('requestHostAction').success).toBe(false);
     expect(PluginHostedWebBridgeMessageKindV1Schema.safeParse('requestSessionResource').success).toBe(false);
     expect(PluginHostedWebBridgeMessageKindV1Schema.safeParse('copy').success).toBe(false);
+    expect(PluginHostedWebBridgeMessageKindV1Schema.safeParse('openExternal').success).toBe(true);
   });
 
   it('rejects a method the canonical producer does not declare everywhere', () => {
@@ -223,5 +224,61 @@ describe('plugin UI initial host-method vocabulary closure', () => {
     expect(parseRequestEnvelopeMethod(NOT_A_HOST_METHOD)).toBe(false);
     expect(parseWireRequestMethod(NOT_A_HOST_METHOD)).toBe(false);
     expect(parseWireResultMethod(NOT_A_HOST_METHOD)).toBe(false);
+  });
+});
+
+/**
+ * Caller-authored hosted HTML is not installed code. It has no manifest,
+ * generation, or grant, so its declarable authority is a closed ceiling owned
+ * here beside the one method vocabulary rather than by any renderer, Session,
+ * or Board consumer (Lane 08.01 §5.1).
+ */
+describe('caller-authored hosted HTML host-method ceiling', () => {
+  it('publishes exactly the approved read/act/notify ceiling', () => {
+    expect([...PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1]).toEqual([
+      'context',
+      'watchContext',
+      'readResource',
+      'watchResource',
+      'executeAction',
+      'notify',
+    ]);
+    expect(PluginUiCallerHostedHtmlHostMethodV1Schema.options)
+      .toEqual([...PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1]);
+  });
+
+  it('is a strict subset of the sole produced vocabulary, so it renames nothing', () => {
+    for (const method of PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1) {
+      expect(PLUGIN_UI_HOST_METHODS_V1).toContain(method);
+    }
+    expect(PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1.length)
+      .toBeLessThan(PLUGIN_UI_HOST_METHODS_V1.length);
+  });
+
+  it('withholds clipboard, Composer, navigation, current-UI publication, and open-content authority', () => {
+    for (const method of [
+      'readClipboard',
+      'writeClipboard',
+      'openSurface',
+      'openExternalLink',
+      'openNewSession',
+      'replacePageLocation',
+      'publishCurrentUiContext',
+      'statOpenableContent',
+      'readOpenableContent',
+      'applyComposer',
+      'focusComposer',
+      'acquireComposerInputLock',
+      'confirm',
+    ] as const) {
+      expect(PLUGIN_UI_HOST_METHODS_V1).toContain(method);
+      expect(PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1).not.toContain(method);
+    }
+  });
+
+  it('does not invent a transport operation as a caller capability', () => {
+    for (const operation of PLUGIN_UI_HOST_TRANSPORT_OPERATIONS_V1) {
+      expect(PLUGIN_UI_CALLER_HOSTED_HTML_HOST_METHODS_V1).not.toContain(operation);
+    }
   });
 });

@@ -9,7 +9,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -34,6 +34,8 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     sessionActivityGet: vi.fn(async () => ({})),
     sessionRecentMessagesGet: vi.fn(async () => ({})),
     resetGlobalVoiceAgent: vi.fn(),
+    // This suite isolates Account-owner dispatch and authority.
+    isActionApprovalRequired: () => false,
     ...overrides,
   };
 }
@@ -41,7 +43,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
 const ACCOUNT_PLUGIN_DATA_ERASE_ACTION_ID = 'account.plugins.data.erase' as ActionId;
 
 describe('createActionExecutor (account.plugins.data.erase)', () => {
-  it('admits a host-stamped present-user call regardless of surface, passes no Account target to the owner, and keeps the result per-arm', async () => {
+  it('admits a host-stamped present-user UI call, passes no Account target to the owner, and keeps the result per-arm', async () => {
     const accountPluginDataEraseAction = vi.fn(async () => ({
       status: 'partial' as const,
       settings: { status: 'completed' as const, changed: true },
@@ -53,7 +55,7 @@ describe('createActionExecutor (account.plugins.data.erase)', () => {
     await expect(executor.execute(
       ACCOUNT_PLUGIN_DATA_ERASE_ACTION_ID,
       { pluginId: 'com.example.retained-data' },
-      { surface: 'api', authority: 'present_user', actionCaller: { kind: 'host' } },
+      { surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' } },
     )).resolves.toEqual({
       ok: true,
       result: {
@@ -64,13 +66,13 @@ describe('createActionExecutor (account.plugins.data.erase)', () => {
     });
     expect(accountPluginDataEraseAction).toHaveBeenCalledWith({
       input: { pluginId: 'com.example.retained-data' },
-      context: { surface: 'api', authority: 'present_user', actionCaller: { kind: 'host' } },
+      context: { surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' } },
     });
 
     await expect(executor.execute(
       ACCOUNT_PLUGIN_DATA_ERASE_ACTION_ID,
       { pluginId: 'com.example.retained-data', accountId: 'other-account' },
-      { surface: 'api', authority: 'present_user', actionCaller: { kind: 'host' } },
+      { surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' } },
     )).resolves.toEqual({
       ok: false,
       errorCode: 'invalid_parameters',

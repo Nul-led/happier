@@ -2,21 +2,49 @@ import { z } from 'zod';
 
 import { PUSH_NOTIFICATION_SOUND_IDS } from '../../push/pushNotificationActions.js';
 
-export const AttentionDeliveryEventIdSchema = z.enum([
-  'ready',
-  'permission_request',
-  'user_action_request',
-  'session_started',
-  'task_acknowledged',
-  'task_completed',
-  'task_failed',
-  'resource_limit',
-  'probe_detected',
-  'connected_service_account_switch',
-  'connected_service_quota_blocked',
-  'connected_service_quota_recovered',
-]);
+const ATTENTION_DELIVERY_EVENT_DEFINITIONS = [
+  { id: 'ready', remoteAlert: true },
+  { id: 'permission_request', remoteAlert: true },
+  { id: 'user_action_request', remoteAlert: true },
+  { id: 'follow_update', remoteAlert: true },
+  { id: 'session_started', remoteAlert: false },
+  { id: 'task_acknowledged', remoteAlert: false },
+  { id: 'task_completed', remoteAlert: false },
+  { id: 'task_failed', remoteAlert: false },
+  { id: 'resource_limit', remoteAlert: false },
+  { id: 'probe_detected', remoteAlert: false },
+  { id: 'connected_service_account_switch', remoteAlert: false },
+  { id: 'connected_service_quota_blocked', remoteAlert: false },
+  { id: 'connected_service_quota_recovered', remoteAlert: false },
+] as const;
+
+type AttentionDeliveryEventDefinition = (typeof ATTENTION_DELIVERY_EVENT_DEFINITIONS)[number];
+type AttentionDeliveryEventIdTuple = {
+  [Index in keyof typeof ATTENTION_DELIVERY_EVENT_DEFINITIONS]:
+    (typeof ATTENTION_DELIVERY_EVENT_DEFINITIONS)[Index] extends Readonly<{ id: infer EventId extends string }>
+      ? EventId
+      : never;
+};
+
+const ATTENTION_DELIVERY_EVENT_IDS = ATTENTION_DELIVERY_EVENT_DEFINITIONS
+  .map(({ id }) => id) as unknown as AttentionDeliveryEventIdTuple;
+
+export const AttentionDeliveryEventIdSchema = z.enum(ATTENTION_DELIVERY_EVENT_IDS);
 export type AttentionDeliveryEventId = z.infer<typeof AttentionDeliveryEventIdSchema>;
+
+/**
+ * The remote-alert projection is derived from the one canonical event
+ * definition behind `AttentionDeliveryEventIdSchema`; consumers never repeat
+ * the supported string set.
+ */
+export type RemoteAlertAttentionDeliveryEventId =
+  Extract<AttentionDeliveryEventDefinition, Readonly<{ remoteAlert: true }>>['id'];
+export const REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS = ATTENTION_DELIVERY_EVENT_DEFINITIONS
+  .filter(
+    (definition): definition is Extract<AttentionDeliveryEventDefinition, Readonly<{ remoteAlert: true }>> =>
+      definition.remoteAlert,
+  )
+  .map(({ id }) => id);
 
 export const AttentionDeliveryChannelIdSchema = z.enum([
   'expo_push',
@@ -286,3 +314,32 @@ export type ResolveAttentionDeliveryPolicyDecisionParams = {
   featureEnabled?: boolean;
   platformSupported?: boolean;
 };
+
+export function composeAttentionDeliveryPolicyDeviceOverrides(policy: AttentionDeliveryPolicyV1, overrides: Readonly<{
+  quietHoursOverride:
+    | Readonly<{ mode: 'account' | 'disabled' }>
+    | Readonly<{
+        mode: 'custom';
+        timezone: string;
+        windows: ReadonlyArray<Readonly<{
+          startLocalTime: string;
+          endLocalTime: string;
+          days?: ReadonlyArray<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'>;
+        }>>;
+      }>;
+  foregroundBehavior: 'account' | AttentionDeliveryPolicyV1['foregroundBehavior'];
+  previewBehavior: 'account' | AttentionPreviewBehavior;
+  soundVolume: number;
+}>): AttentionDeliveryPolicyV1 {
+  const result = AttentionDeliveryPolicyV1Schema.parse(policy);
+  const quiet = overrides.quietHoursOverride;
+  if (quiet.mode === 'disabled') result.quietHours = { ...result.quietHours, enabled: false, windows: [] };
+  if (quiet.mode === 'custom') result.quietHours = {
+    enabled: true, timezone: quiet.timezone,
+    windows: quiet.windows.map((window) => ({ ...window, days: window.days ? [...window.days] : undefined })),
+  };
+  if (overrides.foregroundBehavior !== 'account') result.foregroundBehavior = overrides.foregroundBehavior;
+  if (overrides.previewBehavior !== 'account') result.privacy.defaultPreviewBehavior = overrides.previewBehavior;
+  result.sounds.volume = overrides.soundVolume;
+  return result;
+}

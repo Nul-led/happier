@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { encodeBase64 } from '../crypto/base64.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
+import { TeamInvitationAccountAdmissionV1Schema } from './accountAdmission.js';
 
 const ExpectedAccountIdSchema = z.string().trim().min(1).max(256);
 const ChallengeIdSchema = z.string().trim().min(1).max(128);
@@ -73,6 +74,7 @@ export type KeyChallengeV2IssueResponse = z.infer<
 
 const KeyChallengeV2SigningFactsSchema = KeyChallengeV2IssueResponseSchema.extend({
   expectedAccountId: ExpectedAccountIdSchema.optional(),
+  requireExistingAccount: z.literal(true).optional(),
 }).strict();
 
 const KEY_CHALLENGE_SIGNING_DOMAIN_V2 = 'happier.key-challenge.v2';
@@ -85,6 +87,7 @@ export function createKeyChallengeV2SigningInput(
     expiresAt: string;
     audience: KeyChallengeV2Audience;
     expectedAccountId?: string;
+    requireExistingAccount?: true;
   }>,
 ): Uint8Array {
   const facts = KeyChallengeV2SigningFactsSchema.parse(params);
@@ -98,6 +101,9 @@ export function createKeyChallengeV2SigningInput(
       audience: facts.audience,
       ...(facts.expectedAccountId
         ? { expectedAccountId: facts.expectedAccountId }
+        : {}),
+      ...(facts.requireExistingAccount
+        ? { requireExistingAccount: true }
         : {}),
     }),
   );
@@ -132,6 +138,7 @@ export const KeyChallengeV1AuthRequestSchema = z
     contentPublicKey: z.string().optional(),
     contentPublicKeySig: z.string().optional(),
     expectedAccountId: ExpectedAccountIdSchema.optional(),
+    admission: TeamInvitationAccountAdmissionV1Schema.optional(),
   })
   .strict()
   .superRefine(validateContentKeyPair);
@@ -147,6 +154,8 @@ export const KeyChallengeV2AuthRequestSchema = z
     contentPublicKey: z.string().optional(),
     contentPublicKeySig: z.string().optional(),
     expectedAccountId: ExpectedAccountIdSchema.optional(),
+    admission: TeamInvitationAccountAdmissionV1Schema.optional(),
+    requireExistingAccount: z.literal(true).optional(),
   })
   .strict()
   .superRefine(validateContentKeyPair);

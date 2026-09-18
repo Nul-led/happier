@@ -1323,6 +1323,44 @@ describe('daemon contribution registry projection (wire)', () => {
     }).success).toBe(false);
   });
 
+  it('carries a client Action caller only in its daemon-validated provenance arm', () => {
+    const request = DaemonPluginStructuredMessageActionExecuteRequestSchema.parse({
+      machineId: 'm1',
+      expectedGeneration: '7',
+      qualifiedActionId: 'acme.target/read',
+      executionSurface: 'ui',
+      invocation: {
+        kind: 'clientPluginAction',
+        clientActionBinding: {
+          contributionLocalId: 'search',
+          materializationRef: {
+            machineId: 'm1',
+            materializationId: 'materialization-current',
+            pluginId: 'acme.search',
+          },
+        },
+      },
+    });
+    expect(request.invocation).toEqual({
+      kind: 'clientPluginAction',
+      clientActionBinding: {
+        contributionLocalId: 'search',
+        materializationRef: {
+          machineId: 'm1',
+          materializationId: 'materialization-current',
+          pluginId: 'acme.search',
+        },
+      },
+    });
+    expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.safeParse({
+      ...request,
+      invocation: {
+        ...request.invocation,
+        mountedBinding: request.invocation.clientActionBinding,
+      },
+    }).success).toBe(false);
+  });
+
   it('requires a bounded host-stamped current intent for host-presented Composer and Message Actions', () => {
     const composerRequest = {
       machineId: 'm1',
@@ -1341,6 +1379,24 @@ describe('daemon contribution registry projection (wire)', () => {
 
     expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.parse(composerRequest))
       .toMatchObject(composerRequest);
+    const workflowComposerRequest = {
+      ...composerRequest,
+      sessionId: undefined,
+      invocation: {
+        kind: 'hostPresentedComposer' as const,
+        currentComposerIntent: {
+          composer: {
+            kind: 'workflowAuthoring' as const,
+            draftId: 'workflow-draft',
+            blockId: 'workflow-block',
+            instanceId: 'workflow-composer',
+          },
+          revision: 5,
+        },
+      },
+    };
+    expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.parse(workflowComposerRequest))
+      .toMatchObject(workflowComposerRequest);
     // A missing host witness, a stale session witness, and a mounted caller in
     // the host-presented arm must all fail before the daemon sees an Action.
     expect(DaemonPluginStructuredMessageActionExecuteRequestSchema.safeParse({

@@ -55,6 +55,7 @@ const NotificationChannelBaseV1Schema = z.object({
   enabled: z.boolean().default(true),
   topics: NotificationChannelTopicsV1Schema.default(DEFAULT_NOTIFICATION_CHANNEL_TOPICS_V1),
   readyIncludeMessageText: z.boolean().default(true),
+  requestIncludeMessageText: z.boolean().default(true),
 });
 
 export const ExpoPushNotificationChannelV1Schema = NotificationChannelBaseV1Schema.extend({
@@ -84,7 +85,7 @@ export type WebhookNotificationChannelV1 = z.infer<typeof WebhookNotificationCha
 
 export function hasConfiguredSecretStringValue(secret: SecretStringV1 | null | undefined): boolean {
   if (!secret) return false;
-  if (typeof secret.value === 'string' && secret.value.trim().length > 0) return true;
+  if (typeof secret.value === 'string' && secret.value.length > 0) return true;
   return secret.encryptedValue !== undefined;
 }
 
@@ -116,5 +117,6 @@ export function deriveExpoPushNotificationChannelFromLegacySettings(
       connectedServiceQuotaRecovered: settings.connectedServiceQuotaRecovered !== false,
     },
     readyIncludeMessageText: settings.readyIncludeMessageText !== false,
+    requestIncludeMessageText: settings.requestIncludeMessageText !== false,
   });
 }

@@ -15,6 +15,7 @@ import { StrictJsonValueSchema, type JsonValue as StrictJsonValue } from '../jso
 import { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { AgentRuntimeDiagnosticDataV1Schema } from './agentRuntimeDiagnosticV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../strings/opaqueIdentifier.js';
 
 export { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 
@@ -40,14 +41,16 @@ function exactString(max: number) {
 }
 
 function opaqueNonBlankString(max: number) {
-  return z.string().min(1).max(max).refine(
-    (value) => value.trim().length > 0,
-    'Identifiers must contain a non-whitespace character',
-  );
+  return NonBlankOpaqueIdentifierSchema.max(max);
 }
 
 const HostIdSchema = exactString(HOST_ID_MAX);
-const ProviderIdSchema = exactString(PROVIDER_ID_MAX);
+/**
+ * Identifiers the Agent mints — session, turn, tool-call, message, edit and
+ * observation ids. Happier correlates and replays them, never re-canonicalizes
+ * them, so they are validated for presence and carried byte for byte.
+ */
+const ProviderIdSchema = opaqueNonBlankString(PROVIDER_ID_MAX);
 const InputIdSchema = opaqueNonBlankString(HOST_ID_MAX);
 const SafeIntegerSchema = z.number().int().nonnegative().max(LIMITS.safeIntegerMax);
 /**

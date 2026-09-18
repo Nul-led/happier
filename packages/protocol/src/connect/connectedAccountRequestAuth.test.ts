@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -120,6 +120,9 @@ describe('private connected-account request-auth wire', () => {
   });
 
   it('accepts only an exact canonical HTTPS origin and lowercase unique requested headers', () => {
+    expectTypeOf<z.output<typeof ConnectedAccountRequestAuthMaterializationV1Schema>['headerNames']>()
+      .toEqualTypeOf<readonly string[]>();
+
     expect(ConnectedAccountRequestAuthMaterializationV1Schema.parse({
       kind: 'httpHeaders',
       origin: 'https://chatgpt.com',

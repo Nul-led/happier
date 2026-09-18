@@ -9,7 +9,7 @@ const RESERVED_HAPPIER_PLUGIN_NAMESPACE = 'happier.';
  */
 export const MAX_PLUGIN_IDENTIFIER_BYTES = 256;
 
-const PLUGIN_ID_JSON_SCHEMA_PATTERN = '^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$';
+const PLUGIN_ID_JSON_SCHEMA_PATTERN = '^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$(?![\\s\\S])';
 
 /** Canonical portable JSON-schema fragment for a fully qualified Plugin ID. */
 export const PluginIdJsonSchema = {

@@ -650,6 +650,7 @@ describe('Plugin Account availability v1', () => {
 
     const intentRead = intentReadSchema?.parse({
       availabilityCursor: 12,
+      packageAssets: [],
       hostingCapability: { enabled: false },
       intent: {
         pluginId: 'com.acme.fixture',
@@ -839,7 +840,9 @@ describe('Plugin Account availability v1', () => {
       .toBe('/v1/plugins/availability/intents/list');
     expect(paths?.['account.plugins.availability.uiArtifact.browserFrame.issue'])
       .toBe('/v1/plugins/availability/ui-artifacts/browser-frame/issue');
-    expect(new Set(Object.values(paths ?? {})).size).toBe(13);
+    expect(paths?.['account.plugins.availability.packageAsset.remove'])
+      .toBe('/v1/plugins/availability/package-assets/remove');
+    expect(new Set(Object.values(paths ?? {})).size).toBe(14);
   });
 
   it('keeps the package Asset archive behind qualified Availability publish/read actions', () => {

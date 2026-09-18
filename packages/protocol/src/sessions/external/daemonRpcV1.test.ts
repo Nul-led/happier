@@ -916,3 +916,102 @@ describe('external-session cursor admission', () => {
     }
   });
 });
+
+describe('external-session candidate deletion', () => {
+  it('advertises candidate deletion only as an explicit listing capability', () => {
+    const base = {
+      ok: true as const,
+      candidates: [],
+      nextCursor: null,
+    };
+    // Absent capability is not a negative fact the caller may invert into an
+    // offer: only an explicit `true` may surface the destructive affordance.
+    expect(
+      ExternalSessionsCandidatesListResponseSchema.parse(base),
+    ).not.toHaveProperty('capabilities');
+    expect(
+      ExternalSessionsCandidatesListResponseSchema.parse({
+        ...base,
+        capabilities: { deleteCandidate: true },
+      }),
+    ).toMatchObject({ capabilities: { deleteCandidate: true } });
+    expect(
+      ExternalSessionsCandidatesListResponseSchema.safeParse({
+        ...base,
+        capabilities: { deleteCandidate: 'yes' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('carries the opaque Agent-owned candidate id verbatim through the delete request', () => {
+    const opaqueRemoteSessionId = ' sess_remote\nid ';
+    const parsed = daemonRpcV1.ExternalSessionCandidateDeleteRequestSchema.safeParse({
+      machineId: 'machine-1',
+      agentId: 'kimi',
+      source: { kind: 'acpSessionList' },
+      remoteSessionId: opaqueRemoteSessionId,
+    });
+    expect(parsed.success && parsed.data.remoteSessionId).toBe(opaqueRemoteSessionId);
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteRequestSchema.safeParse({
+      machineId: 'machine-1',
+      agentId: 'kimi',
+      source: { kind: 'acpSessionList' },
+      remoteSessionId: '',
+    }).success).toBe(false);
+  });
+
+  it('accepts the released provider-named delete request identity without touching the opaque id', () => {
+    // cli-v0.2.1 / ui-web-v0.2.0 send `daemon.directSessions.candidate.delete`
+    // with `providerId`. The canonical reader admits that released spelling
+    // through the one normalization seam its siblings already use, and the
+    // Agent-owned identifier still crosses verbatim.
+    const opaqueRemoteSessionId = ' sess_remote\tid ';
+    const parsed = daemonRpcV1.ExternalSessionCandidateDeleteRequestSchema.safeParse({
+      machineId: 'machine-1',
+      providerId: 'kimi',
+      source: { kind: 'acpSessionList' },
+      remoteSessionId: opaqueRemoteSessionId,
+    });
+    expect(parsed.success && parsed.data).toMatchObject({
+      agentId: 'kimi',
+      remoteSessionId: opaqueRemoteSessionId,
+    });
+    expect(parsed.success && Object.hasOwn(parsed.data, 'providerId')).toBe(false);
+    // Exactly one identity spelling, and never a padded released one.
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteRequestSchema.safeParse({
+      machineId: 'machine-1',
+      agentId: 'kimi',
+      providerId: 'kimi',
+      source: { kind: 'acpSessionList' },
+      remoteSessionId: 'sess_remote',
+    }).success).toBe(false);
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteRequestSchema.safeParse({
+      machineId: 'machine-1',
+      providerId: ' kimi ',
+      source: { kind: 'acpSessionList' },
+      remoteSessionId: 'sess_remote',
+    }).success).toBe(false);
+  });
+
+  it('answers deletion with a committed outcome or a typed external-session failure', () => {
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteResponseSchema.safeParse({
+      ok: true,
+      deleted: true,
+    }).success).toBe(true);
+    // A caller must never read "we tried" as "it is gone".
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteResponseSchema.safeParse({
+      ok: true,
+      deleted: false,
+    }).success).toBe(false);
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteResponseSchema.safeParse({
+      ok: false,
+      errorCode: 'agent_unavailable',
+      error: 'external_session_agent_unavailable',
+    }).success).toBe(true);
+    expect(daemonRpcV1.ExternalSessionCandidateDeleteResponseSchema.safeParse({
+      ok: false,
+      errorCode: 'not_a_code',
+      error: 'boom',
+    }).success).toBe(false);
+  });
+});

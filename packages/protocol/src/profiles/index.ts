@@ -14,6 +14,15 @@ export {
   type EnvironmentVariable,
 } from './environmentVariables.js';
 
+export {
+  SavedSecretReferenceV1Schema,
+  SecretReferenceOverlayV1Schema,
+  listSecretReferenceOverlayV1BindingNames,
+  readSecretReferenceOverlayV1Reference,
+  type SavedSecretReferenceV1,
+  type SecretReferenceOverlayV1,
+} from './secretReferenceOverlayV1.js';
+
 export * from './read.js';
 export * from './v2/schema.js';
 export * from './visibilityV1.js';

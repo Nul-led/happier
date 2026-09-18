@@ -41,16 +41,13 @@ export {
 } from './promptKindCatalog.js';
 
 export {
-  RELAY_CONNECT_BACKGROUND_SERVICE_SYSTEM_TASK_STEP_IDS_V1,
   REMOTE_SSH_BOOTSTRAP_MACHINE_SYSTEM_TASK_STEP_IDS_V1,
   SETUP_REPAIR_THIS_COMPUTER_SYSTEM_TASK_STEP_IDS_V1,
   SETUP_THIS_COMPUTER_SYSTEM_TASK_STEP_IDS_V1,
   RemoteSshBootstrapMachineSystemTaskStepIdSchema,
-  RelayConnectBackgroundServiceSystemTaskStepIdSchema,
   SetupRepairThisComputerSystemTaskStepIdSchema,
   SetupThisComputerSystemTaskStepIdSchema,
   type RemoteSshBootstrapMachineSystemTaskStepId,
-  type RelayConnectBackgroundServiceSystemTaskStepId,
   type SetupRepairThisComputerSystemTaskStepId,
   type SetupThisComputerSystemTaskStepId,
 } from './stepIdCatalog.js';

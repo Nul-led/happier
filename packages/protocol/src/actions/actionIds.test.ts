@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { AccountSettingsStoredContentEnvelopeSchema } from '../account/settings/accountSettingsStoredContentEnvelope.js';
+
 import {
   ACTION_ID_FAMILIES_V1,
   ACTION_IDS,
@@ -9,6 +11,14 @@ import {
 } from './actionIds.js';
 
 describe('ActionIdSchema', () => {
+  it('initializes Action ids beside Account Settings stored-content schemas without an import cycle', () => {
+    expect(ActionIdSchema.parse('secrets.shared.promote')).toBe('secrets.shared.promote');
+    expect(AccountSettingsStoredContentEnvelopeSchema.parse({ t: 'plain', v: {} })).toEqual({
+      t: 'plain',
+      v: {},
+    });
+  });
+
   it('publishes the Automation conversation target selector and verifier in the canonical family', () => {
     expect(ACTION_ID_FAMILIES_V1.automation_conversation).toEqual([
       'automation.conversation.targets.list',
@@ -55,11 +65,52 @@ describe('ActionIdSchema', () => {
     expect(ActionIdSchema.parse('devices.simulator.input.tap')).toBe('devices.simulator.input.tap');
   });
 
+  /**
+   * Lane 02 registration contract: the Account Security family is the one
+   * typed use-case boundary for password/email/security journeys, and the
+   * API-token family keeps exactly one create intent. The retired
+   * `createEncrypted` id must never re-enter the family or parse again.
+   */
+  it('registers the Account Security family and the single API-token create intent', () => {
+    expect(ACTION_ID_FAMILIES_V1.account_security).toEqual([
+      'account.security.get',
+      'account.password.enroll',
+      'account.password.change',
+      'account.password.remove',
+      'account.email.change.request',
+    ]);
+    expect(ACTION_ID_FAMILIES_V1.account_api_tokens).toEqual([
+      'account.apiTokens.create',
+      'account.apiTokens.list',
+      'account.apiTokens.revoke',
+      'account.apiTokens.revokeAll',
+    ]);
+    expect(ActionIdSchema.safeParse('account.apiTokens.createEncrypted').success).toBe(false);
+  });
+
   it('does not accept unknown action ids', () => {
+    expect(() => ActionIdSchema.parse('account.apiTokens.createEncrypted')).toThrow();
     expect(() => ActionIdSchema.parse('execution.run.stream.pause' as any)).toThrow();
     expect(() => ActionIdSchema.parse('daemon.browser.recording.start' as any)).toThrow();
     expect(() => ActionIdSchema.parse('daemon.devices.simulator.preview.action' as any)).toThrow();
     expect(() => ActionIdSchema.parse('session.spawn_picker')).toThrow();
+  });
+
+  /**
+   * `ACTION_ID_FAMILIES_V1` is the declaration and `ACTION_IDS` is its
+   * projection, so a family that exists in one and not the other is a registry
+   * defect rather than a policy choice: its rows load into the catalog while
+   * `ActionIdSchema` refuses their ids, which fails far away from the omission.
+   * Deriving the expectation from the declaration keeps this from having to be
+   * re-listed every time a family is added.
+   */
+  it('projects every declared family into the canonical action id list', () => {
+    const projected = new Set<string>(ACTION_IDS);
+    const unprojected = Object.entries(ACTION_ID_FAMILIES_V1)
+      .filter(([, ids]) => (ids as readonly string[]).some((id) => !projected.has(id)))
+      .map(([family]) => family);
+
+    expect(unprojected).toEqual([]);
   });
 
   it('exposes runtime-unification action ids as a canonical subset', () => {
@@ -71,6 +122,10 @@ describe('ActionIdSchema', () => {
 
     expect(isRuntimeActionIdV1('browser.automation.click')).toBe(true);
     expect(isRuntimeActionIdV1('peerMediation.observability.snapshot')).toBe(true);
+    for (const actionId of ACTION_ID_FAMILIES_V1.ephemeral_runner) {
+      expect(RuntimeActionIdV1Schema.safeParse(actionId).success).toBe(false);
+      expect(isRuntimeActionIdV1(actionId)).toBe(false);
+    }
     expect(isRuntimeActionIdV1('session.open')).toBe(false);
     expect(isRuntimeActionIdV1('daemon.browser.recording.start')).toBe(false);
   });
@@ -82,6 +137,36 @@ describe('ActionIdSchema', () => {
         'action.spec.get',
         'action.options.resolve',
         'action.invoke',
+      ],
+      workflows: [
+        'workflow.validate',
+        'workflow.run.start',
+        'workflow.run.list',
+        'workflow.run.get',
+        'workflow.run.wait',
+        'workflow.run.pause',
+        'workflow.run.resume',
+        'workflow.run.cancel',
+        'workflow.run.invocations.list',
+        'workflow.run.invocations.get',
+        'workflow.run.invocations.retry',
+        'workflow.run.delete',
+        'workflow.definition.list',
+        'workflow.definition.get',
+        'workflow.definition.create',
+        'workflow.definition.update',
+        'workflow.definition.delete',
+      ],
+      session_access: [
+        'session.access.grants.list',
+        'session.access.grant.set',
+        'session.access.grant.remove',
+        'session.access.context.set',
+        'session.responsibility.set',
+        'session.responsibility.candidates.list',
+        'session.public_link.get',
+        'session.public_link.create',
+        'session.public_link.remove',
       ],
       session_lifecycle: [
         'session.open',
@@ -98,6 +183,7 @@ describe('ActionIdSchema', () => {
         'session.handoff.commit',
         'session.handoff.abort',
         'session.handoff.status.get',
+        'workspace.sync.conflict.resolve',
         'session.spawn_new',
       ],
       inventory: [
@@ -141,6 +227,7 @@ describe('ActionIdSchema', () => {
         'session.skill_catalog.list',
         'session.history.get',
         'session.wait.idle',
+        'session.presentation.apply',
       ],
       intent_start: [
         'review.start',
@@ -190,6 +277,19 @@ describe('ActionIdSchema', () => {
         'session.activity.get',
         'session.messages.recent.get',
       ],
+      session_follow: [
+        'session.follow.get',
+        'session.follow.set',
+        'session.follow.remove',
+        'session.follow.preferences.get',
+        'session.follow.preferences.set',
+        'session.follow.sources.list',
+        'session.follow.sources.set',
+        'session.follow.sources.remove',
+      ],
+      session_read_state: [
+        'session.read_state.set',
+      ],
       session_transcripts: [
         'session.transcript.get',
         'session.events.get',
@@ -200,6 +300,23 @@ describe('ActionIdSchema', () => {
         'transcript.unfollow',
         'transcript.import',
         'transcript.search',
+      ],
+      session_board: [
+        'session.board.get',
+        'session.board.item.upsert',
+        'session.board.item.remove',
+        'session.board.layout.update',
+      ],
+      session_discussion: [
+        'session.discussion.list',
+        'session.discussion.get',
+        'session.discussion.read',
+        'session.discussion.create',
+        'session.discussion.post',
+        'session.discussion.rename',
+        'session.discussion.archive',
+        'session.discussion.restore',
+        'session.discussion.read_state.set',
       ],
       session_permissions: [
         'session.permission.respond',
@@ -213,6 +330,7 @@ describe('ActionIdSchema', () => {
       ],
       external_sessions: [
         'sessions.external.candidates.list',
+        'sessions.external.candidate.delete',
         'sessions.external.link.ensure',
         'sessions.external.follow',
         'sessions.external.unfollow',
@@ -455,11 +573,52 @@ describe('ActionIdSchema', () => {
       account_sessions: [
         'account.sessions.signOutEverywhere',
       ],
+      account_security: [
+        'account.security.get',
+        'account.password.enroll',
+        'account.password.change',
+        'account.password.remove',
+        'account.email.change.request',
+      ],
       account_api_tokens: [
         'account.apiTokens.create',
         'account.apiTokens.list',
         'account.apiTokens.revoke',
         'account.apiTokens.revokeAll',
+      ],
+      identity_github_apps: [
+        'identity.githubApps.list',
+        'identity.githubApps.create',
+        'identity.githubApps.manifestSetup.start',
+        'identity.githubApps.update',
+        'identity.githubApps.verifyInstallation',
+        'identity.githubApps.remove',
+      ],
+      identity_providers: [
+        'identity.providers.list',
+        'identity.providers.create',
+        'identity.providers.update',
+        'identity.providers.secret.replace',
+        'identity.providers.validate',
+        'identity.providers.test.start',
+        'identity.providers.test.consume',
+        'identity.providers.enable',
+        'identity.providers.disable',
+        'identity.providers.remove.preview',
+        'identity.providers.remove',
+      ],
+      machine_pools: [
+        'machines.pools.list',
+        'machines.pools.get',
+        'machines.pools.create',
+        'machines.pools.update',
+        'machines.pools.delete',
+        'machines.pools.resolve',
+      ],
+      ephemeral_runner: [
+        'sessions.runner.activation.create',
+        'sessions.runner.activation.get',
+        'sessions.runner.activation.cancel',
       ],
       automation_events: [
         'automation.event.sources.list',
@@ -468,7 +627,7 @@ describe('ActionIdSchema', () => {
       ],
       automation_conversation: [
         'automation.conversation.targets.list',
-          'automation.conversation.target.verify',
+        'automation.conversation.target.verify',
         'automation.conversation.admit',
       ],
       scm_pull_request: [
@@ -491,6 +650,108 @@ describe('ActionIdSchema', () => {
       scm_diff_summary: [
         'scm.diffSummary.generate',
       ],
+      home_governance: [
+        'home.governance.get',
+        'home.governance.eligibility.get',
+        'home.accounts.list',
+        'home.accounts.search',
+        'home.accounts.role.set',
+        'home.accounts.disable',
+        'home.accounts.enable',
+        'home.accounts.delete',
+        'home.policy.set',
+      ],
+      teams: [
+        'teams.list',
+        'teams.get',
+        'teams.create',
+        'teams.update',
+        'teams.logo.set',
+        'teams.logo.remove',
+        'teams.policy.set',
+        'teams.archive',
+        'teams.restore',
+        'teams.members.list',
+        'teams.members.get',
+        'teams.members.add',
+        'teams.members.role.set',
+        'teams.members.suspend',
+        'teams.members.reactivate',
+        'teams.members.remove',
+        'teams.members.management.set',
+        'teams.members.groups.list',
+        'teams.groups.list',
+        'teams.groups.get',
+        'teams.groups.create',
+        'teams.groups.update',
+        'teams.groups.archive',
+        'teams.groups.restore',
+        'teams.groups.members.list',
+        'teams.groups.members.add',
+        'teams.groups.members.remove',
+        'teams.invitations.list',
+        'teams.invitations.create',
+        'teams.invitations.revoke',
+        'teams.invitations.reissue',
+        'teams.invitations.preview',
+        'teams.invitations.accept.prepareApproval',
+        'teams.invitations.accept',
+        'teams.identity.connections.list',
+        'teams.identity.connections.create',
+        'teams.identity.connections.settings.update',
+        'teams.identity.connections.enable',
+        'teams.identity.connections.disable',
+        'teams.identity.connections.remove.preview',
+        'teams.identity.connections.remove',
+        'teams.identity.connections.test.start',
+        'teams.identity.connections.test.consume',
+        'teams.identity.workos.adminPortalLink.create',
+        'teams.identity.workos.connection.create',
+        'teams.identity.workos.reconcile',
+        'teams.identity.workos.connection.set',
+        'teams.externalGroupBindings.list',
+        'teams.externalGroupBindings.set',
+        'teams.externalGroupBindings.remove',
+        'teams.directory.sourceSetup.list',
+        'teams.directory.sources.list',
+        'teams.directory.sources.get',
+        'teams.directory.people.list',
+        'teams.directory.groups.list',
+        'teams.directory.sources.create',
+        'teams.directory.sources.sync',
+        'teams.directory.sources.pause',
+        'teams.directory.sources.resume',
+        'teams.directory.sources.remove.preview',
+        'teams.directory.sources.remove',
+        'teams.credentials.list',
+        'teams.credentials.sources.list',
+        'teams.credentials.requestPolicySupport.get',
+        'teams.credentials.sourceResources.list',
+        'teams.credentials.get',
+        'teams.credentials.entitled.list',
+        'teams.credentials.create',
+        'teams.credentials.update',
+        'teams.credentials.audience.set',
+        'teams.credentials.delete',
+        'teams.credentials.test',
+        'teams.credentials.activity.list',
+        'teams.credentials.limits.list',
+        'teams.credentials.limits.upsert',
+        'teams.credentials.limits.delete',
+        'teams.credentials.usage.query',
+        'teams.credentials.externalKeys.create',
+        'teams.credentials.externalKeys.list',
+        'teams.credentials.externalKeys.revoke',
+        'teams.credentials.externalKeys.revokeAll',
+      ],
+      saved_secret_sharing: [
+        'secrets.shared.list',
+        'secrets.shared.create',
+        'secrets.shared.promote',
+        'secrets.shared.grants.set',
+        'secrets.shared.update',
+        'secrets.shared.delete',
+      ],
     });
   });
 
@@ -500,6 +761,15 @@ describe('ActionIdSchema', () => {
       'action.spec.get',
       'action.options.resolve',
       'action.invoke',
+      'session.access.grants.list',
+      'session.access.grant.set',
+      'session.access.grant.remove',
+      'session.access.context.set',
+      'session.responsibility.set',
+      'session.responsibility.candidates.list',
+      'session.public_link.get',
+      'session.public_link.create',
+      'session.public_link.remove',
       'session.open',
       'session.fork',
       'session.continue_with_replay',
@@ -514,6 +784,7 @@ describe('ActionIdSchema', () => {
       'session.handoff.commit',
       'session.handoff.abort',
       'session.handoff.status.get',
+      'workspace.sync.conflict.resolve',
       'session.spawn_new',
       'paths.list_recent',
       'projects.list',
@@ -551,6 +822,7 @@ describe('ActionIdSchema', () => {
       'session.skill_catalog.list',
       'session.history.get',
       'session.wait.idle',
+      'session.presentation.apply',
       'review.start',
       'subagents.plan.start',
       'subagents.delegate.start',
@@ -589,6 +861,15 @@ describe('ActionIdSchema', () => {
       'session.list',
       'session.activity.get',
       'session.messages.recent.get',
+      'session.follow.get',
+      'session.follow.set',
+      'session.follow.remove',
+      'session.follow.preferences.get',
+      'session.follow.preferences.set',
+      'session.follow.sources.list',
+      'session.follow.sources.set',
+      'session.follow.sources.remove',
+      'session.read_state.set',
       'session.transcript.get',
       'session.events.get',
       'session.log.tail',
@@ -598,6 +879,19 @@ describe('ActionIdSchema', () => {
       'transcript.unfollow',
       'transcript.import',
       'transcript.search',
+      'session.board.get',
+      'session.board.item.upsert',
+      'session.board.item.remove',
+      'session.board.layout.update',
+      'session.discussion.list',
+      'session.discussion.get',
+      'session.discussion.read',
+      'session.discussion.create',
+      'session.discussion.post',
+      'session.discussion.rename',
+      'session.discussion.archive',
+      'session.discussion.restore',
+      'session.discussion.read_state.set',
       'session.permission.respond',
       'session.permission.remote.pending.list',
       'session.permission.remote.respond',
@@ -607,6 +901,7 @@ describe('ActionIdSchema', () => {
       'session.user_action.answer',
       'session.mode.set',
       'sessions.external.candidates.list',
+      'sessions.external.candidate.delete',
       'sessions.external.link.ensure',
       'sessions.external.follow',
       'sessions.external.unfollow',
@@ -798,10 +1093,41 @@ describe('ActionIdSchema', () => {
       'plugin.webhook.endpoint.credential.finishRotation',
       'account.plugins.data.erase',
       'account.sessions.signOutEverywhere',
+      'account.security.get',
+      'account.password.enroll',
+      'account.password.change',
+      'account.password.remove',
+      'account.email.change.request',
       'account.apiTokens.create',
       'account.apiTokens.list',
       'account.apiTokens.revoke',
       'account.apiTokens.revokeAll',
+      'identity.githubApps.list',
+      'identity.githubApps.create',
+      'identity.githubApps.manifestSetup.start',
+      'identity.githubApps.update',
+      'identity.githubApps.verifyInstallation',
+      'identity.githubApps.remove',
+      'identity.providers.list',
+      'identity.providers.create',
+      'identity.providers.update',
+      'identity.providers.secret.replace',
+      'identity.providers.validate',
+      'identity.providers.test.start',
+      'identity.providers.test.consume',
+      'identity.providers.enable',
+      'identity.providers.disable',
+      'identity.providers.remove.preview',
+      'identity.providers.remove',
+      'machines.pools.list',
+      'machines.pools.get',
+      'machines.pools.create',
+      'machines.pools.update',
+      'machines.pools.delete',
+      'machines.pools.resolve',
+      'sessions.runner.activation.create',
+      'sessions.runner.activation.get',
+      'sessions.runner.activation.cancel',
       'automation.event.sources.list',
       'automation.event.admit',
       'automation.event.source.status.report',
@@ -822,6 +1148,119 @@ describe('ActionIdSchema', () => {
       'scm.hostingRepository.describePublishTargets',
       'scm.hostingRepository.publish',
       'scm.diffSummary.generate',
-    ]);
+      'home.governance.get',
+      'home.governance.eligibility.get',
+      'home.accounts.list',
+      'home.accounts.search',
+      'home.accounts.role.set',
+      'home.accounts.disable',
+      'home.accounts.enable',
+      'home.accounts.delete',
+      'home.policy.set',
+      'teams.list',
+      'teams.get',
+      'teams.create',
+      'teams.update',
+      'teams.logo.set',
+      'teams.logo.remove',
+      'teams.policy.set',
+      'teams.archive',
+      'teams.restore',
+      'teams.members.list',
+      'teams.members.get',
+      'teams.members.add',
+      'teams.members.role.set',
+      'teams.members.suspend',
+      'teams.members.reactivate',
+      'teams.members.remove',
+      'teams.members.management.set',
+      'teams.members.groups.list',
+      'teams.groups.list',
+      'teams.groups.get',
+      'teams.groups.create',
+      'teams.groups.update',
+      'teams.groups.archive',
+      'teams.groups.restore',
+      'teams.groups.members.list',
+      'teams.groups.members.add',
+      'teams.groups.members.remove',
+      'teams.invitations.list',
+      'teams.invitations.create',
+      'teams.invitations.revoke',
+      'teams.invitations.reissue',
+      'teams.invitations.preview',
+      'teams.invitations.accept.prepareApproval',
+      'teams.invitations.accept',
+      'teams.identity.connections.list',
+      'teams.identity.connections.create',
+      'teams.identity.connections.settings.update',
+      'teams.identity.connections.enable',
+      'teams.identity.connections.disable',
+      'teams.identity.connections.remove.preview',
+      'teams.identity.connections.remove',
+      'teams.identity.connections.test.start',
+      'teams.identity.connections.test.consume',
+      'teams.identity.workos.adminPortalLink.create',
+      'teams.identity.workos.connection.create',
+      'teams.identity.workos.reconcile',
+      'teams.identity.workos.connection.set',
+    'teams.externalGroupBindings.list',
+    'teams.externalGroupBindings.set',
+    'teams.externalGroupBindings.remove',
+    'teams.directory.sourceSetup.list',
+    'teams.directory.sources.list',
+      'teams.directory.sources.get',
+      'teams.directory.people.list',
+      'teams.directory.groups.list',
+      'teams.directory.sources.create',
+      'teams.directory.sources.sync',
+    'teams.directory.sources.pause',
+    'teams.directory.sources.resume',
+    'teams.directory.sources.remove.preview',
+    'teams.directory.sources.remove',
+      'teams.credentials.list',
+      'teams.credentials.sources.list',
+      'teams.credentials.requestPolicySupport.get',
+      'teams.credentials.sourceResources.list',
+    'teams.credentials.get',
+    'teams.credentials.entitled.list',
+    'teams.credentials.create',
+    'teams.credentials.update',
+    'teams.credentials.audience.set',
+    'teams.credentials.delete',
+    'teams.credentials.test',
+    'teams.credentials.activity.list',
+    'teams.credentials.limits.list',
+    'teams.credentials.limits.upsert',
+    'teams.credentials.limits.delete',
+    'teams.credentials.usage.query',
+    'teams.credentials.externalKeys.create',
+    'teams.credentials.externalKeys.list',
+    'teams.credentials.externalKeys.revoke',
+    'teams.credentials.externalKeys.revokeAll',
+    'secrets.shared.list',
+    'secrets.shared.create',
+    'secrets.shared.promote',
+    'secrets.shared.grants.set',
+    'secrets.shared.update',
+    'secrets.shared.delete',
+    'workflow.validate',
+    'workflow.run.start',
+    'workflow.run.list',
+    'workflow.run.get',
+    'workflow.run.wait',
+    'workflow.run.pause',
+    'workflow.run.resume',
+    'workflow.run.cancel',
+    'workflow.run.invocations.list',
+    'workflow.run.invocations.get',
+    'workflow.run.invocations.retry',
+    'workflow.run.delete',
+    'workflow.definition.list',
+    'workflow.definition.get',
+    'workflow.definition.create',
+    'workflow.definition.update',
+    'workflow.definition.delete',
+  ]);
   });
 });

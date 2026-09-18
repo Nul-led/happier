@@ -44,6 +44,46 @@ describe('auth/keyChallenge', () => {
     }).success).toBe(false);
   });
 
+  it('accepts only an affirmative existing-Account constraint on v2 redemption', () => {
+    const request = {
+      challengeId: 'challenge-123',
+      publicKey: 'signing-public-key',
+      signature: 'signature',
+      requireExistingAccount: true,
+    } as const;
+
+    expect(KeyChallengeAuthRequestSchema.parse(request)).toEqual(request);
+    expect(KeyChallengeAuthRequestSchema.safeParse({
+      ...request,
+      requireExistingAccount: false,
+    }).success).toBe(false);
+    expect(KeyChallengeAuthRequestSchema.safeParse({
+      publicKey: 'signing-public-key',
+      challenge: 'challenge',
+      signature: 'signature',
+      requireExistingAccount: true,
+    }).success).toBe(false);
+  });
+
+  it('accepts only the strict Team invitation admission carrier on key redemption', () => {
+    const request = {
+      challengeId: 'challenge-123',
+      publicKey: 'signing-public-key',
+      signature: 'signature',
+      admission: { kind: 'team_invitation', token: 'A'.repeat(43) },
+    };
+
+    expect(KeyChallengeAuthRequestSchema.parse(request)).toEqual(request);
+    expect(KeyChallengeAuthRequestSchema.safeParse({
+      ...request,
+      admission: { ...request.admission, destination: '/teams/team-1' },
+    }).success).toBe(false);
+    expect(KeyChallengeAuthRequestSchema.safeParse({
+      ...request,
+      admission: { kind: 'team_invitation', token: 'too-short' },
+    }).success).toBe(false);
+  });
+
   it('uses canonical issue facts in the v2 domain-separated signing input', () => {
     const issue = KeyChallengeV2IssueResponseSchema.parse({
       challengeId: 'challenge-123',
@@ -81,6 +121,12 @@ describe('auth/keyChallenge', () => {
       createKeyChallengeV2SigningInput({
         ...issue,
         expectedAccountId: 'account-123',
+      }),
+    ).not.toEqual(baseline);
+    expect(
+      createKeyChallengeV2SigningInput({
+        ...issue,
+        requireExistingAccount: true,
       }),
     ).not.toEqual(baseline);
     expect(

@@ -4,10 +4,12 @@ import { sha512 } from '@noble/hashes/sha512';
 import tweetnacl from 'tweetnacl';
 
 import {
+  BOX_BUNDLE_MIN_BYTES,
   BOX_BUNDLE_NONCE_BYTES,
   BOX_BUNDLE_PUBLIC_KEY_BYTES,
   isValidBoxBundlePublicKey,
   openBoxBundle,
+  openBoxBundleWithSecretKey,
   sealBoxBundle,
 } from './boxBundle.js';
 
@@ -39,6 +41,37 @@ const LOW_ORDER_PUBLIC_KEYS: ReadonlyArray<Readonly<{ name: string; bytes: Uint8
 ];
 
 describe('boxBundle', () => {
+  // The published layout sizes are stated as literals in `boxBundleFormat.ts`
+  // so wire schemas can consume them without loading the box implementation.
+  // A literal that drifted from the primitive would silently change the framing
+  // this codec emits, so pin each one to the primitive it frames.
+  it('pins the published bundle layout to the box primitive it frames', () => {
+    expect(BOX_BUNDLE_PUBLIC_KEY_BYTES).toBe(tweetnacl.box.publicKeyLength);
+    expect(BOX_BUNDLE_NONCE_BYTES).toBe(tweetnacl.box.nonceLength);
+    expect(BOX_BUNDLE_MIN_BYTES).toBe(
+      tweetnacl.box.publicKeyLength + tweetnacl.box.nonceLength + tweetnacl.box.overheadLength,
+    );
+  });
+
+  it('opens only the exact raw X25519 recipient key without interpreting it as a seed', () => {
+    const recipientSecretKey = new Uint8Array(32).fill(11);
+    const plaintext = new TextEncoder().encode('reviewed Runner bootstrap');
+    const rawBundle = sealBoxBundle({
+      plaintext,
+      recipientPublicKey: tweetnacl.box.keyPair.fromSecretKey(recipientSecretKey).publicKey,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    const seedBundle = sealBoxBundle({
+      plaintext,
+      recipientPublicKey: tweetnacl.box.keyPair.fromSecretKey(sha512(recipientSecretKey).slice(0, 32)).publicKey,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+
+    expect(openBoxBundleWithSecretKey({ bundle: rawBundle, recipientSecretKey })).toEqual(plaintext);
+    expect(openBoxBundleWithSecretKey({ bundle: seedBundle, recipientSecretKey })).toBeNull();
+    expect(openBoxBundle({ bundle: seedBundle, recipientSecretKeyOrSeed: recipientSecretKey })).toEqual(plaintext);
+  });
+
   it('seals and opens a box bundle with recipient secret key', () => {
     const recipientSecretKey = new Uint8Array(32).fill(9);
     const recipientPublicKey = tweetnacl.box.keyPair.fromSecretKey(recipientSecretKey).publicKey;

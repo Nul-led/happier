@@ -7,6 +7,8 @@ import {
 import {
     BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
 } from './generatedBuiltInLegacyConnectedAccountCompatibility.js';
+import { QualifiedConnectedAccountRefSchema } from './qualifiedConnectedAccountPersistence.js';
+import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 
 export const ConnectedServiceIdSchema = z.enum([
     'openai-codex',
@@ -101,6 +103,66 @@ export const ConnectedServiceBindingSelectionV1Schema = z.union([
 ]);
 
 export type ConnectedServiceBindingSelectionV1 = z.infer<typeof ConnectedServiceBindingSelectionV1Schema>;
+
+export const TeamResourceBrokeredConnectedServiceSelectionV2Schema = z.object({
+    source: z.literal('team_resource'),
+    resourceId: z.string().trim().min(1).max(256),
+    deliveryMode: z.literal('brokered'),
+    disclosedMember: z.never().optional(),
+}).strict();
+
+export const TeamResourceDirectConnectedServiceSelectionV2Schema = z.object({
+    source: z.literal('team_resource'),
+    resourceId: z.string().trim().min(1).max(256),
+    deliveryMode: z.literal('direct'),
+    disclosedMember: asProtocolZod(QualifiedConnectedAccountRefSchema),
+}).strict();
+
+/**
+ * Session-owned Team resource selection. Brokered selection carries only the
+ * resource identity. Direct Pool use adds the disclosed member chosen by the
+ * recipient; transport/currentness facts stay with their canonical owners.
+ */
+export const TeamResourceConnectedServiceSelectionV2Schema = z.union([
+    TeamResourceDirectConnectedServiceSelectionV2Schema,
+    TeamResourceBrokeredConnectedServiceSelectionV2Schema,
+]);
+
+export type TeamResourceConnectedServiceSelectionV2 = z.infer<
+    typeof TeamResourceConnectedServiceSelectionV2Schema
+>;
+
+export const ConnectedServiceBindingSelectionV2Schema = z.union([
+    ConnectedServiceNativeBindingV1Schema.strict(),
+    ConnectedServiceGroupBindingV1Schema.strict(),
+    ConnectedServiceProfileBindingV1Schema.strict(),
+    TeamResourceConnectedServiceSelectionV2Schema,
+]);
+
+export type ConnectedServiceBindingSelectionV2 = z.infer<
+    typeof ConnectedServiceBindingSelectionV2Schema
+>;
+
+const ConnectedServiceBindingsByServiceIdV2Schema = z
+    .record(z.string(), ConnectedServiceBindingSelectionV2Schema)
+    .superRefine((bindings, ctx) => {
+        for (const serviceId of Object.keys(bindings)) {
+            if (!ConnectedAccountServiceKeySchema.safeParse(serviceId).success) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Invalid qualified Connected Account service key',
+                    path: [serviceId],
+                });
+            }
+        }
+    });
+
+export const ConnectedServiceBindingsV2Schema = z.object({
+    v: z.literal(2),
+    bindingsByServiceId: ConnectedServiceBindingsByServiceIdV2Schema.default({}),
+}).strict();
+
+export type ConnectedServiceBindingsV2 = z.infer<typeof ConnectedServiceBindingsV2Schema>;
 
 export const PersistedConnectedServiceBindingSelectionV1Schema = z.union([
     ConnectedServiceNativeBindingV1Schema.strict(),
@@ -249,20 +311,16 @@ export type PersistedConnectedServiceBindingsV1 = z.infer<
     typeof PersistedConnectedServiceBindingsV1Schema
 >;
 
-export const SessionConnectedServiceAuthSwitchRpcParamsSchema = z
-    .object({
-        sessionId: z.string().trim().min(1),
-        agentId: z.string().trim().min(1),
-        bindings: ConnectedServiceBindingsV1Schema,
-        rematerializeServiceId: ConnectedAccountServiceKeySchema.optional(),
-        expectedGroupGenerationByServiceId: z.record(
-            ConnectedAccountServiceKeySchema,
-            z.number().int().nonnegative(),
-        ).optional(),
-        accountSettingsVersionHint: z.number().int().nonnegative().optional(),
-    })
-    .strict();
-
-export type SessionConnectedServiceAuthSwitchRpcParams = z.infer<
-    typeof SessionConnectedServiceAuthSwitchRpcParamsSchema
->;
+export const ConnectedServiceBindingsV2IngressSchema = z.union([
+    ConnectedServiceBindingsV2Schema,
+    PersistedConnectedServiceBindingsV1Schema.transform((value) =>
+        ConnectedServiceBindingsV2Schema.parse({
+            v: 2,
+            bindingsByServiceId: value.bindingsByServiceId,
+        })),
+    BuiltInLegacyConnectedServiceBindingsV1IngressSchema.transform((value) =>
+        ConnectedServiceBindingsV2Schema.parse({
+            v: 2,
+            bindingsByServiceId: value.bindingsByServiceId,
+        })),
+]);

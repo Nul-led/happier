@@ -4,7 +4,10 @@ import type { PluginContributionIdentityV1 } from '../plugins/contributionIdenti
 
 import { StoredJsonContentEnvelopeSchema } from '../storage/storedJsonContentEnvelope.js';
 import type { AccountScopedCryptoMaterial } from '../crypto/accountScopedCipher.js';
-import type { PluginConnectedAccountAuthenticationV2 } from './pluginConnectedAccountAuthenticationV2.js';
+import {
+  CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+  type PluginConnectedAccountAuthenticationV2,
+} from './pluginConnectedAccountAuthenticationV2.js';
 import {
   ConnectedServiceAuthGroupIdSchema,
   ConnectedServiceAuthGroupPolicyV1Schema,
@@ -122,6 +125,8 @@ const QualifiedConnectedAccountCredentialMutationCommonV4Shape = {
   authenticationModeId: ModeIdZodSchema,
   content: StoredJsonContentEnvelopeSchema,
   metadata: QualifiedConnectedAccountCredentialMetadataV4Schema,
+  directExportContract: z.literal(CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1).nullable().optional(),
+  contributionContractVersion: z.string().trim().min(1).max(512).optional(),
   reconnect: z.object({
     allowProviderIdentityChange: z.boolean().optional().default(false),
   }).strict().optional(),

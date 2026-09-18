@@ -1,4 +1,37 @@
 export {
+  AttentionDeliveryEventIdSchema,
+  REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS,
+  composeAttentionDeliveryPolicyDeviceOverrides,
+  type AttentionDeliveryEventId,
+  type RemoteAlertAttentionDeliveryEventId,
+} from './attentionDeliveryPolicy.js';
+export {
+  SessionReminderPresetRuleSchema,
+  SessionReminderPresetV1Schema,
+  SessionReminderPresetsV1Schema,
+  type SessionReminderPresetRule,
+  type SessionReminderPresetV1,
+} from './sessionReminderPresetsV1.js';
+export { resolveAttentionDeliveryPreviewBehavior } from './attentionDeliveryPolicyDecision.js';
+
+export {
+  ACCOUNT_REMOTE_ALERT_POLICY_MAX_UTF8_BYTES,
+  AccountRemoteAlertPolicyV1Schema,
+  DeviceRemoteAlertPolicyV1Schema,
+  deriveAccountRemoteAlertPolicyV1,
+  resolveRemoteAlertPolicyDecision,
+  restrictAttentionPreviewBehavior,
+  type DeviceRemoteAlertPolicyV1,
+  RemoteAlertEventPolicyMapV1Schema,
+  RemoteAlertQuietHoursV1Schema,
+  RemoteAlertSoundIdSchema,
+  type AccountRemoteAlertPolicyV1,
+  type RemoteAlertEventPolicyMapV1,
+  type RemoteAlertQuietHoursV1,
+  type RemoteAlertSoundId,
+} from './accountRemoteAlertPolicy.js';
+
+export {
   ACCOUNT_SETTING_ARTIFACTS,
   ACCOUNT_SETTING_DEFINITIONS,
   ACCOUNT_SETTING_KEYS,
@@ -36,6 +69,7 @@ export {
   resolveNewSessionWizardSectionPresentation,
   SessionHandoffDefaultsV1Schema,
   SessionAgentSpawnPolicyV1Schema,
+  SessionAgentSpawnPolicyV1StrictSchema,
   SessionTmuxMachineOverrideSchema,
   SessionPendingQueueDeliveryTimingSchema,
   SessionPendingQueueDrainModeSchema,
@@ -65,6 +99,8 @@ export {
 
 export {
   ConnectedServicesDefaultAuthByAgentIdV1Schema,
+  ConnectedServicesDefaultAuthBindingsV2Schema,
+  ConnectedServicesDefaultAuthTeamResourceBindingV2Schema,
   BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema,
   ConnectedServicesProviderConfigSharingModeV1Schema,
   ConnectedServicesProviderStateSharingModeV1Schema,
@@ -76,6 +112,8 @@ export {
   resolveConnectedServicesProviderStateSharingPolicyV1,
   type ConnectedServicesDefaultAuthBindingByAgentIdV1,
   type ConnectedServicesDefaultAuthByAgentIdV1,
+  type ConnectedServicesDefaultAuthBindingsV2,
+  type ConnectedServicesDefaultAuthTeamResourceBindingV2,
   type ConnectedServicesProviderConfigSharingModeV1,
   type ConnectedServicesProviderStateSharingModeV1,
   type ConnectedServicesProviderStateSharingPolicyV1,
@@ -170,8 +208,11 @@ export {
   applyAccountSettingsSavedSecretMutation,
   applyAccountSettingsVoiceCredentialSourceMutation,
   eraseAccountSettingsPluginSecretBindings,
+  promotePersonalSavedSecretReference,
   qualifyPluginAccountSecretBindingKey,
+  rekeyPersonalSavedSecret,
   readAccountSettingsConnectedAccountPurposeBindings,
+  resolveAccountSettingsPluginSecretBinding,
   resolveAccountSettingsPluginSecret,
   resolveAccountSettingsVoiceCredentialSecret,
   resolveAccountSettingsVoiceCredentialSource,
@@ -179,6 +220,8 @@ export {
   type AccountSettingsSavedSecretMutation,
   type AccountSettingsSavedSecretReference,
   type AccountSettingsSavedSecretReferenceOwner,
+  type PromotePersonalSavedSecretReferenceInput,
+  type RekeyPersonalSavedSecretInput,
   type AccountSettingsVoiceCredentialSourceMutation,
   type AccountSettingsVoiceCredentialSourceMutationResult,
   type AccountSettingsVoiceCredentialSourceResolution,
@@ -190,3 +233,63 @@ export {
   type VoiceCredentialSourceSelection,
   type VoiceCredentialSecretTarget,
 } from './savedSecretMutationOwner.js';
+
+export {
+  SHARED_SAVED_SECRET_REF_V1_PREFIX,
+  formatSharedSavedSecretRefV1,
+  parseSavedSecretRefV1,
+  type SavedSecretRefV1,
+} from './savedSecretReferenceV1.js';
+
+export {
+  SAVED_SECRET_RESOURCE_MAX_CIPHERTEXT_BASE64_LENGTH_V1,
+  SAVED_SECRET_RESOURCE_MAX_CIPHERTEXT_BYTES_V1,
+  SAVED_SECRET_RESOURCE_MAX_CONTENT_JSON_UTF8_BYTES_V1,
+  SAVED_SECRET_RESOURCE_MAX_ENCRYPTED_PAYLOAD_UTF8_BYTES_V1,
+  SavedSecretResourceContentV1Schema,
+  SavedSecretResourceStoredContentV1Schema,
+  openSavedSecretResourceStoredContentV1,
+  sealSavedSecretResourceStoredContentV1,
+  type SavedSecretResourceContentV1,
+  type SavedSecretResourceStoredContentV1,
+} from './savedSecretResourceContentV1.js';
+
+export {
+  SavedSecretCatalogEntryV1Schema,
+  SavedSecretCatalogCorruptEntryV1Schema,
+  SavedSecretCatalogResultV1Schema,
+  SavedSecretCatalogAccountSummaryV1Schema,
+  SavedSecretCatalogAccessSourceV1Schema,
+  SavedSecretCatalogAudienceV1Schema,
+  SavedSecretCatalogMaterialStatusV1Schema,
+  SavedSecretCatalogResourceV1Schema,
+  SavedSecretResourceMaterialV1Schema,
+  SavedSecretResourceMaterialsResponseV1Schema,
+  SavedSecretResourceEncryptionModeV1Schema,
+  SavedSecretResourceEnvelopeCensusRecipientV1Schema,
+  SavedSecretResourceEnvelopeCensusRequestV1Schema,
+  SavedSecretResourceEnvelopeCensusResponseV1Schema,
+  formatSavedSecretCatalogReferenceV1,
+  isSharedSavedSecretReferenceV1,
+  parseSavedSecretCatalogReferenceV1,
+  projectSavedSecretCatalogCollisionStateV1,
+  type SavedSecretCatalogEntryV1,
+  type SavedSecretCatalogCorruptEntryV1,
+  type SavedSecretCatalogResultV1,
+  type SavedSecretCatalogAccountSummaryV1,
+  type SavedSecretCatalogAccessSourceV1,
+  type SavedSecretCatalogAudienceV1,
+  type SavedSecretCatalogMaterialStatusV1,
+  type SavedSecretCatalogReferenceV1,
+  type SavedSecretCatalogCollisionV1,
+  type SavedSecretCatalogCollisionStateV1,
+  type SavedSecretCatalogResourceV1,
+  type SavedSecretResourceMaterialV1,
+  type SavedSecretResourceMaterialsResponseV1,
+  type SavedSecretResourceEncryptionModeV1,
+  type SavedSecretResourceEnvelopeCensusRecipientV1,
+  type SavedSecretResourceEnvelopeCensusRequestV1,
+  type SavedSecretResourceEnvelopeCensusResponseV1,
+} from './savedSecretCatalogV1.js';
+
+export * from './savedSecretResourceActionsV1.js';

@@ -5,10 +5,17 @@ import {
   ExecutionRunIntentSchema,
   ExecutionRunActionRequestSchema,
   ExecutionRunPublicStateSchema,
+  ExecutionRunInputTurnV1Schema,
+  ExecutionRunGetRequestSchema,
   ExecutionRunListRequestSchema,
   ExecutionRunResumeHandleSchema,
   ExecutionRunSendRequestSchema,
+  ExecutionRunAgentIntentInputV1Schema,
+  ExecutionRunResultContractV1Schema,
+  ExecutionRunCancelTurnRequestSchema,
+  ExecutionRunCancelTurnResponseSchema,
   ExecutionRunStartRequestSchema,
+  ExecutionRunStartResponseSchema,
   ExecutionRunDetachedStartRequestV1Schema,
   ExecutionRunStartFailureDetailsV1Schema,
   EXECUTION_RUN_DETACHED_START_PROMPT_FIELDS_V1,
@@ -29,8 +36,257 @@ import { PlanOutputV1Schema } from '../../messages/structured/planOutputV1.js';
 import { DelegateOutputV1Schema } from '../../messages/structured/delegateOutputV1.js';
 import { ParticipantMessageV1Schema } from '../../messages/structured/participantMessageV1.js';
 import { KNOWN_CANONICAL_TOOL_NAMES_V2 } from '../../tools/v2/names.js';
+import type { ExecutionRunAgentIntentInputV1 } from '../../index.js';
 
 describe('executionRuns protocol', () => {
+  it('publishes the Agent intent and deferred-input schemas through the package root', () => {
+    const input = {
+      input: { path: 'src/index.ts' },
+      resultContract: { kind: 'text' },
+    } satisfies ExecutionRunAgentIntentInputV1;
+
+    expect(Protocol.ExecutionRunAgentIntentInputV1Schema).toBe(ExecutionRunAgentIntentInputV1Schema);
+    expect(Protocol.ExecutionRunAgentIntentInputV1Schema.parse(input)).toEqual(input);
+    expect(Protocol.ExecutionRunInitialInputV1Schema.parse({ kind: 'deferred_session_pending' }))
+      .toEqual({ kind: 'deferred_session_pending' });
+  });
+
+  it('owns the exact per-turn text, JSON, and decision result contract', () => {
+    expect(ExecutionRunResultContractV1Schema.parse({ kind: 'text' })).toEqual({ kind: 'text' });
+    expect(ExecutionRunResultContractV1Schema.parse({
+      kind: 'json',
+      schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+    })).toMatchObject({ kind: 'json' });
+    expect(ExecutionRunResultContractV1Schema.parse({
+      kind: 'decision',
+      decisions: ['continue', 'stop'],
+    })).toEqual({ kind: 'decision', decisions: ['continue', 'stop'] });
+    expect(ExecutionRunResultContractV1Schema.safeParse({
+      kind: 'decision',
+      decisions: ['continue', 'continue'],
+    }).success).toBe(false);
+  });
+
+  it('carries exact input identity and result contract on the native send seam', () => {
+    expect(ExecutionRunSendRequestSchema.parse({
+      runId: 'run_1',
+      message: 'Continue.',
+      localInputId: 'input_2',
+      resultContract: { kind: 'text' },
+      structuredInput: {
+        v: 1,
+        mentions: [{ kind: 'happier.file', ref: 'file:src/index.ts', token: '@src/index.ts', label: 'index.ts' }],
+      },
+    })).toMatchObject({
+      localInputId: 'input_2',
+      resultContract: { kind: 'text' },
+      structuredInput: { v: 1, mentions: [{ kind: 'happier.file', ref: 'file:src/index.ts', token: '@src/index.ts', label: 'index.ts' }] },
+    });
+    expect(ExecutionRunSendRequestSchema.safeParse({
+      runId: 'run_1',
+      message: 'Continue.',
+      localInputId: ' ',
+    }).success).toBe(false);
+  });
+
+  it('projects the selected result on the exact settled input turn', () => {
+    expect(ExecutionRunInputTurnV1Schema.parse({
+      turnId: 'turn_1',
+      inputIds: ['input_1'],
+      state: 'completed',
+      result: { kind: 'json', value: { ok: true } },
+    })).toMatchObject({
+      inputIds: ['input_1'],
+      result: { kind: 'json', value: { ok: true } },
+    });
+  });
+
+  it('accepts an exact input identity for event-driven get observation', () => {
+    expect(ExecutionRunGetRequestSchema.parse({
+      runId: 'run_1',
+      includeStructured: false,
+      waitForInputId: 'input_1',
+    })).toEqual({
+      runId: 'run_1',
+      includeStructured: false,
+      waitForInputId: 'input_1',
+    });
+    expect(ExecutionRunGetRequestSchema.safeParse({
+      runId: 'run_1',
+      waitForInputId: ' ',
+    }).success).toBe(false);
+  });
+
+  it('accepts the general Agent intent with the shared optional strict result contract', () => {
+    expect(ExecutionRunStartRequestSchema.parse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Implement the change.',
+      cwd: '/workspace/repo',
+      mcpSelection: {
+        v: 1,
+        managedServersEnabled: false,
+        forceIncludeServerIds: ['repo-tools'],
+        forceExcludeServerIds: [],
+      },
+      localInputId: 'workflow-input-1',
+      resultContract: { kind: 'text' },
+      intentInput: {
+        input: { path: 'src/index.ts' },
+      },
+      structuredInput: {
+        v: 1,
+        mentions: [{ kind: 'happier.file', ref: 'file:src/index.ts', token: '@src/index.ts', label: 'index.ts' }],
+      },
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+    })).toMatchObject({
+      intent: 'agent',
+      mcpSelection: { v: 1, forceIncludeServerIds: ['repo-tools'] },
+    });
+
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Implement the change.',
+      intentInput: { resultSchema: { type: 'unsupported-schema-kind' } },
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+    }).success).toBe(false);
+
+    expect(ExecutionRunStartRequestSchema.parse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Run without Connected Accounts.',
+      connectedServices: null,
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    })).toMatchObject({ connectedServices: null });
+  });
+
+  it('admits only the explicit attached Session-Pending arm without Agent instructions', () => {
+    const deferred = {
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      initialInput: { kind: 'deferred_session_pending' },
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    } as const;
+
+    expect(ExecutionRunStartRequestSchema.parse(deferred)).toMatchObject({
+      intent: 'agent',
+      initialInput: { kind: 'deferred_session_pending' },
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+    });
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      instructions: 'must enter through Session Pending',
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      localInputId: 'workflow-input-1',
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      structuredInput: { v: 1, values: { topic: 'embedded' } },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      intentInput: { input: { topic: 'embedded' } },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      intent: 'task',
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...deferred,
+      runClass: 'bounded',
+    }).success).toBe(false);
+
+    const missingArm = { ...deferred } as Record<string, unknown>;
+    delete missingArm.initialInput;
+    expect(ExecutionRunStartRequestSchema.safeParse(missingArm).success).toBe(false);
+  });
+
+  it('carries only strict Saved Secret references on one execution-run launch', () => {
+    expect(ExecutionRunStartRequestSchema.parse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Use the selected credential.',
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          API_KEY: {
+            ref: 'happier:shared-secret:v1:resource_1',
+            revision: 3,
+          },
+        },
+      },
+    }).secretReferenceOverlay).toEqual({
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:resource_1',
+          revision: 3,
+        },
+      },
+    });
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Do not admit plaintext.',
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: { API_KEY: { value: 'plaintext-is-not-a-reference' } },
+      },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Do not admit a currentness-free shared reference.',
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: { API_KEY: { ref: 'happier:shared-secret:v1:resource_1' } },
+      },
+    }).success).toBe(false);
+  });
+  it('requires the exact retained Run occurrence and current turn for turn cancellation', () => {
+    expect(ExecutionRunCancelTurnRequestSchema.parse({
+      runId: 'run_1',
+      occurrenceId: 'occurrence_1',
+      turnId: 'turn_1',
+    })).toEqual({ runId: 'run_1', occurrenceId: 'occurrence_1', turnId: 'turn_1' });
+    expect(ExecutionRunCancelTurnRequestSchema.safeParse({ runId: 'run_1', turnId: 'turn_1' }).success).toBe(false);
+    expect(ExecutionRunCancelTurnResponseSchema.parse({
+      ok: true,
+      status: 'requested',
+      runId: 'run_1',
+      occurrenceId: 'occurrence_1',
+      turnId: 'turn_1',
+    })).toMatchObject({ ok: true, status: 'requested' });
+  });
+
   it('accepts only the strict execution-run start certainty detail', () => {
     expect(ExecutionRunStartFailureDetailsV1Schema.parse({
       executionRunStart: { v: 1, runCreation: 'noRunCreated' },
@@ -56,6 +312,22 @@ describe('executionRuns protocol', () => {
       executionRunStart: { v: 1, runCreation: 'noRunCreated' },
     }, 'outcomeUnknown')).toEqual({
       executionRunStart: { v: 1, runCreation: 'outcomeUnknown' },
+    });
+    expect(withExecutionRunStartFailureDetails({
+      updateRequired: {
+        kind: 'update_required',
+        operation: 'execution.run.start',
+        component: 'daemon',
+        reason: 'execution_run_secret_reference_overlay_update_required',
+      },
+    }, 'noRunCreated')).toEqual({
+      executionRunStart: { v: 1, runCreation: 'noRunCreated' },
+      updateRequired: {
+        kind: 'update_required',
+        operation: 'execution.run.start',
+        component: 'daemon',
+        reason: 'execution_run_secret_reference_overlay_update_required',
+      },
     });
     expect(readExecutionRunStartRunCreation({
       executionRunStart: { v: 1, runCreation: 'noRunCreated' },
@@ -94,6 +366,59 @@ describe('executionRuns protocol', () => {
       'bootstrapMode',
       'replay',
     ]);
+  });
+
+  it('carries one exact Team credential model selection for attached and detached starts', () => {
+    const base = {
+      intent: 'task',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    } as const;
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model',
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 7,
+      deliveryMode: 'brokered',
+      agentTargetKey: 'backend:codex',
+      modelId: 'gpt-5.6',
+    } as const;
+
+    expect(ExecutionRunStartRequestSchema.parse({
+      ...base,
+      instructions: 'Use the reviewed Team model.',
+      modelId: teamCredentialModel.modelId,
+      teamCredentialModel,
+    }).teamCredentialModel).toEqual(teamCredentialModel);
+    expect(ExecutionRunDetachedStartRequestV1Schema.parse({
+      ...base,
+      modelId: teamCredentialModel.modelId,
+      teamCredentialModel,
+    }).teamCredentialModel).toEqual(teamCredentialModel);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...base,
+      instructions: 'Reject a different Agent target.',
+      teamCredentialModel: { ...teamCredentialModel, agentTargetKey: 'backend:claude' },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...base,
+      instructions: 'Reject ambiguous Provider owners.',
+      teamCredentialModel,
+      modelSelection: {
+        agentTargetKey: 'backend:codex',
+        providerConnectionId: 'connection-1',
+        modelId: teamCredentialModel.modelId,
+      },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...base,
+      intent: 'voice_agent',
+      instructions: 'Voice uses its own chat and commit model binding contract.',
+      teamCredentialModel,
+    }).success).toBe(false);
   });
 
   it('accepts the remote-dev predecessor user-transcript commit wire vector', () => {
@@ -157,6 +482,22 @@ describe('executionRuns protocol', () => {
       ...request,
       launchOrigin: { kind: 'session', sessionId: 'session_initiator', secret: 'no' },
     }).success).toBe(false);
+
+    const discussionOrigin = {
+      kind: 'session_discussion',
+      sessionId: 'session_initiator',
+      discussionId: 'discussion_1',
+      messageIds: ['message_1', 'message_2'],
+      draftCorrelationId: 'draft_1',
+    } as const;
+    expect(ExecutionRunStartRequestSchema.parse({
+      ...request,
+      launchOrigin: discussionOrigin,
+    }).launchOrigin).toEqual(discussionOrigin);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...request,
+      launchOrigin: { ...discussionOrigin, authority: 'present_user' },
+    }).success).toBe(false);
   });
 
   it('admits the bounded generic task contract with strict JSON input and result schema', () => {
@@ -211,6 +552,23 @@ describe('executionRuns protocol', () => {
     expect((parsed as any).transcript).toMatchObject({ persistenceMode: 'persistent', epoch: 2 });
     expect((parsed as any).futurePublicStateFlag).toBe('state-extra');
 
+    expect(ExecutionRunPublicStateSchema.parse({
+      ...parsed,
+      launchOrigin: {
+        kind: 'session_discussion',
+        sessionId: 'session_1',
+        discussionId: 'discussion_1',
+        messageIds: ['message_1'],
+        draftCorrelationId: 'draft_1',
+      },
+    }).launchOrigin).toEqual({
+      kind: 'session_discussion',
+      sessionId: 'session_1',
+      discussionId: 'discussion_1',
+      messageIds: ['message_1'],
+      draftCorrelationId: 'draft_1',
+    });
+
     expect(() => ExecutionRunPublicStateSchema.parse({
       runId: 'run_1',
       callId: 'subagent_run_1',
@@ -220,6 +578,42 @@ describe('executionRuns protocol', () => {
       status: 'succeeded',
       startedAtMs: now,
     })).toThrow();
+  });
+
+  it('projects only privacy-bounded requested launch configuration', () => {
+    const requestedConfiguration = {
+      modelId: 'meta/muse-spark-1.3-contributor',
+      reasoningEffort: 'xhigh',
+      apiToken: 'must-not-survive',
+    };
+    const base = {
+      runId: 'run_1',
+      callId: 'subagent_run_1',
+      sidechainId: 'subagent_run_1',
+    };
+
+    expect(ExecutionRunStartResponseSchema.parse({
+      ...base,
+      requestedConfiguration,
+    }).requestedConfiguration).toEqual({
+      modelId: 'meta/muse-spark-1.3-contributor',
+      reasoningEffort: 'xhigh',
+    });
+    expect(ExecutionRunPublicStateSchema.parse({
+      ...base,
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'pi' },
+      permissionMode: 'safe-yolo',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      status: 'running',
+      startedAtMs: 1,
+      requestedConfiguration,
+    }).requestedConfiguration).toEqual({
+      modelId: 'meta/muse-spark-1.3-contributor',
+      reasoningEffort: 'xhigh',
+    });
   });
 
   it('preserves additive fields on execution run list requests', () => {
@@ -293,6 +687,27 @@ describe('executionRuns protocol', () => {
     expect((parsed as any).futureRunFlag).toBe('run-extra');
   });
 
+  it('preserves the canonical contributed-Agent target on start requests', () => {
+    const backendTarget = {
+      kind: 'agent',
+      identity: {
+        pluginId: 'acme.review-plugin',
+        localId: 'review-agent',
+      },
+    } as const;
+    const parsed = ExecutionRunStartRequestSchema.parse({
+      intent: 'review',
+      backendTarget,
+      instructions: 'Review.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    });
+
+    expect(parsed.backendTarget).toEqual(backendTarget);
+  });
+
   it('carries an exact Provider-bound model selection and rejects target or model split-brains', () => {
     const request = {
       intent: 'delegate',
@@ -323,6 +738,61 @@ describe('executionRuns protocol', () => {
     expect(ExecutionRunStartRequestSchema.safeParse({
       ...request,
       modelId: 'different-model',
+    }).success).toBe(false);
+  });
+
+  it('carries only an exact attached-Session Team binding consent witness', () => {
+    const request = {
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Run with the selected Team model.',
+      permissionMode: 'default',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+      modelId: 'team-model',
+      teamCredentialModel: {
+        kind: 'team_credential_provider_model',
+        resourceId: 'resource-1',
+        teamId: 'team-1',
+        expectedResourceRevision: 7,
+        deliveryMode: 'brokered',
+        agentTargetKey: 'backend:codex',
+        modelId: 'team-model',
+      },
+      teamCredentialSessionBindingConsent: {
+        v: 1,
+        sessionId: 'session-1',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+      },
+    } as const;
+
+    expect(ExecutionRunStartRequestSchema.parse(request).teamCredentialSessionBindingConsent)
+      .toEqual(request.teamCredentialSessionBindingConsent);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...request,
+      teamCredentialSessionBindingConsent: {
+        ...request.teamCredentialSessionBindingConsent,
+        expectedResourceRevision: 6,
+      },
+    }).success).toBe(false);
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...request,
+      teamCredentialSessionBindingConsent: {
+        ...request.teamCredentialSessionBindingConsent,
+        extra: true,
+      },
+    }).success).toBe(false);
+    const { instructions: _instructions, ...detachedRequest } = request;
+    expect(ExecutionRunDetachedStartRequestV1Schema.safeParse({
+      ...detachedRequest,
+      intent: 'task',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
     }).success).toBe(false);
   });
 
@@ -723,6 +1193,39 @@ describe('executionRuns protocol', () => {
       },
     }) as any;
     expect(parsed.resumeHandle?.kind).toBe('provider_session.v1');
+  });
+
+  it('preserves nonblank provider resume identity bytes and rejects blank-only identity', () => {
+    const opaqueProviderSessionId = '  provider\nses/AB+cd==  ';
+    const request = {
+      intent: 'review',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      instructions: 'Review.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      resumeHandle: {
+        kind: 'provider_session.v1',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        providerSessionId: opaqueProviderSessionId,
+      },
+    } as const;
+
+    const parsed = ExecutionRunStartRequestSchema.parse(request);
+    expect(parsed.resumeHandle).toMatchObject({ providerSessionId: opaqueProviderSessionId });
+
+    const strippedSibling = ExecutionRunStartRequestSchema.parse({
+      ...request,
+      resumeHandle: { ...request.resumeHandle, providerSessionId: opaqueProviderSessionId.trim() },
+    });
+    expect(strippedSibling.resumeHandle).toMatchObject({ providerSessionId: opaqueProviderSessionId.trim() });
+    expect(strippedSibling.resumeHandle).not.toEqual(parsed.resumeHandle);
+
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...request,
+      resumeHandle: { ...request.resumeHandle, providerSessionId: ' \n\t ' },
+    }).success).toBe(false);
   });
 
   it('accepts legacy vendorSessionId input on resume handles as provider session identity compatibility', () => {
@@ -1171,6 +1674,7 @@ describe('executionRuns protocol', () => {
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_invalid_action_input')).toBe('execution_run_invalid_action_input');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_stream_not_found')).toBe('execution_run_stream_not_found');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_busy')).toBe('execution_run_busy');
+    expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_send_outcome_unknown')).toBe('execution_run_send_outcome_unknown');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_failed')).toBe('execution_run_failed');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_budget_exceeded')).toBe('execution_run_budget_exceeded');
     expect(ExecutionRunTransportErrorCodeSchema.parse('execution_run_output_limit_exceeded')).toBe('execution_run_output_limit_exceeded');

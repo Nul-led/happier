@@ -1,3 +1,4 @@
+import { NonBlankOpaqueIdentifierSchema, readNonBlankOpaqueIdentifier } from '../../strings/opaqueIdentifier.js';
 import { z } from 'zod';
 
 import { PluginContributionIdentityV1Schema } from '../../plugins/contributionIdentity.js';
@@ -158,8 +159,8 @@ function normalizeReleasedLinkedExternalSessionRuntime(value: unknown): unknown 
           agentId: 'codex',
           agent: {
             backendMode: mode,
-            ...(typeof record.remoteSessionId === 'string' && record.remoteSessionId.trim()
-              ? { providerSessionId: record.remoteSessionId.trim() }
+            ...(readNonBlankOpaqueIdentifier(record.remoteSessionId)
+              ? { providerSessionId: record.remoteSessionId as string }
               : {}),
           },
         },
@@ -171,7 +172,7 @@ const LinkedExternalSessionV1Schema = z
     v: z.literal(1),
     agentId: ExternalSessionsAgentIdSchema,
     machineId: z.string().min(1),
-    remoteSessionId: z.string().min(1),
+    remoteSessionId: NonBlankOpaqueIdentifierSchema,
     source: ExternalSessionsSourceSchema,
     qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema.optional(),
     linkData: PluginAgentExternalSessionLinkDataSchema.optional(),
@@ -216,7 +217,7 @@ export type LinkedExternalSessionV1 = z.infer<typeof LinkedExternalSessionV1Sche
 export const ExternalHistoryImportV1Schema = z.object({
   v: z.literal(1),
   agentId: ExternalSessionsAgentIdSchema,
-  remoteSessionId: z.string().trim().min(1).max(2_000),
+  remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2_000),
   importedAtMs: z.number().int().min(0),
   source: ExternalSessionsSourceSchema,
   linkData: PluginAgentExternalSessionLinkDataSchema.optional(),

@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
-import { buildBackendTargetKey, isBuiltInAgentTarget, type BackendTargetRefV1 } from '../backends/targets/backendTargetRef.js';
+import {
+  BackendTargetKeySchema,
+  BackendTargetRefSchema,
+  buildBackendTargetKey,
+} from '../backends/targets/backendTargetRef.js';
+import {
+  BackendTargetKeyV2Schema,
+  BackendTargetRefV2Schema,
+  PersistedAgentTargetRefV1Schema,
+  buildBackendTargetKeyV2,
+  type BackendTargetRefV2Input,
+} from '../backends/targets/backendTargetRefV2.js';
 import type { ActionInputFieldHint, ActionSpec } from './actionSpecs.js';
 
 function setByPath(obj: Record<string, any>, path: string, value: unknown): void {
@@ -162,22 +173,45 @@ function findInstructionsField(hints: readonly ActionInputFieldHint[]): ActionIn
 function buildPrimarySelectionSeedValue(
   fieldPath: string,
   params: Readonly<{
-    defaultBackendTarget?: BackendTargetRefV1 | null;
+    defaultBackendTarget?: BackendTargetRefV2Input | null;
     defaultBackendId?: string | null;
   }>,
 ): readonly string[] {
   const path = String(fieldPath ?? '').trim();
   if (path === 'backendTargetKeys' || path.endsWith('.backendTargetKeys')) {
     if (params.defaultBackendTarget) {
-      return [buildBackendTargetKey(params.defaultBackendTarget)];
+      const agentTarget = PersistedAgentTargetRefV1Schema.safeParse(params.defaultBackendTarget);
+      if (agentTarget.success) return [buildBackendTargetKeyV2(agentTarget.data)];
+
+      const legacyTarget = BackendTargetRefSchema.safeParse(params.defaultBackendTarget);
+      if (legacyTarget.success) return [buildBackendTargetKey(legacyTarget.data)];
+
+      const backendTarget = BackendTargetRefV2Schema.safeParse(params.defaultBackendTarget);
+      if (backendTarget.success) return [buildBackendTargetKeyV2(backendTarget.data)];
+
+      if (typeof params.defaultBackendTarget === 'string') {
+        const v2Key = BackendTargetKeyV2Schema.safeParse(params.defaultBackendTarget);
+        if (v2Key.success) return [v2Key.data];
+        const legacyKey = BackendTargetKeySchema.safeParse(params.defaultBackendTarget);
+        if (legacyKey.success) return [legacyKey.data];
+      }
     }
     const backendId = String(params.defaultBackendId ?? '').trim();
     return backendId ? [`agent:${backendId}`] : [];
   }
   const backendId = String(params.defaultBackendId ?? '').trim();
   if (backendId) return [backendId];
-  if (params.defaultBackendTarget && isBuiltInAgentTarget(params.defaultBackendTarget)) {
-    return [params.defaultBackendTarget.agentId];
+  if (params.defaultBackendTarget) {
+    const legacyTarget = BackendTargetRefSchema.safeParse(params.defaultBackendTarget);
+    if (legacyTarget.success && legacyTarget.data.kind === 'builtInAgent') {
+      return [legacyTarget.data.agentId];
+    }
+    const backendTarget = BackendTargetRefV2Schema.safeParse(params.defaultBackendTarget);
+    if (
+      backendTarget.success
+      && backendTarget.data.sourceKind !== 'configured'
+      && !backendTarget.data.configuredBackendId
+    ) return [backendTarget.data.backendId];
   }
   return [];
 }
@@ -185,7 +219,7 @@ function buildPrimarySelectionSeedValue(
 export function buildActionDraftSeedInput(
   spec: ActionSpec,
   ctx: Readonly<{
-    defaultBackendTarget?: BackendTargetRefV1 | null;
+    defaultBackendTarget?: BackendTargetRefV2Input | null;
     defaultBackendId?: string | null;
     instructions?: string | null;
   }>,

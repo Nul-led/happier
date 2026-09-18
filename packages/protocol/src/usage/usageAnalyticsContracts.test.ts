@@ -86,6 +86,20 @@ describe('usageAnalyticsContracts', () => {
     expect(parsed.cost.invoiceUsd).toBe(0.09);
   });
 
+  it('does not let an Account usage-ingest caller assert Execution Run attribution', () => {
+    expect(() => UsageEventIngestRequestSchema.parse({
+      sessionId: 'session-1',
+      executionRunId: 'caller-forged-run',
+      observedAt: 1_714_000_000_000,
+      agentId: 'codex',
+      source: 'codex_sdk',
+      scope: 'turn_delta',
+      isCumulative: false,
+      tokens: { input: 1, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 1 },
+      cost: { reportedUsd: 0, estimatedUsd: 0, currency: 'USD' },
+    })).toThrow();
+  });
+
   it('parses additive usage analytics query requests and responses', () => {
     const request = UsageAnalyticsQueryRequestSchema.parse({
       dateRange: {

@@ -13,6 +13,8 @@ import {
   QualifiedConnectedAccountGroupV4Schema,
   QualifiedConnectedAccountProfileV4Schema,
 } from '../connect/qualifiedConnectedAccountsV4.js';
+import { TeamIdSchema } from '../teams/membership.js';
+import { TEAM_NAME_MAX_LENGTH_V1 } from '../teams/team.js';
 
 const ConnectedServiceV2ProfileSchema = z.object({
   profileId: z.string().min(1),
@@ -56,6 +58,48 @@ export const LinkedProviderSchema = z.object({
 
 export type LinkedProvider = z.infer<typeof LinkedProviderSchema>;
 
+const LinkedIdentityTeamPresentationV1Schema = z.object({
+  id: TeamIdSchema,
+  name: z.string().trim().min(1).max(TEAM_NAME_MAX_LENGTH_V1),
+}).strict();
+
+export const LinkedIdentityManagementReasonV1Schema = z.enum([
+  'required_by_team',
+  'last_login_method',
+  'management_unavailable',
+]);
+export type LinkedIdentityManagementReasonV1 = z.infer<typeof LinkedIdentityManagementReasonV1Schema>;
+
+export const LinkedIdentityManagementV1Schema = z.object({
+  v: z.literal(1),
+  providerId: z.string().trim().min(1).max(512),
+  descriptor: z.object({
+    displayName: z.string().trim().min(1).max(256).nullable(),
+    iconHint: z.string().trim().min(1).max(256).nullable(),
+    source: z.enum(['built_in', 'deployment', 'managed', 'unavailable']),
+  }).strict(),
+  managedBy: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('home') }).strict(),
+    z.object({ kind: z.literal('team'), team: LinkedIdentityTeamPresentationV1Schema }).strict(),
+  ]).nullable(),
+  requiredByTeams: z.array(LinkedIdentityTeamPresentationV1Schema),
+  canDisconnect: z.boolean(),
+  disconnectReason: LinkedIdentityManagementReasonV1Schema.nullable(),
+  canPublishProfile: z.boolean(),
+  publishProfileReason: LinkedIdentityManagementReasonV1Schema.nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.canDisconnect !== (value.disconnectReason === null)) {
+    context.addIssue({ code: 'custom', message: 'Disconnect permission and reason must agree' });
+  }
+  if (value.canPublishProfile !== (value.publishProfileReason === null)) {
+    context.addIssue({ code: 'custom', message: 'Profile publication permission and reason must agree' });
+  }
+  if (value.descriptor.source !== 'managed' && value.managedBy !== null) {
+    context.addIssue({ code: 'custom', message: 'Only managed providers can identify a management owner' });
+  }
+});
+export type LinkedIdentityManagementV1 = z.infer<typeof LinkedIdentityManagementV1Schema>;
+
 export const AccountProfileSchema = z.object({
   id: z.string(),
   timestamp: z.number().int().min(0).optional().default(0),
@@ -64,6 +108,7 @@ export const AccountProfileSchema = z.object({
   username: z.string().nullable().optional().default(null),
   avatar: ImageRefSchema.nullable().optional().default(null),
   linkedProviders: z.array(LinkedProviderSchema).default([]),
+  linkedIdentityManagementV1: z.array(LinkedIdentityManagementV1Schema).optional(),
   connectedServices: z.array(ConnectedServiceCloudVendorKeySchema).default([]),
   connectedServicesV2: z.array(ConnectedServiceV2ServiceSchema).default([]),
   connectedServiceCredentialRevisionsV1: z.array(ConnectedServiceCredentialRevisionProjectionV1Schema).default([]),

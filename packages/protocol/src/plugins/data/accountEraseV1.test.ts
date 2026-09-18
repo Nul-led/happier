@@ -22,6 +22,12 @@ describe('PluginAccountDataEraseActionV1', () => {
   it('requires truthful per-arm outcomes and rejects a completed overall result with unfinished work', () => {
     expect(PluginAccountDataEraseActionOutputV1Schema.safeParse({
       status: 'partial',
+      settings: { status: 'pending', reason: 'outcome-unknown' },
+      data: { status: 'pending', reason: 'outcome-unknown' },
+    }).success).toBe(true);
+
+    expect(PluginAccountDataEraseActionOutputV1Schema.safeParse({
+      status: 'partial',
       settings: { status: 'completed', changed: true },
       data: { status: 'pending', reason: 'unavailable' },
     }).success).toBe(true);

@@ -4,7 +4,7 @@ import { CapabilitiesSchema } from './capabilitiesSchema.js';
 
 describe('device capabilities payload', () => {
   it('defaults simulator preview capabilities to disabled and unavailable', async () => {
-    const mod = await import('./deviceCapabilities.js').catch(() => null);
+    const mod = await import('./deviceCapabilities.js');
 
     const result = mod?.DeviceCapabilitiesSchema.safeParse({});
 

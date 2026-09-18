@@ -15,7 +15,13 @@ import {
   ExecutionRunTurnStreamStartResponseSchema,
 } from '../execution/runs/index.js';
 import { actionSpecToActionDefinitionV1, serializeActionSpec } from './actionCatalog.js';
-import { ActionInputHintsSchema, ActionSpecSchema, PUBLIC_ACTION_IDS, PUBLIC_ACTION_INPUT_SCHEMAS, PUBLIC_ACTION_OUTPUT_SCHEMAS, PublicActionIdSchema, SESSION_TRANSCRIPT_GET_MAX_LIMIT, ActionSurfaceSchema, PLUGIN_ACTION_INPUT_SCHEMAS, PLUGIN_ACTION_OUTPUT_SCHEMAS, PLUGIN_INVOCABLE_ACTION_IDS, PluginInvocableActionIdSchema, SessionTranscriptGetExternalShareableInputV1Schema, getActionContextualDefaults, getActionSpec, isActionSpecSurfacedOn, isInternalActionId, isPluginProvenanceOnlyActionId, isPluginSurfaceExcludedActionId, isVoicePromptHotPathSpec, isVoiceSdkSafeActionSpec, listActionSpecs, listActionSpecsForSurface, listVoicePromptHotPathSpecs, projectSessionSpawnNewApiRequest, resolveRuntimeActionHostEffectClass } from './actionSpecs.js';
+import { ActionInputHintsSchema, ActionSpecSchema, PUBLIC_ACTION_IDS, PUBLIC_ACTION_INPUT_SCHEMAS, PUBLIC_ACTION_OUTPUT_SCHEMAS, PublicActionIdSchema, SIGNED_ROOT_ACTION_IDS, SignedRootActionIdSchema, SESSION_TRANSCRIPT_GET_MAX_LIMIT, ActionSurfaceSchema, PLUGIN_ACTION_INPUT_SCHEMAS, PLUGIN_ACTION_OUTPUT_SCHEMAS, PLUGIN_INVOCABLE_ACTION_IDS, PluginInvocableActionIdSchema, SessionTranscriptGetExternalShareableInputV1Schema, getActionContextualDefaults, getActionSpec, isActionSpecSurfacedOn, isHumanSecretApiExcludedActionId, isInteractiveDiscussionApiExcludedActionId, isInternalActionId, isPluginProvenanceOnlyActionId, isPluginSurfaceExcludedActionId, isVoicePromptHotPathSpec, isVoiceSdkSafeActionSpec, listActionSpecs, listActionSpecsForSurface, listVoicePromptHotPathSpecs, projectSessionSpawnNewApiRequest, resolveRuntimeActionHostEffectClass } from './actionSpecs.js';
+import { HOME_GOVERNANCE_ACTION_IDS_V1 } from '../home/governance/actionsV1.js';
+import { TEAM_ACTION_IDS_V1 } from '../teams/actionsV1.js';
+import { SHARED_SAVED_SECRET_ACTION_IDS_V1 } from '../account/settings/savedSecretResourceActionsV1.js';
+import { MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1 } from '../identity/providers.js';
+import { WORKFLOW_ACTION_IDS_V1 } from '../workflows/actionsV1.js';
+import { MANAGED_GITHUB_APP_ACTION_IDS_V1 } from '../identity/githubApps.js';
 import { resolveRuntimeActionSurfaces } from './surfaces.js';
 import type { ActionSpec } from './actionSpecs.js';
 import {
@@ -141,17 +147,55 @@ const RUNTIME_ACTION_IDS = [
   'devices.simulator.sideband.request',
 ] as const;
 
+const TEAM_NON_REFRESHABLE_DANGER_ACTION_ID_SET = new Set<ActionId>([
+  'teams.credentials.test',
+  'teams.credentials.externalKeys.create',
+  'teams.invitations.create',
+  'teams.invitations.reissue',
+  'teams.identity.connections.test.start',
+  'teams.identity.connections.test.consume',
+  'teams.identity.workos.adminPortalLink.create',
+]);
+const TEAM_DEFERRED_APPROVAL_REPLAY_SAFE_ACTION_ID_SET = new Set(
+  TEAM_ACTION_IDS_V1.filter(
+    (id) => getActionSpec(id).safety === 'danger'
+      && !TEAM_NON_REFRESHABLE_DANGER_ACTION_ID_SET.has(id),
+  ),
+);
+const WORKFLOW_READ_ACTION_ID_SET = new Set([
+  'workflow.validate',
+  'workflow.definition.list',
+  'workflow.definition.get',
+  'workflow.run.list',
+  'workflow.run.get',
+  'workflow.run.wait',
+  'workflow.run.invocations.list',
+  'workflow.run.invocations.get',
+] as const);
+
 const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
+  'secrets.shared.list',
+  'session.follow.get',
+  'session.follow.preferences.get',
   'action.spec.search',
   'action.spec.get',
   'action.options.resolve',
   'action.invoke',
   'account.plugins.data.erase',
   'account.sessions.signOutEverywhere',
+  'account.security.get',
+  'account.password.enroll',
+  'account.password.change',
+  'account.password.remove',
+  'account.email.change.request',
   'account.apiTokens.create',
   'account.apiTokens.list',
   'account.apiTokens.revoke',
   'account.apiTokens.revokeAll',
+  'machines.pools.list',
+  'machines.pools.get',
+  'machines.pools.resolve',
+  'sessions.runner.activation.get',
   'sessions.subagents.list',
   'sessions.subagents.get',
   'sessions.subagents.watch',
@@ -179,12 +223,17 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'session.usageLimit.consumeResetCredit',
   'session.terminalComposer.clear',
   'session.pendingInput.interruptAndRun',
+  'session.presentation.apply',
   'session.vendor_plugin_catalog.list',
   'session.skill_catalog.list',
   'session.history.get',
   'session.transcript.get',
   'session.events.get',
   'session.wait.idle',
+  'session.board.get',
+  'session.discussion.list',
+  'session.discussion.get',
+  'session.discussion.read',
   'session.list',
   'session.activity.get',
   'session.messages.recent.get',
@@ -231,12 +280,33 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'scm.pullRequest.openCompose',
   'scm.hostingRepository.describePublishTargets',
   'scm.diffSummary.generate',
+  ...HOME_GOVERNANCE_ACTION_IDS_V1,
+  ...TEAM_ACTION_IDS_V1.filter(
+    (id) => !TEAM_DEFERRED_APPROVAL_REPLAY_SAFE_ACTION_ID_SET.has(id) && id !== 'teams.update',
+  ),
+  ...MANAGED_GITHUB_APP_ACTION_IDS_V1,
+  ...MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1,
+  ...WORKFLOW_ACTION_IDS_V1.filter((id) => WORKFLOW_READ_ACTION_ID_SET.has(id)),
   ...RUNTIME_ACTION_IDS,
-] as const;
+];
+
+const RESULT_REQUIRED_DEFERRED_ACTION_IDS = [
+  ...TEAM_DEFERRED_APPROVAL_REPLAY_SAFE_ACTION_ID_SET,
+  'teams.update',
+  'workspace.sync.conflict.resolve',
+  ...SHARED_SAVED_SECRET_ACTION_IDS_V1.filter((id) => id !== 'secrets.shared.list'),
+];
 
 const RESULT_NONE_DEFERRED_ACTION_IDS = [
+  // Session-access reads, now that their declared family is projected into the
+  // canonical id list. Their classification is the Session-access owner's.
+  'session.access.grants.list',
+  'session.public_link.get',
+  'session.responsibility.candidates.list',
+  'session.follow.sources.list',
   'session.stop',
   'session.title.set',
+  'session.read_state.set',
   'session.permission_mode.set',
   'session.model.set',
   'session.archive',
@@ -296,6 +366,25 @@ const RESULT_NONE_DEFERRED_ACTION_IDS = [
 ] as const;
 
 const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
+  // Session-access mutations, mirrored from their owner's rows now that the
+  // declared family is projected into the canonical id list.
+  'session.access.grant.set',
+  'session.access.grant.remove',
+  'session.access.context.set',
+  'session.responsibility.set',
+  'session.public_link.create',
+  'session.public_link.remove',
+  'machines.pools.create',
+  'machines.pools.update',
+  'machines.pools.delete',
+  ...WORKFLOW_ACTION_IDS_V1.filter((id) => !WORKFLOW_READ_ACTION_ID_SET.has(id)),
+  'sessions.runner.activation.create',
+  'sessions.runner.activation.cancel',
+  'session.follow.set',
+  'session.follow.remove',
+  'session.follow.preferences.set',
+  'session.follow.sources.set',
+  'session.follow.sources.remove',
   'review.start',
   'subagents.plan.start',
   'subagents.delegate.start',
@@ -325,6 +414,15 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.handoff.abort',
   'session.spawn_new',
   'session.message.send',
+  'session.board.item.upsert',
+  'session.board.item.remove',
+  'session.board.layout.update',
+  'session.discussion.create',
+  'session.discussion.post',
+  'session.discussion.rename',
+  'session.discussion.archive',
+  'session.discussion.restore',
+  'session.discussion.read_state.set',
   'session.permission.respond',
   'session.user_action.answer',
   'session.mode.set',
@@ -336,6 +434,7 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'daemon.filesystem.writeFile',
   'bugreport.uploadArtifact',
   'transcript.import',
+  'sessions.external.candidate.delete',
   'sessions.external.link.ensure',
   'sessions.external.follow',
   'sessions.external.unfollow',
@@ -383,6 +482,12 @@ function resolveExpectedApprovalFlow(approval: { flow?: 'blocking' | 'deferred';
 }
 
 describe('Action Spec Registry', () => {
+  it('keeps the receipt-bearing workspace conflict RPC private to the daemon Action adapter', () => {
+    const spec = getActionSpec('workspace.sync.conflict.resolve');
+    expect(spec.surfaces.rpc).toBe(false);
+    expect(spec.bindings?.rpcMethod).toBeUndefined();
+    expect(spec.surfaceBindings?.rpc).toBeUndefined();
+  });
   it('registers plugin dev-loop actions on agent, cli, and mcp surfaces', () => {
     const expectations = [
       ['plugins.scaffold', 'danger'],
@@ -412,7 +517,12 @@ describe('Action Spec Registry', () => {
     }
 
     expect(expectations.map(([actionId]) => actionId)).toEqual(PLUGIN_DEV_LOOP_ACTION_IDS_V1);
-    expect(PUBLIC_ACTION_IDS).toEqual(expect.arrayContaining(expectations.map(([actionId]) => actionId)));
+    expect(SIGNED_ROOT_ACTION_IDS).toEqual(expect.arrayContaining(expectations.map(([actionId]) => actionId)));
+    expect(PUBLIC_ACTION_IDS).toEqual(expect.arrayContaining(
+      expectations
+        .map(([actionId]) => actionId)
+        .filter((actionId) => getActionSpec(actionId).requiredAuthority === 'account_automation'),
+    ));
     expect(PUBLIC_ACTION_IDS).not.toContain('plugins.dev');
   });
 
@@ -495,7 +605,7 @@ describe('Action Spec Registry', () => {
     }
   });
 
-  it('keeps package trust approval public but present-user-gated', () => {
+  it('keeps package trust approval on trusted interactive surfaces but off PAT', () => {
     for (const retiredActionId of ['plugins.call', 'plugins.trust']) {
       expect(ActionIdSchema.safeParse(retiredActionId).success).toBe(false);
       expect(() => getActionSpec(retiredActionId as ActionId)).toThrow();
@@ -505,7 +615,9 @@ describe('Action Spec Registry', () => {
     expect(install.approval.result).toBe('optional');
     expect(resolveExpectedApprovalFlow(install.approval)).toBe('deferred');
     expect(install.surfaces.rpc).toBe(false);
-    expect(install.surfaces.api).toBe(true);
+    expect(install.surfaces.api).toBe(false);
+    expect(SignedRootActionIdSchema.safeParse(install.id).success).toBe(true);
+    expect(PublicActionIdSchema.safeParse(install.id).success).toBe(false);
     expect(install.surfaces.plugin).toBe(true);
     expect(install.requiredAuthority).toBe('present_user');
 
@@ -940,7 +1052,10 @@ describe('Action Spec Registry', () => {
       expect(typeof spec.surfaces.api).toBe('boolean');
       expect(spec.surfaces.api, spec.id).toBe(
         !isInternalActionId(spec.id)
-          && !isPluginProvenanceOnlyActionId(spec.id),
+          && !isPluginProvenanceOnlyActionId(spec.id)
+          && !isHumanSecretApiExcludedActionId(spec.id)
+          && !isInteractiveDiscussionApiExcludedActionId(spec.id)
+          && spec.requiredAuthority === 'account_automation',
       );
       expect(Object.prototype.hasOwnProperty.call(spec.surfaces, 'plugin')).toBe(true);
       expect(typeof spec.surfaces.plugin).toBe('boolean');
@@ -954,15 +1069,20 @@ describe('Action Spec Registry', () => {
       expect(Object.hasOwn(PLUGIN_ACTION_INPUT_SCHEMAS, spec.id), spec.id).toBe(spec.surfaces.plugin);
       expect(Object.hasOwn(PLUGIN_ACTION_OUTPUT_SCHEMAS, spec.id), spec.id).toBe(spec.surfaces.plugin);
 
-      if (
-        spec.requiredAuthority === 'present_user'
-        && !isInternalActionId(spec.id)
-        && !isPluginProvenanceOnlyActionId(spec.id)
-        && !isPluginSurfaceExcludedActionId(spec.id)
-      ) {
-        expect(spec.surfaces.api, spec.id).toBe(true);
-        expect(spec.surfaces.plugin, spec.id).toBe(true);
-      }
+      expect(SignedRootActionIdSchema.safeParse(spec.id).success, spec.id).toBe(
+        !isInternalActionId(spec.id)
+          && !isPluginProvenanceOnlyActionId(spec.id)
+          && !isHumanSecretApiExcludedActionId(spec.id)
+          && !isInteractiveDiscussionApiExcludedActionId(spec.id),
+      );
+    }
+
+    expect(SIGNED_ROOT_ACTION_IDS).toContain('approval.request.decide');
+    expect(SIGNED_ROOT_ACTION_IDS).toContain('plugins.install');
+    expect(PUBLIC_ACTION_IDS).not.toContain('approval.request.decide');
+    expect(PUBLIC_ACTION_IDS).not.toContain('plugins.install');
+    for (const actionId of PUBLIC_ACTION_IDS) {
+      expect(getActionSpec(actionId).requiredAuthority, actionId).toBe('account_automation');
     }
 
     for (const [actionId, requiredAuthority] of [
@@ -972,8 +1092,8 @@ describe('Action Spec Registry', () => {
       ['account.apiTokens.revokeAll', 'present_user'],
     ] as const) {
       const spec = getActionSpec(actionId);
-      expect(spec.surfaces.api).toBe(true);
-      expect(spec.surfaces.plugin).toBe(true);
+      expect(spec.surfaces.api).toBe(false);
+      expect(spec.surfaces.plugin).toBe(false);
       expect(spec.requiredAuthority).toBe(requiredAuthority);
     }
 
@@ -1005,6 +1125,7 @@ describe('Action Spec Registry', () => {
         .map((spec) => spec.id)
         .sort(),
     ).toEqual([
+      'sessions.external.candidate.delete',
       'sessions.external.candidates.list',
       'sessions.external.follow',
       'sessions.external.link.ensure',
@@ -1054,6 +1175,16 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('session.user_action.answer').surfaces.plugin).toBe(true);
   });
 
+  it('keeps private Discussion read position interactive without publishing it to PAT or public SDK callers', () => {
+    const spec = getActionSpec('session.discussion.read_state.set');
+    expect(spec.surfaces.ui).toBe(true);
+    expect(spec.surfaces.cli).toBe(true);
+    expect(spec.requiredAuthority).toBe('present_user');
+    expect(spec.surfaces.api).toBe(false);
+    expect(PUBLIC_ACTION_IDS).not.toContain('session.discussion.read_state.set');
+    expect(PublicActionIdSchema.safeParse('session.discussion.read_state.set').success).toBe(false);
+  });
+
   it('gives remote permission mediation an Account-automation minimum so a host-stamped plugin caller can reach it', () => {
     // PERM-03/PERM-10: the mediator arm is plugin-only provenance, so a
     // present-user requirement here would make the whole vertical unreachable.
@@ -1079,7 +1210,7 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('session.permission.remote.grants.revoke').surfaces.api).toBe(true);
   });
 
-  it('keeps permission approval public for present users but excludes trusted-plugin publication', () => {
+  it('keeps permission approval on the signed interactive root but excludes PAT and trusted-plugin publication', () => {
     const permission = getActionSpec('session.permission.respond');
     const userAction = getActionSpec('session.user_action.answer');
     expect(permission.requiredAuthority).toBe('present_user');
@@ -1094,11 +1225,13 @@ describe('Action Spec Registry', () => {
       agent: false,
       mcp: false,
       voice: false,
-      api: true,
+      api: false,
       plugin: false,
     });
-    expect(PublicActionIdSchema.safeParse('session.permission.respond').success).toBe(true);
-    expect(PUBLIC_ACTION_IDS).toContain('session.permission.respond');
+    expect(SignedRootActionIdSchema.safeParse('session.permission.respond').success).toBe(true);
+    expect(SIGNED_ROOT_ACTION_IDS).toContain('session.permission.respond');
+    expect(PublicActionIdSchema.safeParse('session.permission.respond').success).toBe(false);
+    expect(PUBLIC_ACTION_IDS).not.toContain('session.permission.respond');
     expect(PluginInvocableActionIdSchema.safeParse('session.permission.respond').success).toBe(false);
     expect(PLUGIN_INVOCABLE_ACTION_IDS).not.toContain('session.permission.respond');
     expect(PLUGIN_ACTION_INPUT_SCHEMAS).not.toHaveProperty('session.permission.respond');
@@ -1318,6 +1451,105 @@ describe('Action Spec Registry', () => {
     expect(nonSafePluginActions.filter(
       (spec) => spec.pluginCallerPolicy === undefined,
     )).toHaveLength(0);
+  });
+
+  it('separates closed public targeted text from trusted plugin input', () => {
+    const input = { sessionId: 's1', message: 'Continue', recipient: { kind: 'execution_run', runId: 'run-1' } };
+    expect(getActionSpec('session.message.send').inputHints?.fields).toContainEqual(
+      expect.objectContaining({ path: 'recipient', widget: 'json' }),
+    );
+    // The same `wait` flag serves the main send and a targeted run send, so its
+    // hint must never claim parent-Session idle semantics (Lane 05 L05-A19).
+    expect(getActionSpec('session.message.send').inputHints?.fields).toContainEqual(
+      expect.objectContaining({ path: 'wait', title: 'Wait for message completion (optional)' }),
+    );
+    const publicInput = PUBLIC_ACTION_INPUT_SCHEMAS['session.message.send'];
+    expect(publicInput.parse(input)).toEqual(input);
+    for (const extra of [
+      { source: { sourceRef: 'private-source' } },
+      { attachments: [] },
+      { idempotencyKey: 'plugin-owned-identity' },
+      { authority: 'present_user' },
+      { messageMeta: {} },
+    ]) expect(publicInput.safeParse({ ...input, ...extra }).success).toBe(false);
+    expect(publicInput.safeParse({ ...input, recipient: { ...input.recipient, label: 'Display only' } }).success).toBe(false);
+    expect(getActionSpec('session.message.send').inputSchema.safeParse({ ...input, unknown: true }).success).toBe(false);
+    const pluginInput = PLUGIN_ACTION_INPUT_SCHEMAS['session.message.send'];
+    expect(pluginInput.parse({ ...input, idempotencyKey: 'input-1' })).toEqual({ ...input, idempotencyKey: 'input-1' });
+    const launch = { sessionId: 's1', kind: 'sessionSubagentLaunch', launch: { kind: 'agent_team_create', teamId: 'reviewers' }, idempotencyKey: 'launch-1' };
+    expect(pluginInput.safeParse(launch).success).toBe(true);
+    expect(pluginInput.safeParse({ ...launch, recipient: input.recipient }).success).toBe(false);
+    expect(publicInput.safeParse(launch).success).toBe(false);
+
+    const publicOutput = PUBLIC_ACTION_OUTPUT_SCHEMAS['session.message.send'];
+    expect(getActionSpec('session.message.send').outputSchema).toBe(
+      protocol.SessionMessageSendResultV1Schema,
+    );
+    expect(publicOutput.parse({ status: 'accepted', localId: 'caller-local-id' })).toEqual({
+      status: 'accepted',
+      localId: 'caller-local-id',
+    });
+    expect(publicOutput.parse({
+      status: 'failed',
+      localId: 'caller-local-id',
+      code: 'session_input_turn_failed',
+    })).toEqual({
+      status: 'failed',
+      localId: 'caller-local-id',
+      code: 'session_input_turn_failed',
+    });
+    expect(publicOutput.parse({
+      status: 'cancelled',
+      localId: 'caller-local-id',
+      code: 'session_input_turn_cancelled',
+    })).toEqual({
+      status: 'cancelled',
+      localId: 'caller-local-id',
+      code: 'session_input_turn_cancelled',
+    });
+    expect(publicOutput.safeParse({
+      status: 'accepted',
+      localId: 'caller-local-id',
+      executorDiagnostic: 'must-not-cross-the-public-boundary',
+    }).success).toBe(false);
+  });
+
+  it('keeps public transcript and wait inputs closed and their outputs exact', () => {
+    expect(PUBLIC_ACTION_INPUT_SCHEMAS['session.transcript.get'].safeParse({
+      sessionId: 'session-1',
+      limit: 20,
+      includeTools: true,
+    }).success).toBe(true);
+    expect(PUBLIC_ACTION_INPUT_SCHEMAS['session.transcript.get'].safeParse({
+      sessionId: 'session-1',
+      projection: 'externalShareableV1',
+    }).success).toBe(false);
+    expect(PUBLIC_ACTION_INPUT_SCHEMAS['session.transcript.get'].safeParse({
+      sessionId: 'session-1',
+      unknown: true,
+    }).success).toBe(false);
+
+    for (const actionId of ['session.wait.idle', 'execution.run.wait'] as const) {
+      const valid = actionId === 'session.wait.idle'
+        ? { sessionId: 'session-1', timeoutSeconds: 30 }
+        : { sessionId: 'session-1', runId: 'run-1', timeoutSeconds: 30 };
+      expect(PUBLIC_ACTION_INPUT_SCHEMAS[actionId].safeParse(valid).success).toBe(true);
+      expect(PUBLIC_ACTION_INPUT_SCHEMAS[actionId].safeParse({ ...valid, unknown: true }).success).toBe(false);
+    }
+
+    expect(PUBLIC_ACTION_OUTPUT_SCHEMAS['session.wait.idle'].safeParse({
+      ok: true,
+      sessionId: 'session-1',
+      idle: true,
+      observedAt: 1,
+    }).success).toBe(true);
+    expect(PUBLIC_ACTION_OUTPUT_SCHEMAS['session.wait.idle'].safeParse({
+      ok: true,
+      sessionId: 'session-1',
+      idle: true,
+      observedAt: 1,
+      unknown: true,
+    }).success).toBe(false);
   });
 
   it('keeps Plugin Session input and transcript access at their canonical closed schemas', () => {
@@ -1714,6 +1946,7 @@ describe('Action Spec Registry', () => {
   it('classifies action approval result and flow contracts', () => {
     const groups = {
       requiredBlocking: [] as string[],
+      requiredDeferred: [] as string[],
       noneDeferred: [] as string[],
       optionalDeferred: [] as string[],
     };
@@ -1722,15 +1955,18 @@ describe('Action Spec Registry', () => {
       const approval = (spec as any).approval as { flow?: 'blocking' | 'deferred'; result: 'required' | 'optional' | 'none' };
       const flow = resolveExpectedApprovalFlow(approval);
       if (spec.approval.result === 'required' && flow === 'blocking') groups.requiredBlocking.push(spec.id);
+      if (spec.approval.result === 'required' && flow === 'deferred') groups.requiredDeferred.push(spec.id);
       if (spec.approval.result === 'none' && flow === 'deferred') groups.noneDeferred.push(spec.id);
       if (spec.approval.result === 'optional' && flow === 'deferred') groups.optionalDeferred.push(spec.id);
     }
 
     expect(sorted(groups.requiredBlocking)).toEqual(sorted(RESULT_REQUIRED_BLOCKING_ACTION_IDS));
+    expect(sorted(groups.requiredDeferred)).toEqual(sorted(RESULT_REQUIRED_DEFERRED_ACTION_IDS));
     expect(sorted(groups.noneDeferred)).toEqual(sorted(RESULT_NONE_DEFERRED_ACTION_IDS));
     expect(sorted(groups.optionalDeferred)).toEqual(sorted(RESULT_OPTIONAL_DEFERRED_ACTION_IDS));
     expect(new Set([
       ...groups.requiredBlocking,
+      ...groups.requiredDeferred,
       ...groups.noneDeferred,
       ...groups.optionalDeferred,
     ]).size).toBe(listActionSpecs().length);
@@ -1932,7 +2168,6 @@ describe('Action Spec Registry', () => {
       'execution.run.start',
       'execution.run.list',
       'execution.run.get',
-      'execution.run.send',
       'execution.run.stop',
       'execution.run.action',
       'execution.run.wait',
@@ -1989,7 +2224,6 @@ describe('Action Spec Registry', () => {
     const voiceOperations = [
       ['execution.run.start', 'startExecutionRun'],
       ['execution.run.get', 'getExecutionRun'],
-      ['execution.run.send', 'sendExecutionRunMessage'],
       ['execution.run.stop', 'stopExecutionRun'],
       ['execution.run.list', 'listExecutionRuns'],
     ] as const;
@@ -2000,6 +2234,8 @@ describe('Action Spec Registry', () => {
       expect(spec.bindings?.voiceClientToolName).toBe(voiceClientToolName);
     }
 
+    expect(getActionSpec('execution.run.send').surfaces.voice).toBe(false);
+    expect(getActionSpec('execution.run.send').bindings?.voiceClientToolName).toBeUndefined();
     expect(getActionSpec('execution.run.wait').surfaces).toMatchObject({ voice: false, plugin: true, api: true });
   });
 
@@ -2011,18 +2247,62 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('action.spec.search').surfaces.mcp).toBe(true);
   });
 
-  it('exposes only the MCP-capable session targeting Action outside the voice client', () => {
+  it('retains the released tracked-target MCP and CLI compatibility surfaces', () => {
     const primaryTarget = getActionSpec('session.target.primary.set');
     const trackedTarget = getActionSpec('session.target.tracked.set');
 
     expect(primaryTarget.surfaces).toMatchObject({ mcp: true, cli: false });
-    expect(trackedTarget.surfaces).toMatchObject({ mcp: false, cli: false });
-    expect(trackedTarget.bindings?.mcpToolName).toBeUndefined();
+    expect(trackedTarget.surfaces).toMatchObject({ mcp: true, cli: true });
+    expect(trackedTarget.bindings?.mcpToolName).toBe('session_target_tracked_set');
     expect(getActionSpec('session.list').surfaces.mcp).toBe(true);
     expect(getActionSpec('session.activity.get').surfaces.mcp).toBe(true);
     expect(getActionSpec('session.transcript.get' as ActionId).bindings?.mcpToolName).toBe('session_transcript_get');
     expect(getActionSpec('session.events.get' as ActionId).bindings?.mcpToolName).toBe('session_events_get');
     expect(getActionSpec('session.messages.recent.get').surfaces.mcp).toBe(true);
+  });
+
+  it('accepts current qualified targets and the released bare-id input', () => {
+    const primaryTarget = getActionSpec('session.target.primary.set');
+    const trackedTarget = getActionSpec('session.target.tracked.set');
+
+    expect(primaryTarget.inputSchema.parse({ serverId: 'home-a', sessionId: 'same' })).toEqual({
+      serverId: 'home-a',
+      sessionId: 'same',
+    });
+    expect(primaryTarget.inputSchema.parse({ sessionId: null })).toEqual({ sessionId: null });
+    expect(primaryTarget.inputSchema.safeParse({ sessionId: 'same' }).success).toBe(false);
+    expect(primaryTarget.inputSchema.safeParse({ sessionTitle: 'Same' }).success).toBe(false);
+    expect(primaryTarget.inputSchema.safeParse({ serverId: 'home-a', sessionId: 'same', extra: true }).success).toBe(false);
+
+    expect(trackedTarget.inputSchema.parse({
+      sessionAddresses: [
+        { serverId: 'home-a', sessionId: 'same' },
+        { serverId: 'home-b', sessionId: 'same' },
+      ],
+    })).toEqual({
+      sessionAddresses: [
+        { serverId: 'home-a', sessionId: 'same' },
+        { serverId: 'home-b', sessionId: 'same' },
+      ],
+    });
+    expect(trackedTarget.inputSchema.parse({ sessionIds: ['same'] })).toEqual({ sessionIds: ['same'] });
+    expect(trackedTarget.inputSchema.safeParse({
+      sessionAddresses: [{ serverId: 'home-a', sessionId: 'same', extra: true }],
+    }).success).toBe(false);
+  });
+
+  it('accepts more than 50 qualified targets so an exact-Home replacement reaches the dependency', () => {
+    const trackedTarget = getActionSpec('session.target.tracked.set');
+
+    const sessionAddresses = Array.from({ length: 51 }, (_, index) => ({
+      serverId: 'home-a',
+      sessionId: `session-${index}`,
+    }));
+    expect(trackedTarget.inputSchema.parse({ sessionAddresses })).toEqual({ sessionAddresses });
+
+    // The predecessor bare-id compatibility arm is uncapped by the same finding.
+    const sessionIds = Array.from({ length: 51 }, (_, index) => `session-${index}`);
+    expect(trackedTarget.inputSchema.parse({ sessionIds })).toEqual({ sessionIds });
   });
 
   it('accepts session.list filter fields in the action schema', () => {
@@ -2049,6 +2329,60 @@ describe('Action Spec Registry', () => {
       resumableOnly: true,
       includeRows: true,
     });
+  });
+
+  it('keeps the released session activity compatibility seam strict and numeric', () => {
+    const spec = getActionSpec('session.activity.get');
+
+    expect(spec.inputSchema.safeParse({
+      sessionId: 'session-1',
+      windowSeconds: 60,
+      transcriptContent: 'must-not-cross-the-boundary',
+    }).success).toBe(false);
+    expect(spec.outputSchema.safeParse({
+      ok: true,
+      sessionId: 'session-1',
+      presence: 'online',
+      active: true,
+      thinking: false,
+      working: false,
+      blocked: true,
+      permissionRequired: true,
+      actionRequired: false,
+      updatedAt: 1_700_000_000_000,
+      permissionRequestIds: ['request-1'],
+      messageCounts: { total: 3, assistant: 2, user: 1 },
+      pendingCount: 2,
+      pendingPermissionRequestCount: 1,
+      pendingUserActionRequestCount: 1,
+    }).success).toBe(true);
+    expect(spec.outputSchema.safeParse({ ok: true, sessionId: 'session-1' }).success).toBe(false);
+    expect(spec.outputSchema.safeParse({
+      ok: true,
+      sessionId: 'session-1',
+      presence: null,
+      active: false,
+      thinking: false,
+      working: false,
+      blocked: false,
+      permissionRequired: false,
+      actionRequired: false,
+      updatedAt: null,
+      transcriptContent: 'must-not-cross-the-boundary',
+    }).success).toBe(false);
+    expect(spec.outputSchema.safeParse({
+      ok: true,
+      sessionId: 'session-1',
+      presence: null,
+      active: false,
+      thinking: false,
+      working: false,
+      blocked: false,
+      permissionRequired: false,
+      actionRequired: false,
+      updatedAt: null,
+      messageCounts: { total: -1, assistant: 0, user: 0 },
+    }).success).toBe(false);
   });
 
   it('marks old transcript/session-history actions as deprecated aliases', () => {
@@ -2267,7 +2601,7 @@ describe('Action Spec Registry', () => {
       const publicProjection = !isInternalActionId(id);
       expect(spec.surfaces, id).toEqual({
         ...resolveRuntimeActionSurfaces(id as RuntimeActionIdV1),
-        api: publicProjection,
+        api: publicProjection && spec.requiredAuthority === 'account_automation',
         plugin: publicProjection,
       });
       expect(spec.bindings).toBeUndefined();
@@ -2886,9 +3220,39 @@ describe('Action Spec Registry', () => {
     });
   });
 
+  it('classifies Agent-owned candidate deletion like its destructive external-session siblings', () => {
+    const spec = getActionSpec('sessions.external.candidate.delete');
+
+    // Deleting the Agent's own session record is destructive and irreversible
+    // at the Agent, so it is `danger` and stays a machine-placed RPC route.
+    expect(spec.safety).toBe('danger');
+    expect(spec.sideEffectClass).toBe('danger');
+    // The same reachable host route as its destructive sibling
+    // `operation.discard` — RPC plus the released API projection — and never an
+    // Agent-, MCP-, voice- or CLI-invocable one.
+    expect(spec.surfaces).toEqual({
+      ...getActionSpec('sessions.external.operation.discard').surfaces,
+      plugin: false,
+    });
+    expect(spec.surfaces).toMatchObject({ rpc: true, api: true, mcp: false, voice: false, cli: false, agent: false });
+    // Host-synthesized Agent session lifecycle is deliberately outside the
+    // External Sessions plugin contribution, which owns discovery and
+    // transcripts only.
+    expect(spec.surfaces.plugin).toBe(false);
+    expect(isPluginSurfaceExcludedActionId('sessions.external.candidate.delete')).toBe(true);
+    // The product confirmation is the surface's own destructive modal. Every
+    // destructive external-session sibling (link.ensure, takeover,
+    // operation.discard) carries the optional deferred approval, so a user who
+    // already confirmed in the UI must not also face a required central
+    // approval invented for this one Action.
+    expect(spec.approval).toEqual({ result: 'optional', flow: 'deferred' });
+    expect(spec.approval).toEqual(getActionSpec('sessions.external.operation.discard').approval);
+  });
+
   it('projects external-session actions through canonical external-session RPC bindings and legacy direct-session aliases', () => {
     const expected: readonly [ActionId, string, string | null, string | null, 'read' | 'write' | 'danger', boolean][] = [
       ['sessions.external.candidates.list', RPC_METHODS.DAEMON_EXTERNAL_SESSIONS_CANDIDATES_LIST, RPC_METHODS.DAEMON_DIRECT_SESSIONS_CANDIDATES_LIST_LEGACY, 'sessions.external.listCandidates', 'read', true],
+      ['sessions.external.candidate.delete', RPC_METHODS.DAEMON_EXTERNAL_SESSION_CANDIDATE_DELETE, RPC_METHODS.DAEMON_DIRECT_SESSION_CANDIDATE_DELETE_LEGACY, null, 'danger', true],
       ['sessions.external.link.ensure', RPC_METHODS.DAEMON_EXTERNAL_SESSION_LINK_ENSURE, RPC_METHODS.DAEMON_DIRECT_SESSION_LINK_ENSURE_LEGACY, null, 'write', true],
       ['sessions.external.follow', RPC_METHODS.DAEMON_EXTERNAL_SESSION_ATTACH, null, null, 'write', true],
       ['sessions.external.unfollow', RPC_METHODS.DAEMON_EXTERNAL_SESSION_DETACH, null, null, 'write', true],
@@ -3074,6 +3438,7 @@ describe('Action Spec Registry', () => {
       ['execution.run.start', SESSION_RPC_METHODS.EXECUTION_RUN_START, 'write'],
       ['execution.run.list', SESSION_RPC_METHODS.EXECUTION_RUN_LIST, 'read'],
       ['execution.run.get', SESSION_RPC_METHODS.EXECUTION_RUN_GET, 'read'],
+      ['execution.run.wait', SESSION_RPC_METHODS.EXECUTION_RUN_WAIT, 'read'],
       ['execution.run.send', SESSION_RPC_METHODS.EXECUTION_RUN_SEND, 'write'],
       ['execution.run.ensure', SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE, 'write'],
       ['execution.run.ensure_or_start', SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START, 'write'],
@@ -3292,6 +3657,8 @@ describe('Action Spec Registry', () => {
     const spec = getActionSpec('execution.run.wait' as any);
     expect(spec.surfaces.cli).toBe(true);
     expect(spec.surfaces.mcp).toBe(true);
+    expect(spec.surfaces.rpc).toBe(true);
+    expect(spec.bindings?.rpcMethod).toBe(SESSION_RPC_METHODS.EXECUTION_RUN_WAIT);
     expect(spec.bindings?.mcpToolName).toBe('execution_run_wait');
     expect(spec.inputSchema.parse({ sessionId: 'session_1', runId: 'run_1' })).toEqual({
       sessionId: 'session_1',
@@ -4070,9 +4437,20 @@ describe('Action Spec Registry', () => {
       instructions: 'Do it.',
     };
 
-    for (const permissionMode of ['read_only', 'default', 'workspace_write', 'yolo']) {
+    for (const [permissionMode, expected] of [
+      ['read_only', 'read_only'],
+      ['read-only', 'read_only'],
+      ['default', 'default'],
+      ['auto', 'workspace_write'],
+      ['workspace_write', 'workspace_write'],
+      ['safe-yolo', 'workspace_write'],
+      ['acceptEdits', 'workspace_write'],
+      ['bypassPermissions', 'yolo'],
+      ['yolo', 'yolo'],
+    ] as const) {
       const parsed = (spec.inputSchema as z.ZodTypeAny).safeParse({ ...baseInput, permissionMode });
       expect(parsed.success, permissionMode).toBe(true);
+      if (parsed.success) expect(parsed.data.permissionMode).toBe(expected);
     }
 
     const invalid = (spec.inputSchema as z.ZodTypeAny).safeParse({
@@ -4083,11 +4461,52 @@ describe('Action Spec Registry', () => {
     if (!invalid.success) {
       expect(invalid.error.issues[0]?.path).toEqual(['permissionMode']);
       expect(invalid.error.issues[0]?.message).toContain('read_only');
-      expect(invalid.error.issues[0]?.message).toContain('workspace_write');
     }
 
     const permissionModeHint = spec.inputHints?.fields.find((field) => field.path === 'permissionMode');
-    expect(permissionModeHint?.description).toContain('read_only | default | workspace_write | yolo');
+    expect(permissionModeHint?.description).toContain('read_only | default | auto | yolo');
+  });
+
+  it('projects canonical execution-run permission spellings through the same Action boundary', () => {
+    const spec = getActionSpec('execution.run.start');
+    const input = {
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'pi' },
+      instructions: 'Implement the requested change.',
+      permissionMode: 'auto',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    };
+
+    const actionParsed = spec.inputSchema.safeParse(input);
+    expect(actionParsed.success).toBe(true);
+    if (actionParsed.success) expect(actionParsed.data.permissionMode).toBe('workspace_write');
+
+    const pluginParsed = PLUGIN_ACTION_INPUT_SCHEMAS['execution.run.start'].safeParse(input);
+    expect(pluginParsed.success).toBe(true);
+    if (pluginParsed.success) expect(pluginParsed.data.permissionMode).toBe('workspace_write');
+  });
+
+  it('advertises current session permission intent names while accepting compatible aliases', () => {
+    const spec = getActionSpec('session.permission_mode.set');
+
+    expect(spec.description).toContain('read_only/default/auto/yolo');
+    expect((spec.inputSchema as z.ZodTypeAny).parse({
+      sessionId: 'session-1',
+      permissionMode: 'auto',
+    })).toEqual({
+      sessionId: 'session-1',
+      permissionMode: 'safe-yolo',
+    });
+    expect((spec.inputSchema as z.ZodTypeAny).parse({
+      sessionId: 'session-1',
+      permissionMode: 'workspace_write',
+    }).permissionMode).toBe('safe-yolo');
+    expect((spec.inputSchema as z.ZodTypeAny).safeParse({
+      sessionId: 'session-1',
+      permissionMode: 'not-a-mode',
+    }).success).toBe(false);
   });
 
   it('retains the raw subagent registry RPC bindings', () => {
@@ -4225,7 +4644,7 @@ describe('Action Spec Registry', () => {
       }
 
       const parsedJson = JSON.parse(exampleText);
-      expect((spec.inputSchema as any).safeParse(parsedJson).success).toBe(true);
+      expect((spec.inputSchema as any).safeParse(parsedJson).success, spec.id).toBe(true);
     }
   });
 });

@@ -1,6 +1,10 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import * as protocol from './index.js';
+import * as sessionProtocol from './sessions/index.js';
+import {
+    SessionDiscussionIdSchema as canonicalSessionDiscussionIdSchema,
+} from './sessions/discussions/content.js';
 import {
     ComposerReferenceCandidateIdV1Schema as canonicalComposerReferenceCandidateIdV1Schema,
 } from './plugins/contributions/composerReferenceProviders.js';
@@ -42,6 +46,16 @@ import type { PluginUiViewV2Input } from './plugins/contributions/ui/v2.js';
 import {
     sameQualifiedConnectedAccountRef as canonicalSameQualifiedConnectedAccountRef,
 } from './connect/qualifiedConnectedAccountPersistence.js';
+import {
+    RUNNER_PUBLICATION_ELIGIBLE_ARTIFACT_TARGETS as canonicalRunnerPublicationEligibleArtifactTargets,
+    isRunnerArtifactTargetEligibleForPublication as canonicalIsRunnerArtifactTargetEligibleForPublication,
+} from './ephemeralRunner/runnerPackageLayout.js';
+import {
+    RunnerActivationProgressPhaseV1Schema as canonicalRunnerActivationProgressPhaseV1Schema,
+} from './ephemeralRunner/progress.js';
+import {
+    RunnerActivationProgressUpdateV1Schema as canonicalRunnerActivationProgressUpdateV1Schema,
+} from './ephemeralRunner/progressProof.js';
 
 // @ts-expect-error — retired author identity has no stable type export.
 type RetiredExtensionId = import('./index.js').ExtensionId;
@@ -122,6 +136,28 @@ if (false) {
 }
 
 describe('protocol package root exports', () => {
+    it('exports Session discussion contracts through both public Session barrels', () => {
+        expect(protocol.SessionDiscussionIdSchema).toBe(canonicalSessionDiscussionIdSchema);
+        expect(sessionProtocol.SessionDiscussionIdSchema).toBe(canonicalSessionDiscussionIdSchema);
+    });
+
+    it('exports the canonical Runner publication-eligibility contract through the package root', () => {
+        expect(protocol.RUNNER_PUBLICATION_ELIGIBLE_ARTIFACT_TARGETS)
+            .toBe(canonicalRunnerPublicationEligibleArtifactTargets);
+        expect(protocol.isRunnerArtifactTargetEligibleForPublication)
+            .toBe(canonicalIsRunnerArtifactTargetEligibleForPublication);
+        expect(protocol.isRunnerArtifactTargetEligibleForPublication('linux-x64')).toBe(true);
+        expect(protocol.isRunnerArtifactTargetEligibleForPublication('windows-x64')).toBe(false);
+        expect('RUNNER_ADVERTISED_ARTIFACT_TARGETS' in protocol).toBe(false);
+        expect('isAdvertisedRunnerArtifactTarget' in protocol).toBe(false);
+    });
+
+    it('exports the canonical Runner activation-progress contract through the package root', () => {
+        expect(protocol.RunnerActivationProgressPhaseV1Schema).toBe(canonicalRunnerActivationProgressPhaseV1Schema);
+        expect(protocol.RunnerActivationProgressUpdateV1Schema).toBe(canonicalRunnerActivationProgressUpdateV1Schema);
+        expectTypeOf<protocol.RunnerActivationProgressPhaseV1>().not.toBeNever();
+    });
+
     it('exports the canonical qualified connected-Account identity comparator', () => {
         expect(protocol.sameQualifiedConnectedAccountRef)
             .toBe(canonicalSameQualifiedConnectedAccountRef);

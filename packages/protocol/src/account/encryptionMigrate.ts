@@ -3,6 +3,9 @@ import { sha256 } from '@noble/hashes/sha2';
 import { hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import { AccountEncryptionModeSchema } from '../features/payload/capabilities/encryptionCapabilities.js';
+import { AccountPasswordCredentialV1Schema } from '../auth/accountPasswordCredential.js';
+import { PasswordMutationChallengeProofV1Schema } from '../auth/passwordMutationChallenge.js';
+import { AccountExternalAuthProofV1Schema } from '../auth/accountExternalAuthProof.js';
 import {
   ConnectedServiceCredentialRecordV1Schema,
   ConnectedServiceCredentialRevisionV1Schema,
@@ -56,6 +59,14 @@ import {
 } from '../automations/automationIdV1.js';
 import { AutomationRunCauseSchema } from '../automations/automationRunCause.js';
 import {
+  WorkflowInvocationRecordIdSchema,
+  WorkflowRunIdV1Schema,
+} from '../workflows/workflowIdsV1.js';
+import {
+  WorkflowRunAutomationOriginV1Schema,
+  WorkflowRunDirectOriginV1Schema,
+} from '../workflows/workflowProgressV1.js';
+import {
   AutomationTriggerIdSchema,
   AutomationTriggerRevisionSchema,
 } from '../automations/automationTriggerIdentity.js';
@@ -73,6 +84,10 @@ import {
   SessionDraftRecordV1Schema,
   SessionDraftStoredContentEnvelopeV1Schema,
 } from '../drafts/sessionDrafts.js';
+import {
+  SessionDraftRecordV2Schema,
+  SessionDraftStoredContentEnvelopeV2Schema,
+} from '../drafts/sessionDraftsV2.js';
 
 const NonNegativeSafeIntegerSchema =
   z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -519,17 +534,16 @@ export type AccountEncryptionMigrateSessionItem = z.infer<
   typeof AccountEncryptionMigrateSessionItemSchema
 >;
 
-export const ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS = 500;
-
 export const AccountEncryptionMigrateSessionsDirectiveSchema =
   z.discriminatedUnion('action', [
     z.object({ action: z.literal('assert_empty') }).strict(),
     z
       .object({
+        // The Account transition is one atomic census. Its real transport
+        // ceiling is the aggregate 8 MiB request bound enforced at ingress;
+        // an item-count ceiling rejects otherwise valid complete inventories.
         action: z.literal('migrate'),
-        items: z
-          .array(AccountEncryptionMigrateSessionItemSchema)
-          .max(ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS),
+        items: z.array(AccountEncryptionMigrateSessionItemSchema),
       })
       .strict(),
   ]);
@@ -644,6 +658,24 @@ export type AccountEncryptionMigratePetsDirective = z.infer<
 
 export const ACCOUNT_ENCRYPTION_MIGRATE_REQUEST_MAX_UTF8_BYTES = 8_000_000;
 
+/** One Account-owned new-session draft replacement in the atomic V4 migration. */
+export const AccountEncryptionMigrateSessionDraftItemSchema = z.object({
+  address: z.object({
+    kind: z.literal('newSession'),
+    draftId: z.string().uuid(),
+  }).strict(),
+  expectedRevision: NonNegativeSafeIntegerSchema,
+  content: SessionDraftStoredContentEnvelopeV1Schema,
+}).strict();
+export type AccountEncryptionMigrateSessionDraftItem = z.infer<
+  typeof AccountEncryptionMigrateSessionDraftItemSchema
+>;
+
+// server-v0.2.11 and the prospective 0.2 caller use this frozen V1 directive.
+const AccountEncryptionMigratePredecessorSessionDraftsDirectiveSchema = z.object({
+  items: z.array(AccountEncryptionMigrateSessionDraftItemSchema).max(500),
+}).strict();
+
 const AccountEncryptionMigratePredecessorRequestShape = {
   toMode: AccountEncryptionMigrateToModeSchema,
   expectedSettingsVersion: NonNegativeSafeIntegerSchema,
@@ -653,6 +685,7 @@ const AccountEncryptionMigratePredecessorRequestShape = {
   automations:
     AccountEncryptionMigratePredecessorAutomationsDirectiveSchema,
   keyProof: AccountEncryptionMigratePredecessorKeyProofSchema.optional(),
+  sessionDrafts: AccountEncryptionMigratePredecessorSessionDraftsDirectiveSchema.optional(),
 } as const;
 
 function refineAccountEncryptionMigrateRequest(
@@ -953,17 +986,7 @@ export type AccountEncryptionMigratePredecessorRequest = z.infer<
   typeof AccountEncryptionMigratePredecessorRequestSchema
 >;
 
-export const AccountEncryptionMigrateExternalAuthProofSchema = z
-  .object({
-    provider: z
-      .string()
-      .min(1)
-      .max(128)
-      .regex(/^[a-z0-9][a-z0-9._-]*$/),
-    pending: z.string().min(1).max(256),
-    proof: z.string().min(1).max(4096),
-  })
-  .strict();
+export const AccountEncryptionMigrateExternalAuthProofSchema = AccountExternalAuthProofV1Schema;
 export type AccountEncryptionMigrateExternalAuthProof = z.infer<
   typeof AccountEncryptionMigrateExternalAuthProofSchema
 >;
@@ -1070,6 +1093,32 @@ const AccountEncryptionMigrateTransitionAuthorizationSchema = z.discriminatedUni
 );
 
 /**
+ * A prepared replacement password credential for an Account that has one
+ * enrolled. Changing the Account's mode changes which credential kind is valid,
+ * so the replacement is authorized and staged here and committed by the same
+ * Account mode flip — the Account is never published in one mode beside a
+ * credential of the other.
+ *
+ * `proof` carries the purpose-bound Key Challenge the E2EE credential's own
+ * signing key produced (02.05 §5.3). It is required whenever the source
+ * credential is an E2EE envelope, because replacing that material must present
+ * the proof the Account's current state can supply rather than relying on the
+ * bearer token that authorized the transition. A Plain source credential
+ * instead proves the current password through the first-key external-auth
+ * proof, which already binds this whole request.
+ */
+export const AccountEncryptionMigrateTransitionPasswordCredentialSchema = z
+  .object({
+    expectedRevision: z.number().int().min(1).max(2_147_483_647),
+    credential: AccountPasswordCredentialV1Schema,
+    proof: PasswordMutationChallengeProofV1Schema.optional(),
+  })
+  .strict();
+export type AccountEncryptionMigrateTransitionPasswordCredential = z.infer<
+  typeof AccountEncryptionMigrateTransitionPasswordCredentialSchema
+>;
+
+/**
  * This phase is mandatory before Collection inventory or staging. The Account
  * coordinator persists the accepted confirmation or first-key authorization.
  */
@@ -1077,6 +1126,8 @@ export const AccountEncryptionMigrateTransitionAuthorizeRequestSchema = z
   .object({
     transitionId: AccountEncryptionMigrateTransitionIdSchema,
     authorization: AccountEncryptionMigrateTransitionAuthorizationSchema,
+    passwordCredential:
+      AccountEncryptionMigrateTransitionPasswordCredentialSchema.optional(),
   })
   .strict();
 export type AccountEncryptionMigrateTransitionAuthorizeRequest = z.infer<
@@ -1200,6 +1251,10 @@ const AccountEncryptionMigrateAutomationRunSourceContentSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.occurrenceEvidenceEqualityTag.nullable(),
     executionInputEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.executionInputEnvelope.nullable(),
+    workflowAcceptedSnapshotEnvelope:
+      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
+    workflowCheckpointEnvelope:
+      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     resultEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     replyContextEnvelope:
@@ -1219,17 +1274,42 @@ const AccountEncryptionMigrateAutomationRunTargetContentSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.occurrenceEvidenceEqualityTag.nullable(),
     executionInputEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.executionInputEnvelope.nullable(),
+    workflowAcceptedSnapshotEnvelope:
+      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
+    workflowCheckpointEnvelope:
+      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     resultEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
     replyContextEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyContextEnvelope.nullable(),
     failureDetailEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.failureDetailEnvelope.nullable(),
+    summaryCiphertext:
+      ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.summaryCiphertext.nullable(),
   })
   .strict();
 
+const AccountEncryptionMigrateWorkflowInvocationContentSchema = z.object({
+  contentEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+}).strict();
+
+const AccountEncryptionMigrateRunShape = {
+  kind: z.literal('run'),
+  runId: WorkflowRunIdV1Schema,
+  source: AccountEncryptionMigrateAutomationRunSourceContentSchema,
+} as const;
+
+const AccountEncryptionMigrateAutomationOriginShape = {
+  origin: WorkflowRunAutomationOriginV1Schema,
+  cause: AutomationRunCauseSchema,
+} as const;
+
+const AccountEncryptionMigrateDirectOriginShape = {
+  origin: WorkflowRunDirectOriginV1Schema,
+} as const;
+
 export const AccountEncryptionMigrateAutomationInventoryItemSchema =
-  z.discriminatedUnion('kind', [
+  z.union([
     z.object({
       kind: z.literal('definition'),
       automationId: asProtocolZod(AutomationIdV1Schema),
@@ -1237,12 +1317,20 @@ export const AccountEncryptionMigrateAutomationInventoryItemSchema =
       source: AccountEncryptionMigrateAutomationDefinitionContentSchema,
     }).strict(),
     z.object({
-      kind: z.literal('run'),
-      runId: asProtocolZod(AutomationIdV1Schema),
-      automationId: asProtocolZod(AutomationIdV1Schema),
+      ...AccountEncryptionMigrateRunShape,
+      ...AccountEncryptionMigrateAutomationOriginShape,
       revision: NonNegativeSafeIntegerSchema,
-      cause: AutomationRunCauseSchema,
-      source: AccountEncryptionMigrateAutomationRunSourceContentSchema,
+    }).strict(),
+    z.object({
+      ...AccountEncryptionMigrateRunShape,
+      ...AccountEncryptionMigrateDirectOriginShape,
+      revision: NonNegativeSafeIntegerSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal('workflow_invocation'),
+      runId: WorkflowRunIdV1Schema,
+      invocationRecordId: WorkflowInvocationRecordIdSchema,
+      source: AccountEncryptionMigrateWorkflowInvocationContentSchema,
     }).strict(),
   ]);
 export type AccountEncryptionMigrateAutomationInventoryItem = z.infer<
@@ -1250,7 +1338,7 @@ export type AccountEncryptionMigrateAutomationInventoryItem = z.infer<
 >;
 
 export const AccountEncryptionMigrateAutomationStageItemSchema =
-  z.discriminatedUnion('kind', [
+  z.union([
     z.object({
       kind: z.literal('definition'),
       automationId: asProtocolZod(AutomationIdV1Schema),
@@ -1259,13 +1347,23 @@ export const AccountEncryptionMigrateAutomationStageItemSchema =
       target: AccountEncryptionMigrateAutomationDefinitionContentSchema,
     }).strict(),
     z.object({
-      kind: z.literal('run'),
-      runId: asProtocolZod(AutomationIdV1Schema),
-      automationId: asProtocolZod(AutomationIdV1Schema),
+      ...AccountEncryptionMigrateRunShape,
+      ...AccountEncryptionMigrateAutomationOriginShape,
       expectedRevision: NonNegativeSafeIntegerSchema,
-      cause: AutomationRunCauseSchema,
-      source: AccountEncryptionMigrateAutomationRunSourceContentSchema,
       target: AccountEncryptionMigrateAutomationRunTargetContentSchema,
+    }).strict(),
+    z.object({
+      ...AccountEncryptionMigrateRunShape,
+      ...AccountEncryptionMigrateDirectOriginShape,
+      expectedRevision: NonNegativeSafeIntegerSchema,
+      target: AccountEncryptionMigrateAutomationRunTargetContentSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal('workflow_invocation'),
+      runId: WorkflowRunIdV1Schema,
+      invocationRecordId: WorkflowInvocationRecordIdSchema,
+      source: AccountEncryptionMigrateWorkflowInvocationContentSchema,
+      target: AccountEncryptionMigrateWorkflowInvocationContentSchema,
     }).strict(),
   ]);
 export type AccountEncryptionMigrateAutomationStageItem = z.infer<
@@ -1299,7 +1397,9 @@ function automationStageItemIdentity(
 ): string {
   return item.kind === 'definition'
     ? `definition\u0000${item.automationId}`
-    : `run\u0000${item.runId}`;
+    : item.kind === 'run'
+      ? `run\u0000${item.runId}`
+      : `workflow_invocation\u0000${item.runId}\u0000${item.invocationRecordId}`;
 }
 
 export const AccountEncryptionMigrateAutomationStageBatchRequestSchema = z
@@ -1434,23 +1534,19 @@ export type AccountEncryptionMigrateTransitionActivateResponse = z.infer<
   typeof AccountEncryptionMigrateTransitionActivateResponseSchema
 >;
 
-/** One Account-owned new-session draft replacement in the atomic V4 migration. */
-export const AccountEncryptionMigrateSessionDraftItemSchema = z.object({
-  address: z.object({
-    kind: z.literal('newSession'),
-    draftId: z.string().uuid(),
+export const AccountEncryptionMigrateSessionDraftsDirectiveSchema = z.union([
+  z.object({
+    items: z.array(AccountEncryptionMigrateSessionDraftItemSchema)
+      .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
   }).strict(),
-  expectedRevision: NonNegativeSafeIntegerSchema,
-  content: SessionDraftStoredContentEnvelopeV1Schema,
-}).strict();
-export type AccountEncryptionMigrateSessionDraftItem = z.infer<
-  typeof AccountEncryptionMigrateSessionDraftItemSchema
->;
-
-export const AccountEncryptionMigrateSessionDraftsDirectiveSchema = z.object({
-  items: z.array(AccountEncryptionMigrateSessionDraftItemSchema)
-    .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
-}).strict().superRefine((value, context) => {
+  z.object({
+    v: z.literal(2),
+    items: z.array(AccountEncryptionMigrateSessionDraftItemSchema.extend({
+      content: SessionDraftStoredContentEnvelopeV2Schema,
+    }))
+      .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
+  }).strict(),
+]).superRefine((value, context) => {
   const seen = new Set<string>();
   value.items.forEach((item, index) => {
     if (seen.has(item.address.draftId)) {
@@ -1491,6 +1587,8 @@ const AccountEncryptionMigrateCurrentRequestShape = {
   sessionDrafts: AccountEncryptionMigrateSessionDraftsDirectiveSchema.optional(),
   externalAuthProof:
     AccountEncryptionMigrateExternalAuthProofSchema.optional(),
+  passwordCredential:
+    AccountEncryptionMigrateTransitionPasswordCredentialSchema.optional(),
 } as const;
 
 export const AccountEncryptionMigrateUnsignedRequestSchema = z
@@ -1813,6 +1911,15 @@ function normalizeAccountEncryptionMigrateTransitionAuthorizationBindingV1(
       contentPublicKey: keyProof.contentPublicKey,
       contentPublicKeySig: keyProof.contentPublicKeySig,
     },
+    // The staged replacement credential is part of what the first-key signature
+    // and the external-auth proof authorize. Leaving it out would let a
+    // substituted password credential ride an otherwise valid authorization.
+    passwordCredential: request.passwordCredential
+      ? {
+          expectedRevision: request.passwordCredential.expectedRevision,
+          credential: request.passwordCredential.credential,
+        }
+      : null,
   } as const;
 }
 
@@ -1873,10 +1980,17 @@ export const AccountEncryptionMigrateSuccessResponseSchema = z
     mode: AccountEncryptionMigrateToModeSchema,
     accountVersion: NonNegativeSafeIntegerSchema,
     settingsVersion: NonNegativeSafeIntegerSchema,
-    sessionDrafts: z.object({
-      records: z.array(SessionDraftRecordV1Schema)
-        .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
-    }).strict().optional(),
+    sessionDrafts: z.union([
+      z.object({
+        records: z.array(SessionDraftRecordV1Schema)
+          .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
+      }).strict(),
+      z.object({
+        v: z.literal(2),
+        records: z.array(SessionDraftRecordV2Schema)
+          .max(ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS),
+      }).strict(),
+    ]).optional(),
   })
   .strict();
 export type AccountEncryptionMigrateSuccessResponse = z.infer<
@@ -1888,11 +2002,22 @@ export const AccountEncryptionMigratePredecessorSuccessResponseSchema = z
     success: z.literal(true),
     mode: AccountEncryptionMigrateToModeSchema,
     settingsVersion: NonNegativeSafeIntegerSchema,
+    sessionDrafts: z.object({ records: z.array(SessionDraftRecordV1Schema) }).strict().optional(),
   })
   .strict();
 export type AccountEncryptionMigratePredecessorSuccessResponse = z.infer<
   typeof AccountEncryptionMigratePredecessorSuccessResponseSchema
 >;
+
+/** Frozen draft failures emitted to server-v0.2.11 / prospective 0.2 callers. */
+export const AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema = z.object({
+  error: z.enum(['session_drafts_require_upgrade', 'session_drafts_migration_incomplete']),
+}).strict();
+export const AccountEncryptionMigratePredecessorDraftConflictResponseSchema = z.object({
+  error: z.literal('session_drafts_version_mismatch'),
+  address: AccountEncryptionMigrateSessionDraftItemSchema.shape.address,
+  currentRevision: NonNegativeSafeIntegerSchema,
+}).strict();
 
 export const AccountEncryptionMigrateInvalidParamsReasonSchema = z.enum([
   'restore_required',

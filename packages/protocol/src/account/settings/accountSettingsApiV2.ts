@@ -6,6 +6,10 @@ import {
   AccountSettingsStoredContentEnvelopeWriteSchema,
 } from './accountSettingsStoredContentEnvelope.js';
 import { ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES } from './catalog/accountSettingBounds.js';
+import {
+  ACCOUNT_REMOTE_ALERT_POLICY_MAX_UTF8_BYTES,
+  AccountRemoteAlertPolicyV1Schema,
+} from './accountRemoteAlertPolicy.js';
 
 const textEncoder = new TextEncoder();
 
@@ -37,7 +41,8 @@ export const ACCOUNT_SETTINGS_V2_UPDATE_REQUEST_MAX_UTF8_BYTES = Math.max(
       content: { t: 'encrypted', c: '' },
       expectedVersion: ACCOUNT_SETTINGS_V2_WIRE_EXPECTED_VERSION_CEILING,
     }),
-);
+) + ACCOUNT_REMOTE_ALERT_POLICY_MAX_UTF8_BYTES
+  + serializedUtf8ByteLength({ remoteAlertPolicy: null }) - serializedUtf8ByteLength(null) - 1;
 
 export const AccountSettingsV2GetResponseSchema = z
   .object({
@@ -56,6 +61,7 @@ export const AccountSettingsV2UpdateRequestAdmissionSchema = z
   .object({
     content: AccountSettingsStoredContentEnvelopeSchema.nullable(),
     expectedVersion: z.number().int().min(0),
+    remoteAlertPolicy: AccountRemoteAlertPolicyV1Schema.nullable().optional(),
   })
   .strict();
 
@@ -63,6 +69,7 @@ export const AccountSettingsV2UpdateRequestSchema = z
   .object({
     content: AccountSettingsStoredContentEnvelopeWriteSchema.nullable(),
     expectedVersion: z.number().int().min(0),
+    remoteAlertPolicy: AccountRemoteAlertPolicyV1Schema.nullable().optional(),
   })
   .strict();
 

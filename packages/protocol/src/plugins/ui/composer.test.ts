@@ -15,6 +15,7 @@ import {
   composerRefV1Key,
   composerRefsV1Equal,
   ComposerSnapshotV1Schema,
+  ComposerScopeKindV1Schema,
   ComposerSurfaceMountBindingV1Schema,
   ComposerSurfaceInputV1Schema,
   ComposerTransactionV1Schema,
@@ -96,6 +97,7 @@ describe('Composer protocol surface', () => {
       { kind: 'pendingMessage', sessionId: 'session-1', localId: 'pending-1' },
       { kind: 'participantMessage', sessionId: 'session-1', instanceId: 'instance-1' },
       { kind: 'automationAuthoring', sessionId: 'session-1', instanceId: 'instance-1' },
+      { kind: 'workflowAuthoring', draftId: 'draft-1', blockId: 'step-1', instanceId: 'instance-1' },
     ].map((ref) => ComposerRefV1Schema.parse(ref));
 
     for (const ref of refs) {
@@ -164,6 +166,24 @@ describe('Composer protocol surface', () => {
     expect(ComposerRefV1Schema.safeParse(composer).success).toBe(true);
     expect(ComposerRefV1Schema.safeParse({ kind: 'sideChat', sessionId: 'session-1' }).success).toBe(false);
     expect(ComposerRefV1Schema.safeParse({ kind: 'session', sessionId: ' session-1 ' }).success).toBe(false);
+    expect(ComposerScopeKindV1Schema.parse('workflowAuthoring')).toBe('workflowAuthoring');
+  });
+
+  it('uses the canonical workflow block identity grammar without imposing the live-instance bound', () => {
+    const blockId = `step_${'a'.repeat(300)}`;
+
+    expect(ComposerRefV1Schema.parse({
+      kind: 'workflowAuthoring',
+      draftId: 'draft-1',
+      blockId,
+      instanceId: 'instance-1',
+    }).blockId).toBe(blockId);
+    expect(ComposerRefV1Schema.safeParse({
+      kind: 'workflowAuthoring',
+      draftId: 'draft-1',
+      blockId: '$root',
+      instanceId: 'instance-1',
+    }).success).toBe(false);
   });
 
   it('publishes the live composer scope as a validator-neutral composable a feature protocol can embed', () => {
@@ -184,12 +204,14 @@ describe('Composer protocol surface', () => {
       { kind: 'sideChat', sessionId: 'session-1' },
       { kind: 'pendingMessage', sessionId: 'session-1' },
       { kind: 'newSession', instanceId: ' instance-1 ' },
+      { kind: 'workflowAuthoring', draftId: 'draft-1', blockId: 'step-1' },
+      { kind: 'workflowAuthoring', draftId: ' draft-1 ', blockId: 'step-1', instanceId: 'instance-1' },
     ]) {
       expect(launchInput.safeParse({ v: 1, originComposer: malformed }).success).toBe(false);
     }
 
     const projected = launchInput.jsonSchema.properties?.originComposer;
-    expect(projected?.anyOf?.length).toBe(5);
+    expect(projected?.anyOf?.length).toBe(6);
     expect(projected?.anyOf?.[0]?.properties?.sessionId?.type).toBe('string');
   });
 

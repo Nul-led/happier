@@ -13,6 +13,7 @@ export const MachineFileBrowserDirectoryEntrySchema = z.object({
   type: z.enum(['file', 'directory', 'other']),
   size: z.number().int().nonnegative().optional(),
   modified: z.number().int().nonnegative().optional(),
+  gitIgnored: z.boolean().optional(),
 }).passthrough();
 export type MachineFileBrowserDirectoryEntry = z.infer<typeof MachineFileBrowserDirectoryEntrySchema>;
 
@@ -32,6 +33,7 @@ export type DaemonFilesystemListRootsResponse = z.infer<typeof DaemonFilesystemL
 export const DaemonFilesystemListDirectoryRequestSchema = z.object({
   path: z.string().min(1),
   includeFiles: z.boolean().optional(),
+  includeGitIgnore: z.boolean().optional(),
   maxEntries: z.number().int().positive().nullable().optional(),
 }).passthrough();
 export type DaemonFilesystemListDirectoryRequest = z.infer<typeof DaemonFilesystemListDirectoryRequestSchema>;
@@ -42,6 +44,7 @@ export const DaemonFilesystemListDirectoryResponseSchema = z.discriminatedUnion(
     path: z.string().min(1),
     entries: z.array(MachineFileBrowserDirectoryEntrySchema),
     truncated: z.boolean(),
+    gitIgnoreAvailable: z.boolean().optional(),
   }).passthrough(),
   z.object({
     ok: z.literal(false),

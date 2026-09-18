@@ -65,6 +65,21 @@ describe('actionInputJsonSchema', () => {
     }));
   });
 
+  it('projects the same Action contract to draft-07 for consumers that require that dialect', () => {
+    const json = zodSchemaToJsonSchemaObject(
+      z.object({ value: z.string().trim().min(1) }).strict(),
+      { target: 'draft-7' },
+    );
+
+    expect(json).toMatchObject({
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: { value: { type: 'string', minLength: 1 } },
+      required: ['value'],
+      additionalProperties: false,
+    });
+  });
+
   it('uses the canonical open-object projection for passthrough schemas', () => {
     const json = zodSchemaToJsonSchemaObject(z.object({ value: z.string() }).passthrough());
 

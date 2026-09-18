@@ -19,7 +19,7 @@ export const PluginAccountDataEraseSettingsArmResultV1Schema = z.discriminatedUn
   }).strict(),
   z.object({
     status: z.literal('pending'),
-    reason: z.enum(['conflict', 'unavailable']),
+    reason: z.enum(['conflict', 'unavailable', 'outcome-unknown']),
   }).strict(),
   z.object({
     status: z.literal('failed'),
@@ -35,7 +35,7 @@ export const PluginAccountDataEraseDataArmResultV1Schema = z.discriminatedUnion(
   }).strict(),
   z.object({
     status: z.literal('pending'),
-    reason: z.enum(['unavailable', 'transition-cleanup']),
+    reason: z.enum(['unavailable', 'transition-cleanup', 'outcome-unknown']),
   }).strict(),
   z.object({
     status: z.literal('failed'),

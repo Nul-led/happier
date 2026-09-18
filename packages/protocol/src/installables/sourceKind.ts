@@ -4,6 +4,7 @@ export const InstallableSourceKindSchema = z.enum([
   'github_release_binary',
   'managed_package',
   'managed_pypi_wheel_asset',
+  'pinned_archive',
   'vendor_recipe',
   'manual_only',
 ]);
@@ -71,6 +72,38 @@ export const ManagedPypiWheelAssetInstallableSourceSchema = z.object({
   maxAssetSizeBytes: z.number().int().positive().optional(),
 }).strict();
 
+export const PinnedArchivePlatformSchema = ManagedPypiWheelAssetPlatformSchema;
+
+export const PinnedArchiveInstallableAssetSchema = z.object({
+  archiveUrl: z.string().url().refine((value) => value.startsWith('https://'), 'Pinned archive URL must use HTTPS'),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  executableSubpath: z.string().trim().min(1).refine((value) => {
+    if (/^(?:[A-Za-z]:)?[\\/]/.test(value)) return false;
+    return value.split(/[\\/]/).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+  }, 'Pinned archive executable path must be a safe relative path'),
+  args: z.array(z.string()).optional(),
+}).strict();
+export type PinnedArchiveInstallableAsset = z.infer<typeof PinnedArchiveInstallableAssetSchema>;
+
+export const PinnedArchiveAssetsByPlatformSchema = z.object({
+  'darwin-arm64': PinnedArchiveInstallableAssetSchema.optional(),
+  'linux-x64': PinnedArchiveInstallableAssetSchema.optional(),
+  'linux-arm64': PinnedArchiveInstallableAssetSchema.optional(),
+  'win32-x64': PinnedArchiveInstallableAssetSchema.optional(),
+  'win32-arm64': PinnedArchiveInstallableAssetSchema.optional(),
+}).strict().refine((assets) => Object.values(assets).some(Boolean), 'Pinned archive source requires at least one platform asset');
+
+/**
+ * One immutable, digest-pinned per-platform archive. The publishing artifact is
+ * pinned, so there is no version discovery: the declared `version` is both the
+ * installed and the available version.
+ */
+export const PinnedArchiveInstallableSourceSchema = z.object({
+  kind: z.literal('pinned_archive'),
+  version: z.string().trim().min(1),
+  assetsByPlatform: PinnedArchiveAssetsByPlatformSchema,
+}).strict();
+
 export const VendorRecipeInstallableSourceSchema = z.object({
   kind: z.literal('vendor_recipe'),
   recipeId: z.string().trim().min(1),
@@ -87,6 +120,7 @@ export const InstallableSourceSchema = z.discriminatedUnion('kind', [
   GitHubReleaseBinaryInstallableSourceSchema,
   ManagedPackageInstallableSourceSchema,
   ManagedPypiWheelAssetInstallableSourceSchema,
+  PinnedArchiveInstallableSourceSchema,
   VendorRecipeInstallableSourceSchema,
   ManualOnlyInstallableSourceSchema,
 ]);

@@ -18,6 +18,18 @@ const canonicalEnvelope = {
 };
 
 describe('HookEventEnvelopeV1', () => {
+  it('preserves Agent-minted session identity bytes and rejects an absent identity', () => {
+    const agentSessionId = '  provider\nses/AB+cd==  ';
+    expect(readHookEventEnvelopeV1({
+      ...canonicalEnvelope,
+      agentSessionId,
+    })?.agentSessionId).toBe(agentSessionId);
+    expect(readHookEventEnvelopeV1({
+      ...canonicalEnvelope,
+      agentSessionId: ' \n\t ',
+    })).toBeNull();
+  });
+
   it('accepts the canonical closed routing envelope while preserving its payload for the selected hook schema', () => {
     expect(readHookEventEnvelopeV1({
       ...canonicalEnvelope,

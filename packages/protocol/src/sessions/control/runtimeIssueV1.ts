@@ -8,6 +8,9 @@ import {
 import { ConnectedAccountServiceKeyIngressSchema } from '../../connect/connectedServiceBindings.js';
 import { ConnectedServiceLimitCategoryV1Schema } from '../../connect/connectedServiceLimitCategory.js';
 import { AgentIdV1Schema } from '../../agents/agentIdV1.js';
+import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
+import { ProviderBrokerAdmissionFailureCodeV1Schema } from '../../providers/brokerRouteGrantV1.js';
+import { TeamCredentialUsageLimitDenialV1Schema } from '../../teams/credentials/usageV1.js';
 
 export const TurnTerminalStatusV1Schema = z.enum(['completed', 'cancelled', 'failed']);
 export type TurnTerminalStatusV1 = z.infer<typeof TurnTerminalStatusV1Schema>;
@@ -24,6 +27,8 @@ export const SessionRuntimeIssueSourceV1Schema = z.enum([
   'agent_process_exit_after_switch',
   'agent_session_error',
   'usage_limit',
+  /** A shared Team credential refused the request at the Home broker. */
+  'team_credential',
   'auth_error',
   'dependency_failure',
   'stream_error',
@@ -37,7 +42,7 @@ const SessionRuntimeAgentProcessExitAfterSwitchDetailsV1Schema = z
     exitCode: z.number().int().nullable(),
     signal: z.string().trim().min(1).max(128).nullable(),
     lastStderrLine: z.string().trim().min(1).max(2_000).nullable(),
-    vendorResumeId: z.string().trim().min(1).max(512).nullable(),
+    vendorResumeId: NonBlankOpaqueIdentifierSchema.max(512).nullable(),
     materializationRoot: z.string().trim().min(1).max(2_000).nullable(),
     effectiveStateMode: z.enum(['shared', 'isolated']).nullable(),
   })
@@ -172,6 +177,24 @@ export const SessionRuntimeUsageLimitDetailsV1Schema = z
 
 export type SessionRuntimeUsageLimitDetailsV1 = z.infer<typeof SessionRuntimeUsageLimitDetailsV1Schema>;
 
+/**
+ * Recipient-safe facts of a Team credential broker refusal: the closed
+ * admission code, the resource the requester selected, and, for an exhausted
+ * ceiling, the metric and reset needed to recover. Limit identity, audience
+ * and other members' use stay manager-private.
+ */
+export const SessionRuntimeTeamCredentialDenialDetailsV1Schema = z
+  .object({
+    v: z.literal(1),
+    resourceId: z.string().trim().min(1).max(256),
+    reasonCode: ProviderBrokerAdmissionFailureCodeV1Schema,
+    usageLimit: TeamCredentialUsageLimitDenialV1Schema.optional(),
+  })
+  .strict();
+
+export type SessionRuntimeTeamCredentialDenialDetailsV1 =
+  z.infer<typeof SessionRuntimeTeamCredentialDenialDetailsV1Schema>;
+
 export const SessionRuntimeTemporaryThrottleDetailsV1Schema = z
   .object({
     v: z.literal(1),
@@ -197,6 +220,7 @@ export const SessionRuntimeIssueV1Schema = z.preprocess(
     agentTurnId: z.string().trim().min(1).max(256).optional(),
     sanitizedPreview: z.string().trim().min(1).max(2_000).optional(),
     usageLimit: SessionRuntimeUsageLimitDetailsV1Schema.optional(),
+    teamCredential: SessionRuntimeTeamCredentialDenialDetailsV1Schema.optional(),
     temporaryThrottle: SessionRuntimeTemporaryThrottleDetailsV1Schema.optional(),
     agentProcessExitAfterSwitch: SessionRuntimeAgentProcessExitAfterSwitchDetailsV1Schema.optional(),
   }).readonly(),

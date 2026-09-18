@@ -11,6 +11,11 @@ import {
 } from './pendingDeliveryStatusV1.js';
 
 describe('PendingDeliveryStatusV1', () => {
+  it('preserves authoritative target unavailability as a pre-effect block', () => {
+    const status = normalizePendingDeliveryStatusV1({ status: 'queued', deliveryState: 'blocked', deliveryBlockedReason: 'session_input_target_unavailable' });
+    expect(status).toEqual({ status: 'blocked', reason: 'session_input_target_unavailable' });
+    expect(isPendingDeliveryProviderEffectPossibleV1(status)).toBe(false);
+  });
   it('round-trips typed delivery statuses through existing persisted fields', () => {
     const statuses = [
       { status: 'queued' },

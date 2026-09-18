@@ -7,11 +7,82 @@ import type { ActionExecutorDeps } from './executor/types.js';
 function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
   return createActionExecutor({
     sessionList: vi.fn(async () => ({ sessions: [] })),
+    isApprovalExecutionOriginCurrent: async () => true,
     ...overrides,
   } as unknown as ActionExecutorDeps);
 }
 
 describe('ActionExecutor prepared invocation', () => {
+  it('refuses unavailable host list access before approval or a prepared continuation', async () => {
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'private-session' }] }));
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-exist' }));
+    const executor = createExecutor({ sessionList, approvalsCreate, isActionApprovalRequired: () => true });
+    const context = { surface: 'agent', authority: 'account_automation', sessionListAccess: 'unavailable' } as const;
+    await expect(executor.prepare('session.list', {}, context)).resolves.toEqual({
+      kind: 'settled',
+      result: { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.list' },
+    });
+    await expect(executor.execute('session.list', { sessionListAccess: 'account' }, {
+      ...context, bypassApprovals: true,
+    })).resolves.toMatchObject({ ok: false });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(sessionList).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { surface: 'cli', authority: 'present_user' },
+    { surface: 'ui', authority: 'present_user' },
+    { surface: 'api', authority: 'account_automation' },
+  ] as const)('preserves existing credential-backed list admission on $surface', async (context) => {
+    const payload = { sessions: [{ id: 'permitted-session', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null };
+    const executor = createExecutor({ sessionList: async () => payload, isActionApprovalRequired: () => false });
+    const prepared = await executor.prepare('session.list', {}, context);
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind !== 'ready') throw new Error('Expected admitted list');
+    await expect(prepared.invocation.run()).resolves.toEqual({ ok: true, result: payload });
+  });
+
+  it('requires a host-admitted current-Session corpus for autonomous listing', async () => {
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'owner-private-session' }] }));
+    const executor = createExecutor({ sessionList, isActionApprovalRequired: () => false });
+
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'admitted-session',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.list',
+    });
+    await expect(executor.execute('session.list', { requestedBy: 'owner-account' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'admitted-session',
+      sessionListAccess: 'current_session',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(sessionList).not.toHaveBeenCalled();
+  });
+
+  it('admits the exact host-stamped current-Session corpus for an autonomous listing', async () => {
+    const payload = { sessions: [{ id: 'admitted-session', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null };
+    const sessionList = vi.fn(async () => payload);
+    const executor = createExecutor({ sessionList, isActionApprovalRequired: () => false });
+
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'admitted-session',
+      sessionListAccess: 'current_session',
+    })).resolves.toEqual({ ok: true, result: payload });
+    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        defaultSessionId: 'admitted-session',
+        sessionListAccess: 'current_session',
+      }),
+    }));
+  });
+
   it('settles admission failures without exposing a runnable mutation', async () => {
     const sessionList = vi.fn(async () => ({ sessions: [] }));
     const executor = createExecutor({ sessionList });
@@ -27,7 +98,7 @@ describe('ActionExecutor prepared invocation', () => {
   });
 
   it('defers dispatch and memoizes the exact run promise', async () => {
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1' }] }));
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null }));
     const executor = createExecutor({ sessionList });
 
     const prepared = await executor.prepare('session.list', { limit: 1 }, {
@@ -44,7 +115,7 @@ describe('ActionExecutor prepared invocation', () => {
     expect(concurrentRun).toBe(firstRun);
     await expect(firstRun).resolves.toEqual({
       ok: true,
-      result: { sessions: [{ id: 'session-1' }] },
+      result: { sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null },
     });
     expect(prepared.invocation.run()).toBe(firstRun);
     expect(sessionList).toHaveBeenCalledTimes(1);
@@ -184,7 +255,7 @@ describe('ActionExecutor prepared invocation', () => {
         decision: { kind: 'approve' as const, decidedAtMs: 2 },
       },
     }));
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1' }] }));
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null }));
     const executor = createExecutor({
       approvalsCreate,
       approvalsGet,
@@ -194,7 +265,13 @@ describe('ActionExecutor prepared invocation', () => {
       isActionApprovalRequired: (actionId) => actionId === 'session.list',
     });
 
-    const prepared = await executor.prepare('session.list', {}, { surface: 'mcp' });
+    const prepared = await executor.prepare('session.list', {}, {
+      surface: 'mcp',
+      serverId: 'server-1',
+      actionRequestId: 'request-1',
+      defaultSessionId: 'session-1',
+      sessionListAccess: 'current_session',
+    });
 
     expect(prepared.kind).toBe('ready');
     expect(approvalsCreate).toHaveBeenCalledTimes(1);
@@ -206,12 +283,12 @@ describe('ActionExecutor prepared invocation', () => {
     expect(prepared.invocation.run()).toBe(firstRun);
     await expect(firstRun).resolves.toEqual({
       ok: true,
-      result: { sessions: [{ id: 'session-1' }] },
+      result: { sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null },
     });
     expect(sessionList).toHaveBeenCalledTimes(1);
     expect(storedRequest).toMatchObject({
       status: 'executed',
-      execution: { ok: true, result: { sessions: [{ id: 'session-1' }] } },
+      execution: { ok: true, result: { sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null } },
     });
   });
 
@@ -243,7 +320,7 @@ describe('ActionExecutor prepared invocation', () => {
       });
       return { decision: 'approve' as const, request };
     });
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1' }] }));
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null }));
     const executor = createExecutor({
       approvalsCreate,
       approvalsGet,
@@ -254,7 +331,13 @@ describe('ActionExecutor prepared invocation', () => {
       isActionApprovalRequired: (actionId) => actionId === 'session.list',
     });
 
-    const preparedPromise = executor.prepare('session.list', {}, { surface: 'mcp' });
+    const preparedPromise = executor.prepare('session.list', {}, {
+      surface: 'mcp',
+      serverId: 'server-1',
+      actionRequestId: 'request-2',
+      defaultSessionId: 'session-1',
+      sessionListAccess: 'current_session',
+    });
     await waiterReady;
     const decideResult = await executor.execute('approval.request.decide', {
       artifactId: 'approval-concurrent-1',
@@ -274,13 +357,13 @@ describe('ActionExecutor prepared invocation', () => {
     expect(prepared.invocation.run()).toBe(firstRun);
     await expect(firstRun).resolves.toEqual({
       ok: true,
-      result: { sessions: [{ id: 'session-1' }] },
+      result: { sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null },
     });
     expect(sessionList).toHaveBeenCalledTimes(1);
   });
 
   it('keeps execute as the terminal prepare-then-run convenience contract', async () => {
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1' }] }));
+    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null }));
     const executor = createExecutor({ sessionList });
 
     await expect(executor.execute('session.list', {}, {
@@ -288,7 +371,7 @@ describe('ActionExecutor prepared invocation', () => {
       authority: 'account_automation',
     })).resolves.toEqual({
       ok: true,
-      result: { sessions: [{ id: 'session-1' }] },
+      result: { sessions: [{ id: 'session-1', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null },
     });
     expect(sessionList).toHaveBeenCalledTimes(1);
   });

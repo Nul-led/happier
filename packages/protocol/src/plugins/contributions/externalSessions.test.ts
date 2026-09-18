@@ -166,6 +166,54 @@ describe('Agent External Sessions contribution limits', () => {
     }).success).toBe(false);
   });
 
+  it('reserves resume-only sources for ACP Session-primary Agents that explicitly open resume', () => {
+    const acpResumeOnlyAgent = {
+      id: 'acp-resume-agent',
+      title: 'ACP Resume Agent',
+      runtime: {
+        kind: 'acp',
+        transport: { kind: 'stdio', executable: { kind: 'systemTool', id: 'fixture-acp' } },
+      },
+      primary: 'sessions',
+      capabilities: {
+        surfaces: ['externalSessions'],
+        sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
+      },
+      surfaces: {
+        externalSession: {
+          sources: [{ ...source(0), resumeOnly: true }],
+        },
+      },
+    } as const;
+
+    const rejected = PluginAgentContributionV2Schema.safeParse(acpResumeOnlyAgent);
+    expect(rejected.success).toBe(false);
+    if (!rejected.success) {
+      expect(JSON.stringify(rejected.error.issues)).toContain(
+        'resume-only External Sessions source requires an ACP Session-primary Agent',
+      );
+    }
+    expect(PluginAgentContributionV2Schema.safeParse({
+      ...acpResumeOnlyAgent,
+      capabilities: {
+        ...acpResumeOnlyAgent.capabilities,
+        sessions: { ...acpResumeOnlyAgent.capabilities.sessions, open: ['create', 'resume'] },
+      },
+    }).success).toBe(true);
+    expect(PluginAgentContributionV2Schema.safeParse({
+      ...acpResumeOnlyAgent,
+      runtime: { kind: 'custom' },
+      capabilities: {
+        ...acpResumeOnlyAgent.capabilities,
+        sessions: { ...acpResumeOnlyAgent.capabilities.sessions, open: ['create', 'resume'] },
+      },
+    }).success).toBe(false);
+    expect(PluginAgentContributionV2Schema.safeParse({
+      ...acpResumeOnlyAgent,
+      surfaces: { externalSession: { sources: [source(0)] } },
+    }).success).toBe(true);
+  });
+
   it('uses one Agent identity when primary runtime and External Sessions coexist', () => {
     expect(PluginAgentContributionV2Schema.safeParse(agentWithSources(1)).success).toBe(true);
     expect(PluginAgentContributionV2Schema.safeParse({

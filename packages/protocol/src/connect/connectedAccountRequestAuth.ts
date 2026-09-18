@@ -201,7 +201,8 @@ export const ConnectedAccountRequestAuthMaterializationV1Schema = z.object({
   origin: ConnectedAccountRequestAuthCanonicalHttpsOriginV1Schema,
   headerNames: z.array(ConnectedAccountRequestAuthHeaderNameV1Schema)
     .min(1)
-    .max(32),
+    .max(32)
+    .readonly(),
 }).strict().superRefine((value, context) => {
   const seen = new Set<string>();
   for (const [index, headerName] of value.headerNames.entries()) {

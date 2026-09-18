@@ -11,9 +11,9 @@ import {
   SESSION_INPUT_AUTHORITY_META_KEY,
   SESSION_INPUT_REQUEST_META_KEY,
   SESSION_MESSAGE_PROVENANCE_META_KEY,
-  SessionInputAuthorityV1Schema,
-  SessionInputRequestV1Schema,
-  SessionMessageProvenanceV1Schema,
+  SessionInputAuthoritySchema,
+  SessionInputRequestSchema,
+  SessionMessageProvenanceSchema,
 } from './sessionInputAdmission.js';
 
 export type SessionUserMessageDeliveryIntentV1 =
@@ -81,9 +81,9 @@ export function createSessionMessageMetaSchema(zod: typeof z) {
       allowedTools: zod.array(zod.string()).nullable().optional(),
       disallowedTools: zod.array(zod.string()).nullable().optional(),
       displayText: zod.string().optional(),
-      [SESSION_MESSAGE_PROVENANCE_META_KEY]: SessionMessageProvenanceV1Schema.optional(),
-      [SESSION_INPUT_REQUEST_META_KEY]: SessionInputRequestV1Schema.optional(),
-      [SESSION_INPUT_AUTHORITY_META_KEY]: SessionInputAuthorityV1Schema.optional(),
+      [SESSION_MESSAGE_PROVENANCE_META_KEY]: SessionMessageProvenanceSchema.optional(),
+      [SESSION_INPUT_REQUEST_META_KEY]: SessionInputRequestSchema.optional(),
+      [SESSION_INPUT_AUTHORITY_META_KEY]: SessionInputAuthoritySchema.optional(),
       happier: zod
         .object({
           kind: zod.string(),

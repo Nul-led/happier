@@ -4,6 +4,7 @@ import {
   SessionIdSchema,
   SessionIndexedIdentifierMaxLengthV1,
   SidechainIdSchema,
+  ExecutionRunIdSchema,
 } from './idsV1.js';
 
 describe('SessionIdSchema', () => {
@@ -21,5 +22,12 @@ describe('SidechainIdSchema', () => {
   it('shares the indexed session identifier boundary', () => {
     expect(SidechainIdSchema.safeParse('s'.repeat(SessionIndexedIdentifierMaxLengthV1)).success).toBe(true);
     expect(SidechainIdSchema.safeParse('s'.repeat(SessionIndexedIdentifierMaxLengthV1 + 1)).success).toBe(false);
+  });
+});
+
+describe('ExecutionRunIdSchema', () => {
+  it('fits the indexed Pending routing identity on every database provider', () => {
+    expect(ExecutionRunIdSchema.safeParse('r'.repeat(SessionIndexedIdentifierMaxLengthV1)).success).toBe(true);
+    expect(ExecutionRunIdSchema.safeParse('r'.repeat(SessionIndexedIdentifierMaxLengthV1 + 1)).success).toBe(false);
   });
 });

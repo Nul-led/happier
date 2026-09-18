@@ -20,6 +20,7 @@ export const ConnectedAccountUiProjectionEntryV1Schema = z.object({
   description: ProjectedLocalizedTextSchema.optional(),
   authentication: PluginConnectedAccountAuthenticationV2Schema,
   capabilities: z.array(z.string()),
+  recoveryCredits: z.object({ supported: z.literal(true) }).strict().optional(),
   availability: z.object({ state: z.enum(['available', 'disabled', 'blocked']), reason: z.string().trim().min(1) }).strict(),
   diagnostics: z.array(z.string()),
 }).strict().superRefine((entry, context) => {

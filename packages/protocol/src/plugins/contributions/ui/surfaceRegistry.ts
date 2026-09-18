@@ -30,9 +30,78 @@ export const PluginUiTargetKindV1Schema = z.enum([
 ]);
 export type PluginUiTargetKindV1 = z.infer<typeof PluginUiTargetKindV1Schema>;
 
+export type PluginUiInlineSurfacePresentationV1 = 'content' | 'fill';
+
+const ALL_UI_SURFACE_PLATFORMS: readonly PluginUiPlatformV1[] = Object.freeze([
+  ...PluginUiPlatformV1Schema.options,
+]);
+
+/**
+ * Exact host-owned inline roles. This is admission, not a generic author slot,
+ * and it is the sole authority for the role vocabulary: the role enum, the
+ * destination exclusion, the authored-`ui.views` classification and the
+ * role/presentation mount union below are all derived from these rows rather
+ * than repeated as parallel lists.
+ *
+ * `authoredIn` records which authoring family may declare the role, because an
+ * inline role is not automatically a `ui.views` container: Session info
+ * sections keep their own `contributes.sessionInfoSections` family.
+ */
+export const PLUGIN_UI_INLINE_SURFACE_SLOTS_V1 = Object.freeze({
+  sessionSubagentLaunch: Object.freeze({
+    role: 'sessionSubagentLaunch' as const,
+    targetKind: 'session' as const,
+    presentations: Object.freeze(['content'] as const),
+    surfaceContextPlacement: 'sessionPane' as const,
+    platforms: ALL_UI_SURFACE_PLATFORMS,
+    authoredIn: 'ui.views' as const,
+  }),
+  sessionSubagentDetails: Object.freeze({
+    role: 'sessionSubagentDetails' as const,
+    targetKind: 'session' as const,
+    presentations: Object.freeze(['content', 'fill'] as const),
+    surfaceContextPlacement: 'sessionPane' as const,
+    platforms: ALL_UI_SURFACE_PLATFORMS,
+    authoredIn: 'ui.views' as const,
+  }),
+  sessionInfoSection: Object.freeze({
+    role: 'sessionInfoSection' as const,
+    targetKind: 'session' as const,
+    presentations: Object.freeze(['content'] as const),
+    surfaceContextPlacement: 'sessionPane' as const,
+    platforms: ALL_UI_SURFACE_PLATFORMS,
+    authoredIn: 'contributes.sessionInfoSections' as const,
+  }),
+  /**
+   * Embedded Session content a Board/Details/sidebar/Companion/mobile host
+   * frames as one Session widget. `content` covers a framed card whose host
+   * owns bounds and scrolling; `fill` covers the expanded/focused host where
+   * the surface owns its own content scroll. Compactness is measured host
+   * geometry already carried by the generic surface context, so it is
+   * deliberately not a public presentation value.
+   */
+  sessionWidget: Object.freeze({
+    role: 'sessionWidget' as const,
+    targetKind: 'session' as const,
+    presentations: Object.freeze(['content', 'fill'] as const),
+    surfaceContextPlacement: 'sessionPane' as const,
+    platforms: ALL_UI_SURFACE_PLATFORMS,
+    authoredIn: 'ui.views' as const,
+  }),
+});
+
+export type PluginUiInlineSurfaceRoleV1 = keyof typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1;
+const PLUGIN_UI_INLINE_SURFACE_ROLE_IDS_V1 = Object.freeze(
+  Object.keys(PLUGIN_UI_INLINE_SURFACE_SLOTS_V1) as [
+    PluginUiInlineSurfaceRoleV1,
+    ...PluginUiInlineSurfaceRoleV1[],
+  ],
+);
+export const PluginUiInlineSurfaceRoleV1Schema = z.enum(PLUGIN_UI_INLINE_SURFACE_ROLE_IDS_V1);
+
 /**
  * Physical host vocabulary. This is intentionally broader than destinations:
- * the three inline roles share the same physical host but are not navigation
+ * the inline roles share the same physical host but are not navigation
  * containers. Consumers that make a destination decision must use
  * `PluginUiDestinationContainerV1` instead.
  */
@@ -46,74 +115,79 @@ export const PluginUiContainerV1Schema = z.enum([
   'bottomPane',
   'browserPanel',
   'servicesPanel',
-  'sessionSubagentLaunch',
-  'sessionSubagentDetails',
-  'sessionInfoSection',
+  ...PLUGIN_UI_INLINE_SURFACE_ROLE_IDS_V1,
 ]);
 export type PluginUiContainerV1 = z.infer<typeof PluginUiContainerV1Schema>;
 
-export const PluginUiDestinationContainerV1Schema = PluginUiContainerV1Schema.exclude([
-  'sessionSubagentLaunch',
-  'sessionSubagentDetails',
-  'sessionInfoSection',
-]);
+export const PluginUiDestinationContainerV1Schema = PluginUiContainerV1Schema.exclude(
+  PLUGIN_UI_INLINE_SURFACE_ROLE_IDS_V1,
+);
 export type PluginUiDestinationContainerV1 = z.infer<
   typeof PluginUiDestinationContainerV1Schema
 >;
 
 /**
- * Author-selectable `ui.views` containers. `settingsPage` remains a real host
- * container, but its declaration is owned exclusively by `ui.settingsPages`.
- * Keeping that distinction structural makes the generated public JSON schema
- * reject the same wrong-owner shape as the canonical parser.
+ * The inline roles a plugin may declare through `ui.views`. `settingsPage`
+ * remains a real host container, but its declaration is owned exclusively by
+ * `ui.settingsPages`, and `sessionInfoSection` by `contributes.sessionInfoSections`.
+ * Keeping both distinctions structural — and Registry-derived — makes the
+ * generated public JSON schema, the canonical parser and every projection
+ * classify the same declarations.
  */
+export type PluginUiAuthoredViewInlineSurfaceRoleV1 = {
+  [Role in PluginUiInlineSurfaceRoleV1]:
+    (typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1)[Role]['authoredIn'] extends 'ui.views'
+      ? Role
+      : never;
+}[PluginUiInlineSurfaceRoleV1];
+type PluginUiNonAuthoredViewInlineSurfaceRoleV1 = Exclude<
+  PluginUiInlineSurfaceRoleV1,
+  PluginUiAuthoredViewInlineSurfaceRoleV1
+>;
+const PLUGIN_UI_NON_AUTHORED_VIEW_INLINE_SURFACE_ROLE_IDS_V1 = Object.freeze(
+  PLUGIN_UI_INLINE_SURFACE_ROLE_IDS_V1.filter((role) => (
+    PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[role].authoredIn !== 'ui.views'
+  )),
+) as readonly PluginUiNonAuthoredViewInlineSurfaceRoleV1[];
+
 /**
- * `ui.views` is the one authored spelling for both destination and Agent
- * inline views. Its parsed binding arm, rather than this input vocabulary,
- * decides whether a view is navigable.
+ * `ui.views` is the one authored spelling for both destination and inline
+ * views. Its parsed binding arm, rather than this input vocabulary, decides
+ * whether a view is navigable.
  */
 export const PluginUiViewContainerV1Schema = PluginUiContainerV1Schema.exclude([
-  'settingsPage',
-  'sessionInfoSection',
+  'settingsPage' as const,
+  ...PLUGIN_UI_NON_AUTHORED_VIEW_INLINE_SURFACE_ROLE_IDS_V1,
 ]);
 export type PluginUiViewContainerV1 = z.infer<typeof PluginUiViewContainerV1Schema>;
 
-export const PluginUiInlineSurfaceRoleV1Schema = z.enum([
-  'sessionSubagentLaunch',
-  'sessionSubagentDetails',
-  'sessionInfoSection',
-]);
-export type PluginUiInlineSurfaceRoleV1 = z.infer<typeof PluginUiInlineSurfaceRoleV1Schema>;
-export type PluginUiInlineSurfacePresentationV1 = 'content' | 'fill';
+/**
+ * The one classification every `ui.views` producer, parser and projection asks
+ * instead of comparing role names. A caller that needs "is this authored view
+ * an inline surface rather than a destination" must call this, so adding a row
+ * above cannot silently drop the role from a consumer's hardcoded pair test.
+ */
+export function isPluginUiAuthoredViewInlineSurfaceRoleV1(
+  container: unknown,
+): container is PluginUiAuthoredViewInlineSurfaceRoleV1 {
+  const parsed = PluginUiInlineSurfaceRoleV1Schema.safeParse(container);
+  return parsed.success
+    && PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[parsed.data].authoredIn === 'ui.views';
+}
 
-const ALL_UI_SURFACE_PLATFORMS: readonly PluginUiPlatformV1[] = Object.freeze([
-  ...PluginUiPlatformV1Schema.options,
-]);
-
-/** Exact host-owned inline roles. This is admission, not a generic author slot. */
-export const PLUGIN_UI_INLINE_SURFACE_SLOTS_V1 = Object.freeze({
-  sessionSubagentLaunch: Object.freeze({
-    role: 'sessionSubagentLaunch' as const,
-    targetKind: 'session' as const,
-    presentations: Object.freeze(['content'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
-    platforms: ALL_UI_SURFACE_PLATFORMS,
-  }),
-  sessionSubagentDetails: Object.freeze({
-    role: 'sessionSubagentDetails' as const,
-    targetKind: 'session' as const,
-    presentations: Object.freeze(['content', 'fill'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
-    platforms: ALL_UI_SURFACE_PLATFORMS,
-  }),
-  sessionInfoSection: Object.freeze({
-    role: 'sessionInfoSection' as const,
-    targetKind: 'session' as const,
-    presentations: Object.freeze(['content'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
-    platforms: ALL_UI_SURFACE_PLATFORMS,
-  }),
-});
+/**
+ * The correlated role/presentation pair an inline host may mount. Derived from
+ * each row's declared `presentations` so a host cannot mount a pair the
+ * Registry does not admit. Runtime callers still validate through
+ * `resolvePluginUiInlineSurfaceSlotV1`: compile-time derivation is not
+ * boundary validation.
+ */
+export type PluginUiInlineSurfaceMountV1 = {
+  [Role in PluginUiInlineSurfaceRoleV1]: Readonly<{
+    role: Role;
+    presentation: (typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1)[Role]['presentations'][number];
+  }>;
+}[PluginUiInlineSurfaceRoleV1];
 
 export function resolvePluginUiInlineSurfaceSlotV1(
   role: unknown,
@@ -817,6 +891,18 @@ export const PluginUiSurfaceBindingV1Schema = z.discriminatedUnion('kind', [
 export type PluginUiSurfaceBindingV1 =
   | PluginUiDestinationBindingV1
   | PluginUiInlineSurfaceBindingV1;
+
+/** Correlate an admitted binding without reconstructing authority from its id. */
+export function isPluginUiInlineSurfaceBindingForSurfaceV1(
+  binding: PluginUiSurfaceBindingV1,
+  surface: PluginContributionIdentityV1,
+  role: PluginUiInlineSurfaceRoleV1,
+): binding is PluginUiInlineSurfaceBindingV1 {
+  return binding.kind !== 'destination'
+    && binding.surface.pluginId === surface.pluginId
+    && binding.surface.localId === surface.localId
+    && binding.role === role;
+}
 
 /**
  * Exact binding selector for a host that already knows its insertion slot and

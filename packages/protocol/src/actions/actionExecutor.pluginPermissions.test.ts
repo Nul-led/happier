@@ -195,6 +195,7 @@ describe('createActionExecutor (plugin permission grants)', () => {
       approvalsCreate,
       approvalsGet,
       approvalsUpdate,
+      isApprovalExecutionOriginCurrent: async () => true,
       isActionApprovalRequired: (actionId, context) => (
         actionId === 'plugins.permissions.grants.revoke' && context.surface === 'plugin'
       ),
@@ -204,7 +205,14 @@ describe('createActionExecutor (plugin permission grants)', () => {
       grantId: 'grant-1',
     }, {
       surface: 'plugin',
-      actionCaller: { kind: 'plugin', pluginId: 'acme.voice', contributionLocalId: 'permission-grants' },
+      serverId: 'server-1',
+      actionRequestId: 'permission-revoke-1',
+      actionCaller: {
+        kind: 'plugin',
+        pluginId: 'acme.voice',
+        contributionLocalId: 'permission-grants',
+        immutableGenerationId: 'generation-1',
+      },
     })).resolves.toMatchObject({
       ok: true,
       result: { kind: 'approval_request_created', artifactId: 'approval-1' },
@@ -231,7 +239,12 @@ describe('createActionExecutor (plugin permission grants)', () => {
     expect(pluginPermissionGrantAction).toHaveBeenCalledWith({
       actionId: 'plugins.permissions.grants.revoke',
       input: { grantId: 'grant-1' },
-      caller: { kind: 'plugin', pluginId: 'acme.voice', contributionLocalId: 'permission-grants' },
+      caller: {
+        kind: 'plugin',
+        pluginId: 'acme.voice',
+        contributionLocalId: 'permission-grants',
+        immutableGenerationId: 'generation-1',
+      },
     });
   });
 

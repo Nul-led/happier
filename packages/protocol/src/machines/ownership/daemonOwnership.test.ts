@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import tweetnacl from 'tweetnacl';
 
 import {
     MACHINE_OWNER_CONFLICT_ERROR,
@@ -8,7 +9,9 @@ import {
     readMachineOwnerConflictSocketPayload,
 } from './daemonOwnership.js';
 
-const validInstallationPublicKey = Buffer.from(new Uint8Array(32)).toString('base64url');
+const validInstallationPublicKey = Buffer.from(
+    tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32)).publicKey,
+).toString('base64url');
 const validInstallationProofSignature = Buffer.from(new Uint8Array(64)).toString('base64url');
 
 describe('machine daemon ownership protocol', () => {

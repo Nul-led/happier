@@ -118,14 +118,6 @@ describe('AccountSettingMutationV1', () => {
         secretRefs: { clientSecret: 'x'.repeat(513) },
       })],
     }],
-    ['more than 64 SavedSecret references', {
-      v: 1,
-      entries: [connectedAccountServiceConfigurationsV1Entry({
-        secretRefs: Object.fromEntries(
-          Array.from({ length: 65 }, (_, index) => [`field-${index}`, `secret-${index}`]),
-        ),
-      })],
-    }],
   ])('rejects invalid persisted Connected Account configuration shape: %s', (_label, value) => {
     const definition = ACCOUNT_SETTING_DEFINITIONS.connectedAccountServiceConfigurationsV1;
 
@@ -137,6 +129,35 @@ describe('AccountSettingMutationV1', () => {
         value,
       }],
     })).toMatchObject({ status: 'invalid' });
+  });
+
+  it('admits Connected Account configuration members above the former private count ceiling', () => {
+    const definition = ACCOUNT_SETTING_DEFINITIONS.connectedAccountServiceConfigurationsV1;
+    const value = {
+      v: 1,
+      entries: [connectedAccountServiceConfigurationsV1Entry({
+        values: Object.fromEntries(
+          Array.from({ length: 65 }, (_, index) => [`field-${index}`, index]),
+        ),
+        secretRefs: Object.fromEntries(
+          Array.from({ length: 65 }, (_, index) => [`secret-field-${index}`, `secret-${index}`]),
+        ),
+      })],
+    };
+
+    expect(new TextEncoder().encode(JSON.stringify(value)).byteLength)
+      .toBeLessThan(definition.maximumSerializedValueBytes);
+    expect(definition.parseMutationValue(value)).toMatchObject({ success: true });
+    expect(applyAccountSettingMutationV1({}, {
+      operations: [{
+        op: 'set',
+        key: 'connectedAccountServiceConfigurationsV1',
+        value,
+      }],
+    })).toEqual({
+      status: 'applied',
+      raw: { connectedAccountServiceConfigurationsV1: value },
+    });
   });
 
   it('accepts one to 64 unique operations and rejects empty or oversized lists', () => {

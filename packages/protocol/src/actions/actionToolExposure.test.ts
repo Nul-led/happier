@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { searchSerializedActionSpecsForSurface } from './actionCatalog.js';
+import {
+  WORKFLOW_ACTION_IDS_V1,
+  type WorkflowActionIdV1,
+} from '../workflows/actionsV1.js';
 import { ActionsSettingsV1Schema } from './actionSettings.js';
 import { isRuntimeActionIdV1 } from './actionIds.js';
 import {
@@ -9,6 +13,8 @@ import {
 } from './surfaces.js';
 import {
   ActionSpecSchema,
+  HUMAN_SECRET_API_EXCLUSION_ACTION_IDS,
+  INTERACTIVE_DISCUSSION_API_EXCLUSION_ACTION_IDS,
   INTERNAL_ACTION_IDS,
   INTERNAL_ACTION_REASONS,
   PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_ACTION_IDS,
@@ -41,13 +47,82 @@ describe('actionToolExposure', () => {
     }
   });
 
-  it('keeps agent action discovery and reload specs directly exposed', () => {
-    for (const id of ['action.spec.search', 'action.spec.get', 'action.options.resolve', 'plugins.reload'] as const) {
+  it('keeps agent action discovery, execution observation, and reload specs directly exposed', () => {
+    for (const id of [
+      'action.spec.search',
+      'action.spec.get',
+      'action.options.resolve',
+      'execution.run.list',
+      'execution.run.get',
+      'execution.run.wait',
+      'plugins.reload',
+    ] as const) {
       const spec = getActionSpec(id);
 
       expect(resolveActionToolExposureMode(spec, 'agent')).toBe('direct');
       expect(isActionDirectToolExposedOn(spec, 'agent')).toBe(true);
       expect(isActionDiscoverableOnToolSurface(spec, 'agent')).toBe(true);
+    }
+  });
+
+  it('directly exposes the current-Session presentation command to Agents and MCP', () => {
+    const spec = getActionSpec('session.presentation.apply');
+
+    expect(resolveActionToolExposureMode(spec, 'agent')).toBe('direct');
+    expect(isActionDirectToolExposedOn(spec, 'agent')).toBe(true);
+    expect(isActionDiscoverableOnToolSurface(spec, 'agent')).toBe(true);
+    expect(resolveActionToolExposureMode(spec, 'mcp')).toBe('direct');
+    expect(isActionDirectToolExposedOn(spec, 'mcp')).toBe(true);
+    expect(isActionDiscoverableOnToolSurface(spec, 'mcp')).toBe(true);
+  });
+
+  it('directly exposes the Session Board Action family to Agents and MCP', () => {
+    for (const id of [
+      'session.board.get',
+      'session.board.item.upsert',
+      'session.board.item.remove',
+      'session.board.layout.update',
+    ] as const) {
+      const spec = getActionSpec(id);
+
+      expect(resolveActionToolExposureMode(spec, 'agent')).toBe('direct');
+      expect(isActionDirectToolExposedOn(spec, 'agent')).toBe(true);
+      expect(isActionDiscoverableOnToolSurface(spec, 'agent')).toBe(true);
+      expect(resolveActionToolExposureMode(spec, 'mcp')).toBe('direct');
+      expect(isActionDirectToolExposedOn(spec, 'mcp')).toBe(true);
+      expect(isActionDiscoverableOnToolSurface(spec, 'mcp')).toBe(true);
+    }
+  });
+
+  it('surfaces every Workflow Action on MCP while only the four interactive tools stay direct', () => {
+    const directMcpActionIds = new Set<WorkflowActionIdV1>([
+      'workflow.run.start',
+      'workflow.run.get',
+      'workflow.run.wait',
+      'workflow.run.cancel',
+    ]);
+
+    for (const actionId of WORKFLOW_ACTION_IDS_V1) {
+      const spec = getActionSpec(actionId);
+      const availability = resolveActionSurfaceAvailability({ actionId, surface: 'mcp' });
+
+      // The generic external MCP `action_execute` transport must never
+      // surface-reject a Workflow operation.
+      expect(availability, actionId).toEqual(expect.objectContaining({
+        available: true,
+        reason: 'available',
+        actionId,
+        surface: 'mcp',
+      }));
+      expect(isActionDiscoverableOnToolSurface(spec, 'mcp'), actionId).toBe(true);
+
+      if (directMcpActionIds.has(actionId)) {
+        expect(resolveActionToolExposureMode(spec, 'mcp'), actionId).toBe('direct');
+        expect(isActionDirectToolExposedOn(spec, 'mcp'), actionId).toBe(true);
+      } else {
+        expect(resolveActionToolExposureMode(spec, 'mcp'), actionId).toBe('discoverable_only');
+        expect(isActionDirectToolExposedOn(spec, 'mcp'), actionId).toBe(false);
+      }
     }
   });
 
@@ -208,6 +283,8 @@ describe('actionToolExposure', () => {
 
   it('derives public Action projections from reasoned exclusions independently of execution placement', () => {
     const internalActionIds = new Set(INTERNAL_ACTION_IDS);
+    const humanSecretApiExcludedActionIds = new Set(HUMAN_SECRET_API_EXCLUSION_ACTION_IDS);
+    const interactiveDiscussionApiExcludedActionIds = new Set(INTERACTIVE_DISCUSSION_API_EXCLUSION_ACTION_IDS);
     const pluginProvenanceOnlyActionIds = new Set(PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_ACTION_IDS);
     const pluginSurfaceExcludedActionIds = new Set(PLUGIN_SURFACE_EXCLUSION_ACTION_IDS);
 
@@ -225,7 +302,10 @@ describe('actionToolExposure', () => {
         expect(spec.surfaces.plugin).toBe(false);
       } else {
         expect(spec.surfaces.api, spec.id).toBe(
-          !pluginProvenanceOnlyActionIds.has(spec.id),
+          !pluginProvenanceOnlyActionIds.has(spec.id)
+            && !humanSecretApiExcludedActionIds.has(spec.id)
+            && !interactiveDiscussionApiExcludedActionIds.has(spec.id)
+            && spec.requiredAuthority === 'account_automation',
         );
         expect(spec.surfaces.plugin, spec.id).toBe(
           !pluginSurfaceExcludedActionIds.has(spec.id),

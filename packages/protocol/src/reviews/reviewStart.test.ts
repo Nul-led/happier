@@ -7,6 +7,35 @@ const reviewStartExports = reviewStart as typeof reviewStart & {
 };
 
 describe('ReviewStartInputSchema', () => {
+  it('accepts one exact Team credential model selection and rejects fanout ambiguity', () => {
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 4,
+      agentTargetKey: 'backend:codex',
+      modelId: 'review-model',
+      deliveryMode: 'brokered' as const,
+    };
+
+    expect(reviewStart.ReviewStartInputSchema.parse({
+      engineIds: ['codex'],
+      instructions: 'Review.',
+      teamCredentialModel,
+    }).teamCredentialModel).toEqual(teamCredentialModel);
+    expect(reviewStart.ReviewStartInputSchema.safeParse({
+      engineIds: ['codex', 'claude'],
+      instructions: 'Review.',
+      teamCredentialModel,
+    }).success).toBe(false);
+    expect(reviewStart.ReviewStartInputSchema.safeParse({
+      engineIds: ['codex'],
+      instructions: 'Review.',
+      runLocation: 'current_session',
+      teamCredentialModel,
+    }).success).toBe(false);
+  });
+
   it('exports the canonical host-resolved SCM review scope key', () => {
     expect(reviewStartExports.REVIEW_SCM_SCOPE_INPUT_KEY).toBe('scmReviewScope');
   });

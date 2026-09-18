@@ -19,6 +19,9 @@ import {
 } from './ui/v2.js';
 import { PluginSettingFieldV2Schema } from './settings.js';
 import {
+  declaresHostSynthesizedAgentResumeOnlyExternalSources,
+} from './agentResumeOnlySources.js';
+import {
   readComposerAttachmentRuntimeRegistrationFieldsV1,
   type ComposerAttachmentRuntimeRegistrationFieldV1,
 } from './composerAttachments.js';
@@ -68,6 +71,7 @@ export type PluginContributionRegistrationRight = Readonly<{
     | 'factory'
     | 'sessionRunnerFactory'
     | 'cliAuth'
+    | 'terminal'
     | 'externalSessions'
     | ComposerAttachmentRuntimeRegistrationFieldV1
   )[];
@@ -564,7 +568,7 @@ function extractNestedReferences(family: string, value: Readonly<Record<string, 
       const current = stack.pop()!;
       if (!current.node || typeof current.node !== 'object') continue;
       const node = current.node as Record<string, unknown>;
-      if (node.kind === 'action') {
+      if (node.kind === 'action' && node.action !== undefined) {
         found.push({
           targetFamily: 'actions',
           allowQualifiedCrossPlugin: false,
@@ -632,6 +636,41 @@ function declaresAgentExternalSessions(value: Readonly<Record<string, unknown>>)
     && !Array.isArray(surfaces.externalSession);
 }
 
+/**
+ * An Agent owes a plugin-authored External Sessions runtime only when the host
+ * cannot produce one itself. A valid ACP Session-primary declaration whose
+ * sources are ALL `resumeOnly` is served by the host's own generic
+ * `session/list` producer, so requiring a plugin contribution there would
+ * reject the very declaration the host synthesizes for — and accepting one
+ * would install a second owner of the same surface. Every other declaration,
+ * including a mixed source set with one non-resume-only source, still owes the
+ * contribution and fails closed without it.
+ */
+function requiresContributedAgentExternalSessions(
+  value: Readonly<Record<string, unknown>>,
+): boolean {
+  return declaresAgentExternalSessions(value)
+    && !declaresHostSynthesizedAgentResumeOnlyExternalSources(value);
+}
+
+function declaresAgentTerminal(value: Readonly<Record<string, unknown>>): boolean {
+  const capabilities = readAgentCapabilities(value);
+  return Array.isArray(capabilities?.surfaces)
+    && capabilities.surfaces.includes('terminal');
+}
+
+/**
+ * A `custom` Agent runtime owns its terminal inside the Agent runtime it
+ * returns (`AgentRuntime.surfaces.terminal`), and the runtime lease rejects an
+ * Agent that carries both that surface and a registered contribution. Only a
+ * host-owned runtime (ACP and the other declarative kinds) can contribute the
+ * declared terminal surface through registration.
+ */
+function declaresContributedAgentTerminal(value: Readonly<Record<string, unknown>>): boolean {
+  return declaresAgentTerminal(value)
+    && (value.runtime as Readonly<{ kind?: unknown }> | undefined)?.kind !== 'custom';
+}
+
 function readAgentCapabilities(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> | null {
   const capabilities = value.capabilities;
   return capabilities
@@ -687,7 +726,10 @@ function requiresFamilyRegistration(family: string, value: Readonly<Record<strin
   if (demand !== 'conditional') return false;
   if (family === 'agents') {
     const runtimeIsCustom = (value.runtime as Readonly<{ kind?: unknown }> | undefined)?.kind === 'custom';
-    return runtimeIsCustom || declaresAgentExternalSessions(value) || declaresAgentCliAuth(value);
+    return runtimeIsCustom
+      || declaresContributedAgentTerminal(value)
+      || requiresContributedAgentExternalSessions(value)
+      || declaresAgentCliAuth(value);
   }
   if (family === 'events') return value.kind === 'subscription';
   // §3.6.1: only the dynamic arm of the discriminated resource family has a
@@ -1050,13 +1092,14 @@ function derivePluginContributionRegistrationRightsForHost(
       }
       if (entry.manifestKey !== 'agents') return [{ family, localId, target }];
       assertExclusiveAgentPrimaryLifecycle(record);
-      const fields: ('factory' | 'sessionRunnerFactory' | 'cliAuth' | 'externalSessions')[] = [];
+      const fields: ('factory' | 'sessionRunnerFactory' | 'cliAuth' | 'terminal' | 'externalSessions')[] = [];
       if ((record.runtime as Readonly<{ kind?: unknown }> | undefined)?.kind === 'custom') {
         fields.push('factory');
         if (declaresAgentSessions(record)) fields.push('sessionRunnerFactory');
       }
       if (declaresAgentCliAuth(record)) fields.push('cliAuth');
-      if (declaresAgentExternalSessions(record)) fields.push('externalSessions');
+      if (declaresContributedAgentTerminal(record)) fields.push('terminal');
+      if (requiresContributedAgentExternalSessions(record)) fields.push('externalSessions');
       return [{ family, localId, target, requiredFields: Object.freeze(fields) }];
     })
   )));

@@ -4,7 +4,6 @@ import {
   isActionSpecSurfacedOn,
   listActionSpecs,
   type ActionInputFieldHint,
-  type ActionInputOption,
   type ActionSpec,
   type ActionSurfaces,
 } from './actionSpecs.js';
@@ -51,6 +50,8 @@ type SearchableActionDefinition = Readonly<{
   inputHints?: ActionSpec['inputHints'] | ActionDefinitionSummaryV1['inputHints'];
 }>;
 
+type SearchableActionInputOption = NonNullable<ActionInputFieldHint['options']>[number];
+
 function actionSearchText(spec: SearchableActionDefinition): string {
   const fieldText = Array.isArray(spec.inputHints?.fields)
     ? spec.inputHints.fields
@@ -59,8 +60,8 @@ function actionSearchText(spec: SearchableActionDefinition): string {
           field.title,
           field.description ?? '',
           field.widget,
-          ...(Array.isArray((field as any).options)
-            ? ((field as any).options as readonly ActionInputOption[]).flatMap((option) => [
+          ...(Array.isArray(field.options)
+            ? field.options.flatMap((option: SearchableActionInputOption) => [
               actionInputOptionValueSearchText(option.value),
               option.label,
               option.description ?? '',
@@ -128,17 +129,19 @@ type ActionCatalogSurfaceParams = Readonly<{
   surface?: keyof ActionSurfaces | null;
 }>;
 
-function resolveActionCatalogInputProjection(
+function resolveActionCatalogSurfaceProjection(
   spec: ActionSpec,
   surface: keyof ActionSurfaces | null | undefined,
 ): Readonly<{
   inputSchema: ActionSpec['inputSchema'];
   inputHints: ActionSpec['inputHints'];
+  outputSchema: ActionSpec['outputSchema'];
 }> {
   const apiBinding = surface === 'api' ? spec.surfaceBindings?.api : undefined;
   return {
     inputSchema: apiBinding?.inputSchema ?? spec.inputSchema,
     inputHints: apiBinding?.inputHints ?? spec.inputHints,
+    outputSchema: apiBinding?.outputSchema ?? spec.outputSchema,
   };
 }
 
@@ -146,7 +149,7 @@ export function serializeActionSpec(
   spec: ActionSpec,
   params?: ActionCatalogSurfaceParams,
 ): SerializedActionSpec {
-  const projection = resolveActionCatalogInputProjection(spec, params?.surface);
+  const projection = resolveActionCatalogSurfaceProjection(spec, params?.surface);
   return {
     id: spec.id,
     title: spec.title,
@@ -163,7 +166,7 @@ export function serializeActionSpec(
     inputHints: projection.inputHints ?? null,
     ...(spec.toolExposure ? { toolExposure: spec.toolExposure } : {}),
     ...(spec.contextualDefaults ? { contextualDefaults: spec.contextualDefaults } : {}),
-    ...(spec.outputSchema ? { outputSchema: zodSchemaToJsonSchemaObject(spec.outputSchema) } : {}),
+    ...(projection.outputSchema ? { outputSchema: zodSchemaToJsonSchemaObject(projection.outputSchema) } : {}),
     ...(spec.execution ? { execution: spec.execution } : {}),
     ...(spec.sideEffectClass ? { sideEffectClass: spec.sideEffectClass } : {}),
     ...(spec.operation ? { operation: spec.operation } : {}),
@@ -174,7 +177,7 @@ export function actionSpecToActionDefinitionV1(
   spec: ActionSpec,
   params?: ActionCatalogSurfaceParams,
 ): ActionDefinitionV1 {
-  const projection = resolveActionCatalogInputProjection(spec, params?.surface);
+  const projection = resolveActionCatalogSurfaceProjection(spec, params?.surface);
   return {
     kindVersion: 1,
     ...serializeActionSpec(spec, params),

@@ -131,7 +131,7 @@ export const ScmDiffSummaryMetadataSchema = z.object({
   turnEvidenceMode: ScmDiffSummaryTurnEvidenceModeSchema.optional(),
   contentConfidence: z.enum(['exact', 'unavailable']).optional(),
   attributionScope: z.enum([
-    'exclusive_worktree',
+    'no_happier_checkpoint_overlap_observed',
     'shared_worktree',
     'unknown',
   ]).optional(),

@@ -10,6 +10,90 @@ import {
 
 const IdentifierSchema = z.string().trim().min(1).max(256);
 const PresentationTextSchema = z.string().max(16_384);
+const PresentationIndexSchema = z.number().int().nonnegative().safe();
+
+export const SessionCompanionPresentationItemRefV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('builtin'), id: z.literal('session_summary') }).strict(),
+  z.object({ kind: z.literal('widget'), widgetId: IdentifierSchema }).strict(),
+]);
+export type SessionCompanionPresentationItemRefV1 = z.infer<
+  typeof SessionCompanionPresentationItemRefV1Schema
+>;
+
+/**
+ * Reversible viewer-local Session presentation intents. Durable Board writes
+ * stay in the Board Action owner; this wire can only reveal or arrange facts
+ * that the exact mounted Session adapter independently resolves as readable.
+ */
+export const CurrentSessionPresentationIntentV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('chat.return') }).strict(),
+  z.object({ kind: z.literal('board.open'), mode: z.enum(['beside_chat', 'focus']) }).strict(),
+  z.object({ kind: z.literal('board.view.select'), viewId: IdentifierSchema }).strict(),
+  z.object({
+    kind: z.literal('board.item.reveal'),
+    widgetId: IdentifierSchema,
+    viewId: IdentifierSchema.optional(),
+  }).strict(),
+  z.object({ kind: z.literal('companion.show') }).strict(),
+  z.object({ kind: z.literal('companion.hide') }).strict(),
+  z.object({
+    kind: z.literal('companion.item.add'),
+    item: SessionCompanionPresentationItemRefV1Schema,
+    index: PresentationIndexSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('companion.item.remove'),
+    item: SessionCompanionPresentationItemRefV1Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal('companion.item.move'),
+    item: SessionCompanionPresentationItemRefV1Schema,
+    toIndex: PresentationIndexSchema,
+  }).strict(),
+  z.object({ kind: z.literal('companion.edge.set'), edge: z.enum(['leading', 'trailing']) }).strict(),
+  z.object({ kind: z.literal('companion.collapse.set'), collapsed: z.boolean() }).strict(),
+  z.object({
+    kind: z.literal('companion.density.set'),
+    density: z.enum(['compact', 'comfortable']),
+  }).strict(),
+  z.object({ kind: z.literal('companion.open_full') }).strict(),
+]);
+export type CurrentSessionPresentationIntentV1 = z.infer<
+  typeof CurrentSessionPresentationIntentV1Schema
+>;
+
+export const CurrentSessionPresentationIntentResultV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('applied') }).strict(),
+  z.object({ status: z.literal('unchanged') }).strict(),
+  z.object({ status: z.literal('unavailable') }).strict(),
+  z.object({ status: z.literal('notCurrent') }).strict(),
+  z.object({ status: z.literal('invalidTarget') }).strict(),
+]);
+export type CurrentSessionPresentationIntentResultV1 = z.infer<
+  typeof CurrentSessionPresentationIntentResultV1Schema
+>;
+
+/**
+ * Host Action input for one reversible change to the exact invoking Agent's
+ * current Session viewer. Session identity and operation identity are
+ * deliberately absent: the Action host stamps both so input cannot retarget a
+ * different Session or manufacture an idempotency key.
+ */
+export const CurrentSessionPresentationActionInputV1Schema = z.object({
+  intent: CurrentSessionPresentationIntentV1Schema,
+}).strict();
+export type CurrentSessionPresentationActionInputV1 = z.infer<
+  typeof CurrentSessionPresentationActionInputV1Schema
+>;
+
+/** Acknowledged success from the incumbent current-Session presentation owner. */
+export const CurrentSessionPresentationActionResultV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('applied'), revision: IdentifierSchema }).strict(),
+  z.object({ status: z.literal('unchanged'), revision: IdentifierSchema }).strict(),
+]);
+export type CurrentSessionPresentationActionResultV1 = z.infer<
+  typeof CurrentSessionPresentationActionResultV1Schema
+>;
 
 export const CurrentSessionPresentationBindV1Schema = z.object({
   clientId: IdentifierSchema,
@@ -19,14 +103,34 @@ export const CurrentSessionPresentationBindV1Schema = z.object({
 
 export type CurrentSessionPresentationBindV1 = z.infer<typeof CurrentSessionPresentationBindV1Schema>;
 
-export const CurrentSessionPresentationBindResultV1Schema = z.object({
-  status: z.literal('bound'),
-  sessionId: IdentifierSchema,
-  hostNonce: IdentifierSchema,
-  revision: z.number().int().nonnegative(),
-}).strict();
+export const CurrentSessionPresentationBindResultV1Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('bound'),
+    sessionId: IdentifierSchema,
+    hostNonce: IdentifierSchema,
+    revision: z.number().int().nonnegative(),
+  }).strict(),
+  z.object({
+    status: z.literal('rejected'),
+    reason: z.enum(['notCurrent', 'unavailable']),
+  }).strict(),
+]);
 
 export type CurrentSessionPresentationBindResultV1 = z.infer<typeof CurrentSessionPresentationBindResultV1Schema>;
+
+export const CurrentSessionPresentationUnbindV1Schema = z.object({
+  clientId: IdentifierSchema,
+}).strict();
+
+export type CurrentSessionPresentationUnbindV1 = z.infer<typeof CurrentSessionPresentationUnbindV1Schema>;
+
+export const CurrentSessionPresentationUnbindResultV1Schema = z.object({
+  status: z.enum(['retired', 'ignored']),
+}).strict();
+
+export type CurrentSessionPresentationUnbindResultV1 = z.infer<
+  typeof CurrentSessionPresentationUnbindResultV1Schema
+>;
 
 /**
  * The legacy daemon-side replacement operation is one exact Composer text
@@ -57,6 +161,12 @@ const CurrentSessionPresentationCommandV1Schema = z.discriminatedUnion('kind', [
     clientId: IdentifierSchema,
     kind: z.literal('composer.replace'),
     transaction: CurrentSessionPresentationComposerReplaceTransactionV1Schema,
+  }).strict(),
+  z.object({
+    id: IdentifierSchema,
+    clientId: IdentifierSchema,
+    kind: z.literal('presentation.apply'),
+    intent: CurrentSessionPresentationIntentV1Schema,
   }).strict(),
 ]);
 
@@ -155,7 +265,10 @@ export const CurrentSessionPresentationAckV1Schema = z.object({
   hostNonce: IdentifierSchema,
   clientId: IdentifierSchema,
   commandId: IdentifierSchema,
-  result: ComposerTransactionResultV1Schema,
+  result: z.union([
+    ComposerTransactionResultV1Schema,
+    CurrentSessionPresentationIntentResultV1Schema,
+  ]),
 }).strict();
 
 export type CurrentSessionPresentationAckV1 = z.infer<typeof CurrentSessionPresentationAckV1Schema>;
@@ -163,3 +276,4 @@ export type CurrentSessionPresentationAckV1 = z.infer<typeof CurrentSessionPrese
 export const CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY = 'currentSessionPresentationV1' as const;
 export const CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD = 'session.presentation.bind' as const;
 export const CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD = 'session.presentation.ack' as const;
+export const CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD = 'session.presentation.unbind' as const;

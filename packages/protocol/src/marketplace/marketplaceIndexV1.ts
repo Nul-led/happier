@@ -5,6 +5,7 @@ import { PluginDiagnosticTextV1Schema } from '../daemon/pluginContributionIntros
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import type { PluginCompatibilityProjectionV1 } from '../plugins/availability/v1.js';
 import { PluginIdSchema } from '../plugins/pluginId.js';
+import { PluginEnginesV2Schema } from '../plugins/manifest/v2.js';
 import { NpmRegistryOriginV1Schema } from '../rpc/npmRegistryProfiles.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { PluginUpdatePolicyV1Schema } from './pluginUpdatePolicyV1.js';
@@ -34,9 +35,8 @@ export type MarketplaceReviewStatusV1 = z.infer<typeof MarketplaceReviewStatusV1
 /**
  * Listing presentation and bounded contribution-summary shapes shared by the
  * catalog entry and the npm discovery projection. Each owner chooses its own
- * unknown-key policy: the catalog entry and the canonical pack projection stay
- * closed, while the marketplaceDiscovery reader admits additive unknown
- * fields for forward compatibility.
+ * unknown-key policy: canonical projections stay closed, while ingress readers
+ * normalize additive presentation fields away before publishing those shapes.
  */
 const ListingDisplayShapeV1 = {
   title: BoundedText,
@@ -63,7 +63,7 @@ export const MarketplaceIndexEntryV1Schema = z.object({
   }).strict(),
   manifestDigest: ManifestDigest,
   compatibility: z.object({
-    happier: z.string().trim().min(1).max(256),
+    happier: PluginEnginesV2Schema.unwrap().shape.happier.unwrap().max(256).optional(),
     platforms: z.array(z.enum(['darwin', 'linux', 'windows', 'web', 'ios', 'android'])).max(6),
   }).strict(),
   summary: z.object(ListingSummaryShapeV1).strict(),
@@ -235,6 +235,25 @@ export const MarketplaceIndexSourceSnapshotV1Schema = z.object({
   });
 });
 export type MarketplaceIndexSourceSnapshotV1 = z.infer<typeof MarketplaceIndexSourceSnapshotV1Schema>;
+
+/**
+ * Catalog ingress drops only additive presentation in display, summary, and
+ * links. Source/entry identity, publisher identity, distribution, compatibility,
+ * review, freshness and diagnostic envelopes stay closed; known fields and the
+ * source-kind review refinement keep the canonical writer's validation.
+ * Unknown presentation never reaches cached snapshots or exact-install facts.
+ */
+const MarketplaceIndexSourceSnapshotReaderV1Schema = MarketplaceIndexSourceSnapshotV1Schema.safeExtend({
+  entries: z.array(MarketplaceIndexEntryV1Schema.extend({
+    display: MarketplaceIndexEntryV1Schema.shape.display.strip(),
+    summary: MarketplaceIndexEntryV1Schema.shape.summary.strip(),
+    links: MarketplaceIndexEntryV1Schema.shape.links.strip(),
+  })).max(5_000),
+});
+
+export function parseMarketplaceIndexSourceSnapshotV1(value: unknown): MarketplaceIndexSourceSnapshotV1 {
+  return MarketplaceIndexSourceSnapshotReaderV1Schema.parse(value);
+}
 
 export const MarketplaceIndexQueryV1Schema = z.object({
   text: z.string().trim().max(256).default(''),

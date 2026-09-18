@@ -1,23 +1,29 @@
-import { BOX_BUNDLE_MIN_BYTES, openBoxBundle, sealBoxBundle } from './boxBundle.js';
+import { openBoxBundle, sealBoxBundle } from './boxBundle.js';
+import {
+  ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
+  ENCRYPTED_DATA_KEY_ENVELOPE_V1_VERSION_BYTE,
+  ENCRYPTED_DATA_KEY_V1_BYTES,
+} from './encryptedDataKeyEnvelopeFormatV1.js';
 
-export const ENCRYPTED_DATA_KEY_ENVELOPE_V1_VERSION_BYTE = 0;
-export const DIRECT_SHARE_DATA_KEY_V1_BYTES = 32;
-export const DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES =
-  1 + BOX_BUNDLE_MIN_BYTES + DIRECT_SHARE_DATA_KEY_V1_BYTES;
+export {
+  ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
+  ENCRYPTED_DATA_KEY_ENVELOPE_V1_VERSION_BYTE,
+  ENCRYPTED_DATA_KEY_V1_BYTES,
+};
 
-export type DirectShareEncryptedDataKeyEnvelopeV1 = Readonly<{
+export type EncryptedDataKeyEnvelopeV1 = Readonly<{
   encryptedDataKey: Uint8Array<ArrayBuffer>;
 }>;
 
 /**
- * Validates the structural contract used when a named session share transports
- * its 32-byte data key. The server cannot authenticate the sealed box, but it
- * can reject envelopes that no conforming direct-share producer could emit.
+ * Validates the structural contract used whenever a fixed 32-byte data key is
+ * transported to one recipient. The server cannot authenticate the sealed box,
+ * but it can reject envelopes that no conforming producer could emit.
  */
-export function parseDirectShareEncryptedDataKeyEnvelopeV1(
+export function parseEncryptedDataKeyEnvelopeV1(
   envelope: Uint8Array,
-): DirectShareEncryptedDataKeyEnvelopeV1 | null {
-  if (envelope.byteLength !== DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES) {
+): EncryptedDataKeyEnvelopeV1 | null {
+  if (envelope.byteLength !== ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES) {
     return null;
   }
   if (envelope[0] !== ENCRYPTED_DATA_KEY_ENVELOPE_V1_VERSION_BYTE) {
@@ -33,6 +39,9 @@ export function sealEncryptedDataKeyEnvelopeV1(params: {
   recipientPublicKey: Uint8Array;
   randomBytes: (length: number) => Uint8Array;
 }): Uint8Array {
+  if (params.dataKey.length !== ENCRYPTED_DATA_KEY_V1_BYTES) {
+    throw new Error(`Invalid data key length: ${params.dataKey.length}`);
+  }
   const bundle = sealBoxBundle({
     plaintext: params.dataKey,
     recipientPublicKey: params.recipientPublicKey,
@@ -48,10 +57,15 @@ export function openEncryptedDataKeyEnvelopeV1(params: {
   envelope: Uint8Array;
   recipientSecretKeyOrSeed: Uint8Array;
 }): Uint8Array | null {
-  if (params.envelope.length < 2) return null;
+  if (params.envelope.length !== ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES) return null;
   if (params.envelope[0] !== ENCRYPTED_DATA_KEY_ENVELOPE_V1_VERSION_BYTE) return null;
-  return openBoxBundle({
+  const opened = openBoxBundle({
     bundle: params.envelope.slice(1),
     recipientSecretKeyOrSeed: params.recipientSecretKeyOrSeed,
   });
+  // Fixed-size postcondition stated at the boundary every runtime (JS, Swift,
+  // Android, and the native bridge) mirrors: callers may rely on exactly one
+  // data-key length, never a shorter or longer opened plaintext.
+  if (!opened || opened.length !== ENCRYPTED_DATA_KEY_V1_BYTES) return null;
+  return opened;
 }

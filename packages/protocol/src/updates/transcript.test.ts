@@ -227,6 +227,16 @@ describe('updates transcript vNext payloads', () => {
     expect(parsed.data.type).toBe('execution-run-updated');
   });
 
+  it('parses the released 0.2.11 Action operation ephemeral envelope', () => {
+    const parsed = EphemeralUpdateSchema.safeParse({
+      type: 'action-operation-updated',
+      machineId: 'machine-1',
+      content: { t: 'encrypted', c: 'sealed-snapshot' },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it('parses transcript-stream-segment ephemerals', () => {
     const parsed = EphemeralUpdateSchema.safeParse({
       type: 'transcript-stream-segment',
@@ -457,5 +467,77 @@ describe('updates transcript vNext payloads', () => {
 
     expect(parsed.success).toBe(true);
     expect(parsed.data).toMatchObject({ active: false, activeAt: 1_233 });
+  });
+});
+
+describe('updates transcript authenticated Account actor projection', () => {
+  const baseMessage = {
+    id: 'm1',
+    seq: 1,
+    content: { t: 'encrypted', c: 'cipher' } as const,
+    localId: 'l1',
+    messageRole: 'user' as const,
+    createdAt: 1_000,
+    updatedAt: 1_100,
+  };
+
+  it('parses a resolved actor on new-message and message-updated', () => {
+    for (const t of ['new-message', 'message-updated'] as const) {
+      const parsed = UpdateBodySchema.parse({
+        t,
+        sid: 'sess_1',
+        message: {
+          ...baseMessage,
+          accountActor: {
+            v: 1,
+            accountId: 'acc_alice',
+            profile: { firstName: 'Alice', lastName: null, username: null, avatarUrl: null },
+          },
+        },
+      });
+      if (parsed.t !== 'new-message' && parsed.t !== 'message-updated') throw new Error('unexpected');
+      expect(parsed.message.accountActor).toEqual({
+        v: 1,
+        accountId: 'acc_alice',
+        profile: { firstName: 'Alice', lastName: null, username: null, avatarUrl: null },
+      });
+    }
+  });
+
+  it('distinguishes explicit null retraction from an older producer omission', () => {
+    const retracted = UpdateBodySchema.parse({
+      t: 'new-message',
+      sid: 'sess_1',
+      message: { ...baseMessage, accountActor: null },
+    });
+    if (retracted.t !== 'new-message') throw new Error('unexpected');
+    expect(retracted.message.accountActor).toBeNull();
+
+    const omitted = UpdateBodySchema.parse({
+      t: 'new-message',
+      sid: 'sess_1',
+      message: baseMessage,
+    });
+    if (omitted.t !== 'new-message') throw new Error('unexpected');
+    expect('accountActor' in omitted.message).toBe(false);
+  });
+
+  it('rejects a message whose actor discloses admission relationship or a malformed profile', () => {
+    expect(UpdateBodySchema.safeParse({
+      t: 'new-message',
+      sid: 'sess_1',
+      message: {
+        ...baseMessage,
+        accountActor: { v: 1, accountId: 'acc_alice', profile: null, sessionRelationship: 'owner' },
+      },
+    }).success).toBe(false);
+    expect(UpdateBodySchema.safeParse({
+      t: 'new-message',
+      sid: 'sess_1',
+      message: {
+        ...baseMessage,
+        accountActor: { v: 1, accountId: 'acc_alice', profile: { firstName: 'Alice' } },
+      },
+    }).success).toBe(false);
   });
 });

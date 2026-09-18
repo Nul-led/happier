@@ -160,6 +160,9 @@ describe('Automation occurrence V1', () => {
     expect(DeclaredAutomationSourceSelectorIdV1Schema.parse(
       eventOccurrence.sourceSelectorId,
     )).toBe(eventOccurrence.sourceSelectorId);
+    expect(DeclaredAutomationSourceSelectorIdV1Schema.safeParse(
+      `${eventOccurrence.sourceSelectorId}\n`,
+    ).success).toBe(false);
   });
 
   it('builds the one canonical Plugin Event evidence shape from Event admission semantics', () => {

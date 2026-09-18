@@ -102,7 +102,7 @@ export type ResolveSessionWorkStatePrimaryOptions = Readonly<{
  * Resolve the canonical `primaryItemId` for a (merged) set of work-state items.
  */
 export function resolveSessionWorkStatePrimaryItemId(
-  items: readonly SessionWorkStateWriteItemV1[],
+  items: readonly SessionWorkStateWriteItemV1[] | readonly unknown[],
   currentPrimaryItemId?: string | null,
   options?: ResolveSessionWorkStatePrimaryOptions,
 ): string | null {
@@ -145,4 +145,34 @@ export function resolveSessionWorkStatePrimaryItemId(
     if (picked) return picked;
   }
   return readId(records[0] ?? {}) ?? null;
+}
+
+/**
+ * Read the primary work ITEM rather than its id, for the readers that need the object.
+ *
+ * A stored `primaryItemId` is honoured whenever it still names a present item: the publish-time
+ * merge already applied the canonical rule above, so a reader that recomputed it would be a
+ * second decision-maker that disagrees with the badge the writer chose. The ladder is consulted
+ * only when there is no usable stored identity — which is exactly why readers must not carry
+ * their own fallback ordering (that copy is how `paused` and terminal work went missing).
+ */
+export function readSessionWorkStatePrimaryItemV1<TItem>(
+  items: readonly TItem[],
+  primaryItemId?: string | null,
+): TItem | null {
+  if (items.length === 0) return null;
+  const readItemId = (item: TItem): string | null => {
+    const record = asRecord(item);
+    return record ? readId(record) : null;
+  };
+
+  const stored = (typeof primaryItemId === 'string' ? primaryItemId.trim() : '') || null;
+  if (stored) {
+    const storedItem = items.find((item) => readItemId(item) === stored);
+    if (storedItem !== undefined) return storedItem;
+  }
+
+  const resolvedId = resolveSessionWorkStatePrimaryItemId(items);
+  if (!resolvedId) return null;
+  return items.find((item) => readItemId(item) === resolvedId) ?? null;
 }

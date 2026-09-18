@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ACTION_IDS } from './actionIds.js';
 import type { ActionId } from './actionIds.js';
 import type { ActionExecutorContext } from './actionExecutor.js';
-import type { ActionsSettingsV1 } from './actionSettings.js';
+import { normalizeActionsSettingsV1, type ActionsSettingsV1 } from './actionSettings.js';
 import { getActionSpec } from './actionSpecs.js';
 import {
   AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS,
@@ -29,6 +29,69 @@ async function loadRoutingResolver() {
 }
 
 describe('isApprovalRequiredByActionsSettings', () => {
+  it('defaults the five identity test and Admin Portal Actions to approval while honoring waiver and require', () => {
+    const actionIds = [
+      'identity.providers.test.start',
+      'identity.providers.test.consume',
+      'teams.identity.connections.test.start',
+      'teams.identity.connections.test.consume',
+      'teams.identity.workos.adminPortalLink.create',
+    ] as const;
+
+    for (const actionId of actionIds) {
+      const spec = getActionSpec(actionId);
+      expect(spec.safety, actionId).toBe('danger');
+      for (const surface of ['ui', 'cli', 'agent', 'api', 'plugin'] as const) {
+        if (!spec.surfaces[surface]) continue;
+        expect(isApprovalRequiredByActionsSettings(
+          actionId,
+          EMPTY_SETTINGS,
+          { surface, authority: 'account_automation' },
+        ), `${actionId}:${surface}`).toBe(true);
+      }
+
+      const waived = normalizeActionsSettingsV1({
+        v: 1,
+        actions: {},
+        approvalWaivedSurfaces: { [actionId]: ['plugin'] },
+      });
+      expect(isApprovalRequiredByActionsSettings(
+        actionId,
+        waived,
+        { surface: 'plugin', authority: 'account_automation' },
+      )).toBe(false);
+
+      const required = normalizeActionsSettingsV1({
+        v: 1,
+        actions: { [actionId]: { approvalRequiredSurfaces: ['plugin'] } },
+        approvalWaivedSurfaces: { [actionId]: ['plugin'] },
+      });
+      expect(isApprovalRequiredByActionsSettings(
+        actionId,
+        required,
+        { surface: 'plugin', authority: 'account_automation' },
+      )).toBe(true);
+    }
+  });
+
+  it('honors an explicit waiver, require wins, and reset restores the dangerous default', () => {
+    const actionId = 'browser.automation.click';
+    const settings = normalizeActionsSettingsV1({ v: 1, actions: {},
+      approvalWaivedSurfaces: { [actionId]: ['agent'] },
+    });
+    expect(isApprovalRequiredByActionsSettings(actionId, settings, { surface: 'agent' })).toBe(false);
+    expect(isApprovalRequiredByActionsSettings(actionId, settings, approvalContext('unknown'))).toBe(true);
+    const required = normalizeActionsSettingsV1({ v: 1, actions: {
+      [actionId]: { approvalRequiredSurfaces: ['agent'] },
+    }, approvalWaivedSurfaces: { [actionId]: ['agent'] } });
+    expect(isApprovalRequiredByActionsSettings(actionId, required, { surface: 'agent' })).toBe(true);
+    expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface: 'agent' })).toBe(true);
+    const malformed = normalizeActionsSettingsV1({ v: 1, actions: {},
+      approvalWaivedSurfaces: { [actionId]: 'agent' },
+    });
+    expect(isApprovalRequiredByActionsSettings(actionId, malformed, { surface: 'agent' })).toBe(true);
+  });
+
   it('returns true when the action override requires approvals for the given surface', () => {
     const settings: ActionsSettingsV1 = {
       v: 1,
@@ -136,6 +199,150 @@ describe('isApprovalRequiredByActionsSettings', () => {
       flow: 'deferred',
       result: 'none',
     });
+  });
+
+  it('routes indirect Team danger mutations through deferred approval on UI surface', () => {
+    const decision = resolveActionApprovalRouting({
+      actionId: 'teams.groups.members.add' as any,
+      spec: getActionSpec('teams.groups.members.add'),
+      settings: EMPTY_SETTINGS,
+      context: { surface: 'ui', authority: 'account_automation' } as any,
+    });
+    expect(decision).toEqual({ required: true, flow: 'deferred', result: 'required' });
+  });
+
+  it('executes dangerous UI actions directly for a present user by default', () => {
+    const decision = resolveActionApprovalRouting({
+      actionId: 'teams.invitations.create' as any,
+      spec: getActionSpec('teams.invitations.create'),
+      settings: EMPTY_SETTINGS,
+      context: { surface: 'ui', authority: 'present_user' } as any,
+    });
+    expect(decision.required).toBe(false);
+  });
+
+  it('consumes exact completed CLI confirmation while preserving explicit require and waiver settings', () => {
+    const actionId = 'account.password.change' as const;
+    expect(resolveActionApprovalRouting({
+      actionId,
+      spec: getActionSpec(actionId),
+      settings: EMPTY_SETTINGS,
+      context: { surface: 'cli', authority: 'present_user' } as any,
+    }).required).toBe(true);
+    expect(resolveActionApprovalRouting({
+      actionId,
+      spec: getActionSpec(actionId),
+      settings: EMPTY_SETTINGS,
+      context: {
+        surface: 'cli', authority: 'present_user',
+        presentUserConfirmation: { actionId },
+      } as any,
+    }).required).toBe(false);
+    expect(resolveActionApprovalRouting({
+      actionId,
+      spec: getActionSpec(actionId),
+      settings: EMPTY_SETTINGS,
+      context: {
+        surface: 'cli', authority: 'present_user',
+        presentUserConfirmation: { actionId: 'account.password.remove' },
+      } as any,
+    }).required).toBe(true);
+
+    const required = normalizeActionsSettingsV1({
+      v: 1,
+      actions: { [actionId]: { approvalRequiredSurfaces: ['cli'] } },
+      approvalWaivedSurfaces: { [actionId]: ['cli'] },
+    });
+    expect(isApprovalRequiredByActionsSettings(
+      actionId,
+      required,
+      {
+        surface: 'cli', authority: 'present_user',
+        presentUserConfirmation: { actionId },
+      } as any,
+    )).toBe(true);
+
+    const waived = normalizeActionsSettingsV1({
+      v: 1,
+      actions: {},
+      approvalWaivedSurfaces: { [actionId]: ['cli'] },
+    });
+    expect(isApprovalRequiredByActionsSettings(
+      actionId,
+      waived,
+      { surface: 'cli', authority: 'account_automation' } as any,
+    )).toBe(false);
+  });
+
+  it('still honors an explicit UI approval requirement for a present user', () => {
+    const settings = normalizeActionsSettingsV1({
+      v: 1,
+      actions: {
+        'teams.invitations.create': { approvalRequiredSurfaces: ['ui'] },
+      },
+    });
+    expect(isApprovalRequiredByActionsSettings(
+      'teams.invitations.create' as any,
+      settings,
+      { surface: 'ui', authority: 'present_user' } as any,
+    )).toBe(true);
+    expect(resolveActionApprovalRouting({
+      actionId: 'teams.invitations.create' as any,
+      spec: getActionSpec('teams.invitations.create'),
+      settings,
+      context: { surface: 'ui', authority: 'present_user' } as any,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+
+    // One-time invitation bearers have live-only result custody: the exact
+    // mounted present-user invocation waits, while the Artifact retains only
+    // the safe observation projection. Other admitted callers retain the same
+    // blocking result contract.
+    expect(resolveActionApprovalRouting({
+      actionId: 'teams.invitations.create' as any,
+      spec: getActionSpec('teams.invitations.create'),
+      requiredByPolicy: true,
+      context: { surface: 'cli', authority: 'present_user' } as any,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+    expect(resolveActionApprovalRouting({
+      actionId: 'teams.invitations.create' as any,
+      spec: getActionSpec('teams.invitations.create'),
+      requiredByPolicy: true,
+      context: { surface: 'agent', authority: 'account_automation' } as any,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+    expect(resolveActionApprovalRouting({
+      actionId: 'teams.invitations.create' as any,
+      spec: getActionSpec('teams.invitations.create'),
+      requiredByPolicy: true,
+      context: { surface: 'api', authority: 'account_automation' } as any,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+  });
+
+  it.each([
+    'home.accounts.role.set',
+    'home.accounts.disable',
+    'home.accounts.enable',
+    'home.accounts.delete',
+    'home.policy.set',
+    'teams.create',
+    'teams.logo.set',
+    'teams.logo.remove',
+    'teams.groups.create',
+    'teams.groups.update',
+    'teams.invitations.create',
+    'teams.invitations.reissue',
+  ] as const)('routes result-bearing Home mutation %s through its declared UI custody', (actionId) => {
+    const spec = getActionSpec(actionId);
+    expect(spec.approval).toEqual({ result: 'required' });
+    const expectedFlow = actionId === 'teams.invitations.create'
+      || actionId === 'teams.invitations.reissue'
+      ? 'blocking'
+      : 'deferred';
+    expect(resolveActionApprovalRouting({
+      actionId,
+      spec,
+      requiredByPolicy: true,
+      context: { surface: 'ui', authority: 'present_user' },
+    })).toEqual({ required: true, flow: expectedFlow, result: 'required' });
   });
 
   it('routes optional-result actions through their explicit flow', async () => {
@@ -253,11 +460,14 @@ describe('agent-initiated dangerous-action approval default (FINALIZATION-PLAN Â
     ).toBe(true);
   });
 
-  it('never prompts user-initiated (ui) or other surfaces for the dangerous subset by default', () => {
+  it('requires confirmation for dangerous actions on every exposed user surface by default', () => {
     for (const actionId of AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS) {
-      expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface: 'ui' } as any)).toBe(false);
-      expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface: 'mcp' } as any)).toBe(false);
-      expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface: 'cli' } as any)).toBe(false);
+      const spec = getActionSpec(actionId);
+      if (spec.safety !== 'danger') continue;
+      for (const surface of ['ui', 'mcp', 'cli', 'agent', 'api', 'plugin', 'voice'] as const) {
+        if (spec.surfaces[surface] !== true) continue;
+        expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, { surface })).toBe(true);
+      }
     }
   });
 
@@ -321,14 +531,14 @@ describe('agent-initiated dangerous-action approval default (FINALIZATION-PLAN Â
     expect(decision.result).toBe('required');
   });
 
-  it('keeps user-initiated devtools eval un-prompted through resolveActionApprovalRouting', () => {
+  it('routes user-initiated devtools eval through the default confirmation floor', () => {
     const decision = resolveActionApprovalRouting({
       actionId: 'browser.diagnostics.eval' as any,
       spec: getActionSpec('browser.diagnostics.eval' as any),
       settings: EMPTY_SETTINGS,
       context: { surface: 'ui' } as any,
     });
-    expect(decision.required).toBe(false);
+    expect(decision.required).toBe(true);
   });
 
   it('fails safe to the agent danger floor when the approval signal is unwired (no requiredByPolicy, no settings)', () => {
@@ -353,13 +563,13 @@ describe('agent-initiated dangerous-action approval default (FINALIZATION-PLAN Â
     expect(decision.required).toBe(false);
   });
 
-  it('does not fail safe on non-agent surfaces when the signal is unwired', () => {
+  it('keeps the dangerous default when the signal is unwired on a user surface', () => {
     const decision = resolveActionApprovalRouting({
       actionId: 'browser.diagnostics.eval' as any,
       spec: getActionSpec('browser.diagnostics.eval' as any),
       context: { surface: 'ui' } as any,
     });
-    expect(decision.required).toBe(false);
+    expect(decision.required).toBe(true);
   });
 
   it('honors an explicit requiredByPolicy=false even for the dangerous agent subset (wired host owns the decision)', () => {
@@ -477,7 +687,7 @@ describe('agent approval floor is derived from the danger SSOT (CON-1..3/6)', ()
     ).toBe(true);
     expect(
       isApprovalRequiredByActionsSettings('localServices.publicPreview.create' as any, EMPTY_SETTINGS, { surface: 'ui' } as any),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('floors prompt_doc.update, the live QA dangerous agent fixture (LIVE-1)', () => {
@@ -490,7 +700,7 @@ describe('agent approval floor is derived from the danger SSOT (CON-1..3/6)', ()
     ).toBe(true);
     expect(
       isApprovalRequiredByActionsSettings('prompt_doc.update', EMPTY_SETTINGS, { surface: 'ui' } as any),
-    ).toBe(false);
+    ).toBe(true);
     expect(resolveActionApprovalRouting({
       actionId: 'prompt_doc.update',
       spec,
@@ -540,9 +750,9 @@ describe('agent approval floor is derived from the danger SSOT (CON-1..3/6)', ()
     }
   });
 
-  it('user-initiated (ui) browser navigation never prompts even though floored for agents', () => {
+  it('user-initiated (ui) browser navigation uses the dangerous default', () => {
     for (const actionId of FLOORED_BROWSER_NAV_INPUT_VERBS) {
-      expect(isApprovalRequiredByActionsSettings(actionId as any, EMPTY_SETTINGS, { surface: 'ui' } as any)).toBe(false);
+      expect(isApprovalRequiredByActionsSettings(actionId as any, EMPTY_SETTINGS, { surface: 'ui' } as any)).toBe(true);
     }
   });
 });
@@ -550,11 +760,9 @@ describe('agent approval floor is derived from the danger SSOT (CON-1..3/6)', ()
 /**
  * Â§4.1 â€” the ratified approval posture for the Plugin surface.
  *
- * `surfaces.plugin` classifies as a NON-agent surface, so the danger floor
- * (`safety === 'danger' && surfaces.agent === true`) does not apply to it. A
- * plugin-surfaced invocation is therefore unprompted by default while remaining
- * subject to the ActionSpec's own confirmation, target-action policy, declared
- * surfaces and persisted overrides.
+ * `surfaces.plugin` is a user-configurable surface. Dangerous plugin-surfaced
+ * invocations therefore use the same default confirmation floor as UI, CLI,
+ * MCP, API, voice and Agent invocations.
  *
  * These are measured from the evaluated registry, never grepped: a later change
  * that flips whole records rather than the plugin row must fail here.
@@ -580,27 +788,26 @@ describe('plugin-surface approval posture (Â§4.1)', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('routes every plugin-surfaced ActionSpec without approval under default settings', () => {
+  it('routes dangerous plugin-surfaced ActionSpecs through approval by default', () => {
     const promptedOnPluginSurface = pluginSurfacedActionIds
       .filter((id) => routingRequired(id, 'plugin'));
 
-    expect(promptedOnPluginSurface).toEqual([]);
+    expect(promptedOnPluginSurface).toEqual(
+      pluginSurfacedActionIds.filter((id) => getActionSpec(id).safety === 'danger'
+        && !id.startsWith('approval.request.')),
+    );
   });
 
-  it('keeps a danger-class plugin-surfaced ActionSpec unprompted on plugin', () => {
-    const dangerPluginActionIds = pluginSurfacedActionIds
-      .filter((id) => getActionSpec(id).safety === 'danger');
+  it('keeps safe plugin-surfaced ActionSpecs unprompted on plugin', () => {
+    const safePluginActionIds = pluginSurfacedActionIds
+      .filter((id) => getActionSpec(id).safety !== 'danger');
 
-    for (const actionId of dangerPluginActionIds) {
+    for (const actionId of safePluginActionIds) {
       expect(routingRequired(actionId, 'plugin')).toBe(false);
     }
   });
 
-  // Negative control: the SAME danger-class rows that are also agent-surfaced
-  // still prompt on `agent`. An implementation that dropped the danger floor
-  // wholesale â€” rather than only classifying `plugin` as a non-agent surface â€”
-  // fails here.
-  it('still prompts the same danger-class rows on the agent surface', () => {
+  it('prompts the same danger-class rows on the agent surface', () => {
     const dangerAgentAndPluginActionIds = pluginSurfacedActionIds.filter((id) => {
       const spec = getActionSpec(id);
       return spec.safety === 'danger'

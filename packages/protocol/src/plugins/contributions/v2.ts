@@ -9,6 +9,10 @@ import {
 } from '../../hooks/hookExecutionSemantics.js';
 import { PluginOptionalStringSchema } from '../_shared.js';
 import {
+  PluginAgentSessionCapabilitiesV2Schema,
+  type PluginAgentSessionCapabilitiesV2,
+} from './agentSessionCapabilities.js';
+import {
   PluginActionContributionV2Schema,
   PluginActionAvailabilityV2Schema,
   PluginJsonSchemaV2Schema,
@@ -98,6 +102,7 @@ import {
   PluginAgentExternalLinkedTakeoverWriterSafetyV1Schema,
   PluginBackendExternalSessionSourceDeclarationV1Schema,
 } from '../backendDefinitionV1.js';
+import { findAgentResumeOnlyExternalSourceContractIssue } from './agentResumeOnlySources.js';
 import { PluginUiContributionsV2Schema } from './ui/v2.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import {
@@ -189,6 +194,7 @@ const PluginAgentAcpStderrStatusErrorRuleV2Schema =
   }).strict();
 
 const PluginAgentAcpStderrRulesV2Schema = z.object({
+  authenticationErrorDetail: z.string().trim().min(1).optional(),
   suppress: z.array(PluginAgentAcpStderrMatchRuleV2Schema)
     .min(1)
     .optional(),
@@ -196,9 +202,151 @@ const PluginAgentAcpStderrRulesV2Schema = z.object({
     .min(1)
     .optional(),
 }).strict().refine(
-  (value) => value.suppress !== undefined || value.statusErrors !== undefined,
+  (value) => value.authenticationErrorDetail !== undefined || value.suppress !== undefined || value.statusErrors !== undefined,
   'ACP stderr rules must declare at least one rule.',
 );
+
+const PluginAgentAcpPermissionModeMappingV2Schema = z.object({
+  default: z.string().trim().min(1).nullable().optional(),
+  'read-only': z.string().trim().min(1).nullable().optional(),
+  'safe-yolo': z.string().trim().min(1).nullable().optional(),
+  yolo: z.string().trim().min(1).nullable().optional(),
+  plan: z.string().trim().min(1).nullable().optional(),
+}).strict();
+
+const PluginAgentAcpPlatformValueV2Schema = z.object({
+  posix: z.string().trim().min(1),
+  win32: z.string().trim().min(1),
+}).strict();
+
+const PluginAgentAcpPlatformSegmentsV2Schema = z.object({
+  posix: z.array(z.string().trim().min(1)).min(1),
+  win32: z.array(z.string().trim().min(1)).min(1),
+}).strict();
+
+/**
+ * An Agent whose CLI reads MCP servers only from its own config file cannot
+ * receive them through `session/new`. This declaration lets the host deliver
+ * them natively: it materializes a session-private config root that links the
+ * user's real provider config, writes the merged server map into it, and
+ * points the provider's config-root variable at that root for one launch.
+ *
+ * The declaration is data-only on purpose: a Session opened by the
+ * out-of-process Session runner reconstructs its runtime from the attested
+ * manifest alone and never loads plugin code.
+ */
+const PluginAgentAcpNativeSessionMcpConfigV2Schema = z.object({
+  /** Environment variable naming the provider's config root. */
+  configRootEnvKey: PluginAgentAcpPlatformValueV2Schema,
+  /** Config root relative to the user's home directory when that variable is unset. */
+  homeRelativeConfigRoot: PluginAgentAcpPlatformSegmentsV2Schema,
+  /** Provider directory inside the config root that holds the MCP config file. */
+  directory: z.string().trim().min(1),
+  /** MCP config file name inside that directory. */
+  fileName: z.string().trim().min(1),
+  /** Key of the JSON object holding the server map. */
+  serversKey: z.string().trim().min(1),
+  /** Constant fields merged into every host-generated server entry. */
+  serverEntryConstants: z.record(z.string().trim().min(1), z.string()).optional(),
+  /** Config-root siblings linked into the session-private root beside `directory`. */
+  linkedConfigRootEntries: z.array(z.string().trim().min(1)).min(1).optional(),
+  /**
+   * Workspace-relative provider config files that would shadow a session
+   * server. A shadowing project entry fails the launch instead of silently
+   * replacing a Happier tool server.
+   */
+  projectShadowPaths: z.array(z.string().trim().min(1)).min(1).optional(),
+}).strict();
+export type PluginAgentAcpNativeSessionMcpConfigV2 =
+  z.infer<typeof PluginAgentAcpNativeSessionMcpConfigV2Schema>;
+
+const PluginAgentAcpModelSuffixOptionValueV2Schema = z.object({
+  value: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  /** Words a provider model name may use for this value, when they differ from `name`. */
+  modelNameWords: z.array(z.string().trim().min(1)).min(1).optional(),
+}).strict();
+
+const PluginAgentAcpModelTrailingOptionValueV2Schema = z.object({
+  /** Provider-native id segment appended after the primary suffix option value. */
+  segment: z.string().trim().min(1),
+  /** Stable option value reported to Happier clients. */
+  value: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  /** Words a provider model name may use for this value, when they differ from `name`. */
+  modelNameWords: z.array(z.string().trim().min(1)).min(1).optional(),
+}).strict();
+
+const PluginAgentAcpModelTrailingOptionV2Schema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  /** Option value represented by the absence of a trailing provider id segment. */
+  defaultValue: z.object({
+    value: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+  }).strict(),
+  values: z.array(PluginAgentAcpModelTrailingOptionValueV2Schema)
+    .min(1)
+    .superRefine((values, context) => {
+      if (new Set(values.map((entry) => entry.segment)).size !== values.length) {
+        context.addIssue({ code: 'custom', message: 'Trailing option segments must be unique.' });
+      }
+      if (new Set(values.map((entry) => entry.value)).size !== values.length) {
+        context.addIssue({ code: 'custom', message: 'Trailing option values must be unique.' });
+      }
+    }),
+}).strict().superRefine((option, context) => {
+  if (option.values.some((entry) => entry.value === option.defaultValue.value)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['defaultValue', 'value'],
+      message: 'The default trailing option value must differ from segment-backed values.',
+    });
+  }
+});
+
+/**
+ * Providers that advertise one model per option value encode that value in the
+ * model id (`<model>-high`, `<model>-high-fast`). This declaration lets the
+ * host present one model plus a canonical option instead of a combinatorial
+ * model list, and to expand a selection back to the advertised id.
+ */
+const PluginAgentAcpModelSuffixOptionV2Schema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  values: z.array(PluginAgentAcpModelSuffixOptionValueV2Schema)
+    .min(2)
+    .refine(
+      (values) => new Set(values.map((entry) => entry.value)).size === values.length,
+      'Option values must be unique.',
+    ),
+  /** Id segments that may follow the option segment, such as a speed tier. */
+  trailingSegments: z.array(z.string().trim().min(1)).min(1).optional(),
+  /**
+   * Optionally projects a complete matrix of trailing provider segments as a second model option.
+   * Incomplete matrices retain their separate provider models.
+   */
+  trailingOption: PluginAgentAcpModelTrailingOptionV2Schema.optional(),
+  /** Words a provider model name may place after the value word, such as `Thinking`. */
+  modelNameFillerWords: z.array(z.string().trim().min(1)).min(1).optional(),
+}).strict().superRefine((option, context) => {
+  if (option.trailingSegments && option.trailingOption) {
+    context.addIssue({
+      code: 'custom',
+      path: ['trailingOption'],
+      message: 'Use either trailingSegments or trailingOption, not both.',
+    });
+  }
+  if (option.trailingOption?.id === option.id) {
+    context.addIssue({
+      code: 'custom',
+      path: ['trailingOption', 'id'],
+      message: 'Primary and trailing option ids must differ.',
+    });
+  }
+});
+export type PluginAgentAcpModelSuffixOptionV2 =
+  z.infer<typeof PluginAgentAcpModelSuffixOptionV2Schema>;
 
 /**
  * Data-only behavior the host ACP composer can apply without invoking plugin
@@ -209,14 +357,27 @@ export const PluginAgentAcpDefinitionV2Schema = z.object({
   stderrRules: PluginAgentAcpStderrRulesV2Schema.optional(),
   mcp: z.object({
     policy: z.enum(['pass_through', 'drop']),
+    nativeSessionConfig: PluginAgentAcpNativeSessionMcpConfigV2Schema.optional(),
   }).strict().optional(),
+  models: z.object({
+    suffixOption: PluginAgentAcpModelSuffixOptionV2Schema,
+  }).strict().optional(),
+  permissionModeMapping: PluginAgentAcpPermissionModeMappingV2Schema.optional(),
 }).strict().refine(
   (value) => (
     value.modelConfigOptionId !== undefined
     || value.stderrRules !== undefined
     || value.mcp !== undefined
+    || value.models !== undefined
+    || value.permissionModeMapping !== undefined
   ),
   'ACP definitions must declare at least one behavior.',
+).refine(
+  (value) => value.mcp?.nativeSessionConfig === undefined || value.mcp.policy === 'drop',
+  {
+    path: ['mcp'],
+    message: 'Native session MCP config delivery requires the `drop` input policy.',
+  },
 );
 export type PluginAgentAcpDefinitionV2 = z.infer<typeof PluginAgentAcpDefinitionV2Schema>;
 
@@ -238,37 +399,13 @@ export const PluginAgentRuntimeV2Schema = z.discriminatedUnion('kind', [
 ]);
 export type PluginAgentRuntimeV2 = z.infer<typeof PluginAgentRuntimeV2Schema>;
 
-const PluginAgentGoalSetCapabilityV2Schema = z.object({
-  fields: z.array(z.enum(['objective', 'status', 'tokenBudget'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'),
-  writableStatuses: z.array(z.enum(['active', 'paused', 'complete'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.').optional(),
-}).strict();
-const PluginAgentGoalControlModeV2Schema = z.object({
-  get: z.literal(true).optional(), clear: z.literal(true).optional(), set: PluginAgentGoalSetCapabilityV2Schema.optional(),
-}).strict().refine((value) => value.get || value.clear || value.set, 'At least one goal control capability is required.');
-const activity = <T extends z.ZodTypeAny>(schema: T) => z.object({ active: schema.optional(), inactive: schema.optional() }).strict()
-  .refine((value) => value.active !== undefined || value.inactive !== undefined, 'At least one activity capability is required.');
-const PluginAgentGoalsV2Schema = z.object({
-  active: PluginAgentGoalControlModeV2Schema.optional(),
-  inactive: PluginAgentGoalControlModeV2Schema.optional(),
-  source: z.string().trim().min(1),
-}).strict().refine((value) => value.active !== undefined || value.inactive !== undefined, 'At least one activity capability is required.');
-export const PluginAgentSessionCapabilitiesV2Schema = z.object({
-  open: z.array(z.enum(['create', 'resume', 'fork'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'),
-  delivery: z.array(z.enum(['newTurn', 'steer', 'followUp'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'),
-  cancel: z.boolean(), configuration: z.boolean().optional(),
-  compaction: z.object({ events: z.literal(true), manual: z.literal(true).optional() }).strict().optional(),
-  conversationRollback: z.literal(true).optional(),
-  goals: PluginAgentGoalsV2Schema.optional(),
-  catalog: activity(z.array(z.enum(['vendorPlugins', 'skills'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.')).optional(),
-  usageLimitRecovery: activity(z.array(z.enum(['checkNow', 'consumeResetCredit'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.')).optional(),
-  continuationVerification: z.object({ intents: z.array(z.enum(['resume', 'fork'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'), requirement: z.enum(['required', 'advisory']) }).strict().optional(),
-  workStateSources: z.array(z.object({ id: asProtocolZod(PluginContributionLocalIdSchema), itemKinds: z.array(z.enum(['goal', 'task', 'todo'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.') }).strict()).max(32).refine((values) => new Set(values.map((value) => value.id)).size === values.length, 'Work-state source ids must be unique.').optional(),
-  runtimeActivitySnapshots: z.literal(true).optional(),
-  startupInstructions: z.object({
-    versions: z.tuple([z.literal(1)]),
-  }).strict().optional(),
-}).strict();
-export type PluginAgentSessionCapabilitiesV2 = z.infer<typeof PluginAgentSessionCapabilitiesV2Schema>;
+// The Agent Session capability vocabulary is owned by the focused contribution
+// module so small runtime contracts can consume it without importing this
+// aggregate manifest. It is re-exported here unchanged for manifest consumers.
+export {
+  PluginAgentSessionCapabilitiesV2Schema,
+  type PluginAgentSessionCapabilitiesV2,
+};
 
 export const PluginAgentExecutionRunCapabilitiesV2Schema = z.object({
   open: z.array(z.enum(['create', 'resume', 'fork'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'), checkpoint: z.boolean(), stop: z.boolean(),
@@ -481,6 +618,14 @@ export const PluginAgentContributionV2Schema = z.union([
       message: 'External-session source descriptors require the externalSessions capability.',
     });
   }
+  const resumeOnlySourceIssue = findAgentResumeOnlyExternalSourceContractIssue(value);
+  if (resumeOnlySourceIssue !== null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['capabilities', 'sessions', 'open'],
+      message: resumeOnlySourceIssue,
+    });
+  }
 });
 export type PluginAgentContributionV2 = z.input<typeof PluginAgentContributionV2Schema>;
 export type ParsedPluginAgentContributionV2 = z.output<typeof PluginAgentContributionV2Schema>;
@@ -655,11 +800,14 @@ export const BackgroundServiceContributionSchema = z.object({
 export type BackgroundServiceContribution = z.infer<typeof BackgroundServiceContributionSchema>;
 
 export {
+  CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+  PluginConnectedAccountDirectExportV2Schema,
   PluginConnectedAccountAuthenticationModeV2Schema,
   PluginConnectedAccountAuthenticationV2Schema,
   PluginConnectedAccountConfigurationFieldV2Schema,
   PluginConnectedAccountConfigurationV2Schema,
   PluginConnectedAccountDescriptorContributionV2Schema,
+  type PluginConnectedAccountDirectExportV2,
   type PluginConnectedAccountAuthenticationModeV2,
   type PluginConnectedAccountAuthenticationV2,
   type PluginConnectedAccountConfigurationFieldV2,

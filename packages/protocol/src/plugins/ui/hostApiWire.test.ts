@@ -13,13 +13,7 @@ import {
   pluginUiHostApiWireIdentitiesEqual,
 } from './hostApiWire.js';
 
-const identity = {
-  pluginId: 'com.acme.fixture',
-  pluginVersion: '1.0.0',
-  viewId: 'review',
-  generation: 'generation-1',
-  sessionId: 'session-1',
-};
+const identity = { instanceId: 'mount-1', mountNonce: 'nonce-1' };
 
 const targetedOperation = {
   point: { pointId: 'connection', protocol: { id: 'connection', version: 1 } },
@@ -37,7 +31,7 @@ const selectedActionInput = {
   action: targetedOperation.action,
   input: { repository: 'happier-dev/happier' },
   selection: {
-    target: { pluginId: identity.pluginId, immutableGenerationId: identity.generation },
+    target: { pluginId: 'com.acme.fixture', immutableGenerationId: 'generation-1' },
     point: targetedOperation.point,
     contributor: targetedOperation.contributor,
   },
@@ -56,20 +50,11 @@ const selectedActionInput = {
 } as const;
 
 describe('plugin UI host API wire envelope', () => {
-  it('addresses a mount by every wire-identity member, including an absent sessionId', () => {
-    // Positive twin: the same address stays equal. Without it the per-member
-    // cases below would also pass against a comparison that is always false.
+  it('rejects another physical instance and a retired nonce of the same instance', () => {
     expect(pluginUiHostApiWireIdentitiesEqual(identity, { ...identity })).toBe(true);
-
-    // Every member is load-bearing. Two mounts of one plugin share the daemon
-    // projection `generation` and can differ only by `viewId`, so dropping any
-    // single member would let one mount accept another mount's envelope.
     const differingByOneMember = {
-      pluginId: { ...identity, pluginId: 'com.acme.other' },
-      pluginVersion: { ...identity, pluginVersion: '2.0.0' },
-      viewId: { ...identity, viewId: 'settings' },
-      generation: { ...identity, generation: 'generation-2' },
-      sessionId: { ...identity, sessionId: 'session-2' },
+      instanceId: { ...identity, instanceId: 'mount-2' },
+      mountNonce: { ...identity, mountNonce: 'nonce-2' },
     };
     for (const [member, other] of Object.entries(differingByOneMember)) {
       // The fixture must actually differ, or the case could not discriminate.
@@ -77,18 +62,6 @@ describe('plugin UI host API wire envelope', () => {
       expect(pluginUiHostApiWireIdentitiesEqual(identity, other), member).toBe(false);
     }
 
-    // An Account-scoped mount and a Session-scoped mount of the same
-    // plugin/view/generation are different addressees, not one address with a
-    // missing field.
-    const accountScoped = {
-      pluginId: identity.pluginId,
-      pluginVersion: identity.pluginVersion,
-      viewId: identity.viewId,
-      generation: identity.generation,
-    };
-    expect(pluginUiHostApiWireIdentitiesEqual(identity, accountScoped)).toBe(false);
-    expect(pluginUiHostApiWireIdentitiesEqual(accountScoped, identity)).toBe(false);
-    expect(pluginUiHostApiWireIdentitiesEqual(accountScoped, { ...accountScoped })).toBe(true);
   });
 
   it('exposes the one wire-identity equality operation through the browser-safe client seam', () => {
@@ -246,7 +219,7 @@ describe('plugin UI host API wire envelope', () => {
     }).success).toBe(false);
   });
 
-  it('requires generation-bound identity on negotiation, requests, results, subscriptions, and disconnects', () => {
+  it('requires nonce-bound identity on negotiation, requests, results, subscriptions, and disconnects', () => {
     for (const envelope of [
       { wireVersion: 1, kind: 'negotiate', identity, apiRange: '^1' },
       { wireVersion: 1, kind: 'request', identity, requestId: 'r1', method: 'context' },
@@ -258,9 +231,9 @@ describe('plugin UI host API wire envelope', () => {
       { wireVersion: 1, kind: 'disconnected', identity, reason: 'daemon_offline' },
     ]) {
       expect(PluginUiHostApiWireEnvelopeV1Schema.safeParse(envelope).success).toBe(true);
-      const withoutGeneration = structuredClone(envelope) as { identity: Record<string, unknown> };
-      delete withoutGeneration.identity.generation;
-      expect(PluginUiHostApiWireEnvelopeV1Schema.safeParse(withoutGeneration).success).toBe(false);
+      const withoutNonce = structuredClone(envelope) as { identity: Record<string, unknown> };
+      delete withoutNonce.identity.mountNonce;
+      expect(PluginUiHostApiWireEnvelopeV1Schema.safeParse(withoutNonce).success).toBe(false);
     }
     expect(PluginUiHostApiWireEnvelopeV1Schema.safeParse({
       wireVersion: 1,

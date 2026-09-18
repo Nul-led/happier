@@ -12,7 +12,7 @@ import {
   type ActionSurfaces,
   type ActionToolExposureMode,
   type ActionToolExposureSurface,
-} from './actionSpecs.js';
+} from './metadata.js';
 import { ActionUiPlacementSchema, type ActionUiPlacement } from './actionUiPlacements.js';
 
 const ActionSurfaceKeySchema = ActionSurfaceSchema.keyof();
@@ -138,16 +138,23 @@ export const ActionsSettingsV1Schema = z
     v: z.literal(1),
     // Accept unknown Action ids so older clients can round-trip newer policy rows.
     actions: z.record(z.string(), ActionSettingsOverrideSchema).default({}),
+    // The 0.2 predecessor has strict Action rows but an open document root.
+    // Keep this new choice outside those rows so old readers retain disable/require
+    // policy. They ignore the waiver and continue requiring default confirmation.
+    approvalWaivedSurfaces: z.record(z.string(), z.array(ActionSurfaceKeySchema))
+      .optional().catch(undefined),
   })
   .passthrough()
   .transform((value) => ({
     v: 1 as const,
     actions: projectKnownActionSettings(value.actions ?? {}),
+    ...(value.approvalWaivedSurfaces ? { approvalWaivedSurfaces: value.approvalWaivedSurfaces } : {}),
   }));
 
 export type ActionsSettingsV1 = Readonly<{
   v: 1;
   actions: Record<string, ActionSettingsOverride>;
+  approvalWaivedSurfaces?: Record<string, ActionSurfaceKey[]>;
 }>;
 
 const EMPTY_ACTIONS_SETTINGS_V1 = Object.freeze({
@@ -163,7 +170,11 @@ const MALFORMED_ACTION_SETTINGS_OVERRIDE = ActionSettingsOverrideSchema.parse({ 
  * for lossless round-tripping; malformed known overrides fail closed while
  * valid sibling policy is preserved.
  */
-function isActionsSettingsV1Document(value: unknown): value is Readonly<{ v: 1; actions?: Record<string, unknown> }> {
+function isActionsSettingsV1Document(value: unknown): value is Readonly<{
+  v: 1;
+  actions?: Record<string, unknown>;
+  approvalWaivedSurfaces?: unknown;
+}> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return record.v === 1 && (
@@ -185,11 +196,42 @@ export function tryNormalizeActionsSettingsV1(value: unknown): ActionsSettingsV1
     const key = actionId ?? rawId;
     actions[key] = override.success ? override.data : MALFORMED_ACTION_SETTINGS_OVERRIDE;
   }
-  return { v: 1, actions };
+  const waivers = ActionsSettingsV1Schema.parse({
+    v: 1,
+    approvalWaivedSurfaces: value.approvalWaivedSurfaces,
+  }).approvalWaivedSurfaces;
+  return { v: 1, actions, ...(waivers ? { approvalWaivedSurfaces: waivers } : {}) };
 }
 
 export function normalizeActionsSettingsV1(value: unknown): ActionsSettingsV1 {
   return tryNormalizeActionsSettingsV1(value) ?? EMPTY_ACTIONS_SETTINGS_V1;
+}
+
+/** Edits one approval preference without changing Action enablement or other surfaces. */
+export function setActionApprovalOverride(params: Readonly<{
+  settings: ActionsSettingsV1;
+  actionId: ActionSettingsActionId;
+  surface: ActionSurfaceKey;
+  approvalRequired: boolean | null;
+}>): ActionsSettingsV1 {
+  const settings = normalizeActionsSettingsV1(params.settings);
+  const prior = settings.actions[params.actionId];
+  const required = prior?.approvalRequiredSurfaces.filter((surface) => surface !== params.surface) ?? [];
+  if (params.approvalRequired === true) required.push(params.surface);
+  const actions = { ...settings.actions };
+  if (prior || required.length > 0) {
+    actions[params.actionId] = ActionSettingsOverrideSchema.parse({ ...prior, approvalRequiredSurfaces: required });
+  }
+  const waivers = { ...settings.approvalWaivedSurfaces };
+  const waived = waivers[params.actionId]?.filter((surface) => surface !== params.surface) ?? [];
+  if (params.approvalRequired === false) waived.push(params.surface);
+  if (waived.length > 0) waivers[params.actionId] = waived;
+  else delete waivers[params.actionId];
+  return {
+    v: 1,
+    actions,
+    ...(Object.keys(waivers).length > 0 ? { approvalWaivedSurfaces: waivers } : {}),
+  };
 }
 
 export type ActionEnablementContext = Readonly<{

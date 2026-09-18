@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ExternalSessionTranscriptInvalidationV1Schema,
+  ExternalSessionSourceUnavailableOccurrenceV1Schema,
   ExternalSessionTranscriptRefreshReadAfterRequestV1Schema,
   ExternalSessionTranscriptRefreshReadAfterResponseV1Schema,
   decideExternalSessionTranscriptRefreshApplicationV1,
@@ -54,6 +55,15 @@ const transcriptItem = {
 } as const;
 
 describe('External Sessions secure refresh contract', () => {
+  it('keeps source-unavailable occurrences strict and content-free', () => {
+    const occurrence = {
+      v: 1 as const,
+      type: 'external-session-source-unavailable' as const,
+      sessionId: 'session-1', machineId: 'machine-1', observedAtMs: 123,
+    };
+    expect(ExternalSessionSourceUnavailableOccurrenceV1Schema.parse(occurrence)).toEqual(occurrence);
+    expect(ExternalSessionSourceUnavailableOccurrenceV1Schema.safeParse({ ...occurrence, preview: 'secret' }).success).toBe(false);
+  });
   it('keeps invalidation content-free while binding the current machine, session, link, source, contribution, and non-reversible cursor identity', () => {
     const invalidation = ExternalSessionTranscriptInvalidationV1Schema.parse({
       v: 1,

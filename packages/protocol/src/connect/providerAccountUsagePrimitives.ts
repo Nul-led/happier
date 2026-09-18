@@ -1,5 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2';
 import { z } from 'zod';
+import { ProviderAccountSubscriptionV1Schema } from './accountSubscription.js';
 
 import { encodeBase64 } from '../crypto/base64.js';
 import {
@@ -169,6 +170,7 @@ export const ProviderAccountUsageSnapshotV1Schema = z.object({
   state: ProviderAccountUsageStateV1Schema.default('loaded_data'),
   planLabel: z.string().trim().min(1).max(256).nullable().optional(),
   accountLabel: z.string().trim().min(1).max(256).nullable().optional(),
+  subscription: ProviderAccountSubscriptionV1Schema.optional(),
   recoveryCredits: ConnectedServiceQuotaRecoveryCreditsV1Schema.optional(),
   meters: z.array(ConnectedServiceQuotaMeterV1Schema),
   diagnostics: z.array(ProviderAccountUsageDiagnosticV1Schema).optional(),

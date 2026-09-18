@@ -10,13 +10,8 @@ const ANTHROPIC_SERVICE_KEY = 'happier.agent.claude/anthropic';
 const EXTERNAL_SERVICE_KEY = 'com.acme.agent/novel-service';
 
 describe('normalizeConnectedServiceSelectionInput', () => {
-    it('treats undefined/null/empty array as no explicit selection (account default)', () => {
+    it('treats undefined/empty array as no explicit selection (account default)', () => {
         expect(normalizeConnectedServiceSelectionInput(undefined)).toEqual({
-            ok: true,
-            bindings: undefined,
-            defaultServiceIds: [],
-        });
-        expect(normalizeConnectedServiceSelectionInput(null)).toEqual({
             ok: true,
             bindings: undefined,
             defaultServiceIds: [],
@@ -24,6 +19,19 @@ describe('normalizeConnectedServiceSelectionInput', () => {
         expect(normalizeConnectedServiceSelectionInput([])).toEqual({
             ok: true,
             bindings: undefined,
+            defaultServiceIds: [],
+        });
+    });
+
+    it('normalizes the global "native" shorthand and canonical null to an explicit all-services opt-out', () => {
+        expect(normalizeConnectedServiceSelectionInput('native')).toEqual({
+            ok: true,
+            bindings: null,
+            defaultServiceIds: [],
+        });
+        expect(normalizeConnectedServiceSelectionInput(null)).toEqual({
+            ok: true,
+            bindings: null,
             defaultServiceIds: [],
         });
     });
@@ -43,7 +51,7 @@ describe('normalizeConnectedServiceSelectionInput', () => {
         expect(result).toEqual({
             ok: true,
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [CODEX_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'team' },
                 },
@@ -134,7 +142,7 @@ describe('normalizeConnectedServiceSelectionInput', () => {
         };
         expect(normalizeConnectedServiceSelectionInput(input)).toEqual({
             ok: true,
-            bindings: input,
+            bindings: { ...input, v: 2 },
             defaultServiceIds: [],
         });
     });
@@ -143,7 +151,7 @@ describe('normalizeConnectedServiceSelectionInput', () => {
         expect(normalizeConnectedServiceSelectionInput(`${EXTERNAL_SERVICE_KEY}:profile:team`)).toEqual({
             ok: true,
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [EXTERNAL_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'team' },
                 },
@@ -184,6 +192,13 @@ describe('normalizeConnectedServiceSelectionInput', () => {
 });
 
 describe('normalizeConnectedServiceSelectionForRunStart (settings-less boundary policy)', () => {
+    it('preserves the global native opt-out as canonical null', () => {
+        expect(normalizeConnectedServiceSelectionForRunStart('native')).toEqual({
+            ok: true,
+            bindings: null,
+        });
+    });
+
     it('passes explicit-only selections through as canonical bindings', () => {
         const result = normalizeConnectedServiceSelectionForRunStart('openai-codex:group:happier');
         expect(result.ok).toBe(true);

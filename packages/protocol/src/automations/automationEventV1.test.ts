@@ -441,13 +441,21 @@ describe('Automation event V1 contracts', () => {
       sourceSelectorId,
     };
     const oversizedTrigger = { ...valid, triggerId: 'x'.repeat(192) };
+    const maximumAstralTrigger = { ...valid, triggerId: '😀'.repeat(191) };
+    const oversizedAstralTrigger = { ...valid, triggerId: '😀'.repeat(192) };
     const paddedTrigger = { ...valid, triggerId: ' trigger-1 ' };
 
     expect(validateDeclaredInput(valid)).toBe(true);
     expect(validateDeclaredInput(oversizedTrigger)).toBe(false);
-    expect(validateDeclaredInput(paddedTrigger)).toBe(true);
-    expect(PluginEventAutomationHistoryGapResetActionInputV1Schema.parse(paddedTrigger))
-      .toEqual({ ...valid, triggerId: 'trigger-1' });
+    expect(validateDeclaredInput(maximumAstralTrigger)).toBe(true);
+    expect(PluginEventAutomationHistoryGapResetActionInputV1Schema.safeParse(maximumAstralTrigger).success)
+      .toBe(true);
+    expect(validateDeclaredInput(oversizedAstralTrigger)).toBe(false);
+    expect(PluginEventAutomationHistoryGapResetActionInputV1Schema.safeParse(oversizedAstralTrigger).success)
+      .toBe(false);
+    expect(validateDeclaredInput(paddedTrigger)).toBe(false);
+    expect(PluginEventAutomationHistoryGapResetActionInputV1Schema.safeParse(paddedTrigger).success)
+      .toBe(false);
   });
 
   it('uses the one bounded filter grammar and evaluates absent/mismatched fields without coercion', () => {

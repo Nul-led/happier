@@ -33,6 +33,7 @@ export {
   isVoiceMediaRelayTunnelId,
   resolveMachineRpcRelayFallbackDecision,
   resolveMachineRpcRoutePolicy,
+  resolveEphemeralRunnerMachineRpcAuthority,
   validateMachineRpcGrantAllowedMethods,
   validateMachineRpcRoutePolicies,
   type MachineRpcRelayFallbackDecision,
@@ -46,3 +47,4 @@ export {
   type MachineRpcRoutePolicyValidationResult,
   type MachineRpcServerRequiredReason,
 } from './routePolicyV1.js';
+export type { EphemeralRunnerMachineRpcAuthority } from './routePolicyV1.js';

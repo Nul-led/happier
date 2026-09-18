@@ -9,7 +9,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     executionRunStart: vi.fn(async () => ({})),
     executionRunList: vi.fn(async () => ({})),
     executionRunGet: vi.fn(async () => ({})),
-    executionRunSend: vi.fn(async () => ({})),
+    detachedExecutionRunSend: vi.fn(async () => ({})),
     executionRunStop: vi.fn(async () => ({})),
     executionRunAction: vi.fn(async () => ({})),
     executionRunWait: vi.fn(async () => ({})),
@@ -43,6 +43,13 @@ const LIST_ACTION_ID = 'account.apiTokens.list' as ActionId;
 const REVOKE_ACTION_ID = 'account.apiTokens.revoke' as ActionId;
 const REVOKE_ALL_ACTION_ID = 'account.apiTokens.revokeAll' as ActionId;
 
+const encryptionAccess = {
+  v: 1,
+  serverIdentityId: 'srv_home_alpha',
+  contentPublicKey: 'A'.repeat(43) + '=',
+  wrappedContentPrivateKey: 'B'.repeat(96),
+} as const;
+
 const token = {
   tokenId: 'dd03e74b-4aae-4a0a-81ee-1c23ddc4525d',
   label: 'CI deploy',
@@ -50,6 +57,8 @@ const token = {
   createdAt: '2026-08-22T12:00:00.000Z',
   lastUsedAt: null,
   expiresAt: '2026-11-20T12:00:00.000Z',
+  hasEncryptionAccess: false,
+  hasUnattendedTeamAccess: false,
 } as const;
 
 describe('createActionExecutor (account.apiTokens)', () => {
@@ -61,7 +70,13 @@ describe('createActionExecutor (account.apiTokens)', () => {
     const accountApiTokensListAction = vi.fn(async () => ({ tokens: [token] }));
     const accountApiTokensRevokeAction = vi.fn(async () => ({ revoked: true }));
     const accountApiTokensRevokeAllAction = vi.fn(async () => ({ revokedCount: 1 }));
-    const deps = Object.assign(createDeps(), {
+    const observeActionExecution = vi.fn();
+    const deps = Object.assign(createDeps({
+      // The plugin hook transport is the boundary; canonical Action execution stays real.
+      interceptActionExecution: async ({ input }) => ({ status: 'continue', input }),
+      isActionApprovalRequired: () => false,
+      observeActionExecution,
+    }), {
       accountApiTokensCreateAction,
       accountApiTokensListAction,
       accountApiTokensRevokeAction,
@@ -69,14 +84,14 @@ describe('createActionExecutor (account.apiTokens)', () => {
     });
     const executor = createActionExecutor(deps);
     const context = {
-      surface: 'api' as const,
+      surface: 'ui' as const,
       authority: 'present_user' as const,
       actionCaller: { kind: 'host' as const },
     };
 
     await expect(executor.execute(
       CREATE_ACTION_ID,
-      { label: token.label, expiresAt: token.expiresAt },
+      { tokenId: token.tokenId, label: token.label, expiresAt: token.expiresAt },
       context,
     )).resolves.toEqual({
       ok: true,
@@ -85,8 +100,11 @@ describe('createActionExecutor (account.apiTokens)', () => {
         apiToken: token,
       },
     });
+    expect(observeActionExecution).toHaveBeenLastCalledWith(expect.objectContaining({
+      result: { ok: true, result: { apiToken: token } },
+    }));
     expect(accountApiTokensCreateAction).toHaveBeenCalledWith({
-      input: { label: token.label, expiresAt: token.expiresAt },
+      input: { tokenId: token.tokenId, label: token.label, expiresAt: token.expiresAt },
       context,
     });
 
@@ -105,7 +123,7 @@ describe('createActionExecutor (account.apiTokens)', () => {
 
     await expect(executor.execute(
       CREATE_ACTION_ID,
-      { label: token.label, accountId: 'caller-selected-account' },
+      { tokenId: token.tokenId, label: token.label, accountId: 'caller-selected-account' },
       context,
     )).resolves.toEqual({
       ok: false,
@@ -113,6 +131,52 @@ describe('createActionExecutor (account.apiTokens)', () => {
       error: 'invalid_parameters',
     });
     expect(accountApiTokensCreateAction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { tokenId: token.tokenId, label: token.label },
+    { tokenId: token.tokenId, label: token.label, encryption: { access: encryptionAccess } },
+  ])('rejects generic API creation before approval or issuance', async (actionInput) => {
+    const observeActionExecution = vi.fn();
+    const accountApiTokensCreateAction = vi.fn(async () => ({
+      token: `hap_v1_${token.tokenId}_${'A'.repeat(43)}`,
+      apiToken: token,
+    }));
+    const approvalsCreate = vi.fn();
+    const executor = createActionExecutor(createDeps({
+      accountApiTokensCreateAction,
+      interceptActionExecution: async ({ input }) => ({ status: 'continue', input }),
+      observeActionExecution,
+      isActionApprovalRequired: (candidate) => candidate === CREATE_ACTION_ID,
+      approvalsCreate,
+    }));
+    await expect(executor.execute(CREATE_ACTION_ID, actionInput, {
+      surface: 'api',
+      authority: 'present_user',
+      actionCaller: { kind: 'host' },
+      serverId: 'srv_home_alpha',
+      actionRequestId: 'req_account_api_token_create',
+      externalActionCredential: {
+        accountId: 'account-1',
+        principalId: 'account-1',
+        credentialId: 'credential-1',
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'action_disabled',
+    });
+    expect(accountApiTokensCreateAction).not.toHaveBeenCalled();
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(observeActionExecution).toHaveBeenCalledTimes(1);
+    expect(observeActionExecution.mock.calls[0]?.[0]).toMatchObject({
+      actionId: CREATE_ACTION_ID,
+      result: {
+        ok: false,
+        errorCode: 'action_disabled',
+        error: 'action_disabled',
+        details: expect.objectContaining({ reason: 'unsupported_surface', surface: 'api' }),
+      },
+    });
   });
 
   it('lets account automation read token summaries but refuses every token-management mutation before its owner runs', async () => {
@@ -131,7 +195,7 @@ describe('createActionExecutor (account.apiTokens)', () => {
     });
     const executor = createActionExecutor(deps);
     const automationContext = {
-      surface: 'api' as const,
+      surface: 'ui' as const,
       authority: 'account_automation' as const,
       actionCaller: { kind: 'host' as const },
     };
@@ -142,7 +206,7 @@ describe('createActionExecutor (account.apiTokens)', () => {
     });
 
     for (const [actionId, input] of [
-      [CREATE_ACTION_ID, { label: token.label }],
+      [CREATE_ACTION_ID, { tokenId: token.tokenId, label: token.label }],
       [REVOKE_ACTION_ID, { tokenId: token.tokenId }],
       [REVOKE_ALL_ACTION_ID, {}],
     ] as const) {
@@ -160,5 +224,111 @@ describe('createActionExecutor (account.apiTokens)', () => {
     });
     expect(accountApiTokensRevokeAction).not.toHaveBeenCalled();
     expect(accountApiTokensRevokeAllAction).not.toHaveBeenCalled();
+  });
+
+  it('dispatches encryption-capable creation through the same owner with a client-captured token id and opaque wrapping record only', async () => {
+    const accountApiTokensCreateAction = vi.fn(async () => ({
+      token: `hap_v1_${token.tokenId}_${'A'.repeat(43)}`,
+      apiToken: token,
+    }));
+    const observeActionExecution = vi.fn();
+    const deps = Object.assign(createDeps({
+      // The plugin hook transport is the boundary; canonical Action execution stays real.
+      interceptActionExecution: async ({ input }) => ({ status: 'continue', input }),
+      observeActionExecution,
+    }), { accountApiTokensCreateAction });
+    const executor = createActionExecutor(deps);
+    const context = {
+      surface: 'ui' as const,
+      authority: 'present_user' as const,
+      actionCaller: { kind: 'host' as const },
+    };
+
+    await expect(executor.execute(
+      CREATE_ACTION_ID,
+      { tokenId: token.tokenId, label: token.label, expiresAt: token.expiresAt, encryption: { access: encryptionAccess } },
+      context,
+    )).resolves.toEqual({
+      ok: true,
+      result: { token: `hap_v1_${token.tokenId}_${'A'.repeat(43)}`, apiToken: token },
+    });
+    expect(observeActionExecution).toHaveBeenLastCalledWith(expect.objectContaining({
+      result: { ok: true, result: { apiToken: token } },
+    }));
+    expect(accountApiTokensCreateAction).toHaveBeenCalledWith({
+      input: { tokenId: token.tokenId, label: token.label, expiresAt: token.expiresAt, encryption: { access: encryptionAccess } },
+      context,
+    });
+
+    // The wrapping record is the only material input; no raw key, wrapping
+    // secret or caller-selected Account may reach the issuance owner.
+    for (const invalid of [
+      { tokenId: token.tokenId, label: token.label, encryption: {} },
+      { label: token.label, encryption: { access: encryptionAccess } },
+      { tokenId: token.tokenId, label: token.label, encryption: { access: encryptionAccess }, accountId: 'caller-selected' },
+      { tokenId: token.tokenId, label: token.label, encryption: { access: encryptionAccess }, wrappingSecret: 'C'.repeat(43) },
+      { tokenId: 'not-a-uuid', label: token.label, encryption: { access: encryptionAccess } },
+      {
+        tokenId: token.tokenId,
+        label: token.label,
+        encryption: { access: { ...encryptionAccess, wrappedContentPrivateKey: 'B'.repeat(95) } },
+      },
+    ]) {
+      await expect(executor.execute(CREATE_ACTION_ID, invalid, context)).resolves.toEqual({
+        ok: false,
+        errorCode: 'invalid_parameters',
+        error: 'invalid_parameters',
+      });
+    }
+    expect(accountApiTokensCreateAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses encryption-capable creation for account automation before its issuance owner runs', async () => {
+    const accountApiTokensCreateAction = vi.fn(async () => ({
+      token: `hap_v1_${token.tokenId}_${'A'.repeat(43)}`,
+      apiToken: token,
+    }));
+    const deps = Object.assign(createDeps(), { accountApiTokensCreateAction });
+    const executor = createActionExecutor(deps);
+
+    await expect(executor.execute(
+      CREATE_ACTION_ID,
+      { tokenId: token.tokenId, label: token.label, encryption: { access: encryptionAccess } },
+      { surface: 'ui' as const, authority: 'account_automation' as const, actionCaller: { kind: 'host' as const } },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'present_user_required',
+      error: 'present_user_required',
+    });
+    expect(accountApiTokensCreateAction).not.toHaveBeenCalled();
+  });
+
+  it('carries the one empty list input to its owner and requires boolean encryption metadata', async () => {
+    const accountApiTokensListAction = vi.fn(async () => ({ tokens: [token] }));
+    const deps = Object.assign(createDeps(), { accountApiTokensListAction });
+    const executor = createActionExecutor(deps);
+    const context = {
+      surface: 'ui' as const,
+      authority: 'present_user' as const,
+      actionCaller: { kind: 'host' as const },
+    };
+
+    await expect(executor.execute(LIST_ACTION_ID, {}, context)).resolves.toEqual({
+      ok: true,
+      result: { tokens: [token] },
+    });
+    expect(accountApiTokensListAction).toHaveBeenLastCalledWith({
+      input: {},
+      context,
+    });
+
+    for (const invalid of [{ includeEncryptionAccess: true }, { projectionVersion: 2 }]) {
+      await expect(executor.execute(LIST_ACTION_ID, invalid, context)).resolves.toEqual({
+        ok: false,
+        errorCode: 'invalid_parameters',
+        error: 'invalid_parameters',
+      });
+    }
+    expect(accountApiTokensListAction).toHaveBeenCalledTimes(1);
   });
 });

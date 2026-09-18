@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import * as tokens from './accountApiTokens.js';
+import { encodeBase64 } from '../crypto/base64.js';
 
 import {
   ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1,
@@ -14,6 +16,91 @@ import {
 const CREDENTIAL_ID = '2c67deea-5ae7-4706-9ad6-b5b992df1cba';
 const PAT = `hap_v1_${CREDENTIAL_ID}_${'A'.repeat(43)}`;
 
+describe('API token encryption credentials', () => {
+  const payload = {
+    bearer: PAT,
+    wrappingSecret: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
+    serverIdentityId: 'srv_home',
+    accountId: 'account-a',
+    contentPublicKey: encodeBase64(new Uint8Array(32).fill(9)),
+  };
+  const encode = (value: unknown) => `hapc_v1_${encodeBase64(new TextEncoder().encode(JSON.stringify(value)), 'base64url')}`;
+
+  it('round trips a closed local credential without making it a bearer', () => {
+    const credential = tokens.formatAccountApiTokenCredentialV1(payload);
+    expect(tokens.parseAccountApiTokenCredentialV1(credential)).toEqual(payload);
+    expect(parseAccountApiTokenBearerV1(credential)).toBeNull();
+    for (const invalid of [
+      { ...payload, extra: true },
+      { ...payload, wrappingSecret: `${payload.wrappingSecret}=` },
+      { ...payload, contentPublicKey: payload.contentPublicKey.slice(0, -1) },
+      { ...payload, bearer: `${PAT.slice(0, -1)}B` },
+      { ...payload, serverIdentityId: 'https://home.example' },
+    ]) expect(tokens.parseAccountApiTokenCredentialV1(encode(invalid))).toBeNull();
+    expect(tokens.parseAccountApiTokenCredentialV1(`${credential}=`)).toBeNull();
+    expect(tokens.parseAccountApiTokenCredentialV1(credential.replace('v1', 'v2'))).toBeNull();
+  });
+
+  it('admits only atomic UUIDv4 creation and fixed-size wrapping records', () => {
+    const input = {
+      tokenId: CREDENTIAL_ID,
+      label: 'SDK',
+      authorizeUnattendedTeamAccess: true,
+      encryption: {
+        access: { v: 1, serverIdentityId: payload.serverIdentityId,
+          contentPublicKey: payload.contentPublicKey,
+          wrappedContentPrivateKey: encodeBase64(new Uint8Array(72), 'base64url') },
+      },
+    };
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.parse(input)).toEqual(input);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({ ...input, wrappingSecret: payload.wrappingSecret }).success).toBe(false);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({
+      ...input,
+      authenticationEvidence: [{ kind: 'home_method', methodId: 'email_password' }],
+    }).success).toBe(false);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({ label: input.label }).success).toBe(false);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({ ...input, tokenId: CREDENTIAL_ID.replace('4706', '1706') }).success).toBe(false);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({ ...input, encryption: { tokenId: CREDENTIAL_ID, access: input.encryption.access } }).success).toBe(false);
+    expect(tokens.AccountApiTokensCreateActionInputV1Schema.safeParse({ ...input, encryption: { ...input.encryption, access: { ...input.encryption.access, wrappedContentPrivateKey: 'AA' } } }).success).toBe(false);
+  });
+
+  it('uses one strict list projection with required capability metadata', () => {
+    const summary = {
+      tokenId: CREDENTIAL_ID,
+      label: 'SDK',
+      displayPrefix: 'hap_v1_2c67deea',
+      createdAt: '2026-08-22T12:00:00.000Z',
+      lastUsedAt: null,
+      expiresAt: null,
+      hasEncryptionAccess: true,
+      hasUnattendedTeamAccess: true,
+    };
+    expect(tokens.AccountApiTokensListActionInputV1Schema.parse({})).toEqual({});
+    expect(tokens.AccountApiTokensListActionInputV1Schema.safeParse({ includeEncryptionAccess: true }).success).toBe(false);
+    expect(tokens.AccountApiTokensListActionOutputV1Schema.parse({ tokens: [summary] })).toEqual({ tokens: [summary] });
+    expect(tokens.AccountApiTokensListActionOutputV1Schema.safeParse({ tokens: [{ ...summary, hasEncryptionAccess: undefined }] }).success).toBe(false);
+    expect(tokens.AccountApiTokensListActionOutputV1Schema.safeParse({
+      tokens: [{ ...summary, hasUnattendedTeamAccess: undefined }],
+    }).success).toBe(false);
+    expect(tokens.AccountApiTokensListActionOutputV1Schema.safeParse({ v: 2, tokens: [summary] }).success).toBe(false);
+  });
+
+  it('keeps one strict current management error union', () => {
+    for (const error of [
+      'invalid_request', 'present_user_required', 'account-disabled',
+      'api_token_required', 'api_token_id_conflict',
+      'api_token_encryption_unavailable', 'api_token_encryption_stale',
+      'api_token_encryption_not_ready',
+      'credential_authentication_evidence_limit',
+      'credential_authentication_evidence_unavailable',
+    ]) {
+      expect(tokens.AccountApiTokensServerErrorV1Schema.parse({ error })).toEqual({ error });
+    }
+    expect(tokens.AccountApiTokensServerErrorV1Schema.safeParse({ error: 'account_disabled' }).success).toBe(false);
+    expect(tokens.AccountApiTokensServerErrorV1Schema.safeParse({ error: 'invalid_request', detail: 'secret' }).success).toBe(false);
+  });
+});
+
 describe('auth/accountApiTokens PAT introspection', () => {
   it('uses a truthful non-secret display prefix from the minted bearer format', () => {
     expect(AccountApiTokenSummaryV1Schema.parse({
@@ -23,6 +110,8 @@ describe('auth/accountApiTokens PAT introspection', () => {
       createdAt: '2026-08-22T12:00:00.000Z',
       lastUsedAt: null,
       expiresAt: null,
+      hasEncryptionAccess: false,
+      hasUnattendedTeamAccess: false,
     }).displayPrefix).toBe('hap_v1_2c67deea');
 
     expect(AccountApiTokenSummaryV1Schema.safeParse({
