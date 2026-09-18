@@ -4,14 +4,14 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import type { ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 
 import { writeConnectedServiceStateSharingManifest } from '@/daemon/connectedServices/stateSharing/connectedServiceStateSharingManifest';
 
 import { resolveSessionConnectedServiceSwitchContinuity } from './startDaemonSessionControlRuntime';
 
-const bindings: ConnectedServiceBindingsV1 = {
-  v: 1,
+const bindings: ConnectedServiceBindingsV2 = {
+  v: 2,
   bindingsByServiceId: {
     'openai-codex': {
       source: 'connected',

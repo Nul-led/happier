@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveHomeTargetFromDescriptor } from '@happier-dev/cli-common/homeTarget';
 import type { HappierJsonExecutor } from '@happier-dev/cli-common/systemTasks';
+import type { approveTerminalAuthRequest as approveTerminalAuthRequestType } from '@/auth/terminalAuthApproval';
 
 const { approveTerminalAuthRequest, writeJsonStdout } = vi.hoisted(() => ({
-  approveTerminalAuthRequest: vi.fn(async () => undefined),
+  approveTerminalAuthRequest: vi.fn<typeof approveTerminalAuthRequestType>(async () => undefined),
   writeJsonStdout: vi.fn(async () => undefined),
 }));
 vi.mock('@/auth/terminalAuthApproval', () => ({ approveTerminalAuthRequest }));
@@ -78,6 +79,7 @@ function createStreamingExecutor(params: Readonly<{
 
 describe('auth pair-remote canonical SSH enrollment', () => {
   it('keeps saved-profile/Iroh pairing auth-only and uses one streaming command', async () => {
+    approveTerminalAuthRequest.mockClear();
     const target = createSavedIrohTarget();
     const seen: Array<Readonly<{ args: readonly string[]; input?: string }>> = [];
 
@@ -95,6 +97,7 @@ describe('auth pair-remote canonical SSH enrollment', () => {
     expect(seen[0]?.input).toContain(HOME_SERVER_IDENTITY_ID);
     expect(JSON.stringify(seen)).not.toMatch(/auth.*(?:request|wait)|--persist|doctor|service/u);
     expect(approveTerminalAuthRequest).toHaveBeenCalledWith(expect.objectContaining({ target }));
+    expect(approveTerminalAuthRequest.mock.calls.at(-1)?.[0]).not.toHaveProperty('authorizeUnattendedTeamAccess');
     expect(writeJsonStdout).toHaveBeenCalledWith(expect.objectContaining({
       success: true,
       homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
@@ -103,6 +106,26 @@ describe('auth pair-remote canonical SSH enrollment', () => {
     const jsonCalls = writeJsonStdout.mock.calls as unknown as Array<[Record<string, unknown>]>;
     expect(jsonCalls.at(-1)?.[0]).not.toHaveProperty('postCheck');
     expect(JSON.stringify(writeJsonStdout.mock.calls)).not.toMatch(/token|claimSecret|secretKey/u);
+  });
+
+  it('delegates restricted-Team evidence only when the operator selects the explicit flag', async () => {
+    approveTerminalAuthRequest.mockClear();
+    const target = createSavedIrohTarget();
+
+    await handleAuthPairRemote([
+      '--ssh', 'user@host', '--json', '--no-post-check', '--authorize-unattended-team-access',
+    ], {
+      resolveHomeTarget: async () => target,
+      createEnrollmentExecutor: () => createStreamingExecutor({
+        requestIdentity: HOME_SERVER_IDENTITY_ID,
+        seen: [],
+      }),
+    });
+
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith(expect.objectContaining({
+      target,
+      authorizeUnattendedTeamAccess: true,
+    }));
   });
 
   it('rejects a different Home identity before approval without reflecting pairing material', async () => {

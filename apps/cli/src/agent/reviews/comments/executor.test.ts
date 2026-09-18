@@ -7,8 +7,13 @@ import { createCliReviewCommentActionExecutorFromCredentials } from './executor'
 import {
     REVIEW_COMMENT_PRINCIPAL_HEADER_V1,
     ReviewCommentPrincipalHeaderV1Schema,
+    ReviewCommentPublicationTransportRequestV1Schema,
     createReviewCommentPrincipalSigningInputV1,
+    createReviewCommentPublicationSettlementRequestV1,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
+    type ReviewCommentClaimPublicationDispatchResponseV1,
+    type ReviewCommentPublicationPlanV1,
+    type ReviewCommentPublicationTransportRequestV1,
 } from '@happier-dev/protocol';
 
 const axiosPostMock = vi.mocked(axios.post);
@@ -26,9 +31,174 @@ vi.mock('axios', () => ({
     },
 }));
 
+/**
+ * Every private plan string carries `PRIVATE-`, so one substring sweep over the
+ * bytes axios actually received covers present and future request fields. The
+ * canonical `happierCommentId` the Happier server already owns is excluded on
+ * purpose: it is the row the server must arbitrate on.
+ */
+const publicationPlan: ReviewCommentPublicationPlanV1 = {
+    target: {
+        providerId: 'PRIVATE-provider',
+        configuredAccountId: 'PRIVATE-connected-account',
+        entryRef: {
+            sourceId: 'PRIVATE-source',
+            kindId: 'PRIVATE-entry-kind',
+            collisionScope: 'PRIVATE-repository',
+            entryId: 'PRIVATE-pull-request',
+        },
+        subtarget: null,
+    },
+    baseRevision: 'PRIVATE-base-revision',
+    headRevision: 'PRIVATE-head-revision',
+    entries: [{
+        happierCommentId: 'comment-1',
+        expectedServerRevision: 1,
+        anchor: { kind: 'line', filePath: 'PRIVATE-source/file.ts', line: 4 },
+        snapshot: {
+            kind: 'text',
+            selectedLines: ['PRIVATE-selected-code'],
+            beforeContext: ['PRIVATE-before-context'],
+            afterContext: ['PRIVATE-after-context'],
+            selectedLinesHash: 'PRIVATE-selected-hash',
+            contextWindowHash: 'PRIVATE-context-hash',
+            capturedAt: 1,
+            fileLength: 5,
+            source: 'workingTree',
+            isUncommitted: true,
+            isUntracked: false,
+            truncated: false,
+            hasBidiControls: false,
+            likelyMinified: false,
+        },
+        body: 'PRIVATE-review-body',
+    }],
+    verdict: { kind: 'comment', body: 'PRIVATE-verdict-body' },
+};
+
+function postedTransportRequest(callIndex: number): ReviewCommentPublicationTransportRequestV1 {
+    return ReviewCommentPublicationTransportRequestV1Schema.parse(axiosPostMock.mock.calls[callIndex]?.[1]);
+}
+
+/** The exact server reply for a dispatch claim of the request axios received. */
+function dispatchResponseFor(body: unknown): unknown {
+    const request = ReviewCommentPublicationTransportRequestV1Schema.parse(body);
+    return {
+        disposition: 'dispatch',
+        dispatchToken: 'dispatch-token-1',
+        publicationPlanId: request.publicationPlanId,
+        entries: request.entries.map(({ happierCommentId, publicationCorrelationId }) => ({
+            happierCommentId,
+            publicationCorrelationId,
+        })),
+        verdict: request.verdict,
+        instructions: {
+            entries: request.entries.map(() => 'dispatch'),
+            verdict: request.verdict === null ? null : 'dispatch',
+        },
+        priorResult: null,
+    };
+}
+
+function settlementResponseFor(body: unknown): unknown {
+    const request = ReviewCommentPublicationTransportRequestV1Schema.parse(body);
+    return {
+        disposition: 'reconcile',
+        dispatchToken: null,
+        publicationPlanId: request.publicationPlanId,
+        entries: request.entries.map(({ happierCommentId, publicationCorrelationId }) => ({
+            happierCommentId,
+            publicationCorrelationId,
+        })),
+        verdict: request.verdict,
+        instructions: {
+            entries: request.entries.map(() => 'confirmed'),
+            verdict: request.verdict === null ? null : 'confirmed',
+        },
+        priorResult: request.settlement?.result ?? null,
+    };
+}
+
 describe('createCliReviewCommentActionExecutorFromCredentials', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+    });
+
+    it('keeps the complete private E2EE publication plan out of actual HTTP bytes', async () => {
+        axiosPostMock.mockImplementationOnce(async (_url, body) => {
+            // Axios is the genuine HTTP boundary; accept either shape so RED observes disclosure.
+            const wire = body as {
+                publicationPlanId?: string;
+                entries: { happierCommentId: string; publicationCorrelationId?: string }[];
+                verdict: { publicationCorrelationId?: string } | null;
+            };
+            return {
+                status: 200,
+                data: {
+                    disposition: 'dispatch',
+                    dispatchToken: 'dispatch-token-1',
+                    publicationPlanId: wire.publicationPlanId ?? 'p'.repeat(43),
+                    entries: wire.entries.map((entry) => ({
+                        happierCommentId: entry.happierCommentId,
+                        publicationCorrelationId: entry.publicationCorrelationId ?? 'a'.repeat(43),
+                    })),
+                    verdict: { publicationCorrelationId: wire.verdict?.publicationCorrelationId ?? 'v'.repeat(43) },
+                    instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+                    priorResult: null,
+                },
+            };
+        });
+        const executor = createCliReviewCommentActionExecutorFromCredentials({
+            credentials: { token: 'token-1', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(5) } },
+            resolveAccountId: () => 'account-1',
+            resolveAccountEncryptionMode: async () => 'e2ee',
+        });
+        await executor('reviews.comments.claimPublicationDispatch', {
+            target: {
+                providerId: 'github',
+                configuredAccountId: 'private-connected-account',
+                entryRef: { sourceId: 'github', kindId: 'pull-request', collisionScope: 'private-repository-id', entryId: 'private-pr-id' },
+                subtarget: null,
+            },
+            baseRevision: 'private-base-sha',
+            headRevision: 'private-head-sha',
+            entries: [{
+                happierCommentId: 'comment-1',
+                expectedServerRevision: 1,
+                anchor: { kind: 'line', filePath: 'private/source.ts', line: 4 },
+                snapshot: {
+                    kind: 'text', selectedLines: ['private selected code'], beforeContext: ['unpublished preceding code'],
+                    afterContext: ['unpublished following code'], selectedLinesHash: 'selected', contextWindowHash: 'context',
+                    capturedAt: 1, fileLength: 5, source: 'workingTree', isUncommitted: true, isUntracked: false,
+                    truncated: false, hasBidiControls: false, likelyMinified: false,
+                },
+                body: 'private review body',
+            }],
+            verdict: { kind: 'comment', body: 'private verdict summary' },
+        });
+        const bytes = JSON.stringify(axiosPostMock.mock.calls[0]?.[1]);
+        for (const privateText of [
+            'private-connected-account', 'private-repository-id', 'private-pr-id', 'private-base-sha', 'private-head-sha',
+            'private/source.ts', 'private selected code', 'unpublished preceding code', 'unpublished following code',
+            'private review body', 'private verdict summary',
+        ]) expect(bytes).not.toContain(privateText);
+    });
+
+    it('refuses a token-only E2EE publication before the HTTP boundary', async () => {
+        const executor = createCliReviewCommentActionExecutorFromCredentials({
+            credentials: { token: 'token-1', encryption: null },
+            resolveAccountId: () => 'account-1',
+            resolveAccountEncryptionMode: async () => 'e2ee',
+        });
+        await expect(executor('reviews.comments.claimPublicationDispatch', {
+            target: {
+                providerId: 'github', configuredAccountId: 'private-account',
+                entryRef: { sourceId: 'github', kindId: 'pull-request', collisionScope: 'repo-1', entryId: '42' }, subtarget: null,
+            },
+            baseRevision: 'base-1', headRevision: 'head-1', entries: [],
+            verdict: { kind: 'comment', body: 'Private summary' },
+        })).rejects.toThrow('review_comment_encryption_material_unavailable');
+        expect(axiosPostMock).not.toHaveBeenCalled();
     });
 
     it('signs host-derived agent review-comment principal headers with the machine installation identity', async () => {
@@ -314,7 +484,112 @@ describe('createCliReviewCommentActionExecutorFromCredentials', () => {
         });
     });
 
-    it('dispatches publication claims without attempting an event-envelope mutation', async () => {
+    it('dispatches a plaintext-Account publication claim opaquely and without an event-envelope mutation', async () => {
+        axiosPostMock.mockImplementationOnce(async (_url, body) => ({ status: 200, data: dispatchResponseFor(body) }));
+        // The Account mode now decides the claim encoding, so it must be resolved before the POST.
+        const resolveAccountEncryptionMode = vi.fn(async () => 'plain' as const);
+        const executor = createCliReviewCommentActionExecutorFromCredentials({
+            credentials: { token: 'token-1', encryption: null },
+            resolveAccountId: () => 'account-1',
+            resolveAccountEncryptionMode,
+        });
+
+        const claim = await executor('reviews.comments.claimPublicationDispatch', publicationPlan);
+
+        expect(resolveAccountEncryptionMode).toHaveBeenCalledTimes(1);
+        expect(axiosPostMock).toHaveBeenCalledTimes(1);
+        expect(axiosPostMock.mock.calls[0]?.[0]).toMatch(/\/v1\/reviews\/comments\/publication\/claim$/);
+        expect(axiosPostMock.mock.calls[0]?.[1]).not.toHaveProperty('eventEnvelope');
+        expect(JSON.stringify(axiosPostMock.mock.calls[0]?.[1])).not.toContain('PRIVATE-');
+
+        const wire = postedTransportRequest(0);
+        expect(wire.mode).toBe('plain');
+        expect(wire.contentPublicKeyFingerprint).toBeNull();
+        expect(wire.targetKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        expect(wire.entries).toEqual([{
+            happierCommentId: 'comment-1',
+            expectedServerRevision: 1,
+            publicationCorrelationId: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        }]);
+        expect(claim).toEqual({
+            disposition: 'dispatch',
+            dispatchToken: 'dispatch-token-1',
+            publicationPlanId: wire.publicationPlanId,
+            entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: wire.entries[0]!.publicationCorrelationId }],
+            verdict: { publicationCorrelationId: wire.verdict!.publicationCorrelationId },
+            instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+            priorResult: null,
+        });
+    });
+
+    it('settles an E2EE publication retry without putting provider references or failure text on the wire', async () => {
+        axiosPostMock
+            .mockImplementationOnce(async (_url, body) => ({ status: 200, data: dispatchResponseFor(body) }))
+            .mockImplementationOnce(async (_url, body) => ({ status: 200, data: settlementResponseFor(body) }));
+        const plan: ReviewCommentPublicationPlanV1 = {
+            ...publicationPlan,
+            entries: [
+                publicationPlan.entries[0]!,
+                { ...publicationPlan.entries[0]!, happierCommentId: 'comment-2', expectedServerRevision: 2 },
+            ],
+        };
+        const executor = createCliReviewCommentActionExecutorFromCredentials({
+            credentials: { token: 'token-1', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(5) } },
+            resolveAccountId: () => 'account-1',
+            resolveAccountEncryptionMode: async () => 'e2ee',
+        });
+
+        const claim = await executor(
+            'reviews.comments.claimPublicationDispatch',
+            plan,
+        ) as ReviewCommentClaimPublicationDispatchResponseV1;
+        const result = {
+            publicationPlanId: claim.publicationPlanId,
+            entries: [
+                {
+                    happierCommentId: 'comment-1',
+                    publicationCorrelationId: claim.entries[0]!.publicationCorrelationId,
+                    outcome: { kind: 'published' as const, externalRef: 'PRIVATE-native-comment-ref' },
+                },
+                {
+                    happierCommentId: 'comment-2',
+                    publicationCorrelationId: claim.entries[1]!.publicationCorrelationId,
+                    outcome: {
+                        kind: 'failed' as const,
+                        code: 'PRIVATE-provider-code',
+                        message: 'PRIVATE-provider-message',
+                    },
+                },
+            ],
+            verdict: {
+                publicationCorrelationId: claim.verdict!.publicationCorrelationId,
+                outcome: { kind: 'published' as const, externalRef: 'PRIVATE-native-verdict-ref' },
+            },
+        };
+
+        const settled = await executor(
+            'reviews.comments.claimPublicationDispatch',
+            createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
+        ) as ReviewCommentClaimPublicationDispatchResponseV1;
+
+        expect(axiosPostMock).toHaveBeenCalledTimes(2);
+        expect(JSON.stringify(axiosPostMock.mock.calls[1]?.[1])).not.toContain('PRIVATE-');
+        const wire = postedTransportRequest(1);
+        expect(wire.mode).toBe('e2ee');
+        expect(wire.contentPublicKeyFingerprint).toEqual(expect.any(String));
+        expect(wire.settlement?.dispatchToken).toBe('dispatch-token-1');
+        const outcomes = [
+            ...wire.settlement!.result.entries.map((entry) => entry.outcome),
+            ...('kind' in wire.settlement!.result.verdict ? [] : [wire.settlement!.result.verdict.outcome]),
+        ];
+        expect(outcomes.map((outcome) => outcome.content?.t)).toEqual(['encrypted', 'encrypted', 'encrypted']);
+        expect(new Set(outcomes.map((outcome) => outcome.content?.t === 'encrypted' ? outcome.content.c : '')).size)
+            .toBe(outcomes.length);
+        // The host reopens its own sealed prior outcomes when the server replays them.
+        expect(settled.priorResult).toEqual(result);
+    });
+
+    it('refuses a publication response whose plan binding the server substituted', async () => {
         axiosPostMock.mockResolvedValueOnce({
             status: 200,
             data: {
@@ -327,52 +602,15 @@ describe('createCliReviewCommentActionExecutorFromCredentials', () => {
                 priorResult: null,
             },
         });
-        const resolveAccountEncryptionMode = vi.fn(async () => 'plain' as const);
         const executor = createCliReviewCommentActionExecutorFromCredentials({
             credentials: { token: 'token-1', encryption: null },
-            resolveAccountEncryptionMode,
-        });
-        const target = {
-            providerId: 'github',
-            configuredAccountId: 'github-account-1',
-            entryRef: {
-                sourceId: 'github',
-                kindId: 'pull-request',
-                collisionScope: 'github:repository-1',
-                entryId: '42',
-            },
-            subtarget: null,
-        };
-
-        const publicationPlan = {
-            target,
-            baseRevision: 'base-1',
-            headRevision: 'head-1',
-            entries: [{
-                happierCommentId: 'comment-1',
-                expectedServerRevision: 1,
-                anchor: { kind: 'file' as const, filePath: 'src/a.ts' },
-                snapshot: { kind: 'too_large' as const, filePath: 'src/a.ts', sizeBytes: 2, capBytes: 1, capturedAt: 1 },
-                body: 'body',
-            }],
-            verdict: { kind: 'comment' as const, body: 'Summary' },
-        };
-        await expect(executor('reviews.comments.claimPublicationDispatch', publicationPlan)).resolves.toEqual({
-            disposition: 'dispatch',
-            dispatchToken: 'dispatch-token-1',
-            publicationPlanId: 'p'.repeat(43),
-            entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'a'.repeat(43) }],
-            verdict: { publicationCorrelationId: 'v'.repeat(43) },
-            instructions: { entries: ['dispatch'], verdict: 'dispatch' },
-            priorResult: null,
+            resolveAccountId: () => 'account-1',
+            resolveAccountEncryptionMode: async () => 'plain',
         });
 
-        expect(resolveAccountEncryptionMode).not.toHaveBeenCalled();
-        expect(axiosPostMock).toHaveBeenCalledWith(
-            expect.stringMatching(/\/v1\/reviews\/comments\/publication\/claim$/),
-            publicationPlan,
-            expect.any(Object),
-        );
+        await expect(executor('reviews.comments.claimPublicationDispatch', publicationPlan))
+            .rejects.toThrow('review_comment_publication_binding_mismatch');
+        expect(axiosPostMock).toHaveBeenCalledTimes(1);
     });
 
     it('fails token-only E2EE before the mutation POST', async () => {

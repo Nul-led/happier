@@ -213,6 +213,8 @@ export function createNativeAgentSessionWorkStateService(params: Readonly<{
     contributionId: string;
     agentId: string;
     generationId: string;
+    /** Optional retained-Run scope; keeps source truncation/replacement isolated across Runs. */
+    executionRunId?: string;
     declarations: readonly WorkStateSourceDeclaration[];
     isCurrent: () => boolean;
     recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
@@ -233,7 +235,12 @@ export function createNativeAgentSessionWorkStateService(params: Readonly<{
                 contributionId: params.contributionId,
                 declaredSourceId,
             });
-            const sourceKey = `${params.pluginId}/${params.contributionId}/${declaredSourceId}`;
+            const sourceKey = [
+                params.pluginId,
+                params.contributionId,
+                params.executionRunId?.trim() || 'session',
+                declaredSourceId,
+            ].join('/');
             const state: PublisherState = {
                 sourceSequence: -1,
                 fingerprint: null,

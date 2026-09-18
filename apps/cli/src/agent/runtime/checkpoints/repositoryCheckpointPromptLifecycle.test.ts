@@ -2,9 +2,9 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
@@ -12,6 +12,36 @@ import { createMutableApiSessionClientFixture } from '@/testkit/backends/session
 import { buildRepositoryCheckpointRefs } from '@/scm/checkpoints';
 
 import { createRepositoryCheckpointPromptLifecycle } from './repositoryCheckpointPromptLifecycle';
+import { createWorktreeAttributionRegistry } from './worktreeAttributionRegistry';
+
+/**
+ * Only the SCM/process boundary is controlled: the real Git checkpoint adapter still runs, but the
+ * test can interleave a peer capture interval at the exact final-capture and diff boundaries.
+ */
+const checkpointBoundaryHooks = vi.hoisted(() => ({
+    beforeFinalCapture: null as null | (() => void),
+    beforeDiff: null as null | (() => void),
+}));
+
+vi.mock('@/scm/checkpoints/gitCheckpointAdapter', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/scm/checkpoints/gitCheckpointAdapter')>();
+    return {
+        ...actual,
+        gitCheckpointAdapter: {
+            ...actual.gitCheckpointAdapter,
+            async capture(request: Parameters<typeof actual.gitCheckpointAdapter.capture>[0]) {
+                if (request.checkpointRef.phase === 'turn-final') {
+                    checkpointBoundaryHooks.beforeFinalCapture?.();
+                }
+                return await actual.gitCheckpointAdapter.capture(request);
+            },
+            async diff(request: Parameters<typeof actual.gitCheckpointAdapter.diff>[0]) {
+                checkpointBoundaryHooks.beforeDiff?.();
+                return await actual.gitCheckpointAdapter.diff(request);
+            },
+        },
+    };
+});
 
 const execFile = promisify(execFileCallback);
 
@@ -60,6 +90,128 @@ function readCheckpointMeta(messages: readonly ACPMessageData[]): Record<string,
 }
 
 describe('createRepositoryCheckpointPromptLifecycle', () => {
+    afterEach(() => {
+        checkpointBoundaryHooks.beforeFinalCapture = null;
+        checkpointBoundaryHooks.beforeDiff = null;
+    });
+
+    it('uses resolved Git roots for nested directories while keeping linked worktrees separate', async () => {
+        const repoRoot = await createGitRepo();
+        const linkedRoot = `${repoRoot}-linked`;
+        const registry = createWorktreeAttributionRegistry();
+        const lifecycles: ReturnType<typeof createRepositoryCheckpointPromptLifecycle>[] = [];
+        try {
+            await mkdir(join(repoRoot, 'nested'));
+            await runGit(repoRoot, ['worktree', 'add', '--detach', linkedRoot]);
+            for (const [index, runtimeDirectory] of [repoRoot, join(repoRoot, 'nested'), linkedRoot].entries()) {
+                const { session } = createMessageCapturingSession(`root-${index}`);
+                const lifecycle = createRepositoryCheckpointPromptLifecycle({
+                    session, runtimeDirectory, provider: 'codex', protocol: 'codex', attributionRegistry: registry,
+                });
+                lifecycles.push(lifecycle);
+                await lifecycle.onBeforePromptDispatch?.({ messageId: 'message', prompt: 'inspect' });
+            }
+            expect(registry.resolveAttributionScope({ repoRoot, intervalId: 'root-0:message' })).toBe('shared_worktree');
+            expect(registry.resolveAttributionScope({ repoRoot, intervalId: 'root-1:message' })).toBe('shared_worktree');
+            expect(registry.resolveAttributionScope({
+                repoRoot: await runGit(linkedRoot, ['rev-parse', '--show-toplevel']), intervalId: 'root-2:message',
+            })).toBe('no_happier_checkpoint_overlap_observed');
+        } finally {
+            for (const lifecycle of lifecycles) await lifecycle.onSessionEnd?.();
+            await rm(linkedRoot, { recursive: true, force: true });
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
+    it.each(['abort', 'shutdown', 'failed_capture'] as const)('releases an interval after %s without contaminating later turns', async (completion) => {
+        const repoRoot = await createGitRepo();
+        const registry = createWorktreeAttributionRegistry();
+        const { session } = createMessageCapturingSession('cleanup');
+        const lifecycle = createRepositoryCheckpointPromptLifecycle({
+            session, runtimeDirectory: repoRoot, provider: 'codex', protocol: 'codex', attributionRegistry: registry,
+        });
+        try {
+            await lifecycle.onBeforePromptDispatch?.({ messageId: 'message', prompt: 'inspect' });
+            if (completion === 'abort') {
+                await lifecycle.onTurnAbortedBeforeStart?.({ messageId: 'message' });
+                await lifecycle.onTurnAbortedBeforeStart?.({ messageId: 'message' });
+            } else if (completion === 'shutdown') {
+                await lifecycle.onSessionEnd?.();
+                await lifecycle.onSessionEnd?.();
+            } else {
+                await rename(join(repoRoot, '.git'), join(repoRoot, '.git.removed'));
+                await lifecycle.onTurnFinal?.({ messageId: 'message', turnId: 'turn', status: 'interrupted' });
+            }
+            expect(registry.resolveAttributionScope({ repoRoot, intervalId: 'cleanup:message' })).toBe('unknown');
+            const later = registry.begin({ repoRoot, intervalId: 'later:message' });
+            expect(registry.resolveAttributionScope(later)).toBe('no_happier_checkpoint_overlap_observed');
+            registry.end(later);
+        } finally {
+            await lifecycle.onSessionEnd?.();
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('records a peer interval that begins while the final capture is still running', async () => {
+        const repoRoot = await createGitRepo();
+        try {
+            const { session, messages } = createMessageCapturingSession('session-capture-overlap');
+            const attributionRegistry = createWorktreeAttributionRegistry();
+            const lifecycle = createRepositoryCheckpointPromptLifecycle({
+                session,
+                runtimeDirectory: repoRoot,
+                provider: 'codex',
+                protocol: 'codex',
+                attributionRegistry,
+            });
+
+            await lifecycle.onBeforePromptDispatch?.({ messageId: 'message-1', prompt: 'change tracked.txt' });
+            await lifecycle.onTurnStarted?.({ messageId: 'message-1', turnId: 'turn-1' });
+            await writeFile(join(repoRoot, 'tracked.txt'), 'changed\n', 'utf8');
+            checkpointBoundaryHooks.beforeFinalCapture = () => {
+                attributionRegistry.begin({ repoRoot, intervalId: 'session-peer:message-9' });
+            };
+            await lifecycle.onTurnFinal?.({ messageId: 'message-1', turnId: 'turn-1', status: 'completed' });
+
+            expect(readCheckpointMeta(messages)).toMatchObject({
+                contentConfidence: 'exact',
+                attributionScope: 'shared_worktree',
+            });
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps the captured attribution when a peer interval begins only after the final capture', async () => {
+        const repoRoot = await createGitRepo();
+        try {
+            const { session, messages } = createMessageCapturingSession('session-capture-after');
+            const attributionRegistry = createWorktreeAttributionRegistry();
+            const lifecycle = createRepositoryCheckpointPromptLifecycle({
+                session,
+                runtimeDirectory: repoRoot,
+                provider: 'codex',
+                protocol: 'codex',
+                attributionRegistry,
+            });
+
+            await lifecycle.onBeforePromptDispatch?.({ messageId: 'message-1', prompt: 'change tracked.txt' });
+            await lifecycle.onTurnStarted?.({ messageId: 'message-1', turnId: 'turn-1' });
+            await writeFile(join(repoRoot, 'tracked.txt'), 'changed\n', 'utf8');
+            checkpointBoundaryHooks.beforeDiff = () => {
+                attributionRegistry.begin({ repoRoot, intervalId: 'session-peer:message-9' });
+            };
+            await lifecycle.onTurnFinal?.({ messageId: 'message-1', turnId: 'turn-1', status: 'completed' });
+
+            expect(readCheckpointMeta(messages)).toMatchObject({
+                contentConfidence: 'exact',
+                attributionScope: 'no_happier_checkpoint_overlap_observed',
+            });
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
     it('does not persist unavailable checkpoint metadata without file evidence', async () => {
         const runtimeDirectory = await mkdtemp(join(tmpdir(), 'happier-checkpoint-nongit-'));
         try {

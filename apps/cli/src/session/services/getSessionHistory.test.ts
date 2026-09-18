@@ -54,7 +54,8 @@ describe('readRawSessionHistoryRows', () => {
     await readRawSessionHistoryRows({
       token: 'token',
       sessionId: 'session-1',
-      ctx: { encryptionKey: new Uint8Array([1]), encryptionVariant: 'legacy' },
+      mode: 'plain',
+      ctx: null,
       limit: 1,
     });
 

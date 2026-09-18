@@ -9,12 +9,13 @@ import {
   type ExecutionRunProfileContributionCatalog,
 } from '@/agent/executionRuns/profiles/intentRegistry';
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
-import { readBackendResumableChildSessionId } from '@/agent/executionRuns/controllers/types';
+import { readBackendResumableRuntimeId } from '@/agent/executionRuns/controllers/types';
 import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import { writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
 import {
   AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1,
+  projectExecutionRunRequestedConfiguration,
   readBackendTargetRefV2,
   type ExecutionRunResumeHandle,
 } from '@happier-dev/protocol';
@@ -89,7 +90,7 @@ export async function finishExecutionRun(args: Readonly<{
 
   const resumeHandle: ExecutionRunResumeHandle | null = (() => {
     if (existing.retentionPolicy !== 'resumable') return null;
-    const providerSessionId = readBackendResumableChildSessionId(args.controllers.get(args.runId) ?? null);
+    const providerSessionId = readBackendResumableRuntimeId(args.controllers.get(args.runId) ?? null);
     if (typeof providerSessionId === 'string' && providerSessionId.trim().length > 0) {
       return { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(existing.backendTarget), providerSessionId };
     }
@@ -178,6 +179,10 @@ export async function finishExecutionRun(args: Readonly<{
   const cleanupReceipt = buildExecutionRunConnectedServicesCleanupReceipt(
     updated.launch?.connectedServicesRegistration,
   );
+  const requestedConfiguration = projectExecutionRunRequestedConfiguration({
+    modelId: updated.launch?.modelSelection?.modelId ?? updated.launch?.modelId,
+    sessionConfigOptionOverrides: updated.launch?.sessionConfigOptionOverrides,
+  });
   const markerPayload = {
     pid: process.pid,
     happySessionId: existing.sessionId,
@@ -187,11 +192,13 @@ export async function finishExecutionRun(args: Readonly<{
     intent: updated.intent,
     backendTarget: readBackendTargetRefV2(updated.backendTarget),
     ...(updated.launch?.launchOrigin ? { launchOrigin: updated.launch.launchOrigin } : {}),
+    ...(requestedConfiguration ? { requestedConfiguration } : {}),
     permissionMode: updated.permissionMode,
     retentionPolicy: updated.retentionPolicy,
     runClass: updated.runClass,
     ioMode: updated.ioMode,
     status: updated.status,
+    ...(updated.notifyParentOnCompletion === true ? { notifyParentOnCompletion: true } : {}),
     startedAtMs: updated.startedAtMs,
     updatedAtMs: args.next.finishedAtMs,
     finishedAtMs: args.next.finishedAtMs,

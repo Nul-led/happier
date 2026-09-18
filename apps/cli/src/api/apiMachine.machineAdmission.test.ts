@@ -6,6 +6,8 @@ import {
   SessionPendingEnqueueByMachineRequestV1Schema,
   type SessionInputAdmissionResultV1,
   type SessionPendingEnqueueByMachineRequestV1,
+  SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
+  SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2,
 } from '@happier-dev/protocol';
 import type { Machine } from '@/api/types';
 
@@ -35,6 +37,23 @@ async function enqueueMachineAdmissionWithCancellation(
 }
 
 describe('ApiMachineClient machine admission transport', () => {
+  it('dispatches target admission only through V2 and rejects an old acknowledgement', async () => {
+    const client = new ApiMachineClient('token', createMachine());
+    const emitWithAck = vi.fn().mockResolvedValue({ v: 1, result: { status: 'accepted', localId: 'target-input' } });
+    Reflect.set(client, 'socket', { connected: true, timeout: () => ({ emitWithAck }) });
+    const request = SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.parse({
+      v: 2, sessionId: 'session-1', targetMachineId: 'machine-1',
+      recipient: { kind: 'execution_run', runId: 'run-a' }, localId: 'target-input',
+      content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Target input' }, meta: {} } },
+      requestedAction: { v: 1, kind: 'enqueue' },
+    });
+    await expect(client.enqueueSessionPendingByMachine(request)).resolves.toMatchObject({
+      status: 'outcomeUnknown', localId: 'target-input',
+    });
+    expect(emitWithAck).toHaveBeenCalledWith(SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2, request);
+    emitWithAck.mockResolvedValue({ v: 2, result: { status: 'accepted', localId: 'target-input' } });
+    await expect(client.enqueueSessionPendingByMachine(request)).resolves.toEqual({ status: 'accepted', localId: 'target-input' });
+  });
   it('returns a definite rejection when the socket is known disconnected before emit', async () => {
     const client = new ApiMachineClient('token', createMachine());
     const emitWithAck = vi.fn();

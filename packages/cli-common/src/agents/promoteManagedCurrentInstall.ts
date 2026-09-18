@@ -139,7 +139,9 @@ export async function promoteManagedCurrentInstall(params: Readonly<{
   currentPath?: string;
   reportWarning?: (message: string) => void;
   activateVersionedRelease?: boolean;
+  signal?: AbortSignal;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   const candidatePath = params.candidatePath ?? join(params.installRoot, 'next');
   const currentPath = params.currentPath ?? join(params.installRoot, 'current');
   const activePath = join(params.installRoot, 'active');
@@ -154,6 +156,7 @@ export async function promoteManagedCurrentInstall(params: Readonly<{
       && process.platform !== 'win32'
       && (await pathExists(currentPath) || await pathExists(activePath))
     ) {
+      params.signal?.throwIfAborted();
       await promoteVersionedManagedInstallCandidate({
         installRoot: params.installRoot,
         candidatePath,
@@ -164,6 +167,7 @@ export async function promoteManagedCurrentInstall(params: Readonly<{
 
     const backupPath = join(params.installRoot, `.current.backup-${process.pid}-${randomUUID()}`);
     const hadCurrent = await pathExists(currentPath);
+    params.signal?.throwIfAborted();
     if (hadCurrent) {
       await rename(currentPath, backupPath);
     }
@@ -193,6 +197,7 @@ export async function promoteManagedCurrentInstall(params: Readonly<{
       reportWarning: params.reportWarning,
     });
   }, {
+    signal: params.signal,
     lockPath: join(params.installRoot, '.lock', 'install.lock'),
     timeoutMs: MANAGED_INSTALL_COMMIT_LOCK_TIMEOUT_MS,
     staleAfterMs: MANAGED_INSTALL_COMMIT_LOCK_TIMEOUT_MS,

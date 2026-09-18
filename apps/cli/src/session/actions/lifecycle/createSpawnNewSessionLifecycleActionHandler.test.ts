@@ -55,6 +55,38 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
     });
   });
 
+  it('validates and forwards the canonical Team credential binding to the daemon spawn owner', async () => {
+    const spawnSession = vi.fn(async (_options: SpawnSessionOptions) => ({
+      type: 'success',
+      sessionId: 'session-created',
+    } as const));
+    const handler = createSpawnNewSessionLifecycleActionHandler({ spawnSession });
+    const teamCredentialBinding = {
+      v: 1 as const,
+      slot: { kind: 'provider_model' as const },
+      resourceId: 'resource-1',
+      expectedResourceRevision: 3,
+      deliveryMode: 'brokered' as const,
+    };
+
+    await expect(handler({
+      directory: '/tmp/project',
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      teamCredentialBindings: [teamCredentialBinding],
+    })).resolves.toEqual({ type: 'success', sessionId: 'session-created' });
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({ teamCredentialBindings: [teamCredentialBinding] }));
+
+    await expect(handler({
+      directory: '/tmp/project',
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      teamCredentialBindings: [{ ...teamCredentialBinding, unexpected: true }],
+    })).resolves.toEqual(expect.objectContaining({
+      type: 'error',
+      errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+    }));
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards the admitted creation identity, immutable recipe, and initial title to the daemon owner', async () => {
     const spawnSession = vi.fn(async (_options: SpawnSessionOptions) => ({
       type: 'success',
@@ -65,6 +97,15 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
       callerCreationNamespace: 'user',
       creationKey: 'creation-1',
     });
+    const secretReferenceOverlay = {
+      v: 1 as const,
+      bindings: {
+        ANTHROPIC_API_KEY: {
+          ref: 'happier:shared-secret:v1:shared-anthropic',
+          revision: 7,
+        },
+      },
+    };
     const sessionCreationCorrespondence = SessionCreationCorrespondenceV1Schema.parse({
       v: 1,
       sessionCreationTag,
@@ -76,7 +117,8 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
           identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
         },
         modelSelection: null,
-        profileId: null,
+        profileId: 'profile-shared',
+        secretReferenceOverlay,
         requestedPermissionMode: null,
         agentModeId: null,
         configuration: null,
@@ -92,7 +134,12 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
     await expect(handler({
       directory: '/tmp/project',
       machineId: 'machine-exact',
-      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      backendTarget: {
+        kind: 'backend',
+        backendId: 'review-bot',
+        configuredBackendId: 'review-bot',
+        sourceKind: 'configured',
+      },
       sessionCreationTag,
       sessionCreationCorrespondence,
       initialTitle: 'Atomic initial title',
@@ -101,8 +148,117 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       sessionCreationTag,
       sessionCreationCorrespondence,
+      profileId: 'profile-shared',
+      secretReferenceOverlay,
       initialTitle: 'Atomic initial title',
     }));
+  });
+
+  it('fails closed before spawn when duplicate launch references disagree with immutable correspondence', async () => {
+    const spawnSession = vi.fn();
+    const handler = createSpawnNewSessionLifecycleActionHandler({ spawnSession });
+    const sessionCreationTag = deriveSessionCreationTagV1({
+      callerCreationNamespace: 'user',
+      creationKey: 'creation-conflict',
+    });
+    const correspondence = SessionCreationCorrespondenceV1Schema.parse({
+      v: 1,
+      sessionCreationTag,
+      recipe: {
+        execution: { machineId: 'machine-exact', directory: '/tmp/project' },
+        organization: { folderId: null, tagIds: [] },
+        agentTarget: {
+          kind: 'agent',
+          identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+        },
+        modelSelection: null,
+        profileId: 'profile-original',
+        secretReferenceOverlay: {
+          v: 1,
+          bindings: {
+            OPENAI_API_KEY: {
+              ref: 'happier:shared-secret:v1:original',
+              revision: 3,
+            },
+          },
+        },
+        requestedPermissionMode: null,
+        agentModeId: null,
+        configuration: null,
+        connectedServices: null,
+        mcpSelection: null,
+        transcriptStorage: null,
+        terminal: null,
+        agentSessionStartupInstructionsMarkerV1: null,
+        checkout: null,
+      },
+    });
+
+    for (const conflicting of [
+      {
+        profileId: 'profile-other',
+        secretReferenceOverlay: correspondence.recipe.secretReferenceOverlay,
+      },
+      {
+        profileId: correspondence.recipe.profileId,
+        secretReferenceOverlay: {
+          v: 1 as const,
+          bindings: {
+            OPENAI_API_KEY: {
+              ref: 'happier:shared-secret:v1:other',
+              revision: 4,
+            },
+          },
+        },
+      },
+    ]) {
+      await expect(handler({
+        directory: '/tmp/project',
+        backendTarget: {
+          kind: 'backend',
+          backendId: 'review-bot',
+          configuredBackendId: 'review-bot',
+          sourceKind: 'configured',
+        },
+        sessionCreationTag,
+        sessionCreationCorrespondence: correspondence,
+        ...conflicting,
+      })).resolves.toMatchObject({
+        type: 'error',
+        errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+      });
+    }
+
+    expect(spawnSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed launch overlay before invoking the daemon spawn owner', async () => {
+    const spawnSession = vi.fn();
+    const handler = createSpawnNewSessionLifecycleActionHandler({ spawnSession });
+
+    await expect(handler({
+      directory: '/tmp/project',
+      backendTarget: {
+        kind: 'backend',
+        backendId: 'review-bot',
+        configuredBackendId: 'review-bot',
+        sourceKind: 'configured',
+      },
+      profileId: 'profile-shared',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          OPENAI_API_KEY: {
+            ref: 'not-a-canonical-reference',
+            revision: 1,
+          },
+        },
+      },
+    })).resolves.toMatchObject({
+      type: 'error',
+      errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+    });
+    expect(spawnSession).not.toHaveBeenCalled();
   });
 
   it('keeps private spawn request and result identities out of persistent diagnostics', async () => {

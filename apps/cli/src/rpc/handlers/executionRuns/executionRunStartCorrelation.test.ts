@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { accountSettingsParse } from '@happier-dev/protocol';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executionRunPolicy';
+import { buildExecutionRunProfileCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/testkit';
 
@@ -26,6 +28,10 @@ vi.mock('@/daemon/executionRunRegistry', async (importOriginal) => ({
 import { ExecutionRunHostBridge } from '@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge';
 
 import { createExecutionRunRpcActionExecutor } from './dispatchExecutionRunRpcAction';
+import {
+  registerExecutionRunRpcHandlers,
+  type ExecutionRunRpcHandlerContext,
+} from './registerExecutionRunRpcHandlers';
 
 const TEST_BACKEND_ID = `${'task'}.${'backend'}` as never;
 
@@ -155,6 +161,62 @@ describe('execution.run.start correlation freedom', () => {
       expect(start).toHaveBeenCalledTimes(1);
       expect(runtimeFactoryMock.createExecutionRunBridgeRuntime).toHaveBeenCalledTimes(1);
       expect(manager.listPublic()).toHaveLength(1);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('carries the runtime owner Account settings snapshot into execution-run runtime creation', async () => {
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation(() => (
+      createTestExecutionRunHostRuntime() as ExecutionRunHostRuntime
+    ));
+    const ownerSnapshot = {
+      source: 'cache' as const,
+      settings: accountSettingsParse({}),
+      settingsVersion: 7,
+      loadedAtMs: 10,
+      settingsSecretsReadKeys: [],
+      scopeKey: 'account:owner',
+    };
+    const resolveAccountSettingsSnapshot = vi.fn(async () => ownerSnapshot);
+    const managers: ExecutionRunHostBridge[] = [];
+    const context = {
+      sessionId: 'session-owner',
+      cwd: process.cwd(),
+      parentProvider: TEST_BACKEND_ID,
+      sendAcp: async () => {},
+      executionRunProfileCatalog: buildExecutionRunProfileCatalog(),
+      resolveAccountSettingsSnapshot,
+      onManagerCreated: (created: ExecutionRunHostBridge) => {
+        managers.push(created);
+      },
+    } satisfies ExecutionRunRpcHandlerContext;
+
+    registerExecutionRunRpcHandlers({ registerHandler: vi.fn() }, context);
+
+    const manager = managers[0];
+    if (!manager) {
+      throw new Error('execution-run manager was not created');
+    }
+
+    try {
+      await manager.start({
+        sessionId: 'session-owner',
+        intent: 'task',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        instructions: 'Use the owning Account configuration.',
+        intentInput: { input: { topic: 'runtime owner' } },
+        permissionMode: 'read_only',
+        retentionPolicy: 'ephemeral',
+        runClass: 'bounded',
+        ioMode: 'request_response',
+      });
+
+      const runtimeOptions = runtimeFactoryMock.createExecutionRunBridgeRuntime.mock.calls[0]?.[0] as
+        | Readonly<{ resolveAccountSettingsSnapshot?: () => Promise<unknown> }>
+        | undefined;
+      expect(runtimeOptions?.resolveAccountSettingsSnapshot).toBeTypeOf('function');
+      await expect(runtimeOptions!.resolveAccountSettingsSnapshot!()).resolves.toBe(ownerSnapshot);
     } finally {
       await manager.dispose();
     }

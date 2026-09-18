@@ -5,18 +5,29 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 
-const { installAgentCliForRuntime } = vi.hoisted(() => ({
-  installAgentCliForRuntime: vi.fn(async (_params: Readonly<{ runtimeSpec: { id: string } }>) => ({
-    ok: true as const,
-    alreadyInstalled: false,
-    plan: { installMode: 'managed_package' } as any,
-    logPath: null,
-  })),
+const { installAgentCliForRuntime, resolveAgentCliCommandForRuntimeMock, installedAgentIds } = vi.hoisted(() => ({
+  installedAgentIds: new Set<string>(),
+  installAgentCliForRuntime: vi.fn(async (params: Readonly<{ runtimeSpec: { id: string } }>) => {
+    installedAgentIds.add(params.runtimeSpec.id);
+    return {
+      ok: true as const,
+      alreadyInstalled: false,
+      plan: { installMode: 'managed_package' } as any,
+      logPath: null,
+    };
+  }),
+  resolveAgentCliCommandForRuntimeMock: vi.fn((runtimeSpec: Readonly<{ id: string; binaryName: string }>) => (
+    installedAgentIds.has(runtimeSpec.id)
+      ? { command: runtimeSpec.binaryName, args: [], source: 'system' as const }
+      : null
+  )),
 }));
 
-const { resolveMergedContributionRegistryMock, getAgentCliSetupRecommendedIdsMock } = vi.hoisted(() => ({
+const { resolveMergedContributionRegistryMock, getAgentCliSetupRecommendedIdsMock, interactiveTerminal, promptMultipleSelectionMock } = vi.hoisted(() => ({
   resolveMergedContributionRegistryMock: vi.fn(),
   getAgentCliSetupRecommendedIdsMock: vi.fn(() => ['claude', 'codex']),
+  interactiveTerminal: { value: false },
+  promptMultipleSelectionMock: vi.fn(async () => [] as string[]),
 }));
 
 vi.mock('@happier-dev/cli-common/agents', async (importOriginal) => {
@@ -24,7 +35,18 @@ vi.mock('@happier-dev/cli-common/agents', async (importOriginal) => {
   return {
     ...actual,
     installAgentCliForRuntime,
+    resolveAgentCliCommandForRuntime: resolveAgentCliCommandForRuntimeMock,
   };
+});
+
+vi.mock('@/terminal/prompts/promptInput', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/terminal/prompts/promptInput')>();
+  return { ...actual, isInteractiveTerminal: () => interactiveTerminal.value };
+});
+
+vi.mock('@/terminal/prompts/promptMultipleChoice', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/terminal/prompts/promptMultipleChoice')>();
+  return { ...actual, promptMultipleSelection: promptMultipleSelectionMock };
 });
 
 vi.mock('@happier-dev/agents', async (importOriginal) => {
@@ -51,6 +73,19 @@ describe('happier agents setup --yes --json', () => {
 
   beforeEach(async () => {
     installAgentCliForRuntime.mockReset();
+    installAgentCliForRuntime.mockImplementation(async (params: Readonly<{ runtimeSpec: { id: string } }>) => {
+      installedAgentIds.add(params.runtimeSpec.id);
+      return {
+        ok: true as const,
+        alreadyInstalled: false,
+        plan: { installMode: 'managed_package' } as any,
+        logPath: null,
+      };
+    });
+    installedAgentIds.clear();
+    interactiveTerminal.value = false;
+    promptMultipleSelectionMock.mockReset();
+    promptMultipleSelectionMock.mockResolvedValue([]);
     resolveMergedContributionRegistryMock.mockReset();
     getAgentCliSetupRecommendedIdsMock.mockClear();
     envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
@@ -143,6 +178,19 @@ describe('happier agents setup --yes --json', () => {
     }
   });
 
+  it('does not reinstall an already-present recommended agent under --yes', async () => {
+    installedAgentIds.add('claude');
+    const output = captureConsoleLogAndMuteStdout();
+    try {
+      await handleAgentsCommand(['setup', '--yes', '--json']);
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed.ok).toBe(true);
+      expect(installAgentCliForRuntime.mock.calls.map((call) => call[0].runtimeSpec.id)).toEqual(['codex']);
+    } finally {
+      output.restore();
+    }
+  });
+
   it('accepts --providers comma-separated selection in non-interactive mode', async () => {
     const output = captureConsoleLogAndMuteStdout();
     try {
@@ -152,6 +200,48 @@ describe('happier agents setup --yes --json', () => {
 
       const installedIds = installAgentCliForRuntime.mock.calls.map((call) => call[0].runtimeSpec.id);
       expect(installedIds).toEqual(['claude', 'codex']);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('uses the interactive multi-select, excludes installed agents, and keeps recommended missing agents selected', async () => {
+    installedAgentIds.add('claude');
+    interactiveTerminal.value = true;
+    promptMultipleSelectionMock.mockResolvedValue(['codex']);
+
+    await handleAgentsCommand(['setup']);
+
+    expect(promptMultipleSelectionMock).toHaveBeenCalledWith(
+      expect.stringContaining('coding agents'),
+      [
+        expect.objectContaining({ id: 'codex', selected: true, description: expect.stringContaining('Happier-managed') }),
+        expect.objectContaining({ id: 'skip', kind: 'skip' }),
+      ],
+    );
+    expect(installAgentCliForRuntime).toHaveBeenCalledTimes(1);
+    expect(installAgentCliForRuntime.mock.calls[0]?.[0].runtimeSpec.id).toBe('codex');
+  });
+
+  it('reports an install that cannot be re-detected as a failure while preserving detected successes', async () => {
+    installAgentCliForRuntime.mockImplementation(async (params: Readonly<{ runtimeSpec: { id: string } }>) => {
+      if (params.runtimeSpec.id === 'claude') installedAgentIds.add('claude');
+      return {
+        ok: true as const,
+        alreadyInstalled: false,
+        plan: { installMode: 'managed_package' } as any,
+        logPath: null,
+      };
+    });
+    const output = captureConsoleLogAndMuteStdout();
+    try {
+      await handleAgentsCommand(['setup', '--providers', 'claude,codex', '--json']);
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.agents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentId: 'claude', ok: true, installed: true }),
+        expect.objectContaining({ agentId: 'codex', ok: false, installed: false }),
+      ]));
     } finally {
       output.restore();
     }

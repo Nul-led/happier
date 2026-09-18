@@ -13,6 +13,7 @@ import {
     type InitializeBackendRunSessionOptions,
 } from '@/agent/runtime/initializeBackendRunSession';
 import type { StoredCredentials } from '@/persistence';
+import type { SessionAttachSecret } from '@/agent/runtime/sessionAttach';
 import { configuration } from '@/configuration';
 import { DeferredApiSessionClient } from './DeferredApiSessionClient';
 import type {
@@ -26,6 +27,34 @@ type DeferredStartupBootstrapDeps = Readonly<{
     initializeBackendApiContextFn?: typeof initializeBackendApiContext;
     initializeBackendRunSessionFn?: typeof initializeBackendRunSession;
 }>;
+
+export type DeferredStartupSessionClientOptions = Pick<
+    ApiSessionClientOptions,
+    | 'initialRegisteredSessionStateFieldMutations'
+    | 'durableMutationDeliveryInitiallyActive'
+    | 'transformSessionInputBeforeCommit'
+    | 'afterComposerAttachmentMessageAccepted'
+    | 'machineAdmissionTransport'
+>;
+
+export type DeferredStartupBackendApi = Omit<Pick<ApiClient, 'getOrCreateSession' | 'push'>, 'push'> & Readonly<{ push: () => ReturnType<ApiClient['push']> | null }> & Readonly<{
+    sessionSyncClient: (
+        session: Parameters<ApiClient['sessionSyncClient']>[0],
+        options?: DeferredStartupSessionClientOptions,
+    ) => ApiSessionClient;
+}>;
+
+export type DeferredStartupBackendApiContextInitializer = (
+    params: Readonly<{
+        credentials: StoredCredentials;
+        machineMetadata: MachineMetadata;
+        missingMachineIdMessage?: string;
+        skipMachineRegistration?: boolean;
+    }>,
+) => Promise<Readonly<{
+    api: DeferredStartupBackendApi;
+    machineId: string;
+}>>;
 
 class DeferredStartupAuthorityAttachFailure extends Error {
     readonly failure: unknown;
@@ -77,21 +106,6 @@ function awaitStartupAbortable<T>(
     });
 }
 
-function createDeferredPushSenderProxy(ref: { current: DeferredStartupPushSender | null }): DeferredStartupPushSender {
-    return Object.freeze({
-        sendToAllDevices: (...args: Parameters<DeferredStartupPushSender['sendToAllDevices']>) => {
-            const pushSender = ref.current;
-            if (!pushSender) return;
-            pushSender.sendToAllDevices(...args);
-        },
-        sendToAllDevicesAsync: async (...args: Parameters<DeferredStartupPushSender['sendToAllDevicesAsync']>) => {
-            const pushSender = ref.current;
-            if (!pushSender) return;
-            await pushSender.sendToAllDevicesAsync(...args);
-        },
-    });
-}
-
 export async function createDeferredStartupBootstrap(params: Readonly<{
     credentials: StoredCredentials;
     startedBy: 'terminal' | 'daemon';
@@ -101,6 +115,7 @@ export async function createDeferredStartupBootstrap(params: Readonly<{
     sessionTag: string;
     existingSessionId?: string;
     sessionAttachFilePath?: string;
+    sessionAttachSecret?: SessionAttachSecret;
     attachMetadataIdentityPolicy?: SessionAttachMetadataIdentityPolicy | null;
     initialMetadata: Metadata;
     createInitializedSessionMetadata: (machineId: string) => Readonly<{
@@ -120,9 +135,16 @@ export async function createDeferredStartupBootstrap(params: Readonly<{
     transformSessionInputBeforeCommit?: ApiSessionClientOptions['transformSessionInputBeforeCommit'];
     afterComposerAttachmentMessageAccepted?: ApiSessionClientOptions['afterComposerAttachmentMessageAccepted'];
     machineAdmissionTransport?: ApiSessionClientOptions['machineAdmissionTransport'];
+    /**
+     * Alternate admitted API context for a runtime that must not initialize an
+     * Account client (for example, a materialized ephemeral Runner).
+     */
+    initializeBackendApiContext?: DeferredStartupBackendApiContextInitializer;
     deps?: DeferredStartupBootstrapDeps;
 }>): Promise<DeferredStartupBootstrapResult> {
-    const initializeBackendApiContextFn = params.deps?.initializeBackendApiContextFn ?? initializeBackendApiContext;
+    const initializeBackendApiContextFn = params.initializeBackendApiContext
+        ?? params.deps?.initializeBackendApiContextFn
+        ?? initializeBackendApiContext;
     const initializeBackendRunSessionFn = params.deps?.initializeBackendRunSessionFn ?? initializeBackendRunSession;
     const backgroundController = new AbortController();
     const initialMetadata = {
@@ -137,7 +159,6 @@ export async function createDeferredStartupBootstrap(params: Readonly<{
         },
     });
     const pushSenderRef = { current: null as DeferredStartupPushSender | null };
-    const deferredPushSender = createDeferredPushSenderProxy(pushSenderRef);
     const reconnectionHandleRef = { current: null as { cancel: () => void } | null };
     let started = false;
 
@@ -227,6 +248,9 @@ export async function createDeferredStartupBootstrap(params: Readonly<{
                     ...(params.sessionAttachFilePath
                         ? { sessionAttachFilePath: params.sessionAttachFilePath }
                         : {}),
+                    ...(params.sessionAttachSecret
+                        ? { sessionAttachSecret: params.sessionAttachSecret }
+                        : {}),
                     attachMetadataIdentityPolicy: params.attachMetadataIdentityPolicy,
                     uiLogPrefix: params.uiLogPrefix,
                     startupMetadataOverrides: params.startupMetadataOverrides,
@@ -290,7 +314,10 @@ export async function createDeferredStartupBootstrap(params: Readonly<{
 
     return {
         api: {
-            push: () => deferredPushSender,
+            // Return the admitted sender truthfully: null until the backend
+            // context initializes, the real sender for ordinary runtimes, and
+            // null forever for sender-less runtimes such as the Runner.
+            push: () => pushSenderRef.current,
         },
         session: deferredSession as unknown as ApiSessionClient,
         machineId: params.initialMachineId,

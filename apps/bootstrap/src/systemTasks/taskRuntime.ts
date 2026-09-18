@@ -30,7 +30,9 @@ export async function runCommandCapture(params: Readonly<{
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   stdinText?: string;
+  signal?: AbortSignal;
 }>): Promise<CommandExecutionResult> {
+  params.signal?.throwIfAborted();
   return await new Promise((resolve, reject) => {
     const child = spawn(params.command, [...params.args], {
       env: params.env,
@@ -42,12 +44,25 @@ export async function runCommandCapture(params: Readonly<{
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      params.signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      cleanup();
+      reject(params.signal?.reason instanceof Error ? params.signal.reason : new DOMException('This operation was aborted', 'AbortError'));
+    };
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill('SIGTERM');
+      cleanup();
       reject(new Error(`Command timed out: ${params.command}`));
     }, Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000);
+    params.signal?.addEventListener('abort', onAbort, { once: true });
 
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -58,13 +73,13 @@ export async function runCommandCapture(params: Readonly<{
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cleanup();
       reject(error);
     });
     child.on('close', (status) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cleanup();
       resolve({
         status: typeof status === 'number' ? status : 1,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),

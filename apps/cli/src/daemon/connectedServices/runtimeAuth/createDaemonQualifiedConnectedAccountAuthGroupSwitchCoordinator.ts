@@ -10,6 +10,7 @@ import {
     listQualifiedConnectedAccountsV4,
     readQualifiedConnectedAccountGroupV4,
     setQualifiedConnectedAccountGroupActiveAccountV4,
+    updateQualifiedConnectedAccountGroupMemberV4,
     updateQualifiedConnectedAccountGroupRuntimeStateV4,
 } from '@/api/client/qualifiedConnectedAccountApi';
 import {
@@ -30,6 +31,13 @@ import {
     updateConnectedServiceAuthGroupRuntimeStateWithRetry,
 } from '../accountGroups/runtimeState/updateConnectedServiceAuthGroupRuntimeStateWithRetry';
 import type { ConnectedServiceAuthGroupCandidatePreparationResult } from '../refresh/ConnectedServiceRefreshCoordinator';
+import {
+    buildConnectedServiceAuthGroupSwitchStateFromAccountUsage,
+    buildQualifiedConnectedAccountAuthGroupAccountUsageView,
+    type AccountUsageStoreForAuthGroupSwitchState,
+} from '../accountGroups/switching/buildConnectedServiceAuthGroupSwitchStateFromAccountUsage';
+import type { ConnectedServiceAuthGroupQuotaProbeResult } from '../accountGroups/quotas/preTurnQuotaProbe';
+import type { ConnectedServiceQuotaRecoveryCreditConsumeResult } from '../quotas/ConnectedServiceQuotasCoordinator';
 
 type QualifiedConnectedAccountAuthGroupApi = Readonly<{
     readGroup: typeof readQualifiedConnectedAccountGroupV4;
@@ -38,6 +46,7 @@ type QualifiedConnectedAccountAuthGroupApi = Readonly<{
         typeof setQualifiedConnectedAccountGroupActiveAccountV4;
     updateRuntimeState:
         typeof updateQualifiedConnectedAccountGroupRuntimeStateV4;
+    updateMember?: typeof updateQualifiedConnectedAccountGroupMemberV4;
 }>;
 
 const defaultQualifiedConnectedAccountAuthGroupApi:
@@ -48,6 +57,7 @@ const defaultQualifiedConnectedAccountAuthGroupApi:
             setQualifiedConnectedAccountGroupActiveAccountV4,
         updateRuntimeState:
             updateQualifiedConnectedAccountGroupRuntimeStateV4,
+        updateMember: updateQualifiedConnectedAccountGroupMemberV4,
     };
 
 function sameQualifiedService(
@@ -116,6 +126,14 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
         token: string;
         quotaFreshnessMs: number;
         nowMs: () => number;
+        accountUsageStore?: AccountUsageStoreForAuthGroupSwitchState;
+        probeQuotaSnapshotsForGroup?: (input: Readonly<{
+            serviceId: QualifiedConnectedAccountServiceRef; groupId: string; profileIds: ReadonlyArray<string>; reason: string;
+        }>) => Promise<ConnectedServiceAuthGroupQuotaProbeResult | void>;
+        consumeAvailableRecoveryCreditForProfile?: (input: Readonly<{
+            serviceId: QualifiedConnectedAccountServiceRef; groupId: string; profileId: string;
+            automaticResetContext: Readonly<{ groupId: string; sessionId?: string }>;
+        }>) => Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult>;
         api?: QualifiedConnectedAccountAuthGroupApi;
         leases?: InMemoryConnectedServiceAuthGroupSwitchLeaseRegistry<
             QualifiedConnectedAccountServiceRef
@@ -142,6 +160,16 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
 > {
     const api =
         params.api ?? defaultQualifiedConnectedAccountAuthGroupApi;
+    const buildState = (input: Parameters<typeof buildQualifiedConnectedAccountAuthGroupSwitchState>[0]) => {
+        const state = buildQualifiedConnectedAccountAuthGroupSwitchState(input);
+        const usage = params.accountUsageStore ? buildConnectedServiceAuthGroupSwitchStateFromAccountUsage({
+            group: buildQualifiedConnectedAccountAuthGroupAccountUsageView(input.group), accountUsageStore: params.accountUsageStore,
+        }) : null;
+        if (!usage) return state;
+        return { ...state, memberStatesByProfileId: new Map([...state.memberStatesByProfileId].map(([profileId, member]) => [
+            profileId, { ...usage.state.memberStatesByProfileId.get(profileId), ...member },
+        ])) };
+    };
 
     const loadState = async (input: Readonly<{
         serviceId: QualifiedConnectedAccountServiceRef;
@@ -180,7 +208,7 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
                 'qualified_connected_account_group_member_missing',
             );
         }
-        return buildQualifiedConnectedAccountAuthGroupSwitchState({
+        return buildState({
             group,
             profiles: listed.accounts,
         });
@@ -194,6 +222,8 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
         nowMs: params.nowMs,
         quotaFreshnessMs: params.quotaFreshnessMs,
         loadState,
+        probeQuotaSnapshotsForGroup: params.probeQuotaSnapshotsForGroup,
+        consumeAvailableRecoveryCreditForProfile: params.consumeAvailableRecoveryCreditForProfile,
         commitSwitch: async (input) => {
             const service =
                 QualifiedConnectedAccountServiceRefSchema.parse(
@@ -238,7 +268,7 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
                 service,
             });
             assertExactAccountList(service, listed);
-            return buildQualifiedConnectedAccountAuthGroupSwitchState({
+            return buildState({
                 group,
                 profiles: listed.accounts,
             });
@@ -313,6 +343,11 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
                                     buildConnectedServiceAuthGroupObservedFailureMemberState({
                                         existing: member.state,
                                         reason: input.reason,
+                                        limitCategory:
+                                            input.limitCategory,
+                                        quotaScope: input.quotaScope,
+                                        providerLimitId:
+                                            input.providerLimitId,
                                         retryAtMs:
                                             resolveConnectedServiceAuthGroupFailureRetryAtMs({
                                                 retryAtMs:
@@ -327,6 +362,9 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
                                         cooldownMs:
                                             input.loaded.policy
                                                 .cooldownMs,
+                                        autoDisablePlanInvalidAccounts:
+                                            input.loaded.policy
+                                                .autoDisablePlanInvalidAccounts,
                                         planType:
                                             input.planType,
                                         observedAtMs,
@@ -342,17 +380,44 @@ export function createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinator(
                     expectedIncarnation,
                     expectedRuntimeStateRevision,
                     runtimeState,
-                }) => await api.updateRuntimeState({
-                    token: params.token,
-                    patch: {
-                        service: serviceId,
-                        groupId,
-                        expectedGeneration,
-                        expectedIncarnation,
-                        expectedRuntimeStateRevision,
-                        runtimeState,
-                    },
-                }),
+                }) => {
+                    const observedState = runtimeState.memberStates.find(
+                        (candidate) => candidate.connectedAccountId
+                            === observedAccountId,
+                    )?.state;
+                    if (
+                        observedState?.autoDisabledReason
+                            === 'model_not_entitled'
+                        && api.updateMember
+                    ) {
+                        return await api.updateMember({
+                            token: params.token,
+                            mutation: {
+                                group: { service: serviceId, groupId },
+                                connectedAccountId: observedAccountId,
+                                expectedGeneration:
+                                    expectedGeneration,
+                                expectedIncarnation:
+                                    expectedIncarnation,
+                                expectedRuntimeStateRevision:
+                                    expectedRuntimeStateRevision,
+                                enabled: false,
+                                state: observedState,
+                            },
+                        });
+                    }
+                    return await api.updateRuntimeState({
+                        token: params.token,
+                        patch: {
+                            service: serviceId,
+                            groupId,
+                            expectedGeneration,
+                            expectedIncarnation,
+                            expectedRuntimeStateRevision,
+                            runtimeState,
+                        },
+                    });
+                },
             });
         },
         applyGeneration: params.applyGeneration,

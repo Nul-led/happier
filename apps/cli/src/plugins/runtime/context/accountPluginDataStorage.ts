@@ -770,6 +770,8 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
         const post = async (input: Readonly<{
             path: string;
             body: unknown;
+            /** Canonical-row mutations settle independently of later currentness. */
+            kind?: 'read' | 'mutation';
             credentials: StoredCredentials;
             operationSignal?: AbortSignal;
             parseError: (value: unknown) => PluginError | null;
@@ -783,23 +785,32 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     'Collection request cannot be serialized by this runtime',
                 );
             }
+            await assertCurrentAccount(input.credentials, input.operationSignal);
             try {
                 const response = await http.post(
                     `${resolveBaseUrl()}${input.path}`,
                     encodedBody,
                     requestConfig(input.credentials, signal),
                 );
-                await assertCurrentAccount(input.credentials, input.operationSignal);
+                if (input.kind !== 'mutation') {
+                    await assertCurrentAccount(input.credentials, input.operationSignal);
+                }
                 if (response.status >= 200 && response.status < 300) return response.data;
                 throw input.parseError(response.data)
-                    ?? dataError(
+                    ?? (input.kind === 'mutation' ? dataError(
+                        'plugin_collection_outcome_unknown',
+                        'Account Collection mutation may have committed without a valid acknowledgement',
+                    ) : dataError(
                         ACCOUNT_DATA_UNAVAILABLE_CODE,
                         input.unavailableMessage,
                         response.status >= 500,
-                    );
+                    ));
             } catch (error) {
-                await assertBoundCurrent(lifecycle, input.operationSignal);
+                if (input.kind !== 'mutation') await assertBoundCurrent(lifecycle, input.operationSignal);
                 if (isPluginError(error)) throw error;
+                if (input.kind === 'mutation') {
+                    throw dataError('plugin_collection_outcome_unknown', 'Account Collection mutation outcome is unknown');
+                }
                 throw dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, `${input.unavailableMessage} failed`, true);
             }
         };
@@ -812,6 +823,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
         }>): Promise<unknown> => await post({
             path: input.path,
             body: input.body,
+            kind: input.kind,
             credentials: input.credentials,
             ...(input.operationSignal ? { operationSignal: input.operationSignal } : {}),
             parseError: (value) => parseCollectionError(value, input.kind),
@@ -1390,6 +1402,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     );
                 }
                 const signal = signalFor(input.operationSignal);
+                await assertCurrentAccount(input.snapshot.credentials, input.operationSignal);
                 let response: Readonly<{ status: number; data: unknown }>;
                 try {
                     response = await http.post(
@@ -1397,26 +1410,22 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         encodedBody,
                         requestConfig(input.snapshot.credentials, signal),
                     );
-                    await assertCurrentAccount(input.snapshot.credentials, input.operationSignal);
                 } catch (error) {
-                    await assertBoundCurrent(lifecycle, input.operationSignal);
-                    if (isPluginError(error)) throw error;
-                    throw dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, 'Account KV write request failed', true);
+                    throw dataError('plugin_account_storage_outcome_unknown', 'Account KV write outcome is unknown');
                 }
                 if (response.status < 200 || response.status >= 300) {
                     const unavailable = PluginAccountStorageUnavailableV1Schema.safeParse(response.data);
                     throw unavailable.success
                         ? dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, 'Account KV is unavailable on this server')
-                        : dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, 'Account KV write is unavailable', response.status >= 500);
+                        : dataError('plugin_account_storage_outcome_unknown', 'Account KV write outcome is unknown');
                 }
                 const parsed = PluginAccountStorageMutationResponseV1Schema.safeParse(response.data);
                 if (!parsed.success) {
-                    throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Account KV mutation response is invalid');
+                    throw dataError('plugin_account_storage_outcome_unknown', 'Account KV mutation acknowledgement is invalid');
                 }
                 if (parsed.data.status === 'conflict') {
                     return 'conflict';
                 }
-                await assertCurrentAccount(input.snapshot.credentials, input.operationSignal);
                 return 'updated';
             };
 
@@ -1511,7 +1520,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                                 }),
                             }));
                         }
-                        await assertBoundCurrent(lifecycle, commitSignal);
                         return result;
                     } finally {
                         active = false;
@@ -1732,9 +1740,8 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     });
                     const parsed = PluginCollectionMutationResultV1Schema.safeParse(response);
                     if (!parsed.success) {
-                        throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection mutation response is invalid');
+                        throw dataError('plugin_collection_outcome_unknown', 'Collection mutation acknowledgement is invalid');
                     }
-                    await assertCurrentAccount(credentials, operationSignal);
                     return parsed.data;
                 };
 
@@ -1770,9 +1777,8 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     });
                     const parsed = PluginCollectionForgetResultV1Schema.safeParse(response);
                     if (!parsed.success) {
-                        throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection forget response is invalid');
+                        throw dataError('plugin_collection_outcome_unknown', 'Collection forget acknowledgement is invalid');
                     }
-                    await assertCurrentAccount(credentials, operationSignal);
                     return parsed.data.status === 'forgotten';
                 };
 

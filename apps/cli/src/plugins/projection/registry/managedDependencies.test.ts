@@ -344,4 +344,61 @@ describe('managed dependency plugin contributions', () => {
         expect(first).not.toHaveProperty('generationId');
         expect(second).not.toHaveProperty('generationId');
     });
+    it('projects a pinned-archive dependency with the installable fields the UI installables registry requires', () => {
+        const asset = (suffix: string) => ({
+            archiveUrl: `https://downloads.acme.test/acme-pinned-tool-4.5.6-${suffix}.zip`,
+            sha256: 'b'.repeat(64),
+            executableSubpath: suffix.startsWith('win32') ? 'bin/acme-pinned-tool.exe' : 'bin/acme-pinned-tool',
+        });
+        const registry = createEmptyRegistry({
+            managedDependencies: [{
+                provenance: 'external',
+                source: { kind: 'path' },
+                pluginId: 'acme.dependencies',
+                manifestPath: '/plugins/acme-dependencies/.happier-plugin/plugin.json',
+                daemonEntryPath: null,
+                sourceSpec,
+                definition: {
+                    id: 'pinned-tool',
+                    title: 'Acme pinned tool',
+                    description: 'Pinned Acme runtime',
+                    executable: 'acme-pinned-tool',
+                    sources: [{
+                        kind: 'pinnedArchive',
+                        installId: 'dep.acme.pinned-tool',
+                        version: '4.5.6',
+                        assetsByPlatform: {
+                            'darwin-arm64': asset('darwin-arm64'),
+                            'linux-x64': asset('linux-x64'),
+                            'linux-arm64': asset('linux-arm64'),
+                            'win32-x64': asset('win32-x64'),
+                            'win32-arm64': asset('win32-arm64'),
+                        },
+                    }],
+                },
+            }],
+            managedDependenciesByKey: new Map(),
+        });
+
+        const projection = buildPluginProjectionV2({ registry, generation: 9 });
+
+        // The raw V2 request stays request-only; the installable projection is what the UI reads.
+        expect(projection.familiesById.managedDependencies?.entriesById['acme.dependencies/pinned-tool'])
+            .toEqual(expect.not.objectContaining({ key: expect.anything() }));
+        expect(projection.familiesById.managedDependencies?.entriesById['dep.acme.pinned-tool']).toEqual({
+            id: 'dep.acme.pinned-tool',
+            pluginId: 'acme.dependencies',
+            key: 'dep.acme.pinned-tool',
+            capabilityId: 'dep.acme.pinned-tool',
+            sourceKind: 'pinned_archive',
+            display: {
+                name: 'Acme pinned tool',
+            },
+            defaultPolicy: {
+                autoInstallWhenNeeded: true,
+                autoUpdateMode: 'off',
+            },
+            experimental: true,
+        });
+    });
 });

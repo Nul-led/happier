@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import type {
   HostExternalTranscriptFollowEvent,
   HostExternalTranscriptFollowResult,
@@ -98,11 +100,13 @@ export function createHostTerminalTranscriptFollowService(params: Readonly<{
                 const result = unavailable('plugin_operation_aborted');
                 return result;
             }
+            // `agentId` is Happier/manifest-owned and must already be canonical.
+            // `providerSessionId` is the Agent's own opaque identity, so padding
+            // is part of those bytes -- only blankness disqualifies it.
             if (
                 request.agentId.length === 0
                 || request.agentId !== request.agentId.trim()
-                || request.providerSessionId.length === 0
-                || request.providerSessionId !== request.providerSessionId.trim()
+                || readNonBlankOpaqueIdentifier(request.providerSessionId) === null
             ) {
                 const result = unavailable('plugin_external_follow_identity_mismatch');
                 return result;

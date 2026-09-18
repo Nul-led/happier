@@ -4,7 +4,6 @@ import {
   resolveDirectPeerTransferChunkBytes,
   resolveDirectPeerTransferExpirySkewMs,
   resolveDirectPeerTransferOpenBodyMaxBytes,
-  resolveDirectPeerTransferMaxTotalChunks,
   resolveDirectPeerTransferRequestTimeoutOverrideMs as resolveDirectPeerTransferRequestTimeoutOverrideMsConfig,
 } from '../transferRuntimeConfig';
 import { IN_MEMORY_TRANSFER_SIZE_LIMIT_ERROR } from '../inMemoryTransferSizeLimit';
@@ -52,10 +51,6 @@ function readDirectPeerExpirySkewMs(): number {
 
 function readDirectPeerOpenBodyMaxBytes(): number {
   return resolveDirectPeerTransferOpenBodyMaxBytes();
-}
-
-function readDirectPeerMaxTotalChunks(): number {
-  return resolveDirectPeerTransferMaxTotalChunks();
 }
 
 function resolveDirectPeerRequestTimeoutOverrideMs(timeoutMs: number | undefined): number {
@@ -529,11 +524,13 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
   fetchFn?: typeof fetch;
   now?: () => number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   maxInMemoryPayloadBytes: number;
   onChunk: (chunk: Buffer) => Promise<void> | void;
   onFinish: (manifestHash: string) => Promise<TPayload>;
   onAbort?: (terminal: boolean) => Promise<void> | void;
 }>): Promise<TPayload> {
+  params.signal?.throwIfAborted();
   if (!Number.isFinite(params.maxInMemoryPayloadBytes) || params.maxInMemoryPayloadBytes <= 0) {
     throw new Error(`Invalid direct peer maxInMemoryPayloadBytes: ${String(params.maxInMemoryPayloadBytes)}`);
   }
@@ -581,6 +578,7 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
   let lastError: Error | null = null;
 
   for (const candidate of params.endpointCandidates) {
+    params.signal?.throwIfAborted();
     if (!isSafeDirectTransferEndpointCandidate(candidate)) continue;
     const parsedCandidate = TransferEndpointCandidateSchema.safeParse(candidate);
     if (!parsedCandidate.success) continue;
@@ -609,12 +607,14 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
     }
 
     for (let attempt = 0; attempt < DIRECT_PEER_REQUEST_RETRY_ATTEMPTS; attempt += 1) {
+      params.signal?.throwIfAborted();
       let receivedSizeBytes = 0;
       try {
+        const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
         const openRequestInit: RequestInit & { duplex?: 'half' } = {
           method: 'POST',
           headers,
-          signal: AbortSignal.timeout(requestTimeoutMs),
+          signal: params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal,
         };
         if (candidateOpenBodyTransmission?.kind === 'bytes') {
           openRequestInit.body = candidateOpenBodyTransmission.body;
@@ -656,17 +656,23 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
         ) {
           throw createDirectPeerTransferCommitmentMismatchError(params.transferId);
         }
-        if (parsed.data.totalChunks > readDirectPeerMaxTotalChunks()) {
-          throw new Error(`${IN_MEMORY_TRANSFER_SIZE_LIMIT_ERROR}:${params.maxInMemoryPayloadBytes}`);
+        const authoritativeSizeBytes = expectedCommitment?.sizeBytes ?? parsed.data.sizeBytes;
+        if (
+          authoritativeSizeBytes !== undefined
+          && parsed.data.totalChunks > Math.max(1, authoritativeSizeBytes)
+        ) {
+          throw createInvalidDirectPeerTransferResponseError(params.transferId);
         }
         for (let sequence = 0; sequence < parsed.data.totalChunks; sequence += 1) {
+          params.signal?.throwIfAborted();
+          const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
           const chunkResponse = await fetchFn(`${auth.requestUrl}/chunks/${sequence}`, {
             method: 'GET',
             headers: {
               ...headers,
               ...(auth.authorizationHeader ? { authorization: auth.authorizationHeader } : {}),
             },
-            signal: AbortSignal.timeout(requestTimeoutMs),
+            signal: params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal,
           });
           if (!chunkResponse.ok) {
             throw new Error(`Direct peer request failed with status ${chunkResponse.status}`);
@@ -724,6 +730,7 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
             throw createDirectPeerTransferCommitmentMismatchError(params.transferId);
           }
           await params.onChunk(chunk);
+          params.signal?.throwIfAborted();
           receivedSizeBytes = nextReceivedSizeBytes;
         }
         if (expectedCommitment && receivedSizeBytes !== expectedCommitment.sizeBytes) {
@@ -742,6 +749,7 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
           throw error;
         }
       } catch (error) {
+        params.signal?.throwIfAborted();
         const isProtocolError = isDirectPeerTransferProtocolError(error);
         await params.onAbort?.(isProtocolError);
         if (isProtocolError) {
@@ -752,6 +760,7 @@ async function requestDirectPeerTransfer<TPayload>(params: Readonly<{
           break;
         }
         await waitForDirectPeerTransferRetryDelay(DIRECT_PEER_REQUEST_RETRY_DELAY_MS * (attempt + 1));
+        params.signal?.throwIfAborted();
       }
     }
   }
@@ -769,8 +778,10 @@ export async function requestDirectPeerTransferToFile(params: Readonly<{
   fetchFn?: typeof fetch;
   now?: () => number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   onProgress?: (receivedBytes: number) => Promise<void> | void;
 }>): Promise<TransferPayloadFileResult> {
+  params.signal?.throwIfAborted();
   let receivedBytes = 0;
   let sink = await createTransferPayloadFileSink({
     destinationPath: params.destinationPath,

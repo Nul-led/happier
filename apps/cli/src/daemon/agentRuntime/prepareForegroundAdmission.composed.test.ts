@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { z } from 'zod';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -176,7 +177,11 @@ import {
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 
 import { prepareForegroundAgentRuntimeAdmission } from './prepareForegroundAdmission';
-import type { ForegroundAgentRuntimeAdmissionOwnerRequestV1 } from './foregroundAdmissionContract';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import {
+  ForegroundAgentRuntimeAdmissionRequestV1Schema,
+  type ForegroundAgentRuntimeAdmissionOwnerRequestV1,
+} from './foregroundAdmissionContract';
 import { configuration } from '@/configuration';
 import {
   consumeProviderBindingLaunchHandoffFromEnvironments,
@@ -352,6 +357,7 @@ function publishSettings(params: Readonly<{
   corruptProfileSecret?: boolean;
   providerSecretValue?: string;
   providerSecretUpdatedAt?: number;
+  profileSecretRef?: string;
 }>) {
   const providerSettings =
     params.providerSettings ?? createProviderSettings();
@@ -397,7 +403,7 @@ function publishSettings(params: Readonly<{
         version: '1.0.0',
       }],
       secretBindingsByProfileId: {
-        'profile-1': { PROFILE_SECRET: 'profile-secret' },
+        'profile-1': { PROFILE_SECRET: params.profileSecretRef ?? 'profile-secret' },
       },
     } as never,
     settingsVersion: params.version,
@@ -408,9 +414,12 @@ function publishSettings(params: Readonly<{
 }
 
 function request(
-  overrides: Partial<ForegroundAgentRuntimeAdmissionOwnerRequestV1> = {},
+  overrides: Partial<
+    z.input<typeof ForegroundAgentRuntimeAdmissionRequestV1Schema>
+    & Readonly<{ machineId: string }>
+  > = {},
 ): ForegroundAgentRuntimeAdmissionOwnerRequestV1 {
-  return {
+  const input = {
     v: 1,
     attemptId: 'attempt-1',
     sessionId: 'session-1',
@@ -436,6 +445,11 @@ function request(
       },
     },
     ...overrides,
+  };
+  const { machineId, ...wireRequest } = input;
+  return {
+    ...ForegroundAgentRuntimeAdmissionRequestV1Schema.parse(wireRequest),
+    machineId,
   };
 }
 
@@ -595,6 +609,66 @@ beforeEach(() => {
 });
 
 describe('foreground admission composed real Provider authorization seam', () => {
+  it('refreshes a persisted shared Profile binding before creating Session bootstrap effects', async () => {
+    const sharedRef = 'happier:shared-secret:v1:resource-profile-shared';
+    publishSettings({ version: 1, profileSecretRef: sharedRef });
+    const refreshSavedSecretCatalogForOperation = vi.fn(async () => {
+      throw new SavedSecretOperationAdmissionError({
+        reason: 'reference_stale',
+        reference: sharedRef,
+      });
+    });
+
+    const admitted = await prepareForegroundAgentRuntimeAdmission(
+      request(),
+      { refreshSavedSecretCatalogForOperation },
+    );
+
+    expect(refreshSavedSecretCatalogForOperation).toHaveBeenCalledExactlyOnceWith({
+      expectedScopeKey: 'scope-1',
+      references: [{ ref: sharedRef }],
+    });
+    expect(admitted).toEqual({
+      ok: false,
+      error: createProviderErrorV1('provider_binding_changed', {
+        machineId: 'machine-1',
+        sourceProfileId: 'profile-1',
+      }),
+    });
+    expect(boundaries.bridgePrepared).not.toHaveBeenCalled();
+    expect(boundaries.leaseRelease).not.toHaveBeenCalled();
+  });
+
+  it('refreshes shared Saved Secret authorization before creating Session bootstrap effects', async () => {
+    publishSettings({ version: 1 });
+    const refreshSavedSecretCatalogForOperation = vi.fn(async () => {
+      throw new Error('shared access was revoked without a delivered AccountChange');
+    });
+
+    const admitted = await prepareForegroundAgentRuntimeAdmission(request({
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          PROFILE_SECRET: {
+            ref: 'happier:shared-secret:v1:resource-revoked',
+            revision: 4,
+          },
+        },
+      },
+    }), { refreshSavedSecretCatalogForOperation });
+
+    expect(refreshSavedSecretCatalogForOperation).toHaveBeenCalledTimes(1);
+    expect(admitted).toEqual({
+      ok: false,
+      error: createProviderErrorV1('provider_secret_unavailable', {
+        machineId: 'machine-1',
+        sourceProfileId: 'profile-1',
+      }),
+    });
+    expect(boundaries.bridgePrepared).not.toHaveBeenCalled();
+    expect(boundaries.leaseRelease).not.toHaveBeenCalled();
+  });
+
   it('revalidates Provider authorization before Profile decryption and returns no environment on staleness', async () => {
     publishSettings({ version: 1, corruptProfileSecret: true });
     const admitted = await prepareForegroundAgentRuntimeAdmission(request());
@@ -982,7 +1056,7 @@ describe('foreground admission composed real Provider authorization seam', () =>
       cleanupOnFailure: vi.fn(),
       cleanupOnExit: vi.fn(),
       connectedServicesBindings: {
-        v: 1 as const,
+        v: 2 as const,
         bindingsByServiceId: {
           'openai-codex': {
             source: 'connected' as const,
@@ -1190,7 +1264,7 @@ describe('foreground admission composed real Provider authorization seam', () =>
           cleanupOnFailure: boundaries.connectedServiceCleanupOnFailure,
           cleanupOnExit: boundaries.connectedServiceCleanupOnExit,
           connectedServicesBindings: {
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
               'openai-codex': {
                 source: 'connected',
@@ -1927,7 +2001,7 @@ describe('foreground admission composed real Provider authorization seam', () =>
       expect.objectContaining({
         agentId: externalAgentId,
         connectedServicesBindingsRaw: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': {
               source: 'connected',
@@ -1972,7 +2046,7 @@ describe('foreground admission composed real Provider authorization seam', () =>
       activateSessionPurposeBindings,
       resolveConnectedServiceAuthForSpawn: async (input) => {
         const connectedServicesBindings = {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': {
               source: 'connected',
@@ -2052,7 +2126,7 @@ describe('foreground admission composed real Provider authorization seam', () =>
         cleanupOnFailure: vi.fn(),
         cleanupOnExit: vi.fn(),
         connectedServicesBindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': {
               source: 'connected',

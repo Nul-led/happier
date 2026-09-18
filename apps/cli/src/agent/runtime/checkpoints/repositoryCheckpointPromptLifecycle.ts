@@ -298,13 +298,26 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
             const binding = bindingsByMessageId.get(messageId);
             bindingsByMessageId.delete(messageId);
             if (!binding) return;
+            let capturedAttributionScope: RepositoryCheckpointAttributionScope | null = null;
+            /**
+             * Close the capture interval exactly once, at the boundary where no further checkpoint
+             * content can be captured: a peer that begins during the final capture still affects the
+             * captured bytes, while a peer that begins during the asynchronous diff/publication does
+             * not. The snapshot is a local value, so later idempotent cleanup cannot erase it.
+             */
+            const snapshotAttributionScope = (activeBinding: ActiveCheckpointBinding): RepositoryCheckpointAttributionScope => {
+                if (capturedAttributionScope === null) {
+                    capturedAttributionScope = resolveAttributionScope(activeBinding);
+                    endAttributionInterval(activeBinding);
+                }
+                return capturedAttributionScope;
+            };
             try {
                 const refs = buildRepositoryCheckpointRefs({
                     scopeId: binding.scopeId,
                     messageId,
                     turnId,
                 });
-                const attributionScope = resolveAttributionScope(binding);
                 const baseRef = binding.refs.turnStart ?? binding.refs.messageStart;
                 const baseRefSource: RepositoryCheckpointDiffBaseRefSource = binding.unavailableReason
                     ? 'unavailable'
@@ -322,7 +335,7 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
                             reason: binding.unavailableReason ?? 'not_repo',
                             error: binding.unavailableError ?? 'Repository checkpoint evidence is unavailable.',
                             baseRefSource,
-                            attributionScope,
+                            attributionScope: snapshotAttributionScope(binding),
                             receipts: binding.receipts,
                         }),
                         startRef: baseRef?.ref,
@@ -335,6 +348,7 @@ export function createRepositoryCheckpointPromptLifecycle(params: Readonly<{
                     context: binding.context,
                     checkpointRef: refs.turnFinal,
                 });
+                const attributionScope = snapshotAttributionScope(binding);
                 const receiptsAfterFinal = appendReceipts(binding.receipts, finalized.receipts);
                 if (!finalized.success) {
                     await emitProjectedDiff({

@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createActionExecutor, type ActionExecutorDeps } from '@happier-dev/protocol';
+import {
+    createActionExecutor,
+    normalizeActionsSettingsV1,
+    type ActionExecutorContext,
+    type ActionExecutorDeps,
+} from '@happier-dev/protocol';
+import { NO_TEAM_CAPABILITIES_V1 } from '@happier-dev/protocol/teams';
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 
 import { createBrowserDaemonRuntimeActionExecutor } from '@/daemon/browser/actions/runtimeActionExecutor';
@@ -13,21 +19,23 @@ import {
     type InvokeContributedAction,
 } from './actions';
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
+import { createProductionPluginInvocationServiceOwners } from './production';
 
-type TestActionExecutorOverrides = Pick<
+type TestActionExecutorOverrides = Partial<Pick<
     ActionExecutorDeps,
     'pluginPermissionGrantAction'
     | 'sessionPermissionRespond'
     | 'sessionUserActionAnswer'
     | 'pluginWebhookAction'
->;
+    | 'sessionList'
+>>;
 
 function createActionExecutorForTest(overrides: TestActionExecutorOverrides = {}) {
     const deps: ActionExecutorDeps = {
         executionRunStart: async () => ({}),
         executionRunList: async () => ({}),
         executionRunGet: async () => ({}),
-        executionRunSend: async () => ({}),
+        detachedExecutionRunSend: async () => ({}),
         executionRunStop: async () => ({}),
         executionRunAction: async () => ({}),
         executionRunWait: async () => ({}),
@@ -45,7 +53,13 @@ function createActionExecutorForTest(overrides: TestActionExecutorOverrides = {}
         sessionModeSet: async () => ({}),
         sessionModesList: async () => ({ items: [] }),
         sessionTargetPrimarySet: async () => ({}),
-        sessionTargetTrackedSet: async () => ({}),
+        sessionTargetTrackedSet: async () => ({
+            ok: true as const,
+            status: 'ok' as const,
+            sessionIds: [],
+            sessionAddresses: [],
+            sessions: [],
+        }),
         sessionList: async () => ({ sessions: [] }),
         sessionActivityGet: async () => ({}),
         sessionRecentMessagesGet: async () => ({}),
@@ -65,7 +79,587 @@ function createPermissionActionExecutor(
     return createActionExecutorForTest({ pluginPermissionGrantAction });
 }
 
+/**
+ * The host stamps a closed `ActionCaller` union; only the plugin arm carries a
+ * plugin id. Narrowing here keeps the assertion discriminating: a caller
+ * stamped as any other kind reads as `null` instead of silently matching.
+ */
+function readPluginCallerId(context: ActionExecutorContext | undefined): string | null {
+    const caller = context?.actionCaller;
+    return caller?.kind === 'plugin' ? caller.pluginId : null;
+}
+
 describe('plugin invocation ActionsService', () => {
+    it('preserves host-private external PAT authority for a nested host Action', async () => {
+        const execute = vi.fn().mockResolvedValue({
+            ok: true,
+            result: {
+                id: 'team-1',
+                name: 'Platform',
+                description: null,
+                logo: null,
+                archivedAt: null,
+                recovery: null,
+                policy: {
+                    v: 1,
+                    sessionCreationPolicy: 'private_default',
+                    externalSharingPolicy: 'allowed',
+                    defaultSessionHistoryAccess: 'from_membership',
+                    admissionMode: 'invite_only',
+                    authenticationPolicy: null,
+                    authenticationPolicyStatus: 'available',
+                },
+                viewerRole: 'owner',
+                capabilities: NO_TEAM_CAPABILITIES_V1,
+                admission: { historyChoice: { admin: 'choice', member: 'choice', guest: 'hidden' } },
+            },
+        });
+        const signExternalActionApprovalInput = vi.fn().mockReturnValue('machine-signature');
+        const externalActionContext = {
+            authority: 'account_automation' as const,
+            serverId: 'home-profile-1',
+            serverIdentityId: 'home-identity-1',
+            actionRequestId: 'outer-request-1',
+            externalActionCredential: { accountId: 'account-1', principalId: 'pat-principal-1', credentialId: 'pat-1' },
+            externalActionExecutionAuthorization: { opaque: 'authorization' } as never,
+            externalActionTarget: { kind: 'session' as const, sessionId: 'session-1' },
+            signExternalActionApprovalInput,
+        };
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: 'plugin.example', version: '1.0.0' },
+                contribution: { id: 'action', qualifiedId: 'plugin.example/action' },
+                generation: 'generation-1',
+                immutableGenerationId: 'immutable-generation-1',
+                correlationId: 'plugin-call-1',
+                surface: 'plugin',
+                externalActionContext,
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture('plugin.example')
+                        .resolveCurrentPluginMaterializationRef,
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+
+        await service.execute('teams.archive', { v: 1, teamId: 'team-1' });
+
+        expect(execute).toHaveBeenCalledWith(
+            'teams.archive',
+            { v: 1, teamId: 'team-1' },
+            expect.objectContaining({
+                ...externalActionContext,
+                surface: 'plugin',
+                authority: 'account_automation',
+                actionCaller: expect.objectContaining({ kind: 'plugin', pluginId: 'plugin.example' }),
+            }),
+        );
+    });
+    it('returns a Lane 01 approval deferral as typed admitted data instead of rejecting it as a malformed Team result', async () => {
+        const pluginId = 'acme.external-home-admin';
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'archive-team', qualifiedId: `${pluginId}/actions/archive-team` },
+                generation: 'generation-1',
+                immutableGenerationId: 'external-home-admin-generation',
+                correlationId: 'external-home-admin-archive',
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: {
+                execute: vi.fn(async () => ({
+                    ok: true as const,
+                    result: {
+                        kind: 'approval_request_created' as const,
+                        artifactId: 'approval-1',
+                        actionId: 'teams.archive',
+                    },
+                })),
+            },
+            invokeContributedAction: vi.fn(),
+        });
+
+        await expect(service.execute('teams.archive', {
+            v: 1,
+            teamId: 'team-1',
+        })).resolves.toEqual({
+            kind: 'approval_request_created',
+            artifactId: 'approval-1',
+            actionId: 'teams.archive',
+        });
+    });
+
+    it.each([
+        'update_required',
+        'outcome_unknown',
+        'cancelled',
+        'server_unreachable',
+    ] as const)('preserves the typed Lane 01 %s settlement for plugin callers', async (errorCode) => {
+        const pluginId = 'acme.external-home-admin';
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'archive-team', qualifiedId: `${pluginId}/actions/archive-team` },
+                generation: 'generation-1',
+                immutableGenerationId: 'external-home-admin-generation',
+                correlationId: `external-home-admin-${errorCode}`,
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: {
+                execute: vi.fn(async () => ({ ok: false as const, errorCode, error: errorCode })),
+            },
+            invokeContributedAction: vi.fn(),
+        });
+
+        await expect(service.execute('teams.archive', {
+            v: 1,
+            teamId: 'team-1',
+        })).rejects.toMatchObject({ name: 'PluginError', code: errorCode });
+    });
+
+    it('gives bundled and trusted external installed plugins the same Lane 01 governance Action contract', async () => {
+        const result = {
+            id: 'team-1',
+            name: 'Platform',
+            description: null,
+            logo: null,
+            archivedAt: null,
+            recovery: null,
+            policy: {
+                v: 1 as const,
+                sessionCreationPolicy: 'private_default' as const,
+                externalSharingPolicy: 'allowed' as const,
+                defaultSessionHistoryAccess: 'from_membership' as const,
+                admissionMode: 'invite_only' as const,
+                authenticationPolicy: null,
+                authenticationPolicyStatus: 'available' as const,
+            },
+            viewerRole: 'owner' as const,
+            capabilities: NO_TEAM_CAPABILITIES_V1,
+            admission: { historyChoice: { admin: 'choice' as const, member: 'choice' as const, guest: 'hidden' as const } },
+        };
+        const execute = vi.fn(async (
+            _actionId: string,
+            _input: unknown,
+            _context?: ActionExecutorContext,
+        ) => ({ ok: true as const, result }));
+        const createService = (pluginId: string) => createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'team-admin', qualifiedId: `${pluginId}/actions/team-admin` },
+                generation: 'generation-1',
+                immutableGenerationId: `${pluginId}-immutable-generation`,
+                correlationId: `${pluginId}-lane01`,
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+        const input = { v: 1 as const, teamId: 'team-1' };
+
+        for (const pluginId of ['happier.builtin', 'acme.external-installed']) {
+            await expect(createService(pluginId).execute('teams.archive', input)).resolves.toEqual(result);
+        }
+        expect(execute.mock.calls.map((call) => readPluginCallerId(call[2]))).toEqual([
+            'happier.builtin',
+            'acme.external-installed',
+        ]);
+        for (const call of execute.mock.calls) {
+            expect(call[0]).toBe('teams.archive');
+            expect(call[1]).toEqual(input);
+            expect(call[2]).toMatchObject({ surface: 'plugin', authority: 'account_automation' });
+        }
+    });
+
+    it('dispatches every bounded Lane 03 identity handoff through the trusted external-plugin Action ABI', async () => {
+        const provider = {
+            v: 1 as const,
+            owner: { kind: 'team' as const, teamId: 'team-1' },
+            id: 'provider-1',
+            kind: 'oidc' as const,
+            displayName: 'Company login',
+            enabled: true,
+            firstEnabledAt: 1,
+            securityRevision: 2,
+            revision: 3,
+            config: {
+                v: 1 as const,
+                kind: 'oidc' as const,
+                issuer: 'https://id.example.test',
+                clientId: 'happier',
+                clientAuthenticationMethod: 'client_secret_post' as const,
+                scopes: 'openid profile email',
+                httpTimeoutSeconds: 30,
+                claims: { login: 'preferred_username', email: 'email', groups: 'groups' },
+                allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
+                fetchUserInfo: true,
+                storeRefreshToken: false,
+                ui: { buttonColor: null, iconHint: 'oidc' },
+            },
+            secret: { configured: true, health: 'configured' as const },
+            lastSuccessfulTest: { at: 10, testedSecurityRevision: 2, current: true },
+            createdByAccountId: 'account-1',
+            createdAt: 1,
+            updatedAt: 10,
+            teamConsumers: [],
+        };
+        const connection = {
+            v: 1 as const,
+            id: 'connection-1',
+            teamId: 'team-1',
+            provider: { id: 'provider-1', kind: 'oidc' as const, displayName: 'Company login' },
+            externalReference: { v: 1 as const, kind: 'oidc' as const },
+            settings: {
+                v: 1 as const,
+                kind: 'oidc' as const,
+                allowedUsers: [],
+                allowedEmailDomains: [],
+                groupsAny: [],
+                groupsAll: [],
+            },
+            enabled: true,
+            firstEnabledAt: 1,
+            revision: 3,
+            state: 'connected' as const,
+            allowedActions: ['teams.identity.connections.test.start'] as const,
+            lastObservation: { v: 1 as const, kind: 'oidc' as const },
+            lastSuccessfulTest: { at: 10, runtimeFingerprint: 'runtime-1', current: true },
+            createdAt: 1,
+            updatedAt: 10,
+        };
+        const cases = [
+            {
+                id: 'identity.providers.test.start' as const,
+                input: { owner: { kind: 'team' as const, teamId: 'team-1' }, id: 'provider-1', expectedRevision: 3, expectedSecurityRevision: 2 },
+                result: { authorizeUrl: 'https://id.example.test/authorize', attemptId: 'attempt-provider' },
+            },
+            {
+                id: 'identity.providers.test.consume' as const,
+                input: { owner: { kind: 'team' as const, teamId: 'team-1' }, id: 'provider-1', resultHandle: 'result-provider' },
+                result: { provider, testedAt: 10, subjectPresent: true as const },
+            },
+            {
+                id: 'teams.identity.connections.test.start' as const,
+                input: { v: 1 as const, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 3 },
+                result: { authorizeUrl: 'https://id.example.test/authorize', attemptId: 'attempt-connection' },
+            },
+            {
+                id: 'teams.identity.connections.test.consume' as const,
+                input: { v: 1 as const, teamId: 'team-1', connectionId: 'connection-1', resultHandle: 'result-connection' },
+                result: { connection },
+            },
+            {
+                id: 'teams.identity.workos.adminPortalLink.create' as const,
+                input: { v: 1 as const, teamId: 'team-1', connectionId: 'connection-1', intent: 'sso' as const },
+                result: { url: 'https://setup.workos.test/portal' },
+            },
+        ];
+        const resultByActionId = new Map<string, unknown>(cases.map((entry) => [entry.id, entry.result]));
+        const execute = vi.fn(async (
+            actionId: string,
+            _input: unknown,
+            _context?: ActionExecutorContext,
+        ) => ({
+            ok: true as const,
+            result: resultByActionId.get(actionId),
+        }));
+        const pluginId = 'acme.external-installed';
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'identity-admin', qualifiedId: `${pluginId}/actions/identity-admin` },
+                generation: 'generation-1',
+                immutableGenerationId: 'external-identity-generation',
+                correlationId: 'external-identity',
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+
+        for (const entry of cases) {
+            await expect(service.execute(entry.id, entry.input)).resolves.toEqual(entry.result);
+        }
+        expect(execute).toHaveBeenCalledTimes(cases.length);
+        for (const call of execute.mock.calls) {
+            expect(call[2]).toMatchObject({
+                surface: 'plugin',
+                authority: 'account_automation',
+                actionCaller: { kind: 'plugin', pluginId, contributionLocalId: 'identity-admin' },
+            });
+        }
+    });
+
+    it('gives bundled and trusted external installed plugins the same public Team removal-preview Action', async () => {
+        const result = {
+            v: 1 as const,
+            status: 'allowed' as const,
+            sourceId: 'source-1',
+            sourceLabel: 'Corporate directory',
+            impact: {
+                teamMembershipsRemoved: 2,
+                groupMembershipsRemoved: 3,
+                groupContributionsRemoved: 1,
+                directoryCreatedGroupsRetained: 1,
+                nativeMembershipsPreserved: 4,
+                nativeGroupContributionsPreserved: 2,
+            },
+        };
+        const execute = vi.fn(async (
+            _actionId: string,
+            _input: unknown,
+            _context?: ActionExecutorContext,
+        ) => ({ ok: true as const, result }));
+        const createService = (pluginId: string) => createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'admin', qualifiedId: `${pluginId}/actions/admin` },
+                generation: 'generation-1',
+                immutableGenerationId: `${pluginId}-immutable-generation`,
+                correlationId: `${pluginId}-preview`,
+                surface: 'cli',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+        const input = { v: 1 as const, teamId: 'team-1', sourceId: 'source-1' };
+
+        await expect(createService('happier.builtin').execute(
+            'teams.directory.sources.remove.preview', input,
+        )).resolves.toEqual(result);
+        await expect(createService('acme.external-installed').execute(
+            'teams.directory.sources.remove.preview', input,
+        )).resolves.toEqual(result);
+
+        expect(execute).toHaveBeenCalledTimes(2);
+        for (const call of execute.mock.calls) {
+            expect(call[0]).toBe('teams.directory.sources.remove.preview');
+            expect(call[1]).toEqual(input);
+            expect(call[2]).toMatchObject({ surface: 'plugin', authority: 'account_automation' });
+        }
+        expect(execute.mock.calls.map((call) => readPluginCallerId(call[2]))).toEqual([
+            'happier.builtin',
+            'acme.external-installed',
+        ]);
+    });
+
+    it('gives bundled and trusted external installed plugins the same redacted GitHub App listing Action', async () => {
+        const result = { registrations: [], installations: [] };
+        const execute = vi.fn(async (
+            _actionId: string,
+            _input: unknown,
+            _context?: ActionExecutorContext,
+        ) => ({ ok: true as const, result }));
+        const createService = (pluginId: string) => createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'identity-read', qualifiedId: `${pluginId}/actions/identity-read` },
+                generation: 'generation-1',
+                immutableGenerationId: `${pluginId}-immutable-generation`,
+                correlationId: `${pluginId}-github-app-list`,
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+        const input = { owner: { kind: 'team' as const, teamId: 'team-1' } };
+
+        for (const pluginId of ['happier.builtin', 'acme.external-installed']) {
+            await expect(createService(pluginId).execute('identity.githubApps.list', input))
+                .resolves.toEqual(result);
+        }
+        expect(execute.mock.calls.map((call) => readPluginCallerId(call[2]))).toEqual([
+            'happier.builtin',
+            'acme.external-installed',
+        ]);
+        for (const call of execute.mock.calls) {
+            expect(call[0]).toBe('identity.githubApps.list');
+            expect(call[1]).toEqual(input);
+            expect(call[2]).toMatchObject({ surface: 'plugin', authority: 'account_automation' });
+        }
+    });
+
+    it('gives bundled and trusted external installed plugins the same Lane 10 resource Actions', async () => {
+        const resultByActionId = new Map<string, unknown>([
+            ['teams.credentials.list', { resources: [], viewer: { manageCredentials: false, offerOwnCredential: false } }],
+            ['teams.credentials.sources.list', {
+                candidates: [],
+                supportedKinds: ['connected_account', 'connected_pool', 'provider_connection'],
+                brokerPresentation: {
+                    selectedTarget: null,
+                    eligibleTargets: [],
+                    selectedPool: null,
+                    eligiblePools: [],
+                },
+            }],
+            ['teams.credentials.entitled.list', { resources: [] }],
+            ['teams.credentials.externalKeys.list', { keys: [] }],
+            ['secrets.shared.list', { resources: [] }],
+        ]);
+        const execute = vi.fn(async (
+            actionId: string,
+            _input: unknown,
+            _context?: ActionExecutorContext,
+        ) => ({
+            ok: true as const,
+            result: resultByActionId.get(actionId),
+        }));
+        const createService = (pluginId: string) => createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: pluginId, version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture(pluginId)
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'credential-consumer', qualifiedId: `${pluginId}/actions/credential-consumer` },
+                generation: 'generation-1',
+                immutableGenerationId: `${pluginId}-immutable-generation`,
+                correlationId: `${pluginId}-credentials`,
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+        const cases = [
+            ['teams.credentials.list', { teamId: 'team-1' }],
+            ['teams.credentials.sources.list', { teamId: 'team-1' }],
+            ['teams.credentials.entitled.list', { teamId: 'team-1' }],
+            ['teams.credentials.externalKeys.list', { resourceId: 'resource-1' }],
+            ['secrets.shared.list', {}],
+        ] as const;
+
+        for (const pluginId of ['happier.builtin', 'acme.external-installed']) {
+            const service = createService(pluginId);
+            for (const [actionId, input] of cases) {
+                await expect(service.execute(actionId, input)).resolves.toEqual(resultByActionId.get(actionId));
+            }
+        }
+        expect(execute).toHaveBeenCalledTimes(cases.length * 2);
+        expect(execute.mock.calls.map((call) => readPluginCallerId(call[2]))).toEqual([
+            ...Array(cases.length).fill('happier.builtin'),
+            ...Array(cases.length).fill('acme.external-installed'),
+        ]);
+        for (const call of execute.mock.calls) {
+            expect(call[2]).toMatchObject({ surface: 'plugin', authority: 'account_automation' });
+        }
+    });
+
+    it('preserves Lane 10 approval deferral and typed failure for trusted external plugins', async () => {
+        const pending = {
+            kind: 'approval_request_created' as const,
+            artifactId: 'approval-lane10-1',
+            actionId: 'secrets.shared.update',
+        };
+        const baseSeed = {
+            plugin: { id: 'acme.external-installed', version: '1.0.0' },
+            resolveCurrentPluginMaterializationRef:
+                createPluginActionCallerMaterializationFixture('acme.external-installed')
+                    .resolveCurrentPluginMaterializationRef,
+            contribution: {
+                id: 'credential-consumer',
+                qualifiedId: 'acme.external-installed/actions/credential-consumer',
+            },
+            generation: 'generation-1',
+            immutableGenerationId: 'acme.external-installed-immutable-generation',
+            correlationId: 'lane10-approval',
+            surface: 'background' as const,
+            signal: new AbortController().signal,
+            isGenerationCurrent: () => true,
+        };
+        const input = {
+            resourceId: 'resource-1',
+            expectedRevision: 3,
+            displayName: 'Rotated API key',
+            kind: 'apiKey' as const,
+            storedContent: {
+                t: 'plain' as const,
+                v: { v: 1 as const, name: 'Rotated API key', kind: 'apiKey' as const, value: 'secret' },
+            },
+        };
+        const deferred = createPluginInvocationActionsService({
+            seed: baseSeed,
+            actionExecutor: { execute: async () => ({ ok: true, result: pending }) },
+            invokeContributedAction: vi.fn(),
+        });
+        await expect(deferred.execute('secrets.shared.update', input)).resolves.toEqual(pending);
+
+        const changed = createPluginInvocationActionsService({
+            seed: baseSeed,
+            actionExecutor: {
+                execute: async () => ({
+                    ok: false,
+                    errorCode: 'resource_changed',
+                    error: 'The Saved Secret changed before this update.',
+                    details: { expectedRevision: 3 },
+                }),
+            },
+            invokeContributedAction: vi.fn(),
+        });
+        await expect(changed.execute('secrets.shared.update', input)).rejects.toMatchObject({
+            name: 'PluginError',
+            code: 'resource_changed',
+            message: 'The Saved Secret changed before this update.',
+        });
+    });
+
+    it('does not treat an exact retained turn as authority to list the ambient Account corpus', async () => {
+        const sessionList = vi.fn(async () => ({ sessions: [{ id: 'private-account-session', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null }));
+        const owners = createProductionPluginInvocationServiceOwners({
+            actionExecutor: createActionExecutorForTest({ sessionList }),
+            invokeContributedAction: vi.fn(),
+        });
+        const service = owners.createServices({
+                plugin: { id: 'acme.agent', version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.agent').resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
+                generation: 'generation-1',
+                correlationId: 'retained-list-1',
+                surface: 'agent',
+                session: { id: 'session-1' },
+                sessionListAccess: 'unavailable',
+                signal: new AbortController().signal,
+                readActiveTurnAdmissionWitness: () => ({
+                    inputId: 'input-1', turnId: 'turn-1', userMessageSeq: 7, userMessageSeqs: [7],
+                    callerPermissionMode: 'yolo',
+                }),
+                isGenerationCurrent: () => true,
+            }, owners.createOrdinaryServiceBinding('generation-1', 'retained-current-global-actions')).actions;
+        await expect(service.execute('session.list', {})).rejects.toMatchObject({ code: 'unsupported_action' });
+        expect(sessionList).not.toHaveBeenCalled();
+    });
     it('preserves strict execution-run start certainty in the public PluginError', async () => {
         const service = createPluginInvocationActionsService({
             seed: {
@@ -434,6 +1028,13 @@ describe('plugin invocation ActionsService', () => {
             mode: 'plain',
             ctx: null,
             runtimeActionExecute,
+            actionsSettingsProvider: {
+                getActionsSettings: () => normalizeActionsSettingsV1({
+                    v: 1,
+                    actions: {},
+                    approvalWaivedSurfaces: { 'browser.navigate': ['plugin'] },
+                }),
+            },
         } as Parameters<typeof createCliActionExecutor>[0] & Readonly<{
             runtimeActionExecute: typeof runtimeActionExecute;
         }>);
@@ -573,6 +1174,60 @@ describe('plugin invocation ActionsService', () => {
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
         });
+
+        await expect(service.execute('session.list', {})).resolves.toEqual({ sessions: [] });
+        expect(execute).toHaveBeenCalledWith(
+            'session.list',
+            {},
+            expect.objectContaining({
+                surface: 'agent',
+                authority: 'account_automation',
+                sessionListAccess: 'current_session',
+                callerPermissionMode: 'yolo',
+                causalPermissionAuthority,
+                sessionInputSource: {
+                    sourceSessionId: 'session-1',
+                    sourceTurnId: 'turn-1',
+                    via: 'action',
+                },
+            }),
+        );
+    });
+
+    it('propagates the Agent active-turn admission witness through composed invocation services', async () => {
+        // The composed services owner builds the actions seed explicitly. Dropping the
+        // witness there silently strips the caller permission mode and causal authority
+        // from every Agent-placed Action, so Run dispatch fails closed.
+        const execute = vi.fn(async () => ({ ok: true as const, result: { sessions: [] } }));
+        const causalPermissionAuthority = Object.freeze({
+            kind: 'admittedSessionInputV1' as const,
+            admittedPermissionCeiling: 'read-only',
+        });
+        const owners = createProductionPluginInvocationServiceOwners({
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+        const service = owners.createServices({
+            plugin: { id: 'acme.agent', version: '1.0.0' },
+            resolveCurrentPluginMaterializationRef:
+                createPluginActionCallerMaterializationFixture('acme.agent')
+                    .resolveCurrentPluginMaterializationRef,
+            contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
+            generation: 'generation-1',
+            correlationId: 'invocation-1',
+            surface: 'agent',
+            session: { id: 'session-1' },
+            signal: new AbortController().signal,
+            readActiveTurnAdmissionWitness: () => ({
+                inputId: 'input-1',
+                turnId: 'turn-1',
+                userMessageSeq: 7,
+                userMessageSeqs: [7],
+                causalPermissionAuthority,
+                callerPermissionMode: 'yolo',
+            }),
+            isGenerationCurrent: () => true,
+        }, owners.createOrdinaryServiceBinding('generation-1', 'composed-witness-actions')).actions;
 
         await expect(service.execute('session.list', {})).resolves.toEqual({ sessions: [] });
         expect(execute).toHaveBeenCalledWith(
@@ -811,6 +1466,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 session: { id: 'session-1' },
@@ -834,6 +1490,7 @@ describe('plugin invocation ActionsService', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
+                immutableGenerationId: 'caller-generation-1',
                 materialization: callerMaterialization.materialization,
                 originSurface: 'agent',
             },
@@ -861,6 +1518,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: () => currentCaller,
                 signal: new AbortController().signal,
@@ -909,6 +1567,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
@@ -965,6 +1624,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
@@ -1005,6 +1665,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
@@ -1059,6 +1720,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
                 generation: 'generation-1',
+                immutableGenerationId: 'caller-generation-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal,
@@ -1084,6 +1746,7 @@ describe('plugin invocation ActionsService', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
+                immutableGenerationId: 'caller-generation-1',
                 materialization: callerMaterialization.materialization,
                 originSurface: 'agent',
             },
@@ -1163,6 +1826,7 @@ describe('plugin invocation ActionsService', () => {
                     qualifiedId: 'acme.background/backgroundServices/gateway-supervisor',
                 },
                 generation: 'generation-1',
+                immutableGenerationId: 'background-generation-1',
                 surface: 'background',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal,
@@ -1188,6 +1852,7 @@ describe('plugin invocation ActionsService', () => {
                     id: 'gateway-supervisor',
                     qualifiedId: 'acme.background/backgroundServices/gateway-supervisor',
                 },
+                immutableGenerationId: 'background-generation-1',
                 materialization: callerMaterialization.materialization,
                 originSurface: 'background',
             },

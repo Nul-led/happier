@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PERSONAL_HOME_ORIGIN,
   DEFAULT_PERSONAL_HOME_PORT,
+  DEFAULT_PERSONAL_HOME_TEAM_NAME,
   createPersonalHomeRuntimeSpec,
   parsePersonalHomeRuntimePurpose,
   renderPersonalHomeRuntimeEnv,
@@ -15,6 +16,7 @@ describe('Personal Home runtime purpose', () => {
   it('owns the browser-safe default loopback origin and port', () => {
     expect(DEFAULT_PERSONAL_HOME_PORT).toBe(3005);
     expect(DEFAULT_PERSONAL_HOME_ORIGIN).toBe('http://127.0.0.1:3005');
+    expect(DEFAULT_PERSONAL_HOME_TEAM_NAME).toBe('Personal Home');
   });
   it('renders the fixed loopback/plaintext bootstrap environment', () => {
     const spec = createPersonalHomeRuntimeSpec({
@@ -35,7 +37,10 @@ describe('Personal Home runtime purpose', () => {
       HAPPIER_CANONICAL_SERVER_URL: 'http://127.0.0.1:43123',
       HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
       HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+      HAPPIER_FEATURE_TEAMS__ENABLED: '1',
       AUTH_ANONYMOUS_SIGNUP_ENABLED: '1',
+      HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'external',
+      HAPPIER_AUTH_SIGN_IN_SERVICE_URL: 'https://api.happier.dev',
     });
   });
 
@@ -56,6 +61,52 @@ describe('Personal Home runtime purpose', () => {
     }).HAPPIER_CANONICAL_SERVER_URL).toBe('http://127.0.0.1:43123');
   });
 
+  it('strictly validates and preserves existing Iroh relay configuration', () => {
+    const spec = resolvePersonalHomeRuntimeSpec({ canonicalServerUrl: 'http://127.0.0.1:43123' });
+
+    expect(renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      baseEnv: {
+        HAPPIER_IROH_RELAY_POLICY: 'automatic',
+        HAPPIER_IROH_RELAY_URLS: 'https://relay-b.example.test,https://relay-a.example.test',
+      },
+    })).toMatchObject({
+      HAPPIER_IROH_RELAY_POLICY: 'automatic',
+      HAPPIER_IROH_RELAY_URLS: 'https://relay-a.example.test,https://relay-b.example.test',
+    });
+
+    expect(renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: { HAPPIER_IROH_RELAY_POLICY: 'disabled' },
+      baseEnv: {
+        HAPPIER_IROH_RELAY_POLICY: 'automatic',
+        HAPPIER_IROH_RELAY_URLS: 'https://relay.example.test',
+      },
+    })).not.toHaveProperty('HAPPIER_IROH_RELAY_URLS');
+    expect(renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: { HAPPIER_IROH_RELAY_POLICY: 'automatic' },
+      baseEnv: { HAPPIER_IROH_RELAY_URLS: 'https://stale-relay.example.test' },
+    })).not.toHaveProperty('HAPPIER_IROH_RELAY_URLS');
+
+    expect(() => renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: {
+        HAPPIER_IROH_RELAY_POLICY: 'disabled',
+        HAPPIER_IROH_RELAY_URLS: 'https://relay.example.test',
+      },
+    })).toThrow(/disabled.*HAPPIER_IROH_RELAY_URLS/u);
+    expect(() => renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: { HAPPIER_IROH_RELAY_POLICY: 'relay-only' },
+    })).toThrow(/automatic.*disabled/u);
+  });
+
   it('rejects arbitrary environment injection and malformed purposes', () => {
     const spec = createPersonalHomeRuntimeSpec({
       canonicalServerUrl: 'http://127.0.0.1:43123',
@@ -71,6 +122,11 @@ describe('Personal Home runtime purpose', () => {
       port: 43123,
       overrides: { HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test' },
     })).toThrow(/unsupported Personal Home environment key/u);
+    expect(() => renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: { HAPPIER_FEATURE_TEAMS__ENABLED: '0' },
+    })).toThrow(/Teams availability must remain enabled/u);
     expect(() => parsePersonalHomeRuntimePurpose({
       kind: 'personal-home',
       canonicalServerUrl: 'http://127.0.0.1:43123',

@@ -821,7 +821,7 @@ describe('plugin daemon database owner', () => {
                 maximumInputBytes: 16_384,
                 maximumResultBytes: 16_384,
                 maximumResultRows: 100,
-                maximumAffectedRows: 1_000,
+                maximumAffectedRows: 1,
                 maximumElapsedMs: 5_000,
             },
             declarations: [{
@@ -848,13 +848,92 @@ describe('plugin daemon database owner', () => {
             });
 
             await database.execute('INSERT INTO records (value) VALUES (?)', ['persisted']);
+            await database.execute('INSERT INTO records (value) VALUES (?)', ['second']);
 
             await expect(database.query('SELECT value FROM records')).resolves.toEqual([
                 { value: 'persisted' },
+                { value: 'second' },
             ]);
             await expect(database.query('SELECT * FROM _happier_plugin_schema')).rejects.toMatchObject({
                 code: 'daemon_database_reserved_schema',
             });
+            await expect(database.query("SELECT * FROM '_happier_plugin_schema'")).rejects.toMatchObject({
+                code: 'daemon_database_reserved_schema',
+            });
+            await expect(database.query("SELECT * FROM ('_happier_plugin_schema')"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT * FROM (main.'_happier_plugin_schema')"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT h.version FROM records AS r, '_happier_plugin_schema' AS h"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT * FROM (SELECT * FROM ('_happier_plugin_schema'))"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT name FROM ('sqlite_master')"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("DELETE FROM '_happier_plugin_schema'")).rejects.toMatchObject({
+                code: 'daemon_database_reserved_schema',
+            });
+            await expect(database.query("UPDATE OR IGNORE '_happier_plugin_schema' SET version = version"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("ANALYZE '_happier_plugin_schema'"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.execute("CREATE INDEX ordinary_idx ON '_happier_plugin_schema' (version)"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT * FROM pragma_table_info('_happier_plugin_schema')"))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query('SELECT name FROM pragma_table_list'))
+                .rejects.toMatchObject({ code: 'daemon_database_reserved_schema' });
+            await expect(database.query("SELECT 'pragma_table_list' AS value")).resolves.toEqual([
+                { value: 'pragma_table_list' },
+            ]);
+            await expect(database.query("SELECT '_happier_plugin_schema' AS value")).resolves.toEqual([
+                { value: '_happier_plugin_schema' },
+            ]);
+            await expect(database.query("SELECT 1 AS ordinary, '_happier_plugin_schema' AS value"))
+                .resolves.toEqual([{ ordinary: 1, value: '_happier_plugin_schema' }]);
+            await expect(database.query(`
+                SELECT r.value
+                FROM records AS r
+                JOIN records AS s ON '_happier_plugin_schema' = '_happier_plugin_schema'
+                WHERE r.value = s.value
+                ORDER BY r.value
+            `)).resolves.toEqual([
+                { value: 'persisted' },
+                { value: 'second' },
+            ]);
+            await expect(database.query('DELETE FROM records RETURNING value')).rejects.toMatchObject({
+                code: 'daemon_database_affected_rows_exceeded',
+            });
+            await expect(database.transaction(async (transaction) => {
+                try {
+                    await transaction.query('DELETE FROM records RETURNING value');
+                } catch (error) {
+                    expect(error).toMatchObject({
+                        code: 'daemon_database_affected_rows_exceeded',
+                    });
+                }
+                return 'caught';
+            })).rejects.toMatchObject({
+                code: 'daemon_database_affected_rows_exceeded',
+            });
+            await expect(database.transaction(async (transaction) => {
+                try {
+                    await transaction.execute('DELETE FROM records');
+                } catch (error) {
+                    expect(error).toMatchObject({
+                        code: 'daemon_database_affected_rows_exceeded',
+                    });
+                }
+                return 'caught';
+            })).rejects.toMatchObject({
+                code: 'daemon_database_affected_rows_exceeded',
+            });
+            const explainedDelete = await database.query('EXPLAIN DELETE FROM records');
+            expect(explainedDelete.length).toBeGreaterThan(0);
+            await expect(database.query('SELECT value FROM records ORDER BY value')).resolves.toEqual([
+                { value: 'persisted' },
+                { value: 'second' },
+            ]);
             await expect(database.execute("INSERT INTO records (value) VALUES ('ignored'); DELETE FROM records"))
                 .rejects.toMatchObject({ code: 'daemon_database_statement_tail' });
             await expect(database.execute('CREATE TABLE "temp".escaped_records (value TEXT NOT NULL)'))

@@ -63,8 +63,17 @@ export function buildActionExecutorContextForRpc(
         ...(localActionContext?.operationOwnerUpdate
             ? { operationOwnerUpdate: localActionContext.operationOwnerUpdate }
             : {}),
+        ...(localActionContext?.executionRunPermissionRequestStore === undefined
+            ? {}
+            : { executionRunPermissionRequestStore: localActionContext.executionRunPermissionRequestStore }),
+        ...(localActionContext?.executionRunWorkflowObservationSink === undefined
+            ? {}
+            : { executionRunWorkflowObservationSink: localActionContext.executionRunWorkflowObservationSink }),
         surface,
         authority: localActionContext?.authority ?? 'account_automation',
+        ...(localActionContext?.actionRequestId
+            ? { actionRequestId: localActionContext.actionRequestId }
+            : {}),
         ...(hasLocalCallerPermissionMode
             ? { callerPermissionMode: localActionContext?.callerPermissionMode ?? null }
             : {}),

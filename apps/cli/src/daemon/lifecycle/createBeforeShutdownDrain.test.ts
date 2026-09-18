@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
+import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import {
     activateConnectedAccountRequestAuthForSpawn,
 } from '@/daemon/connectedServices/requestAuth/prepareConnectedAccountRequestAuthForSpawn';
@@ -246,7 +246,7 @@ describe('createBeforeShutdownDrain', () => {
         expect(drainBackgroundServerWork).toHaveBeenCalledTimes(1);
     });
 
-    it('disposes plugin runtime registry after background and RPC drains', async () => {
+    it('keeps background transports live until pending RPC requests drain, then disposes plugin runtime', async () => {
         const calls: string[] = [];
         const apiMachineForSessions = {
             awaitPendingRpcRequests: vi.fn(async () => {
@@ -275,6 +275,6 @@ describe('createBeforeShutdownDrain', () => {
 
         await beforeShutdown();
 
-        expect(calls).toEqual(['backgroundDrain', 'rpcDrain', 'pluginRuntimeDispose']);
+        expect(calls).toEqual(['rpcDrain', 'backgroundDrain', 'pluginRuntimeDispose']);
     });
 });

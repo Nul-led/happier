@@ -4,11 +4,11 @@ import { PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1 } from '@happier-dev/p
 import { createPluginWebhookActionExecutor } from './pluginWebhookActionExecutor';
 
 const transportMocks = vi.hoisted(() => ({
-  post: vi.fn(),
+  request: vi.fn(),
   createPublisherHeader: vi.fn(),
 }));
 
-vi.mock('axios', () => ({ default: { post: transportMocks.post } }));
+vi.mock('axios', () => ({ default: { request: transportMocks.request } }));
 vi.mock('@/plugins/installations/publisherProof', () => ({
   createDefaultPluginInstallationPublisherHeader: transportMocks.createPublisherHeader,
 }));
@@ -30,7 +30,7 @@ const correspondenceSetup = {
 describe('createPluginWebhookActionExecutor', () => {
   it('signs and sends the exact stamped caller materialization on the correspondence HTTP path', async () => {
     transportMocks.createPublisherHeader.mockResolvedValueOnce('publisher-proof');
-    transportMocks.post.mockResolvedValueOnce({
+    transportMocks.request.mockResolvedValueOnce({
       data: {
         kind: 'ready',
         webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
@@ -74,10 +74,11 @@ describe('createPluginWebhookActionExecutor', () => {
       path: '/v1/plugins/webhooks/endpoints/check-correspondence',
       body,
     });
-    expect(transportMocks.post).toHaveBeenCalledWith(
-      expect.stringMatching(/\/v1\/plugins\/webhooks\/endpoints\/check-correspondence$/u),
-      body,
+    expect(transportMocks.request).toHaveBeenCalledWith(
       expect.objectContaining({
+        url: expect.stringMatching(/\/v1\/plugins\/webhooks\/endpoints\/check-correspondence$/u),
+        method: 'POST',
+        data: body,
         headers: expect.objectContaining({
           [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]: 'publisher-proof',
         }),
@@ -86,10 +87,10 @@ describe('createPluginWebhookActionExecutor', () => {
   });
 
   it('signs and sends the stamped caller materialization on the target-convergence HTTP path', async () => {
-    transportMocks.post.mockClear();
+    transportMocks.request.mockClear();
     transportMocks.createPublisherHeader.mockClear();
     transportMocks.createPublisherHeader.mockResolvedValueOnce('publisher-proof');
-    transportMocks.post.mockResolvedValueOnce({
+    transportMocks.request.mockResolvedValueOnce({
       data: {
         kind: 'converged',
         webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
@@ -127,10 +128,11 @@ describe('createPluginWebhookActionExecutor', () => {
       path: '/v1/plugins/webhooks/endpoints/converge-target',
       body,
     });
-    expect(transportMocks.post).toHaveBeenCalledWith(
-      expect.stringMatching(/\/v1\/plugins\/webhooks\/endpoints\/converge-target$/u),
-      body,
+    expect(transportMocks.request).toHaveBeenCalledWith(
       expect.objectContaining({
+        url: expect.stringMatching(/\/v1\/plugins\/webhooks\/endpoints\/converge-target$/u),
+        method: 'POST',
+        data: body,
         headers: expect.objectContaining({
           [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]: 'publisher-proof',
         }),
@@ -296,7 +298,7 @@ describe('createPluginWebhookActionExecutor', () => {
   });
 
   it('rejects caller identity embedded in plugin Action input before constructing the private transport body', async () => {
-    transportMocks.post.mockClear();
+    transportMocks.request.mockClear();
     transportMocks.createPublisherHeader.mockClear();
     const executor = createPluginWebhookActionExecutor({
       credentials,
@@ -321,6 +323,6 @@ describe('createPluginWebhookActionExecutor', () => {
       },
     })).rejects.toThrow();
     expect(transportMocks.createPublisherHeader).not.toHaveBeenCalled();
-    expect(transportMocks.post).not.toHaveBeenCalled();
+    expect(transportMocks.request).not.toHaveBeenCalled();
   });
 });

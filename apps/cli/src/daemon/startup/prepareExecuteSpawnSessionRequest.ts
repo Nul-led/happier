@@ -1,3 +1,4 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { findCatalogEntry } from '@/agent/catalog/registry';
 import { getVendorResumeSupport } from '@/session/runtime/catalogHooks';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -70,7 +71,6 @@ export type PrepareExecuteSpawnSessionRequestInput = Readonly<{
     /** Account snapshot admitted by the daemon caller; never read from ambient UI/global state. */
     accountSettings?: Readonly<Record<string, unknown>>;
     credentials: NonNullable<Parameters<typeof resolveSpawnBackendIdentity>[0]['credentials']>;
-    loadLocalHandoffMetadataByVendorResumeId: Parameters<typeof resolveSpawnBackendIdentity>[0]['loadLocalHandoffMetadataByVendorResumeId'];
 }>;
 
 export async function prepareExecuteSpawnSessionRequest(
@@ -131,7 +131,7 @@ export async function prepareExecuteSpawnSessionRequest(
         agentTarget,
         backendTarget,
     } = options;
-    const normalizedResume = typeof resume === 'string' ? resume.trim() : '';
+    const normalizedResume = readNonBlankOpaqueIdentifier(resume) ?? '';
 
     const backendIdentityResolution = await resolveSpawnBackendIdentity({
         existingSessionId: typeof existingSessionId === 'string' ? existingSessionId : '',
@@ -139,7 +139,6 @@ export async function prepareExecuteSpawnSessionRequest(
         agentTarget,
         backendTarget,
         credentials: params.request.credentials,
-        loadLocalHandoffMetadataByVendorResumeId: params.request.loadLocalHandoffMetadataByVendorResumeId,
     });
     if (!backendIdentityResolution.ok) {
         return backendIdentityResolution.error;

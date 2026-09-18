@@ -1,23 +1,29 @@
+import type { ExecutionRunInteractionV1 } from '@happier-dev/protocol';
+
 import type {
   ExecutionRunHostRuntime,
   ExecutionRunPermissionCapability,
   RuntimePermissionResponseOutcome,
 } from '../executionRunHostRuntime';
 
-type PromptMeta = Parameters<ExecutionRunHostRuntime['sendPrompt']>[2];
-
 export type ExecutionRunHostRuntimeWrapper = Readonly<{
   passthrough?: Readonly<Record<string, unknown>>;
   readPermissionCapability?: () => ExecutionRunPermissionCapability | undefined;
+  readInteraction?: () => ExecutionRunInteractionV1 | undefined;
   readResumeSupport: ExecutionRunHostRuntime['readResumeSupport'];
-  provisionSession: ExecutionRunHostRuntime['provisionSession'];
-  sendPrompt: ExecutionRunHostRuntime['sendPrompt'];
-  readSendSteerPrompt?: () => ExecutionRunHostRuntime['sendSteerPrompt'] | undefined;
+  provisionRuntime: ExecutionRunHostRuntime['provisionRuntime'];
+  deliverInput: ExecutionRunHostRuntime['deliverInput'];
+  readSteerInput?: () => ExecutionRunHostRuntime['steerInput'];
+  getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
+  readSubscribeProviderInputOutcomes?: () => ExecutionRunHostRuntime['subscribeProviderInputOutcomes'];
+  readSubscribeRuntimeEvents?: () => ExecutionRunHostRuntime['subscribeRuntimeEvents'];
+  readActiveTurnAdmissionWitness?: () => ExecutionRunHostRuntime['readActiveTurnAdmissionWitness'];
   cancel: ExecutionRunHostRuntime['cancel'];
   subscribeMessages: ExecutionRunHostRuntime['subscribeMessages'];
   readRespondToPermission?: () => (
     (requestId: string, approved: boolean) => Promise<RuntimePermissionResponseOutcome>
   ) | undefined;
+  readAbortPendingPermissionRequests?: () => ExecutionRunHostRuntime['abortPendingPermissionRequests'];
   readWaitForTurnCompletion?: () => ExecutionRunHostRuntime['waitForTurnCompletion'] | undefined;
   readProbeTurnLiveness?: () => ExecutionRunHostRuntime['probeTurnLiveness'] | undefined;
   dispose: ExecutionRunHostRuntime['dispose'];
@@ -31,24 +37,35 @@ export function wrapExecutionRunHostRuntime(
     get permissionCapability() {
       return wrapper.readPermissionCapability?.();
     },
+    get interaction() {
+      return wrapper.readInteraction?.();
+    },
     async readResumeSupport(opts) {
       return await wrapper.readResumeSupport(opts);
     },
-    async provisionSession(opts) {
-      return await wrapper.provisionSession(opts);
+    async provisionRuntime(opts) {
+      return await wrapper.provisionRuntime(opts);
     },
-    async sendPrompt(sessionId, prompt, meta) {
-      await wrapper.sendPrompt(sessionId, prompt, meta);
+    async deliverInput(runtimeId, input, context) {
+      return await wrapper.deliverInput(runtimeId, input, context);
     },
-    get sendSteerPrompt() {
-      const sendSteerPrompt = wrapper.readSendSteerPrompt?.();
-      return sendSteerPrompt
-        ? async (sessionId: string, prompt: string, meta?: PromptMeta) =>
-            await sendSteerPrompt(sessionId, prompt, meta)
-        : undefined;
+    get steerInput() {
+      return wrapper.readSteerInput?.();
     },
-    async cancel(sessionId) {
-      await wrapper.cancel(sessionId);
+    getRuntimeLifetimeSignal() {
+      return wrapper.getRuntimeLifetimeSignal();
+    },
+    get subscribeProviderInputOutcomes() {
+      return wrapper.readSubscribeProviderInputOutcomes?.();
+    },
+    get subscribeRuntimeEvents() {
+      return wrapper.readSubscribeRuntimeEvents?.();
+    },
+    get readActiveTurnAdmissionWitness() {
+      return wrapper.readActiveTurnAdmissionWitness?.();
+    },
+    async cancel(runtimeId) {
+      await wrapper.cancel(runtimeId);
     },
     subscribeMessages(handler) {
       return wrapper.subscribeMessages(handler);
@@ -57,6 +74,12 @@ export function wrapExecutionRunHostRuntime(
       const respondToPermission = wrapper.readRespondToPermission?.();
       return respondToPermission
         ? async (requestId: string, approved: boolean) => await respondToPermission(requestId, approved)
+        : undefined;
+    },
+    get abortPendingPermissionRequests() {
+      const abortPendingPermissionRequests = wrapper.readAbortPendingPermissionRequests?.();
+      return abortPendingPermissionRequests
+        ? async (reason: string) => await abortPendingPermissionRequests(reason)
         : undefined;
     },
     get waitForTurnCompletion() {
@@ -68,7 +91,7 @@ export function wrapExecutionRunHostRuntime(
     get probeTurnLiveness() {
       const probeTurnLiveness = wrapper.readProbeTurnLiveness?.();
       return probeTurnLiveness
-        ? async (sessionId: string) => await probeTurnLiveness(sessionId)
+        ? async (runtimeId: string) => await probeTurnLiveness(runtimeId)
         : undefined;
     },
     async dispose() {

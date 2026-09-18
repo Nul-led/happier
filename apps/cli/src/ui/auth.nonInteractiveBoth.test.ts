@@ -800,6 +800,38 @@ describe.sequential('doAuth (non-interactive)', () => {
     }
   }, 15_000);
 
+  it('prints only the mobile link when mobile is explicitly selected', async () => {
+    const home = await createTempDir('happier-cli-auth-mobile-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    displayQRCodeMock.mockClear();
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: 'mobile',
+      });
+      vi.resetModules();
+      const { doAuth } = await import('./auth');
+
+      expect((await doAuth())?.token).toBe('tok');
+      expect(displayQRCodeMock).toHaveBeenCalledTimes(1);
+      const out = output.logs.join('\n');
+      expect(out).toContain('Connect this computer');
+      expect(out).toContain('happier://terminal?');
+      expect(out).not.toContain('webapp.example.test/terminal/connect#key=');
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 15_000);
+
   it('does not print a QR code when method is web', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-web-');
     const envScope = createEnvKeyScope(envKeys);
@@ -812,7 +844,7 @@ describe.sequential('doAuth (non-interactive)', () => {
         HAPPIER_HOME_DIR: home,
         HAPPIER_SERVER_URL: 'https://server.example.test',
         HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
-        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_NO_BROWSER_OPEN: undefined,
         HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
         HAPPIER_AUTH_METHOD: 'web',
       });
@@ -825,8 +857,12 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(displayQRCodeMock).not.toHaveBeenCalled();
 
       const out = output.logs.join('\n');
+      expect(out).toContain('Connect this computer');
+      expect(out).toContain('normal on a headless or remote computer');
+      expect(out).toContain('Copy this link into any browser');
       expect(out).toContain('webapp.example.test/terminal/connect#key=');
-      expect(out).toContain('happier://terminal?');
+      expect(out).not.toContain('happier://terminal?');
+      expect(out.match(/Authentication successful/gu) ?? []).toHaveLength(0);
     } finally {
       output.restore();
       restoreTty();

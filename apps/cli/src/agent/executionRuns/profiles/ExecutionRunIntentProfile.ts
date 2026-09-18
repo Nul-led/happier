@@ -5,6 +5,7 @@ import type {
   ExecutionRunIoMode,
   ExecutionRunRetentionPolicy,
   ExecutionRunStartRequest,
+  ExecutionRunResultContractV1,
 } from '@happier-dev/protocol';
 
 /**
@@ -23,6 +24,7 @@ export type ExecutionRunProfileStartParams = Readonly<{
   backendTarget: BackendTargetRefV1;
   instructions: string;
   intentInput?: unknown;
+  resultContract?: ExecutionRunResultContractV1;
   permissionMode: string;
   retentionPolicy: ExecutionRunRetentionPolicy;
   runClass: ExecutionRunClass;

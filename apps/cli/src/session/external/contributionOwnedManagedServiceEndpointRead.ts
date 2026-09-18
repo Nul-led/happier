@@ -116,7 +116,13 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
         signal: AbortSignal,
         admit: 'ownedOrAttached' | 'attachedOnly',
     ): Promise<ManagedServiceHandle | null> => {
-        const spec = await declare({ source, signal });
+        // The declaration is stamped with the same generation-bound execution
+        // authority the contribution's reads receive, so a specification whose
+        // readiness check depends on which executable the host will spawn is
+        // decided from that resolution rather than from a guess. Acquisition is
+        // the same cached, generation-bound one the supervise call below uses.
+        const services = await ensureServices();
+        const spec = await declare({ source, signal, exec: services.exec });
         if (!spec) {
             throw new Error(
                 'Agent External Sessions contribution declares no managed endpoint service for this source',
@@ -126,7 +132,6 @@ export function createContributionOwnedManagedServiceEndpointReadHost(params: Re
         // passive follow reaches it exactly like an explicit browse does. An
         // owned spawn is the only shape passive following must not reach.
         if (admit === 'attachedOnly' && spec.mode.kind !== 'attach') return null;
-        const services = await ensureServices();
         // Supervision is bounded by the generation, not by the browse operation
         // that first needed it. A cold start can outlast one operation deadline;
         // binding establishment to that operation's signal would tear the

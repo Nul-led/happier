@@ -7,6 +7,33 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 describe('sessionControl.sessionSystemRecordsHttp', () => {
   let envScope = createEnvKeyScope(['HAPPIER_SERVER_URL']);
 
+  it('reads host V1 records at a captured Home without fabricating plugin authority', async () => {
+    const { readSessionSystemRecordV1, listSessionSystemRecordsV1 } = await import('./sessionSystemRecordsHttp');
+    const get = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({ status: 200, data: { record: null } })
+      .mockResolvedValueOnce({ status: 200, data: { records: [], nextCursor: null, hasNext: false } });
+    await readSessionSystemRecordV1({ token: 'token', serverUrl: 'https://captured.example', sessionId: 'session/one',
+      address: { owner: 'host', namespace: 'surface', kind: 'layout.v1', localId: 'layout' } });
+    await listSessionSystemRecordsV1({ token: 'token', serverUrl: 'https://captured.example', sessionId: 'session/one',
+      query: { owner: 'host', namespace: 'surface', kind: 'item.v1', limit: 10 } });
+    for (const [url, config] of get.mock.calls) {
+      expect(url).toMatch(/^https:\/\/captured.example\/v2\/sessions\/session%2Fone\/system-records/);
+      expect(config?.headers).toMatchObject({ 'x-happier-session-system-records-protocol': '1' });
+      expect(config?.headers).not.toHaveProperty('x-happier-plugin-id');
+    }
+  });
+
+  it('rejects V1 records outside the requested address before any consumer opens them', async () => {
+    const { readSessionSystemRecordV1, listSessionSystemRecordsV1 } = await import('./sessionSystemRecordsHttp');
+    const address = { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: 'wanted' } as const;
+    const record = { id: 'row', address: { ...address, localId: 'other' }, revision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ',
+      content: { t: 'encrypted', c: 'opaque' }, createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' };
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 200, data: { record } })
+      .mockResolvedValueOnce({ status: 200, data: { records: [record], nextCursor: null, hasNext: false } });
+    await expect(readSessionSystemRecordV1({ token: 'token', sessionId: 'session', address })).rejects.toMatchObject({ code: 'plugin_session_record_invalid_response' });
+    await expect(listSessionSystemRecordsV1({ token: 'token', sessionId: 'session', query: { ...address, limit: 10 } })).rejects.toMatchObject({ code: 'plugin_session_record_invalid_response' });
+  });
+
   afterEach(() => {
     envScope.restore();
     envScope = createEnvKeyScope(['HAPPIER_SERVER_URL']);
@@ -263,20 +290,30 @@ describe('sessionControl.sessionSystemRecordsHttp', () => {
       'x-happier-plugin-id': 'acme.notes',
       'x-happier-session-system-records-protocol': '1',
     });
-    expect(getSpy).toHaveBeenNthCalledWith(
-      1,
-      'http://server.example.test/v2/sessions/sess%2F1/system-records',
-      expect.objectContaining({
-        params: { owner: 'plugin', namespace: 'acme.notes', limit: 25 },
-        headers: expectedHeaders,
-        signal,
-      }),
-    );
-    expect(getSpy).toHaveBeenNthCalledWith(
-      2,
-      'http://server.example.test/v2/sessions/sess%2F1/system-records/record',
-      expect.objectContaining({ params: address, headers: expectedHeaders, signal }),
-    );
+    const listUrl = new URL(getSpy.mock.calls[0]![0]);
+    expect(listUrl.pathname).toBe('/v2/sessions/sess%2F1/system-records');
+    expect(Object.fromEntries(listUrl.searchParams)).toEqual({
+      owner: 'plugin',
+      namespace: 'acme.notes',
+      limit: '25',
+    });
+    expect(getSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({
+      headers: expectedHeaders,
+      signal,
+    }));
+
+    const readUrl = new URL(getSpy.mock.calls[1]![0]);
+    expect(readUrl.pathname).toBe('/v2/sessions/sess%2F1/system-records/record');
+    expect(Object.fromEntries(readUrl.searchParams)).toEqual({
+      owner: 'plugin',
+      namespace: 'acme.notes',
+      kind: 'memo',
+      localId: 'today',
+    });
+    expect(getSpy.mock.calls[1]![1]).toEqual(expect.objectContaining({
+      headers: expectedHeaders,
+      signal,
+    }));
     expect(putSpy).toHaveBeenCalledWith(
       'http://server.example.test/v2/sessions/sess%2F1/system-records',
       { address, content: storedRecord.content },
@@ -291,6 +328,39 @@ describe('sessionControl.sessionSystemRecordsHttp', () => {
       }),
     );
     expect(putSpy.mock.calls[0]?.[2]?.headers).not.toHaveProperty('Idempotency-Key');
+  });
+
+  it('uses ordinary Session authority for strict host requests even when called by a plugin', async () => {
+    const { listSessionSystemRecordsV1, readSessionSystemRecordV1, upsertSessionSystemRecordV1, deleteSessionSystemRecordV1 } = await import('./sessionSystemRecordsHttp');
+    const address = { owner: 'host' as const, namespace: 'memory' as const, kind: 'synopsis.v1' as const, localId: 'current' };
+    const record = {
+      id: 'record-1', address, content: { t: 'plain' as const, v: { v: 1, seqTo: 10, updatedAtMs: 99, synopsis: 'S' } },
+      revision: 'ssr1.AAAAAWkAAAAB', createdAt: '2026-05-19T00:00:00.000Z', updatedAt: '2026-05-19T00:00:00.000Z',
+    };
+    const get = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({ status: 200, data: { records: [record], nextCursor: null, hasNext: false } })
+      .mockResolvedValueOnce({ status: 200, data: { record } });
+    const put = vi.spyOn(axios, 'put').mockResolvedValueOnce({ status: 200, data: { record } });
+    const remove = vi.spyOn(axios, 'delete').mockResolvedValueOnce({ status: 200, data: { ok: true } });
+    const context = { token: 'token', sessionId: 'session', pluginId: 'acme.notes' };
+    await expect(listSessionSystemRecordsV1({ ...context, query: { owner: 'host', namespace: 'memory', limit: 1 } })).resolves.toMatchObject({ records: [record] });
+    await expect(readSessionSystemRecordV1({ token: context.token, sessionId: context.sessionId, address })).resolves.toEqual(record);
+    await expect(upsertSessionSystemRecordV1({ ...context, request: { address, content: record.content } })).resolves.toEqual(record);
+    await deleteSessionSystemRecordV1({ ...context, request: { address } });
+    for (const headers of [get.mock.calls[0]?.[1]?.headers, get.mock.calls[1]?.[1]?.headers, put.mock.calls[0]?.[2]?.headers, remove.mock.calls[0]?.[1]?.headers]) {
+      expect(headers).toMatchObject({ Authorization: 'Bearer token', 'x-happier-session-system-records-protocol': '1' });
+      expect(headers).not.toHaveProperty('x-happier-plugin-id');
+    }
+  });
+
+  it('rejects a plugin address without valid plugin identity before sending', async () => {
+    const { readSessionSystemRecordV1 } = await import('./sessionSystemRecordsHttp');
+    const get = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { record: null } });
+    await expect(readSessionSystemRecordV1({
+      token: 'token', sessionId: 'session', pluginId: '',
+      address: { owner: 'plugin', namespace: 'notes', kind: 'entry.v1', localId: 'entry' },
+    })).rejects.toMatchObject({ code: 'plugin_session_record_invalid_query' });
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('preserves a typed V1 conflict and its current revision', async () => {

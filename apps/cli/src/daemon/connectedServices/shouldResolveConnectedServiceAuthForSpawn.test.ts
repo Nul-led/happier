@@ -5,6 +5,16 @@ import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers
 import { shouldResolveConnectedServiceAuthForSpawn } from './shouldResolveConnectedServiceAuthForSpawn';
 
 describe('shouldResolveConnectedServiceAuthForSpawn', () => {
+  it.each([null, {}])('keeps malformed present intent on the admission path (%j)', (connectedServices) => {
+    expect(shouldResolveConnectedServiceAuthForSpawn({ connectedServices })).toBe(true);
+  });
+
+  it('does not materialize an explicit empty current selection', () => {
+    expect(shouldResolveConnectedServiceAuthForSpawn({
+      connectedServices: { v: 2, bindingsByServiceId: {} },
+    })).toBe(false);
+  });
+
   it('returns false when no connectedServices payload is provided', () => {
     const options: SpawnSessionOptions = { directory: '.', environmentVariables: {} };
     expect(shouldResolveConnectedServiceAuthForSpawn(options)).toBe(false);

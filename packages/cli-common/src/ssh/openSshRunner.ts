@@ -52,7 +52,8 @@ async function runCommand(params: Readonly<{
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  /** `null` explicitly disables the process timeout after irreversible-operation admission. */
+  timeoutMs?: number | null;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
   rejectOnNonZero?: boolean;
@@ -63,7 +64,9 @@ async function runCommand(params: Readonly<{
   input?: string;
   maxInputBytes?: number;
 }>): Promise<OpenSshCommandResult> {
-  const timeoutMs = normalizePositiveInteger(params.timeoutMs, DEFAULT_OPEN_SSH_TIMEOUT_MS);
+  const timeoutMs = params.timeoutMs === null
+    ? null
+    : normalizePositiveInteger(params.timeoutMs, DEFAULT_OPEN_SSH_TIMEOUT_MS);
   const maxStdoutBytes = normalizePositiveInteger(params.maxStdoutBytes, DEFAULT_OPEN_SSH_OUTPUT_LIMIT_BYTES);
   const maxStderrBytes = normalizePositiveInteger(params.maxStderrBytes, DEFAULT_OPEN_SSH_OUTPUT_LIMIT_BYTES);
   const maxInputBytes = normalizePositiveInteger(params.maxInputBytes, DEFAULT_OPEN_SSH_INPUT_LIMIT_BYTES);
@@ -202,12 +205,14 @@ async function runCommand(params: Readonly<{
       onAbort();
       return;
     }
-    timeout = setTimeout(() => {
-      rejectOnce(new OpenSshExecutionError(
-        'timed_out',
-        `${params.errorPrefix}: timed out after ${timeoutMs} ms.`,
-      ));
-    }, timeoutMs);
+    if (timeoutMs !== null) {
+      timeout = setTimeout(() => {
+        rejectOnce(new OpenSshExecutionError(
+          'timed_out',
+          `${params.errorPrefix}: timed out after ${timeoutMs} ms.`,
+        ));
+      }, timeoutMs);
+    }
   });
 }
 
@@ -224,7 +229,8 @@ export async function runOpenSshRemoteCommand(params: Readonly<{
   serverAliveIntervalSec?: number;
   serverAliveCountMax?: number;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  /** `null` explicitly disables the process timeout after irreversible-operation admission. */
+  timeoutMs?: number | null;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
   rejectOnNonZero?: boolean;
@@ -280,6 +286,7 @@ export async function transferOpenSshFile(params: Readonly<{
   connectTimeoutSec?: number;
   serverAliveIntervalSec?: number;
   serverAliveCountMax?: number;
+  recursive?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
 }>): Promise<void> {
@@ -289,7 +296,7 @@ export async function transferOpenSshFile(params: Readonly<{
     localPath: params.localPath,
     remotePath: params.remotePath,
     direction: params.direction,
-    recursive: false,
+    recursive: params.recursive ?? false,
     sshConfigFile: params.sshConfigFile,
     knownHostsPath: params.knownHostsPath,
     knownHostsMode: params.knownHostsMode,

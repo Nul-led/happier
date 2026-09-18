@@ -1,4 +1,5 @@
 import {
+  getActionRequiredServerFeatureId,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
   type AccountSettings,
@@ -6,9 +7,13 @@ import {
   type ActionSurfaces,
 } from '@happier-dev/protocol';
 
+import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+
 import {
   createActionSettingsProvider,
   type ActionSettingsProvider,
+  type RuntimeActionSettingsProvider,
 } from '@/settings/actionsSettingsProvider';
 
 /** @deprecated Use the settings-owned ActionSettingsProvider outside MCP. */
@@ -20,7 +25,7 @@ export const createMcpActionSettingsProvider = createActionSettingsProvider;
 export function createMcpActionEnablement(params: Readonly<{
   accountSettings?: AccountSettings | null;
   getAccountSettings?: (() => AccountSettings | null) | null;
-  actionSettingsProvider?: McpActionSettingsProvider | null;
+  actionSettingsProvider?: RuntimeActionSettingsProvider | null;
   surface: keyof ActionSurfaces;
 }>): (id: ActionId) => boolean {
   const provider = params.actionSettingsProvider ?? createMcpActionSettingsProvider({
@@ -34,10 +39,44 @@ export function createMcpActionEnablement(params: Readonly<{
     });
 }
 
+/**
+ * Compose the shared Actions policy with the current Session runtime's exact
+ * Home feature projection. Server-backed Session Actions must not be exposed
+ * without an authenticated runtime and their owning feature bit. Effect-time
+ * access and currentness remain owned by each Action adapter.
+ */
+export function createMcpActionEnablementWithServerFeatureAvailability(params: Readonly<{
+  actionSettingsProvider: RuntimeActionSettingsProvider;
+  surface: keyof ActionSurfaces;
+  hasAuthenticatedRuntime: boolean;
+  readServerFeaturesSnapshot: () => CliServerFeaturesSnapshot | undefined;
+  env?: NodeJS.ProcessEnv;
+}>): (id: ActionId) => boolean {
+  const isEnabledByPolicy = createMcpActionEnablement({
+    actionSettingsProvider: params.actionSettingsProvider,
+    surface: params.surface,
+  });
+  return (id) => {
+    if (!isEnabledByPolicy(id)) return false;
+    const featureId = getActionRequiredServerFeatureId(id);
+    if (featureId === null) return true;
+    if (!params.hasAuthenticatedRuntime) return false;
+    try {
+      return resolveCliFeatureDecision({
+        featureId,
+        env: params.env ?? process.env,
+        serverSnapshot: params.readServerFeaturesSnapshot(),
+      }).state === 'enabled';
+    } catch {
+      return false;
+    }
+  };
+}
+
 export function createMcpActionApprovalRequirement(params: Readonly<{
   accountSettings?: AccountSettings | null;
   getAccountSettings?: (() => AccountSettings | null) | null;
-  actionSettingsProvider?: McpActionSettingsProvider | null;
+  actionSettingsProvider?: RuntimeActionSettingsProvider | null;
   surface: keyof ActionSurfaces;
 }>): (id: ActionId) => boolean {
   const provider = params.actionSettingsProvider ?? createMcpActionSettingsProvider({

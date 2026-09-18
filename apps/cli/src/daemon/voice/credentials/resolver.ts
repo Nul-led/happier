@@ -1,7 +1,6 @@
 import {
   type VoiceCredentialBindingIdentityV1,
   type VoiceCredentialSourceSelection,
-  decryptSecretValueWithKeysV1,
   resolveAccountSettingsVoiceCredentialSource,
 } from '@happier-dev/protocol';
 
@@ -10,17 +9,26 @@ import {
   getActiveAccountSettingsSnapshotLifetimeToken,
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
-import { indexSavedSecretsByIdFromAccountSettings } from '@/settings/secrets/indexSavedSecretsById';
+import {
+  createSavedSecretMaterializerFromSnapshotV1,
+  type SavedSecretResolutionV1,
+} from '@/settings/secrets/savedSecretCatalog';
 
 export type VoiceCredentialResolutionSource = 'account' | 'machine_override';
 
 type VoiceCredentialReference = Readonly<{
   secretId: string;
   source: VoiceCredentialResolutionSource;
-  secretUpdatedAt: number;
+  materialFingerprint: string;
   /** Retained only for unscoped snapshots, which cannot prove Account identity. */
   snapshot: ActiveAccountSettingsSnapshot;
 }>;
+
+export type VoiceCredentialMaterialStatus = SavedSecretResolutionV1['status'];
+
+type VoiceCredentialReferenceInspection =
+  | Readonly<{ status: 'ready'; reference: VoiceCredentialReference }>
+  | Readonly<{ status: Exclude<VoiceCredentialMaterialStatus, 'ready'> }>;
 
 export type VoiceCredentialResolver = Readonly<{
   /** Current Account-settings source selection before any secret materialization. */
@@ -28,6 +36,7 @@ export type VoiceCredentialResolver = Readonly<{
   status(identity: VoiceCredentialBindingIdentityV1): Readonly<{
     available: boolean;
     source: VoiceCredentialResolutionSource | null;
+    materialStatus: VoiceCredentialMaterialStatus;
   }>;
   withSecret<T>(params: Readonly<{
     identity: VoiceCredentialBindingIdentityV1;
@@ -36,8 +45,12 @@ export type VoiceCredentialResolver = Readonly<{
   }>): Promise<T>;
 }>;
 
-function unavailable(): Error & { code: 'credential_unavailable' } {
-  return Object.assign(new Error('credential_unavailable'), { code: 'credential_unavailable' as const });
+function unavailable(materialStatus: Exclude<VoiceCredentialMaterialStatus, 'ready'> = 'missing'):
+  Error & { code: 'credential_unavailable'; materialStatus: Exclude<VoiceCredentialMaterialStatus, 'ready'> } {
+  return Object.assign(new Error('credential_unavailable'), {
+    code: 'credential_unavailable' as const,
+    materialStatus,
+  });
 }
 
 /**
@@ -49,13 +62,13 @@ function unavailable(): Error & { code: 'credential_unavailable' } {
  * saved-secret arm is the effective one. Any invalid or ambiguous stored shape
  * fails closed rather than falling back to a raw binding read.
  */
-function resolveReference(params: Readonly<{
+function inspectReference(params: Readonly<{
   snapshot: ActiveAccountSettingsSnapshot | null;
   machineId: string | null;
   identity: VoiceCredentialBindingIdentityV1;
   recipientContractDigest?: string;
-}>): VoiceCredentialReference | null {
-  if (!params.snapshot) return null;
+}>): VoiceCredentialReferenceInspection {
+  if (!params.snapshot) return { status: 'missing' };
   let resolved: ReturnType<typeof resolveAccountSettingsVoiceCredentialSource>;
   try {
     resolved = resolveAccountSettingsVoiceCredentialSource(
@@ -68,31 +81,27 @@ function resolveReference(params: Readonly<{
       },
     );
   } catch {
-    return null;
+    return { status: 'missing' };
   }
-  if (resolved.selection.kind !== 'savedSecret' || !resolved.savedSecret) return null;
+  if (resolved.selection.kind !== 'savedSecret' || !resolved.savedSecret) return { status: 'missing' };
   if (
     params.recipientContractDigest
     && resolved.approvedRecipientContractDigest !== params.recipientContractDigest
   ) {
-    return null;
+    return { status: 'missing' };
   }
   const secretId = resolved.savedSecret.secretId;
-  if (!indexSavedSecretsByIdFromAccountSettings(params.snapshot.settings).has(secretId)) return null;
-  let savedSecret: (typeof params.snapshot.settings.secrets)[number] | null = null;
-  // Match the `Map#set` last-record semantics used for the decryption lookup
-  // below so an invalid duplicate record cannot split the revision fence from
-  // the credential bytes this legacy reader still selects.
-  for (const candidate of params.snapshot.settings.secrets) {
-    if (candidate.id === secretId) savedSecret = candidate;
-  }
-  if (!savedSecret) return null;
-  return Object.freeze({
-    secretId,
-    source: resolved.savedSecret.source,
-    secretUpdatedAt: savedSecret.updatedAt,
-    snapshot: params.snapshot,
-  });
+  const inspected = createSavedSecretMaterializerFromSnapshotV1(params.snapshot).inspect(secretId);
+  if (inspected.status !== 'ready') return inspected;
+  return {
+    status: 'ready',
+    reference: Object.freeze({
+      secretId,
+      source: resolved.savedSecret.source,
+      materialFingerprint: inspected.fingerprint,
+      snapshot: params.snapshot,
+    }),
+  };
 }
 
 /**
@@ -114,7 +123,7 @@ function sameCredentialReference(
   return beforeScopeKey === afterScopeKey
     && before.secretId === after.secretId
     && before.source === after.source
-    && before.secretUpdatedAt === after.secretUpdatedAt;
+    && before.materialFingerprint === after.materialFingerprint;
 }
 
 function readSelectedSource(params: Readonly<{
@@ -157,12 +166,12 @@ export function createVoiceCredentialResolver(params: Readonly<{
         : null;
     },
     status(identity) {
-      const resolved = identity
-        ? resolveReference({ snapshot: getSnapshot(), machineId: params.machineId, identity })
-        : null;
-      return resolved
-        ? { available: true, source: resolved.source }
-        : { available: false, source: null };
+      const inspected = identity
+        ? inspectReference({ snapshot: getSnapshot(), machineId: params.machineId, identity })
+        : { status: 'missing' as const };
+      return inspected.status === 'ready'
+        ? { available: true, source: inspected.reference.source, materialStatus: 'ready' }
+        : { available: false, source: null, materialStatus: inspected.status };
     },
     async withSecret<T>(input: Readonly<{
       identity: VoiceCredentialBindingIdentityV1;
@@ -172,7 +181,7 @@ export function createVoiceCredentialResolver(params: Readonly<{
       if (!input.identity) throw unavailable();
       const snapshot = getSnapshot();
       const lifetimeToken = getLifetimeToken();
-      const resolved = resolveReference({
+      const inspected = inspectReference({
         snapshot,
         machineId: params.machineId,
         identity: input.identity,
@@ -180,14 +189,18 @@ export function createVoiceCredentialResolver(params: Readonly<{
           ? { recipientContractDigest: input.recipientContractDigest }
           : {}),
       });
-      if (!snapshot || !resolved) throw unavailable();
-      const savedSecret = indexSavedSecretsByIdFromAccountSettings(snapshot.settings).get(resolved.secretId);
-      if (!savedSecret) throw unavailable();
-      const secret = decryptSecretValueWithKeysV1(savedSecret, snapshot.settingsSecretsReadKeys);
-      if (!secret) throw unavailable();
-      const result = await input.use(secret);
-      const current = resolveReference({
-        snapshot: getSnapshot(),
+      if (!snapshot) throw unavailable();
+      if (inspected.status !== 'ready') throw unavailable(inspected.status);
+      const resolved = inspected.reference;
+      // The SavedSecret catalog is the only owner of "the material behind this
+      // fingerprint moved"; ask it rather than re-deciding drift locally.
+      const material = createSavedSecretMaterializerFromSnapshotV1(snapshot)
+        .recheck(resolved.secretId, resolved.materialFingerprint);
+      if (material.status !== 'ready') throw unavailable(material.status);
+      const result = await input.use(material.value);
+      const currentSnapshot = getSnapshot();
+      const currentInspection = inspectReference({
+        snapshot: currentSnapshot,
         machineId: params.machineId,
         identity: input.identity,
         ...(input.recipientContractDigest
@@ -200,11 +213,15 @@ export function createVoiceCredentialResolver(params: Readonly<{
       // version is deliberately not an authority fence here.
       if (
         getLifetimeToken() !== lifetimeToken
-        || !current
-        || !sameCredentialReference(resolved, current)
+        || !currentSnapshot
+        || currentInspection.status !== 'ready'
+        || !sameCredentialReference(resolved, currentInspection.reference)
       ) {
-        throw unavailable();
+        throw unavailable(currentInspection.status === 'ready' ? 'repair_required' : currentInspection.status);
       }
+      const rechecked = createSavedSecretMaterializerFromSnapshotV1(currentSnapshot)
+        .recheck(resolved.secretId, resolved.materialFingerprint);
+      if (rechecked.status !== 'ready') throw unavailable(rechecked.status);
       return result;
     },
   });

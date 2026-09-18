@@ -1,0 +1,133 @@
+import axios from 'axios';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  fetchTeamCredentialDirectMaterial,
+  TeamCredentialDirectMaterialHttpContractError,
+  TeamCredentialDirectMaterialHttpTransportError,
+} from './teamCredentialDirectMaterialHttp';
+
+vi.mock('axios', () => ({ default: { post: vi.fn() } }));
+
+describe('fetchTeamCredentialDirectMaterial', () => {
+  beforeEach(() => vi.mocked(axios.post).mockReset());
+
+  it('fetches and strictly parses the authenticated recipient projection', async () => {
+    vi.mocked(axios.post).mockResolvedValue({ status: 200, data: {
+      status: 'unavailable',
+      reason: 'preparing',
+    } });
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token',
+      teamId: 'team',
+      resourceId: 'resource',
+      request: {
+        resourceId: 'resource',
+        consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'connected_service_purpose', purpose: {
+          consumer: { pluginId: 'plugin.acme', localId: 'agent' }, purpose: 'runtime',
+        } },
+        disclosedMember: { service: { pluginId: 'plugin.acme', localId: 'service' }, accountId: 'account' },
+      },
+    })).resolves.toEqual({ status: 'unavailable', reason: 'preparing' });
+    expect(vi.mocked(axios.post).mock.calls[0]?.[0]).toContain(
+      '/v2/teams/team/credential-resources/resource/direct-material',
+    );
+    expect(vi.mocked(axios.post).mock.calls[0]?.[2]).toMatchObject({
+      headers: { Authorization: 'Bearer token' },
+    });
+  });
+
+  it('rejects a non-protocol response', async () => {
+    vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { status: 'ready', stored: { secret: true } } });
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource',
+      request: {
+        resourceId: 'resource',
+        consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'connected_service_purpose', purpose: {
+          consumer: { pluginId: 'plugin.acme', localId: 'agent' }, purpose: 'runtime',
+        } },
+        disclosedMember: { service: { pluginId: 'plugin.acme', localId: 'service' }, accountId: 'account' },
+      },
+    })).rejects.toBeInstanceOf(TeamCredentialDirectMaterialHttpContractError);
+  });
+
+  it('rejects an invalid request before issuing HTTP', async () => {
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource',
+      request: {
+        resourceId: '',
+        consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'provider_model' },
+        sourceMemberKey: 'member-1',
+      },
+    })).rejects.toBeInstanceOf(TeamCredentialDirectMaterialHttpContractError);
+    expect(vi.mocked(axios.post)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [403, 'team_authentication_required'],
+    [503, 'team_authentication_policy_unavailable'],
+  ] as const)('strictly preserves a canonical HTTP %s operation error', async (status, error) => {
+    vi.mocked(axios.post).mockResolvedValue({ status, data: { error } });
+
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource',
+      request: {
+        resourceId: 'resource',
+        consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'connected_service_purpose', purpose: {
+          consumer: { pluginId: 'plugin.acme', localId: 'agent' }, purpose: 'runtime',
+        } },
+        disclosedMember: { service: { pluginId: 'plugin.acme', localId: 'service' }, accountId: 'account' },
+      },
+    })).resolves.toEqual({ status: 'operation_error', error: { error } });
+    expect(vi.mocked(axios.post).mock.calls[0]?.[2]).toMatchObject({
+      validateStatus: expect.any(Function),
+    });
+  });
+
+  it.each([
+    { error: 'not_a_team_error' },
+    { error: 'team_authentication_required', secret: 'must-not-cross-the-boundary' },
+  ])('rejects a malformed non-success response instead of inventing or leaking a domain error', async (body) => {
+    vi.mocked(axios.post).mockResolvedValue({ status: 503, data: body });
+
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource',
+      request: {
+        resourceId: 'resource',
+        consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'provider_model' },
+        sourceMemberKey: 'member-1',
+      },
+    })).rejects.toBeInstanceOf(TeamCredentialDirectMaterialHttpContractError);
+  });
+
+  it('classifies an Axios rejection without a response as transport failure', async () => {
+    vi.mocked(axios.post).mockRejectedValueOnce(new Error('socket closed'));
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource',
+      request: {
+        resourceId: 'resource', consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'provider_model' }, sourceMemberKey: 'member-1',
+      },
+    })).rejects.toBeInstanceOf(TeamCredentialDirectMaterialHttpTransportError);
+  });
+
+  it('preserves abort during Axios instead of classifying it as transport failure', async () => {
+    const controller = new AbortController();
+    vi.mocked(axios.post).mockImplementationOnce(async () => {
+      controller.abort();
+      throw controller.signal.reason;
+    });
+    await expect(fetchTeamCredentialDirectMaterial({
+      token: 'token', teamId: 'team', resourceId: 'resource', signal: controller.signal,
+      request: {
+        resourceId: 'resource', consumer: { kind: 'session', sessionId: 'session-1' },
+        slot: { kind: 'provider_model' }, sourceMemberKey: 'member-1',
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});

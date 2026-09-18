@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceSyncController } from './workspaceSyncController';
+import { AccountSettingsSchema } from '@happier-dev/protocol';
 import { computeWorkspaceSyncPolicyDigest, type WorkspaceSyncRelationshipV1, type WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
 import { deriveWorkspaceSyncEndpointId } from './transport/workspaceSyncBrokerProtocol';
-import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
+import { createHash } from 'node:crypto';
 import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
+import { createWorkspaceSyncMutagenAdapter } from './workspaceSyncMutagenAdapter';
+import { createWorkspaceSyncTargetAuthority } from './workspaceSyncTargetAuthority';
+import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
 const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 const definition = { v: 1 as const, relationshipId: 'r1', controllerMachineId: 'm1', alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b', mode: 'keep_synced' as const, contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) }, enabled: true, createdAtMs: 1, updatedAtMs: 1 };
@@ -176,6 +181,39 @@ describe('WorkspaceSyncController', () => {
 
     await controller.rehydrateFromSettings([definition]);
     expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
+    await controller.shutdown();
+  });
+
+  it('reacquires released ownership before materializing a reconciled disabled relationship', async () => {
+    const disabled = { ...definition, enabled: false };
+    const ensure = vi.fn(async () => status);
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const ownership = rootOwnership();
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        ensure,
+        rehydrate: vi.fn(async () => []),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: ownership,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      prepareRelationshipTarget,
+    });
+
+    await controller.rehydrateFromSettings([disabled]);
+    ownership.tryAcquire.mockClear();
+
+    await expect(controller.ensure({ ...disabled, enabled: true }, undefined, {
+      transient: true,
+      targetBootstrap: 'use_existing',
+    })).resolves.toMatchObject({ relationshipId: 'r1' });
+
+    expect(ownership.tryAcquire).toHaveBeenCalled();
+    expect(prepareRelationshipTarget).toHaveBeenCalledOnce();
+    expect(ensure).toHaveBeenCalledWith({ ...disabled, enabled: true }, undefined);
     await controller.shutdown();
   });
 
@@ -464,7 +502,7 @@ describe('WorkspaceSyncController', () => {
     expect(ensure).not.toHaveBeenCalled();
   });
 
-  it('rejects persisted git_worktree rehydration before any target, root, or engine work', async () => {
+  it('rejects persisted git_worktree rehydration without target, root, or enabled runtime work', async () => {
     const prepareRelationshipTarget = vi.fn(async () => undefined);
     const managerLifecycle = lifecycle();
     const ownership = rootOwnership();
@@ -478,9 +516,172 @@ describe('WorkspaceSyncController', () => {
     await expect(controller.rehydrateFromSettings([gitWorktreeDefinition])).rejects.toMatchObject({ code: 'git_selection_unavailable' });
     expect(prepareRelationshipTarget).not.toHaveBeenCalled();
     expect(ownership.tryAcquire).not.toHaveBeenCalled();
-    expect(managerLifecycle.start).not.toHaveBeenCalled();
-    expect(adapter.rehydrate).not.toHaveBeenCalled();
+    expect(managerLifecycle.start).toHaveBeenCalledOnce();
+    expect(adapter.rehydrate).toHaveBeenCalledWith([]);
     expect(adapter.ensure).not.toHaveBeenCalled();
+  });
+
+  it('terminates an existing disabled runtime even when every enabled relationship requires unavailable Git', async () => {
+    const disabled = {
+      ...definition,
+      relationshipId: 'disabled-persisted',
+      enabled: false,
+    };
+    const enabledGit = {
+      ...gitWorktreeDefinition,
+      relationshipId: 'enabled-git',
+      alphaWorkspaceRefId: 'git-a',
+      betaWorkspaceRefId: 'git-b',
+    };
+    const commands: string[] = [];
+    const persistedSession = (paused: boolean) => ({
+      identifier: 'mutagen-disabled-persisted',
+      name: disabled.relationshipId,
+      labels: {
+        'external.owner': 'happier-workspace-sync',
+        'external.relationship_id': disabled.relationshipId,
+        'external.endpoint_role': 'alpha|beta',
+        'external.schema': 'workspace-sync-v1',
+        'external.policy_digest': disabled.contentPolicy.policyDigest,
+        'external.alpha_workspace_ref_id': disabled.alphaWorkspaceRefId,
+        'external.beta_workspace_ref_id': disabled.betaWorkspaceRefId,
+        'external.controller_machine_id': disabled.controllerMachineId,
+        'external.operation_kind': 'relationship',
+        'external.policy_selection': 'all_files',
+      },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'alpha'), path: '', connected: true, scanned: true },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(disabled.relationshipId, 'beta'), path: '', connected: true, scanned: true },
+      mode: 'one-way-safe',
+      paused,
+      status: 'watching',
+      successfulCycles: 1,
+      conflictCount: 0,
+    });
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command.t);
+      if (command.t === 'list') return { sessions: [persistedSession(false)], nextCursor: null };
+      if (command.t === 'terminate') return null;
+      throw new Error(`unexpected Mutagen command: ${command.t}`);
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    const ownership = rootOwnership();
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: ownership,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      prepareRelationshipTarget,
+      probeGitRuntimeDependency: vi.fn(async () => false),
+    });
+
+    await expect(controller.rehydrateFromSettings([disabled, enabledGit])).resolves.toEqual([
+      expect.objectContaining({ relationshipId: disabled.relationshipId, state: 'paused' }),
+      expect.objectContaining({
+        relationshipId: enabledGit.relationshipId,
+        state: 'error',
+        errorCode: 'git_selection_unavailable',
+      }),
+    ]);
+    expect(commands).toEqual(['list', 'list', 'terminate']);
+    expect(ownership.tryAcquire).not.toHaveBeenCalled();
+    expect(prepareRelationshipTarget).not.toHaveBeenCalled();
+  });
+
+  it('fences a disabled local root before runtime transition and publishes only after releasing it', async () => {
+    const events: string[] = [];
+    const disabled = { ...definition, relationshipId: 'disabled-ordered', enabled: false };
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({
+        rehydrate: vi.fn(async () => { events.push('runtime-transition'); return []; }),
+      }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: vi.fn(async (owner) => {
+          events.push('fence');
+          return {
+            owner: { ...owner, rootFingerprint: null },
+            bindCurrentRootIdentity: vi.fn(async () => undefined),
+            release: vi.fn(async () => { events.push('release'); }),
+          };
+        }),
+      },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+      onStatusPublished: () => { events.push('publish'); },
+    });
+
+    await expect(controller.rehydrateFromSettings([disabled])).resolves.toEqual([
+      expect.objectContaining({ relationshipId: disabled.relationshipId, state: 'paused' }),
+    ]);
+    expect(events).toEqual(['fence', 'runtime-transition', 'release', 'publish']);
+  });
+
+  it('removes a stale persisted runtime before rejecting an all-Git settings snapshot when Git is unavailable', async () => {
+    const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
+    const stale = {
+      identifier: 'mutagen-removed',
+      name: 'removed',
+      labels: {
+        'external.owner': 'happier-workspace-sync',
+        'external.relationship_id': 'removed',
+        'external.endpoint_role': 'alpha|beta',
+        'external.schema': 'workspace-sync-v1',
+        'external.policy_digest': definition.contentPolicy.policyDigest,
+        'external.alpha_workspace_ref_id': definition.alphaWorkspaceRefId,
+        'external.beta_workspace_ref_id': definition.betaWorkspaceRefId,
+        'external.controller_machine_id': definition.controllerMachineId,
+        'external.operation_kind': 'relationship',
+        'external.policy_selection': 'all_files',
+      },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'alpha'), path: '', connected: true, scanned: true },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('removed', 'beta'), path: '', connected: true, scanned: true },
+      mode: 'one-way-safe',
+      paused: false,
+      status: 'watching',
+      successfulCycles: 1,
+      conflictCount: 0,
+    };
+    const send = vi.fn(async (command: { t: string; sessionIdentifier?: string }) => {
+      commands.push(command);
+      if (command.t === 'list') return { sessions: [stale], nextCursor: null };
+      if (command.t === 'terminate') return null;
+      throw new Error(`unexpected Mutagen command: ${command.t}`);
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    const ownership = rootOwnership();
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: ownership,
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      prepareRelationshipTarget,
+      probeGitRuntimeDependency: vi.fn(async () => false),
+    });
+
+    await expect(controller.rehydrateFromSettings([gitWorktreeDefinition])).rejects.toMatchObject({
+      code: 'git_selection_unavailable',
+    });
+    expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
+      ['list', undefined],
+      ['list', undefined],
+      ['terminate', stale.identifier],
+    ]);
+    expect(ownership.tryAcquire).not.toHaveBeenCalled();
+    expect(prepareRelationshipTarget).not.toHaveBeenCalled();
   });
 
   it('rejects a recovered git_worktree copy operation before reacquiring roots or dispatching it', async () => {
@@ -738,6 +939,81 @@ describe('WorkspaceSyncController', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('retains copy_once runtime and root custody when the operation and required termination both fail', async () => {
+    const operationError = Object.assign(new Error('flush failed'), { code: 'engine_error' });
+    const cleanupError = Object.assign(new Error('termination acknowledgement unavailable'), { code: 'agent_unavailable' });
+    const operationId = 'copy-dual-failure';
+    let terminateAttempts = 0;
+    const genericSession = (overrides: Record<string, unknown> = {}) => ({
+      identifier: 'mutagen-copy-dual-failure',
+      name: operationId,
+      labels: {
+        'external.owner': 'happier-workspace-sync',
+        'external.relationship_id': operationId,
+        'external.endpoint_role': 'alpha|beta',
+        'external.schema': 'workspace-sync-v1',
+        'external.policy_digest': computeWorkspaceSyncPolicyDigest(policy),
+        'external.alpha_workspace_ref_id': 'a',
+        'external.beta_workspace_ref_id': 'b',
+        'external.controller_machine_id': 'm1',
+        'external.operation_kind': 'copy_once',
+        'external.policy_selection': 'all_files',
+      },
+      alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'alpha'), path: '', connected: true, scanned: true },
+      beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(operationId, 'beta'), path: '', connected: true, scanned: true },
+      mode: 'one-way-safe',
+      paused: false,
+      status: 'watching',
+      successfulCycles: 0,
+      conflictCount: 0,
+      ...overrides,
+    });
+    const send = vi.fn(async (command: { t: string }) => {
+      if (command.t === 'list') return { sessions: [], nextCursor: null };
+      if (command.t === 'create') return genericSession({ paused: true, status: 'disconnected' });
+      if (command.t === 'flush') throw operationError;
+      if (command.t === 'terminate') {
+        terminateAttempts += 1;
+        if (terminateAttempts === 1) throw cleanupError;
+        return null;
+      }
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: id === 'a' ? 'm1' : 'm2', rootPath: `/${id}` }),
+    });
+    const release = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
+        owner: { ...owner, rootFingerprint: null },
+        bindCurrentRootIdentity: vi.fn(async () => undefined),
+        release,
+      })) },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: id === 'a' ? 'm1' : 'm2', rootPath: `/${id}` }),
+    });
+    const operation = {
+      v: 1 as const,
+      operationId,
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) },
+    };
+
+    const first = await controller.copyOnce(operation).catch((error: unknown) => error);
+    expect(first).toMatchObject({ code: 'indeterminate', cause: operationError, cleanupError });
+    expect(release).not.toHaveBeenCalled();
+
+    await expect(controller.terminate(operationId)).resolves.toBeUndefined();
+    expect(terminateAttempts).toBe(2);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('uses carried copy_once custody without reacquiring or releasing its exact root', async () => {
     const carriedRelease = vi.fn(async () => undefined);
     const carried = Object.freeze({
@@ -855,6 +1131,194 @@ describe('WorkspaceSyncController', () => {
     await controller.shutdown();
   });
 
+  it('keeps disabled intent paused across a cold restart while an enabled relationship bootstraps through target authority', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-disabled-restart-'));
+    const roots = {
+      disabledAlpha: join(fixture, 'disabled-alpha'),
+      disabledBeta: join(fixture, 'disabled-beta'),
+      enabledAlpha: join(fixture, 'enabled-alpha'),
+      enabledBeta: join(fixture, 'enabled-beta'),
+    };
+    await Promise.all([
+      mkdir(roots.disabledAlpha),
+      mkdir(roots.disabledBeta),
+      mkdir(roots.enabledAlpha),
+      mkdir(roots.enabledBeta),
+    ]);
+    const gitPolicyInput = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const disabled = {
+      ...definition,
+      relationshipId: 'disabled-restart',
+      alphaWorkspaceRefId: 'disabled-alpha',
+      betaWorkspaceRefId: 'disabled-beta',
+      enabled: false,
+      contentPolicy: { ...gitPolicyInput, policyDigest: computeWorkspaceSyncPolicyDigest(gitPolicyInput) },
+    };
+    const enabled = {
+      ...definition,
+      relationshipId: 'enabled-restart',
+      alphaWorkspaceRefId: 'enabled-alpha',
+      betaWorkspaceRefId: 'enabled-beta',
+    };
+    let disabledEnabled = false;
+    let settingsReady = false;
+    const settingsSnapshot = (): ActiveAccountSettingsSnapshot => ({
+      source: 'network',
+      settings: AccountSettingsSchema.parse({
+        workspaceRefsV1: [
+          { id: 'disabled-alpha', serverId: 'server-1', machineId: 'm1', rootPath: roots.disabledAlpha, createdAtMs: 1 },
+          { id: 'disabled-beta', serverId: 'server-1', machineId: 'm2', rootPath: roots.disabledBeta, createdAtMs: 1 },
+          { id: 'enabled-alpha', serverId: 'server-1', machineId: 'm1', rootPath: roots.enabledAlpha, createdAtMs: 1 },
+          { id: 'enabled-beta', serverId: 'server-1', machineId: 'm2', rootPath: roots.enabledBeta, createdAtMs: 1 },
+        ],
+        workspaceSyncRelationshipsV1: settingsReady
+          ? [{ ...disabled, enabled: disabledEnabled }, enabled]
+          : [],
+      }),
+      settingsVersion: disabledEnabled ? 2 : 1,
+      loadedAtMs: 1,
+      settingsSecretsReadKeys: [],
+    });
+    const targetLockDirectory = join(fixture, 'target-locks');
+    const initialAuthority = createWorkspaceSyncTargetAuthority({
+      localServerId: 'server-1',
+      localMachineId: 'm2',
+      getSettingsSnapshot: settingsSnapshot,
+      callMachineRpc: async () => { throw new Error('unexpected machine RPC'); },
+      bootstrap: {
+        materializationDirectory: join(fixture, 'target-staging'),
+        rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: targetLockDirectory }),
+        prepareGitTarget: async ({ canonicalRoot }) => {
+          await mkdir(canonicalRoot, { recursive: true });
+        },
+      },
+    });
+    await initialAuthority.prepareBootstrapAtTarget({
+      v: 1,
+      bootstrapOperationId: enabled.relationshipId,
+      owner: { kind: 'relationship', relationshipId: enabled.relationshipId },
+      transientRelationship: enabled,
+      targetWorkspaceRefId: enabled.betaWorkspaceRefId,
+      targetMachineId: 'm2',
+      endpointRole: 'beta',
+      policyDigest: enabled.contentPolicy.policyDigest,
+      createIfMissing: true,
+      targetBootstrap: 'use_existing',
+    });
+    await initialAuthority.releaseBootstrapAtTarget({
+      v: 1,
+      bootstrapOperationId: enabled.relationshipId,
+      targetWorkspaceRefId: enabled.betaWorkspaceRefId,
+      targetMachineId: 'm2',
+      reason: 'relationship_committed',
+    });
+    const initiallyEnabledDisabledRelationship = { ...disabled, enabled: true };
+    await initialAuthority.prepareBootstrapAtTarget({
+      v: 1,
+      bootstrapOperationId: disabled.relationshipId,
+      owner: { kind: 'relationship', relationshipId: disabled.relationshipId },
+      transientRelationship: initiallyEnabledDisabledRelationship,
+      targetWorkspaceRefId: disabled.betaWorkspaceRefId,
+      targetMachineId: 'm2',
+      endpointRole: 'beta',
+      policyDigest: disabled.contentPolicy.policyDigest,
+      createIfMissing: true,
+      targetBootstrap: 'use_existing',
+    });
+    await initialAuthority.releaseBootstrapAtTarget({
+      v: 1,
+      bootstrapOperationId: disabled.relationshipId,
+      targetWorkspaceRefId: disabled.betaWorkspaceRefId,
+      targetMachineId: 'm2',
+      reason: 'relationship_committed',
+    });
+    settingsReady = true;
+    await initialAuthority.releaseAllRetainedBootstraps();
+    const targetRootOwnership = createWorkspaceRootOwnershipManager({ lockDirectory: targetLockDirectory });
+    const authority = createWorkspaceSyncTargetAuthority({
+      localServerId: 'server-1',
+      localMachineId: 'm2',
+      getSettingsSnapshot: settingsSnapshot,
+      callMachineRpc: async () => { throw new Error('unexpected machine RPC'); },
+      bootstrap: {
+        materializationDirectory: join(fixture, 'target-staging'),
+        rootOwnershipManager: targetRootOwnership,
+        prepareGitTarget: async ({ canonicalRoot }) => {
+          await mkdir(canonicalRoot, { recursive: true });
+        },
+      },
+    });
+    const prepareRelationshipTarget = vi.fn(async (relationship: WorkspaceSyncRelationshipV1) => (
+      await authority.prepareBootstrapAtTarget({
+        v: 1,
+        bootstrapOperationId: relationship.relationshipId,
+        owner: { kind: 'relationship', relationshipId: relationship.relationshipId },
+        targetWorkspaceRefId: relationship.betaWorkspaceRefId,
+        targetMachineId: 'm2',
+        endpointRole: 'beta',
+        policyDigest: relationship.contentPolicy.policyDigest,
+        createIfMissing: true,
+      })
+    ));
+    const adapter = completeAdapter({
+      rehydrate: vi.fn(async () => []),
+      ensure: vi.fn(async (relationship: WorkspaceSyncRelationshipV1) => ({
+        ...status,
+        relationshipId: relationship.relationshipId,
+        mode: relationship.mode,
+      })),
+    });
+    let gitAvailable = false;
+    const probeGitRuntimeDependency = vi.fn(async () => gitAvailable);
+    const refs = new Map(settingsSnapshot().settings.workspaceRefsV1.map((ref) => [ref.id, ref]));
+    const controllerRootOwnership = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'controller-locks') });
+    const tryAcquire = vi.fn(async (input: Parameters<typeof controllerRootOwnership.tryAcquire>[0]) => (
+      await controllerRootOwnership.tryAcquire(input)
+    ));
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: lifecycle(),
+      rootOwnershipManager: { tryAcquire },
+      localMachineId: 'm1',
+      localServerId: 'server-1',
+      resolveWorkspaceRef: (id) => refs.get(id) ?? null,
+      prepareRelationshipTarget,
+      probeGitRuntimeDependency,
+    });
+    try {
+      await expect(controller.rehydrateFromSettings([disabled, enabled])).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationshipId: 'disabled-restart', state: 'paused' }),
+        expect.objectContaining({ relationshipId: 'enabled-restart' }),
+      ]));
+      expect(prepareRelationshipTarget).toHaveBeenCalledTimes(1);
+      expect(prepareRelationshipTarget).toHaveBeenCalledWith(enabled, undefined);
+      expect(probeGitRuntimeDependency).not.toHaveBeenCalled();
+      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'disabled-restart' }));
+      await expect(access(roots.disabledBeta)).resolves.toBeUndefined();
+
+      disabledEnabled = true;
+      gitAvailable = true;
+      const resumed = { ...disabled, enabled: true };
+      await expect(controller.rehydrateFromSettings([resumed, enabled])).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationshipId: 'disabled-restart' }),
+        expect.objectContaining({ relationshipId: 'enabled-restart' }),
+      ]));
+      expect(prepareRelationshipTarget).toHaveBeenCalledWith(resumed, undefined);
+      expect(probeGitRuntimeDependency).toHaveBeenCalledOnce();
+      expect(tryAcquire).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'disabled-restart' }));
+      await expect(access(roots.disabledBeta)).resolves.toBeUndefined();
+    } finally {
+      await controller.shutdown().catch(() => undefined);
+      await authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('uses the canonical queued ensure before a handoff flush can start a newly-written relationship', async () => {
     const events: string[] = [];
     const ensure = vi.fn(async () => { events.push('ensure'); return status; });
@@ -886,8 +1350,16 @@ describe('WorkspaceSyncController', () => {
     await controller.shutdown();
   });
 
-  it('releases root ownership when settings remove a previously adopted relationship', async () => {
+  it('retains root ownership until rooted-agent cleanup succeeds when settings remove a relationship', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-settings-removal-'));
+    const roots = { a: join(fixture, 'a'), b: join(fixture, 'b') };
+    await Promise.all([mkdir(roots.a), mkdir(roots.b)]);
     const releases: Array<ReturnType<typeof vi.fn>> = [];
+    const cleanupFailure = new Error('removed relationship rooted-agent cleanup failed');
+    let failStop = true;
+    const stop = vi.fn(async () => {
+      if (failStop) throw cleanupFailure;
+    });
     const rootOwnershipManager = {
       tryAcquire: vi.fn(async (owner) => {
         const release = vi.fn(async () => undefined);
@@ -899,23 +1371,34 @@ describe('WorkspaceSyncController', () => {
         };
       }),
     };
-    const rehydrate = vi.fn()
+    const rehydrate = vi.fn().mockResolvedValue([])
       .mockResolvedValueOnce([status])
       .mockResolvedValueOnce([]);
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter({ rehydrate }), lifecycle: lifecycle(), localMachineId: 'm1',
       rootOwnershipManager,
-      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/tmp/rehydrate-${id}-${process.pid}` }),
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(new PassThrough(), stop)),
+      resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: roots[id as keyof typeof roots] }),
     });
 
     await controller.rehydrateFromSettings([definition]);
-    await controller.rehydrateFromSettings([]);
+    await controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId(definition.relationshipId, 'alpha'),
+    });
+    await expect(controller.rehydrateFromSettings([])).rejects.toBe(cleanupFailure);
+    expect(releases.every((release) => release.mock.calls.length === 0)).toBe(true);
+
+    failStop = false;
+    await expect(controller.rehydrateFromSettings([])).resolves.toEqual([]);
 
     expect(rehydrate).toHaveBeenNthCalledWith(1, [definition]);
     expect(rehydrate).toHaveBeenNthCalledWith(2, []);
+    expect(rehydrate).toHaveBeenNthCalledWith(3, []);
     expect(releases).toHaveLength(2);
     expect(releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(2);
     await controller.shutdown();
+    await rm(fixture, { recursive: true, force: true });
   });
 
   it('maps an opaque endpoint to the lifecycle-owned machine tunnel loopback port', async () => {
@@ -1118,6 +1601,81 @@ describe('WorkspaceSyncController', () => {
     await rm(localRoot, { recursive: true, force: true });
   });
 
+  it('keeps admitted ingress live for graceful manager SHUTDOWN, then closes it while rejecting new ingress', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-shutdown-order-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    const stream = new PassThrough();
+    const events: string[] = [];
+    let releaseManagerShutdown!: () => void;
+    const managerShutdown = new Promise<void>((resolve) => { releaseManagerShutdown = resolve; });
+    const openLocalWorkspaceAgentStream = vi.fn(async () => ownedLocalAgent(stream, vi.fn(async () => {
+      events.push('ingress-stop');
+    })));
+    const lifecycleOwner = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        events.push('manager-shutdown');
+        await managerShutdown;
+      }),
+    };
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(), lifecycle: lifecycleOwner, rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1', openLocalWorkspaceAgentStream,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+    await controller.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha') });
+
+    const shutdown = controller.shutdown();
+    await vi.waitFor(() => expect(lifecycleOwner.stop).toHaveBeenCalledOnce());
+    expect(stream.destroyed).toBe(false);
+    await expect(controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    })).rejects.toMatchObject({ code: 'relationship_not_owned' });
+    expect(openLocalWorkspaceAgentStream).toHaveBeenCalledOnce();
+
+    releaseManagerShutdown();
+    await shutdown;
+    expect(events).toEqual(['manager-shutdown', 'ingress-stop']);
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
+  it('does not publish a late local ingress after its relationship terminates', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-race-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    let resolveAgent!: (agent: ReturnType<typeof ownedLocalAgent>) => void;
+    const pendingAgent = new Promise<ReturnType<typeof ownedLocalAgent>>((resolve) => {
+      resolveAgent = resolve;
+    });
+    const stream = new PassThrough();
+    const agent = ownedLocalAgent(stream);
+    const openLocalWorkspaceAgentStream = vi.fn(async () => await pendingAgent);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      openLocalWorkspaceAgentStream,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+
+    const opening = controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    });
+    await vi.waitFor(() => expect(openLocalWorkspaceAgentStream).toHaveBeenCalledOnce());
+    await controller.terminate('r1');
+    resolveAgent(agent);
+
+    await expect(opening).rejects.toMatchObject({ code: 'relationship_not_owned' });
+    expect(agent.stop).toHaveBeenCalledOnce();
+    expect(stream.destroyed).toBe(true);
+    await controller.shutdown();
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
   it('retains local agent process custody after close cleanup fails and retries it during shutdown', async () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-local-agent-retry-'));
     const canonicalLocalRoot = await realpath(localRoot);
@@ -1202,6 +1760,47 @@ describe('WorkspaceSyncController', () => {
     await rm(localRoot, { recursive: true, force: true });
   });
 
+  it('retains relationship root custody while rooted-agent shutdown keeps failing', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-agent-fence-'));
+    const canonicalLocalRoot = await realpath(localRoot);
+    const cleanupFailure = new Error('rooted agent cleanup failed');
+    let failStop = true;
+    const stop = vi.fn(async () => {
+      if (failStop) throw cleanupFailure;
+    });
+    const release = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: {
+        tryAcquire: vi.fn(async (owner) => ({
+          owner: { ...owner, canonicalRoot: canonicalLocalRoot, rootFingerprint: null },
+          bindCurrentRootIdentity: vi.fn(async () => undefined),
+          renew: vi.fn(async () => undefined),
+          release,
+        })),
+      },
+      localMachineId: 'm1',
+      openLocalWorkspaceAgentStream: vi.fn(async () => ownedLocalAgent(new PassThrough(), stop)),
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: canonicalLocalRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    await controller.ensure(definition);
+    await controller.openExternalStream({
+      endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+    });
+
+    await expect(controller.shutdown()).rejects.toMatchObject({ errors: [cleanupFailure] });
+    expect(release).not.toHaveBeenCalled();
+
+    failStop = false;
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledOnce();
+    await rm(localRoot, { recursive: true, force: true });
+  });
+
   it('rejects a local endpoint when the filesystem object no longer matches its held fence', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-root-'));
     const localRoot = join(fixture, 'workspace');
@@ -1248,6 +1847,131 @@ describe('WorkspaceSyncController', () => {
     ])).resolves.toEqual({ done: true, value: undefined });
   });
 
+  it('observes engine-only status changes while subscribed and stops observing after abort', async () => {
+    let observedStatus = status;
+    const get = vi.fn(async () => observedStatus);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ get }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    await controller.ensure(definition);
+
+    const abort = new AbortController();
+    const iterator = controller.subscribe('r1', abort.signal)[Symbol.asyncIterator]();
+    observedStatus = { ...status, state: 'conflicted', conflictCount: 1 };
+
+    await expect(Promise.race([
+      iterator.next(),
+      new Promise((resolve) => setTimeout(() => resolve('still-waiting'), 100)),
+    ])).resolves.toEqual({
+        done: false,
+        value: { ...status, state: 'conflicted', conflictCount: 1 },
+    });
+
+    const waiting = iterator.next();
+    abort.abort();
+    await expect(waiting).resolves.toEqual({ done: true, value: undefined });
+    const callsAfterAbort = get.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(get).toHaveBeenCalledTimes(callsAfterAbort);
+    await controller.shutdown();
+  });
+
+  it('publishes engine-only status changes for enabled production relationships and stops on shutdown', async () => {
+    let observedStatus = status;
+    const get = vi.fn(async () => observedStatus);
+    const published: WorkspaceSyncStatusV1[] = [];
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ get }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      onStatusPublished: (next) => published.push(next),
+    });
+    await controller.ensure(definition);
+    await Promise.resolve();
+    published.length = 0;
+
+    observedStatus = { ...status, state: 'disconnected' };
+    await vi.waitFor(() => expect(published).toEqual([{ ...status, state: 'disconnected' }]), { timeout: 2_000 });
+
+    await controller.shutdown();
+    const callsAfterShutdown = get.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(get).toHaveBeenCalledTimes(callsAfterShutdown);
+  });
+
+  it('preserves the last known status across a transient observation failure and publishes recovery', async () => {
+    const recovered = { ...status, state: 'conflicted' as const, conflictCount: 1 };
+    const get = vi.fn()
+      .mockRejectedValueOnce(new Error('manager temporarily unavailable'))
+      .mockResolvedValue(recovered);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ get }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    await controller.ensure(definition);
+
+    const abort = new AbortController();
+    const iterator = controller.subscribe('r1', abort.signal)[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: recovered });
+    expect(get).toHaveBeenCalledTimes(2);
+
+    abort.abort();
+    await iterator.next();
+    await controller.shutdown();
+  });
+
+  it('serializes status observation behind an in-flight relationship command', async () => {
+    let releasePause!: () => void;
+    const pauseGate = new Promise<void>((resolve) => { releasePause = resolve; });
+    let pauseStarted!: () => void;
+    const pauseDidStart = new Promise<void>((resolve) => { pauseStarted = resolve; });
+    const pause = vi.fn(async () => {
+      pauseStarted();
+      await pauseGate;
+      return { ...status, state: 'paused' as const };
+    });
+    const get = vi.fn(async () => ({ ...status, state: 'conflicted' as const, conflictCount: 1 }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ pause, get }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    await controller.ensure(definition);
+
+    const pausing = controller.pause('r1');
+    await pauseDidStart;
+    const abort = new AbortController();
+    const iterator = controller.subscribe('r1', abort.signal)[Symbol.asyncIterator]();
+    const observing = iterator.next();
+    await Promise.resolve();
+    expect(get).not.toHaveBeenCalled();
+
+    releasePause();
+    await expect(pausing).resolves.toMatchObject({ state: 'paused' });
+    await expect(observing).resolves.toMatchObject({
+      done: false,
+      value: { state: 'paused' },
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { state: 'conflicted', conflictCount: 1 },
+    });
+    abort.abort();
+    await iterator.next();
+    await controller.shutdown();
+  });
+
   it('deletes the losing target with digest/type preconditions and flushes Mutagen', async () => {
     const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
     const flush = vi.fn(async () => status);
@@ -1259,12 +1983,17 @@ describe('WorkspaceSyncController', () => {
     await controller.ensure(definition);
 
     await controller.deleteConflictLoser({
-      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'sha1-digest',
-    });
+      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    }, undefined, 'approval-1');
 
     expect(deleteConflictLoserAtTarget).toHaveBeenCalledWith({
+      actionReceiptId: 'approval-1',
+      actionInput: {
+        controllerMachineId: 'm1',
+        request: { relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      },
       relationshipId: 'r1', targetMachineId: 'm2', targetWorkspaceRefId: 'b',
-      path: 'src/file.ts', expectedKind: 'file', expectedDigest: 'sha1-digest', signal: undefined,
+      path: 'src/file.ts', expectedKind: 'file', expectedDigest: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', signal: undefined,
     });
     expect(flush).toHaveBeenCalledWith('r1', undefined);
     await controller.terminate('r1');
@@ -1282,15 +2011,15 @@ describe('WorkspaceSyncController', () => {
     await controller.ensure(definition);
 
     await expect(controller.deleteConflictLoser({
-      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'old',
-    })).rejects.toBe(changed);
+      relationshipId: 'r1', path: 'src/file.ts', keep: 'alpha', expectedKind: 'file', expectedDigest: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    }, undefined, 'approval-1')).rejects.toBe(changed);
     expect(flush).not.toHaveBeenCalled();
     await controller.terminate('r1');
   });
 
   it('routes bounded file reads to the selected authenticated WorkspaceRef without sending a root path', async () => {
     const readFileAtTarget = vi.fn(async () => ({
-      status: 'text' as const, text: 'hello', digest: 'sha1-digest', size: 5,
+      status: 'text' as const, text: 'hello', digest: 'd'.repeat(40), size: 5,
     }));
     const controller = new WorkspaceSyncController({
       adapter: completeAdapter(), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
@@ -1301,15 +2030,196 @@ describe('WorkspaceSyncController', () => {
 
     await expect(controller.readFile({
       relationshipId: 'r1', side: 'beta', path: 'src/file.ts',
-      expectedDigest: 'old-digest', maxBytes: 1024,
+      expectedDigest: 'cccccccccccccccccccccccccccccccccccccccc', maxBytes: 1024,
     })).resolves.toMatchObject({ status: 'text', text: 'hello' });
 
     expect(readFileAtTarget).toHaveBeenCalledWith({
       relationshipId: 'r1', targetMachineId: 'm2', targetWorkspaceRefId: 'b',
-      path: 'src/file.ts', expectedDigest: 'old-digest', maxBytes: 1024, signal: undefined,
+      path: 'src/file.ts', expectedDigest: 'cccccccccccccccccccccccccccccccccccccccc', maxBytes: 1024, signal: undefined,
     });
     await controller.terminate('r1');
   });
+
+  it('reads the fenced local source directly while the target preview remains on target authority', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-preview-'));
+    const sourceRoot = join(fixture, 'source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'source.txt'), 'source bytes');
+    const readFileAtTarget = vi.fn(async () => ({
+      status: 'text' as const, text: 'target bytes', digest: 'target-digest', size: 12,
+    }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      readFileAtTarget,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    try {
+      await controller.ensure(definition);
+
+      const [sourcePreview, targetPreview] = await Promise.all([
+        controller.readFile({ relationshipId: 'r1', side: 'alpha', path: 'source.txt', maxBytes: 1024 }),
+        controller.readFile({ relationshipId: 'r1', side: 'beta', path: 'target.txt', maxBytes: 1024 }),
+      ]);
+
+      expect(sourcePreview).toMatchObject({ status: 'text', text: 'source bytes' });
+      expect(targetPreview).toMatchObject({ status: 'text', text: 'target bytes' });
+      expect(readFileAtTarget).toHaveBeenCalledOnce();
+      expect(readFileAtTarget).toHaveBeenCalledWith(expect.objectContaining({
+        relationshipId: 'r1', targetMachineId: 'm2', targetWorkspaceRefId: 'b', path: 'target.txt',
+      }));
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('fails a local source preview closed when the fenced root object is replaced before access', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-preview-fence-'));
+    const sourceRoot = join(fixture, 'source');
+    const retainedRoot = join(fixture, 'retained-source');
+    await mkdir(sourceRoot);
+    await writeFile(join(sourceRoot, 'source.txt'), 'retained bytes');
+    const readFileAtTarget = vi.fn(async () => ({ status: 'missing' as const }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      readFileAtTarget,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    try {
+      await controller.ensure(definition);
+      await rename(sourceRoot, retainedRoot);
+      await mkdir(sourceRoot);
+      await writeFile(join(sourceRoot, 'source.txt'), 'replacement bytes');
+
+      await expect(controller.readFile({
+        relationshipId: 'r1', side: 'alpha', path: 'source.txt', maxBytes: 1024,
+      })).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+      expect(readFileAtTarget).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes a fenced local source loser only after exact Action receipt revalidation', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-delete-'));
+    const sourceRoot = join(fixture, 'source');
+    const loserPath = join(sourceRoot, 'loser.txt');
+    const loserBytes = 'local loser';
+    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
+    await mkdir(sourceRoot);
+    await writeFile(loserPath, loserBytes);
+    const finalAuthorityOrder: string[] = [];
+    const persistedRootOwnership = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const rootOwnershipManager = {
+      tryAcquire: vi.fn(async (input: Parameters<typeof persistedRootOwnership.tryAcquire>[0]) => {
+        const result = await persistedRootOwnership.tryAcquire(input);
+        if ('kind' in result) return result;
+        return {
+          ...result,
+          bindCurrentRootIdentity: async () => {
+            finalAuthorityOrder.push('root');
+            await result.bindCurrentRootIdentity();
+          },
+        };
+      }),
+    };
+    const assertConflictResolutionAuthorized = vi.fn(async () => {
+      finalAuthorityOrder.push('action');
+    });
+    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
+    const flush = vi.fn(async () => status);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ flush }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager,
+      localMachineId: 'm1',
+      assertConflictResolutionAuthorized,
+      deleteConflictLoserAtTarget,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    const request = {
+      relationshipId: 'r1' as const,
+      path: 'loser.txt',
+      keep: 'beta' as const,
+      expectedKind: 'file' as const,
+      expectedDigest,
+    };
+    try {
+      await controller.ensure(definition);
+      await controller.deleteConflictLoser(request, undefined, 'approval-local-source');
+
+      expect(assertConflictResolutionAuthorized).toHaveBeenCalledWith('approval-local-source', {
+        controllerMachineId: 'm1',
+        request,
+      });
+      expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
+      expect(finalAuthorityOrder.slice(-2)).toEqual(['action', 'root']);
+      await expect(access(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(flush).toHaveBeenCalledWith('r1', undefined);
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a local source loser intact when its Action receipt is missing or stale', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-source-approval-'));
+    const sourceRoot = join(fixture, 'source');
+    const loserPath = join(sourceRoot, 'loser.txt');
+    const loserBytes = 'local loser';
+    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
+    await mkdir(sourceRoot);
+    await writeFile(loserPath, loserBytes);
+    const stale = Object.assign(new Error('stale approval'), { code: 'approval_stale' });
+    const assertConflictResolutionAuthorized = vi.fn(async () => { throw stale; });
+    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
+    const flush = vi.fn(async () => status);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ flush }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      localMachineId: 'm1',
+      assertConflictResolutionAuthorized,
+      deleteConflictLoserAtTarget,
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: sourceRoot }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    const request = {
+      relationshipId: 'r1' as const,
+      path: 'loser.txt',
+      keep: 'beta' as const,
+      expectedKind: 'file' as const,
+      expectedDigest,
+    };
+    try {
+      await controller.ensure(definition);
+      await expect(controller.deleteConflictLoser(request)).rejects.toMatchObject({ code: 'approval_required' });
+      expect(assertConflictResolutionAuthorized).not.toHaveBeenCalled();
+
+      await expect(controller.deleteConflictLoser(request, undefined, 'stale-approval')).rejects.toBe(stale);
+      await expect(access(loserPath)).resolves.toBeUndefined();
+      expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
+      expect(flush).not.toHaveBeenCalled();
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('fail-closes every state-touching entry point with the exact typed legacy-state code', async () => {
     for (const code of ['legacy_workspace_sync_state_unsupported', 'legacy_workspace_sync_state_unknown'] as const) {
       const adapter = completeAdapter();
@@ -1331,7 +2241,7 @@ describe('WorkspaceSyncController', () => {
       await expectTyped(controller.pause('r1'));
       await expectTyped(controller.resume('r1'));
       await expectTyped(controller.terminate('r1'));
-      await expectTyped(controller.listConflicts('r1'));
+      await expectTyped(controller.listConflicts({ relationshipId: 'r1', limit: 100 }));
       await expectTyped(controller.deleteConflictLoser({ relationshipId: 'r1', path: 'src/x.ts', keep: 'alpha', expectedKind: 'file' }));
       await expectTyped(controller.readFile({ relationshipId: 'r1', side: 'beta', path: 'src/x.ts', maxBytes: 64 }));
       await expectTyped(controller.rehydrateFromSettings([definition]));
@@ -1505,7 +2415,7 @@ function completeAdapter(overrides: Record<string, unknown> = {}) {
     discoverCopyOnceRecoveries: vi.fn(async () => []), rehydrate: vi.fn(async () => [status]), ensure: vi.fn(async () => status), copyOnce: vi.fn(async () => status), get: vi.fn(async () => status),
     list: vi.fn(async () => [status]), flush: vi.fn(async () => status), pause: vi.fn(async () => status),
     resume: vi.fn(async () => status), terminate: vi.fn(async () => undefined),
-    listConflicts: vi.fn(async () => ({ relationshipId: 'r1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [] })),
+    listConflicts: vi.fn(async () => ({ status: 'page' as const, relationshipId: 'r1', totalCount: 0, nextCursor: null, conflicts: [] })),
     deleteConflictLoser: vi.fn(async () => status),
     ...overrides,
   };

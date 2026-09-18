@@ -5,16 +5,19 @@ import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/json
 import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
 import { configuration } from '@/configuration';
+import { randomUUID } from 'node:crypto';
 import { errorFrame } from '@happier-dev/cli-common/output';
 import {
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
   parseRemotePersonalHomeApprovalInput,
 } from '@happier-dev/cli-common/systemTasks';
+import { isHappierRuntimePathWithinRoot } from '@happier-dev/cli-common/happierRuntime';
 import {
   cleanupPersonalHomeRelocationUpload,
   consumePersonalHomeRelocationUpload,
   PersonalHomeRelocationTransferCleanupError,
   preparePersonalHomeRelocationUpload,
+  type PersonalHomeRelocationSourceResult,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   SYSTEM_TASK_PROTOCOL_VERSION,
@@ -34,12 +37,34 @@ import {
   runCliDirectHomeQr,
   type CliDirectHomeQrResult,
 } from '@/auth/directHomeQr/runCliDirectHomeQr';
-import { linkCliHomeToAccountService } from '@/auth/accountService/linkCliHomeToAccountService';
+import {
+  linkCliHomeToAccountService,
+  unlinkCliHomeFromAccountService,
+  type CliHomeLinkUnavailableReason,
+} from '@/auth/accountService/linkCliHomeToAccountService';
+import { resolveCliSelectedAccountServicePresentation } from '@/auth/accountService/cliAccountServicePresentation';
+import {
+  adoptServerProfileHomeConnectionDescriptor,
+  getActiveServerProfile,
+  getServerProfile,
+} from '@/server/serverProfiles';
 
 type PersonalHomePurpose = Readonly<{
   kind: 'personal-home';
   canonicalServerUrl: string;
 }>;
+
+type PersonalHomeRelocationRecovery =
+  | Readonly<{ status: 'none' }>
+  | Readonly<{ status: 'ambiguous' }>
+  | Readonly<{
+      status: 'recovery_available';
+      operationId: string;
+      destinationMachineId: string;
+      sourceDescriptorRevision: number;
+      primaryAction: 'finish_move';
+      secondaryAction?: 'return_to_source';
+    }>;
 
 export type PersonalHomeCreateResult = Readonly<{
   status: 'complete';
@@ -61,7 +86,13 @@ type RemoteHomePairingResult = HomePairDeviceResult | Readonly<{ kind: 'not_requ
 export type HomeLinkAccountResult =
   | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
   | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
-  | Readonly<{ kind: 'unavailable'; reason: 'home_profile_unavailable' | 'home_credentials_unavailable' | 'account_service_credentials_unavailable' | 'home_transport_unavailable' }>
+  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
+  | Readonly<{ kind: 'cancelled' | 'failed' }>;
+
+/** What stopping delegated sign-in for one Home can answer. */
+export type HomeUnlinkAccountResult =
+  | Readonly<{ kind: 'unlinked'; homeServerIdentityId: string; issuerServerIdentityId: string }>
+  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
   | Readonly<{ kind: 'cancelled' | 'failed' }>;
 
 export type HomePostCreateLinkResult = HomeLinkAccountResult | Readonly<{
@@ -75,9 +106,10 @@ export type HomeCommandDeps = Readonly<{
   }>) => CliSystemTasksRunnerAdapter;
   resolvePath: (value: string) => string | null;
   isInteractiveTerminal: () => boolean;
-  promptInput: (prompt: string) => Promise<string>;
+  promptInput: (prompt: string, options?: Readonly<{ signal?: AbortSignal }>) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
   resolveDefaultChannel: () => 'stable' | 'preview' | 'dev';
+  resolveSelectedAccountServicePresentation?: typeof resolveCliSelectedAccountServicePresentation;
   readApprovalInput?: () => Promise<string>;
   prepareRelocationUpload?: typeof preparePersonalHomeRelocationUpload;
   consumeRelocationUpload?: typeof consumePersonalHomeRelocationUpload;
@@ -99,7 +131,30 @@ export type HomeCommandDeps = Readonly<{
     signal?: AbortSignal;
     onInvite?: (input: Readonly<{ link: string }>) => void;
   }>) => Promise<HomePairDeviceResult>;
-  linkAccount?: (input: Readonly<{ homeServerIdentityId?: string; relink: boolean; signal?: AbortSignal }>) => Promise<HomeLinkAccountResult>;
+  linkAccount?: (input: Readonly<{
+    homeServerIdentityId?: string;
+    relink: boolean;
+    signal?: AbortSignal;
+    expectedAccountServiceSelection?: Readonly<{ endpoint: string; serverIdentityId: string }>;
+  }>) => Promise<HomeLinkAccountResult>;
+  unlinkAccount?: (input: Readonly<{
+    homeServerIdentityId?: string;
+    signal?: AbortSignal;
+  }>) => Promise<HomeUnlinkAccountResult>;
+  createRelocationOperationId?: () => string;
+  readRelocationSourceProfile?: () => Promise<Readonly<{
+    profileId: string;
+    name: string;
+    descriptor: HomeConnectionDescriptorV1;
+  }>>;
+  publishRelocationDescriptor?: (input: Readonly<{
+    profileId: string;
+    descriptor: HomeConnectionDescriptorV1;
+  }>) => Promise<HomeConnectionDescriptorV1>;
+  readRelocationDescriptor?: (input: Readonly<{
+    profileId: string;
+    homeServerIdentityId: string;
+  }>) => Promise<HomeConnectionDescriptorV1 | null>;
 }>;
 
 const DEFAULT_DEPS: HomeCommandDeps = {
@@ -109,6 +164,7 @@ const DEFAULT_DEPS: HomeCommandDeps = {
       start: async (params) => await runner.start(params as never) as Readonly<{ taskId: string }>,
       poll: async (params) => await runner.poll(params as never) as Awaited<ReturnType<CliSystemTasksRunnerAdapter['poll']>>,
       respond: async (params) => await runner.respond(params as never),
+      cancel: async (params) => await runner.cancel(params as never),
     };
   },
   resolvePath: resolveAbsolutePathFromWorkingDirectory,
@@ -118,6 +174,7 @@ const DEFAULT_DEPS: HomeCommandDeps = {
   resolveDefaultChannel: () => configuration.publicReleaseRing === 'publicdev'
     ? 'dev'
     : configuration.publicReleaseRing,
+  resolveSelectedAccountServicePresentation: resolveCliSelectedAccountServicePresentation,
   readApprovalInput: async () => {
     process.stdin.setEncoding('utf8');
     let input = '';
@@ -131,10 +188,51 @@ const DEFAULT_DEPS: HomeCommandDeps = {
   reconcileCreatedHome: reconcileCreatedPersonalHome,
   pairDevice: runCliDirectHomeQr,
   linkAccount: linkCliHomeToAccountService,
+  unlinkAccount: unlinkCliHomeFromAccountService,
+  createRelocationOperationId: () => `relocation-${randomUUID()}`,
+  readRelocationSourceProfile: async () => {
+    const profile = await getActiveServerProfile();
+    if (!profile.homeConnectionDescriptor || profile.homeConnectionDescriptorAuthority !== 'exact') {
+      throw Object.assign(new Error('The active Home profile has no exact connection descriptor for relocation.'), { code: 'home_profile_unavailable' });
+    }
+    return { profileId: profile.id, name: profile.name, descriptor: profile.homeConnectionDescriptor };
+  },
+  publishRelocationDescriptor: async ({ profileId, descriptor }) => {
+    const adopted = await adoptServerProfileHomeConnectionDescriptor({
+      descriptor,
+      expectedProfileId: profileId,
+      observation: 'exact',
+    });
+    const retained = adopted.profile.homeConnectionDescriptor;
+    if (!retained) throw new Error('Personal Home relocation descriptor was not retained.');
+    return retained;
+  },
+  readRelocationDescriptor: async ({ profileId, homeServerIdentityId }) => {
+    const profile = await getServerProfile(profileId);
+    return profile.homeConnectionDescriptor?.homeServerIdentityId === homeServerIdentityId
+      ? profile.homeConnectionDescriptor
+      : null;
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parsePersonalHomeRelocationResult(value: unknown): PersonalHomeRelocationSourceResult | null {
+  if (!isRecord(value)
+    || typeof value.operationId !== 'string'
+    || typeof value.destinationMachineId !== 'string'
+    || !Number.isInteger(value.sourceDescriptorRevision)
+    || (value.status !== 'committed' && value.status !== 'pending' && value.status !== 'returned')) {
+    return null;
+  }
+  if (value.status === 'pending'
+    && value.recoveryAction !== 'finish_move'
+    && value.recoveryAction !== 'return_to_source') {
+    return null;
+  }
+  return value as PersonalHomeRelocationSourceResult;
 }
 
 function takeFlag(args: string[], name: string): Readonly<{ present: boolean; rest: string[] }> {
@@ -169,18 +267,26 @@ function requirePath(value: string | undefined, label: string, deps: HomeCommand
   return resolved;
 }
 
-function showHomeHelp(): void {
+async function showHomeHelp(): Promise<void> {
+  // Home governance and Account administration are compiled Action leaves
+  // under this root. Their rows come from the same descriptor dispatch and
+  // completion use, so this page cannot hide or misstate them.
+  const { listCompiledActionCliUsageLinesForRoot } = await import('@/cli/actions/commandHelp');
+  const compiled = listCompiledActionCliUsageLinesForRoot(['home']).map((row) => `  ${row}`);
   console.log([
     'Usage:',
     '  happier home create [--ssh user@host] [--channel stable|preview|dev] [--mode user|system] [--link-account auto|never] [--yes] [--json]',
     '  happier home pair-device [--home PROFILE] [--copy-link]',
     '  happier home link-account [--home PROFILE] [--relink]',
+    '  happier home unlink-account [--home PROFILE]',
     '  happier home status [--ssh user@host]',
     '  happier home backup [--output PATH] [--ssh user@host]',
     '  happier home verify-backup PATH [--ssh user@host]',
     '  happier home restore PATH [--ssh user@host] [--yes]',
     '  happier home recover-restore [--ssh user@host] [--yes]',
-    '  happier home erase [--ssh user@host] [--yes]',
+    '  happier home relocate --target user@host [--recovery-action finish_move|return_to_source] [--yes]',
+    '  happier home erase [--ssh user@host] [--backup-first --backup-output PATH] [--yes]',
+    ...(compiled.length > 0 ? ['', 'Home administration:', ...compiled] : []),
     '',
     'Runtime targeting options:',
     '  --channel stable|preview|dev',
@@ -190,7 +296,14 @@ function showHomeHelp(): void {
     '  create installs or reuses the managed runtime and atomically creates a Personal Home.',
     '  Use --ssh user@host to create it on a trusted remote host; public ingress is not required for Iroh reachability.',
     '  pair-device starts a new short-lived QR/link session. link-account publishes the Home for Account Service discovery.',
+    '  unlink-account stops the selected Account Service from signing in to this Home; credentials it already issued stay valid until revoked on the Home.',
     '  status, backup, verify-backup, restore, recover-restore, and erase accept --ssh for the same managed Home on a remote host.',
+    '  relocate moves this computer\'s Personal Home to the explicit SSH destination in --target.',
+    '',
+    'Erase safety:',
+    '  erase offers a verified backup before its single destructive confirmation.',
+    '  --backup-first --backup-output PATH takes that verified backup without a prompt; PATH must be outside the erased Home data.',
+    '  --yes alone confirms the deletion and never creates a backup implicitly.',
   ].join('\n'));
 }
 
@@ -212,12 +325,48 @@ function parseLinkAccountMode(value: string | null): 'auto' | 'never' {
   throw Object.assign(new Error(`Unsupported Account Service linking mode: ${value}`), { code: 'invalid_params' });
 }
 
+function parseRelocationRecovery(value: unknown): PersonalHomeRelocationRecovery {
+  if (!isRecord(value)) {
+    throw Object.assign(new Error('Personal Home inspection returned invalid relocation recovery facts.'), { code: 'personal_home_inspection_incomplete' });
+  }
+  if (value.status === 'none') return { status: 'none' };
+  if (value.status === 'ambiguous') return { status: 'ambiguous' };
+  const operationId = typeof value.operationId === 'string' ? value.operationId.trim() : '';
+  const destinationMachineId = typeof value.destinationMachineId === 'string' ? value.destinationMachineId.trim() : '';
+  const sourceDescriptorRevision = value.sourceDescriptorRevision;
+  if (value.status !== 'recovery_available'
+    || !operationId
+    || !destinationMachineId
+    || typeof sourceDescriptorRevision !== 'number'
+    || !Number.isSafeInteger(sourceDescriptorRevision)
+    || sourceDescriptorRevision < 1
+    || value.primaryAction !== 'finish_move'
+    || (value.secondaryAction !== undefined && value.secondaryAction !== 'return_to_source')) {
+    throw Object.assign(new Error('Personal Home inspection returned invalid relocation recovery facts.'), { code: 'personal_home_inspection_incomplete' });
+  }
+  return {
+    status: 'recovery_available',
+    operationId,
+    destinationMachineId,
+    sourceDescriptorRevision,
+    primaryAction: 'finish_move',
+    ...(value.secondaryAction === 'return_to_source' ? { secondaryAction: 'return_to_source' as const } : {}),
+  };
+}
+
+function parseRelocationRecoveryAction(value: string | null): 'finish_move' | 'return_to_source' | null {
+  if (value === null) return null;
+  if (value === 'finish_move' || value === 'return_to_source') return value;
+  throw Object.assign(new Error('--recovery-action must be finish_move or return_to_source.'), { code: 'invalid_params' });
+}
+
 async function resolvePostCreateHomeLink(params: Readonly<{
   mode: 'auto' | 'never';
   canAttempt: boolean;
   homeServerIdentityId: string;
   linkAccount?: HomeCommandDeps['linkAccount'];
   signal?: AbortSignal;
+  expectedAccountServiceSelection?: Readonly<{ endpoint: string; serverIdentityId: string }>;
 }>): Promise<HomePostCreateLinkResult> {
   if (params.mode === 'never' || !params.canAttempt || !params.linkAccount) {
     return { kind: params.mode === 'never' ? 'not_requested' : 'unable_to_attempt' };
@@ -227,6 +376,9 @@ async function resolvePostCreateHomeLink(params: Readonly<{
       homeServerIdentityId: params.homeServerIdentityId,
       relink: false,
       signal: params.signal,
+      ...(params.expectedAccountServiceSelection
+        ? { expectedAccountServiceSelection: params.expectedAccountServiceSelection }
+        : {}),
     });
   } catch {
     return { kind: 'failed' };
@@ -341,7 +493,14 @@ function printSafeFacts(data: SystemTaskJsonValue, operation?: PersonalHomeOpera
   add('Outcome', data.outcome);
   add(operation ? `${operation} error` : 'Operation error', data.error);
   add('Home needs attention', data.homeNeedsAttention);
+  if (isRecord(data.cleanupRequired)) {
+    add('Cleanup required', data.cleanupRequired.kind);
+    add('Cleanup path', data.cleanupRequired.path);
+    add('Cleanup error', data.cleanupRequired.error);
+  }
   add('Stopped running Home', data.stoppedRunningHome);
+  add('Post-delete inspection complete', data.inspectionComplete);
+  add('Post-delete inspection error', data.inspectionError);
   if (Array.isArray(data.removedPaths)) {
     for (const path of data.removedPaths) add('Removed', path);
   }
@@ -380,6 +539,8 @@ function printSafeFacts(data: SystemTaskJsonValue, operation?: PersonalHomeOpera
         : data.storage.backupsCount);
     }
     add('Estimated owned bytes', data.storage.estimatedOwnedBytes);
+    add('Erase preview complete', data.storage.estimatedOwnedBytesComplete);
+    add('Erase preview reason', data.storage.estimatedOwnedBytesReason);
     if (Array.isArray(data.storage.ownedErasePaths)) {
       for (const path of data.storage.ownedErasePaths) add('Owned erase path', path);
     }
@@ -408,10 +569,14 @@ async function confirmDestructive(params: Readonly<{
   prompt: string;
   nonInteractiveMessage: string;
   deps: HomeCommandDeps;
+  signal?: AbortSignal;
 }>): Promise<void> {
   if (params.yes) return;
   if (!params.interactive) throw Object.assign(new Error(params.nonInteractiveMessage), { code: 'confirmation_required' });
-  const answer = await params.deps.promptInput(`${params.prompt} [y/N]: `);
+  const prompt = `${params.prompt} [y/N]: `;
+  const answer = params.signal
+    ? await params.deps.promptInput(prompt, { signal: params.signal })
+    : await params.deps.promptInput(prompt);
   if (!/^y(?:es)?$/i.test(answer.trim())) throw Object.assign(new Error('Destructive operation was not confirmed; no mutation task was started.'), { code: 'confirmation_declined' });
 }
 
@@ -422,7 +587,7 @@ export async function handleHomeCommand(
 ): Promise<void> {
   const subcommand = argsRaw[0];
   if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
-    showHomeHelp();
+    await showHomeHelp();
     return;
   }
   const jsonFlag = takeFlag(argsRaw.slice(1), '--json');
@@ -431,17 +596,132 @@ export async function handleHomeCommand(
   const channelFlag = takeFlagValue(approvalStdinFlag.rest, '--channel');
   const modeFlag = takeFlagValue(channelFlag.rest, '--mode');
   const linkAccountModeFlag = takeFlagValue(modeFlag.rest, '--link-account');
-  const sshFlag = takeFlagValue(linkAccountModeFlag.rest, '--ssh');
+  const targetFlag = takeFlagValue(linkAccountModeFlag.rest, '--target');
+  const recoveryActionFlag = takeFlagValue(targetFlag.rest, '--recovery-action');
+  const sshFlag = takeFlagValue(recoveryActionFlag.rest, '--ssh');
+  const backupFirstFlag = takeFlag(sshFlag.rest, '--backup-first');
+  const backupOutputFlag = takeFlagValue(backupFirstFlag.rest, '--backup-output');
   const runtime = {
     channel: parseRuntimeChannel(channelFlag.value, deps.resolveDefaultChannel()),
     mode: parseRuntimeMode(modeFlag.value),
   } as const;
-  let args = sshFlag.rest;
+  let args = backupOutputFlag.rest;
   const json = jsonFlag.present;
   const interactive = deps.isInteractiveTerminal() && !json;
+  const promptUser = async (prompt: string): Promise<string> => signal
+    ? await deps.promptInput(prompt, { signal })
+    : await deps.promptInput(prompt);
   if (approvalStdinFlag.present && yesFlag.present) {
     throw Object.assign(new Error('Do not combine --approval-stdin with --yes.'), { code: 'invalid_params' });
   }
+  if (targetFlag.value !== null && subcommand !== 'relocate') {
+    throw Object.assign(new Error('--target is supported only by `happier home relocate`.'), { code: 'invalid_params' });
+  }
+  if (recoveryActionFlag.value !== null && subcommand !== 'relocate') {
+    throw Object.assign(new Error('--recovery-action is supported only by `happier home relocate`.'), { code: 'invalid_params' });
+  }
+  if ((backupFirstFlag.present || backupOutputFlag.value !== null) && subcommand !== 'erase') {
+    throw Object.assign(new Error('--backup-first and --backup-output are supported only by `happier home erase`.'), { code: 'invalid_params' });
+  }
+  if (backupOutputFlag.value !== null && !backupFirstFlag.present) {
+    throw Object.assign(new Error('--backup-output requires --backup-first.'), { code: 'invalid_params' });
+  }
+  if (backupFirstFlag.present && approvalStdinFlag.present) {
+    throw Object.assign(
+      new Error('--backup-first is not available under --approval-stdin; the invoking client owns the pre-erase backup offer.'),
+      { code: 'invalid_params' },
+    );
+  }
+  /** Resolves the plan-required pre-erase verified-backup offer into an explicit
+   * destination outside the erased data, or `null` when no backup was chosen. */
+  const resolvePreEraseBackupOutputPath = async (): Promise<string | null> => {
+    const chosen = backupFirstFlag.present
+      || (interactive && !yesFlag.present && !approvalStdinFlag.present
+        && /^y(?:es)?$/i.test((await promptUser('Create and verify a Personal Home backup before erasing data? [y/N]: ')).trim()));
+    if (!chosen) return null;
+    const requested = backupOutputFlag.value
+      ?? (interactive ? (await promptUser('Destination for the verified pre-erase backup: ')).trim() : '');
+    if (!requested) {
+      throw Object.assign(
+        new Error('A pre-erase verified backup requires --backup-output PATH outside the Personal Home data roots.'),
+        { code: 'backup_output_required' },
+      );
+    }
+    return requirePath(requested, 'pre-erase backup output path', deps);
+  };
+  /** Verified pre-erase backup target, rebound against the erase confirmation facts. */
+  let preEraseVerifiedIdentity: string | null = null;
+  let verifiedLocalPreEraseBackupPath: string | null = null;
+  let remotePreEraseTarget: Readonly<{
+    sshHost: string;
+    canonicalServerUrl: string;
+    homeServerIdentityId: string;
+    paths: readonly string[];
+  }> | null = null;
+  let eraseTargetDriftedAfterBackup = false;
+  const readVerifiedPreEraseBackupIdentity = (
+    backup: SystemTaskJsonValue,
+    verification: SystemTaskJsonValue,
+    requestedOutputPath: string,
+  ): string => {
+    const cleanupRequired = isRecord(backup) && isRecord(backup.cleanupRequired)
+      ? backup.cleanupRequired
+      : null;
+    if (cleanupRequired?.kind === 'backup_staging'
+      && typeof cleanupRequired.path === 'string'
+      && cleanupRequired.path.trim()) {
+      throw Object.assign(
+        new Error(`The verified backup is safe, but its protected staging copy still exists at ${cleanupRequired.path.trim()}. Remove that exact path before erasing the Home.`),
+        {
+          code: 'personal_home_backup_cleanup_required',
+          cleanupPath: cleanupRequired.path.trim(),
+          personalHomeTaskFailure: true,
+        },
+      );
+    }
+    const backupPath = isRecord(backup) && typeof backup.path === 'string' ? backup.path.trim() : '';
+    const backupIdentity = isRecord(backup) && isRecord(backup.manifest) && typeof backup.manifest.homeServerIdentityId === 'string'
+      ? backup.manifest.homeServerIdentityId.trim()
+      : '';
+    if (!backupPath
+      || !backupIdentity
+      || !isRecord(backup)
+      || typeof backup.sha256 !== 'string'
+      || !isHappierRuntimePathWithinRoot(backupPath, requestedOutputPath)
+      || !isHappierRuntimePathWithinRoot(requestedOutputPath, backupPath)) {
+      throw Object.assign(
+        new Error('The pre-erase backup did not return verified final facts at the requested destination; erase was not started.'),
+        { code: 'invalid_backup_result' },
+      );
+    }
+    if (!isRecord(verification) || !isRecord(verification.manifest)) {
+      throw Object.assign(
+        new Error('The pre-erase backup did not return a valid manifest; erase was not started.'),
+        { code: 'invalid_backup_manifest' },
+      );
+    }
+    if (verification.manifest.format !== 'happier-personal-home-backup' || verification.manifest.version !== 1) {
+      throw Object.assign(
+        new Error('The pre-erase backup schema is unsupported; erase was not started.'),
+        { code: 'unsupported_backup_schema' },
+      );
+    }
+    if (verification.identityMatchesCurrentHome !== 'match'
+      || verification.manifest.homeServerIdentityId !== backupIdentity) {
+      throw Object.assign(
+        new Error('The pre-erase backup does not verify against this Personal Home; erase was not started.'),
+        { code: 'identity_mismatch' },
+      );
+    }
+    return backupIdentity;
+  };
+  const failOnEraseTargetDrift = (error: unknown): never => {
+    if (!eraseTargetDriftedAfterBackup) throw error;
+    throw Object.assign(
+      new Error('The Personal Home changed after the verified backup; nothing was erased.'),
+      { code: 'identity_mismatch' },
+    );
+  };
   if (subcommand === 'create') {
     const aliasFlag = takeFlag(args, '--this-computer');
     args = aliasFlag.rest;
@@ -456,8 +736,11 @@ export async function handleHomeCommand(
         { code: 'interactive_required' },
       );
     }
+    const confirmedAccountService = !yesFlag.present && linkAccountMode === 'auto'
+        ? await deps.resolveSelectedAccountServicePresentation?.({ signal, timeoutMs: 6_000 })
+        : null;
     if (!yesFlag.present) {
-      const answer = await deps.promptInput([
+      const answer = await promptUser([
         sshFlag.value
           ? `Create a Personal Home on remote SSH host ${sshFlag.value} with the fixed managed preset?`
           : 'Create a Personal Home on this computer with the fixed managed preset?',
@@ -466,6 +749,11 @@ export async function handleHomeCommand(
         sshFlag.value
           ? `Storage: plaintext at rest on ${sshFlag.value}; continue only if you trust that remote host.`
           : 'Storage: plaintext on this computer; use only a machine you trust.',
+        linkAccountMode === 'never'
+          ? 'Account Service publication: disabled.'
+          : confirmedAccountService
+            ? `Account Service publication: ${confirmedAccountService.displayName} (${confirmedAccountService.endpoint}).`
+            : 'Account Service publication: automatic only when the selected service can be verified.',
         'This installs or reuses the managed server, creates the initial account, closes signup, and configures the local service.',
         '[y/N]: ',
       ].join('\n'));
@@ -487,7 +775,10 @@ export async function handleHomeCommand(
             channel: runtime.channel,
             relayRuntime: runtime,
             pairDevice: interactive,
-            enrollInvokingClient: linkAccountMode === 'auto',
+            // The creator always needs a Home credential. --link-account only
+            // controls the separate Account Service publication performed after
+            // creation succeeds.
+            enrollInvokingClient: true,
             ssh: { target: sshFlag.value, auth: 'agent' },
           },
         },
@@ -500,7 +791,7 @@ export async function handleHomeCommand(
             throw Object.assign(new Error(`Remote Personal Home creation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
           }
           if (yesFlag.present) return { trusted: true };
-          const answer = await deps.promptInput(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
+          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
           return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
         },
       });
@@ -508,10 +799,16 @@ export async function handleHomeCommand(
       const { pairing, invokingClientEnrollment, ...createdFacts } = created;
       const accountServiceLink = await resolvePostCreateHomeLink({
         mode: linkAccountMode,
-        canAttempt: invokingClientEnrollment.kind === 'enrolled',
+        canAttempt: invokingClientEnrollment.kind === 'enrolled' && (yesFlag.present || confirmedAccountService !== null),
         homeServerIdentityId: created.homeServerIdentityId,
         linkAccount: deps.linkAccount,
         signal,
+        ...(confirmedAccountService
+          ? { expectedAccountServiceSelection: {
+              endpoint: confirmedAccountService.endpoint,
+              serverIdentityId: confirmedAccountService.serverIdentityId,
+            } }
+          : {}),
       });
       const result: PersonalHomeCreateResult = {
         ...createdFacts,
@@ -560,10 +857,16 @@ export async function handleHomeCommand(
     }
     const accountServiceLink = await resolvePostCreateHomeLink({
       mode: linkAccountMode,
-      canAttempt: true,
+      canAttempt: yesFlag.present || confirmedAccountService !== null,
       homeServerIdentityId: created.homeServerIdentityId,
       linkAccount: deps.linkAccount,
       signal,
+      ...(confirmedAccountService
+        ? { expectedAccountServiceSelection: {
+            endpoint: confirmedAccountService.endpoint,
+            serverIdentityId: confirmedAccountService.serverIdentityId,
+          } }
+        : {}),
     });
     const result: PersonalHomeCreateResult = {
       status: 'complete',
@@ -654,6 +957,203 @@ export async function handleHomeCommand(
     if (outcome.kind === 'relink_required') throw Object.assign(new Error('Account Service relink was not accepted.'), { code: 'relink_required' });
     throw Object.assign(new Error('Account Service Home linking failed.'), { code: 'link_account_failed' });
   }
+  if (subcommand === 'unlink-account') {
+    if (sshFlag.value) throw Object.assign(new Error('--ssh is not supported by home unlink-account.'), { code: 'invalid_params' });
+    const homeFlag = takeFlagValue(args, '--home');
+    if (homeFlag.rest.length > 0) throw new Error(`Unknown home unlink-account arguments: ${homeFlag.rest.join(' ')}`);
+    if (!deps.unlinkAccount) throw Object.assign(new Error('Account Service Home unlinking is unavailable in this build.'), { code: 'unlink_account_unavailable' });
+    const outcome = await deps.unlinkAccount({
+      ...(homeFlag.value ? { homeServerIdentityId: homeFlag.value } : {}),
+      signal,
+    });
+    if (outcome.kind === 'unlinked') {
+      // Truthful about the exact boundary: the refusal is forward-looking, and
+      // sessions the service already obtained are the Home's to revoke.
+      console.log('Stopped Account Service sign-in for this Home.');
+      console.log('Devices already signed in keep their access until signed out on the Home.');
+      return;
+    }
+    if (outcome.kind === 'unavailable') throw Object.assign(new Error(`Home unlinking is unavailable: ${outcome.reason}.`), { code: outcome.reason });
+    if (outcome.kind === 'cancelled') throw Object.assign(new Error('Home unlinking was cancelled.'), { code: 'cancelled' });
+    throw Object.assign(new Error('Account Service Home unlinking failed.'), { code: 'unlink_account_failed' });
+  }
+  if (subcommand === 'relocate') {
+    if (sshFlag.value) throw Object.assign(new Error('Use --target, not --ssh, to select the relocation destination.'), { code: 'invalid_params' });
+    const target = targetFlag.value?.trim() ?? '';
+    if (!target || args.length > 0) {
+      throw Object.assign(new Error('Usage: happier home relocate --target user@host [--recovery-action finish_move|return_to_source] [--yes]'), { code: 'invalid_params' });
+    }
+    if (!deps.readRelocationSourceProfile || !deps.publishRelocationDescriptor || !deps.readRelocationDescriptor) {
+      throw Object.assign(new Error('Personal Home relocation profile publication is unavailable in this build.'), { code: 'relocation_unavailable' });
+    }
+    const runner = deps.createRunner(runtime);
+    const purpose = await readPersonalHomePurpose({ runner, signal, sleep: deps.sleep, runtime });
+    const inspection = await runTask({
+      runner,
+      spec: taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime),
+      json: false,
+      visible: false,
+      signal,
+      sleep: deps.sleep,
+    });
+    const inspectionRecord = isRecord(inspection) ? inspection : null;
+    const recovery = parseRelocationRecovery(inspectionRecord?.relocationRecovery);
+    if (recovery.status === 'ambiguous') {
+      throw Object.assign(new Error('Personal Home relocation recovery state is ambiguous; repair is required before another move.'), { code: 'relocation_recovery_ambiguous' });
+    }
+    const source = await deps.readRelocationSourceProfile();
+    const sourceDescriptor = HomeConnectionDescriptorV1Schema.parse(source.descriptor);
+    const inspectedHomeServerIdentityId = isRecord(inspectionRecord?.identity)
+      && typeof inspectionRecord.identity.homeServerIdentityId === 'string'
+      ? inspectionRecord.identity.homeServerIdentityId.trim()
+      : '';
+    if (!inspectedHomeServerIdentityId) {
+      throw Object.assign(new Error('Personal Home inspection did not return the managed Home identity.'), { code: 'personal_home_inspection_incomplete' });
+    }
+    if (inspectedHomeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
+      throw Object.assign(new Error('The active Home profile does not match this computer\'s managed Personal Home.'), { code: 'home_profile_mismatch' });
+    }
+    if (recovery.status === 'none' && sourceDescriptor.canonicalServerUrl !== purpose.canonicalServerUrl) {
+      throw Object.assign(new Error('The active Home profile does not match this computer\'s managed Personal Home.'), { code: 'home_profile_mismatch' });
+    }
+    const requestedRecoveryAction = parseRelocationRecoveryAction(recoveryActionFlag.value);
+    let recoveryAction: 'finish_move' | 'return_to_source' | undefined;
+    let operationId: string;
+    let sourceDescriptorRevision: number;
+    if (recovery.status === 'recovery_available') {
+      if (target !== recovery.destinationMachineId) {
+        throw Object.assign(new Error(`The interrupted relocation is reserved for SSH destination ${recovery.destinationMachineId}; refuse to resume it through ${target}.`), { code: 'relocation_destination_mismatch' });
+      }
+      if (requestedRecoveryAction === 'return_to_source' && recovery.secondaryAction !== 'return_to_source') {
+        throw Object.assign(new Error('Return to the original Home is no longer safe because destination publication has advanced.'), { code: 'relocation_recovery_action_unavailable' });
+      }
+      if (requestedRecoveryAction) {
+        recoveryAction = requestedRecoveryAction;
+      } else {
+        if (!interactive) {
+          throw Object.assign(new Error('Interrupted relocation recovery requires --recovery-action finish_move or return_to_source.'), { code: 'relocation_recovery_action_required' });
+        }
+        const available = recovery.secondaryAction === 'return_to_source'
+          ? 'finish_move or return_to_source'
+          : 'finish_move';
+        const selected = (await promptUser(`Interrupted relocation found. Choose ${available}: `)).trim();
+        const selectedAction = parseRelocationRecoveryAction(selected);
+        if (!selectedAction) {
+          throw Object.assign(new Error('A relocation recovery action is required.'), { code: 'relocation_recovery_action_required' });
+        }
+        recoveryAction = selectedAction;
+        if (recoveryAction === 'return_to_source' && recovery.secondaryAction !== 'return_to_source') {
+          throw Object.assign(new Error('Return to the original Home is no longer safe because destination publication has advanced.'), { code: 'relocation_recovery_action_unavailable' });
+        }
+      }
+      operationId = recovery.operationId;
+      sourceDescriptorRevision = recovery.sourceDescriptorRevision;
+    } else {
+      if (requestedRecoveryAction) {
+        throw Object.assign(new Error('No interrupted Personal Home relocation is available for recovery.'), { code: 'relocation_recovery_unavailable' });
+      }
+      await confirmDestructive({
+        yes: yesFlag.present,
+        interactive,
+        prompt: [
+          `Move ${source.name || 'this Personal Home'} to SSH destination ${target}?`,
+          `Home: ${sourceDescriptor.canonicalServerUrl}`,
+          `Home identity: ${sourceDescriptor.homeServerIdentityId}`,
+          'The source will stop before the final backup and remain quarantined after publication.',
+        ].join('\n'),
+        nonInteractiveMessage: 'Personal Home relocation requires an interactive terminal or explicit --yes.',
+        deps,
+        ...(signal ? { signal } : {}),
+      });
+      operationId = (deps.createRelocationOperationId ?? (() => `relocation-${randomUUID()}`))();
+      sourceDescriptorRevision = sourceDescriptor.revision;
+    }
+    const relocationData = await runTask({
+      runner,
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'remote.ssh.manageHost.v1',
+        params: {
+          action: 'personalHome.relocate',
+          channel: runtime.channel,
+          relayRuntime: runtime,
+          personalHomeRelocation: {
+            operationId,
+            destinationMachineId: target,
+            sourceDescriptorRevision,
+            ...(recoveryAction ? { recoveryAction } : {}),
+          },
+          ssh: { target, auth: 'agent' },
+        },
+      },
+      json: false,
+      visible: false,
+      signal,
+      sleep: deps.sleep,
+      onPrompt: async (prompt, message) => {
+        if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
+          if (yesFlag.present) return { trusted: true };
+          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
+          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+        }
+        if (prompt.data.operationId !== operationId || prompt.data.homeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
+          throw Object.assign(new Error('Personal Home relocation prompt did not match the requested operation.'), { code: 'prompt_mismatch' });
+        }
+        if (prompt.kind === 'personal_home.publish_relocation_descriptor.v1') {
+          const descriptor = HomeConnectionDescriptorV1Schema.parse(prompt.data.connectionDescriptor);
+          if (descriptor.homeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
+            throw Object.assign(new Error('Personal Home relocation publication targeted another Home.'), { code: 'home_identity_mismatch' });
+          }
+          const published = HomeConnectionDescriptorV1Schema.parse(
+            await deps.publishRelocationDescriptor!({ profileId: source.profileId, descriptor }),
+          );
+          if (published.homeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
+            throw Object.assign(new Error('Personal Home relocation publication returned another Home.'), { code: 'home_identity_mismatch' });
+          }
+          return { descriptor: published };
+        }
+        if (prompt.kind === 'personal_home.read_relocation_descriptor.v1') {
+          const currentRaw = await deps.readRelocationDescriptor!({
+            profileId: source.profileId,
+            homeServerIdentityId: sourceDescriptor.homeServerIdentityId,
+          });
+          const current = currentRaw === null ? null : HomeConnectionDescriptorV1Schema.parse(currentRaw);
+          if (current && current.homeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
+            throw Object.assign(new Error('Personal Home relocation readback returned another Home.'), { code: 'home_identity_mismatch' });
+          }
+          return { descriptor: current };
+        }
+        throw Object.assign(new Error(`Personal Home relocation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
+      },
+    });
+    const relocationResult = isRecord(relocationData) && relocationData.action === 'personalHome.relocate'
+      ? parsePersonalHomeRelocationResult(relocationData.personalHome)
+      : null;
+    if (!relocationResult) {
+      throw Object.assign(new Error('Personal Home relocation returned an invalid result.'), { code: 'invalid_cli_response' });
+    }
+    if (relocationResult.status === 'pending') {
+      const recoveryCommand = `happier home relocate --target ${target} --recovery-action ${relocationResult.recoveryAction}`;
+      throw Object.assign(
+        new Error(`Personal Home relocation is pending; both Homes remain stopped. Continue with \`${recoveryCommand}\`.`),
+        {
+          code: 'personal_home_relocation_incomplete',
+          personalHomeTaskFailure: true,
+          status: relocationResult.status,
+          recoveryAction: relocationResult.recoveryAction,
+        },
+      );
+    }
+    if (json) {
+      await printJsonEnvelope({ ok: true, kind: 'personal_home_relocation', data: relocationResult }, { exitCode: 0 });
+    } else {
+      console.log(`Personal Home relocation ${relocationResult.status}.`);
+      if (relocationResult.destinationCleanupNeedsAttention === true) {
+        console.log(`Destination cleanup needs attention. Retry with \`happier home relocate --target ${target} --recovery-action finish_move\`.`);
+      }
+    }
+    return;
+  }
   if (sshFlag.value) {
     const actionByCommand = {
       status: 'personalHome.status',
@@ -676,17 +1176,20 @@ export async function handleHomeCommand(
       if (args.length !== 1) throw Object.assign(new Error(`Usage: happier home ${subcommand} --ssh user@host PATH${subcommand === 'restore' ? ' [--yes]' : ''}`), { code: 'invalid_params' });
       personalHomeOperation = { archivePath: requirePath(args[0], 'backup archive path', deps) };
     }
-    const remoteData = await runTask({
+    const runRemoteAction = async (
+      remoteAction: (typeof actionByCommand)[keyof typeof actionByCommand],
+      operation?: SystemTaskJsonObject,
+    ): Promise<SystemTaskJsonValue> => await runTask({
       runner: deps.createRunner(runtime),
       spec: {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
         kind: 'remote.ssh.manageHost.v1',
         params: {
-          action,
+          action: remoteAction,
           channel: runtime.channel,
           relayRuntime: runtime,
           ssh: { target: sshFlag.value, auth: 'agent' },
-          ...(personalHomeOperation ? { personalHomeOperation } : {}),
+          ...(operation ? { personalHomeOperation: operation } : {}),
         },
       },
       json: false,
@@ -694,15 +1197,23 @@ export async function handleHomeCommand(
       signal,
       sleep: deps.sleep,
       onPrompt: async (prompt, message) => {
+        if (prompt.kind === 'ssh.replaceHostKey' && remotePreEraseTarget !== null) {
+          return { trusted: false };
+        }
         if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
           if (yesFlag.present) return { trusted: true };
           if (!interactive) return { trusted: false };
-          const answer = await deps.promptInput(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
+          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
           return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
         }
         if (prompt.kind.startsWith('personal_home.confirm_remote_')) {
           const data = prompt.data;
           const paths = Array.isArray(data.paths) ? data.paths.filter((path): path is string => typeof path === 'string') : [];
+          const expectedTarget = remotePreEraseTarget;
+          if (expectedTarget !== null && data.sshHost !== expectedTarget.sshHost) {
+            eraseTargetDriftedAfterBackup = true;
+            return { confirmed: false };
+          }
           if (data.sshHost !== sshFlag.value
             || typeof data.homeServerIdentityId !== 'string' || !data.homeServerIdentityId.trim()
             || typeof data.canonicalServerUrl !== 'string' || !data.canonicalServerUrl.trim()
@@ -710,9 +1221,19 @@ export async function handleHomeCommand(
             || (data.estimatedBytes !== null && (typeof data.estimatedBytes !== 'number' || !Number.isSafeInteger(data.estimatedBytes) || data.estimatedBytes < 0))) {
             return { confirmed: false };
           }
+          if (expectedTarget !== null && (
+            data.sshHost !== expectedTarget.sshHost
+            || data.canonicalServerUrl !== expectedTarget.canonicalServerUrl
+            || data.homeServerIdentityId !== expectedTarget.homeServerIdentityId
+            || paths.length !== expectedTarget.paths.length
+            || paths.some((path, index) => path !== expectedTarget.paths[index])
+          )) {
+            eraseTargetDriftedAfterBackup = true;
+            return { confirmed: false };
+          }
           if (yesFlag.present) return { confirmed: true };
           if (!interactive) return { confirmed: false };
-          const answer = await deps.promptInput([
+          const answer = await promptUser([
             `Confirm ${subcommand} on remote SSH host ${sshFlag.value}?`,
             `Home: ${data.canonicalServerUrl}`,
             `Home identity: ${data.homeServerIdentityId}`,
@@ -725,6 +1246,62 @@ export async function handleHomeCommand(
         throw Object.assign(new Error(`Remote Personal Home operation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
       },
     });
+    const readRemotePersonalHomeFacts = (value: SystemTaskJsonValue, remoteAction: string): SystemTaskJsonObject => {
+      if (!isRecord(value) || value.action !== remoteAction || !isRecord(value.personalHome)) {
+        throw Object.assign(new Error('Remote Personal Home operation returned an invalid result.'), { code: 'invalid_cli_response' });
+      }
+      return value.personalHome;
+    };
+    if (subcommand === 'erase') {
+      const backupOutputPath = await resolvePreEraseBackupOutputPath();
+      if (backupOutputPath !== null) {
+        const beforeBackup = readRemotePersonalHomeFacts(
+          await runRemoteAction('personalHome.status'),
+          'personalHome.status',
+        );
+        const purpose = isRecord(beforeBackup.purpose) ? beforeBackup.purpose : null;
+        const identity = isRecord(beforeBackup.identity) ? beforeBackup.identity : null;
+        const storage = isRecord(beforeBackup.storage) ? beforeBackup.storage : null;
+        const rawPaths = storage?.ownedErasePaths;
+        const paths = Array.isArray(rawPaths)
+          ? rawPaths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+          : [];
+        const estimatedBytes = storage?.estimatedOwnedBytes;
+        if (purpose?.kind !== 'personal-home'
+          || typeof purpose.canonicalServerUrl !== 'string' || !purpose.canonicalServerUrl.trim()
+          || typeof identity?.homeServerIdentityId !== 'string' || !identity.homeServerIdentityId.trim()
+          || !Array.isArray(rawPaths) || paths.length !== rawPaths.length || paths.length === 0
+          || (estimatedBytes !== null && (typeof estimatedBytes !== 'number' || !Number.isSafeInteger(estimatedBytes) || estimatedBytes < 0))) {
+          throw Object.assign(
+            new Error('Remote Personal Home inspection did not resolve the exact erase target; no backup or erase was started.'),
+            { code: 'personal_home_inspection_incomplete' },
+          );
+        }
+        remotePreEraseTarget = {
+          sshHost: sshFlag.value,
+          canonicalServerUrl: purpose.canonicalServerUrl.trim(),
+          homeServerIdentityId: identity.homeServerIdentityId.trim(),
+          paths,
+        };
+        const backup = readRemotePersonalHomeFacts(
+          await runRemoteAction('personalHome.backup', { outputPath: backupOutputPath }),
+          'personalHome.backup',
+        );
+        if (!json) printSafeFacts(backup, 'Backup');
+        const verification = readRemotePersonalHomeFacts(
+          await runRemoteAction('personalHome.verifyBackup', { archivePath: backupOutputPath }),
+          'personalHome.verifyBackup',
+        );
+        preEraseVerifiedIdentity = readVerifiedPreEraseBackupIdentity(backup, verification, backupOutputPath);
+        if (preEraseVerifiedIdentity !== remotePreEraseTarget.homeServerIdentityId) {
+          throw Object.assign(
+            new Error('The verified backup identity does not match the inspected remote Personal Home; erase was not started.'),
+            { code: 'identity_mismatch' },
+          );
+        }
+      }
+    }
+    const remoteData = await runRemoteAction(action, personalHomeOperation).catch(failOnEraseTargetDrift);
     if (!isRecord(remoteData) || remoteData.action !== action || !isRecord(remoteData.personalHome)) {
       throw Object.assign(new Error('Remote Personal Home operation returned an invalid result.'), { code: 'invalid_cli_response' });
     }
@@ -779,6 +1356,8 @@ export async function handleHomeCommand(
       ? rawPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       : [];
     const estimatedBytes = prompt.data.estimatedBytes;
+    const previewComplete = prompt.data.previewComplete;
+    const previewReason = prompt.data.previewReason;
     const canonicalServerUrl = typeof prompt.data.canonicalServerUrl === 'string' ? prompt.data.canonicalServerUrl.trim() : '';
     const homeServerIdentityId = prompt.data.homeServerIdentityId === null
       || (typeof prompt.data.homeServerIdentityId === 'string' && prompt.data.homeServerIdentityId.trim().length > 0)
@@ -789,7 +1368,19 @@ export async function handleHomeCommand(
       || paths.length === 0
       || !canonicalServerUrl
       || homeServerIdentityId === undefined
+      || previewComplete !== true
+      || previewReason !== null
       || (estimatedBytes !== null && (typeof estimatedBytes !== 'number' || !Number.isFinite(estimatedBytes) || estimatedBytes < 0))) {
+      return { confirmed: false };
+    }
+    if (preEraseVerifiedIdentity !== null && homeServerIdentityId !== preEraseVerifiedIdentity) {
+      eraseTargetDriftedAfterBackup = true;
+      return { confirmed: false };
+    }
+    const verifiedBackupPath = verifiedLocalPreEraseBackupPath;
+    if (verifiedBackupPath !== null
+      && paths.some((owned) => isHappierRuntimePathWithinRoot(verifiedBackupPath, owned))) {
+      eraseTargetDriftedAfterBackup = true;
       return { confirmed: false };
     }
     if (approvalStdinFlag.present) {
@@ -799,7 +1390,7 @@ export async function handleHomeCommand(
     }
     if (yesFlag.present) return { confirmed: true };
     if (!interactive) return { confirmed: false };
-    const answer = await deps.promptInput([
+    const answer = await promptUser([
       'Permanently erase the owner-validated Personal Home paths below?',
       `Home: ${canonicalServerUrl}`,
       `Home identity: ${homeServerIdentityId ?? 'unavailable'}`,
@@ -843,9 +1434,8 @@ export async function handleHomeCommand(
     if (action === 'stage') {
       const archiveFlag = takeFlagValue(args, '--archive');
       const prepareUploadFlag = takeFlag(archiveFlag.rest, '--prepare-upload');
-      const uploadReceiptFlag = takeFlagValue(prepareUploadFlag.rest, '--upload-receipt');
       if (prepareUploadFlag.present) {
-        if (archiveFlag.value !== null || uploadReceiptFlag.value !== null || uploadReceiptFlag.rest.length > 0) {
+        if (archiveFlag.value !== null || prepareUploadFlag.rest.length > 0) {
           throw new Error('Relocation upload preparation accepts only --operation-id and --prepare-upload.');
         }
         const prepared = await (deps.prepareRelocationUpload ?? preparePersonalHomeRelocationUpload)({ operationId });
@@ -861,7 +1451,7 @@ export async function handleHomeCommand(
         });
         return;
       }
-      const digestFlag = takeFlagValue(uploadReceiptFlag.rest, '--bundle-sha256');
+      const digestFlag = takeFlagValue(prepareUploadFlag.rest, '--bundle-sha256');
       const homeIdFlag = takeFlagValue(digestFlag.rest, '--expected-home-id');
       const canonicalUrlFlag = takeFlagValue(homeIdFlag.rest, '--expected-canonical-server-url');
       const revisionFlag = takeFlagValue(canonicalUrlFlag.rest, '--source-descriptor-revision');
@@ -870,9 +1460,6 @@ export async function handleHomeCommand(
       if (!Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1) {
         throw new Error('Relocation destination stage requires a positive --source-descriptor-revision.');
       }
-      if ((archiveFlag.value === null) === (uploadReceiptFlag.value === null)) {
-        throw new Error('Relocation destination stage requires exactly one of --archive or --upload-receipt.');
-      }
       const stageParams = {
         operationId,
         bundleSha256: digestFlag.value ?? '',
@@ -880,11 +1467,10 @@ export async function handleHomeCommand(
         expectedCanonicalServerUrl: canonicalUrlFlag.value ?? '',
         sourceDescriptorRevision,
       };
-      const uploadReceipt = uploadReceiptFlag.value;
-      if (uploadReceipt === null) {
+      if (archiveFlag.value !== null) {
         await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage, purpose, runtime, {
           ...stageParams,
-          archivePath: requirePath(archiveFlag.value ?? undefined, 'relocation bundle path', deps),
+          archivePath: requirePath(archiveFlag.value, 'relocation bundle path', deps),
         }));
         return;
       }
@@ -897,7 +1483,6 @@ export async function handleHomeCommand(
         // fails.
         const { archivePath } = await (deps.consumeRelocationUpload ?? consumePersonalHomeRelocationUpload)({
           operationId,
-          uploadReceipt,
         });
         data = await runTask({
           runner,
@@ -1033,6 +1618,7 @@ export async function handleHomeCommand(
           prompt: 'Restore this verified backup and overwrite the current Personal Home data?',
           nonInteractiveMessage: 'Non-interactive restore into a non-empty Personal Home requires --yes after successful backup verification.',
           deps,
+          ...(signal ? { signal } : {}),
         });
       }
     }
@@ -1095,6 +1681,7 @@ export async function handleHomeCommand(
         prompt: 'Roll back the interrupted restore using the retained recovery material?',
         nonInteractiveMessage: 'Non-interactive restore recovery requires --yes.',
         deps,
+        ...(signal ? { signal } : {}),
       });
     }
     await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, { action: 'recover' }));
@@ -1105,7 +1692,47 @@ export async function handleHomeCommand(
     if (args.length > 0) {
       throw Object.assign(new Error(`Unknown home erase arguments: ${args.join(' ')}`), { code: 'invalid_params' });
     }
-    const result = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose, runtime), true, 'Erase');
+    const backupOutputPath = await resolvePreEraseBackupOutputPath();
+    if (backupOutputPath !== null) {
+      const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
+      const ownedErasePaths = isRecord(inspection) && isRecord(inspection.storage) && Array.isArray(inspection.storage.ownedErasePaths)
+        ? inspection.storage.ownedErasePaths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+        : [];
+      if (ownedErasePaths.length === 0) {
+        throw Object.assign(
+          new Error('Personal Home inspection did not resolve the erase target paths; no backup or erase was started.'),
+          { code: 'personal_home_inspection_incomplete' },
+        );
+      }
+      // A backup written inside the erased data would be deleted by this very operation,
+      // so the destination is validated against the owner's exact target set first.
+      if (ownedErasePaths.some((owned) => isHappierRuntimePathWithinRoot(backupOutputPath, owned))) {
+        throw Object.assign(
+          new Error(`The pre-erase backup destination is inside the Personal Home data this erase deletes: ${backupOutputPath}`),
+          { code: 'backup_output_required' },
+        );
+      }
+      const backup = await run(
+        taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, runtime, { outputPath: backupOutputPath }),
+        true,
+        'Backup',
+      );
+      const verification = await run(
+        taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, purpose, runtime, { archivePath: backupOutputPath }),
+      );
+      const verifiedIdentity = readVerifiedPreEraseBackupIdentity(backup, verification, backupOutputPath);
+      const refreshed = await readPersonalHomePurpose({ runner, signal, sleep: deps.sleep, runtime });
+      if (refreshed.canonicalServerUrl !== purpose.canonicalServerUrl) {
+        throw Object.assign(
+          new Error('The managed Personal Home changed after the verified backup; nothing was erased.'),
+          { code: 'identity_mismatch' },
+        );
+      }
+      preEraseVerifiedIdentity = verifiedIdentity;
+      verifiedLocalPreEraseBackupPath = backupOutputPath;
+    }
+    const result = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose, runtime), true, 'Erase')
+      .catch(failOnEraseTargetDrift);
     if (isRecord(result) && result.outcome === 'partial') {
       throw Object.assign(
         new Error(result.error === undefined
@@ -1186,10 +1813,13 @@ function parseRemoteInvokingClientEnrollmentResult(
     : null;
 }
 
-export async function handleHomeCliCommand(context: CommandContext): Promise<void> {
+export async function handleHomeCliCommand(
+  context: CommandContext,
+  deps: HomeCommandDeps = DEFAULT_DEPS,
+): Promise<void> {
   const json = wantsJson(context.args);
   try {
-    await handleHomeCommand(context.args.slice(1), DEFAULT_DEPS, context.signal);
+    await handleHomeCommand(context.args.slice(1), deps, context.signal);
   } catch (error) {
     const errorRecord = isRecord(error) ? error : null;
     const rawCode = typeof errorRecord?.code === 'string' ? errorRecord.code : null;
@@ -1204,6 +1834,7 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       'unsupported_backup_schema',
       'invalid_backup_manifest',
       'invalid_backup_result',
+      'backup_output_required',
       'personal_home_inspection_incomplete',
       'personal_home_restore_incomplete',
       'personal_home_erase_incomplete',
@@ -1231,7 +1862,15 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       await printJsonEnvelope({
         ok: false,
         kind: 'personal_home_operation',
-        error: { code: mapped.code, ...(mapped.message ? { message: mapped.message } : {}) },
+        error: {
+          code: mapped.code,
+          ...(mapped.message ? { message: mapped.message } : {}),
+          ...(rawCode === 'personal_home_relocation_incomplete'
+            && errorRecord?.status === 'pending'
+            && (errorRecord.recoveryAction === 'finish_move' || errorRecord.recoveryAction === 'return_to_source')
+            ? { status: errorRecord.status, recoveryAction: errorRecord.recoveryAction }
+            : {}),
+        },
       }, { exitCode: mapped.unexpected ? 2 : 1 });
       return;
     }

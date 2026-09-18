@@ -46,6 +46,12 @@ import type {
 } from '@happier-dev/plugin-sdk/providers';
 
 import type { MachineProviderRpcServices } from '@/api/machine/rpcHandlers.providers';
+import type { RuntimeProviderModelManagementServices } from '@/providers/modelManagement/runtimeServices';
+
+type RuntimeProviderOperationsMachineServices = MachineProviderRpcServices & Pick<
+  RuntimeProviderModelManagementServices,
+  'resolveTeamCredentialBrokerSourceSelection'
+>;
 
 export type RuntimeProviderOperationsBinding = Readonly<{
   signal: AbortSignal;
@@ -53,7 +59,7 @@ export type RuntimeProviderOperationsBinding = Readonly<{
 }>;
 
 export type RuntimeProviderOperationsProducer = Readonly<{
-  machineServices: MachineProviderRpcServices;
+  machineServices: RuntimeProviderOperationsMachineServices;
   bind(binding: RuntimeProviderOperationsBinding): ProvidersService;
 }>;
 
@@ -273,7 +279,7 @@ async function dispatchWhenProvidersEnabled<TRequest>(input: Readonly<{
  */
 export function createRuntimeProviderOperationsProducer(input: Readonly<{
   machineId: string;
-  machineServices: MachineProviderRpcServices;
+  machineServices: RuntimeProviderOperationsMachineServices;
   featureGate: RuntimeProviderOperationsFeatureGate;
 }>): RuntimeProviderOperationsProducer {
   return Object.freeze({

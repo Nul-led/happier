@@ -147,6 +147,16 @@ export type PluginInvocationLogReadResult = Readonly<{
   kind: 'unavailable'
 }>
 
+export type LoggerOptions = Readonly<{
+  logFilePath?: string
+  /** Redact every file line at the canonical diagnostics boundary. */
+  redactFileOutput?: boolean
+  /** Explicitly disable the opt-in, unencrypted remote diagnostics path. */
+  allowDangerousRemoteLogging?: boolean
+  /** Disable ordinary process-log retention for an independently owned path. */
+  pruneCurrentProcessLogs?: boolean
+}>
+
 function normalizePluginInvocationLogReadLimit(value: number | undefined): number {
   if (value === undefined || !Number.isSafeInteger(value)) return DEFAULT_PLUGIN_INVOCATION_LOG_READ_LIMIT
   return Math.min(MAX_PLUGIN_INVOCATION_LOG_READ_LIMIT, Math.max(1, value))
@@ -327,10 +337,16 @@ export class Logger {
   private readonly warnFileEnabled: boolean
   private readonly fileAppender: BufferedFileAppender
   private readonly pluginInvocationFileAppender: BufferedFileAppender
+  private readonly redactFileOutput: boolean
+  private readonly pruneLogs: boolean
 
-  constructor(
-    public readonly logFilePath = getSessionLogPath()
-  ) {
+  public readonly logFilePath: string
+
+  constructor(input: string | LoggerOptions = {}) {
+    const options = typeof input === 'string' ? { logFilePath: input } : input
+    this.logFilePath = options.logFilePath ?? getSessionLogPath()
+    this.redactFileOutput = options.redactFileOutput === true
+    this.pruneLogs = options.pruneCurrentProcessLogs !== false
     this.fileLogLevel = resolveFileLogLevel({ env: process.env, isDaemonProcess: configuration.isDaemonProcess })
     this.debugFileEnabled = isFileLogLevelEnabled(this.fileLogLevel, 'debug')
     this.infoFileEnabled = isFileLogLevelEnabled(this.fileLogLevel, 'info')
@@ -342,10 +358,11 @@ export class Logger {
     this.pluginInvocationFileAppender = new BufferedFileAppender({
       filePath: this.logFilePath,
     })
-    void pruneCurrentProcessLogsBestEffort(this.logFilePath).catch(() => {})
+    if (this.pruneLogs) void pruneCurrentProcessLogsBestEffort(this.logFilePath).catch(() => {})
 
     // Remote logging enabled only when explicitly set with server URL
-    if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING 
+    if (options.allowDangerousRemoteLogging !== false
+      && process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING
       && process.env.HAPPIER_SERVER_URL) {
       this.dangerouslyUnencryptedServerLoggingUrl = process.env.HAPPIER_SERVER_URL
       writeConsoleLogBestEffort(chalk.yellow('[REMOTE LOGGING] Sending logs to server for AI debugging'))
@@ -500,12 +517,15 @@ export class Logger {
   flushSync(): void {
     this.fileAppender.flushSync()
     this.pluginInvocationFileAppender.flushSync()
-    void pruneCurrentProcessLogsBestEffort(this.logFilePath).catch(() => {})
+    if (this.pruneLogs) void pruneCurrentProcessLogsBestEffort(this.logFilePath).catch(() => {})
   }
 
   appendPluginInvocationLogRecord(record: Readonly<Record<string, unknown>>): void {
     try {
-      this.pluginInvocationFileAppender.append(`${JSON.stringify(record)}\n`)
+      const line = `${JSON.stringify(record)}\n`
+      this.pluginInvocationFileAppender.append(this.redactFileOutput
+        ? redactBugReportSensitiveText(line)
+        : line)
     } catch {
       // Structured plugin diagnostics must never interfere with plugin work.
     }
@@ -649,7 +669,7 @@ export class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg => {
+    const unredactedLogLine = `${prefix} ${message} ${args.map(arg => {
       if (typeof arg === 'string') return arg
       if (arg instanceof Error) return arg.stack || arg.message
       try {
@@ -660,6 +680,9 @@ export class Logger {
         return String(arg)
       }
     }).join(' ')}\n`
+    const logLine = this.redactFileOutput
+      ? redactBugReportSensitiveText(unredactedLogLine)
+      : unredactedLogLine
     
     // Send to remote server if configured
     if (this.dangerouslyUnencryptedServerLoggingUrl) {
@@ -687,6 +710,25 @@ export class Logger {
 
 // Will be initialized immideately on startup
 export let logger = new Logger()
+
+/**
+ * Temporarily replaces the canonical process logger for a single-process
+ * composition. Imports retain the live binding, so existing runtime owners keep
+ * logging through the same seam. Restoration synchronously drains the scoped
+ * logger before handing the process back to its prior owner.
+ */
+export function bindProcessLogger(nextLogger: Logger): () => void {
+  const previousLogger = logger
+  previousLogger.flushSync()
+  logger = nextLogger
+  let restored = false
+  return () => {
+    if (restored) return
+    restored = true
+    nextLogger.flushSync()
+    if (logger === nextLogger) logger = previousLogger
+  }
+}
 
 /**
  * Information about a log file on disk

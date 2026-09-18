@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,81 @@ import { inspectRetiredWorkspaceReplicationState } from './workspaceSyncLegacySt
 
 // First line of every released cli-v0.2.11 streaming source-offer file.
 const SOURCE_OFFER_MAGIC = 'HAPPIER_WORKSPACE_REPLICATION_SOURCE_OFFER_V1';
+const RELEASED_DIRECTION_SCOPE = {
+  sourceMachineId: 'machine-a',
+  sourceWorkspaceRoot: '/workspace/alpha',
+  targetMachineId: 'machine-b',
+  targetWorkspaceRoot: '/workspace/beta',
+  mode: 'one_way_safe',
+} as const;
+const RELEASED_RELATIONSHIP_ID = 'rel_2teqJ4EEScvFRzDbDcbDoHyd7LWGG5enP7dXcJs0fDo';
+const RELEASED_DIRECTION_ID = 'dir_mP-WeDnUSn5yRZP6Q3OagcOHEwhYXGc4ro02xYTcLAU';
+
+// Golden record shapes copied from the immutable cli-v0.2.11 writer at
+// 98ea8fb76733b1dd785d38c31360179cafa84824. Keep these literals independent
+// of current replacement types so this test remains provenance evidence.
+function releasedJobRecord(jobId: string) {
+  return {
+    schemaVersion: 1,
+    jobId,
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    status: {
+      status: 'pending',
+      phase: 'planning',
+      checkpoint: 'job_created',
+      progressCounters: {
+        plannedFiles: 0,
+        plannedBytes: 0,
+        transferredFiles: 0,
+        transferredBytes: 0,
+        appliedFiles: 0,
+        appliedBytes: 0,
+      },
+      warnings: [],
+      blockingDivergenceCandidates: [],
+    },
+  };
+}
+
+function releasedRelationshipRecord(relationshipId: string) {
+  return {
+    schemaVersion: 1,
+    relationshipId,
+    endpoints: [
+      { machineId: 'machine-a', rootPath: '/workspace/alpha' },
+      { machineId: 'machine-b', rootPath: '/workspace/beta' },
+    ],
+    config: { mode: 'one_way_safe' },
+    createdAtMs: 1,
+    updatedAtMs: 1,
+  };
+}
+
+function releasedBaselineRecord() {
+  const serializedScope = JSON.stringify(RELEASED_DIRECTION_SCOPE);
+  return {
+    schemaVersion: 1,
+    cacheKey: `workspace-replication-baseline-v1-${createHash('sha256').update('workspace-replication-baseline-v1\n').update(serializedScope).digest('hex')}`,
+    scope: RELEASED_DIRECTION_SCOPE,
+    baseline: {
+      manifestFingerprint: `sha256:${'b'.repeat(64)}`,
+      manifest: { entries: [] },
+      savedAtMs: 1,
+    },
+  };
+}
+
+function releasedLeaseRecord() {
+  return {
+    leaseId: 'lease-1',
+    attempt: 1,
+    ownerId: 'owner_a',
+    acquiredAtMs: 1,
+    renewedAtMs: 2,
+    expiresAtMs: 3,
+  };
+}
 
 async function makeServerDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'happier-workspace-sync-legacy-state-'));
@@ -33,7 +109,7 @@ async function makeLegacyStateRoot(activeServerDir: string): Promise<string> {
   const stateRoot = join(activeServerDir, 'workspace-replication');
   await mkdir(join(stateRoot, 'cas'), { recursive: true });
   await mkdir(join(stateRoot, 'jobs'));
-  await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+  await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
   await chmod(stateRoot, 0o700);
   return stateRoot;
 }
@@ -60,7 +136,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'cas'), { recursive: true });
     await mkdir(join(stateRoot, 'jobs'));
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o700);
 
     const result = await inspectRetiredWorkspaceReplicationState({
@@ -103,7 +179,12 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await mkdir(join(stateRoot, 'relationships'), { recursive: true });
     await mkdir(join(stateRoot, 'staging'), { recursive: true });
     await mkdir(join(stateRoot, 'offers'));
-    await writeFile(join(stateRoot, 'offers', 'offer_1.txt'), `${SOURCE_OFFER_MAGIC}\n{"offerId":"offer_1","relationshipId":"rel_1","directionId":"dir_1","sourceFingerprint":"fp"}\n`);
+    await writeFile(join(stateRoot, 'offers', 'offer_1.txt'), `${SOURCE_OFFER_MAGIC}\n${JSON.stringify({
+      offerId: 'offer_1',
+      relationshipId: 'rel_1',
+      directionId: 'dir_1',
+      sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+    })}\n`);
     await mkdir(join(stateRoot, 'scope-leases', 'rel_1__dir_1', 'lease'), { recursive: true });
     await writeFile(join(stateRoot, 'scope-leases', 'rel_1__dir_1', 'lease', 'lease.json'), JSON.stringify({
       ownerId: 'owner_a',
@@ -111,8 +192,8 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
       renewedAtMs: 2,
       expiresAtMs: 3,
     }));
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
-    await chmod(stateRoot, 0o755);
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
+    await chmod(stateRoot, 0o700);
 
     const result = await inspectRetiredWorkspaceReplicationState({
       activeServerDir,
@@ -136,7 +217,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o700);
     // An unrelated child that merely looks like a lock is not provenance of
     // the retired engine and must fail closed instead of being quarantined.
@@ -159,7 +240,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o700);
     // writeJsonAtomic leftovers and lease-writer artifacts live inside the
     // store directories, never at the state root. A root-level temp shape is
@@ -186,28 +267,38 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const stateRoot = join(activeServerDir, 'workspace-replication');
     // Job records plus a writeJsonAtomic leftover inside jobs/.
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await writeFile(join(stateRoot, 'jobs', '.tmp-4242-1700000000000-deadbeef.json'), '{}');
     // Relationship record location with its baselines subtree and a leftover
     // writeJsonAtomic temp beside the record.
-    await mkdir(join(stateRoot, 'relationships', 'rel_abc', 'directionalBaselines', 'dir_1'), { recursive: true });
-    await writeFile(join(stateRoot, 'relationships', 'rel_abc', 'relationship.json'), JSON.stringify({ schemaVersion: 1, relationshipId: 'rel_abc' }));
-    await writeFile(join(stateRoot, 'relationships', 'rel_abc', '.tmp-4242-1700000000000-cafebabe.json'), '{}');
-    await writeFile(join(stateRoot, 'relationships', 'rel_abc', 'directionalBaselines', 'dir_1', 'baseline.json'), JSON.stringify({ schemaVersion: 1 }));
+    await mkdir(join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, 'directionalBaselines', RELEASED_DIRECTION_ID), { recursive: true });
+    await writeFile(join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, 'relationship.json'), JSON.stringify(releasedRelationshipRecord(RELEASED_RELATIONSHIP_ID)));
+    await writeFile(join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, '.tmp-4242-1700000000000-cafebabe.json'), '{}');
+    await writeFile(join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, 'directionalBaselines', RELEASED_DIRECTION_ID, 'baseline.json'), JSON.stringify(releasedBaselineRecord()));
     // Scope-lease location with both released leftover shapes.
-    await mkdir(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease'), { recursive: true });
-    await mkdir(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease.tmp-0f1e2d3c-4b5a-4987-8765-fedcba987655'));
-    await writeFile(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease', 'lease.json'), JSON.stringify({
-      ownerId: 'owner_a',
-      acquiredAtMs: 1,
-      renewedAtMs: 2,
-      expiresAtMs: 3,
-    }));
-    await writeFile(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease', 'lease.0f1e2d3c-4b5a-4987-8765-fedcba987654.tmp'), '{}');
+    const scopeLeaseName = `${RELEASED_RELATIONSHIP_ID}__${RELEASED_DIRECTION_ID}`;
+    await mkdir(join(stateRoot, 'scope-leases', scopeLeaseName, 'lease'), { recursive: true });
+    const temporaryLeaseDirectory = join(stateRoot, 'scope-leases', scopeLeaseName, 'lease.tmp-0f1e2d3c-4b5a-4987-8765-fedcba987655');
+    await mkdir(temporaryLeaseDirectory);
+    await writeFile(join(temporaryLeaseDirectory, 'lease.json'), JSON.stringify(releasedLeaseRecord()));
+    await writeFile(join(stateRoot, 'scope-leases', scopeLeaseName, 'lease', 'lease.json'), JSON.stringify(releasedLeaseRecord()));
+    await writeFile(join(stateRoot, 'scope-leases', scopeLeaseName, 'lease', 'lease.0f1e2d3c-4b5a-4987-8765-fedcba987654.tmp'), '{}');
     // CAS shard layout with a partial blob write inside a shard directory.
-    await mkdir(join(stateRoot, 'cas', 'sha256', 'ab'), { recursive: true });
-    await writeFile(join(stateRoot, 'cas', 'sha256', 'ab', `${'a'.repeat(64)}`), 'blob bytes');
-    await writeFile(join(stateRoot, 'cas', 'sha256', 'ab', '0f1e2d3c-4b5a-4987-8765-fedcba987654.part'), 'partial');
+    await mkdir(join(stateRoot, 'cas', 'sha256', 'aa'), { recursive: true });
+    await writeFile(join(stateRoot, 'cas', 'sha256', 'aa', `${'a'.repeat(64)}`), 'blob bytes');
+    await writeFile(join(stateRoot, 'cas', 'sha256', 'aa', '0f1e2d3c-4b5a-4987-8765-fedcba987654.part'), 'partial');
+    // Staging carries only the job lease and received blob-pack partial trees.
+    await mkdir(join(stateRoot, 'staging', 'job-1', 'lease'), { recursive: true });
+    await writeFile(join(stateRoot, 'staging', 'job-1', 'lease', 'lease.json'), JSON.stringify(releasedLeaseRecord()));
+    await mkdir(join(stateRoot, 'staging', 'job-1', 'blob-packs', 'pack_1'), { recursive: true });
+    await writeFile(join(
+      stateRoot,
+      'staging',
+      'job-1',
+      'blob-packs',
+      'pack_1',
+      `${'b'.repeat(64)}-0f1e2d3c-4b5a-4987-8765-fedcba987654.part`,
+    ), 'partial');
     await chmod(stateRoot, 0o700);
 
     await expect(inspectRetiredWorkspaceReplicationState({
@@ -220,7 +311,74 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
       classification: 'retired_v1',
     });
     const quarantinePath = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-storetemps');
-    await expect(stat(join(quarantinePath, 'relationships', 'rel_abc', 'relationship.json'))).resolves.toBeTruthy();
+    await expect(stat(join(quarantinePath, 'relationships', RELEASED_RELATIONSHIP_ID, 'relationship.json'))).resolves.toBeTruthy();
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    {
+      label: 'an arbitrary directional baseline record',
+      arrange: async (stateRoot: string) => {
+        const baselineDirectory = join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, 'directionalBaselines', RELEASED_DIRECTION_ID);
+        await mkdir(baselineDirectory, { recursive: true });
+        await writeFile(join(stateRoot, 'relationships', RELEASED_RELATIONSHIP_ID, 'relationship.json'), JSON.stringify(releasedRelationshipRecord(RELEASED_RELATIONSHIP_ID)));
+        await writeFile(join(baselineDirectory, 'baseline.json'), JSON.stringify({ schemaVersion: 1 }));
+      },
+    },
+    {
+      label: 'an arbitrary CAS shard entry',
+      arrange: async (stateRoot: string) => {
+        await mkdir(join(stateRoot, 'cas', 'sha256', 'ab'), { recursive: true });
+        await writeFile(join(stateRoot, 'cas', 'sha256', 'ab', 'not-a-released-cas-entry'), 'unknown');
+      },
+    },
+    {
+      label: 'an arbitrary staging entry',
+      arrange: async (stateRoot: string) => {
+        await mkdir(join(stateRoot, 'staging', 'job-1'), { recursive: true });
+        await writeFile(join(stateRoot, 'staging', 'job-1', 'unrelated.json'), '{}');
+      },
+    },
+    {
+      label: 'a magic-prefixed but malformed source offer',
+      arrange: async (stateRoot: string) => {
+        await mkdir(join(stateRoot, 'offers'), { recursive: true });
+        await writeFile(join(stateRoot, 'offers', 'offer_bad.txt'), `${SOURCE_OFFER_MAGIC}\n{"arbitrary":true}\n`);
+      },
+    },
+    {
+      label: 'a lease record with fields the released writer never emits',
+      arrange: async (stateRoot: string) => {
+        await mkdir(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease'), { recursive: true });
+        await writeFile(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease', 'lease.json'), JSON.stringify({
+          ...releasedLeaseRecord(),
+          arbitrary: true,
+        }));
+      },
+    },
+    {
+      label: 'an empty lease acquisition directory',
+      arrange: async (stateRoot: string) => {
+        await mkdir(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease'), { recursive: true });
+        await writeFile(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease', 'lease.json'), JSON.stringify(releasedLeaseRecord()));
+        await mkdir(join(stateRoot, 'scope-leases', 'rel_abc__dir_1', 'lease.tmp-0f1e2d3c-4b5a-4987-8765-fedcba987655'));
+      },
+    },
+  ])('leaves the state untouched when it contains $label', async ({ arrange }) => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = await makeLegacyStateRoot(activeServerDir);
+    await arrange(stateRoot);
+
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'unrecognized_child',
+    });
+    await expect(stat(stateRoot)).resolves.toBeTruthy();
+    await expect(readdir(activeServerDir)).resolves.toEqual(['workspace-replication']);
 
     await rm(activeServerDir, { recursive: true, force: true });
   });
@@ -229,7 +387,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     // A candidate at a released record location that is not valid JSON is a
     // malformed candidate: classification must fail closed, not succeed.
     await writeFile(join(stateRoot, 'jobs', 'job-2.json'), '{not json');
@@ -268,11 +426,61 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
+  it('leaves a superficial schema-version-and-id job lookalike untouched', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = join(activeServerDir, 'workspace-replication');
+    await mkdir(join(stateRoot, 'jobs'), { recursive: true });
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({
+      schemaVersion: 1,
+      jobId: 'job-1',
+    }));
+    await chmod(stateRoot, 0o700);
+
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'unrecognized_child',
+    });
+    await expect(stat(stateRoot)).resolves.toBeTruthy();
+    await expect(readFile(join(stateRoot, 'jobs', 'job-1.json'), 'utf8')).resolves.toContain('"jobId":"job-1"');
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('requires released record identity to match its job filename and relationship directory', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = join(activeServerDir, 'workspace-replication');
+    await mkdir(join(stateRoot, 'jobs'), { recursive: true });
+    await mkdir(join(stateRoot, 'relationships', 'rel_location'), { recursive: true });
+    await writeFile(
+      join(stateRoot, 'jobs', 'job-location.json'),
+      JSON.stringify(releasedJobRecord('job-record')),
+    );
+    await writeFile(
+      join(stateRoot, 'relationships', 'rel_location', 'relationship.json'),
+      JSON.stringify(releasedRelationshipRecord('rel_record')),
+    );
+    await chmod(stateRoot, 0o700);
+
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'unrecognized_child',
+    });
+    await expect(stat(stateRoot)).resolves.toBeTruthy();
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
   it('fails closed when a record location entry is a symlink', async () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await mkdir(join(activeServerDir, 'elsewhere'), { recursive: true });
     await symlink(join(activeServerDir, 'elsewhere'), join(stateRoot, 'relationships'));
     await chmod(stateRoot, 0o700);
@@ -286,12 +494,33 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
+  it('fails closed on a same-filesystem Linux mount replacement before inspecting or moving it', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = await makeLegacyStateRoot(activeServerDir);
+    const canonicalStateRoot = await realpath(stateRoot);
+
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      platform: 'linux',
+      readLinuxMountInfo: async () => `44 32 0:31 / ${canonicalStateRoot} rw,relatime - ext4 /dev/test rw\n`,
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'mount_replacement',
+      path: stateRoot,
+    });
+    await expect(stat(stateRoot)).resolves.toBeTruthy();
+    await expect(readdir(activeServerDir)).resolves.toEqual(['workspace-replication']);
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
   it('fails closed when the bounded record traversal is exhausted before completing', async () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
     for (let index = 0; index < 2_100; index += 1) {
-      await writeFile(join(stateRoot, 'jobs', `job-${index}.json`), JSON.stringify({ schemaVersion: 1, jobId: `job-${index}` }));
+      await writeFile(join(stateRoot, 'jobs', `job-${index}.json`), JSON.stringify(releasedJobRecord(`job-${index}`)));
     }
     await chmod(stateRoot, 0o700);
 
@@ -308,7 +537,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await writeFile(join(stateRoot, 'unexpected.txt'), 'do not touch');
 
     await expect(inspectRetiredWorkspaceReplicationState({
@@ -326,7 +555,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'cas'), { recursive: true });
     await mkdir(join(stateRoot, 'jobs'));
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o700);
 
     const first = await inspectRetiredWorkspaceReplicationState({
@@ -393,7 +622,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const stateRoot = join(activeServerDir, 'workspace-replication');
     const quarantine = async (nowMs: number, randomSuffix: string) => {
       await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-      await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+      await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
       await chmod(stateRoot, 0o700);
       await inspectRetiredWorkspaceReplicationState({
         activeServerDir,
@@ -466,7 +695,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const quarantinePath = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-after-rename');
     await mkdir(join(quarantinePath, 'jobs'), { recursive: true });
-    await writeFile(join(quarantinePath, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(quarantinePath, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(quarantinePath, 0o700);
 
     await expect(inspectRetiredWorkspaceReplicationState({
@@ -507,6 +736,32 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
+  it('fails unknown without mutation when a marked quarantine has nested content drift', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = await makeLegacyStateRoot(activeServerDir);
+    const first = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'nested-drift',
+    });
+    if (first.status !== 'legacy_workspace_sync_state_unsupported') {
+      throw new Error('expected quarantine on first startup');
+    }
+    const jobPath = join(first.quarantinePath, 'jobs', 'job-1.json');
+    await writeFile(jobPath, JSON.stringify({ schemaVersion: 1, injected: true }));
+
+    await expect(inspectRetiredWorkspaceReplicationState({ activeServerDir })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'malformed_retired_quarantine',
+      path: first.quarantinePath,
+    });
+    await expect(readFile(jobPath, 'utf8')).resolves.toBe('{"schemaVersion":1,"injected":true}');
+    await expect(stat(stateRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
   it('ignores similarly named directories that do not match the exact plan-owned quarantine shape', async () => {
     const activeServerDir = await makeServerDir();
     await mkdir(join(activeServerDir, 'workspace-replication.retired-v1'), { recursive: true });
@@ -524,7 +779,7 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o777);
 
     await expect(inspectRetiredWorkspaceReplicationState({
@@ -649,10 +904,12 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
-  it('rechecks POSIX permissions before renaming so a noop hardening call never quarantines a public directory', async () => {
+  it('rejects a non-private released root without invoking a POSIX mutation hook', async () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = await makeLegacyStateRoot(activeServerDir);
     await chmod(stateRoot, 0o755);
+
+    const setPosixPrivatePermissions = vi.fn(async () => undefined);
 
     const result = await inspectRetiredWorkspaceReplicationState({
       activeServerDir,
@@ -660,14 +917,16 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
       nowMs: 1_700_000_000_000,
       randomSuffix: 'chmodnoop',
       platform: 'linux',
-      setPosixPrivatePermissions: async () => undefined,
+      setPosixPrivatePermissions,
     });
 
     expect(result).toMatchObject({
       status: 'legacy_workspace_sync_state_unknown',
-      reason: 'quarantine_permissions_failed',
+      reason: 'ownership_or_permissions',
       path: stateRoot,
     });
+    expect(setPosixPrivatePermissions).not.toHaveBeenCalled();
+    expect((await stat(stateRoot)).mode & 0o777).toBe(0o755);
     await expect(stat(join(
       activeServerDir,
       'workspace-replication.retired-v1-1700000000000-chmodnoop',
@@ -675,11 +934,11 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
-  it('quarantines a 0755 released root once POSIX hardening actually runs before the rename', async () => {
+  it('leaves a 0755 released root untouched because privacy must be proven before inspection', async () => {
     const activeServerDir = await makeServerDir();
     const stateRoot = join(activeServerDir, 'workspace-replication');
     await mkdir(join(stateRoot, 'jobs'), { recursive: true });
-    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify(releasedJobRecord('job-1')));
     await chmod(stateRoot, 0o755);
 
     const result = await inspectRetiredWorkspaceReplicationState({
@@ -689,12 +948,13 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
       randomSuffix: 'hardened',
     });
 
-    const quarantinePath = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-hardened');
     expect(result).toMatchObject({
-      status: 'legacy_workspace_sync_state_unsupported',
-      quarantinePath,
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'ownership_or_permissions',
+      path: stateRoot,
     });
-    expect((await stat(quarantinePath)).mode & 0o777).toBe(0o700);
+    expect((await stat(stateRoot)).mode & 0o777).toBe(0o755);
+    await expect(readdir(activeServerDir)).resolves.toEqual(['workspace-replication']);
     await rm(activeServerDir, { recursive: true, force: true });
   });
 

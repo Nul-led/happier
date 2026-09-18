@@ -21,8 +21,21 @@ import { resolveHappierToolsShellBridgeContextEnv } from './resolveHappierToolsS
  * `launchSpec.env` (e.g. TSX_TSCONFIG_PATH in dev) is the launch-mechanism env for
  * this specific CLI invocation and is merged after the context.
  */
+/**
+ * Every command this module generates is run by an Agent's shell, never typed by
+ * the operator, so the provenance marker belongs to the generated shape itself
+ * rather than to each caller. Stamping it here keeps the producer, the exact
+ * recognizer below and the `happier tools` dispatcher agreeing on one fact: the
+ * invocation is Agent automation even when it can read stored human credentials.
+ */
+function withAgentBridgeMarker(args: readonly string[]): string[] {
+  const [subcommand, ...rest] = args;
+  if (subcommand === undefined) return [];
+  return [subcommand, '--agent-bridge', ...rest.filter((arg) => arg !== '--agent-bridge')];
+}
+
 export function buildHappierToolsShellBridgeCommand(args: readonly string[]): string {
-  const launchSpec = buildHappyCliSubprocessLaunchSpec(['tools', ...args]);
+  const launchSpec = buildHappyCliSubprocessLaunchSpec(['tools', ...withAgentBridgeMarker(args)]);
   const command = buildPosixShellCommand([launchSpec.filePath, ...launchSpec.args]);
   const env = {
     ...resolveHappierToolsShellBridgeContextEnv(),

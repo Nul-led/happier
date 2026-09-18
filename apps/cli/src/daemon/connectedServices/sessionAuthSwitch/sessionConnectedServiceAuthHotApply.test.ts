@@ -35,7 +35,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -71,7 +71,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -118,7 +118,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -172,7 +172,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' } },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'claude-subscription': { source: 'connected', selection: 'group', groupId: 'group-1', profileId: 'profile-1' },
         },
@@ -226,7 +226,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' } },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'claude-subscription': { source: 'connected', selection: 'group', groupId: 'group-1', profileId: 'profile-1' },
         },
@@ -285,7 +285,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -317,7 +317,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -360,7 +360,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -406,7 +406,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -452,7 +452,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -494,7 +494,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
           openai: { source: 'connected', selection: 'profile', profileId: 'api' },
@@ -541,7 +541,7 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
         },
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
           openai: { source: 'connected', selection: 'profile', profileId: 'api' },

@@ -7,7 +7,7 @@ import type { RegisteredSessionStateFieldMutationV1 } from '@/api/session/client
 export type DeferredStartupPushSender = Pick<PushNotificationClient, 'sendToAllDevices' | 'sendToAllDevicesAsync'>;
 
 export type DeferredStartupLoopApi = Readonly<{
-    push: () => DeferredStartupPushSender;
+    push: () => DeferredStartupPushSender | null;
 }>;
 
 export type DeferredStartupStartOptions = Readonly<{

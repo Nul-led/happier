@@ -4,6 +4,7 @@ import axios from 'axios';
 import type { StoredCredentials } from '@/persistence';
 import type { RawSessionListRow, RawSessionRecord } from '@/session/transport/http/sessionsHttp';
 import { createAuthenticationHttpStatusError } from '@/api/client/httpStatusError';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 import {
   type AccountEncryptionCurrentnessResponse,
   createPlainSessionOwnerMetadataEnvelopeV1,
@@ -24,13 +25,9 @@ const credentials = {
   encryption: null,
 } satisfies StoredCredentials;
 
-const plainAccountEncryptionCurrentness = Object.freeze({
-  mode: 'plain' as const,
-  version: 1,
-  signingKeyFingerprint: null,
-  contentKeyFingerprint: null,
-  updatedAt: 1,
-}) satisfies AccountEncryptionCurrentnessResponse;
+const plainAccountEncryptionCurrentness = Object.freeze(
+  createAccountEncryptionCurrentnessFixture({ version: 1, updatedAt: 1 }),
+) satisfies AccountEncryptionCurrentnessResponse;
 
 function createTestPluginSessionsInventory(
   params: Omit<
@@ -607,6 +604,36 @@ describe('plugin sessions inventory public service boundary', () => {
     });
     expect(await handle?.summary()).not.toHaveProperty('machineId');
     await expect(inventory.list({ machineId: 'machine-a' })).resolves.toEqual({ items: [] });
+  });
+
+  it('uses the host-retained exact-Home feature snapshot for shared Session detail reads', async () => {
+    const serverFeaturesSnapshot = {
+      status: 'unsupported' as const,
+      reason: 'endpoint_missing' as const,
+    };
+    const viewer = rawSession({
+      id: 'session-viewer',
+      share: { accessLevel: 'view', canApprovePermissions: false },
+    });
+    const fetchById = vi.fn(async () => viewer);
+    const inventory = createTestPluginSessionsInventory({
+      credentials,
+      currentSessionId: null,
+      isCurrent: () => true,
+      resolveServerFeaturesSnapshot: () => serverFeaturesSnapshot,
+      readStoragePolicy: async () => 'optional',
+      fetchPage: async () => ({ sessions: [], nextCursor: null, hasNext: false }),
+      fetchById,
+    });
+
+    await expect((await inventory.get(viewer.id))?.summary()).resolves.toMatchObject({
+      id: viewer.id,
+    });
+    expect(fetchById).toHaveBeenCalledWith({
+      token: credentials.token,
+      sessionId: viewer.id,
+      serverFeaturesSnapshot,
+    });
   });
 
   it('uses the same summary owner for current and global get and delegates user text to the canonical sender', async () => {

@@ -77,6 +77,7 @@ export type TmuxSpawnResult<TCommitRefusal = never> =
       sessionId: string;
       sessionName: string;
       windowName: string;
+      windowId: string;
       pid: number;
       commitRefusal?: never;
     }>
@@ -96,8 +97,38 @@ export class TmuxUtilities {
   private readonly tmuxCommandEnv?: Record<string, string>;
   private readonly tmuxSocketPath?: string;
 
+  /**
+   * Build the leading argv for every tmux client this class spawns.
+   *
+   * `-u` declares the client UTF-8 capable. Without it tmux derives that flag from
+   * TMUX/LC_ALL/LC_CTYPE/LANG and, for a non-UTF-8 client, rewrites every control or
+   * non-ASCII byte of printed output (`-P`, `display-message -p`, `list-*`) as `_`.
+   * That silently corrupts the TAB-separated formats parsed here (window id + pane
+   * pid, window listings, cursor position, session selection) whenever the daemon
+   * inherits no locale, e.g. when it was started over SSH.
+   */
+  private static clientArgs(socketPath?: string): string[] {
+    return socketPath ? ['tmux', '-u', '-S', socketPath] : ['tmux', '-u'];
+  }
+
+  /** Index of the tmux command name in an argv built from `clientArgs()`. */
+  private static commandIndex(args: readonly string[]): number {
+    let index = 1;
+    while (index < args.length) {
+      const arg = args[index];
+      if (arg === '-S') {
+        index += 2;
+      } else if (arg?.startsWith('-')) {
+        index += 1;
+      } else {
+        break;
+      }
+    }
+    return index;
+  }
+
   private static operationName(args: readonly string[]): string {
-    return args[1] === '-S' ? (args[3] ?? 'unknown') : (args[1] ?? 'unknown');
+    return args[TmuxUtilities.commandIndex(args)] ?? 'unknown';
   }
 
   constructor(sessionName?: string, tmuxCommandEnv?: Record<string, string>, tmuxSocketPath?: string) {
@@ -155,47 +186,19 @@ export class TmuxUtilities {
   ): Promise<TmuxCommandResult | null> {
     const targetSession = session || this.sessionName;
 
-    // Build command array
-    let baseCmd = ['tmux'];
+    const baseCmd = TmuxUtilities.clientArgs(socketPath ?? this.tmuxSocketPath);
 
-    // Add socket specification if provided
-    const resolvedSocketPath = socketPath ?? this.tmuxSocketPath;
-    if (resolvedSocketPath) {
-      baseCmd = ['tmux', '-S', resolvedSocketPath];
-    }
-
-    // Handle send-keys with proper target specification
-    if (cmd.length > 0 && cmd[0] === 'send-keys') {
-      const fullCmd = [...baseCmd, cmd[0]];
-      const hasExplicitTarget = cmd.slice(1).includes('-t');
-
-      // Add target specification immediately after send-keys
-      if (!hasExplicitTarget) {
-        let target = targetSession;
-        if (window) target += `:${window}`;
-        if (pane) target += `.${pane}`;
-        fullCmd.push('-t', target);
-      }
-
-      // Add keys and control sequences
-      fullCmd.push(...cmd.slice(1));
-
-      return this.executeCommand(fullCmd, {
-        ...(stdin !== undefined ? { stdin } : {}),
-        ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      });
-    }
-
-    // Non-send-keys commands
+    // Add the default target for commands that support it, immediately after the command name.
+    // tmux does not permute arguments: a `-t` placed after a positional operand (`send-keys` text,
+    // the `display-message` format) is rejected as an extra argument instead of being parsed.
+    const commandName = cmd[0];
+    const hasExplicitTarget = cmd.slice(1).includes('-t');
     const fullCmd = [...baseCmd, ...cmd];
-
-    // Add target specification for commands that support it
-    const hasExplicitTarget = cmd.includes('-t');
-    if (!hasExplicitTarget && cmd.length > 0 && COMMANDS_SUPPORTING_TARGET.has(cmd[0])) {
+    if (commandName !== undefined && !hasExplicitTarget && COMMANDS_SUPPORTING_TARGET.has(commandName)) {
       let target = targetSession;
       if (window) target += `:${window}`;
       if (pane) target += `.${pane}`;
-      fullCmd.push('-t', target);
+      fullCmd.splice(baseCmd.length + 1, 0, '-t', target);
     }
 
     return this.executeCommand(fullCmd, {
@@ -255,7 +258,7 @@ export class TmuxUtilities {
       logTmuxDebug('[TMUX] Command starting', {
         operation: TmuxUtilities.operationName(args),
         timeoutMs: commandTimeoutMs,
-        hasSocketPath: args[1] === '-S',
+        hasSocketPath: args.slice(0, TmuxUtilities.commandIndex(args)).includes('-S'),
       });
       const child = spawn(args[0], args.slice(1), {
         stdio: stdin !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
@@ -296,9 +299,8 @@ export class TmuxUtilities {
           } catch {
             killRequested = false;
           } finally {
-            const operationIndex = args[1] === '-S' ? 3 : 1;
             logTmuxWarn('[TMUX] Command timed out', {
-              operation: args[operationIndex] ?? 'unknown',
+              operation: TmuxUtilities.operationName(args),
               timeoutMs: commandTimeoutMs,
               pid: child.pid ?? null,
               killRequested,
@@ -766,7 +768,8 @@ export class TmuxUtilities {
         : parsePositivePid(createOutputParts[0]);
       const createCompletedNormally = createResult?.returncode === 0 && createResult.timedOut !== true;
 
-      let panePid = createCompletedNormally ? directlyReportedPid : null;
+      let resolvedWindowId = createdWindowId;
+      let panePid = createCompletedNormally && resolvedWindowId ? directlyReportedPid : null;
       if (panePid === null) {
         type ListedWindow = Readonly<{ windowId: string; windowName: string; panePid: number | null }>;
         const listCreatedWindows = async (): Promise<readonly ListedWindow[] | null> => {
@@ -803,6 +806,7 @@ export class TmuxUtilities {
           : (windowNameIsUnique && exactNameMatches?.length === 1 ? exactNameMatches[0]! : null);
 
         if (recoveredWindow?.panePid) {
+          resolvedWindowId = recoveredWindow.windowId;
           panePid = recoveredWindow.panePid;
         } else {
           const absenceWasAlreadyVerified = listedWindows !== null && (
@@ -845,12 +849,16 @@ export class TmuxUtilities {
         }
       }
 
+      if (!resolvedWindowId) {
+        throw new Error('Failed to resolve immutable tmux window id');
+      }
       logTmuxDebug(`[TMUX] Spawned command in tmux session ${sessionName}, window ${windowName}, PID ${panePid}`);
 
-      // Return tmux session info and PID
+      // Persist the display name separately, while every ownership target uses tmux's
+      // immutable server-wide window id so automatic or manual renames cannot retarget it.
       const sessionIdentifier: TmuxSessionIdentifier = {
         session: sessionName,
-        window: windowName,
+        window: resolvedWindowId,
       };
 
       return {
@@ -859,6 +867,7 @@ export class TmuxUtilities {
         sessionId: formatTmuxSessionIdentifier(sessionIdentifier),
         sessionName,
         windowName,
+        windowId: resolvedWindowId,
         pid: panePid,
       };
     } catch (error) {
@@ -896,10 +905,33 @@ export class TmuxUtilities {
    */
   async killWindow(sessionIdentifier: string): Promise<boolean> {
     try {
+      const immutableWindowId = sessionIdentifier.trim().match(/^@\d+$/)?.[0] ?? null;
+      if (immutableWindowId) {
+        const result = await this.executeTmuxCommand(['kill-window', '-t', immutableWindowId]);
+        if (!result || result.returncode !== 0 || result.timedOut === true) return false;
+        const inventory = await this.executeTmuxCommand([
+          'list-windows',
+          '-a',
+          '-F',
+          '#{window_id}\t#{window_name}',
+        ]);
+        if (!inventory || inventory.timedOut === true) return false;
+        if (inventory.returncode === 0) {
+          return !inventory.stdout
+            .split('\n')
+            .map((line) => line.split('\t', 1)[0]?.trim())
+            .filter(Boolean)
+            .includes(immutableWindowId);
+        }
+        return /(?:no server running|failed to connect to server)/iu.test(inventory.stderr);
+      }
+
       const parsed = parseTmuxSessionIdentifier(sessionIdentifier);
       if (!parsed.window) {
         throw new TmuxSessionIdentifierError(`Window identifier required: ${sessionIdentifier}`);
       }
+      const directWindowId = parsed.window.match(/^@\d+$/)?.[0] ?? null;
+      if (directWindowId) return await this.killWindow(directWindowId);
 
       const result = await this.executeTmuxCommand(['kill-window'], parsed.session, parsed.window);
       if (!result || result.returncode !== 0 || result.timedOut === true) {

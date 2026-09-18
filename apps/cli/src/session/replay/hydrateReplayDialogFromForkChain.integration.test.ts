@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import nacl from 'tweetnacl';
 import { buildHappierReplayPromptFromDialog } from '@happier-dev/agents';
 import {
   createPlainSessionOwnerMetadataEnvelopeV1,
+  deriveAccountMachineKeyFromRecoverySecret,
+  sealEncryptedDataKeyEnvelopeV1,
   SessionOwnerMetadataV1Schema,
 } from '@happier-dev/protocol';
 
@@ -26,6 +29,7 @@ function respondAccountEncryptionCurrentness(url: URL, res: import('node:http').
     signingKeyFingerprint: null,
     contentKeyFingerprint: null,
     updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
   }));
   return true;
 }
@@ -1044,9 +1048,9 @@ describe('hydrateReplayDialogFromForkChain (integration)', () => {
   });
 
   /**
-   * A legacy-secret Account has no per-Session data key: the Account secret IS
-   * the content key, and `resolveSessionEncryptionContextFromCredentials` is the
-   * one owner that already knows that. This hydrator asked only for `dataKey`
+   * An absent-envelope legacy Session uses the Account secret as its content
+   * key. A current envelope instead selects its own data-key cipher, even on
+   * a recovery-secret device. The canonical resolver owns both. This hydrator asked only for `dataKey`
    * material, so every e2ee segment of a legacy-secret Account was marked
    * unavailable and the whole hydration answered `null`.
    *
@@ -1055,17 +1059,21 @@ describe('hydrateReplayDialogFromForkChain (integration)', () => {
    * `partially_applied / source_stopped / context_unavailable`: the Session's
    * Agent is stopped and only then does the switch fail.
    */
-  it('opens an e2ee segment with the Account secret under legacy-secret credentials', async () => {
-    const { encodeBase64, encryptLegacy } = await import('@/api/encryption');
+  it.each(['legacy', 'dataKey'] as const)('opens an e2ee %s segment under recovery-secret credentials', async (variant) => {
+    const { encodeBase64, encrypt } = await import('@/api/encryption');
     const secret = new Uint8Array(32).fill(9);
+    const contentKey = variant === 'legacy' ? secret : new Uint8Array(32).fill(21);
     const legacySession = {
       ...EMPTY_SOURCE_SESSION,
       id: 'sess_legacy_e2ee',
       seq: 1,
       encryptionMode: 'e2ee',
-      metadata: encodeBase64(encryptLegacy({ flavor: 'claude', path: '/tmp' }, secret)),
-      // A legacy-secret Account publishes no per-Session DEK; the secret is the key.
-      dataEncryptionKey: null,
+      metadata: encodeBase64(encrypt(contentKey, variant, { flavor: 'claude', path: '/tmp' })),
+      dataEncryptionKey: variant === 'legacy' ? null : encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+        dataKey: contentKey,
+        recipientPublicKey: nacl.box.keyPair.fromSecretKey(deriveAccountMachineKeyFromRecoverySecret(secret)).publicKey,
+        randomBytes: (length) => new Uint8Array(length).fill(5),
+      })),
     };
 
     const result = await hydrateAgainst((url, res) => {
@@ -1085,9 +1093,10 @@ describe('hydrateReplayDialogFromForkChain (integration)', () => {
             createdAt: 1,
             content: {
               t: 'encrypted',
-              c: encodeBase64(encryptLegacy(
-                { role: 'user', content: { type: 'text', text: 'LEGACY_SECRET_TURN' } },
-                secret,
+              c: encodeBase64(encrypt(
+                contentKey,
+                variant,
+                { role: 'user', content: { type: 'text', text: 'RECOVERY_DEVICE_TURN' } },
               )),
             },
           }],
@@ -1099,7 +1108,7 @@ describe('hydrateReplayDialogFromForkChain (integration)', () => {
     }, { sessionId: 'sess_legacy_e2ee', secret });
 
     expect(result).not.toBeNull();
-    expect(result?.dialog.map((item) => item.text)).toEqual(['LEGACY_SECRET_TURN']);
+    expect(result?.dialog.map((item) => item.text)).toEqual(['RECOVERY_DEVICE_TURN']);
     // Opening the segment with the wrong key would skip the row and still
     // return an empty-but-successful hydration, so the seed would claim a
     // completeness it never had.

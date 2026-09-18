@@ -52,6 +52,7 @@ export type RegisterMachineLiveStreamRoutesOptions = PeerMachineLiveStreamDirect
     nowMs: () => number;
     expected: PeerMachineLiveStreamDirectExpectedBinding;
     trustRoots: readonly DirectRouteGrantTrustRoot[];
+    resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
 }>;
 
 const LiveStreamDirectStartRequestSchema = z
@@ -161,7 +162,7 @@ export function registerMachineLiveStreamRoutes(
           ? verifyDirectRouteGrantV2({
             grant: body.grant,
             proof: body.proof,
-            trustRoots: options.trustRoots,
+            trustRoots: options.resolveTrustRoots?.() ?? options.trustRoots,
             nowMs: options.nowMs(),
             expected: {
                 accountId: options.expected.accountId,
@@ -173,7 +174,7 @@ export function registerMachineLiveStreamRoutes(
           })
           : verifyDirectRouteGrantV1({
             grant: body.grant,
-            trustRoots: options.trustRoots,
+            trustRoots: options.resolveTrustRoots?.() ?? options.trustRoots,
             nowMs: options.nowMs(),
             expected: {
                 accountId: options.expected.accountId,

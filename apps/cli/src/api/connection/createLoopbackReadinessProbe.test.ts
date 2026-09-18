@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from '@happier-dev/protocol';
-import { Readable } from 'node:stream';
 
 const axiosGet = vi.hoisted(() => vi.fn());
 
@@ -13,21 +12,18 @@ import { createLoopbackReadinessProbe } from './createLoopbackReadinessProbe';
 describe('createLoopbackReadinessProbe', () => {
   beforeEach(() => {
     axiosGet.mockReset();
+    vi.unstubAllGlobals();
   });
 
   it('requires both the expected Home identity and authenticated account access', async () => {
-    axiosGet
-      .mockResolvedValueOnce({
-        status: 200,
-        headers: {},
-        data: Readable.from([Buffer.from(JSON.stringify({
-          features: {},
-          capabilities: {
-            serverIdentity: { serverIdentityId: 'srv_expected' },
-          },
-        }))]),
-      })
-      .mockResolvedValueOnce({ status: 401, data: { error: 'unauthorized' } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      features: {},
+      capabilities: {
+        serverIdentity: { serverIdentityId: 'srv_expected' },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    axiosGet.mockResolvedValueOnce({ status: 401, data: { error: 'unauthorized' } });
 
     await expect(createLoopbackReadinessProbe({
       serverUrl: 'http://127.0.0.1:48123',
@@ -35,13 +31,11 @@ describe('createLoopbackReadinessProbe', () => {
       expectedServerIdentityId: 'srv_expected',
     })()).resolves.toMatchObject({ status: 'auth_failed', statusCode: 401 });
 
-    expect(axiosGet).toHaveBeenNthCalledWith(
-      1,
+    expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:48123/v1/features',
-      expect.objectContaining({ validateStatus: expect.any(Function) }),
+      expect.objectContaining({ method: 'GET', redirect: 'manual' }),
     );
-    expect(axiosGet).toHaveBeenNthCalledWith(
-      2,
+    expect(axiosGet).toHaveBeenCalledWith(
       'http://127.0.0.1:48123/v1/auth/ping',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer account-token' }),
@@ -51,48 +45,54 @@ describe('createLoopbackReadinessProbe', () => {
   });
 
   it('fails closed when the public Home identity does not match', async () => {
-    axiosGet.mockResolvedValueOnce({
-      status: 200,
-      headers: {},
-      data: Readable.from([Buffer.from(JSON.stringify({
-        features: {},
-        capabilities: {
-          serverIdentity: { serverIdentityId: 'srv_other' },
-        },
-      }))]),
-    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      features: {},
+      capabilities: {
+        serverIdentity: { serverIdentityId: 'srv_other' },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
 
     await expect(createLoopbackReadinessProbe({
       serverUrl: 'http://127.0.0.1:48123',
       token: 'account-token',
       expectedServerIdentityId: 'srv_expected',
     })()).resolves.toMatchObject({ status: 'auth_failed' });
-    expect(axiosGet).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(axiosGet).not.toHaveBeenCalled();
   });
 
   it('consumes only the bounded feature stream before rejecting an oversized Home identity payload', async () => {
     let chunksRead = 0;
-    const body = {
-      async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
         chunksRead += 1;
-        yield Buffer.alloc(FEATURES_RESPONSE_MAX_UTF8_BYTES_V1);
-        chunksRead += 1;
-        yield Buffer.from('x');
-        chunksRead += 1;
-        yield Buffer.from('{"mustNotBeRead":true}');
+        if (chunksRead === 1) {
+          controller.enqueue(Buffer.alloc(FEATURES_RESPONSE_MAX_UTF8_BYTES_V1));
+          return;
+        }
+        if (chunksRead === 2) {
+          controller.enqueue(Buffer.from('x'));
+          return;
+        }
+        controller.enqueue(Buffer.from('{"mustNotBeRead":true}'));
       },
-      destroy: vi.fn(),
-    };
-    axiosGet.mockResolvedValueOnce({ status: 200, headers: {}, data: body });
+      cancel,
+    }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
 
     await expect(createLoopbackReadinessProbe({
       serverUrl: 'http://127.0.0.1:48123',
       token: 'account-token',
       expectedServerIdentityId: 'srv_expected',
-    })()).resolves.toMatchObject({ status: 'auth_failed' });
+    })()).resolves.toMatchObject({ status: 'server_unreachable' });
 
     expect(chunksRead).toBe(2);
-    expect(body.destroy).toHaveBeenCalledOnce();
-    expect(axiosGet).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(axiosGet).not.toHaveBeenCalled();
   });
 });

@@ -1,16 +1,15 @@
 import { Socket } from 'socket.io-client';
 
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import {
     createManagedConnectionSupervisor,
     DEFAULT_MANAGED_CONNECTION_POLICY,
     type ManagedConnectionState,
     type ManagedConnectionSupervisor,
 } from '@happier-dev/connection-supervisor';
+import { redactBugReportSensitiveText } from '@happier-dev/protocol';
 import { createLoopbackReadinessProbe } from '@/api/connection/createLoopbackReadinessProbe';
-import { createSessionSocketTransport } from '../../connection/createSessionSocketTransport';
 import { connectionState } from '@/api/offline/serverConnectionErrors';
-import { createUserScopedSocket } from '../../sockets';
+import type { SessionClientTransport } from './sessionClientTransport';
 import type { ClientToServerEvents, ServerToClientEvents, Update } from '../../../types';
 import { logger } from '@/ui/logger';
 import { serializeAxiosErrorForLog } from '../../../client/serializeAxiosErrorForLog';
@@ -37,8 +36,15 @@ function normalizeMachineId(value: unknown): string | undefined {
 export function initializeSessionClientConnection(
     params: Readonly<{
         token: string;
+        transport: SessionClientTransport;
         sessionId: string;
         localMachineId?: string | null;
+        /**
+         * Account-wide user-scoped updates. A restricted Session-runtime
+         * composition (shared-editor authority) has no Account room to join, so
+         * it never opens that socket.
+         */
+        userScopedAccountUpdates: boolean;
         getMetadataSnapshot: () => unknown;
         setSessionSocket: (socket: Socket<ServerToClientEvents, ClientToServerEvents>) => void;
         rpcHandlerManager: {
@@ -71,20 +77,24 @@ export function initializeSessionClientConnection(
         waitForRuntimeActivityPublisherReadiness?: (
             signal: AbortSignal,
         ) => Promise<boolean>;
+        /** Content-free hint only; the destination reconciler re-observes durable authority. */
+        onSessionFollowInvalidated?: () => void;
     }>,
 ): Readonly<{
-    userSocket: Socket<ServerToClientEvents, ClientToServerEvents>;
+    userSocket: Socket<ServerToClientEvents, ClientToServerEvents> | null;
     sessionConnectionSupervisor: ManagedConnectionSupervisor;
 }> {
-    const userSocket = createUserScopedSocket({ token: params.token });
-    userSocket.on('update', (data: Update) => params.handleUserScopedUpdate(data, userSocket));
-    userSocket.on('session', () => {});
+    const userSocket = params.userScopedAccountUpdates
+        ? params.transport.createAccountUpdatesSocket?.() ?? null
+        : null;
+    userSocket?.on('update', (data: Update) => params.handleUserScopedUpdate(data, userSocket));
+    userSocket?.on('session', () => {});
 
     let currentTransportSocket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
     let currentTransportMachineId: string | undefined;
     let publisherReadinessAbortController: AbortController | null = null;
     const serverContractController = createSessionSyncPendingInputServerContractController({
-        serverUrl: resolveServerHttpBaseUrl(),
+        serverUrl: params.transport.serverUrl,
         token: params.token,
     });
     const sessionConnectionSupervisor = createManagedConnectionSupervisor({
@@ -101,8 +111,7 @@ export function initializeSessionClientConnection(
                 }
                 return normalizeMachineId((metadata as { machineId?: unknown }).machineId);
             })();
-            const { socket, transport } = createSessionSocketTransport({
-                token: params.token,
+            const { socket, transport } = params.transport.createSessionSocketTransport({
                 sessionId: params.sessionId,
                 machineId,
             });
@@ -114,10 +123,19 @@ export function initializeSessionClientConnection(
         },
         classifyTransportErrorToProbeResult: params.classifyTransportErrorToProbeResult,
         probeReadiness: createLoopbackReadinessProbe({
-            serverUrl: resolveServerHttpBaseUrl(),
+            serverUrl: params.transport.serverUrl,
             token: params.token,
         }),
         onStateChange: (state) => {
+            logger.infoFile('[API] Session socket connection state', {
+                phase: state.phase,
+                reason: state.reason,
+                attempt: state.attempt,
+                nextRetryAt: state.nextRetryAt,
+                lastErrorMessage: state.lastErrorMessage
+                    ? redactBugReportSensitiveText(state.lastErrorMessage)
+                    : null,
+            });
             params.onStateChange(state);
         },
         onConnected: async () => {
@@ -234,6 +252,7 @@ export function initializeSessionClientConnection(
                     });
                 });
             }
+            params.onSessionFollowInvalidated?.();
         },
         onDisconnected: async ({ event }) => {
             logger.debug('[API] Socket disconnected:', event.reason ?? 'unknown');
@@ -247,7 +266,7 @@ export function initializeSessionClientConnection(
             );
             params.rpcHandlerManager.onSocketDisconnect();
             try {
-                userSocket.disconnect();
+                userSocket?.disconnect();
             } catch {
                 // ignore
             }
@@ -263,7 +282,7 @@ export function initializeSessionClientConnection(
             );
             params.rpcHandlerManager.onSocketDisconnect();
             try {
-                userSocket.disconnect();
+                userSocket?.disconnect();
             } catch {
                 // ignore
             }

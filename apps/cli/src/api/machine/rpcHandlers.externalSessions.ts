@@ -1,11 +1,13 @@
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   EXTERNAL_SESSION_IMPORT_PUBLICATION_FENCE_VERSION_V1,
+  EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
   EXTERNAL_SESSION_RUNTIME_BOUND_ADMISSION_VERSION_V3,
   ExternalSessionOperationActionResponseV1Schema,
   type ActionExecuteResult,
   type ActionId,
   type ExternalSessionTranscriptInvalidationV1,
+  type ExternalSessionSourceUnavailableOccurrenceV1,
   PLUGIN_SESSION_HOOK_MANAGEMENT_FEATURE_ID,
 } from '@happier-dev/protocol';
 
@@ -26,6 +28,7 @@ import { registerActionSpecRpcHandlers } from '@/rpc/handlers/registerActionSpec
 import {
   externalSessionsError,
   executeExternalSessionAttachAction,
+  executeExternalSessionCandidateDeleteAction,
   executeExternalSessionCandidatesListAction,
   executeExternalSessionDetachAction,
   executeExternalSessionFollowPolicySetAction,
@@ -295,6 +298,16 @@ export function createExternalSessionRpcActionExecutor(
                 : undefined,
             ),
           };
+        case 'sessions.external.candidate.delete':
+          return {
+            ok: true,
+            result: await executeExternalSessionCandidateDeleteAction(
+              input,
+              executionContext?.signal
+                ? { signal: executionContext.signal }
+                : undefined,
+            ),
+          };
         case 'sessions.external.link.ensure':
           return {
             ok: true,
@@ -395,6 +408,8 @@ function readExternalSessionGenericFailure(actionId: ActionId): string {
   switch (actionId) {
     case 'sessions.external.candidates.list':
       return 'external_sessions_candidates_list_failed';
+    case 'sessions.external.candidate.delete':
+      return 'external_session_candidate_delete_failed';
     case 'sessions.external.link.ensure':
       return 'external_session_link_ensure_failed';
     case 'sessions.external.follow':
@@ -495,6 +510,7 @@ export function registerMachineExternalSessionsRpcHandlers(params: Readonly<{
   spawnSession?: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   stopSession?: (sessionId: string) => Promise<boolean>;
   emitExternalSessionTranscriptUpdate?: (payload: ExternalSessionTranscriptInvalidationV1) => void | Promise<void>;
+  emitExternalSessionSourceUnavailableOccurrence?: (payload: ExternalSessionSourceUnavailableOccurrenceV1) => void | Promise<void>;
   deviceLocalSecretStorage?: DeviceLocalSecretStorage;
   transientMediaReadAllowance?: ExternalSessionActionContext['transientMediaReadAllowance'];
   actionExecutor?: RpcActionExecutor;
@@ -540,8 +556,20 @@ export function registerMachineExternalSessionsRpcHandlers(params: Readonly<{
   dispose(): Promise<void>;
 }> {
   const { rpcHandlerManager, emitExternalSessionTranscriptUpdate } = params;
+  const sourceUnavailableMachineId = params.machineId;
+  const emitSourceUnavailable = params.emitExternalSessionSourceUnavailableOccurrence;
   const followLeaseManager = createExternalSessionFollowLeaseManager({
     writeFollowStatus: writeExternalSessionFollowStatus,
+    ...(sourceUnavailableMachineId && emitSourceUnavailable
+      ? { publishSourceUnavailableOccurrence: ({ sessionId, observedAtMs }) =>
+          emitSourceUnavailable({
+            v: 1,
+            type: EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
+            sessionId,
+            machineId: sourceUnavailableMachineId,
+            observedAtMs,
+          }) }
+      : {}),
   });
   const observationProjection = createExternalSessionObservationDaemonProjection({
     shouldSendReadyNotification: (sessionId) =>

@@ -4,6 +4,7 @@ import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
@@ -59,13 +60,11 @@ describe('happier session run start (plaintext integration)', () => {
       if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
+        res.end(JSON.stringify(createAccountEncryptionCurrentnessFixture({
           mode: 'plain',
           version: 1,
-          signingKeyFingerprint: null,
-          contentKeyFingerprint: null,
           updatedAt: 1,
-        }));
+        })));
         return;
       }
       if (req.method === 'GET' && url.pathname === `/v2/sessions`) {

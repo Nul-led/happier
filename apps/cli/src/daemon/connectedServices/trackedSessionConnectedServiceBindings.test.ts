@@ -22,9 +22,9 @@ function trackedSession(overrides: Partial<TrackedSession> = {}): TrackedSession
 describe('trackedSessionConnectedServiceBindings', () => {
   it('falls back to webhook metadata when spawn options do not carry connected-service bindings', () => {
     const metadataBindings = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
-        anthropic: {
+        'happier.agent.claude/anthropic': {
           source: 'connected' as const,
           selection: 'group' as const,
           profileId: 'profile_1',
@@ -57,7 +57,7 @@ describe('trackedSessionConnectedServiceBindings', () => {
       spawnOptions: {
         directory: '/tmp/project',
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'happier.agent.claude/anthropic': {
               source: 'connected',
@@ -76,9 +76,9 @@ describe('trackedSessionConnectedServiceBindings', () => {
         happyLibDir: '/tmp/home/.happier/lib',
         happyToolsDir: '/tmp/home/.happier/tools',
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               profileId: 'profile_stale',

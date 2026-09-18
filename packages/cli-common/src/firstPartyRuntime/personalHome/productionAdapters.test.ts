@@ -15,6 +15,7 @@ import {
   createCanonicalPersonalHomeOperations,
   createCanonicalPersonalHomeRelocationDestinationOwner,
   finalizePersonalHomeSanitizedConfiguration,
+  materializePersonalHomeRelocationEndpointWithServerCommand,
   inspectPersonalHomeSanitizedConfigurationStorage,
   preparePersonalHomeSanitizedConfiguration,
   readPersonalHomeSanitizedConfiguration,
@@ -60,6 +61,32 @@ async function seedPersonalHome(params: Readonly<{ homeDir: string; homeServerId
 }
 
 describe('Personal Home production adapters', () => {
+  it.skipIf(process.platform === 'win32')('consumes an exact stopped-server descriptor and never synthesizes one from unavailable endpoint facts', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-descriptor-command-'));
+    try {
+      const { layout } = await seedPersonalHome({ homeDir, homeServerIdentityId: 'srv_home_descriptor', marker: 'descriptor' });
+      const connectionDescriptor = {
+        v: 1, homeServerIdentityId: 'srv_home_descriptor', canonicalServerUrl: 'https://home.example.test', revision: 27,
+        endpoints: [{ kind: 'https', url: 'https://destination.example.test' },
+          { kind: 'iroh', endpointId: 'ab'.repeat(32), relayUrls: ['https://relay.example.test'] }],
+      };
+      // A real child process is the server-maintenance boundary; all identity,
+      // configuration, parser, and deadline logic below it remains real.
+      const serverBinary = join(homeDir, 'maintenance-server');
+      const respond = async (value: unknown) => await writeFile(serverBinary,
+        `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(value)}'\n`, { mode: 0o700 });
+      const input = { layout, serverBinary, operationId: 'move-1', canonicalServerUrl: 'https://home.example.test', sourceDescriptorRevision: 7 };
+      await respond({ status: 'ready', connectionDescriptor });
+      await expect(materializePersonalHomeRelocationEndpointWithServerCommand(input)).resolves.toEqual({ connectionDescriptor });
+      await respond({ status: 'unavailable' });
+      await expect(materializePersonalHomeRelocationEndpointWithServerCommand(input)).rejects.toThrow();
+      await respond({ status: 'ready', connectionDescriptor: { ...connectionDescriptor, homeServerIdentityId: 'srv_other' } });
+      await expect(materializePersonalHomeRelocationEndpointWithServerCommand(input)).rejects.toThrow();
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('binds the relocation destination owner to the explicitly selected runtime target', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-relocation-target-'));
     try {
@@ -83,9 +110,10 @@ describe('Personal Home production adapters', () => {
         attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_1', accountCount: 1, sessionCount: 0 }),
         runMigrationProcess: async () => undefined,
         materializeEndpoint: async () => ({
-          homeServerIdentityId: 'srv_home_1',
-          canonicalServerUrl: 'https://destination.example.test',
-          minimumOuterRevisionExclusive: 7,
+          connectionDescriptor: {
+            v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://destination.example.test',
+            revision: 8, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+          },
         }),
       });
       await expect(owner.stage({
@@ -139,9 +167,10 @@ describe('Personal Home production adapters', () => {
         attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_1', accountCount: 1, sessionCount: 0 }),
         runMigrationProcess: async () => undefined,
         materializeEndpoint: async () => ({
-          homeServerIdentityId: 'srv_home_1',
-          canonicalServerUrl: 'https://destination.example.test',
-          minimumOuterRevisionExclusive: 7,
+          connectionDescriptor: {
+            v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://destination.example.test',
+            revision: 8, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+          },
         }),
       });
 
@@ -194,9 +223,10 @@ describe('Personal Home production adapters', () => {
         attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_source', accountCount: 1, sessionCount: 0 }),
         runMigrationProcess: async () => undefined,
         materializeEndpoint: async () => ({
-          homeServerIdentityId: 'srv_home_source',
-          canonicalServerUrl: 'https://destination.example.test',
-          minimumOuterRevisionExclusive: 4,
+          connectionDescriptor: {
+            v: 1, homeServerIdentityId: 'srv_home_source', canonicalServerUrl: 'https://destination.example.test',
+            revision: 5, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+          },
         }),
       });
       const stageInput = {
@@ -256,7 +286,7 @@ describe('Personal Home production adapters', () => {
         attestActivatedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_source', accountCount: 1, sessionCount: 0 }),
         attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_source', accountCount: 1, sessionCount: 0 }),
         runMigrationProcess: async () => undefined,
-        materializeEndpoint: async () => ({ homeServerIdentityId: 'srv_home_source', canonicalServerUrl: 'https://destination.example.test', minimumOuterRevisionExclusive: 2 }),
+        materializeEndpoint: async () => ({ connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_source', canonicalServerUrl: 'https://destination.example.test', revision: 3, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }] } }),
       });
       const input = {
         operationId: 'operation-candidate-abort', archivePath: bundle.path, bundleSha256: bundle.sha256,
@@ -382,9 +412,124 @@ describe('Personal Home production adapters', () => {
     const layout = await resolveCanonicalPersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' });
     const configuration = await readPersonalHomeSanitizedConfiguration(layout);
     expect(configuration.anonymousSignupPhase).toBe('loopback-bootstrap-then-disabled');
+    expect(configuration.homeDeviceApprovalRequired).toBe(false);
     const applied = await applyPersonalHomeSanitizedConfiguration(layout, normalizePersonalHomeRestorableConfigurationV1(configuration, 'home-identity'));
     await expect(readFile(join(layout.configDir, 'server.env'), 'utf8')).resolves.toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=0');
     await applied.rollback();
+  });
+
+  it.each([
+    ['enabled', '1', '0'],
+    ['disabled', '0', '1'],
+  ] as const)('applies and rolls back the %s Home device-approval policy without weakening destination state', async (_label, restoredValue, previousValue) => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-approval-policy-'));
+    try {
+      const layout = resolvePersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' });
+      const envPath = join(layout.configDir, 'server.env');
+      await mkdir(layout.configDir, { recursive: true });
+      await writeFile(envPath, [
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${layout.dataDir}`,
+        `HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=${previousValue}`,
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'));
+      const configuration = await readPersonalHomeSanitizedConfiguration(layout);
+      expect(configuration.homeDeviceApprovalRequired).toBe(previousValue === '1');
+      const prepared = await preparePersonalHomeSanitizedConfiguration(
+        layout,
+        normalizePersonalHomeRestorableConfigurationV1({
+          ...configuration,
+          homeDeviceApprovalRequired: restoredValue === '1',
+        }, 'home-identity'),
+      );
+
+      await prepared.apply();
+      await expect(readFile(envPath, 'utf8')).resolves.toContain(`HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=${restoredValue}`);
+      await prepared.rollback();
+      await expect(readFile(envPath, 'utf8')).resolves.toContain(`HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=${previousValue}`);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies direct-only relay configuration without retaining destination custom URLs and restores them on rollback', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-relay-policy-'));
+    const layout = resolvePersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' });
+    const envPath = join(layout.configDir, 'server.env');
+    await mkdir(layout.configDir, { recursive: true });
+    await writeFile(envPath, [
+      `HAPPIER_SERVER_LIGHT_DATA_DIR=${layout.dataDir}`,
+      'HAPPIER_IROH_RELAY_POLICY=automatic',
+      'HAPPIER_IROH_RELAY_URLS=https://relay.example.test',
+      'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+      '',
+    ].join('\n'));
+
+    const prepared = await preparePersonalHomeSanitizedConfiguration(
+      layout,
+      normalizePersonalHomeRestorableConfigurationV1({ irohRelayPolicy: 'disabled' }, 'home-identity'),
+    );
+    await prepared.apply();
+    const applied = await readFile(envPath, 'utf8');
+    expect(applied).toContain('HAPPIER_IROH_RELAY_POLICY=disabled');
+    expect(applied).not.toContain('HAPPIER_IROH_RELAY_URLS=');
+
+    await prepared.rollback();
+    await expect(readFile(envPath, 'utf8')).resolves.toContain('HAPPIER_IROH_RELAY_URLS=https://relay.example.test');
+
+    const automaticWithoutCustomRelay = await preparePersonalHomeSanitizedConfiguration(
+      layout,
+      normalizePersonalHomeRestorableConfigurationV1({ irohRelayPolicy: 'automatic' }, 'home-identity'),
+    );
+    await automaticWithoutCustomRelay.apply();
+    const automaticApplied = await readFile(envPath, 'utf8');
+    expect(automaticApplied).toContain('HAPPIER_IROH_RELAY_POLICY=automatic');
+    expect(automaticApplied).not.toContain('HAPPIER_IROH_RELAY_URLS=');
+    await automaticWithoutCustomRelay.rollback();
+  });
+
+  it.each([
+    ['direct-only', ['HAPPIER_IROH_RELAY_POLICY=disabled']],
+    ['custom relay', [
+      'HAPPIER_IROH_RELAY_POLICY=automatic',
+      'HAPPIER_IROH_RELAY_URLS=https://destination-relay.example.test',
+    ]],
+  ] as const)('restores implicit Iroh defaults over destination %s configuration and rolls the destination values back', async (_label, destinationIrohAssignments) => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-implicit-relay-policy-'));
+    try {
+      const layout = resolvePersonalHomeRuntimeLayout({ homeDir, platform: 'linux', mode: 'user' });
+      const envPath = join(layout.configDir, 'server.env');
+      await mkdir(layout.configDir, { recursive: true });
+      await writeFile(envPath, [
+        '# Preserve destination-local and newer configuration.',
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${layout.dataDir}`,
+        ...destinationIrohAssignments,
+        'HAPPIER_FEATURE_TEAMS__ENABLED=1',
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'));
+
+      const prepared = await preparePersonalHomeSanitizedConfiguration(
+        layout,
+        normalizePersonalHomeRestorableConfigurationV1({}, 'home-identity'),
+      );
+      await prepared.apply();
+      const applied = await readFile(envPath, 'utf8');
+      expect(applied).not.toContain('HAPPIER_IROH_RELAY_POLICY=');
+      expect(applied).not.toContain('HAPPIER_IROH_RELAY_URLS=');
+      expect(applied).toContain('# Preserve destination-local and newer configuration.');
+      expect(applied).toContain('HAPPIER_FEATURE_TEAMS__ENABLED=1');
+
+      await prepared.rollback();
+      const rolledBack = await readFile(envPath, 'utf8');
+      for (const assignment of destinationIrohAssignments) {
+        expect(rolledBack).toContain(assignment);
+      }
+      expect(rolledBack).toContain('# Preserve destination-local and newer configuration.');
+      expect(rolledBack).toContain('HAPPIER_FEATURE_TEAMS__ENABLED=1');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 
   it('reports exact configuration temporary and rollback storage for upgrade recovery preflight', async () => {

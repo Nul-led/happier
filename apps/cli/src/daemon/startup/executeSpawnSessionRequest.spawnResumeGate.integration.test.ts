@@ -181,7 +181,6 @@ function createParams() {
       },
     },
     api: {} as never,
-    loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
     connectedServicesMaterializationBaseDir: '/tmp/connected-services',
     connectedServiceRefreshCoordinator: null,
     connectedServiceQuotasCoordinator: null,
@@ -306,7 +305,7 @@ describe('executeSpawnSessionRequest §2 resume-reachability gate (integration)'
       env: {},
       cleanupOnFailure: null,
       cleanupOnExit: null,
-      connectedServicesBindings: { v: 1, bindingsByServiceId: {} },
+      connectedServicesBindings: { v: 2, bindingsByServiceId: {} },
       qualifiedPurposeBindingSnapshot: null,
     });
     vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({

@@ -145,6 +145,7 @@ describe('engineRegistry account-configured ACP ingestion', () => {
     });
 
     const executionRuntime = resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
+      scope: 'detached',
       cwd: '/workspace',
       runId: 'configured-acp-run',
       backendId: 'account-configured-acp',

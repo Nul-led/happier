@@ -1,7 +1,11 @@
 import { SESSION_LOOKUP_BY_TAGS_TAG_MAX_CODE_UNITS_V2 } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
-import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import {
+  tryDecryptSessionMetadata,
+  tryDecryptSessionOwnerMetadataView,
+} from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   fetchSessionById,
   fetchSessionsPage,
@@ -97,8 +101,13 @@ export async function resolveSessionIdOrPrefixFromSessionList(params: Readonly<{
 async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   signal?: AbortSignal;
   deadlineAtMs?: number;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+  accountEncryptionMode?: 'plain' | 'e2ee';
 }>): Promise<ResolveSessionIdResult> {
   params.signal?.throwIfAborted();
   const input = normalizeIdOrPrefix(params.idOrPrefix);
@@ -109,8 +118,12 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
     const exact = await fetchSessionById({
       token: params.credentials.token,
       sessionId: input,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
       ...(params.signal ? { signal: params.signal } : {}),
       ...(params.deadlineAtMs !== undefined ? { deadlineAtMs: params.deadlineAtMs } : {}),
+      ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
     });
     if (exact) {
       return { ok: true, sessionId: input, rawSession: exact };
@@ -121,6 +134,9 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
     ? await lookupSessionsByTags({
         token: params.credentials.token,
         tags: [input],
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         ...(params.signal ? { signal: params.signal } : {}),
         ...(params.deadlineAtMs !== undefined ? { deadlineAtMs: params.deadlineAtMs } : {}),
       })
@@ -175,6 +191,9 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
         cursor,
         limit: 200,
         archivedOnly,
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         ...(params.signal ? { signal: params.signal } : {}),
       });
       params.signal?.throwIfAborted();
@@ -186,12 +205,16 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
         }
 
         if (useOldServerTagFallback) {
-          // Old servers predate the owner envelope, so their tag fallback reads the
-          // Session-scoped metadata field rather than inferring Account ownership.
-          const metadata = tryDecryptSessionMetadata({
-            credentials: params.credentials,
-            rawSession: row,
-          });
+          const metadata = params.accountEncryptionMode
+            ? tryDecryptSessionOwnerMetadataView({
+                credentials: params.credentials,
+                accountEncryptionMode: params.accountEncryptionMode,
+                rawSession: row,
+              })
+            : tryDecryptSessionMetadata({
+                credentials: params.credentials,
+                rawSession: row,
+              });
           const tag = typeof metadata?.tag === 'string' ? metadata.tag.trim() : '';
           if (tag === input) {
             fallbackTagMatches.add(id);
@@ -233,7 +256,14 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
 export async function resolveSessionIdOrPrefix(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   signal?: AbortSignal;
+  /** Snapshot already bound to this exact Home; absence preserves released detail semantics. */
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+  /** Persisted Account mode from the exact Home; required to open layout-v1 owner metadata. */
+  accountEncryptionMode?: 'plain' | 'e2ee';
 }>): Promise<ResolveSessionIdResult> {
   params.signal?.throwIfAborted();
   const input = normalizeIdOrPrefix(params.idOrPrefix);

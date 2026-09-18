@@ -1,12 +1,13 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ExecutionRunController, ExecutionRunVoiceAgentController } from '@/agent/executionRuns/controllers/types';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
-import type { ExecutionRunState } from './executionRunTypes';
+import type { AttachRetainedRunSessionInput, ExecutionRunState } from './executionRunTypes';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import {
-  convertBackendTargetRefV2ToV1,
   type AcpConfigOptionOverridesV1,
   type BackendTargetRefV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ProviderBoundModelRef,
   type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
@@ -14,16 +15,28 @@ import { resumeBackendControllerForResumableRun } from './resumeBackendControlle
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
 import type { StreamedTranscriptWriterSession } from '@/api/session/streamedTranscriptWriter';
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
-import { areExecutionRunBackendTargetsEqual } from './backendTargets';
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
 import type { ExecutionRunProfileContributionCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
+import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
+import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
+
+export type ExecutionRunEnsureResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{
+      ok: false;
+      errorCode: string;
+      error: string;
+      resumeFailureKind: 'permanent' | 'indeterminate';
+    }>;
 
 export async function ensureExecutionRun(args: Readonly<{
   runId: string;
   params: Readonly<{
     resume?: boolean;
+    /** Host-only: the caller will couple bounded recovery to an admitted input. */
+    inputFollowsResume?: boolean;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   }>;
   runs: Map<string, ExecutionRunState>;
@@ -31,6 +44,7 @@ export async function ensureExecutionRun(args: Readonly<{
   budgetRegistry: ExecutionBudgetRegistry | null;
   createRuntime: (opts: {
     runId?: string;
+    controllerOccurrenceId: string;
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
@@ -39,7 +53,8 @@ export async function ensureExecutionRun(args: Readonly<{
     modelSelection?: ProviderBoundModelRef;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
     accountSettings?: Readonly<Record<string, unknown>> | null;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
+    start?: ExecutionRunBackendStartContext;
   }) => ExecutionRunHostRuntime;
   sendAcp: ExecutionRunTranscriptPublisher;
   parentProvider: ACPProvider;
@@ -50,9 +65,10 @@ export async function ensureExecutionRun(args: Readonly<{
   voiceAgentManager: VoiceAgentManager;
   onPublicStateUpdated?: (runId: string) => void;
   profileCatalog?: ExecutionRunProfileContributionCatalog;
-}>): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
+  attachRetainedRunSessionInput?: AttachRetainedRunSessionInput;
+}>): Promise<ExecutionRunEnsureResult> {
   let run = args.runs.get(args.runId);
-  if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+  if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found', resumeFailureKind: 'indeterminate' };
 
   const wantsResume = args.params.resume === true;
   let ctrl = args.controllers.get(args.runId) ?? null;
@@ -63,44 +79,57 @@ export async function ensureExecutionRun(args: Readonly<{
       await args.voiceAgentManager.waitForRetirement(retiringVoiceAgentId);
     }
     run = args.runs.get(args.runId);
-    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found', resumeFailureKind: 'indeterminate' };
     ctrl = args.controllers.get(args.runId) ?? null;
   }
-  if (run.status === 'running' && ctrl) return { ok: true };
-  if (ctrl) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
+  let lifecycle = resolveExecutionRunLifecycle(run, ctrl);
+  if (lifecycle.projection.state === 'current') return { ok: true };
+  if (lifecycle.projection.state === 'recovering') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress', resumeFailureKind: 'indeterminate' };
 
-  if (!wantsResume) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not running' };
-  if (run.retentionPolicy !== 'resumable') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable' };
+  if (!wantsResume) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not running', resumeFailureKind: 'indeterminate' };
+  if (lifecycle.projection.state === 'recoverable_with_input' && args.params.inputFollowsResume !== true) {
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume requires input', resumeFailureKind: 'permanent' };
+  }
+  if (lifecycle.projection.state === 'unavailable') {
+    const error = lifecycle.unavailableReason === 'not_resumable'
+      ? 'Not resumable'
+      : lifecycle.unavailableReason === 'unsupported'
+        ? 'Not supported'
+        : 'Missing resume handle';
+    return { ok: false, errorCode: 'execution_run_not_allowed', error, resumeFailureKind: 'permanent' };
+  }
 
   if (run.intent === 'voice_agent') {
     await args.voiceAgentManager.waitForRetirement(args.runId);
     run = args.runs.get(args.runId);
-    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found', resumeFailureKind: 'indeterminate' };
     ctrl = args.controllers.get(args.runId) ?? null;
-    if (run.status === 'running' && ctrl) return { ok: true };
-    if (ctrl) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
-    if (run.ioMode !== 'streaming') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not supported' };
+    lifecycle = resolveExecutionRunLifecycle(run, ctrl);
+    if (lifecycle.projection.state === 'current') return { ok: true };
+    if (lifecycle.projection.state === 'recovering') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress', resumeFailureKind: 'indeterminate' };
+    if (lifecycle.projection.state !== 'recoverable') {
+      const error = lifecycle.unavailableReason === 'unsupported' ? 'Not supported' : 'Missing resume handle';
+      return { ok: false, errorCode: 'execution_run_not_allowed', error, resumeFailureKind: 'permanent' };
+    }
     const config = run.voiceAgentConfig ?? null;
-    if (!config) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing voice agent config' };
-    const resumeHandle =
-      run.resumeHandle
-      && areExecutionRunBackendTargetsEqual(convertBackendTargetRefV2ToV1(run.resumeHandle.backendTarget), run.backendTarget)
-      && (run.resumeHandle.kind === 'provider_session.v1' || run.resumeHandle.kind === 'voice_agent_sessions.v1')
-        ? run.resumeHandle
-        : null;
-    if (!resumeHandle) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing resume handle' };
+    if (!config) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing voice agent config', resumeFailureKind: 'permanent' };
+    const resumeHandle = run.resumeHandle!;
+
+    const voiceRun = run;
 
     const needsBudget = Boolean(args.budgetRegistry && run.status !== 'running');
     if (needsBudget && args.budgetRegistry && !args.budgetRegistry.tryAcquireExecutionRun(args.runId, run.intent)) {
-      return { ok: false, errorCode: 'execution_run_budget_exceeded', error: 'Execution run budget exceeded' };
+      return { ok: false, errorCode: 'execution_run_budget_exceeded', error: 'Execution run budget exceeded', resumeFailureKind: 'indeterminate' };
     }
 
+    const controllerOccurrenceId = randomUUID();
     let resolveTerminal!: () => void;
     const terminalPromise = new Promise<void>((resolve) => {
       resolveTerminal = resolve;
     });
     const voiceCtrl: ExecutionRunVoiceAgentController = {
       kind: 'voice_agent',
+      controllerOccurrenceId,
       voiceAgentId: args.runId,
       cancelled: false,
       lastMarkerWriteAtMs: 0,
@@ -174,10 +203,12 @@ export async function ensureExecutionRun(args: Readonly<{
           modelSelection,
           sessionConfigOptionOverrides,
           permissionIntent,
+          start,
           connectedServices,
         }) =>
           args.createRuntime({
             runId: args.runId,
+            controllerOccurrenceId,
             backendId,
             backendTarget,
             modelId,
@@ -187,13 +218,20 @@ export async function ensureExecutionRun(args: Readonly<{
             ...(args.params.causalPermissionAuthority
               ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
               : {}),
+            start: {
+              intent: voiceRun.intent,
+              runClass: voiceRun.runClass,
+              ioMode: voiceRun.ioMode,
+              retentionPolicy: voiceRun.retentionPolicy,
+              ...(start ?? {}),
+            },
             ...(connectedServices !== undefined ? { connectedServices } : {}),
           }),
       });
       if (!isCurrentResumeOccurrence()) {
         await args.voiceAgentManager.stop({ voiceAgentId: startedVoice.voiceAgentId }).catch(() => {});
         await retireVoiceResumeOccurrence();
-        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded', resumeFailureKind: 'indeterminate' };
       }
 
       const nextResumeHandle = args.voiceAgentManager.getResumeHandle(startedVoice.voiceAgentId) ?? resumeHandle;
@@ -216,14 +254,14 @@ export async function ensureExecutionRun(args: Readonly<{
           controllers: args.controllers,
         })
       ) {
-        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded', resumeFailureKind: 'indeterminate' };
       }
       args.onPublicStateUpdated?.(args.runId);
       return { ok: true };
     } catch (error: unknown) {
       await retireVoiceResumeOccurrence();
       const message = error instanceof Error ? error.message : 'Resume failed';
-      return { ok: false, errorCode: 'execution_run_not_allowed', error: message };
+      return { ok: false, errorCode: 'execution_run_not_allowed', error: message, resumeFailureKind: 'indeterminate' };
     }
   }
 
@@ -233,9 +271,10 @@ export async function ensureExecutionRun(args: Readonly<{
     runs: args.runs,
     controllers: args.controllers,
     budgetRegistry: args.budgetRegistry,
-    createRuntime: ({ backendId, backendTarget, permissionMode, causalPermissionAuthority, accountSettings }) =>
+    createRuntime: ({ controllerOccurrenceId, backendId, backendTarget, permissionMode, causalPermissionAuthority, accountSettings }) =>
       args.createRuntime({
         runId: args.runId,
+        controllerOccurrenceId,
         backendId,
         backendTarget,
         permissionMode,
@@ -257,6 +296,9 @@ export async function ensureExecutionRun(args: Readonly<{
     onModelOutput: () => {
       void args.writeActivityMarker(args.runId, args.getNowMs());
     },
+    ...(args.attachRetainedRunSessionInput
+      ? { attachRetainedRunSessionInput: args.attachRetainedRunSessionInput }
+      : {}),
   });
   if (!resumed.ok) return resumed;
   const resumedController = args.controllers.get(args.runId) ?? null;
@@ -272,7 +314,7 @@ export async function ensureExecutionRun(args: Readonly<{
       controllers: args.controllers,
     })
   ) {
-    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded', resumeFailureKind: 'indeterminate' };
   }
   return { ok: true };
 }

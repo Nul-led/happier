@@ -23,6 +23,7 @@ const COMMUNITY_INTEGRITY = 'sha512-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB
 function communityHappierMetadata(params: Readonly<{
   marketplaceDiscovery?: Record<string, unknown>;
   compatibilityProjection?: Record<string, unknown>;
+  engines?: Record<string, unknown> | null;
 }> = {}) {
   const compatibilityProjection = params.compatibilityProjection ?? {
     version: 1,
@@ -31,7 +32,7 @@ function communityHappierMetadata(params: Readonly<{
       id: 'acme.community',
       version: '1.0.0',
       displayName: 'Community',
-      engines: { happier: '>=0.0.0' },
+      ...(params.engines === null ? {} : { engines: params.engines ?? { happier: '>=0.0.0' } }),
       runtime: { apiVersion: 1 },
       entrypoints: { daemon: './dist/index.js' },
       hostAccess: { required: [], optional: [] },
@@ -222,6 +223,64 @@ describe('loadMarketplaceIndexSource', () => {
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
     });
     expect(parsed.diagnostics).toEqual([]);
+  });
+
+  it.each([null, {}])('lists packed community packages without an author engine floor (%j)', async (engines) => {
+    const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, {
+      client: communityNpmMetadataClient(communityHappierMetadata({ engines })),
+    });
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]?.compatibility).toEqual({ platforms: [] });
+    expect(parsed.diagnostics).toEqual([]);
+  });
+
+  it.each(['', '*', 'not-a-range'])('rejects a malformed declared community engine floor (%s)', async (happier) => {
+    const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, {
+      client: communityNpmMetadataClient(communityHappierMetadata({ engines: { happier } })),
+    });
+    expect(parsed.entries).toEqual([]);
+    expect(parsed.diagnostics).toEqual([expect.objectContaining({ code: 'community_npm_metadata_skipped' })]);
+  });
+
+  it.each(['curated', 'user'] as const)('normalizes additive catalog presentation before caching a %s source', async (kind) => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const community = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, {
+      client: communityNpmMetadataClient(communityHappierMetadata()),
+    });
+    const entry = community.entries[0]!;
+    const catalogSource = { ...source, kind };
+    const review = kind === 'curated'
+      ? { status: 'approved', reviewedAt: '2026-09-05T00:00:00.000Z' }
+      : { status: 'unreviewed', reviewedAt: null };
+    const entries = [
+      {
+        ...entry, review,
+        display: { ...entry.display, badge: { label: 'New' } },
+        summary: { ...entry.summary, installFootprint: { bytes: 1_024 } },
+        links: { ...entry.links, documentation: 'https://example.test/docs' },
+      },
+      { ...entry, pluginId: 'acme.neighbor', review },
+    ];
+    const result = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: catalogSource,
+      happyHomeDir: home,
+      fetchImpl: async () => new Response(JSON.stringify({ ...snapshot(), source: catalogSource, entries }), { status: 200 }),
+      now: () => 100,
+    });
+    const expectedEntries = [{ ...entry, review }, { ...entry, pluginId: 'acme.neighbor', review }];
+    expect(result.freshness.state).toBe('fresh');
+    expect(result.entries).toEqual(expectedEntries);
+    const offline = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: catalogSource,
+      happyHomeDir: home,
+      fetchImpl: async () => { throw new Error('offline'); },
+      now: () => 200,
+    });
+    expect(offline.freshness.state).toBe('stale-offline');
+    expect(offline.entries).toEqual(expectedEntries);
   });
 
   it('skips community packages whose discovery projection malformed a known field', async () => {

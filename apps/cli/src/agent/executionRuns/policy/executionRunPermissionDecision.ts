@@ -23,7 +23,7 @@ const EXECUTION_RUN_EXACT_READ_ONLY_SHELL_COMMANDS = new Set([
 
 export type ExecutionRunPermissionHandler = AcpPermissionHandler & Readonly<{
   getImmediateDecision: NonNullable<AcpPermissionHandler['getImmediateDecision']>;
-  respondToPermissionRequest: (toolCallId: string, approved: boolean) => void;
+  respondToPermissionRequest: (toolCallId: string, approved: boolean) => boolean;
 }>;
 
 export function isExecutionRunWriteLikeToolName(toolName: string): boolean {
@@ -93,8 +93,7 @@ function resolveExecutionRunImmediateDecision(args: Readonly<{
   }
 
   if (effectiveMode === 'safe-yolo') {
-    // Safe-yolo: auto-approve read-like tools, prompt for write-like tools.
-    return isExecutionRunWriteLikeToolName(args.toolName) ? null : { decision: 'approved' };
+    return { decision: 'approved_for_session' };
   }
 
   // Default (and other interactive-ish modes): require an explicit response.
@@ -124,18 +123,21 @@ export function createExecutionRunPermissionHandler(args: Readonly<{
   permissionMode: string;
   backendId: string;
   causalPermissionAuthority?: AcpPermissionCausalAuthority;
-}>): ExecutionRunPermissionHandler {
+  publishPendingRequest?: (request: Readonly<{
+    requestId: string;
+    toolName: string;
+    toolInput: unknown;
+    turnId?: string;
+  }>) => Promise<void> | void;
+  }>): ExecutionRunPermissionHandler {
   const pending = new Map<string, { resolve: (value: { decision: 'approved' | 'denied' }) => void }>();
-  const buffered = new Map<string, { approved: boolean }>();
 
-  function respondToPermissionRequest(toolCallId: string, approved: boolean): void {
+  function respondToPermissionRequest(toolCallId: string, approved: boolean): boolean {
     const request = pending.get(toolCallId) ?? null;
-    if (!request) {
-      buffered.set(toolCallId, { approved });
-      return;
-    }
+    if (!request) return false;
     pending.delete(toolCallId);
     request.resolve({ decision: approved ? 'approved' : 'denied' });
+    return true;
   }
 
   function readImmediate(
@@ -154,22 +156,7 @@ export function createExecutionRunPermissionHandler(args: Readonly<{
         : {}),
       ...(context ? { context } : {}),
     });
-    if (immediate) {
-      // A narrower current/admitted mode remains authoritative even if an
-      // asynchronous response arrived before the provider emitted the tool
-      // call. The buffered answer is correlation state, not policy authority.
-      buffered.delete(toolCallId);
-      return immediate;
-    }
-
-    // Execution runs treat the ACP permission id as the toolCallId for correlation.
-    const bufferedResponse = buffered.get(toolCallId) ?? null;
-    if (bufferedResponse) {
-      buffered.delete(toolCallId);
-      return { decision: bufferedResponse.approved ? 'approved' : 'denied' } as const;
-    }
-
-    return null;
+    return immediate;
   }
 
   return {
@@ -181,9 +168,39 @@ export function createExecutionRunPermissionHandler(args: Readonly<{
       const immediate = readImmediate(toolCallId, toolName, input, context);
       if (immediate) return immediate;
 
-      return await new Promise<{ decision: 'approved' | 'denied' }>((resolve) => {
+      if (!args.publishPendingRequest) {
+        const error = Object.assign(
+          new Error('Execution-run permission interaction target is unavailable'),
+          { code: 'execution_run_interaction_unavailable' },
+        );
+        throw error;
+      }
+      const pendingDecision = new Promise<{ decision: 'approved' | 'denied' }>((resolve) => {
         pending.set(toolCallId, { resolve });
       });
+      try {
+        await args.publishPendingRequest({
+          requestId: toolCallId,
+          toolName,
+          toolInput: input,
+          ...(context?.turnId ? { turnId: context.turnId } : {}),
+        });
+      } catch (error) {
+        pending.delete(toolCallId);
+        throw error;
+      }
+      return await pendingDecision;
+    },
+    async abortPendingRequestAndFlush(toolCallId) {
+      const request = pending.get(toolCallId);
+      if (!request) return;
+      pending.delete(toolCallId);
+      request.resolve({ decision: 'denied' });
+    },
+    async abortPendingRequestsAndFlush() {
+      const requests = [...pending.values()];
+      pending.clear();
+      for (const request of requests) request.resolve({ decision: 'denied' });
     },
   };
 }

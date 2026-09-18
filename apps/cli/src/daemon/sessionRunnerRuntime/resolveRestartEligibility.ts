@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import type { TrackedSession } from '@/daemon/types';
 
 import {
@@ -28,12 +30,21 @@ function hasSpawnOptions(tracked: TrackedSession): boolean {
   return !!normalizeString(tracked.spawnOptions?.directory);
 }
 
-function hasResumeContext(tracked: TrackedSession): boolean {
-  return !!(
-    normalizeString(tracked.spawnOptions?.resume) ||
-    normalizeString(tracked.vendorResumeId) ||
-    normalizeString(tracked.spawnOptions?.existingSessionId)
+export function hasSessionRunnerResumeIdentity(tracked: TrackedSession): boolean {
+  // The Agent's resume ids are opaque: only presence is decided here.
+  return (
+    readNonBlankOpaqueIdentifier(tracked.spawnOptions?.resume) !== null ||
+    readNonBlankOpaqueIdentifier(tracked.vendorResumeId) !== null ||
+    !!normalizeString(tracked.spawnOptions?.existingSessionId)
   );
+}
+
+export function shouldRefreshSessionRunnerResumeIdentity(
+  tracked: TrackedSession | null | undefined,
+): tracked is TrackedSession {
+  if (!tracked || hasSessionRunnerResumeIdentity(tracked)) return false;
+  if (!isSessionRunnerColdResumeSupported({ trackedSession: tracked })) return false;
+  return resolveSessionRunnerRestartEligibility(tracked).disabledReason === 'missing_resume_identity';
 }
 
 function isWindowsHostedRunner(tracked: TrackedSession): boolean {
@@ -58,7 +69,9 @@ export function resolveSessionRunnerRestartEligibility(
     };
   }
   if (!hasSpawnOptions(tracked)) return { eligible: false, disabledReason: 'missing_spawn_options' };
-  if (!hasResumeContext(tracked)) return { eligible: false, disabledReason: 'missing_resume_identity' };
+  if (!hasSessionRunnerResumeIdentity(tracked)) {
+    return { eligible: false, disabledReason: 'missing_resume_identity' };
+  }
   if (!isSessionRunnerColdResumeSupported({
     trackedSession: tracked,
   })) {

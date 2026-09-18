@@ -19,7 +19,10 @@ import {
   persistTerminalEnrollmentCredential,
   registerTerminalEnrollmentMachine,
 } from '@/auth/persistTerminalEnrollmentCredential';
-import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import {
+  fetchServerFeaturesSnapshot,
+  observeServerFeaturesSnapshot,
+} from '@/features/serverFeaturesClient';
 
 const MAX_PROVISIONING_RESPONSE_B64_CHARS = 4096;
 
@@ -95,7 +98,11 @@ export async function runRemoteTerminalEnrollment(params: Readonly<{
   throwIfStopped(params.signal, deadlineMs);
 
   const acquired = params.target.descriptor
-    ? await acquireTerminalAuthEnrollmentRuntime(params.target.descriptor, params.target.preferredTransport)
+    ? await acquireTerminalAuthEnrollmentRuntime(
+        params.target.descriptor,
+        params.target.preferredTransport,
+        params.signal,
+      )
     : {
         ok: true as const,
         runtime: {
@@ -198,7 +205,7 @@ export async function runRemoteTerminalEnrollment(params: Readonly<{
       if (!token || !responseB64 || responseB64.length > MAX_PROVISIONING_RESPONSE_B64_CHARS) {
         throw new Error('Remote Home enrollment returned an invalid provisioning response.');
       }
-      const authenticatedSnapshot = await fetchServerFeaturesSnapshot({
+      const authenticatedSnapshot = await observeServerFeaturesSnapshot({
         serverUrl: acquired.runtime.runtimeOrigin,
         token,
         timeoutMs: remainingMs(deadlineMs),

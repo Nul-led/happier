@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -98,7 +99,7 @@ describe('ApiSessionClient live account settings convergence', () => {
         const sessionSocket = createApiSessionSocketStub({ connected: true });
         const userSocket = createApiSessionSocketStub({ connected: true });
         bindApiSessionSocketPairMock(mockIo, { sessionSocket, userSocket });
-        const client = new ApiSessionClient('fake-token', createMockSession({
+        const client = createTestApiSessionClient(ApiSessionClient, 'fake-token', createMockSession({
             pendingCount: 1,
             pendingVersion: 3,
             latestTurnStatus: 'in_progress',

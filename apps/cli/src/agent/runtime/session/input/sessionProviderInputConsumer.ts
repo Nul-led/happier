@@ -33,7 +33,8 @@ const PENDING_INPUT_SLOW_PHASE_DIAGNOSTIC_MS = 30_000;
 type WakeWinner =
   | { kind: 'queue'; hasMessages: boolean; refreshBeforeReturn?: boolean }
   | { kind: 'meta'; ok: boolean }
-  | { kind: 'admission'; changed: boolean };
+  | { kind: 'admission'; changed: boolean }
+  | { kind: 'context_only'; changed: boolean };
 
 export class PendingQueueMaterializationAuthError extends Error {
   constructor() {
@@ -55,6 +56,9 @@ export type SessionProviderInputConsumerOptions<Mode, Message> = Readonly<{
   metadataWaitRetryBackoffMs?: number;
   refreshBeforeQueuedBatch?: boolean;
   pendingDrainMaxPopPerWake?: number;
+  /** Host-private, non-queued input source used by centralized runtime owners. */
+  takeContextOnlyInput?: ((abortSignal: AbortSignal) => Promise<MessageBatch<Mode, Message> | null>) | null;
+  waitForContextOnlyInputChange?: ((abortSignal: AbortSignal) => Promise<boolean>) | null;
 }>;
 
 export function createSessionProviderPendingDrainAdapter(
@@ -62,10 +66,12 @@ export function createSessionProviderPendingDrainAdapter(
   defaults?: Readonly<{
     maxPopPerWake?: number;
     pendingQueueDeliveryTiming?: SessionPendingQueueDeliveryTiming;
+    afterDrain?: () => Promise<void>;
+    waitForInputChange?: (abortSignal: AbortSignal) => Promise<boolean>;
   }>,
-): Pick<SessionProviderInputConsumer<never, never>, 'drainPending'> {
-  return {
-    drainPending: async (options) => await drainPendingMessages(
+): Pick<SessionProviderInputConsumer<never, never>, 'drainPending' | 'pumpPendingWhileActive'> {
+  const drainPending = async (options?: DrainPendingOptions): Promise<DrainPendingResult> => {
+    const result = await drainPendingMessages(
       withDefaultDrainOptions(
         session,
         defaults?.maxPopPerWake,
@@ -73,7 +79,18 @@ export function createSessionProviderPendingDrainAdapter(
         undefined,
         options,
       ),
-    ),
+    );
+    await defaults?.afterDrain?.();
+    return result;
+  };
+  return {
+    drainPending,
+    pumpPendingWhileActive: async (options) => await pumpPendingWhileActive({
+      ...options,
+      waitForMetadataUpdate: session.waitForMetadataUpdate,
+      waitForAdmissionChange: defaults?.waitForInputChange,
+      drainPending,
+    }),
   };
 }
 
@@ -492,7 +509,7 @@ export function createSessionProviderInputConsumer<Mode, Message>(
 async function pumpPendingWhileActive(
   opts: ActiveTurnPendingPumpOptions & Readonly<{
     waitForMetadataUpdate: SessionProviderInputConsumerSession['waitForMetadataUpdate'];
-    waitForAdmissionChange: (abortSignal: AbortSignal) => Promise<boolean>;
+    waitForAdmissionChange?: (abortSignal: AbortSignal) => Promise<boolean>;
     drainPending: (drainOpts?: DrainPendingOptions) => Promise<DrainPendingResult>;
   }>,
 ): Promise<void> {
@@ -502,12 +519,15 @@ async function pumpPendingWhileActive(
     opts.abortSignal.addEventListener('abort', onAbort, { once: true });
     if (opts.abortSignal.aborted) wakeController.abort(opts.abortSignal.reason);
 
-    const waitForWake = async (): Promise<boolean> => await Promise.race([
-      opts.waitForMetadataUpdate(wakeController.signal).catch(() => false),
-      opts.waitForAdmissionChange(wakeController.signal),
-    ]);
     let passDirty = false;
-    const armedWake = waitForWake().then((didWake) => {
+    const armedWake = waitForWakeSignal({
+      waitForMetadataUpdate: opts.waitForMetadataUpdate,
+      waitForAdmissionChange: opts.waitForAdmissionChange,
+      controller: wakeController,
+      metadataWaitRetryBackoffMs: DEFAULT_SESSION_METADATA_WAIT_RETRY_BACKOFF_MS,
+    }).then((winner) => {
+      const didWake = winner.kind === 'meta' ? winner.ok
+        : winner.kind === 'queue' ? winner.hasMessages : winner.changed;
       if (didWake) passDirty = true;
       return didWake;
     });
@@ -524,11 +544,7 @@ async function pumpPendingWhileActive(
         || result.stoppedReason === 'auth_failure'
       ) return;
       if (passDirty) continue;
-      const didWake = await armedWake || (
-        !opts.abortSignal.aborted
-        && await waitForWake()
-      );
-      if (!didWake) return;
+      if (!await armedWake) return;
     } finally {
       opts.abortSignal.removeEventListener('abort', onAbort);
       wakeController.abort('active-turn-pending-pass-complete');
@@ -583,6 +599,7 @@ async function waitForNextInput<Mode, Message>(
         messageQueue: opts.messageQueue,
         waitForMetadataUpdate: opts.session.waitForMetadataUpdate,
         waitForAdmissionChange: opts.waitForAdmissionChange,
+        waitForContextOnlyInputChange: opts.waitForContextOnlyInputChange ?? undefined,
         controller,
         metadataWaitRetryBackoffMs,
       });
@@ -607,6 +624,12 @@ async function waitForNextInput<Mode, Message>(
       if (materializedBatch) {
         controller.abort('sessionProviderInputConsumer-materialized');
         return await returnBatch(opts, materializedBatch, refreshBeforeQueuedBatch);
+      }
+
+      const contextOnlyBatch = await opts.takeContextOnlyInput?.(opts.abortSignal);
+      if (contextOnlyBatch) {
+        controller.abort('sessionProviderInputConsumer-context-only');
+        return contextOnlyBatch;
       }
 
       if (
@@ -711,6 +734,27 @@ async function collectQueuedBatch<Mode, Message>(
   return await opts.messageQueue.waitForMessagesAndGetAsString(opts.abortSignal);
 }
 
+function logInputConsumerMaterializationDecision(opts: Readonly<{
+  source: 'waitForNextInput' | 'drainPending';
+  reconcileWhenEmpty: PendingMaterializationReconcileWhenEmpty;
+  deliveryTiming: SessionPendingQueueDeliveryTiming | undefined;
+  result: MaterializeNextPendingResult;
+}>): void {
+  logger.infoFile('[pendingQueue] input consumer materialization decision', {
+    source: opts.source,
+    reconcileWhenEmpty: opts.reconcileWhenEmpty,
+    deliveryTiming: opts.deliveryTiming ?? 'after_foreground_ready',
+    resultType: opts.result.type,
+    ...(opts.result.type === 'materialized'
+      ? {
+          localId: opts.result.localId,
+          seq: opts.result.seq,
+        }
+      : {}),
+    ...(opts.result.type === 'deferred' ? { deferredReason: opts.result.reason } : {}),
+  });
+}
+
 async function materializePendingMessage<Mode, Message>(
   opts: WaitForNextInputOptions<Mode, Message>,
 ): Promise<number | null> {
@@ -723,10 +767,12 @@ async function materializePendingMessage<Mode, Message>(
     if (opts.abortSignal.aborted || !opts.isAdmitted() || opts.hasLocalInputCustody()) return null;
 
     let result: MaterializeNextPendingResult;
+    const reconcileWhenEmpty = opts.reconcileWhenEmpty ?? 'throttled';
+    const deliveryTiming = opts.resolvePendingQueueDeliveryTiming?.() ?? opts.pendingQueueDeliveryTiming;
     try {
       result = await materializeWithRuntimeActivityTail(opts.session, buildMaterializeOptions(
-          opts.reconcileWhenEmpty ?? 'throttled',
-          opts.resolvePendingQueueDeliveryTiming?.() ?? opts.pendingQueueDeliveryTiming,
+          reconcileWhenEmpty,
+          deliveryTiming,
         ), opts.abortSignal);
     } catch (error) {
       if (error instanceof PendingQueueMaterializationAuthError) throw error;
@@ -736,6 +782,12 @@ async function materializePendingMessage<Mode, Message>(
       logger.debug('[INPUT-CONSUMER] Pending materialization episode failed nonfatally', { error });
       return null;
     }
+    logInputConsumerMaterializationDecision({
+      source: 'waitForNextInput',
+      reconcileWhenEmpty,
+      deliveryTiming,
+      result,
+    });
     if (result.type === 'auth_failure' || (result.type === 'deferred' && result.reason === 'supervisor_auth_failed')) {
       throw new PendingQueueMaterializationAuthError();
     }
@@ -838,15 +890,23 @@ async function materializeNextPendingForDrain(
     resolvePendingQueueDeliveryTiming?: () => SessionPendingQueueDeliveryTiming;
   },
 ): Promise<Exclude<DrainPendingResult['stoppedReason'], 'aborted' | 'drain_disallowed' | 'materialization_blocked' | 'max_pop_per_wake'> | 'materialized'> {
-  try {
+    try {
+      const reconcileWhenEmpty = 'force';
+      const deliveryTiming = opts.resolvePendingQueueDeliveryTiming?.() ?? opts.pendingQueueDeliveryTiming;
       const result = await materializeWithRuntimeActivityTail(
           session,
           buildMaterializeOptions(
-            'force',
-            opts.resolvePendingQueueDeliveryTiming?.() ?? opts.pendingQueueDeliveryTiming,
+            reconcileWhenEmpty,
+            deliveryTiming,
           ),
           opts.abortSignal ?? new AbortController().signal,
         );
+      logInputConsumerMaterializationDecision({
+        source: 'drainPending',
+        reconcileWhenEmpty,
+        deliveryTiming,
+        result,
+      });
       if (result.type === 'materialized') return 'materialized';
       if (result.type === 'auth_failure') {
         logTerminalAuthDrainStop(opts, null);
@@ -883,17 +943,20 @@ function logTerminalAuthDrainStop(opts: DrainPendingOptions, status: 401 | 403 |
 }
 
 async function waitForWakeSignal<Mode, Message>(opts: {
-  messageQueue: MessageQueue2<Mode, Message>;
+  messageQueue?: MessageQueue2<Mode, Message>;
   waitForMetadataUpdate: (abortSignal?: AbortSignal) => Promise<boolean>;
-  waitForAdmissionChange: (abortSignal: AbortSignal) => Promise<boolean>;
+  waitForAdmissionChange?: (abortSignal: AbortSignal) => Promise<boolean>;
+  waitForContextOnlyInputChange?: (abortSignal: AbortSignal) => Promise<boolean>;
   controller: AbortController;
   metadataWaitRetryBackoffMs: number;
 }): Promise<WakeWinner> {
   const queueWait = opts.messageQueue
-    .waitForMessagesSignal(opts.controller.signal)
+    ?.waitForMessagesSignal(opts.controller.signal)
     .then((hasMessages) => ({ kind: 'queue' as const, hasMessages }));
-  const admissionWait = opts.waitForAdmissionChange(opts.controller.signal)
+  const admissionWait = opts.waitForAdmissionChange?.(opts.controller.signal)
     .then((changed) => ({ kind: 'admission' as const, changed }));
+  const contextOnlyWait = opts.waitForContextOnlyInputChange?.(opts.controller.signal)
+    .then((changed) => ({ kind: 'context_only' as const, changed }));
   while (true) {
     if (opts.controller.signal.aborted) {
       return { kind: 'meta', ok: false };
@@ -903,15 +966,22 @@ async function waitForWakeSignal<Mode, Message>(opts: {
       (ok) => ({ kind: 'meta' as const, ok }),
       () => ({ kind: 'meta' as const, ok: false }),
     );
-
-    const winner = await Promise.race([queueWait, metaWait, admissionWait]);
+    const winner = await Promise.race([
+      ...(queueWait ? [queueWait] : []),
+      metaWait,
+      ...(admissionWait ? [admissionWait] : []),
+      ...(contextOnlyWait ? [contextOnlyWait] : []),
+    ]);
     if (winner.kind !== 'meta' || winner.ok || opts.controller.signal.aborted) {
       return winner;
     }
 
+    // Keep the adapter-unavailable retry bounded without polling the queue. Real client
+    // waits retain their subscription through transient disconnects.
     const queueOrBackoffWinner = await Promise.race([
-      queueWait,
-      admissionWait,
+      ...(queueWait ? [queueWait] : []),
+      ...(admissionWait ? [admissionWait] : []),
+      ...(contextOnlyWait ? [contextOnlyWait] : []),
       waitForSessionMetadataRetryBackoff({
         abortSignal: opts.controller.signal,
         backoffMs: opts.metadataWaitRetryBackoffMs,

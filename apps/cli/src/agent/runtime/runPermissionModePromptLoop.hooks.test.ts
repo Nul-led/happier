@@ -82,6 +82,8 @@ async function runSingleSpecialCommand(params: Readonly<{
   text: string;
   localId: string;
   runtime?: ReturnType<typeof createRuntime>;
+  registerProviderAcceptedEffect?: (localId: string, onAccepted: (() => void) | null) => void;
+  hostContextOnly?: PermissionModeQueuedPrompt['hostContextOnly'];
 }>) {
   const observeProviderInputSettlement = vi.fn();
   const confirmUserMessageLocallyConsumed = vi.fn();
@@ -94,9 +96,25 @@ async function runSingleSpecialCommand(params: Readonly<{
   });
   session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
   const queue = createModeQueue();
-  queue.push({ text: params.text, localId: params.localId }, { permissionMode: 'default' });
+  if (!params.hostContextOnly) queue.push({ text: params.text, localId: params.localId }, { permissionMode: 'default' });
+  let contextAvailable = params.hostContextOnly !== undefined;
+  const inputConsumer = params.hostContextOnly ? createSessionProviderInputConsumer({
+    messageQueue: queue,
+    session: { waitForMetadataUpdate: () => new Promise<boolean>(() => {}) },
+    takeContextOnlyInput: async () => {
+      if (!contextAvailable) return null;
+      contextAvailable = false;
+      return {
+        message: { text: '', localId: params.localId, hostContextOnly: params.hostContextOnly },
+        mode: { permissionMode: 'default', suppressUserEcho: true, providerPromptAlreadyResolved: true },
+        isolate: true,
+        hash: params.localId,
+      };
+    },
+  }) : undefined;
   const runtime = params.runtime ?? createRuntime();
   let shouldExit = false;
+  const messageBuffer = new MessageBuffer();
 
   await runPermissionModePromptLoop({
     providerName: 'Test Provider',
@@ -110,7 +128,8 @@ async function runSingleSpecialCommand(params: Readonly<{
       syncFromMetadata: () => undefined,
       flushPendingAfterStart: async () => undefined,
     }),
-    messageBuffer: new MessageBuffer(),
+    messageBuffer,
+    ...(inputConsumer ? { inputConsumer } : {}),
     shouldExit: () => shouldExit,
     getAbortSignal: () => new AbortController().signal,
     keepAlive: () => undefined,
@@ -120,14 +139,103 @@ async function runSingleSpecialCommand(params: Readonly<{
     setCurrentPermissionMode: () => undefined,
     setCurrentPermissionModeUpdatedAt: () => undefined,
     formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    registerProviderAcceptedEffect: params.registerProviderAcceptedEffect ?? (() => undefined),
   } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
-  return { observeProviderInputSettlement, confirmUserMessageLocallyConsumed, runtime };
+  return { observeProviderInputSettlement, confirmUserMessageLocallyConsumed, runtime, messageBuffer };
 }
 
 describe('runPermissionModePromptLoop hook dispatch', () => {
   beforeEach(() => {
     loggerDebugMock.mockClear();
+  });
+
+  it('composes Follow into an ordinary final prompt and acknowledges only on exact provider acceptance', async () => {
+    const acknowledgeAccepted = vi.fn();
+    const prepareSessionFollowContext = vi.fn(async ({ requiredPrompt }: { requiredPrompt: string }) => {
+      expect(requiredPrompt).toContain('ordinary input');
+      return {
+        updates: [{
+          v: 1,
+          kind: 'session_follow_update' as const,
+          edge: { sourceSessionId: 'source', destinationSessionId: 'session-local-special-command' },
+          reason: 'source_changed' as const,
+          deliveryIntent: 'context_only' as const,
+          observed: { transcriptSeq: 2, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+          awareness: {
+            v: 1,
+            sessionId: 'source',
+            lifecycle: 'ready' as const,
+            runtime: 'idle' as const,
+            freshness: 'live' as const,
+            operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+            encryption: 'plain' as const,
+            availability: 'complete' as const,
+          },
+          recentMessages: [{ messageId: 'source-2', seq: 2, text: 'follow context', provenance: null }],
+          truncated: false,
+        }],
+        acknowledgeAccepted,
+      };
+    });
+    let accept: (() => void) | null = null;
+    const runtime = { ...createRuntime(), prepareSessionFollowContext };
+
+    await runSingleSpecialCommand({
+      text: 'ordinary input',
+      localId: 'follow-with-acceptance',
+      runtime: runtime as ReturnType<typeof createRuntime>,
+      registerProviderAcceptedEffect: (_localId, onAccepted) => { accept = onAccepted; },
+    });
+
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
+      expect.stringContaining('<session_follow>'),
+      expect.objectContaining({ localId: 'follow-with-acceptance' }),
+    );
+    const sentPrompt = (runtime.sendTurnPrompt.mock.calls as unknown as Array<[string]>)[0]?.[0] ?? '';
+    expect(sentPrompt).toContain('follow context');
+    expect(sentPrompt.endsWith('ordinary input')).toBe(true);
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+    expect(accept).toBeTypeOf('function');
+    (accept as unknown as () => void)();
+    expect(acknowledgeAccepted).toHaveBeenCalledWith({
+      kind: 'admitted_input',
+      localInputId: 'follow-with-acceptance',
+      userMessageSeq: null,
+    });
+  });
+
+  it('dispatches host Follow context without creating user input custody or echo', async () => {
+    const acknowledgeAccepted = vi.fn();
+    let accept: (() => void) | null = null;
+    const runtime = createRuntime();
+    const result = await runSingleSpecialCommand({
+      text: '', localId: 'wake-1', runtime,
+      hostContextOnly: {
+        kind: 'session_follow',
+        prepared: {
+          updates: [{
+            v: 1, kind: 'session_follow_update',
+            edge: { sourceSessionId: 'source', destinationSessionId: 'session-local-special-command' },
+            reason: 'human_changed_source', deliveryIntent: 'wake',
+            observed: { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+            awareness: { v: 1, sessionId: 'source', lifecycle: 'ready', runtime: 'idle', freshness: 'live', operational: { primary: 'ready', reasons: ['ready'] }, encryption: 'plain', availability: 'complete' },
+            recentMessages: [{ messageId: 'human-1', seq: 1, text: 'Please check', provenance: { v: 1, kind: 'cli' } }],
+            truncated: false,
+          }],
+          acknowledgeAccepted,
+        },
+      },
+      registerProviderAcceptedEffect: (_localId, callback) => { accept = callback; },
+    });
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
+      expect.stringContaining('<session_follow>'), expect.objectContaining({ localId: 'wake-1' }),
+    );
+    expect(result.confirmUserMessageLocallyConsumed).not.toHaveBeenCalled();
+    expect(result.observeProviderInputSettlement).not.toHaveBeenCalled();
+    expect(result.messageBuffer.getMessages().some((message) => message.type === 'user')).toBe(false);
+    (accept as unknown as () => void)();
+    expect(acknowledgeAccepted).toHaveBeenCalledWith({ kind: 'context_only_wake', eventLocalId: 'wake-1' });
   });
 
   it('dispatches an advertised provider command verbatim without consuming fresh-session composition', async () => {
@@ -185,6 +293,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       resolveAgentCompositionBeforeDispatch,
       transformAgentContextBeforeDispatch,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('/goal fix authentication', {
@@ -247,6 +356,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       setCurrentPermissionModeUpdatedAt: () => undefined,
       transformAgentContextBeforeDispatch,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(transformAgentContextBeforeDispatch).toHaveBeenCalledTimes(1);
@@ -369,6 +479,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       setCurrentPermissionMode: () => undefined,
       setCurrentPermissionModeUpdatedAt: () => undefined,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     await pumpStarted;
@@ -432,6 +543,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       setCurrentPermissionMode: () => undefined,
       setCurrentPermissionModeUpdatedAt: () => undefined,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     const logCall = loggerDebugMock.mock.calls.find(
@@ -486,6 +598,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       setCurrentPermissionMode: () => undefined,
       setCurrentPermissionModeUpdatedAt: () => undefined,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.supportsInFlightSteer()).toBe(false);
@@ -555,6 +668,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       setCurrentPermissionMode: () => undefined,
       setCurrentPermissionModeUpdatedAt: () => undefined,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     await runtimeConfigStarted;
@@ -645,6 +759,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
         return payload;
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     await preparationStarted;
@@ -731,6 +846,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       resolveFreshSessionSystemPrompt: async () => 'SYSTEM',
       transformAgentContextBeforeDispatch,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(transformAgentContextBeforeDispatch).toHaveBeenCalledWith(expect.objectContaining({
@@ -808,6 +924,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       resolveFreshSessionSystemPrompt,
       setActiveAgentCompositionToolSelection,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(resolveAgentCompositionBeforeDispatch).toHaveBeenCalledTimes(1);
@@ -885,6 +1002,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       }),
       setActiveAgentCompositionToolSelection,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]).catch(() => undefined);
 
     expect(setActiveAgentCompositionToolSelection).toHaveBeenNthCalledWith(1, {
@@ -950,6 +1068,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       resolveFreshSessionSystemPrompt: async () => 'SYSTEM',
       transformAgentContextBeforeDispatch,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(transformAgentContextBeforeDispatch).toHaveBeenCalledWith(expect.objectContaining({
@@ -1011,6 +1130,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
         throw hostile.proxy;
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('private prompt', {
@@ -1070,6 +1190,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       },
       transformAgentContextErrorPolicy: 'throw',
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();

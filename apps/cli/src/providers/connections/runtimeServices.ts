@@ -137,6 +137,8 @@ export function createRuntimeProviderConnectionServices(input: Readonly<{
         rawAccountSettings: active.rawSettings ?? active.settings,
         registry: projection.registry,
         ...(projection.generation ? { registryGeneration: projection.generation } : {}),
+        ...(active.savedSecretResources ? { savedSecretResources: active.savedSecretResources } : {}),
+        ...(active.savedSecretCatalogState ? { savedSecretCatalogState: active.savedSecretCatalogState } : {}),
       };
     },
     updateAccountSettings: async (mutate) => {

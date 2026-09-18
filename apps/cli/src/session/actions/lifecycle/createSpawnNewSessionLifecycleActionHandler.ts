@@ -16,7 +16,10 @@ import {
     AgentSessionStartupInstructionsV1Schema,
     SessionModelSelectionV1Schema,
     SessionCreationCorrespondenceV1Schema,
+    sessionCreationCorrespondenceMatchesV1,
     SessionCreationTagV1Schema,
+    SessionInitialAccessDraftV1Schema,
+    SessionSpawnNewInputV2Schema,
     RuntimeDescriptorV1Schema,
     buildBackendTargetKeyV2,
     SessionMcpSelectionV1Schema,
@@ -47,10 +50,14 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             sessionId,
             machineId,
             approvedNewDirectoryCreation,
+            initialAccess,
+            primaryTeamId,
+            teamCredentialBindings,
             backendTarget,
             agent,
             environmentVariables,
             profileId,
+            secretReferenceOverlay,
             terminal,
             resume,
             connectedServices,
@@ -100,6 +107,39 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             parsedAgentSessionStartupInstructionsV1?.success
                 ? parsedAgentSessionStartupInstructionsV1.data
                 : undefined;
+        const parsedInitialAccess = initialAccess === undefined
+            ? null
+            : SessionInitialAccessDraftV1Schema.safeParse(initialAccess);
+        if (parsedInitialAccess && !parsedInitialAccess.success) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Invalid initial Session access',
+            };
+        }
+        const normalizedInitialAccess = parsedInitialAccess?.success
+            ? parsedInitialAccess.data
+            : undefined;
+        const parsedPrimaryTeamId = SessionSpawnNewInputV2Schema.shape.primaryTeamId.safeParse(primaryTeamId);
+        if (!parsedPrimaryTeamId.success) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Invalid primary Team identity',
+            };
+        }
+        const normalizedPrimaryTeamId = parsedPrimaryTeamId.data;
+        const parsedTeamCredentialBindings = SessionSpawnNewInputV2Schema.shape.teamCredentialBindings.safeParse(
+            teamCredentialBindings,
+        );
+        if (!parsedTeamCredentialBindings.success) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Invalid Team credential binding',
+            };
+        }
+        const normalizedTeamCredentialBindings = parsedTeamCredentialBindings.data;
         const parsedSessionCreationTag = sessionCreationTag === undefined
             ? null
             : SessionCreationTagV1Schema.safeParse(sessionCreationTag);
@@ -139,6 +179,63 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
                 errorMessage: 'Session creation correspondence requires its matching identity',
             };
         }
+        const parsedProfileId = SessionSpawnNewInputV2Schema.shape.profileId.safeParse(profileId);
+        if (!parsedProfileId.success) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Invalid launch profile identity',
+            };
+        }
+        const normalizedProfileId = parsedProfileId.data;
+        const parsedSecretReferenceOverlay = SessionSpawnNewInputV2Schema.shape.secretReferenceOverlay.safeParse(
+            secretReferenceOverlay,
+        );
+        if (!parsedSecretReferenceOverlay.success) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Invalid Saved Secret reference overlay',
+            };
+        }
+        const normalizedSecretReferenceOverlay = parsedSecretReferenceOverlay.data;
+        if (
+            normalizedSessionCreationCorrespondence
+            && normalizedProfileId !== undefined
+            && normalizedSessionCreationCorrespondence.recipe.profileId !== normalizedProfileId
+        ) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Launch profile conflicts with Session creation correspondence',
+            };
+        }
+        if (
+            normalizedSessionCreationCorrespondence
+            && normalizedSecretReferenceOverlay !== undefined
+            && !sessionCreationCorrespondenceMatchesV1(
+                normalizedSessionCreationCorrespondence,
+                {
+                    ...normalizedSessionCreationCorrespondence,
+                    recipe: {
+                        ...normalizedSessionCreationCorrespondence.recipe,
+                        secretReferenceOverlay: normalizedSecretReferenceOverlay,
+                    },
+                },
+            )
+        ) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: 'Saved Secret references conflict with Session creation correspondence',
+            };
+        }
+        const effectiveProfileId = normalizedSessionCreationCorrespondence
+            ? normalizedSessionCreationCorrespondence.recipe.profileId ?? undefined
+            : normalizedProfileId;
+        const effectiveSecretReferenceOverlay = normalizedSessionCreationCorrespondence
+            ? normalizedSessionCreationCorrespondence.recipe.secretReferenceOverlay
+            : normalizedSecretReferenceOverlay;
         const normalizedInitialTitle = typeof initialTitle === 'string'
             ? initialTitle.trim()
             : '';
@@ -311,7 +408,8 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             machineId: typeof machineId === 'string' ? machineId : undefined,
             backendTarget: normalizedBackendTarget,
             environmentVariables: normalizedEnvironmentVariables,
-            profileId: typeof profileId === 'string' ? profileId : undefined,
+            profileId: effectiveProfileId,
+            secretReferenceOverlay: effectiveSecretReferenceOverlay,
             terminal: terminal as SpawnSessionOptions['terminal'],
             resume: normalizedResume,
             connectedServices,
@@ -323,6 +421,11 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             accountSettingsVersionHint: normalizedAccountSettingsVersionHint,
             initialTranscriptAfterSeq: normalizedInitialTranscriptAfterSeq,
             executionAuthorization: normalizedExecutionAuthorization,
+            ...(normalizedInitialAccess !== undefined ? { initialAccess: normalizedInitialAccess } : {}),
+            ...(normalizedPrimaryTeamId !== undefined ? { primaryTeamId: normalizedPrimaryTeamId } : {}),
+            ...(normalizedTeamCredentialBindings !== undefined
+                ? { teamCredentialBindings: normalizedTeamCredentialBindings }
+                : {}),
             agentModeId: normalizedAgentModeId,
             agentModeUpdatedAt: normalizedAgentModeUpdatedAt,
             modelSelection: normalizedModelSelection,

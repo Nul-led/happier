@@ -255,18 +255,22 @@ export function isNetworkError(code: string | undefined): boolean {
     return code !== undefined && (NETWORK_ERROR_CODES as readonly string[]).includes(code);
 }
 
-export function readNormalizedErrorCode(error: unknown): string | null {
+function readNormalizedErrorCodeAtDepth(error: unknown, depth: number): string | null {
     if (!error || typeof error !== 'object') {
         return null;
     }
 
     const raw = (error as { code?: unknown }).code;
-    if (typeof raw !== 'string') {
-        return null;
+    if (typeof raw === 'string') {
+        const normalized = raw.trim().toUpperCase();
+        if (normalized.length > 0) return normalized;
     }
+    if (depth >= 4) return null;
+    return readNormalizedErrorCodeAtDepth((error as { cause?: unknown }).cause, depth + 1);
+}
 
-    const normalized = raw.trim().toUpperCase();
-    return normalized.length > 0 ? normalized : null;
+export function readNormalizedErrorCode(error: unknown): string | null {
+    return readNormalizedErrorCodeAtDepth(error, 0);
 }
 
 /** Maps error codes to human-readable descriptions - exported for discoverability */

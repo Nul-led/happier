@@ -2,8 +2,32 @@ import type { AccountSettings } from '@happier-dev/protocol';
 
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification';
 import type { ExpoPushActivityNotificationSender } from '@/notifications/activity/sendExpoPushActivityNotification';
-import type { ConnectedServiceQuotaLifecycleTransition } from '../quotas/ConnectedServiceQuotasCoordinator';
+import type { AutomaticQuotaResetConsumedEvent, ConnectedServiceQuotaLifecycleTransition } from '../quotas/ConnectedServiceQuotasCoordinator';
 import { resolveConnectedServiceNotificationDisplayName } from './connectedServiceNotificationLabels';
+
+export async function dispatchConnectedServiceAutomaticQuotaResetNotificationAsync(params: Readonly<{
+  settings: AccountSettings | null | undefined;
+  settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
+  expoPushSender?: ExpoPushActivityNotificationSender | null;
+  event: AutomaticQuotaResetConsumedEvent;
+  nowMs?: () => number;
+  dedupeWindowMs?: number;
+}>): Promise<void> {
+  const { event } = params;
+  await dispatchActivityNotificationAsync({
+    ...params,
+    event: {
+      topic: 'connected_service_quota_recovered',
+      recoveryReason: 'automatic_quota_reset',
+      sessionId: event.sessionId,
+      serviceId: event.serviceId,
+      serviceDisplayName: resolveConnectedServiceNotificationDisplayName(event.serviceId),
+      groupId: event.groupId,
+      profileId: event.profileId,
+      issueFingerprint: event.receipt.idempotencyKey,
+    },
+  });
+}
 
 export async function dispatchConnectedServiceQuotaLifecycleNotificationAsync(params: Readonly<{
   settings: AccountSettings | null | undefined;

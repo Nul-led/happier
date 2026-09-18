@@ -754,6 +754,7 @@ describe('createAutomationEventActionExecutor', () => {
           snapshot.contentPublicKeyFingerprint,
         ),
       updatedAt: 9,
+      recipientEnvelopeReadiness: { status: 'available' as const },
     };
     const storedDefinition = {
       automationId: 'automation-1',

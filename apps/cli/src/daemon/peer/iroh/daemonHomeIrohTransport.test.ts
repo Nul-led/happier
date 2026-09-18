@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IrohError } from '@happier-dev/iroh-native';
+import { IrohError } from '@happier-dev/iroh-native/node';
 
 import {
   applyDaemonHomeDescriptorRefresh,
@@ -135,7 +135,39 @@ describe('prepareDaemonHomeIrohTransport', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the independently reachable standard origin only for carrier availability failures', async () => {
+  it('fails closed after acquiring Iroh when readiness is unavailable instead of publishing HTTPS', async () => {
+    const release = vi.fn(async () => undefined);
+    const httpsUrl = 'https://public-home.example.test';
+    const publish = vi.fn(() => vi.fn());
+
+    await expect(prepareDaemonHomeIrohTransport({
+      runtime: {
+        available: true,
+        ensureHomeTunnel: vi.fn(async () => ({
+          runtimeOrigin: 'http://127.0.0.1:48123',
+          observedPath: 'unknown' as const,
+          release,
+        })),
+      } as never,
+      profile: {
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: {
+          ...descriptor,
+          endpoints: [...descriptor.endpoints, { kind: 'https' as const, url: httpsUrl }],
+        },
+      } as never,
+      token: 'account-token',
+      probe: async ({ serverUrl }) => serverUrl === httpsUrl
+        ? { status: 'ready' }
+        : { status: 'server_unreachable', errorMessage: 'Iroh readiness failed' },
+      publishRuntimeOrigin: publish,
+    })).rejects.toThrow(/Iroh readiness failed/);
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('fails closed after selecting Iroh when transport acquisition times out instead of falling back to HTTPS', async () => {
     const descriptorWithHttpsFallback = {
       ...descriptor,
       endpoints: [
@@ -166,12 +198,10 @@ describe('prepareDaemonHomeIrohTransport', () => {
       token: 'account-token',
       probe: probe as never,
       publishRuntimeOrigin: publish,
-    })).resolves.toMatchObject({ carrier: 'standard' });
+    })).rejects.toMatchObject({ code: 'transport_timeout' });
 
-    expect(publish).toHaveBeenCalledWith('https://public-home.example.test', 'https');
-    expect(probe).toHaveBeenLastCalledWith(expect.objectContaining({
-      serverUrl: 'https://public-home.example.test',
-    }));
+    expect(publish).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
 
     runtime.ensureHomeTunnel.mockRejectedValueOnce(new IrohError('relay_auth_failed', 'relay denied'));
     await expect(prepareDaemonHomeIrohTransport({
@@ -281,6 +311,133 @@ describe('prepareDaemonHomeIrohTransport', () => {
       status: 'server_unreachable',
       errorMessage: 'timed out',
     });
+  });
+
+  it('keeps daemon recovery pinned to a selected Iroh carrier when reacquisition is unavailable', async () => {
+    const httpsUrl = 'https://public-home.example.test';
+    const descriptorWithHttps = {
+      ...descriptor,
+      endpoints: [...descriptor.endpoints, { kind: 'https' as const, url: httpsUrl }],
+    };
+    const runtime = {
+      available: true as const,
+      ensureHomeTunnel: vi.fn()
+        .mockResolvedValueOnce({
+          runtimeOrigin: 'http://127.0.0.1:48123',
+          observedPath: 'direct' as const,
+          release: vi.fn(async () => undefined),
+        })
+        .mockRejectedValueOnce(new IrohError('unavailable', 'Iroh suspended')),
+    };
+    const probe = vi.fn(async ({ serverUrl }: { serverUrl: string }) => (
+      serverUrl === httpsUrl
+        ? { status: 'ready' as const }
+        : { status: 'ready' as const }
+    ));
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: descriptorWithHttps } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: descriptorWithHttps,
+      }) as never,
+      probe: probe as never,
+      publishRuntimeOrigin: vi.fn(() => vi.fn()),
+    });
+    probe.mockClear();
+
+    await expect(transport.reacquire()).resolves.toMatchObject({
+      status: 'server_unreachable',
+      errorMessage: 'Iroh suspended',
+    });
+    expect(probe).not.toHaveBeenCalled();
+    expect(transport.carrier).toBe('iroh');
+  });
+
+  it('keeps the selected Iroh lease published until a verified replacement is installed', async () => {
+    const releaseInitialNative = vi.fn(async () => undefined);
+    const releaseReplacementNative = vi.fn(async () => undefined);
+    const replacementFailure = new IrohError('transport_timeout', 'replacement unavailable');
+    const runtime = {
+      available: true as const,
+      ensureHomeTunnel: vi.fn()
+        .mockResolvedValueOnce({
+          runtimeOrigin: 'http://127.0.0.1:48123',
+          observedPath: 'direct' as const,
+          release: releaseInitialNative,
+        })
+        .mockRejectedValueOnce(replacementFailure)
+        .mockResolvedValueOnce({
+          runtimeOrigin: 'http://127.0.0.1:48124',
+          observedPath: 'relay' as const,
+          release: releaseReplacementNative,
+        }),
+    };
+    const unpublishInitial = vi.fn();
+    const unpublishReplacement = vi.fn();
+    const publish = vi.fn()
+      .mockReturnValueOnce(unpublishInitial)
+      .mockReturnValueOnce(unpublishReplacement);
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: descriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: descriptor,
+      }) as never,
+      probe: async () => ({ status: 'ready' }),
+      publishRuntimeOrigin: publish,
+    });
+
+    await expect(transport.reacquire()).resolves.toEqual({
+      status: 'server_unreachable',
+      errorMessage: replacementFailure.message,
+    });
+    expect(unpublishInitial).not.toHaveBeenCalled();
+    expect(releaseInitialNative).not.toHaveBeenCalled();
+
+    await expect(transport.reacquire()).resolves.toEqual({ status: 'ready' });
+    expect(publish).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:48124', 'iroh');
+    expect(unpublishInitial).toHaveBeenCalledOnce();
+    expect(releaseInitialNative).toHaveBeenCalledOnce();
+    expect(publish.mock.invocationCallOrder[1]!).toBeLessThan(unpublishInitial.mock.invocationCallOrder[0]!);
+
+    await transport.release();
+    expect(unpublishReplacement).toHaveBeenCalledOnce();
+    expect(releaseReplacementNative).toHaveBeenCalledOnce();
+  });
+
+  it('does not downgrade a selected Iroh lease when the current profile has no descriptor', async () => {
+    const releaseNative = vi.fn(async () => undefined);
+    const unpublish = vi.fn();
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: {
+        available: true,
+        ensureHomeTunnel: vi.fn(async () => ({
+          runtimeOrigin: 'http://127.0.0.1:48123',
+          observedPath: 'direct' as const,
+          release: releaseNative,
+        })),
+      } as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: descriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({ serverUrl: descriptor.canonicalServerUrl }) as never,
+      probe: async () => ({ status: 'ready' }),
+      publishRuntimeOrigin: vi.fn(() => unpublish),
+    });
+
+    await expect(transport.reacquire()).resolves.toMatchObject({
+      status: 'server_unreachable',
+      errorMessage: expect.stringMatching(/descriptor/i),
+    });
+    expect(unpublish).not.toHaveBeenCalled();
+    expect(releaseNative).not.toHaveBeenCalled();
+
+    await transport.release();
+    expect(unpublish).toHaveBeenCalledOnce();
+    expect(releaseNative).toHaveBeenCalledOnce();
   });
 
   it('reacquires with the current canonical profile instead of the startup descriptor', async () => {

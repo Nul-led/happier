@@ -2,9 +2,13 @@ import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
 import {
   ExecutionRunTurnStreamStartV2RequestSchema,
+  ExecutionRunCancelTurnRequestSchema,
   ExecutionRunUserTranscriptCommitRequestSchema,
+  SessionExecutionRunBrokerAuthorityRequestV1Schema,
+  SessionExecutionRunBrokerAuthorityResponseV1Schema,
   type ExecutionRunPublicState,
   type SessionTranscriptObservationProvenanceV1,
+  type ActionExecutorDeps,
 } from '@happier-dev/protocol';
 import { accountSettingsParse } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -41,7 +45,11 @@ import type { RpcActionExecutor } from '../_actionDispatchAdapter';
 import type { EphemeralSendResult } from '@/api/session/client/transcript/ephemeralSendOutcome';
 import { EXECUTION_RUN_RPC_SCOPES } from '../actionSpecRpcRegistration';
 import { registerActionSpecRpcHandlers } from '../registerActionSpecRpcHandlers';
-import { createExecutionRunRpcActionExecutor, type ExecutionRunRpcApprovalDeps } from './dispatchExecutionRunRpcAction';
+import {
+  createExecutionRunRpcActionExecutor,
+  type ExecutionRunRpcApprovalDeps,
+  type PrepareAttachedTeamCredentialSessionBinding,
+} from './dispatchExecutionRunRpcAction';
 import {
   createReviewCommentHostActionMaterializer,
   resolveReviewCommentHostPluginAuthority,
@@ -51,12 +59,22 @@ import { checkExecutionRunConnectedServicesGenerationCurrent } from '@/daemon/co
 import { resolvePluginPromptAssetBlocks } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
 import { resolveInvocationContributionPolicyFacts } from '@/plugins/runtime/policy/evaluate';
 import type { NativeAgentSessionInteractionHostBinding } from '@/agent/runtime/registry/engineRegistryTypes';
+import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
 
 export type ExecutionRunRpcHandlerContext = Readonly<{
   /** Fixed handler scope: a concrete Session or the daemon-owned detached scope. */
   sessionId: string | null;
   cwd: string;
   machineId?: string;
+  /** Stable qualified Home identity; never the transport URL. */
+  serverId?: string;
+  /** Authenticated runtime Account identity for strict V2 execution origins. */
+  runtimeAccountId?: string;
+  /** Session-owned Run listing dependency, injected by the runtime principal owner. */
+  sessionList?: ActionExecutorDeps['sessionList'];
+  prepareAttachedTeamCredentialSessionBinding?: PrepareAttachedTeamCredentialSessionBinding;
   serverUrl?: string;
   parentProvider: ACPProvider;
   browserControl?: BrowserDaemonControlRoutes | null;
@@ -116,13 +134,21 @@ export type ExecutionRunRpcHandlerContext = Readonly<{
   getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider | null;
   parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
   sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
+  prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
   onExecutionRunPublicStateUpdated?: (run: ExecutionRunPublicState) => void;
   onExecutionRunVoiceAgentWelcomed?: (run: ExecutionRunPublicState, welcomedEpoch: number) => void | Promise<void>;
   resolveAccountSettings?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  /** Settings snapshot bound to the runtime owner's Account/Home, never ambient active state. */
+  resolveAccountSettingsSnapshot?: () => Promise<ActiveAccountSettingsSnapshot | null>;
   executionRunProfileCatalog?: ExecutionRunProfileContributionCatalog;
   resolveExecutionRunProfileCatalog?: ConstructorParameters<typeof ExecutionRunHostBridge>[0]['resolveExecutionRunProfileCatalog'];
   actionExecutor?: RpcActionExecutor;
+  /** Host-owned runtime Action policy; restricted runtimes must not fall back to ambient env/Account state. */
+  actionsSettingsProvider?: RuntimeActionSettingsProvider;
   actionApprovalDeps?: Partial<ExecutionRunRpcApprovalDeps>;
+  enqueueParentSessionInput?: (input: Readonly<{ text: string; meta: Record<string, unknown> }>) => Promise<void>;
+  /** Parent Session composition hook; the bridge remains the sole Run registry owner. */
+  onManagerCreated?: (manager: ExecutionRunHostBridge) => void;
 }>;
 
 function invalidParams(): Readonly<{ ok: false; error: string; errorCode: string }> {
@@ -132,6 +158,8 @@ function invalidParams(): Readonly<{ ok: false; error: string; errorCode: string
 function createExecutionRunRpcRegistrarExecutor(params: Readonly<{
   executor: RpcActionExecutor;
   defaultSessionId: string | null;
+  serverId?: string;
+  runtimeAccountId?: string;
 }>): RpcActionExecutor {
   return {
     execute: async (actionId, input, context) => {
@@ -139,6 +167,11 @@ function createExecutionRunRpcRegistrarExecutor(params: Readonly<{
       const result = await params.executor.execute(actionId, input, {
         ...context,
         ...(defaultSessionId ? { defaultSessionId } : {}),
+        ...(params.serverId ? { serverId: params.serverId } : {}),
+        ...(params.runtimeAccountId ? { runtimeAccountId: params.runtimeAccountId } : {}),
+        sessionListAccess: defaultSessionId && params.runtimeAccountId
+          ? 'current_session'
+          : 'unavailable',
       });
 
       if (!result.ok && result.errorCode === 'invalid_parameters') {
@@ -306,7 +339,16 @@ export function registerExecutionRunRpcHandlers(
     ...(ctx.sessionInteractionHost
       ? { sessionInteractionHost: ctx.sessionInteractionHost }
       : {}),
+    ...(ctx.prepareRunTeamCredentialProviderBinding
+      ? { prepareRunTeamCredentialProviderBinding: ctx.prepareRunTeamCredentialProviderBinding }
+      : {}),
     resolveAccountSettings: ctx.resolveAccountSettings,
+    ...(ctx.resolveAccountSettingsSnapshot
+      ? { resolveAccountSettingsSnapshot: ctx.resolveAccountSettingsSnapshot }
+      : {}),
+    ...(ctx.enqueueParentSessionInput
+      ? { enqueueParentSessionInput: ctx.enqueueParentSessionInput }
+      : {}),
     ...(ctx.machineId ? { machineId: ctx.machineId } : {}),
     resolveProvidersFeatureEnabled: () => {
       const serverSnapshot = ctx.getServerFeaturesSnapshot?.();
@@ -327,6 +369,7 @@ export function registerExecutionRunRpcHandlers(
     },
     ...profileCatalogOptions,
   });
+  ctx.onManagerCreated?.(manager);
 
   function isExecutionRunsEnabled(): boolean {
     return resolveCliFeatureDecision({ featureId: 'execution.runs', env: process.env }).state === 'enabled';
@@ -337,18 +380,46 @@ export function registerExecutionRunRpcHandlers(
     context: ctx,
     policy,
     isExecutionRunsEnabled,
+    ...(ctx.actionsSettingsProvider
+      ? { actionsSettingsProvider: ctx.actionsSettingsProvider }
+      : {}),
     approvalDeps: ctx.actionApprovalDeps,
   });
   canonicalActionExecutor = actionExecutor;
+
+  rpc.registerHandler(
+    SESSION_RPC_METHODS.EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE_V1,
+    async (request: unknown) => {
+      const parsed = SessionExecutionRunBrokerAuthorityRequestV1Schema.safeParse(request);
+      if (!parsed.success) return invalidParams();
+      return SessionExecutionRunBrokerAuthorityResponseV1Schema.parse(
+        manager.resolveLiveBrokerAuthority(parsed.data),
+      );
+    },
+  );
 
   registerActionSpecRpcHandlers({
     rpcHandlerManager: rpc,
     actionExecutor: createExecutionRunRpcRegistrarExecutor({
       executor: actionExecutor,
       defaultSessionId: ctx.sessionId,
+      ...(ctx.serverId ? { serverId: ctx.serverId } : {}),
+      ...(ctx.runtimeAccountId ? { runtimeAccountId: ctx.runtimeAccountId } : {}),
     }),
     scopes: EXECUTION_RUN_RPC_SCOPES,
   });
+
+  rpc.registerHandler(
+    SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1,
+    async (request: unknown) => {
+      if (!isExecutionRunsEnabled()) {
+        return { ok: false, error: 'Execution runs disabled', errorCode: 'execution_run_cancel_unsupported' };
+      }
+      const parsed = ExecutionRunCancelTurnRequestSchema.safeParse(request);
+      if (!parsed.success) return invalidParams();
+      return await manager.cancelCurrentTurn(parsed.data.runId, parsed.data);
+    },
+  );
 
   rpc.registerHandler(
     SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2,

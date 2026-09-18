@@ -2340,6 +2340,59 @@ describe('createPluginHttpService', () => {
         expect(adapter).not.toHaveBeenCalled();
     });
 
+    it('admits the rewritten destination through its matching request policies before adapter execution', async () => {
+        const adapter = vi.fn(async () => createResponse('unsafe'));
+        const rewriteContribution: PluginRequestInterceptorContributionV1 = {
+            id: 'rewrite',
+            priority: 10,
+            origins: ['https://source.example.test', 'https://destination.example.test'],
+        };
+        const destinationPolicyContribution: PluginRequestInterceptorContributionV1 = {
+            id: 'destination-policy',
+            priority: 20,
+            origins: ['https://destination.example.test'],
+        };
+        const destinationPolicy = vi.fn(async () => ({
+            decision: 'deny' as const,
+            code: 'destination_blocked',
+        }));
+        const service = createPluginHttpService({
+            adapter,
+            allowedUrlOrigins: ['https://source.example.test', 'https://destination.example.test'],
+            interceptorRegistry: {
+                declarations: [
+                    { pluginId: 'rewrite.policy', contribution: rewriteContribution },
+                    { pluginId: 'destination.policy', contribution: destinationPolicyContribution },
+                ],
+                activateContributionsOnDemand: async () => {},
+                readBindings: () => [
+                    {
+                        pluginId: 'rewrite.policy',
+                        contribution: rewriteContribution,
+                        invoke: async (request) => ({
+                            decision: 'continue',
+                            request: {
+                                ...request,
+                                url: 'https://destination.example.test/status',
+                            },
+                        }),
+                    },
+                    {
+                        pluginId: 'destination.policy',
+                        contribution: destinationPolicyContribution,
+                        invoke: destinationPolicy,
+                    },
+                ],
+            },
+        });
+
+        await expect(service({ url: 'https://source.example.test/status' })).rejects.toMatchObject({
+            code: 'plugin_fetch_interceptor_denied',
+        });
+        expect(destinationPolicy).toHaveBeenCalledOnce();
+        expect(adapter).not.toHaveBeenCalled();
+    });
+
     it('aborts the host adapter when request timeout elapses', async () => {
         const adapter = vi.fn(async (request) => {
             await new Promise<void>((resolve, reject) => {

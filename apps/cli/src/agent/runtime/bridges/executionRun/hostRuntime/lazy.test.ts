@@ -9,8 +9,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
     const runtime = createLazyExecutionRunHostRuntime({
       resolveRuntime: async () => ({
         readResumeSupport: async () => false,
-        provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-        sendPrompt: async () => {},
+        provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+        deliverInput: async () => ({ status: 'admitted' as const }),
+        getRuntimeLifetimeSignal: () => new AbortController().signal,
         cancel: async () => {},
         subscribeMessages: vi.fn(() => () => {}),
         probeTurnLiveness,
@@ -18,22 +19,23 @@ describe('createLazyExecutionRunHostRuntime', () => {
       }),
     });
 
-    await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'lazy-runtime-session-1' });
+    await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'lazy-runtime-1' });
 
-    expect(runtime.sendSteerPrompt).toBeUndefined();
+    expect(runtime.steerInput).toBeUndefined();
     expect(runtime.probeTurnLiveness).toEqual(expect.any(Function));
-    await expect(runtime.probeTurnLiveness?.('lazy-runtime-session-1')).resolves.toEqual({
+    await expect(runtime.probeTurnLiveness?.('lazy-runtime-1')).resolves.toEqual({
       active: true,
       reason: 'busy',
     });
-    expect(probeTurnLiveness).toHaveBeenCalledWith('lazy-runtime-session-1');
+    expect(probeTurnLiveness).toHaveBeenCalledWith('lazy-runtime-1');
   });
 
   it('does not resolve the lazy runtime for a cancel-before-start request', async () => {
     const resolveRuntime = vi.fn(async () => ({
       readResumeSupport: async () => false,
-      provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-      sendPrompt: async () => {},
+      provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel: async () => {},
       subscribeMessages: vi.fn(() => () => {}),
       dispose: async () => {},
@@ -42,24 +44,25 @@ describe('createLazyExecutionRunHostRuntime', () => {
       resolveRuntime,
     });
 
-    await expect(runtime.cancel('lazy-runtime-session-1')).resolves.toBeUndefined();
+    await expect(runtime.cancel('lazy-runtime-1')).resolves.toBeUndefined();
 
     expect(resolveRuntime).not.toHaveBeenCalled();
   });
 
-  it('cancels the resolved runtime when cancel is requested during session provisioning', async () => {
+  it('cancels the resolved runtime when cancel is requested during runtime provisioning', async () => {
     let resolveProvision!: () => void;
-    const provisionSession = vi.fn(async () => {
+    const provisionRuntime = vi.fn(async () => {
       await new Promise<void>((resolve) => {
         resolveProvision = resolve;
       });
-      return { sessionId: 'lazy-runtime-session-1' };
+      return { runtimeId: 'lazy-runtime-1' };
     });
     const cancel = vi.fn(async () => {});
     const resolveRuntime = vi.fn(async () => ({
       readResumeSupport: async () => false,
-      provisionSession,
-      sendPrompt: async () => {},
+      provisionRuntime,
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel,
       subscribeMessages: vi.fn(() => () => {}),
       dispose: async () => {},
@@ -68,21 +71,21 @@ describe('createLazyExecutionRunHostRuntime', () => {
       resolveRuntime,
     });
 
-    const provision = runtime.provisionSession();
+    const provision = runtime.provisionRuntime();
     await vi.waitFor(() => {
-      expect(provisionSession).toHaveBeenCalledTimes(1);
+      expect(provisionRuntime).toHaveBeenCalledTimes(1);
     });
-    const cancelled = runtime.cancel('lazy-runtime-session-1');
+    const cancelled = runtime.cancel('lazy-runtime-1');
 
     await Promise.resolve();
     expect(cancel).not.toHaveBeenCalled();
     resolveProvision();
 
     await expect(cancelled).resolves.toBeUndefined();
-    await expect(provision).resolves.toEqual({ sessionId: 'lazy-runtime-session-1' });
+    await expect(provision).resolves.toEqual({ runtimeId: 'lazy-runtime-1' });
     expect(resolveRuntime).toHaveBeenCalledTimes(1);
-    expect(provisionSession).toHaveBeenCalledTimes(1);
-    expect(cancel).toHaveBeenCalledWith('lazy-runtime-session-1');
+    expect(provisionRuntime).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith('lazy-runtime-1');
   });
 
   it('disposes the resolved lazy runtime idempotently for concurrent and repeated disposal', async () => {
@@ -91,8 +94,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
     const runtime = createLazyExecutionRunHostRuntime({
       resolveRuntime: async () => ({
         readResumeSupport: async () => false,
-        provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-        sendPrompt: async () => {},
+        provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+        deliverInput: async () => ({ status: 'admitted' as const }),
+        getRuntimeLifetimeSignal: () => new AbortController().signal,
         cancel: async () => {},
         subscribeMessages: vi.fn(() => unsubscribe),
         dispose,
@@ -101,7 +105,7 @@ describe('createLazyExecutionRunHostRuntime', () => {
 
     const handler = vi.fn();
     runtime.subscribeMessages(handler);
-    await runtime.provisionSession();
+    await runtime.provisionRuntime();
     await expect(Promise.all([runtime.dispose(), runtime.dispose()])).resolves.toEqual([undefined, undefined]);
     await expect(runtime.dispose()).resolves.toBeUndefined();
 
@@ -119,15 +123,18 @@ describe('createLazyExecutionRunHostRuntime', () => {
       resolveRuntime: async () => await runtimePromise,
     });
 
-    const provisioning = runtime.provisionSession();
+    const provisioning = runtime.provisionRuntime();
+    const lifetime = runtime.getRuntimeLifetimeSignal();
     const disposed = runtime.dispose();
 
     await expect(disposed).resolves.toBeUndefined();
+    expect(lifetime.aborted).toBe(true);
 
     resolveRuntime({
       readResumeSupport: async () => false,
-      provisionSession: async () => ({ sessionId: 'late-session' }),
-      sendPrompt: async () => {},
+      provisionRuntime: async () => ({ runtimeId: 'late-runtime' }),
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel: async () => {},
       subscribeMessages: vi.fn(() => () => {}),
       dispose: lateDispose,
@@ -140,8 +147,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
   it('does not advertise a permission responder before the runtime declares one', async () => {
     const resolveRuntime = vi.fn(async () => ({
       readResumeSupport: async () => false,
-      provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-      sendPrompt: async () => {},
+      provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel: async () => {},
       subscribeMessages: vi.fn(() => () => {}),
       respondToPermission: async () => ({ delivered: true as const }),
@@ -158,8 +166,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
   it('does not attach a late subscription after the caller already unsubscribed', async () => {
     let resolveRuntime!: (value: {
       readResumeSupport: () => Promise<boolean>;
-      provisionSession: () => Promise<{ sessionId: string }>;
-      sendPrompt: () => Promise<void>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
+      deliverInput: ExecutionRunHostRuntime['deliverInput'];
+      getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
       cancel: () => Promise<void>;
       subscribeMessages: ReturnType<typeof vi.fn>;
       dispose: () => Promise<void>;
@@ -167,8 +176,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
 
     const runtimePromise = new Promise<{
       readResumeSupport: () => Promise<boolean>;
-      provisionSession: () => Promise<{ sessionId: string }>;
-      sendPrompt: () => Promise<void>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
+      deliverInput: ExecutionRunHostRuntime['deliverInput'];
+      getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
       cancel: () => Promise<void>;
       subscribeMessages: ReturnType<typeof vi.fn>;
       dispose: () => Promise<void>;
@@ -181,28 +191,30 @@ describe('createLazyExecutionRunHostRuntime', () => {
       resolveRuntime: async () => await runtimePromise,
     });
 
-    const sessionPromise = runtime.provisionSession();
+    const runtimeProvision = runtime.provisionRuntime();
     const unsubscribe = runtime.subscribeMessages(() => {});
     unsubscribe();
 
     resolveRuntime({
       readResumeSupport: async () => false,
-      provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-      sendPrompt: async () => {},
+      provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel: async () => {},
       subscribeMessages,
       dispose: async () => {},
     });
 
-    await expect(sessionPromise).resolves.toEqual({ sessionId: 'lazy-runtime-session-1' });
+    await expect(runtimeProvision).resolves.toEqual({ runtimeId: 'lazy-runtime-1' });
     expect(subscribeMessages).not.toHaveBeenCalled();
   });
 
   it('forwards runtime identity only from the resolved runtime owner', async () => {
     let resolveRuntime!: (value: {
       readResumeSupport: () => Promise<boolean>;
-      provisionSession: () => Promise<{ sessionId: string }>;
-      sendPrompt: () => Promise<void>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
+      deliverInput: ExecutionRunHostRuntime['deliverInput'];
+      getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
       cancel: () => Promise<void>;
       subscribeMessages: ReturnType<typeof vi.fn>;
       dispose: () => Promise<void>;
@@ -210,8 +222,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
 
     const runtimePromise = new Promise<{
       readResumeSupport: () => Promise<boolean>;
-      provisionSession: () => Promise<{ sessionId: string }>;
-      sendPrompt: () => Promise<void>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
+      deliverInput: ExecutionRunHostRuntime['deliverInput'];
+      getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
       cancel: () => Promise<void>;
       subscribeMessages: ReturnType<typeof vi.fn>;
       dispose: () => Promise<void>;
@@ -228,12 +241,13 @@ describe('createLazyExecutionRunHostRuntime', () => {
       messages.push(message);
     });
 
-    const sessionPromise = runtime.provisionSession();
+    const runtimeProvision = runtime.provisionRuntime();
 
     resolveRuntime({
       readResumeSupport: async () => false,
-      provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
-      sendPrompt: async () => {},
+      provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+      deliverInput: async () => ({ status: 'admitted' as const }),
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel: async () => {},
       subscribeMessages: vi.fn((handler) => {
         handler({
@@ -256,7 +270,7 @@ describe('createLazyExecutionRunHostRuntime', () => {
       dispose: async () => {},
     });
 
-    await expect(sessionPromise).resolves.toEqual({ sessionId: 'lazy-runtime-session-1' });
+    await expect(runtimeProvision).resolves.toEqual({ runtimeId: 'lazy-runtime-1' });
     expect(messages).toEqual([
       {
         type: 'event',
@@ -284,5 +298,70 @@ describe('createLazyExecutionRunHostRuntime', () => {
         },
       },
     ]);
+  });
+
+  it('preserves an established permission responder when runtime capabilities omit permission data', async () => {
+    const respondToPermission = vi.fn(async () => ({ delivered: true as const }));
+    const eventSource: { emit?: Parameters<ExecutionRunHostRuntime['subscribeMessages']>[0] } = {};
+    const runtime = createLazyExecutionRunHostRuntime({
+      resolveRuntime: async () => ({
+        readResumeSupport: async () => false,
+        provisionRuntime: async () => ({ runtimeId: 'lazy-runtime-1' }),
+        deliverInput: async () => ({ status: 'admitted' as const }),
+        getRuntimeLifetimeSignal: () => new AbortController().signal,
+        cancel: async () => {},
+        subscribeMessages: vi.fn((handler) => {
+          eventSource.emit = handler;
+          return () => {};
+        }),
+        permissionCapability: 'responds',
+        respondToPermission,
+        dispose: async () => {},
+      }),
+    });
+    runtime.subscribeMessages(() => {});
+    await runtime.provisionRuntime();
+
+    eventSource.emit?.({
+      type: 'event',
+      name: 'runtime.capabilities',
+      payload: { executionRun: { supported: true } },
+    });
+
+    expect(runtime.permissionCapability).toBe('responds');
+    await expect(runtime.respondToPermission?.('permission-1', true)).resolves.toEqual({ delivered: true });
+  });
+
+  it('fails closed when a capability refresh explicitly contains malformed permission data', async () => {
+    const respondToPermission = vi.fn(async () => ({ delivered: true as const }));
+    const eventSource: { emit?: Parameters<ExecutionRunHostRuntime['subscribeMessages']>[0] } = {};
+    const runtime = createLazyExecutionRunHostRuntime({
+      resolveRuntime: async () => ({
+        readResumeSupport: async () => false,
+        provisionRuntime: async () => ({ runtimeId: 'runtime-1' }),
+        deliverInput: async () => ({ status: 'admitted' as const }),
+        cancel: async () => {},
+        subscribeMessages: (handler) => {
+          eventSource.emit = handler;
+          return () => {};
+        },
+        getRuntimeLifetimeSignal: () => new AbortController().signal,
+        permissionCapability: 'responds',
+        respondToPermission,
+        dispose: async () => {},
+      }),
+    });
+    runtime.subscribeMessages(() => {});
+    await runtime.provisionRuntime();
+
+    eventSource.emit?.({
+      type: 'event',
+      name: 'runtime.capabilities',
+      payload: { permissions: { capability: 'unexpected' } },
+    });
+
+    expect(runtime.permissionCapability).toBe('static');
+    expect(runtime.respondToPermission).toBeUndefined();
+    expect(respondToPermission).not.toHaveBeenCalled();
   });
 });

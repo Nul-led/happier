@@ -6,12 +6,12 @@ import { join } from 'node:path';
 
 import {
   CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES,
+  ConnectedServiceBindingsV2IngressSchema,
   DEFAULT_PROVIDER_SETTINGS_V1,
   ProviderConnectionIdSchema,
   createProviderBindingSecurityFingerprintV1,
   createProviderErrorV1,
   isConnectedServiceUxDiagnosticSpawnErrorDetail,
-  type ConnectedServiceBindingsV1,
   type ProviderRuntimeBindingBasisV1,
 } from '@happier-dev/protocol';
 import type { VendorResumeSupportParams } from '@/agent/catalog/types';
@@ -229,7 +229,6 @@ function createParams() {
       },
     },
     api: {} as never,
-    loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
     connectedServicesMaterializationBaseDir: '/tmp/connected-services',
     connectedServiceRefreshCoordinator: null,
     connectedServiceQuotasCoordinator: null,
@@ -824,8 +823,6 @@ describe('executeSpawnSessionRequest', () => {
           },
         },
         credentials: createParams().credentials,
-        loadLocalHandoffMetadataByVendorResumeId:
-          createParams().loadLocalHandoffMetadataByVendorResumeId,
       },
       validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
     });
@@ -1341,7 +1338,7 @@ describe('executeSpawnSessionRequest', () => {
         },
       });
       expect(input.resolveQualifiedPurposeBindingSnapshot?.(
-        input.connectedServicesBindingsRaw as ConnectedServiceBindingsV1,
+        ConnectedServiceBindingsV2IngressSchema.parse(input.connectedServicesBindingsRaw),
       )?.bindings).toEqual([{
         purpose: {
           consumer: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -2901,7 +2898,7 @@ describe('executeSpawnSessionRequest', () => {
       cleanupOnFailure: null,
       cleanupOnExit: null,
       connectedServicesBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': {
             source: 'connected',
@@ -3079,7 +3076,7 @@ describe('executeSpawnSessionRequest', () => {
       env: {},
       cleanupOnFailure: null,
       cleanupOnExit: null,
-      connectedServicesBindings: { v: 1, bindingsByServiceId: {} },
+      connectedServicesBindings: { v: 2, bindingsByServiceId: {} },
       qualifiedPurposeBindingSnapshot: null,
     });
     vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
@@ -3180,7 +3177,7 @@ describe('executeSpawnSessionRequest', () => {
       cleanupOnFailure: null,
       cleanupOnExit: null,
       connectedServicesBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': {
             source: 'connected',
@@ -3227,7 +3224,7 @@ describe('executeSpawnSessionRequest', () => {
     expect(resolveSpawnChildEnvironment).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': {
               source: 'connected',
@@ -3241,7 +3238,7 @@ describe('executeSpawnSessionRequest', () => {
     }));
     expect(createSpawnLifecycleCallbacks).toHaveBeenCalledWith(expect.objectContaining({
       connectedServicesBindingsRaw: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': {
             source: 'connected',
@@ -3255,7 +3252,7 @@ describe('executeSpawnSessionRequest', () => {
     expect(routeSpawnModeAndWaitForWebhook).toHaveBeenCalledWith(expect.objectContaining({
       trackedSpawnOptions: expect.objectContaining({
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             'openai-codex': {
               source: 'connected',
@@ -3303,7 +3300,7 @@ describe('executeSpawnSessionRequest', () => {
       env: {},
       cleanupOnFailure: null,
       cleanupOnExit: null,
-      connectedServicesBindings: { v: 1, bindingsByServiceId: {} },
+      connectedServicesBindings: { v: 2, bindingsByServiceId: {} },
       qualifiedPurposeBindingSnapshot: null,
     });
     vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
@@ -3932,7 +3929,6 @@ describe('executeSpawnSessionRequest', () => {
             }],
           },
         },
-        loadLocalHandoffMetadataByVendorResumeId: createParams().loadLocalHandoffMetadataByVendorResumeId,
       },
       validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
     });

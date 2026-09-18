@@ -4,7 +4,7 @@ import type {
   ConnectedServiceQuotaMeterV1,
   ConnectedServiceQuotaSnapshotV1,
 } from '@happier-dev/protocol';
-import { readConnectedServiceLimitCategoryV1 } from '@happier-dev/protocol';
+import { compareConnectedServiceQuotaObservationRecency, readConnectedServiceLimitCategoryV1 } from '@happier-dev/protocol';
 
 import {
   normalizeQuotaMeter,
@@ -41,18 +41,29 @@ function readFetchedAt(snapshot: ConnectedServiceQuotaSnapshotV1 | null | undefi
 function selectFreshestSnapshot(
   first: ConnectedServiceQuotaSnapshotV1 | null | undefined,
   second: ConnectedServiceQuotaSnapshotV1 | null | undefined,
+  nowMs: number,
 ): ConnectedServiceQuotaSnapshotV1 | null {
   if (!first) return second ?? null;
   if (!second) return first;
-  return readFetchedAt(second) > readFetchedAt(first) ? second : first;
+  return compareConnectedServiceQuotaObservationRecency({
+    existingObservedAtMs: readFetchedAt(first),
+    incomingObservedAtMs: readFetchedAt(second),
+    nowMs,
+  }) === 'incoming_newer' ? second : first;
 }
 
 function shouldRecordSnapshot(
   existing: ConnectedServiceQuotaSnapshotV1 | null | undefined,
   incoming: ConnectedServiceQuotaSnapshotV1,
+  nowMs: number,
 ): boolean {
   if (!existing) return true;
-  return readFetchedAt(incoming) >= readFetchedAt(existing);
+  const recency = compareConnectedServiceQuotaObservationRecency({
+    existingObservedAtMs: readFetchedAt(existing),
+    incomingObservedAtMs: readFetchedAt(incoming),
+    nowMs,
+  });
+  return recency === 'incoming_newer' || recency === 'same';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -163,9 +174,10 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
 
   recordSnapshot(input: SnapshotKeyInput & Readonly<{ snapshot: ConnectedServiceQuotaSnapshotV1 }>): void {
     const key = snapshotKey(input);
-    if (shouldRecordSnapshot(this.snapshotsByKey.get(key), input.snapshot)) {
+    const nowMs = Date.now();
+    if (shouldRecordSnapshot(this.snapshotsByKey.get(key), input.snapshot, nowMs)) {
       this.snapshotsByKey.set(key, input.snapshot);
-      this.recordBurnObservation(key, input.snapshot, input.groupGeneration);
+      this.recordBurnObservation(key, input.snapshot, input.groupGeneration, nowMs);
     }
     this.recordProfileSnapshot(input);
   }
@@ -174,13 +186,18 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
     key: string,
     snapshot: ConnectedServiceQuotaSnapshotV1,
     groupGeneration: number | null | undefined,
+    nowMs: number,
   ): void {
     const observation = readBurnObservation(snapshot, groupGeneration);
     if (!observation) return;
     const existing = this.burnHistoryByKey.get(key);
     // Only advance the history when this observation is strictly newer than the latest one; a
     // duplicate/stale fetchedAt would otherwise poison the delta with a zero time window.
-    if (existing && observation.atMs <= existing.latest.atMs) return;
+    if (existing && compareConnectedServiceQuotaObservationRecency({
+      existingObservedAtMs: existing.latest.atMs,
+      incomingObservedAtMs: observation.atMs,
+      nowMs,
+    }) !== 'incoming_newer') return;
     this.burnHistoryByKey.set(key, {
       prev: existing && isSameBurnContext(existing.latest, observation) ? existing.latest : null,
       latest: observation,
@@ -245,7 +262,7 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
 
   recordProfileSnapshot(input: ProfileSnapshotKeyInput & Readonly<{ snapshot: ConnectedServiceQuotaSnapshotV1 }>): void {
     const key = profileSnapshotKey(input);
-    if (shouldRecordSnapshot(this.snapshotsByProfileKey.get(key), input.snapshot)) {
+    if (shouldRecordSnapshot(this.snapshotsByProfileKey.get(key), input.snapshot, Date.now())) {
       this.snapshotsByProfileKey.set(key, input.snapshot);
     }
   }
@@ -254,6 +271,7 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
     return selectFreshestSnapshot(
       this.snapshotsByKey.get(snapshotKey(input)),
       this.snapshotsByProfileKey.get(profileSnapshotKey(input)),
+      Date.now(),
     );
   }
 
@@ -262,7 +280,6 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
     groupId: string;
     capturedAtMs: number;
   }>): Map<string, ConnectedServiceAuthGroupMemberRuntimeState> {
-    void input.capturedAtMs;
     const states = new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>();
     const prefix = `${input.serviceId}\0${input.groupId}\0`;
     for (const [key, snapshot] of this.snapshotsByKey.entries()) {
@@ -272,7 +289,9 @@ export class ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore {
         serviceId: input.serviceId,
         profileId,
       }));
-      states.set(profileId, buildMemberState(selectFreshestSnapshot(snapshot, profileSnapshot) ?? snapshot));
+      states.set(profileId, buildMemberState(
+        selectFreshestSnapshot(snapshot, profileSnapshot, input.capturedAtMs) ?? snapshot,
+      ));
     }
     const profilePrefix = `${input.serviceId}\0`;
     for (const [key, snapshot] of this.snapshotsByProfileKey.entries()) {

@@ -248,6 +248,9 @@ export async function startVoiceAgentTurnStream(args: Readonly<{
     const started = await args.voiceAgentManager.startTurnStream({
       voiceAgentId: ctrl.voiceAgentId,
       userText,
+      ...(args.params.userTranscript?.localId
+        ? { durableUserTranscriptLocalId: args.params.userTranscript.localId }
+        : {}),
       ...(args.params.causalPermissionAuthority
         ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
         : {}),

@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
-import type { ResolvedActivatedHookRegistration } from '@/plugins/projection/registry/types';
+import type {
+  ResolvedActivatedHookRegistration,
+  ResolvedActivationTarget,
+  ResolvedAgentContribution,
+  ResolvedContributionRegistry,
+} from '@/plugins/projection/registry/types';
+import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
+import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 
 import { dispatchDaemonSpawnHookEvent } from './dispatchDaemonSpawnHookEvent';
 
@@ -74,6 +81,74 @@ function createPrerequisiteHookActivationTarget(params: Readonly<{
     },
     manifest: ingested.manifest,
   });
+}
+
+function createSpawnHookAgentContribution(params: Readonly<{
+  id: string;
+  pluginId: string;
+}>): ResolvedAgentContribution {
+  return Object.freeze({
+    id: params.id,
+    provenance: 'first_party' as const,
+    source: { kind: 'bundled' as const },
+    pluginId: params.pluginId,
+    definition: {
+      kindVersion: 1 as const,
+      id: params.id,
+      ownedBackendIds: [params.id],
+    },
+  });
+}
+
+function createSpawnHookContributes(params: Readonly<{
+  agents?: readonly ResolvedAgentContribution[];
+  activationTargets?: readonly ResolvedActivationTarget[];
+}> = {}): ResolvedContributionRegistry {
+  const agents = params.agents ?? [];
+  return Object.freeze({
+    agents: Object.freeze([...agents]),
+    actions: Object.freeze([]),
+    resources: Object.freeze([]),
+    activationTargets: Object.freeze([...(params.activationTargets ?? [])]),
+    catalogEntriesById: Object.freeze({}),
+    agentDefinitionsById: new Map(agents.map((agent) => [agent.id, agent])),
+    pluginDiagnosticsByPluginId: Object.freeze({}),
+  });
+}
+
+/**
+ * The dispatch bridge hands a resolved runtime to the canonical ephemeral
+ * lease owner, so a fixture must be a complete runtime registry rather than
+ * the two members this suite observes.
+ */
+function createSpawnHookRuntimeRegistry(params: Readonly<{
+  contributes: ResolvedContributionRegistry;
+  hookHandlersByHookId?: ResolvedExecutablePluginRuntimeRegistry['hookHandlersByHookId'];
+  dispose?: ResolvedExecutablePluginRuntimeRegistry['dispose'];
+}>): ResolvedExecutablePluginRuntimeRegistry {
+  return {
+    contributes: params.contributes,
+    hookHandlersByHookId: params.hookHandlersByHookId ?? new Map(),
+    agentRuntimesByAgentId: new Map(),
+    scmHostingProvidersById: new Map(),
+    pluginDiagnosticsByPluginId: Object.freeze({}),
+    activatedPluginIds: new Set(),
+    activateContributionsOnDemand: async () => [],
+    createAgentInvocationServices: async () => createUnavailablePluginServices(),
+    resolvePromptAssetBlocks: async () => Object.freeze([]),
+    retireConsumers: () => {},
+    dispose: params.dispose ?? (async () => {}),
+  };
+}
+
+/**
+ * A hook signal is captured inside a dispatch callback, so the compiler cannot
+ * see the assignment. Reading it through this owner keeps the assertion honest:
+ * a never-captured signal fails loudly instead of silently short-circuiting.
+ */
+function readCapturedHookSignal(signal: AbortSignal | null): AbortSignal {
+  if (!signal) throw new Error('Expected the dispatch bridge to capture a hook signal');
+  return signal;
 }
 
 describe('dispatchDaemonSpawnHookEvent', () => {
@@ -189,9 +264,12 @@ describe('dispatchDaemonSpawnHookEvent', () => {
       contributes,
       pluginIds: ['happier.agent.codex'],
     });
-    expect(dispatchEvent).toHaveBeenCalledWith({
+    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({
       runtimeRegistry: expect.objectContaining({
         hookHandlersByHookId: expect.any(Map),
+      }),
+      context: expect.objectContaining({
+        signal: expect.anything(),
       }),
       event: expect.objectContaining({
         hookVersion: 1,
@@ -214,7 +292,7 @@ describe('dispatchDaemonSpawnHookEvent', () => {
           },
         }),
       }),
-    });
+    }));
     const dispatchedEvent = dispatchEvent.mock.calls[0]?.[0]?.event;
     expect(dispatchedEvent).not.toHaveProperty('providerId');
     expect(dispatchedEvent).not.toHaveProperty('backendId');
@@ -273,6 +351,169 @@ describe('dispatchDaemonSpawnHookEvent', () => {
       },
     });
     expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it('releases an ephemeral runtime registry that finishes acquiring after the dispatch deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      const contributes = createSpawnHookContributes({
+        agents: [createSpawnHookAgentContribution({
+          id: 'codex',
+          pluginId: 'happier.agent.codex',
+        })],
+      });
+      const resolveContributes = vi.fn().mockResolvedValue(contributes);
+      const resolveRuntimeRegistry = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        return createSpawnHookRuntimeRegistry({ contributes, dispose });
+      });
+      const dispatchEvent = vi.fn();
+
+      const pending = dispatchDaemonSpawnHookEvent({
+        happyHomeDir: '/tmp/happy-home',
+        event: {
+          eventId: 'agent.resolvePrerequisites',
+          backendId: 'codex',
+          payload: { backendId: 'codex' },
+        },
+      } as never, {
+        resolveContributes,
+        resolveRuntimeRegistry,
+        dispatchEvent,
+        timeoutMs: 5,
+      });
+
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(pending).resolves.toMatchObject({
+        aggregate: {
+          executionKind: 'decide',
+          result: { decision: 'deny' },
+        },
+      });
+      expect(dispose).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+      expect(dispatchEvent).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses one cancellation-owning deadline across registry acquisition and hook execution', async () => {
+    vi.useFakeTimers();
+    try {
+      const contributes = createSpawnHookContributes({
+        agents: [createSpawnHookAgentContribution({
+          id: 'codex',
+          pluginId: 'happier.agent.codex',
+        })],
+      });
+      const resolveContributes = vi.fn().mockResolvedValue(contributes);
+      const resolveRuntimeRegistry = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 600));
+        return createSpawnHookRuntimeRegistry({
+          contributes,
+          dispose: vi.fn().mockResolvedValue(undefined),
+        });
+      });
+      let handlerSignal: AbortSignal | null = null;
+      let toolSignal: AbortSignal | null = null;
+      const dispatchEvent = vi.fn(async (input: Readonly<{ context?: unknown }>) => {
+        const context = input.context as Readonly<{
+          signal: AbortSignal;
+          tools: Readonly<{ signal: AbortSignal }>;
+        }>;
+        handlerSignal = context.signal;
+        toolSignal = context.tools.signal;
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return {
+          eventId: 'agent.resolvePrerequisites',
+          matchedHandlerCount: 0,
+          outcomes: [],
+          aggregate: {
+            executionKind: 'decide',
+            result: { decision: 'allow' },
+          },
+        };
+      });
+
+      const pending = dispatchDaemonSpawnHookEvent({
+        happyHomeDir: '/tmp/happy-home',
+        event: {
+          eventId: 'agent.resolvePrerequisites',
+          backendId: 'codex',
+          payload: { backendId: 'codex' },
+          contextFactory: ({ signal }: Readonly<{ signal: AbortSignal }>) => ({
+            signal,
+            tools: { signal },
+          }),
+        },
+      } as never, {
+        resolveContributes,
+        resolveRuntimeRegistry,
+        dispatchEvent,
+        timeoutMs: 1_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect(dispatchEvent).toHaveBeenCalledTimes(1);
+      expect(handlerSignal).toBe(toolSignal);
+      expect(readCapturedHookSignal(handlerSignal).aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(400);
+      await expect(pending).resolves.toMatchObject({
+        aggregate: {
+          executionKind: 'decide',
+          result: { decision: 'deny' },
+        },
+        outcomes: [expect.objectContaining({ error: expect.stringContaining('timed out') })],
+      });
+      expect(readCapturedHookSignal(handlerSignal).aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves caller cancellation reason through the deadline-bound handler signal', async () => {
+    const caller = new AbortController();
+    const cancellation = new Error('caller cancelled spawn');
+    const acceptedRegistry = {
+      contributes: {
+        agentDefinitionsById: new Map(),
+        activationTargets: Object.freeze([]),
+      },
+      hookHandlersByHookId: new Map(),
+    };
+    let handlerSignal: AbortSignal | null = null;
+    const dispatchEvent = vi.fn(async (input: Readonly<{ context?: unknown }>) => {
+      const context = input.context as Readonly<{ signal: AbortSignal }>;
+      handlerSignal = context.signal;
+      return await new Promise<never>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true });
+      });
+    });
+
+    const pending = dispatchDaemonSpawnHookEvent({
+      happyHomeDir: '/tmp/happy-home',
+      runtimeRegistry: acceptedRegistry,
+      event: {
+        eventId: 'agent.resolvePrerequisites',
+        backendId: 'codex',
+        payload: { backendId: 'codex' },
+        context: { signal: caller.signal },
+      },
+    } as never, { dispatchEvent });
+
+    await vi.waitFor(() => expect(handlerSignal).not.toBeNull());
+    caller.abort(cancellation);
+
+    await expect(pending).rejects.toBe(cancellation);
+    expect(readCapturedHookSignal(handlerSignal).aborted).toBe(true);
+    expect(readCapturedHookSignal(handlerSignal).reason).toBe(cancellation);
   });
 
   it('resolves spawn hook runtime state only for the backend owner and matching global hooks', async () => {

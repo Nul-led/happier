@@ -316,9 +316,14 @@ export async function projectExternalShareableTranscriptPage(params: Readonly<{
       (total, item) => total + (item.kind === 'assistantText' ? item.consumedInputs.length : 0),
       0,
     );
+    if (emittedConsumedInputCount + nextConsumedInputCount > EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_CONSUMED_INPUTS_V1) {
+      return ExternalShareableTranscriptPageV1Schema.parse({
+        ...lastFittingPage,
+        hasMore: true,
+      });
+    }
     const nextCandidate = candidate !== null
       && items.length < limit
-      && emittedConsumedInputCount + nextConsumedInputCount <= EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_CONSUMED_INPUTS_V1
       ? candidate
       : null;
     const nextItems = nextCandidate ? [...items, nextCandidate] : items;

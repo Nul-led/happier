@@ -8,6 +8,7 @@ import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload
 import { compilePrismaMigrateBinary } from './compilePrismaMigrateBinary.js';
 import { stageIrohNativeReleaseEvidence } from './stageIrohNativeReleaseEvidence.js';
 import { writePersonalHomeServerArtifactCapability } from '../firstPartyRuntime/personalHome/artifactContract.js';
+import { resolveServerRuntimePrismaEngineFileName } from '../firstPartyRuntime/serverRuntimeArtifactLayout.js';
 import {
   resolveRequestedServerDbProviders,
   resolveServerBinarySidecarEntries,
@@ -17,31 +18,7 @@ import {
   type StageEntry,
 } from './serverSidecars.js';
 
-// `expo-modules-core` is the React Native availability probe boundary of
-// `@happier-dev/iroh-native`'s root entry (`HappierIrohNative.ts`). Its guarded
-// require must stay a runtime lookup: resolving it at build time drags the
-// React Native dependency graph (reached through the root-hoisted
-// react-native symlink) into the server bundle, whose Flow sources Bun cannot
-// parse. Keep it external so the probe fails closed to `null` off-Expo.
-export const SERVER_BINARY_DEFAULT_EXTERNALS = Object.freeze(['redis', 'expo-modules-core']);
-
-function resolvePrismaEngineFileNameForTarget(target: BinaryTarget): string {
-  const key = `${target.os}-${target.arch}`;
-  switch (key) {
-    case 'linux-x64':
-      return 'libquery_engine-debian-openssl-3.0.x.so.node';
-    case 'linux-arm64':
-      return 'libquery_engine-linux-arm64-openssl-3.0.x.so.node';
-    case 'darwin-x64':
-      return 'libquery_engine-darwin.dylib.node';
-    case 'darwin-arm64':
-      return 'libquery_engine-darwin-arm64.dylib.node';
-    case 'windows-x64':
-      return 'query_engine-windows.dll.node';
-    default:
-      throw new Error(`[component-artifacts] unsupported Prisma binary target: ${key}`);
-  }
-}
+export const SERVER_BINARY_DEFAULT_EXTERNALS = Object.freeze(['redis']);
 
 async function ensureFile(path: string, message: string): Promise<void> {
   const info = await stat(path).catch(() => null);
@@ -60,7 +37,10 @@ async function validateServerPrismaEnginesForTarget({
   buildDbProviders: string;
 }): Promise<void> {
   const targetKey = `${target.os}-${target.arch}`;
-  const engineFileName = resolvePrismaEngineFileNameForTarget(target);
+  const engineFileName = resolveServerRuntimePrismaEngineFileName({
+    platform: target.os,
+    arch: target.arch,
+  });
   await ensureFile(
     join(payloadDir, 'node_modules', '.prisma', 'client', engineFileName),
     `[component-artifacts] missing postgres Prisma query engine for ${targetKey}: node_modules/.prisma/client/${engineFileName}`,

@@ -183,6 +183,12 @@ function coerceProfile(value: any): ServerProfile | null {
   };
 }
 
+function requireProfileProjection(value: unknown, id: string): ServerProfile {
+  const profile = coerceProfile(value);
+  if (!profile) throw new Error(`Server profile is invalid: ${id}`);
+  return profile;
+}
+
 function assertValidStoredHomeDescriptors(servers: Record<string, any>): void {
   for (const value of Object.values(servers)) {
     coerceProfile(value);
@@ -334,6 +340,7 @@ export async function getActiveServerProfile(): Promise<ServerProfile> {
 export async function useServerProfile(idRaw: string): Promise<ServerProfile> {
   const identifier = asStringId(idRaw);
   const now = Date.now();
+  let selectedProfile!: ServerProfile;
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
     assertValidStoredHomeDescriptors(servers);
@@ -345,24 +352,25 @@ export async function useServerProfile(idRaw: string): Promise<ServerProfile> {
     if (!existing) {
       throw new Error(`Server profile not found: ${resolvedId}`);
     }
+    const nextProfile = { ...existing, lastUsedAt: now, updatedAt: now };
+    selectedProfile = requireProfileProjection(nextProfile, resolvedId);
     return {
       ...current,
       activeServerId: resolvedId,
       servers: {
         ...servers,
-        [resolvedId]: { ...existing, lastUsedAt: now, updatedAt: now },
+        [resolvedId]: nextProfile,
       },
     };
   });
 
-  const active = await getActiveServerProfile();
   await maybeCopyAccessKeyFromDerivedUrlId({
-    targetServerId: active.id,
-    serverUrl: active.serverUrl,
-    ...(active.localServerUrl ? { localServerUrl: active.localServerUrl } : {}),
-    hasObservedHomeIdentity: Boolean(active.homeConnectionDescriptor?.homeServerIdentityId),
-  });
-  return active;
+    targetServerId: selectedProfile.id,
+    serverUrl: selectedProfile.serverUrl,
+    ...(selectedProfile.localServerUrl ? { localServerUrl: selectedProfile.localServerUrl } : {}),
+    hasObservedHomeIdentity: Boolean(selectedProfile.homeConnectionDescriptor?.homeServerIdentityId),
+  }).catch(() => undefined);
+  return selectedProfile;
 }
 
 export async function addServerProfile(opts: Readonly<{
@@ -385,6 +393,7 @@ export async function addServerProfile(opts: Readonly<{
   const webappUrl = String(opts.webappUrl ?? '').trim();
   const shouldUse = opts.use === true;
   const now = Date.now();
+  let createdProfile!: ServerProfile;
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
@@ -420,6 +429,7 @@ export async function addServerProfile(opts: Readonly<{
         ? { homeConnectionDescriptor: existing.homeConnectionDescriptor }
         : {}),
     };
+    createdProfile = requireProfileProjection(next, id);
     return {
       ...current,
       activeServerId: shouldUse ? id : current?.activeServerId,
@@ -432,18 +442,10 @@ export async function addServerProfile(opts: Readonly<{
       targetServerId: id,
       serverUrl,
       ...(localServerUrl ? { localServerUrl } : {}),
-    });
+    }).catch(() => undefined);
   }
 
-  if (shouldUse) {
-    return await getActiveServerProfile();
-  }
-  const profiles = await listServerProfiles();
-  const created = profiles.find((p) => p.id === id);
-  if (!created) {
-    throw new Error(`Failed to create server profile: ${id}`);
-  }
-  return created;
+  return createdProfile;
 }
 
 /**
@@ -484,6 +486,7 @@ export async function adoptServerProfileHomeConnectionDescriptor(opts: Readonly<
   const expectedProfileId = opts.expectedProfileId ? asStringId(opts.expectedProfileId) : null;
   let resolvedId = '';
   let outcome: 'updated' | 'unchanged' | 'stale' = 'unchanged';
+  let adoptedProfile!: ServerProfile;
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
@@ -533,17 +536,20 @@ export async function adoptServerProfileHomeConnectionDescriptor(opts: Readonly<
     const descriptor = incoming;
     if (opts.observation === 'advisory' && previousAuthority === 'exact') {
       outcome = 'stale';
+      adoptedProfile = requireProfileProjection(rawExisting, resolvedId);
       return current;
     }
     const promotesAdvisory = opts.observation === 'exact' && previousAuthority === 'advisory';
     if (!promotesAdvisory && previous && previous.revision > descriptor.revision) {
       outcome = 'stale';
+      adoptedProfile = requireProfileProjection(rawExisting, resolvedId);
       return current;
     }
     if (!promotesAdvisory && previous && previous.revision === descriptor.revision) {
       if (!isDeepStrictEqual(previous, descriptor)) {
         throw new Error('Home descriptor conflicts with the persisted profile revision');
       }
+      adoptedProfile = requireProfileProjection(rawExisting, resolvedId);
       return current;
     }
 
@@ -552,29 +558,31 @@ export async function adoptServerProfileHomeConnectionDescriptor(opts: Readonly<
     const webappUrl = String(opts.webappUrl ?? existing?.webappUrl ?? '').trim()
       || new URL(descriptor.canonicalServerUrl).origin;
     outcome = 'updated';
+    const nextProfile = {
+      ...(rawExisting && typeof rawExisting === 'object' ? rawExisting : {}),
+      id: resolvedId,
+      name,
+      serverUrl: descriptor.canonicalServerUrl,
+      ...(existing?.localServerUrl ? { localServerUrl: existing.localServerUrl } : {}),
+      webappUrl,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastUsedAt: opts.use === true ? now : (existing?.lastUsedAt ?? 0),
+      homeConnectionDescriptor: descriptor,
+      homeConnectionDescriptorAuthority: opts.observation,
+    };
+    adoptedProfile = requireProfileProjection(nextProfile, resolvedId);
     return {
       ...current,
       activeServerId: opts.use === true ? resolvedId : current?.activeServerId,
       servers: {
         ...servers,
-        [resolvedId]: {
-          ...(rawExisting && typeof rawExisting === 'object' ? rawExisting : {}),
-          id: resolvedId,
-          name,
-          serverUrl: descriptor.canonicalServerUrl,
-          ...(existing?.localServerUrl ? { localServerUrl: existing.localServerUrl } : {}),
-          webappUrl,
-          createdAt: existing?.createdAt ?? now,
-          updatedAt: now,
-          lastUsedAt: opts.use === true ? now : (existing?.lastUsedAt ?? 0),
-          homeConnectionDescriptor: descriptor,
-          homeConnectionDescriptorAuthority: opts.observation,
-        },
+        [resolvedId]: nextProfile,
       },
     };
   });
 
-  return { profile: await getServerProfile(resolvedId), outcome };
+  return { profile: adoptedProfile, outcome };
 }
 
 export async function findServerProfileIdentityConflicts(): Promise<ServerProfileIdentityConflict[]> {
@@ -614,6 +622,7 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
   const now = Date.now();
 
   let resolvedId: string | null = null;
+  let upsertedProfile: ServerProfile | null = null;
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
     assertValidStoredHomeDescriptors(servers);
@@ -631,28 +640,30 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
     }
 
     resolvedId = matchedId;
+    const nextProfile = {
+      ...existing,
+      name: name || existing.name,
+      serverUrl,
+      // Omission preserves an existing split URL. Supplying a local URL
+      // equal to the canonical URL explicitly collapses that split.
+      ...(opts.localServerUrl !== undefined
+        ? {
+            localServerUrl: localServerUrl && localServerUrl !== serverUrl
+              ? localServerUrl
+              : undefined,
+          }
+        : {}),
+      webappUrl,
+      updatedAt: now,
+      lastUsedAt: shouldUse ? now : existing.lastUsedAt,
+    };
+    upsertedProfile = requireProfileProjection(nextProfile, matchedId);
     return {
       ...current,
       activeServerId: shouldUse ? matchedId : current?.activeServerId,
       servers: {
         ...servers,
-        [matchedId]: {
-          ...existing,
-          name: name || existing.name,
-          serverUrl,
-          // Omission preserves an existing split URL. Supplying a local URL
-          // equal to the canonical URL explicitly collapses that split.
-          ...(opts.localServerUrl !== undefined
-            ? {
-                localServerUrl: localServerUrl && localServerUrl !== serverUrl
-                  ? localServerUrl
-                  : undefined,
-              }
-            : {}),
-          webappUrl,
-          updatedAt: now,
-          lastUsedAt: shouldUse ? now : existing.lastUsedAt,
-        },
+        [matchedId]: nextProfile,
       },
     };
   });
@@ -667,13 +678,10 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
       serverUrl,
       ...(localServerUrl ? { localServerUrl } : {}),
       hasObservedHomeIdentity: false,
-    });
+    }).catch(() => undefined);
   }
 
-  if (shouldUse) {
-    return await getActiveServerProfile();
-  }
-  return await getServerProfile(resolvedId);
+  return upsertedProfile!;
 }
 
 /**
@@ -700,6 +708,7 @@ export async function setServerProfileEndpointsById(opts: Readonly<{
   const requestedName = String(opts.name ?? '').trim();
   const shouldUse = opts.use === true;
   const now = Date.now();
+  let updatedProfile!: ServerProfile;
 
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
@@ -721,6 +730,7 @@ export async function setServerProfileEndpointsById(opts: Readonly<{
       updatedAt: now,
       lastUsedAt: shouldUse ? now : (existing?.lastUsedAt ?? 0),
     };
+    updatedProfile = requireProfileProjection(next, id);
     return {
       ...current,
       activeServerId: shouldUse ? id : current?.activeServerId,
@@ -728,7 +738,7 @@ export async function setServerProfileEndpointsById(opts: Readonly<{
     };
   });
 
-  return shouldUse ? await getActiveServerProfile() : await getServerProfile(id);
+  return updatedProfile;
 }
 
 export async function removeServerProfile(
@@ -753,6 +763,8 @@ export async function removeServerProfile(
     throw new Error(`Cannot remove the active server profile (${resolvedId}). Use --force to switch back to cloud and remove it.`);
   }
 
+  let removedProfile!: ServerProfile;
+  let activeProfileAfterRemoval!: ServerProfile;
   await updateSettings((current: any) => {
     const servers = current?.servers && typeof current.servers === 'object' ? current.servers : {};
     assertValidStoredHomeDescriptors(servers);
@@ -760,6 +772,7 @@ export async function removeServerProfile(
     if (!existing) {
       throw new Error(`Server profile not found: ${resolvedId}`);
     }
+    removedProfile = requireProfileProjection(existing, resolvedId);
 
     const { [resolvedId]: _removed, ...rest } = servers as any;
     const nextActive = resolvedId === current?.activeServerId ? 'cloud' : current?.activeServerId;
@@ -769,15 +782,13 @@ export async function removeServerProfile(
     if (nextActive && !(nextActive in rest)) {
       // Safety: if active server disappears (corrupt settings), fall back.
       (rest as any).cloud = (rest as any).cloud ?? (servers as any).cloud;
+      activeProfileAfterRemoval = requireProfileProjection((rest as any).cloud, 'cloud');
       return { ...current, activeServerId: 'cloud', servers: rest };
     }
+    const returnedActiveId = nextActive || 'cloud';
+    activeProfileAfterRemoval = requireProfileProjection((rest as any)[returnedActiveId], returnedActiveId);
     return { ...current, activeServerId: nextActive, servers: rest };
   });
 
-  const afterActive = await getActiveServerProfile();
-  const removed = coerceProfile((servers as any)[resolvedId]);
-  if (!removed) {
-    throw new Error(`Failed to resolve removed profile: ${resolvedId}`);
-  }
-  return { removed, active: afterActive };
+  return { removed: removedProfile, active: activeProfileAfterRemoval };
 }

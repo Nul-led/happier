@@ -4,6 +4,7 @@ import {
   DEFAULT_PROVIDER_SETTINGS_V1,
   ProviderSettingsV1Schema,
   encryptSecretStringV1,
+  sealSavedSecretResourceStoredContentV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
 
@@ -14,6 +15,21 @@ import {
 
 const key = new Uint8Array(32).fill(7);
 const encryptedValue = encryptSecretStringV1('secret-value', key, (length) => new Uint8Array(length).fill(3));
+const sharedSecretRef = 'happier:shared-secret:v1:resource-provider';
+const sharedSecretResource = {
+  resourceId: 'resource-provider',
+  ownerAccountId: 'owner-account',
+  displayName: 'Shared provider key',
+  kind: 'apiKey' as const,
+  encryptionMode: 'plain' as const,
+  revision: 1,
+  storedContent: sealSavedSecretResourceStoredContentV1({
+    resourceId: 'resource-provider',
+    mode: 'plain',
+    content: { v: 1, name: 'Shared provider key', kind: 'apiKey', value: 'shared-provider-value' },
+  }),
+  materialStatus: 'ready' as const,
+};
 
 function settings(): ProviderSettingsV1 {
   return ProviderSettingsV1Schema.parse({
@@ -119,6 +135,47 @@ describe('provider spawn credential resolution', () => {
       reference: referenceResult.reference,
       accountSettings: { secrets: [{ id: 'secret-machine', encryptedValue: { _isSecretValue: true, encryptedValue: rotated } }] },
       settingsSecretsReadKeys: [key],
+      connectionId: 'pc_gateway',
+      machineId: 'machine-a',
+    })).toMatchObject({ ok: false, error: { code: 'provider_authorization_changed' } });
+  });
+
+  it('captures and materializes a shared Saved Secret through the canonical catalog', () => {
+    const providerSettings = {
+      ...settings(),
+      secretBindingsByConnectionId: {
+        pc_gateway: { account: { apiKey: sharedSecretRef }, byMachineId: {} },
+      },
+    };
+    const referenceResult = resolveProviderCredentialReference({
+      providerSettings,
+      accountSettings: { secrets: [] },
+      savedSecretResources: [sharedSecretResource],
+      connectionId: 'pc_gateway',
+      machineId: 'machine-a',
+      credentialSlotId: 'apiKey',
+      required: true,
+    });
+    expect(referenceResult).toMatchObject({
+      ok: true,
+      reference: { kind: 'apiKey', secretId: sharedSecretRef },
+    });
+    if (!referenceResult.ok) throw new Error('Expected shared Saved Secret reference');
+
+    expect(resolveProviderCredentialPlaintext({
+      reference: referenceResult.reference,
+      accountSettings: { secrets: [] },
+      savedSecretResources: [sharedSecretResource],
+      settingsSecretsReadKeys: [],
+      connectionId: 'pc_gateway',
+      machineId: 'machine-a',
+    })).toEqual({ ok: true, credential: { kind: 'apiKey', value: 'shared-provider-value' } });
+
+    expect(resolveProviderCredentialPlaintext({
+      reference: referenceResult.reference,
+      accountSettings: { secrets: [] },
+      savedSecretResources: [{ ...sharedSecretResource, revision: 2 }],
+      settingsSecretsReadKeys: [],
       connectionId: 'pc_gateway',
       machineId: 'machine-a',
     })).toMatchObject({ ok: false, error: { code: 'provider_authorization_changed' } });

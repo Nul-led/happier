@@ -46,6 +46,8 @@ import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { Metadata } from '@/api/types';
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
+import type { ComposerAttachmentDispatchResolver } from '@/agent/runtime/runPermissionModePromptLoop';
+import type { StructuredInputComposerReferenceResolver } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
 import {
   resolveUsageLimitRecoveryEnabled,
   usageLimitRecoveryDisabledResult,
@@ -57,6 +59,22 @@ import {
 } from '@/session/usageLimitRecoveryControls/sessionUsageLimitRecoveryOperationResult';
 
 export type SessionRuntimeControls = {
+  /** Current-generation Composer reference resolver, scoped by the owning Session runtime. */
+  resolveComposerReference?: StructuredInputComposerReferenceResolver['resolve'];
+  /** Current-generation Composer attachment resolver, scoped by the owning Session runtime. */
+  resolveComposerAttachmentForDispatch?: ComposerAttachmentDispatchResolver;
+  prepareRunTeamCredentialProviderBinding?: (request: Readonly<{
+    runId: string;
+    resourceId: string;
+    modelId: string;
+    /** Present only for an explicit Run selection; omission preserves parent inheritance. */
+    selection?: import('@happier-dev/protocol').TeamCredentialProviderModelSelectionV1;
+  }>) => Promise<Readonly<{
+    providerBinding: import('@happier-dev/plugin-sdk/agents/runtime').AgentSessionProviderBinding;
+    environmentOverlay: import('@happier-dev/protocol').SessionEnvOverlayV1;
+    additionalRedactionValues: readonly string[];
+    cleanup(): void | Promise<void>;
+  }> | null>;
   refreshGoal?: () => unknown;
   setGoal?: (
     objective: string | undefined,

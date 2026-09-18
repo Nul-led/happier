@@ -116,13 +116,13 @@ function createChangedConnectedProfileParams(
       groupId: null,
     },
     fromBindings: {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
         [serviceId]: { source: 'connected', selection: 'profile', profileId: 'old' },
       },
     },
     toBindings: {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
         [serviceId]: { source: 'connected', selection: 'profile', profileId: 'new' },
       },
@@ -150,7 +150,7 @@ function createNativeToConnectedProfileParams(
       groupId: null,
     },
     fromBindings: {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
         [serviceId]: { source: 'native' },
       },

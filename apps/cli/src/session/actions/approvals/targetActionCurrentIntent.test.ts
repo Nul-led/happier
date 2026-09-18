@@ -125,6 +125,20 @@ describe('target action current-intent adapter', () => {
         machineId: 'machine-1',
         defaultSessionId: 'session-1',
       },
+      executionOriginV1: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'api',
+        caller: { kind: 'host' },
+        serverId: 'server-1',
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+        machineId: 'machine-1',
+        sessionId: 'session-1',
+        actionId: 'action.invoke',
+        requestId: 'request-1',
+      },
     })).resolves.toEqual({
       status: 'deferred',
       artifactId: 'approval-api-required-1',
@@ -136,6 +150,10 @@ describe('target action current-intent adapter', () => {
         machineId: 'machine-1',
         defaultSessionId: 'session-1',
       },
+      executionOriginV1: expect.objectContaining({
+        actionId: 'action.invoke',
+        requestId: 'request-1',
+      }),
     });
   });
 

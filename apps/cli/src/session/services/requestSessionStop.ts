@@ -22,7 +22,8 @@ import { createDefaultTerminalHostAdapterInventory } from '@/integrations/termin
 import { logger } from '@/ui/logger';
 import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
-import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { resolveSessionOwningMachineId } from './resolveSessionOwningMachine';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
 import {
   resolveSessionControlStopPollIntervalMs,
@@ -103,25 +104,6 @@ async function stopOutcomeFromAttemptResult(params: Readonly<{
   });
 }
 
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-function resolveOwningMachineId(params: Readonly<{
-  credentials: StoredCredentials;
-  rawSession: NonNullable<Awaited<ReturnType<typeof fetchSessionByIdCompat>>>;
-}>): { ok: true; machineId: string | null } | { ok: false } {
-  const rawMachineId = readNonEmptyString(params.rawSession.machineId);
-  const metadata = tryDecryptSessionMetadata({
-    credentials: params.credentials,
-    rawSession: params.rawSession,
-  });
-  const metadataMachineId = readNonEmptyString(metadata?.machineId);
-  if (rawMachineId && metadataMachineId && rawMachineId !== metadataMachineId) {
-    return { ok: false };
-  }
-  return { ok: true, machineId: rawMachineId ?? metadataMachineId };
-}
 
 async function stopSessionOnOwningMachine(params: Readonly<{
   credentials: StoredCredentials;
@@ -267,6 +249,7 @@ async function cleanupStoppedSessionMarkersBestEffort(sessionId: string): Promis
 export async function requestSessionStop(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<
   | (Readonly<{ ok: true }> & SessionStopCommandResult)
   | Readonly<{ ok: false; code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'unsupported'; candidates?: string[] }>
@@ -274,6 +257,7 @@ export async function requestSessionStop(params: Readonly<{
   const resolved = await resolveSessionIdOrPrefix({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!resolved.ok) {
     return {
@@ -287,6 +271,7 @@ export async function requestSessionStop(params: Readonly<{
     const rawSession = resolved.rawSession ?? await fetchSessionByIdCompat({
       token: params.credentials.token,
       sessionId: resolved.sessionId,
+      ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
     });
     if (!rawSession) {
       return {
@@ -299,7 +284,7 @@ export async function requestSessionStop(params: Readonly<{
         },
       };
     }
-    const owningMachine = resolveOwningMachineId({
+    const owningMachine = resolveSessionOwningMachineId({
       credentials: params.credentials,
       rawSession,
     });

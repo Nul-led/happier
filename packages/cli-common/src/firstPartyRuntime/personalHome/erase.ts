@@ -1,4 +1,5 @@
 import { lstat, readdir, rm } from 'node:fs/promises';
+import type { PathLike, Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
 
@@ -16,16 +17,18 @@ export class PersonalHomeEraseError extends Error {
 }
 
 export type PersonalHomeEraseResult = Readonly<{
-  outcome: 'completed' | 'partial';
+  outcome: 'completed' | 'completed_with_cleanup_attention' | 'partial';
   removedPaths: readonly string[];
   remainingOwnedPaths: readonly string[];
   remainingUnknownPaths: readonly string[];
+  inspectionComplete: boolean;
+  inspectionError: string | null;
   error: string | null;
 }>;
 
 type PersonalHomeEraseFilesystem = Readonly<{
-  lstat: typeof lstat;
-  readdir: typeof readdir;
+  lstat(path: PathLike): Promise<Stats>;
+  readdir(path: PathLike): Promise<string[]>;
   rm: typeof rm;
 }>;
 
@@ -80,12 +83,14 @@ function resolveValidatedDataRoot(layout: PersonalHomeRuntimeLayout, userHomeDir
   return dataRoot;
 }
 
-export async function erasePersonalHomeData(params: Readonly<{
+/** Validates the complete destructive target set without deleting anything. The returned
+ * operation is the irreversible boundary and must be invoked under the same Home lease. */
+export async function preparePersonalHomeDataErase(params: Readonly<{
   layout: PersonalHomeRuntimeLayout;
   operationLeaseHeld: true;
   operation?: 'erase' | 'relocate';
   userHomeDir?: string;
-}>, filesystem: PersonalHomeEraseFilesystem = defaultFilesystem): Promise<PersonalHomeEraseResult> {
+}>, filesystem: PersonalHomeEraseFilesystem = defaultFilesystem): Promise<() => Promise<PersonalHomeEraseResult>> {
   const api = pathApi(params.layout.platform);
   const dataRoot = resolveValidatedDataRoot(params.layout, params.userHomeDir ?? homedir());
   const artifacts = resolvePersonalHomeRuntimeArtifactPaths(params.layout);
@@ -152,49 +157,74 @@ export async function erasePersonalHomeData(params: Readonly<{
     return unknown;
   };
 
-  const removedPaths: string[] = [];
-  for (let index = 0; index < existingTargets.length; index += 1) {
-    const target = existingTargets[index]!;
+  return async () => {
+    const removedPaths: string[] = [];
+    for (let index = 0; index < existingTargets.length; index += 1) {
+      const target = existingTargets[index]!;
+      try {
+        await filesystem.rm(target, { recursive: true, force: true });
+        await filesystem.lstat(target).then(
+          () => { throw new Error(`Personal Home erase postcondition failed: ${target}`); },
+          (error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; },
+        );
+        removedPaths.push(target);
+      } catch (error) {
+        const detail = error instanceof Error && error.message.trim() ? error.message.trim() : 'unknown platform error';
+        const remainingOwnedPaths = (
+          await Promise.all(existingTargets.slice(index).map(async (candidate) => {
+            try {
+              await filesystem.lstat(candidate);
+              return candidate;
+            } catch (inspectionError) {
+              return (inspectionError as NodeJS.ErrnoException).code === 'ENOENT' ? null : candidate;
+            }
+          }))
+        ).filter((candidate): candidate is string => candidate !== null);
+        let remainingUnknownPaths: readonly string[] = [];
+        let unknownInspectionError: string | null = null;
+        try {
+          remainingUnknownPaths = await readRemainingUnknownPaths();
+        } catch (inspectionError) {
+          unknownInspectionError = inspectionError instanceof Error && inspectionError.message.trim()
+            ? inspectionError.message.trim()
+            : 'unknown platform error';
+        }
+        return {
+          outcome: 'partial',
+          removedPaths,
+          remainingOwnedPaths,
+          remainingUnknownPaths,
+          inspectionComplete: unknownInspectionError === null,
+          inspectionError: unknownInspectionError,
+          error: `Failed to remove Personal Home target ${target}: ${detail}${unknownInspectionError
+            ? `; remaining unknown-path inspection also failed: ${unknownInspectionError}`
+            : ''}`,
+        };
+      }
+    }
+    let remainingUnknownPaths: readonly string[] = [];
     try {
-      await filesystem.rm(target, { recursive: true, force: true });
-      await filesystem.lstat(target).then(
-        () => { throw new Error(`Personal Home erase postcondition failed: ${target}`); },
-        (error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; },
-      );
-      removedPaths.push(target);
+      remainingUnknownPaths = await readRemainingUnknownPaths();
+      await filesystem.lstat(artifacts.operationLockPath);
+      return { outcome: 'completed', removedPaths, remainingOwnedPaths: [], remainingUnknownPaths, inspectionComplete: true, inspectionError: null, error: null };
     } catch (error) {
       const detail = error instanceof Error && error.message.trim() ? error.message.trim() : 'unknown platform error';
-      const remainingOwnedPaths = (
-        await Promise.all(existingTargets.slice(index).map(async (candidate) => {
-          try {
-            await filesystem.lstat(candidate);
-            return candidate;
-          } catch (inspectionError) {
-            return (inspectionError as NodeJS.ErrnoException).code === 'ENOENT' ? null : candidate;
-          }
-        }))
-      ).filter((candidate): candidate is string => candidate !== null);
-      let remainingUnknownPaths: readonly string[] = [];
-      let unknownInspectionError: string | null = null;
-      try {
-        remainingUnknownPaths = await readRemainingUnknownPaths();
-      } catch (inspectionError) {
-        unknownInspectionError = inspectionError instanceof Error && inspectionError.message.trim()
-          ? inspectionError.message.trim()
-          : 'unknown platform error';
-      }
       return {
-        outcome: 'partial',
+        outcome: 'completed_with_cleanup_attention',
         removedPaths,
-        remainingOwnedPaths,
+        remainingOwnedPaths: [],
         remainingUnknownPaths,
-        error: `Failed to remove Personal Home target ${target}: ${detail}${unknownInspectionError
-          ? `; remaining unknown-path inspection also failed: ${unknownInspectionError}`
-          : ''}`,
+        inspectionComplete: false,
+        inspectionError: detail,
+        error: `Personal Home data was removed, but residual-path inspection needs attention: ${detail}`,
       };
     }
-  }
-  const remainingUnknownPaths = await readRemainingUnknownPaths();
-  await filesystem.lstat(api.resolve(dataRoot, '.operations', 'lock'));
-  return { outcome: 'completed', removedPaths, remainingOwnedPaths: [], remainingUnknownPaths, error: null };
+  };
+}
+
+export async function erasePersonalHomeData(
+  params: Parameters<typeof preparePersonalHomeDataErase>[0],
+  filesystem: PersonalHomeEraseFilesystem = defaultFilesystem,
+): Promise<PersonalHomeEraseResult> {
+  return (await preparePersonalHomeDataErase(params, filesystem))();
 }

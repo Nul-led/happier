@@ -28,6 +28,11 @@ type RawTranscriptRow = Readonly<{
 
 const DEFAULT_TRANSCRIPT_FETCH_TIMEOUT_MS = 10_000;
 
+type ResolveTranscriptAuthorizationHeaders = (request: Readonly<{
+  method: 'GET';
+  path: string;
+}>) => Readonly<Record<string, string>> | null;
+
 function resolveTranscriptFetchTimeoutMs(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.max(1, Math.trunc(value))
@@ -74,16 +79,23 @@ export async function fetchEncryptedTranscriptPageAfterSeq(params: Readonly<{
   afterSeq: number;
   limit: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveTranscriptAuthorizationHeaders;
 }>): Promise<TranscriptRow[]> {
   const serverUrl = resolveServerHttpBaseUrl();
-  const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
+  const query = new URLSearchParams({ afterSeq: String(params.afterSeq), limit: String(params.limit) });
+  const path = `/v1/sessions/${params.sessionId}/messages?${query.toString()}`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.get(`${serverUrl}${path}`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${params.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
-    params: { afterSeq: params.afterSeq, limit: params.limit },
     timeout: resolveTranscriptFetchTimeoutMs(params.timeoutMs),
+    ...(params.signal ? { signal: params.signal } : {}),
     validateStatus: () => true,
   });
 
@@ -103,15 +115,19 @@ export async function fetchEncryptedTranscriptPageLatest(params: Readonly<{
   sessionId: string;
   limit: number;
   timeoutMs?: number;
+  resolveAuthorizationHeaders?: ResolveTranscriptAuthorizationHeaders;
 }>): Promise<TranscriptRow[]> {
   const serverUrl = resolveServerHttpBaseUrl();
-  const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
+  const path = `/v1/sessions/${params.sessionId}/messages?${new URLSearchParams({ limit: String(params.limit) }).toString()}`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.get(`${serverUrl}${path}`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${params.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
-    params: { limit: params.limit },
     timeout: resolveTranscriptFetchTimeoutMs(params.timeoutMs),
     validateStatus: () => true,
   });
@@ -132,6 +148,7 @@ export async function fetchEncryptedTranscriptRange(params: Readonly<{
   sessionId: string;
   seqFrom: number;
   seqTo: number;
+  resolveAuthorizationHeaders?: ResolveTranscriptAuthorizationHeaders;
 }>): Promise<FetchEncryptedTranscriptRangeResult> {
   const seqFrom = Math.max(0, Math.trunc(params.seqFrom));
   const seqTo = Math.max(0, Math.trunc(params.seqTo));
@@ -153,6 +170,9 @@ export async function fetchEncryptedTranscriptRange(params: Readonly<{
     sessionId: params.sessionId,
     afterSeq,
     limit,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
   });
   return { ok: true, rows };
 }

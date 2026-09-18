@@ -123,6 +123,35 @@ describe('daemon control client (HTTP error responses)', () => {
     }
   });
 
+  it('uses authenticated daemon control when the caller cannot observe the daemon PID namespace', async () => {
+    let observedToken: string | undefined;
+    const server = http.createServer((req, res) => {
+      observedToken = req.headers['x-happier-daemon-token'] as string | undefined;
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ children: [{ pid: 42, metadata: null }] }));
+    });
+
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-pid-namespace-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({
+        pid: 987_654_321,
+        httpPort: port,
+        startedAt: Date.now(),
+        startedWithCliVersion: 'test',
+        controlToken: 'test-token',
+      });
+
+      await expect(controlClient.listDaemonSessions()).resolves.toEqual([{ pid: 42, metadata: null }]);
+      expect(observedToken).toBe('test-token');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('returns parsed 500 payload from /spawn-session (structured daemon error)', async () => {
     const server = http.createServer((req, res) => {
       if (req.method === 'POST' && req.url === '/spawn-session') {
@@ -166,14 +195,23 @@ describe('daemon control client (HTTP error responses)', () => {
   });
 
   it('keeps connected-service switch HTTP diagnostics on its existing adapter path', async () => {
+    let observedBody: unknown = null;
     const server = http.createServer((req, res) => {
       if (req.method === 'POST' && req.url === '/connected-service-auth/session/switch') {
-        res.statusCode = 501;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
-          ok: false,
-          errorCode: 'connected_service_auth_switch_unavailable',
-        }));
+        let rawBody = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => {
+          rawBody += chunk;
+        });
+        req.on('end', () => {
+          observedBody = JSON.parse(rawBody);
+          res.statusCode = 501;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({
+            ok: false,
+            errorCode: 'connected_service_auth_switch_unavailable',
+          }));
+        });
         return;
       }
       res.statusCode = 404;
@@ -198,12 +236,32 @@ describe('daemon control client (HTTP error responses)', () => {
         sessionId: 'session-1',
         agentId: 'grok',
         bindings: {
-          v: 1,
-          bindingsByServiceId: {},
+          v: 2,
+          bindingsByServiceId: {
+            'plugin.acme/service': {
+              source: 'team_resource',
+              resourceId: 'resource-1',
+              deliveryMode: 'brokered',
+            },
+          },
         },
       })).rejects.toThrow(
         /HTTP 501 \(connected_service_auth_switch_unavailable\)/u,
       );
+      expect(observedBody).toEqual({
+        sessionId: 'session-1',
+        agentId: 'grok',
+        bindings: {
+          v: 2,
+          bindingsByServiceId: {
+            'plugin.acme/service': {
+              source: 'team_resource',
+              resourceId: 'resource-1',
+              deliveryMode: 'brokered',
+            },
+          },
+        },
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

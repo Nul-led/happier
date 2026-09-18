@@ -30,7 +30,7 @@ import { configuration } from '@/configuration';
 import { getAgentModelConfig, type AgentId } from '@happier-dev/agents';
 import {
     CodexPassiveRealtimeSetupResultV1Schema,
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
     PluginScaffoldUiModeSchema,
     PluginScaffoldTemplateSchema,
     qualifiedPurposeKey,
@@ -46,7 +46,11 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveProbeBackendContext } from './capabilitiesProbeContext';
 import { resolvePreflightSessionControlsProbeAdapter } from '@/capabilities/probes/resolvePreflightSessionControlsProbeAdapter';
-import { withPreflightSessionControlsProbeEnvironment } from '@/capabilities/probes/preflightSessionControlsProbeEnvironment';
+import {
+    resolvePreflightSessionControlsProbeEnvironment,
+    withPreflightSessionControlsProbeEnvironment,
+} from '@/capabilities/probes/preflightSessionControlsProbeEnvironment';
+import { resolveProfileProbeEnvironment } from '@/capabilities/probes/resolveProfileProbeEnvironment';
 import { resolveCatalogAgentConnectedServiceIds } from '@/agent/catalog/registry';
 import { resolveConnectedServiceAuthForSpawn } from '@/daemon/connectedServices/resolveConnectedServiceAuthForSpawn';
 import { generateConnectedServiceMaterializationIdentityV1 } from '@/daemon/connectedServices/materialization/identity';
@@ -112,11 +116,12 @@ type ConnectedServiceProbeEnvironment = Readonly<{
 async function resolveConnectedServiceProbeEnvironment(params: Readonly<{
     agentId: string;
     cwd: string;
-    connectedServices: ReturnType<typeof ConnectedServiceBindingsV1Schema.parse> | null;
+    connectedServices: ReturnType<typeof ConnectedServiceBindingsV2IngressSchema.parse> | null;
     credentials: Awaited<ReturnType<typeof resolveProbeBackendContext>>['credentials'];
     accountSettings: Record<string, unknown> | null;
     requiresMaterializedAuth: boolean;
     dependencies: CliProbeDependencies;
+    processEnv: NodeJS.ProcessEnv;
 }>): Promise<ConnectedServiceProbeEnvironment> {
     if (!params.requiresMaterializedAuth || !params.connectedServices) {
         return {
@@ -151,7 +156,7 @@ async function resolveConnectedServiceProbeEnvironment(params: Readonly<{
         credentials: params.credentials,
         api: await params.dependencies.createApiClient(params.credentials),
         accountSettings: params.accountSettings,
-        processEnv: process.env,
+        processEnv: params.processEnv,
         resolveQualifiedPurposeBindingSnapshot: (bindings) =>
             resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
                 agentId: params.agentId,
@@ -263,7 +268,7 @@ async function invokeCliProbeOrInstallMethod(
     }
 
     const { cwd, timeoutMs } = resolveCliProbeInvokeParams(params);
-    const parsedConnectedServices = ConnectedServiceBindingsV1Schema.safeParse(params?.connectedServices);
+    const parsedConnectedServices = ConnectedServiceBindingsV2IngressSchema.safeParse(params?.connectedServices);
     const connectedServices = parsedConnectedServices.success ? parsedConnectedServices.data : null;
     const materializationAgentId =
         resolveCatalogAgentConnectedServiceIds(agentId).length > 0
@@ -287,6 +292,28 @@ async function invokeCliProbeOrInstallMethod(
         { ...params, agentId },
         { requireCredentials: requiresMaterializedAuth },
     );
+    let profileProbeEnvironment: Awaited<ReturnType<typeof resolveProfileProbeEnvironment>> = null;
+    try {
+        profileProbeEnvironment = await resolveProfileProbeEnvironment({
+            agentId,
+            profileId: params?.profileId,
+            accountSettings: probeContext.accountSettings,
+            credentials: probeContext.credentials,
+            processEnv: process.env,
+        });
+    } catch {
+        return {
+            ok: false,
+            error: {
+                code: 'profile-preflight-failed',
+                message: 'Could not prepare the selected backend profile for this probe.',
+            },
+        };
+    }
+    const profileProcessEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        ...(profileProbeEnvironment?.env ?? {}),
+    };
     let connectedServiceProbeEnvironment: ConnectedServiceProbeEnvironment = {
         materializedEnv: null,
         connectedServiceSelectionCacheKey: null,
@@ -302,6 +329,7 @@ async function invokeCliProbeOrInstallMethod(
                 accountSettings: probeContext.accountSettings,
                 requiresMaterializedAuth,
                 dependencies,
+                processEnv: profileProcessEnv,
             });
         } catch {
             return {
@@ -313,6 +341,15 @@ async function invokeCliProbeOrInstallMethod(
             };
         }
     }
+    const materializedEnv = {
+        ...(profileProbeEnvironment?.env ?? {}),
+        ...(connectedServiceProbeEnvironment.materializedEnv ?? {}),
+    };
+    const probeProcessEnv = (await resolvePreflightSessionControlsProbeEnvironment({
+        agentId,
+        processEnv: process.env,
+        materializedEnv,
+    })).env;
     const commonProbeArgs = {
         agentId,
         backendTarget: probeContext.backendTarget,
@@ -320,7 +357,9 @@ async function invokeCliProbeOrInstallMethod(
         timeoutMs,
         accountSettings: probeContext.accountSettings,
         credentials: probeContext.credentials,
-        materializedEnv: connectedServiceProbeEnvironment.materializedEnv ?? undefined,
+        env: probeProcessEnv,
+        materializedEnv,
+        profileCacheKey: profileProbeEnvironment?.cacheKey ?? null,
         connectedServiceSelectionCacheKey:
             connectedServiceProbeEnvironment.connectedServiceSelectionCacheKey,
     };
@@ -329,8 +368,8 @@ async function invokeCliProbeOrInstallMethod(
       if (method === 'probePassiveRealtimeSetup') {
         const result = await withPreflightSessionControlsProbeEnvironment({
           agentId,
-          processEnv: process.env,
-          materializedEnv: connectedServiceProbeEnvironment.materializedEnv ?? undefined,
+          processEnv: profileProcessEnv,
+          materializedEnv: commonProbeArgs.materializedEnv,
         }, async ({ env }) => {
           if (!preflightAdapter?.probePassiveRealtimeSetupRaw) return { v: 1, status: 'unavailable' } as const;
           const raw = await preflightAdapter.probePassiveRealtimeSetupRaw({
@@ -353,7 +392,7 @@ async function invokeCliProbeOrInstallMethod(
       if (method === 'probeModels') {
         const modelConfig = getAgentModelConfig(agentId);
         const observation = modelConfig?.nativeCatalogObservation;
-        const bindings = ConnectedServiceBindingsV1Schema.safeParse(params?.connectedServices);
+        const bindings = ConnectedServiceBindingsV2IngressSchema.safeParse(params?.connectedServices);
         const observationRuntime = dependencies.getAgentCatalogObservation?.() ?? null;
         if (observation && observationRuntime && bindings.success) {
             const registry = dependencies.agentRegistrySnapshot ?? readCurrentContributionRegistry();
@@ -402,7 +441,7 @@ async function invokeCliProbeOrInstallMethod(
                             { id: 'default', name: 'Default' },
                             ...result.models.filter((model) => model.id !== 'default'),
                         ],
-                        supportsFreeform: modelConfig.supportsSelection === true && modelConfig.supportsFreeform === true,
+                        supportsFreeform: modelConfig?.supportsSelection === true && modelConfig.supportsFreeform === true,
                         source: result.source,
                     },
                 };

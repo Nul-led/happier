@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
@@ -103,7 +104,7 @@ describe('ApiSessionClient long-offline reconnect fallback', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: sessionId,
@@ -164,7 +165,7 @@ describe('ApiSessionClient long-offline reconnect fallback', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: sessionId,
@@ -215,7 +216,7 @@ describe('ApiSessionClient long-offline reconnect fallback', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: sessionId,
@@ -278,7 +279,7 @@ describe('ApiSessionClient long-offline reconnect fallback', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: 'test-session-id',
@@ -347,7 +348,7 @@ describe('ApiSessionClient long-offline reconnect fallback', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: 'test-session-id',

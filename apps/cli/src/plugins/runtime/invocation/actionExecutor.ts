@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   createPluginActionPresentUserGate,
   projectPluginActionFailureCode,
+  type ApprovalExecutionOriginV1,
   type TargetActionApprovalReplayPlacementV1,
   type PluginActionPresentUserGatePolicy,
 } from '@happier-dev/protocol';
@@ -100,6 +101,8 @@ export type TargetActionCurrentIntentRequest = Readonly<{
   invocationSurface?: string;
   /** Immutable host-stamped target for a deferred API approval replay. */
   replayPlacement?: TargetActionApprovalReplayPlacementV1;
+  /** Immutable outer Action authority captured before a deferred API decision. */
+  executionOriginV1?: ApprovalExecutionOriginV1;
   signal?: AbortSignal;
 }>;
 

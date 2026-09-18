@@ -15,8 +15,8 @@ import { normalizeSessionCreateSpawnRequest } from './create/normalizeSessionCre
 import {
   executeSessionWaitAction,
   printSessionWaitSuccess,
-  resolveSessionWaitTimeoutSeconds,
-} from './wait';
+  readSessionWaitTimeoutSecondsFlag,
+} from './shared/sessionWaitAction';
 import { resolveConnectedServicesLaunchAuthWithInventory } from '@/cli/connectedServicesLaunchAuth';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
 
@@ -49,7 +49,7 @@ async function resolveSessionCreateConnectedServices(params: Readonly<{
       const inventoryResult = normalizeActionExecuteResult(await params.executor.execute(
         'sessions.spawn.connected_services.list',
         { agentId: params.agentId, includeUnavailable: false },
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       ));
       if (!inventoryResult.ok) {
         throw new Error(inventoryResult.errorMessage ?? inventoryResult.errorCode);
@@ -140,6 +140,7 @@ export async function cmdSessionCreate(
       resolvedActionInput,
       {
         surface: 'cli',
+        authority: 'present_user',
         defaultSessionId: null,
         actionRequestId: effectiveSpawnAttemptId,
         ...(resumeSpawnAttempt ? { resumeActionRequest: true } : {}),
@@ -250,7 +251,7 @@ export async function cmdSessionCreate(
     const waitResult = await executeSessionWaitAction({
       executor,
       sessionId: created.sessionId,
-      timeoutSeconds: resolveSessionWaitTimeoutSeconds(argv),
+      timeoutSeconds: readSessionWaitTimeoutSecondsFlag(argv),
     });
     if (!waitResult.ok) {
       if (json) {

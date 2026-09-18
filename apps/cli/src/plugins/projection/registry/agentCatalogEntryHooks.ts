@@ -404,7 +404,7 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
                     agentId: params.agentId,
                     resolveTarget: providerCliAttach.resolveTarget,
                     createArgs: providerCliAttach.createArgs,
-                    buildHealthUrl: providerCliAttach.buildHealthUrl,
+                    resolveReachability: providerCliAttach.resolveReachability,
                     ...(resolveManagedServiceSessionBaseUrl
                         ? {
                             readFallbackServerBaseUrl: async (input) => (
@@ -684,11 +684,12 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
         || (contribution.jsonRpcCommands?.length ?? 0) > 0;
     const resolveVariant = (input: Readonly<{
         accountSettings?: Readonly<Record<string, unknown>> | null;
+        env?: NodeJS.ProcessEnv;
     }>): string | null => {
         if (!params.isCurrent() || !contribution.resolveProbeVariant) return null;
         const output = contribution.resolveProbeVariant(readPreflightProbeInput({
             accountSettings: input.accountSettings,
-            environment: readPreflightProbeEnvironment(undefined),
+            environment: readPreflightProbeEnvironment(input.env),
         }));
         return typeof output === 'string' && output.length > 0 ? output : null;
     };

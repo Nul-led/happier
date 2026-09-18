@@ -3,6 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
+import type { PluginExecutionScopeV1 } from '@happier-dev/protocol';
 
 import { PluginContextServiceError } from '../errors';
 
@@ -19,7 +20,7 @@ export type TranscriptFileFollowPathGrantEvidence =
 export type TranscriptFileFollowPathGrantScope = Readonly<{
     pluginId: string;
     runtimeId: string;
-    sessionId?: string | null;
+    scope?: PluginExecutionScopeV1 | null;
 }>;
 
 export type TranscriptFileFollowPathGrantInput = TranscriptFileFollowPathGrantScope & Readonly<{
@@ -56,7 +57,7 @@ type StoredTranscriptFileFollowPathGrant = Readonly<{
     id: string;
     pluginId: string;
     runtimeId: string;
-    sessionId: string | null;
+    scopeKey: string | null;
     realPath: string;
     reason: TranscriptFileFollowPathGrantReason;
     evidence: TranscriptFileFollowPathGrantEvidence;
@@ -91,7 +92,7 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
             if (
                 grant.pluginId === scope.pluginId
                 && grant.runtimeId === scope.runtimeId
-                && grant.sessionId === scope.sessionId
+                && grant.scopeKey === scope.scopeKey
                 && grant.realPath === realPath
             ) {
                 return Object.freeze({
@@ -141,12 +142,12 @@ export function createTranscriptFileFollowPathGrantRegistry(): TranscriptFileFol
         },
         async revokeScope(scopeInput): Promise<void> {
             const scope = normalizeTranscriptFileFollowGrantScope(scopeInput);
-            const hasSessionFilter = normalizeOptionalScopeId(scopeInput.sessionId) !== null;
+            const hasExecutionScopeFilter = scopeInput.scope !== undefined && scopeInput.scope !== null;
             for (const grant of grantsById.values()) {
                 if (
                     grant.pluginId === scope.pluginId
                     && grant.runtimeId === scope.runtimeId
-                    && (!hasSessionFilter || grant.sessionId === scope.sessionId)
+                    && (!hasExecutionScopeFilter || grant.scopeKey === scope.scopeKey)
                 ) {
                     grantsById.delete(grant.id);
                 }
@@ -177,25 +178,24 @@ export async function resolveTranscriptFileFollowRealPath(path: string): Promise
 
 function normalizeTranscriptFileFollowGrantScope(
     input: TranscriptFileFollowPathGrantScope,
-): Readonly<{ pluginId: string; runtimeId: string; sessionId: string | null }> {
+): Readonly<{ pluginId: string; runtimeId: string; scopeKey: string | null }> {
     const pluginId = input.pluginId.trim();
     const runtimeId = input.runtimeId.trim();
-    const sessionId = normalizeOptionalScopeId(input.sessionId);
+    const scopeKey = normalizeExecutionScopeKey(input.scope);
     if (!pluginId || !runtimeId) {
         throw new PluginContextServiceError(
             'PLUGIN_TRANSCRIPTS_FILE_FOLLOW_GRANT_INVALID',
             'Transcript file-follow grants require plugin and runtime scope',
         );
     }
-    return Object.freeze({ pluginId, runtimeId, sessionId });
+    return Object.freeze({ pluginId, runtimeId, scopeKey });
 }
 
-function normalizeOptionalScopeId(value: string | null | undefined): string | null {
-    if (value === undefined || value === null) {
-        return null;
-    }
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : null;
+function normalizeExecutionScopeKey(scope: PluginExecutionScopeV1 | null | undefined): string | null {
+    if (!scope) return null;
+    return scope.kind === 'session'
+        ? `session:${scope.sessionId}`
+        : `execution_run:${scope.executionRunId}`;
 }
 
 function normalizeGrantExpiresAtMs(value: number | undefined): number | null {

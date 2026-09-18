@@ -36,7 +36,10 @@ describe('registerHappierBridgeTools', () => {
     });
 
     const names = calls.map((c) => c.name);
-    expect(names).toEqual(listBuiltInHappierTools({ surface: 'agent' }).map((tool) => tool.name));
+    expect(names).toEqual(listBuiltInHappierTools({
+      surface: 'agent',
+      isServerFeatureEnabled: () => false,
+    }).map((tool) => tool.name));
     expect(names).toContain('change_title');
     expect(names).not.toContain('happier__change_title');
     expect(names).not.toContain('happy__change_title');
@@ -250,5 +253,38 @@ describe('registerHappierBridgeTools', () => {
     await expect(
       registered[0]?.handler({}, { signal: controller.signal }),
     ).rejects.toBe(abortError);
+  });
+
+  it('forwards requested MCP progress across the bridge', async () => {
+    const { registerHappierBridgeTools } = await import('./registerHappierBridgeTools');
+    const registered: Array<{
+      handler: (args: any, extra?: any) => Promise<any>;
+    }> = [];
+    const callHttpTool = vi.fn(async (_name: string, _args: unknown, options?: {
+      onprogress?: (progress: { progress: number }) => void;
+    }) => {
+      options?.onprogress?.({ progress: 1 });
+      return { content: [{ type: 'text', text: 'ok' }], isError: false };
+    });
+
+    registerHappierBridgeTools({
+      registerTool: (_name, _definition, handler) => {
+        registered.push({ handler });
+      },
+    }, {
+      tools: [{ name: 'long_running', inputSchema: { type: 'object' } }],
+      callHttpTool,
+    });
+
+    const sendNotification = vi.fn(async () => undefined);
+    await registered[0]?.handler({}, {
+      _meta: { progressToken: 'progress-1' },
+      sendNotification,
+    });
+
+    expect(sendNotification).toHaveBeenCalledWith({
+      method: 'notifications/progress',
+      params: { progressToken: 'progress-1', progress: 1 },
+    });
   });
 });

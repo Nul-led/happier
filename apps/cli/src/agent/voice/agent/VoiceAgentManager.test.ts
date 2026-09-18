@@ -6,6 +6,10 @@ import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/execu
 import type { BackendFactory, ResolveVoiceSystemAppendBlocksArgs, VoiceAgentTurnStreamEvent } from './voiceAgentTypes';
 import { VoiceAgentError, VoiceAgentManager } from './VoiceAgentManager';
 
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
+
 type VoiceTestRuntime<T extends object = object> = ExecutionRunHostRuntime & T;
 
 async function readVoiceAgentTurnStreamUntilDone(args: Readonly<{
@@ -54,8 +58,8 @@ function createDeterministicBackend(label: string): VoiceTestRuntime<{ getSeenPr
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt(_sid, prompt) {
@@ -75,8 +79,8 @@ function createDeltaOnlyBackend(label: string): ExecutionRunHostRuntime {
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt() {
@@ -93,8 +97,8 @@ function createBlockingBackend(label: string, opts: Readonly<{ waitForSendPrompt
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     async onSendPrompt(_sid, prompt) {
@@ -111,8 +115,8 @@ function createMultiDeltaBackend(label: string, deltas: string[]): ExecutionRunH
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt() {
@@ -136,8 +140,8 @@ function createDelayedCompletionBackend(
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt(_sid, prompt) {
@@ -178,8 +182,8 @@ function createCancelableBlockingBackend(
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     async onSendPrompt(_sid, prompt) {
@@ -208,8 +212,8 @@ function createLateResolvingCancellationBackend(
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId: 's-late-cancel',
-    onProvisionSession() {
+    runtimeId: 's-late-cancel',
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     async onSendPrompt() {
@@ -237,7 +241,7 @@ function createPostDetachOutputBackend(cancelledText: string): ExecutionRunHostR
   let releasePrompt: (() => void) | null = null;
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId: 's-post-detach-cancel',
+    runtimeId: 's-post-detach-cancel',
     async onSendPrompt(_sessionId, prompt) {
       if (prompt.includes('cancel this turn')) {
         await new Promise<void>((resolve) => {
@@ -261,8 +265,8 @@ function createStaticResponseBackend(label: string, responseText: string): Execu
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt() {
@@ -280,8 +284,8 @@ function createPromptCaptureBackend(sequence: Array<{ responseText: string }>): 
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt(_sid, prompt) {
@@ -302,8 +306,8 @@ function createBootstrapTimeoutBackend(): VoiceTestRuntime<{ prompts: string[]; 
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt(_sid, prompt) {
@@ -323,8 +327,8 @@ function createResponseTimeoutCaptureBackend(responseText = 'ok'): VoiceTestRunt
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId,
-    onProvisionSession() {
+    runtimeId: sessionId,
+    onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
     onSendPrompt() {
@@ -339,6 +343,91 @@ function createResponseTimeoutCaptureBackend(responseText = 'ok'): VoiceTestRunt
 }
 
 describe('VoiceAgentManager', () => {
+  it('projects current idle and active-turn authority from the exact live Voice runtime', async () => {
+    let active = false;
+    const base = createTestExecutionRunHostRuntime({ runtimeId: 'voice-authority-session' });
+    const runtime: ExecutionRunHostRuntime = {
+      ...base,
+      readActiveTurnAdmissionWitness: () => active
+        ? ({ turnId: 'voice-turn-1' } as ReturnType<NonNullable<ExecutionRunHostRuntime['readActiveTurnAdmissionWitness']>>)
+        : null,
+    };
+    const manager = new VoiceAgentManager({ createBackend: () => runtime });
+    try {
+      await manager.start({
+        voiceAgentId: 'voice-authority',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        chatModelId: 'chat-model',
+        commitModelId: 'commit-model',
+        permissionIntent: 'read-only',
+        idleTtlSeconds: 60,
+        initialContext: 'CTX',
+      });
+      const idle = manager.readCurrentRuntimeAuthority('voice-authority');
+      expect(idle).toMatchObject({ runtimeState: 'idle' });
+      active = true;
+      expect(manager.readCurrentRuntimeAuthority('voice-authority')).toEqual({
+        runtimeState: 'active_turn',
+        activeTurnId: 'voice-turn-1',
+      });
+      await manager.stop({ voiceAgentId: 'voice-authority' });
+      expect(manager.readCurrentRuntimeAuthority('voice-authority')).toBeNull();
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('moves active-turn authority to an isolated commit runtime without retiring the Voice Run', async () => {
+    let releaseCommit!: () => void;
+    let commitStarted!: () => void;
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    const commitStartedPromise = new Promise<void>((resolve) => { commitStarted = resolve; });
+    let commitActive = false;
+    const chat = {
+      ...createTestExecutionRunHostRuntime({ runtimeId: 'voice-chat' }),
+      readActiveTurnAdmissionWitness: () => null,
+    } satisfies ExecutionRunHostRuntime;
+    const commit = {
+      ...createTestExecutionRunHostRuntime({
+        runtimeId: 'voice-commit',
+        async onSendPrompt() {
+          commitActive = true;
+          commitStarted();
+          await commitGate;
+          commitActive = false;
+        },
+      }),
+      readActiveTurnAdmissionWitness: () => commitActive
+        ? ({ turnId: 'voice-commit-turn' } as ReturnType<NonNullable<ExecutionRunHostRuntime['readActiveTurnAdmissionWitness']>>)
+        : null,
+    } satisfies ExecutionRunHostRuntime;
+    const manager = new VoiceAgentManager({
+      createBackend: ({ modelId }) => modelId === 'commit-model' ? commit : chat,
+    });
+    try {
+      const started = await manager.start({
+        voiceAgentId: 'voice-isolated-commit-authority',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        chatModelId: 'chat-model',
+        commitModelId: 'commit-model',
+        commitIsolation: true,
+        permissionIntent: 'read-only',
+        idleTtlSeconds: 60,
+        initialContext: 'CTX',
+      });
+      expect(manager.readCurrentRuntimeAuthority(started.voiceAgentId)).toEqual({ runtimeState: 'idle', activeTurnId: null });
+      const committing = manager.commit({ voiceAgentId: started.voiceAgentId });
+      await commitStartedPromise;
+      expect(manager.readCurrentRuntimeAuthority(started.voiceAgentId)).toEqual({ runtimeState: 'active_turn', activeTurnId: 'voice-commit-turn' });
+      releaseCommit();
+      await committing;
+      expect(manager.readCurrentRuntimeAuthority(started.voiceAgentId)).toEqual({ runtimeState: 'idle', activeTurnId: null });
+    } finally {
+      releaseCommit();
+      await manager.dispose();
+    }
+  });
+
   it('claims a voice-agent id before provisioning so concurrent starts cannot double-provision it', async () => {
     let releaseFirstProvision!: () => void;
     let firstProvisionStarted!: () => void;
@@ -355,8 +444,8 @@ describe('VoiceAgentManager', () => {
         runtimeCount += 1;
         const occurrence = runtimeCount;
         return createTestExecutionRunHostRuntime({
-          sessionId: `voice-session-${occurrence}`,
-          onProvisionSession: async () => {
+          runtimeId: `voice-session-${occurrence}`,
+          onProvisionRuntime: async () => {
             if (occurrence !== 1) return;
             firstProvisionStarted();
             await firstProvisionGate;
@@ -406,8 +495,8 @@ describe('VoiceAgentManager', () => {
     const disposeRuntime = vi.fn(async () => {});
     const manager = new VoiceAgentManager({
       createBackend: () => createTestExecutionRunHostRuntime({
-        sessionId: 'late-session',
-        onProvisionSession: async () => {
+        runtimeId: 'late-session',
+        onProvisionRuntime: async () => {
           provisionStarted();
           await provisionGate;
         },
@@ -445,14 +534,14 @@ describe('VoiceAgentManager', () => {
     const chatDispose = vi.fn(async () => undefined);
     const commitDispose = vi.fn(async () => undefined);
     const chatBackend = createTestExecutionRunHostRuntime({
-      sessionId: 'resumed-chat-session',
+      runtimeId: 'resumed-chat-session',
       resumeSupported: true,
       onDispose: chatDispose,
     });
     const commitBackend = createTestExecutionRunHostRuntime({
-      sessionId: 'resumed-commit-session',
+      runtimeId: 'resumed-commit-session',
       resumeSupported: true,
-      async onProvisionSession() {
+      async onProvisionRuntime() {
         commitProvisionStarted();
         await commitProvisionGate;
       },
@@ -522,7 +611,7 @@ describe('VoiceAgentManager', () => {
         runtimeCount += 1;
         const occurrence = runtimeCount;
         return createTestExecutionRunHostRuntime({
-          sessionId: `retiring-established-session-${occurrence}`,
+          runtimeId: `retiring-established-session-${occurrence}`,
           async onDispose() {
             if (occurrence !== 1) return;
             disposalStarted();
@@ -608,7 +697,7 @@ describe('VoiceAgentManager', () => {
 
     const chatDispose = vi.fn(async () => {});
     const chatBackend = createTestExecutionRunHostRuntime({
-      sessionId: 's-chat',
+      runtimeId: 's-chat',
       onDispose: chatDispose,
     });
 
@@ -647,7 +736,7 @@ describe('VoiceAgentManager', () => {
     const manager = new VoiceAgentManager({ createBackend });
 
     const connectedServices = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
         'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
       },
@@ -690,9 +779,9 @@ describe('VoiceAgentManager', () => {
 
     const dispose = vi.fn(async () => {});
     const backend = createTestExecutionRunHostRuntime({
-      sessionId: 's-bootstrap-fail',
+      runtimeId: 's-bootstrap-fail',
       onDispose: dispose,
-      onProvisionSession() {
+      onProvisionRuntime() {
         backend.emitMessage({ type: 'status', status: 'running' });
       },
       onSendPrompt() {
@@ -931,6 +1020,303 @@ describe('VoiceAgentManager', () => {
 
     expect(chatBackend.getSeenPrompts().length).toBe(2);
     expect(commitBackend.getSeenPrompts().length).toBe(1);
+  });
+
+  it('surfaces the runtime refusal when the host declines the prompt instead of treating it as delivered', async () => {
+    // `deliverInput` reports a refusal as a value rather than a throw. If Voice
+    // ignored the status it would fall through to an empty chat buffer and report
+    // the generic 'Bootstrap failed', hiding the reason the Agent gave.
+    const refusingBackend: ExecutionRunHostRuntime = {
+      readResumeSupport: async () => false,
+      provisionRuntime: async () => ({ runtimeId: 'chat-session' }),
+      deliverInput: async () => ({
+        status: 'rejected' as const,
+        diagnostic: { code: 'provider_busy', severity: 'error' as const, message: 'Agent refused the prompt' },
+        retryable: false,
+      }),
+      getRuntimeLifetimeSignal: () => TEST_RUNTIME_LIFETIME_SIGNAL,
+      cancel: async () => undefined,
+      subscribeMessages: () => () => undefined,
+      dispose: async () => undefined,
+    };
+
+    const manager = new VoiceAgentManager({ createBackend: () => refusingBackend });
+
+    const started = await manager.start({
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    await expect(manager.sendTurn({ voiceAgentId: started.voiceAgentId, userText: 'hi' }))
+      .rejects.toMatchObject({
+        code: 'VOICE_AGENT_START_FAILED',
+        message: 'Agent refused the prompt',
+      });
+  });
+
+  it('keeps Account Voice Follow pending through ambiguous delivery and settles it once for later exact acceptance', async () => {
+    const base = createDeterministicBackend('chat');
+    let outcomeHandler: Parameters<NonNullable<ExecutionRunHostRuntime['subscribeProviderInputOutcomes']>>[0] | null = null;
+    let deliveredLocalId: string | null = null;
+    const unsubscribeProviderInputOutcomes = vi.fn();
+    const backend: ExecutionRunHostRuntime = {
+      ...base,
+      async deliverInput(runtimeId, input, context) {
+        deliveredLocalId = context?.localId ?? null;
+        return await base.deliverInput(runtimeId, input, context);
+      },
+      subscribeProviderInputOutcomes(handler) {
+        outcomeHandler = handler;
+        return () => {
+          unsubscribeProviderInputOutcomes();
+          if (outcomeHandler === handler) outcomeHandler = null;
+        };
+      },
+    };
+    const acknowledgeAccepted = vi.fn();
+    const prepareFollowContext = vi.fn().mockResolvedValue({
+      updates: [{
+        v: 1,
+        kind: 'session_follow_update',
+        edge: { sourceSessionId: 'source', destinationSessionId: 'voice-session' },
+        reason: 'source_changed',
+        deliveryIntent: 'context_only',
+        observed: { transcriptSeq: 0, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+        awareness: {
+          v: 1,
+          sessionId: 'source',
+          lifecycle: 'ready',
+          runtime: 'idle',
+          freshness: 'live',
+          operational: { primary: 'ready', reasons: ['ready'] },
+          encryption: 'plain',
+          availability: 'complete',
+        },
+        recentMessages: [],
+        truncated: false,
+      }],
+      acknowledgeAccepted,
+    });
+    const manager = new VoiceAgentManager({ createBackend: () => backend, prepareFollowContext });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    expect(prepareFollowContext).not.toHaveBeenCalled();
+    await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      userText: 'what changed?',
+      durableUserTranscriptLocalId: 'voice-user-1',
+    });
+    await vi.waitFor(() => expect(base.getSeenPrompts()).toHaveLength(1));
+    expect(base.getSeenPrompts()[0]).toContain('<session_follow>');
+    expect(prepareFollowContext).toHaveBeenCalledWith(expect.objectContaining({
+      executionRunId: started.voiceAgentId,
+    }));
+    expect(deliveredLocalId).toBe('voice-user-1');
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+    const subscribedOutcomeHandler = outcomeHandler!;
+    subscribedOutcomeHandler({
+      kind: 'effect_may_have_occurred',
+      localId: deliveredLocalId!,
+      userMessageSeq: 17,
+      issue: { code: 'provider_response_lost', severity: 'error' },
+    });
+    expect(unsubscribeProviderInputOutcomes).not.toHaveBeenCalled();
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+
+    subscribedOutcomeHandler({ kind: 'accepted', localId: deliveredLocalId!, userMessageSeq: 17 });
+    subscribedOutcomeHandler({ kind: 'accepted', localId: deliveredLocalId!, userMessageSeq: 17 });
+    expect(unsubscribeProviderInputOutcomes).toHaveBeenCalledOnce();
+    expect(acknowledgeAccepted).toHaveBeenCalledExactlyOnceWith({
+      kind: 'admitted_input',
+      localInputId: deliveredLocalId,
+      userMessageSeq: 17,
+    });
+
+    await manager.dispose();
+  });
+
+  it('keeps Account Voice Follow pending through retryable pre-effect rejection and accepts a later exact outcome', async () => {
+    const base = createDeterministicBackend('chat-retryable-rejection');
+    let outcomeHandler: Parameters<NonNullable<ExecutionRunHostRuntime['subscribeProviderInputOutcomes']>>[0] | null = null;
+    const unsubscribeProviderInputOutcomes = vi.fn();
+    const backend: ExecutionRunHostRuntime = {
+      ...base,
+      subscribeProviderInputOutcomes(handler) {
+        outcomeHandler = handler;
+        return () => {
+          unsubscribeProviderInputOutcomes();
+          if (outcomeHandler === handler) outcomeHandler = null;
+        };
+      },
+    };
+    const acknowledgeAccepted = vi.fn();
+    const manager = new VoiceAgentManager({
+      createBackend: () => backend,
+      prepareFollowContext: vi.fn().mockResolvedValue({
+        updates: [],
+        acknowledgeAccepted,
+      }),
+    });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent-retryable-rejection',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      userText: 'what changed?',
+      durableUserTranscriptLocalId: 'voice-user-retryable',
+    });
+    await vi.waitFor(() => expect(base.getSeenPrompts()).toHaveLength(1));
+    const subscribedOutcomeHandler = outcomeHandler!;
+    subscribedOutcomeHandler({
+      kind: 'rejected_before_effect',
+      localId: 'voice-user-retryable',
+      userMessageSeq: 23,
+      reason: 'provider_unavailable_before_acceptance',
+      diagnostic: { code: 'provider_unavailable', severity: 'error' },
+      retryable: true,
+    });
+    expect(unsubscribeProviderInputOutcomes).not.toHaveBeenCalled();
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+
+    subscribedOutcomeHandler({ kind: 'accepted', localId: 'voice-user-retryable', userMessageSeq: 23 });
+    expect(unsubscribeProviderInputOutcomes).toHaveBeenCalledOnce();
+    expect(acknowledgeAccepted).toHaveBeenCalledExactlyOnceWith({
+      kind: 'admitted_input',
+      localInputId: 'voice-user-retryable',
+      userMessageSeq: 23,
+    });
+
+    await manager.dispose();
+  });
+
+  it('settles Account Voice Follow without ACK on definitive pre-effect rejection', async () => {
+    const base = createDeterministicBackend('chat-definitive-rejection');
+    let outcomeHandler: Parameters<NonNullable<ExecutionRunHostRuntime['subscribeProviderInputOutcomes']>>[0] | null = null;
+    const unsubscribeProviderInputOutcomes = vi.fn();
+    const backend: ExecutionRunHostRuntime = {
+      ...base,
+      subscribeProviderInputOutcomes(handler) {
+        outcomeHandler = handler;
+        return () => {
+          unsubscribeProviderInputOutcomes();
+          if (outcomeHandler === handler) outcomeHandler = null;
+        };
+      },
+    };
+    const acknowledgeAccepted = vi.fn();
+    const manager = new VoiceAgentManager({
+      createBackend: () => backend,
+      prepareFollowContext: vi.fn().mockResolvedValue({
+        updates: [],
+        acknowledgeAccepted,
+      }),
+    });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent-definitive-rejection',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      userText: 'what changed?',
+      durableUserTranscriptLocalId: 'voice-user-definitive',
+    });
+    await vi.waitFor(() => expect(base.getSeenPrompts()).toHaveLength(1));
+    const subscribedOutcomeHandler = outcomeHandler!;
+    subscribedOutcomeHandler({
+      kind: 'rejected_before_effect',
+      localId: 'voice-user-definitive',
+      userMessageSeq: 29,
+      reason: 'unsupported_action',
+      diagnostic: { code: 'unsupported_action', severity: 'error' },
+      retryable: false,
+    });
+    subscribedOutcomeHandler({ kind: 'accepted', localId: 'voice-user-definitive', userMessageSeq: 29 });
+    expect(unsubscribeProviderInputOutcomes).toHaveBeenCalledOnce();
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+
+    await manager.dispose();
+  });
+
+  it('does not prepare Account Voice Follow when the runtime cannot report exact provider acceptance', async () => {
+    const backend = createDeterministicBackend('chat');
+    const prepareFollowContext = vi.fn().mockResolvedValue({
+      updates: [],
+      acknowledgeAccepted: vi.fn(),
+    });
+    const manager = new VoiceAgentManager({ createBackend: () => backend, prepareFollowContext });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent-without-acceptance',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      userText: 'what changed?',
+      durableUserTranscriptLocalId: 'voice-user-1',
+    });
+    await vi.waitFor(() => expect(backend.getSeenPrompts()).toHaveLength(1));
+
+    expect(prepareFollowContext).not.toHaveBeenCalled();
+    await manager.dispose();
+  });
+
+  it('does not prepare Account Voice Follow without a durable user transcript identity', async () => {
+    const base = createDeterministicBackend('chat');
+    const backend: ExecutionRunHostRuntime = {
+      ...base,
+      subscribeProviderInputOutcomes() {
+        return () => undefined;
+      },
+    };
+    const prepareFollowContext = vi.fn().mockResolvedValue({
+      updates: [],
+      acknowledgeAccepted: vi.fn(),
+    });
+    const manager = new VoiceAgentManager({ createBackend: () => backend, prepareFollowContext });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent-without-durable-transcript',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    await manager.sendTurn({ voiceAgentId: started.voiceAgentId, userText: 'what changed?' });
+
+    expect(prepareFollowContext).not.toHaveBeenCalled();
+    await manager.dispose();
   });
 
   it('normalizes sendSessionMessage preambles when extracting voice tool actions from the assistant response text', async () => {
@@ -1231,7 +1617,7 @@ describe('VoiceAgentManager', () => {
     let releaseCancelledPrompt: (() => void) | null = null;
     let cancelledRuntime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     cancelledRuntime = createTestExecutionRunHostRuntime({
-      sessionId: 's-cancelled-mid-conversation',
+      runtimeId: 's-cancelled-mid-conversation',
       async onSendPrompt() {
         promptCount += 1;
         if (promptCount === 1) {
@@ -1316,8 +1702,8 @@ describe('VoiceAgentManager', () => {
     const provisionArgs: unknown[] = [];
     const cancelledBackend = createCancelableBlockingBackend('chat');
     const replacementBackend = createTestExecutionRunHostRuntime({
-      sessionId: 's-replacement',
-      async onProvisionSession(opts) {
+      runtimeId: 's-replacement',
+      async onProvisionRuntime(opts) {
         provisionArgs.push(opts);
         await replacementBarrier;
       },
@@ -1378,8 +1764,8 @@ describe('VoiceAgentManager', () => {
       },
     });
     const replacementBackend = createTestExecutionRunHostRuntime({
-      sessionId: 's-failed-replacement',
-      onProvisionSession() { throw new Error('replacement provision failed'); },
+      runtimeId: 's-failed-replacement',
+      onProvisionRuntime() { throw new Error('replacement provision failed'); },
       onDispose() { disposed.replacement += 1; },
     });
     const createBackend = vi.fn<BackendFactory>()
@@ -1418,7 +1804,7 @@ describe('VoiceAgentManager', () => {
       },
     });
     const replacementBase = createTestExecutionRunHostRuntime({
-      sessionId: 's-replacement-subscribe-throw',
+      runtimeId: 's-replacement-subscribe-throw',
       onDispose() { disposed.replacement += 1; },
     });
     const replacementBackend = Object.assign({}, replacementBase, {
@@ -1470,7 +1856,7 @@ describe('VoiceAgentManager', () => {
     });
     let replacementBackend: ReturnType<typeof createTestExecutionRunHostRuntime>;
     replacementBackend = createTestExecutionRunHostRuntime({
-      sessionId: 's-replacement-after-unsubscribe-throw',
+      runtimeId: 's-replacement-after-unsubscribe-throw',
       onSendPrompt() {
         replacementBackend.emitMessage({ type: 'model-output', fullText: 'replacement survived' });
         replacementBackend.emitMessage({ type: 'status', status: 'idle' });
@@ -1513,7 +1899,7 @@ describe('VoiceAgentManager', () => {
       },
     });
     const replacementBase = createTestExecutionRunHostRuntime({
-      sessionId: 's-replacement-unsubscribe-throw',
+      runtimeId: 's-replacement-unsubscribe-throw',
       onDispose() { disposed.replacement += 1; },
     });
     const replacementBackend = Object.assign({}, replacementBase, {
@@ -1558,8 +1944,8 @@ describe('VoiceAgentManager', () => {
       },
     });
     const replacementBackend = createTestExecutionRunHostRuntime({
-      sessionId: 's-stop-replacement',
-      async onProvisionSession() { await replacementBarrier; },
+      runtimeId: 's-stop-replacement',
+      async onProvisionRuntime() { await replacementBarrier; },
       onDispose() { disposed.replacement += 1; },
     });
     const createBackend = vi.fn<BackendFactory>()
@@ -1633,7 +2019,7 @@ describe('VoiceAgentManager', () => {
     let disposed = 0;
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'completed-unread-stop',
+      runtimeId: 'completed-unread-stop',
       onSendPrompt() {
         runtime.emitMessage({ type: 'model-output', fullText: 'completed response' });
         runtime.emitMessage({ type: 'status', status: 'idle' });
@@ -1705,7 +2091,7 @@ describe('VoiceAgentManager', () => {
     let disposed = false;
     const reapedVoiceAgentIds: string[] = [];
     const createBackend: BackendFactory = ({ modelId }) => createTestExecutionRunHostRuntime({
-      sessionId: `s-${modelId}`,
+      runtimeId: `s-${modelId}`,
       onDispose() {
         disposed = true;
       },
@@ -1751,7 +2137,7 @@ describe('VoiceAgentManager', () => {
     let nowMs = 0;
     let disposedCount = 0;
     const createBackend: BackendFactory = ({ modelId }) => createTestExecutionRunHostRuntime({
-      sessionId: `s-${modelId}`,
+      runtimeId: `s-${modelId}`,
       onDispose() {
         disposedCount += 1;
       },
@@ -1793,7 +2179,7 @@ describe('VoiceAgentManager', () => {
     let nowMs = 0;
     let disposedCount = 0;
     const createBackend: BackendFactory = ({ modelId }) => createTestExecutionRunHostRuntime({
-      sessionId: `s-${modelId}`,
+      runtimeId: `s-${modelId}`,
       onDispose() {
         disposedCount += 1;
       },

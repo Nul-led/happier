@@ -2,7 +2,8 @@ import {
   createProviderErrorV1,
   type AgentProviderBindingLaunchMaterializationV1,
   type BackendTargetRefV2Input,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
+  type PluginExecutionScopeV1,
   type ProviderErrorV1,
   type SessionModelSelectionV1,
   type SessionProviderBindingMetadataV1,
@@ -43,7 +44,7 @@ export type DirectProviderLaunchResult =
       ok: true;
       kind: 'provider';
       agentTargetKey: string;
-      connectedServices: ConnectedServiceBindingsV1 | null;
+      connectedServices: ConnectedServiceBindingsV2 | null;
       suppressedConnectedServiceIds: readonly string[];
       environment: Readonly<Record<string, string>>;
       unsetEnvKeys: readonly string[];
@@ -69,13 +70,13 @@ export async function prepareDirectProviderLaunch(input: Readonly<{
   backendTarget: BackendTargetRefV2Input;
   machineId?: string;
   agentId: string | null;
-  sessionId: string;
+  scope: PluginExecutionScopeV1;
   previousBinding: SessionProviderBindingMetadataV1 | null;
   confirmation: SessionProviderBindingSecurityChangeConfirmationV1 | null;
   confirmSecurityChange?: (
     confirmation: SessionProviderBindingSecurityChangeConfirmationV1,
   ) => Promise<boolean>;
-  connectedServices: ConnectedServiceBindingsV1 | null;
+  connectedServices: ConnectedServiceBindingsV2 | null;
   featureEnabled: boolean;
 }>, dependencies: Readonly<{
   resolvePrerequisites: (
@@ -97,8 +98,10 @@ export async function prepareDirectProviderLaunch(input: Readonly<{
   const scope = createProviderLaunchResourceScope();
   try {
     for (const resource of dependencies.initialResources ?? []) scope.register(resource);
+    const { scope: executionScope, ...providerLaunchInput } = input;
     const prepared = await prepareProviderLaunch({
-      ...input,
+      ...providerLaunchInput,
+      ...(executionScope.kind === 'session' ? { sessionId: executionScope.sessionId } : {}),
       resolvePrerequisites: async (context) => {
         const result = await dependencies.resolvePrerequisites(context);
         if (result.cleanupOnFailure || result.cleanupOnExit) {

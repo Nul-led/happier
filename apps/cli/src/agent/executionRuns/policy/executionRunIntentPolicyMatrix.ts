@@ -32,6 +32,12 @@ export const EXECUTION_RUN_INTENT_POLICY_MATRIX: Readonly<Record<ExecutionRunInt
     allowedIoModes: ['request_response', 'streaming'],
     invariant: 'Keep delegate structured-output behavior and long-lived steering semantics.',
   },
+  agent: {
+    allowedRetentionPolicies: ['ephemeral', 'resumable'],
+    allowedRunClasses: ['bounded', 'long_lived'],
+    allowedIoModes: ['request_response', 'streaming'],
+    invariant: 'Keep general Agent execution on the native runtime with optional exact per-turn results.',
+  },
   task: {
     allowedRetentionPolicies: ['ephemeral'],
     allowedRunClasses: ['bounded'],

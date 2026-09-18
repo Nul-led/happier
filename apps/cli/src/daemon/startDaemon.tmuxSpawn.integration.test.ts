@@ -51,11 +51,11 @@ describe('daemon tmux spawn config', () => {
     vi.clearAllMocks();
   });
 
-  it('uses merged env and bun runtime when configured', () => {
+  it('uses merged env and bun runtime when configured', async () => {
     process.env.HAPPIER_CLI_SUBPROCESS_RUNTIME = 'bun';
     process.env.PATH = '/bin';
 
-    const cfg = buildTmuxSpawnConfig({
+    const cfg = await buildTmuxSpawnConfig({
       agent: 'claude',
       directory: '/tmp',
       extraEnv: {
@@ -67,16 +67,16 @@ describe('daemon tmux spawn config', () => {
       extraArgs: ['--happy-terminal-mode', 'tmux'],
     });
 
-    expect(cfg.commandTokens[0]).toBe('bun');
+    expect(cfg.commandTokens).toContain('bun');
     expect(cfg.tmuxEnv.PATH).toBe('/bin');
     expect(cfg.tmuxEnv.FOO).toBe('bar');
     expect(cfg.tmuxCommandEnv.TMUX_TMPDIR).toBe('/custom/tmux');
     expect(cfg.commandTokens).toEqual(expect.arrayContaining(['--happy-terminal-mode', 'tmux']));
   });
 
-  it('uses the admitted immutable runner decision for the tmux child command', () => {
+  it('uses the admitted immutable runner decision for the tmux child command', async () => {
     const immutableEntrypoint = '/runtime/.runner-snapshots/0123456789abcdef/index.mjs';
-    const cfg = buildTmuxSpawnConfig({
+    const cfg = await buildTmuxSpawnConfig({
       agent: 'claude',
       directory: '/tmp',
       extraEnv: {},
@@ -99,7 +99,7 @@ describe('daemon tmux spawn config', () => {
     expect(cfg.tmuxEnv.HAPPIER_TEST_ADMITTED_CLOSURE).toBe('0123456789abcdef');
   });
 
-  it('applies the same final child hygiene as regular and Windows spawn modes', () => {
+  it('applies the same final child hygiene as regular and Windows spawn modes', async () => {
     const originalValues = new Map<string, string | undefined>();
     const changedKeys = [
       'HAPPIER_DAEMON_STARTUP_SOURCE',
@@ -116,9 +116,11 @@ describe('daemon tmux spawn config', () => {
       process.env.HAPPIER_DAEMON_STARTUP_SOURCE = 'background-service';
       process.env.HAPPIER_STACK_ENV_FILE = '/tmp/repo-dev/env';
 
-      const cfg = buildTmuxSpawnConfig({
+      const cfg = await buildTmuxSpawnConfig({
         agent: 'claude',
         directory: '/tmp',
+        // Exercise legacy child hygiene regardless of the host's systemd setup.
+        unsetEnvKeys: ['DBUS_SESSION_BUS_ADDRESS'],
         extraEnv: {
           CLAUDECODE: '1',
           CLAUDE_CODE_ENTRYPOINT: 'parent',

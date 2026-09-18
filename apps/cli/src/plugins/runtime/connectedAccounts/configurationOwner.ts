@@ -15,6 +15,7 @@ import {
 
 import type { ConnectedAccountAttemptConfigurationAdmission } from './authenticationAttemptOwner';
 import { normalizeConnectedAccountConfiguredOrigin } from './configuredOrigins';
+import { clonePluginPlainData } from '../plainData';
 
 type MaybePromise<T> = T | Promise<T>;
 type GenerationIdentity = Readonly<{
@@ -85,7 +86,10 @@ export function parseConnectedAccountConfigurationRecordContent(
     }
     const values = cloneOwnRecord(
         valuesProperty.value as Readonly<Record<string, unknown>>,
-        (entry) => cloneJsonValue(entry, { nodes: 0 }),
+        (entry) => clonePluginPlainData(entry, {
+            path: 'Connected-account configuration value',
+            invalid,
+        }) as JsonValue,
     );
     const secretRefs = cloneOwnRecord(
         secretRefsProperty.value as Readonly<Record<string, unknown>>,
@@ -159,13 +163,9 @@ export class ConnectedAccountConfigurationError extends Error {
     }
 }
 
-const MAX_CONFIGURATION_FIELDS = 64;
 const MAX_CONFIGURATION_REVISION_LENGTH = 256;
 const MAX_SECRET_REFERENCE_LENGTH = 512;
 const MAX_SECRET_VALUE_LENGTH = 64 * 1024;
-const MAX_JSON_DEPTH = 16;
-const MAX_JSON_NODES = 4_096;
-const MAX_JSON_STRING_LENGTH = 64 * 1024;
 
 function invalid(message: string): ConnectedAccountConfigurationError {
     return new ConnectedAccountConfigurationError(
@@ -194,68 +194,6 @@ function modeConfiguration(
     return 'configuration' in mode ? mode.configuration : undefined;
 }
 
-function cloneJsonValue(
-    value: unknown,
-    state: { nodes: number },
-    depth = 0,
-): JsonValue {
-    state.nodes += 1;
-    if (state.nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
-        throw invalid('Connected-account configuration value exceeds the bounded JSON budget');
-    }
-    if (value === null || typeof value === 'boolean') return value;
-    if (typeof value === 'string') {
-        if (value.length > MAX_JSON_STRING_LENGTH) {
-            throw invalid('Connected-account configuration string exceeds the bounded JSON budget');
-        }
-        return value;
-    }
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) throw invalid('Connected-account configuration numbers must be finite');
-        return Object.is(value, -0) ? 0 : value;
-    }
-    if (typeof value !== 'object') throw invalid('Connected-account configuration must contain JSON values');
-    if (Array.isArray(value)) {
-        if (Object.getPrototypeOf(value) !== Array.prototype) {
-            throw invalid('Connected-account configuration arrays must be plain data');
-        }
-        const ownKeys = Reflect.ownKeys(value);
-        if (
-            ownKeys.length !== value.length + 1
-            || ownKeys.some((key) => typeof key !== 'string')
-        ) {
-            throw invalid('Connected-account configuration arrays must be dense plain data');
-        }
-        return Object.freeze(value.map((_entry, index) => {
-            const property = Object.getOwnPropertyDescriptor(value, String(index));
-            if (!property || !property.enumerable || !('value' in property)) {
-                throw invalid('Connected-account configuration arrays must be plain data');
-            }
-            return cloneJsonValue(property.value, state, depth + 1);
-        }));
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-        throw invalid('Connected-account configuration objects must be plain data');
-    }
-    const ownKeys = Reflect.ownKeys(value);
-    if (
-        ownKeys.length > MAX_CONFIGURATION_FIELDS
-        || ownKeys.some((key) => typeof key !== 'string')
-    ) {
-        throw invalid('Connected-account configuration object exceeds the field budget');
-    }
-    const output: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
-    for (const key of ownKeys as string[]) {
-        const property = Object.getOwnPropertyDescriptor(value, key);
-        if (!property || !property.enumerable || !('value' in property)) {
-            throw invalid('Connected-account configuration objects must be plain data');
-        }
-        output[key] = cloneJsonValue(property.value, state, depth + 1);
-    }
-    return Object.freeze(output);
-}
-
 function cloneOwnRecord<T>(
     value: Readonly<Record<string, unknown>>,
     clone: (entry: unknown, key: string) => T,
@@ -268,11 +206,8 @@ function cloneOwnRecord<T>(
         throw invalid('Connected-account configuration fields must be plain data');
     }
     const keys = Reflect.ownKeys(value);
-    if (
-        keys.length > MAX_CONFIGURATION_FIELDS
-        || keys.some((key) => typeof key !== 'string')
-    ) {
-        throw invalid('Connected-account configuration exceeds the field budget');
+    if (keys.some((key) => typeof key !== 'string')) {
+        throw invalid('Connected-account configuration fields must use string keys');
     }
     const output: Record<string, T> = Object.create(null) as Record<string, T>;
     for (const key of keys as string[]) {
@@ -574,7 +509,10 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             if (!field || field.secret === true) {
                 throw invalid(`Undeclared or secret configuration field '${key}' was supplied as plaintext`);
             }
-            const cloned = cloneJsonValue(entry, { nodes: 0 });
+            const cloned = clonePluginPlainData(entry, {
+                path: `Connected-account configuration field '${key}'`,
+                invalid,
+            }) as JsonValue;
             const validate = compilePluginJsonSchema(field.schema);
             if (!isValidPluginJsonSchemaValue(validate, cloned)) {
                 throw invalid(`Configuration field '${key}' does not match its declared schema`);
@@ -649,7 +587,10 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 continue;
             }
             if (normalizedValues[field.id] === undefined && field.default !== undefined) {
-                const clonedDefault = cloneJsonValue(field.default, { nodes: 0 });
+                const clonedDefault = clonePluginPlainData(field.default, {
+                    path: `Connected-account configuration default '${field.id}'`,
+                    invalid,
+                }) as JsonValue;
                 const validate = compilePluginJsonSchema(field.schema);
                 if (!isValidPluginJsonSchemaValue(validate, clonedDefault)) {
                     throw invalid(`Configuration default '${field.id}' does not match its declared schema`);

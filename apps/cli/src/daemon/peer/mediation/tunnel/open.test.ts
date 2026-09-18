@@ -158,7 +158,7 @@ describe('openPeerTcpTunnel', () => {
             ok: true,
             response: {
                 streamPath: '/peer-mediation/v1/tunnel/stream',
-                encoding: 'json_base64_v1',
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             },
             receipt: 'peer.tunnel.opened',
         });
@@ -174,7 +174,7 @@ describe('openPeerTcpTunnel', () => {
         await expect(mod?.openPeerTcpTunnel({
             open: createOpen({
                 selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-                supportedEncodings: ['json_base64_v1', PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
+                supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
             }),
             nowMs: 2_000,
             expected: {
@@ -196,16 +196,20 @@ describe('openPeerTcpTunnel', () => {
         });
     });
 
-    it('rejects a selected loopback encoding that the opener did not advertise', async () => {
+    it('rejects the removed JSON/base64 encoding at the open schema boundary', async () => {
         const mod = await loadOpenModule();
         const connectTcp = vi.fn(async () => ({ close: vi.fn() }));
         expect(mod?.openPeerTcpTunnel).toBeTypeOf('function');
 
+        // The removed encoding no longer exists in the canonical Protocol type, so this boundary
+        // case is built as wire input rather than through the typed open builder.
+        const openWithRemovedEncoding: unknown = {
+            ...createOpen({ selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2 }),
+            supportedEncodings: ['json_base64_v1'],
+        };
+
         await expect(mod?.openPeerTcpTunnel({
-            open: createOpen({
-                selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-                supportedEncodings: ['json_base64_v1'],
-            }),
+            open: openWithRemovedEncoding,
             nowMs: 2_000,
             expected: {
                 accountId: 'account_1',
@@ -218,7 +222,7 @@ describe('openPeerTcpTunnel', () => {
             connectTcp,
         })).resolves.toMatchObject({
             ok: false,
-            reasonCode: 'encoding_unsupported',
+            reasonCode: 'open_invalid',
             receipt: 'peer.route.fallback',
         });
         expect(connectTcp).not.toHaveBeenCalled();
@@ -270,8 +274,43 @@ describe('openPeerTcpTunnel', () => {
         })).resolves.toMatchObject({
             ok: true,
             receipt: 'peer.tunnel.opened',
+            // The admitted tunnel publishes one canonical destination so every later dial on it
+            // — the base connection here and the substream mux in `registerRoutes` — resolves the
+            // same normalized host instead of re-deriving it from the open frame.
+            destination: { host: '::1', port: 3000 },
         });
 
         expect(connectTcp).toHaveBeenCalledWith({ host: '::1', port: 3000 });
+    });
+
+    it('refuses a loopback direct open that names no TCP destination', async () => {
+        const mod = await loadOpenModule();
+        const connectTcp = vi.fn(async () => ({ close: vi.fn() }));
+        expect(mod?.openPeerTcpTunnel).toBeTypeOf('function');
+
+        // Protocol V1 admits a destination-free open only for the provider-broker application
+        // relay, which is a `server_relay` route this direct owner never serves.
+        const { destination, ...openWithoutDestination } = createOpen();
+        expect(destination).toBeDefined();
+
+        await expect(mod?.openPeerTcpTunnel({
+            open: openWithoutDestination,
+            nowMs: 2_000,
+            expected: {
+                accountId: 'account_1',
+                machineId: 'machine_1',
+                endpointFingerprint: 'endpoint_1',
+                accountPublicKey: toBase64Url(accountKeyPair.publicKey),
+            },
+            trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+            grantConsumption: createAtomicRouteGrantConsumption({ activationFailurePolicy: 'release' }),
+            connectTcp,
+        })).resolves.toMatchObject({
+            ok: false,
+            reasonCode: 'open_invalid',
+            receipt: 'peer.route.fallback',
+        });
+
+        expect(connectTcp).not.toHaveBeenCalled();
     });
 });

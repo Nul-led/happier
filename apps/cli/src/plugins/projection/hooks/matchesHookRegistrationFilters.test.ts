@@ -53,6 +53,31 @@ describe('matchesHookRegistrationFilters', () => {
     )).toBe(false);
   });
 
+  it('matches a sessionId filter against the exact opaque agentSessionId bytes', () => {
+    expect(matchesHookRegistrationFilters(
+      createEnvelope({ agentSessionId: 'agent/session+1=' }),
+      createRegistration({ sessionId: 'agent/session+1=' }),
+    )).toBe(true);
+  });
+
+  it('never folds a padded opaque agentSessionId onto its stripped sibling', () => {
+    expect(matchesHookRegistrationFilters(
+      createEnvelope({ agentSessionId: ' agent-session-1' }),
+      createRegistration({ sessionId: 'agent-session-1' }),
+    )).toBe(false);
+    expect(matchesHookRegistrationFilters(
+      createEnvelope({ agentSessionId: 'agent-session-1\n' }),
+      createRegistration({ sessionId: 'agent-session-1' }),
+    )).toBe(false);
+  });
+
+  it('keeps Happier-owned happySessionId normalization for the sessionId filter', () => {
+    expect(matchesHookRegistrationFilters(
+      createEnvelope({ happySessionId: ' happy-session-1 ' }),
+      createRegistration({ sessionId: 'happy-session-1' }),
+    )).toBe(true);
+  });
+
   it('keeps retired backend/provider filter aliases fail-closed', () => {
     expect(matchesHookRegistrationFilters(
       createEnvelope({ backendTarget: 'acme.runtime' }),

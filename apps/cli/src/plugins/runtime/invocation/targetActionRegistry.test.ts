@@ -86,6 +86,25 @@ function createRegistry(
 }
 
 describe('target action invocation registry', () => {
+    it('keeps a prepared handler inert when retirement occurs during host custody admission', async () => {
+        const handler = vi.fn(async () => ({ echoed: 'value' }));
+        let transitions = 0;
+        const registry = createRegistry({ actions: [{ ...action(), handler }] });
+        const prepared = await registry.prepare({
+            pluginId: 'acme.alpha', localId: 'run', input: { value: 'value' }, surface: 'cli',
+            beforeHandlerInvocation: async () => {
+                transitions += 1;
+                registry.dispose();
+            },
+        });
+        expect(prepared.kind).toBe('ready');
+        expect(transitions).toBe(0);
+        if (prepared.kind !== 'ready') throw new Error('Expected prepared invocation');
+        await expect(prepared.run()).resolves.toMatchObject({ actionHandlerInvocation: 'notStarted' });
+        expect(transitions).toBe(1);
+        expect(handler).not.toHaveBeenCalled();
+    });
+
     it('passes one executable-parser-normalized input to host admission and the handler', async () => {
         const inputParser = vi.fn((input: unknown) => Object.freeze({
             success: true as const,
@@ -388,6 +407,7 @@ describe('target action invocation registry', () => {
                     id: 'request',
                     qualifiedId: 'acme.target/actions/request',
                 },
+                immutableGenerationId: 'acme-target-generation-1',
                 materialization: {
                     pluginId: 'acme.target',
                     machineId: 'machine-target',
@@ -414,6 +434,7 @@ describe('target action invocation registry', () => {
             setWidget: vi.fn(),
             purgeOwner: vi.fn(),
             replaceComposerText: vi.fn(),
+            present: vi.fn(),
         };
         const registry = createRegistry({
             resolveCurrentSessionUi: (sessionId) => sessionId === 'session-1'
@@ -455,6 +476,7 @@ describe('target action invocation registry', () => {
             setWidget: vi.fn(async () => ({ status: 'applied' as const, revision: 'r1' })),
             purgeOwner,
             replaceComposerText: vi.fn(async () => ({ status: 'applied' as const, revision: 'r1' })),
+            present: vi.fn(async () => ({ status: 'applied' as const, revision: 'r1' })),
         });
         const currentSessionUi = createNativeAgentCurrentSessionUiServices({
             permissionHandler: null,
@@ -511,6 +533,7 @@ describe('target action invocation registry', () => {
             setWidget: vi.fn(),
             purgeOwner: vi.fn(),
             replaceComposerText: vi.fn(),
+            present: vi.fn(),
         });
         const currentSession = createNativeAgentCurrentSessionUiServices({
             permissionHandler: { handleToolCall },

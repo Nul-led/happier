@@ -71,7 +71,16 @@ func runDarwinPeerIdentity(t *testing.T, extraFiles []*os.File) (string, int) {
 }
 
 func TestDarwinPeerIdentityProvesTheConnectingProcess(t *testing.T) {
-	listener, err := net.Listen("unix", filepath.Join(t.TempDir(), "broker.sock"))
+	// Darwin limits Unix-domain socket addresses to 104 bytes. testing.T.TempDir
+	// includes the full test name beneath /var/folders and can exceed that limit
+	// before this peer-identity corridor is exercised. Keep this black-box test's
+	// socket in a short private directory while retaining automatic cleanup.
+	socketDir, err := os.MkdirTemp("/tmp", "hpc-peer-")
+	if err != nil {
+		t.Fatalf("create short socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	listener, err := net.Listen("unix", filepath.Join(socketDir, "broker.sock"))
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

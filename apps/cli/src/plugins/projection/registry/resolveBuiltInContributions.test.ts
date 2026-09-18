@@ -361,7 +361,7 @@ describe('resolveBuiltInContributions', () => {
     expect(contributes.agents.find((entry) => entry.id === 'codex')?.richDefinition).toMatchObject({
       provenance: 'first_party',
       definition: {
-        capabilities: { surfaces: ['terminal', 'externalSessions'] },
+        capabilities: { surfaces: ['externalSessions'] },
       },
     });
   });
@@ -1111,6 +1111,11 @@ describe('resolveBuiltInContributions', () => {
         hasProbe: true,
       },
       deepsec: { loginStatusArgs: null, binaryNames: ['deepsec'], hasProbe: true },
+      devin: { loginStatusArgs: null, binaryNames: ['devin'], hasProbe: false },
+      // Droid declares `FACTORY_API_KEY`, so the host-owned static credential
+      // probe exists at cold discovery; FX declares no credential source.
+      droid: { loginStatusArgs: null, binaryNames: ['droid'], hasProbe: true },
+      fx: { loginStatusArgs: null, binaryNames: ['fx'], hasProbe: false },
       gemini: { loginStatusArgs: null, binaryNames: ['gemini'], hasProbe: true },
       grok: { loginStatusArgs: null, binaryNames: ['grok'], hasProbe: true },
       kilo: { loginStatusArgs: null, binaryNames: ['kilo'], hasProbe: false },

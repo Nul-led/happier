@@ -26,14 +26,12 @@ describe('Personal Home relocation upload reception', () => {
       expect(retried).toEqual(prepared);
       await expect(consumePersonalHomeRelocationUpload({
         operationId,
-        uploadReceipt: prepared.uploadReceipt,
         temporaryRoot,
       })).resolves.toEqual({ archivePath: prepared.uploadLocator });
       await expect(consumePersonalHomeRelocationUpload({
-        operationId,
-        uploadReceipt: '99999999-9999-4999-8999-999999999999',
+        operationId: 'different-operation',
         temporaryRoot,
-      })).rejects.toThrow(/does not match/u);
+      })).rejects.toMatchObject({ code: 'ENOENT' });
 
       await cleanupPersonalHomeRelocationUpload({ operationId, temporaryRoot });
       await expect(stat(prepared.uploadLocator)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -64,7 +62,8 @@ describe('Personal Home relocation upload reception', () => {
       const prepared = await preparePersonalHomeRelocationUpload({ operationId, temporaryRoot, platform: 'linux' });
 
       expect(prepared.uploadLocator).toBe(partialArchive.replaceAll('\\', '/'));
-      await expect(readFile(join(directory, 'receipt.json'), 'utf8')).resolves.toContain(prepared.uploadReceipt);
+      await expect(readFile(join(directory, 'receipt.json'), 'utf8')).resolves.toContain(`"operationId":"${operationId}"`);
+      expect(prepared).not.toHaveProperty('uploadReceipt');
       await expect(stat(partialArchive).then((info) => info.isFile())).resolves.toBe(true);
       await expect(readFile(join(siblingDirectory, 'receipt.json'), 'utf8')).resolves.toBe('other operation receipt\n');
     } finally {

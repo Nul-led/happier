@@ -78,6 +78,17 @@ export async function cleanupAndShutdown(params: CleanupAndShutdownParams): Prom
         logger.debug('[DAEMON RUN] Health check interval cleared');
     }
 
+    // Admission has already been stopped synchronously by the outer lifecycle
+    // owner. Drain admitted Action/RPC work while control and data transports
+    // and their supporting loops are still live.
+    if (params.beforeShutdown) {
+        try {
+            await params.beforeShutdown();
+        } catch (error) {
+            logger.debug('[DAEMON RUN] Error draining shutdown work during cleanup (best-effort)', error);
+        }
+    }
+
     // Clear daemon.state.json early only while this process still owns the exact lifecycle lock.
     // A self-restart predecessor has already handed that lock to its successor and must preserve
     // the successor's state publication.
@@ -99,14 +110,6 @@ export async function cleanupAndShutdown(params: CleanupAndShutdownParams): Prom
     if (params.connectedServiceQuotasLoopHandle) {
         await params.connectedServiceQuotasLoopHandle.stop();
     }
-    if (params.beforeShutdown) {
-        try {
-            await params.beforeShutdown();
-        } catch (error) {
-            logger.debug('[DAEMON RUN] Error draining shutdown work during cleanup (best-effort)', error);
-        }
-    }
-
     // Stop transfer listeners while the machine socket is still available. Their lifecycle
     // owners publish the terminal inactive state through apiMachine; disconnecting first leaves
     // the previous daemon's direct routes falsely active until a replacement daemon publishes.

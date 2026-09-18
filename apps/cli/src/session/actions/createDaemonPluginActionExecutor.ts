@@ -24,6 +24,7 @@ type ActionExecutorLike = Readonly<{
 const DAEMON_OWNED_PLUGIN_META_ACTION_IDS = new Set<string>([
   'action.spec.search',
   'action.spec.get',
+  'action.options.resolve',
   'action.invoke',
 ]);
 const BUILT_IN_ACTION_IDS = new Set<string>(ACTION_IDS);
@@ -35,7 +36,16 @@ const BUILT_IN_ACTION_IDS = new Set<string>(ACTION_IDS);
  */
 export function createDaemonPluginActionExecutor(params: Readonly<{
   base: ActionExecutorLike;
-  requestPluginActionExecution?: (request: Readonly<{
+  requestPluginActionExecution?: PluginActionExecutionRequestOwner;
+}>): ActionExecutorLike {
+  return createPluginActionExecutor({
+    base: params.base,
+    requestPluginActionExecution: params.requestPluginActionExecution
+      ?? requestDaemonPluginActionExecution,
+  });
+}
+
+export type PluginActionExecutionRequestOwner = (request: Readonly<{
     actionId: string;
     input: unknown;
     surface: 'cli' | 'mcp' | 'agent';
@@ -43,9 +53,12 @@ export function createDaemonPluginActionExecutor(params: Readonly<{
     defaultSessionId?: string;
     expectedContributorImmutableGenerationId?: string;
   }>, options?: Readonly<{ signal?: AbortSignal }>) => Promise<PluginActionExecutionAttempt>;
+
+/** Routes dynamic/meta Actions to one explicit execution owner before the built-in executor. */
+export function createPluginActionExecutor(params: Readonly<{
+  base: ActionExecutorLike;
+  requestPluginActionExecution: PluginActionExecutionRequestOwner;
 }>): ActionExecutorLike {
-  const requestPluginActionExecution = params.requestPluginActionExecution
-    ?? requestDaemonPluginActionExecution;
   return {
     execute: async (actionId, input, context) => {
       const normalizedActionId = String(actionId);
@@ -73,8 +86,8 @@ export function createDaemonPluginActionExecutor(params: Readonly<{
             : {}),
         };
         const attempt = context?.signal
-          ? await requestPluginActionExecution(request, { signal: context.signal })
-          : await requestPluginActionExecution(request);
+          ? await params.requestPluginActionExecution(request, { signal: context.signal })
+          : await params.requestPluginActionExecution(request);
         if (attempt.matched) {
           return attempt.result;
         }

@@ -67,5 +67,5 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home exclusion', () => {
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });

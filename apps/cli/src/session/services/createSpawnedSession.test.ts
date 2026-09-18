@@ -53,6 +53,7 @@ vi.mock('./archiveSessionOnceInactive', () => ({ archiveSessionOnceInactive }));
 vi.mock('./setSessionArchivedState', () => ({ archiveSessionByIdBestEffort }));
 
 import { createSpawnedSession, type CreateSpawnedSessionParams } from './createSpawnedSession';
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@/daemon/spawn/sessionWebhookTimeoutPolicy';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import {
   ConnectedServiceMaterializationIdentityV1Schema,
@@ -62,10 +63,15 @@ import {
   SessionOwnerMetadataV1Schema,
   deriveSessionCreationTagV1,
   buildSessionSpawnInitialInputLocalIdV1,
+  type SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import { buildSessionSpawnInitialInputAdmissionForLocalIdV1 } from './sessionInputAdmissionIdentity';
+
+const initialAccess: SessionInitialAccessDraftV1 = {
+  grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'edit', canApprovePermissions: false }],
+};
 
 describe('createSpawnedSession settlement', () => {
   const credentials: Credentials = {
@@ -231,6 +237,8 @@ describe('createSpawnedSession settlement', () => {
       sessionCreationCorrespondence,
       organizationPlacement: { folderId: null, tagIds: [] },
       initialTitle: 'Atomic first title',
+      initialAccess,
+      primaryTeamId: 'team-1',
       initialInput: { text: 'Inspect this repo' },
       agentSessionStartupInstructionsV1,
       buildInitialInputHandoff,
@@ -249,6 +257,8 @@ describe('createSpawnedSession settlement', () => {
       sessionCreationTag,
       sessionCreationCorrespondence,
       initialTitle: 'Atomic first title',
+      initialAccess,
+      primaryTeamId: 'team-1',
       agentSessionStartupInstructionsV1,
     });
     expect(spawnRequest).not.toHaveProperty('pendingFirstInput');
@@ -962,6 +972,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-exact',
       method: RPC_METHODS.SPAWN_HAPPY_SESSION,
+      timeoutMs: DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS,
       request: expect.objectContaining({
         machineId: 'machine-exact',
         spawnNonce: 'exact-machine-action-1',
@@ -972,7 +983,9 @@ describe('createSpawnedSession settlement', () => {
       machineId: 'machine-exact',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
       request: { spawnNonce: 'exact-machine-action-1' },
+      timeoutMs: expect.any(Number),
     });
+    expect(callMachineRpc.mock.calls[1]?.[0]?.timeoutMs).toBeGreaterThan(20_000);
     expect(spawnDaemonSession).not.toHaveBeenCalled();
     expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();
   });
@@ -1395,6 +1408,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-1',
       method: RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE,
+      timeoutMs: DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS,
       request: expect.objectContaining({
         machineId: 'machine-1',
         spawnNonce: 'provider-action-1',
@@ -1414,6 +1428,7 @@ describe('createSpawnedSession settlement', () => {
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
       request: { spawnNonce: 'provider-action-1' },
+      timeoutMs: expect.any(Number),
     });
     expect(spawnDaemonSession).not.toHaveBeenCalled();
     expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();
@@ -1460,6 +1475,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-1',
       method: RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE,
+      timeoutMs: DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS,
       request: expect.objectContaining({ spawnNonce: 'provider-action-2' }),
     });
     expect(spawnDaemonSession).not.toHaveBeenCalled();
@@ -1535,6 +1551,7 @@ describe('createSpawnedSession settlement', () => {
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
       request: { spawnNonce: 'provider-action-retry' },
+      timeoutMs: expect.any(Number),
     });
     expect(spawnDaemonSession).not.toHaveBeenCalled();
     expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();
@@ -1782,6 +1799,8 @@ describe('createSpawnedSession replay-seeded creation', () => {
     ) => ({ type: 'success', sessionId: 'replay-child' }));
 
     const created = await createSpawnedSession(replaySeededParams({
+      initialAccess,
+      primaryTeamId: 'team-1',
       directTransport: {
         spawn: directSpawn,
         resolveSpawnSessionByNonce: async () => ({ status: 'unsupported' as const }),
@@ -1792,6 +1811,9 @@ describe('createSpawnedSession replay-seeded creation', () => {
     expect(created.sessionId).toBe('replay-child');
     const creationCall = getOrCreateSessionByTag.mock.calls[0]?.[0];
     expect(creationCall.tag).toBe('replay:parent-session:12:attempt');
+    expect(creationCall).toMatchObject({ initialAccess, primaryTeamId: 'team-1' });
+    expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('initialAccess');
+    expect(directSpawn.mock.calls[0]?.[0]).not.toHaveProperty('primaryTeamId');
     expect(creationCall.metadata).toMatchObject({
       tag: 'replay:parent-session:12:attempt',
       path: '/repo',

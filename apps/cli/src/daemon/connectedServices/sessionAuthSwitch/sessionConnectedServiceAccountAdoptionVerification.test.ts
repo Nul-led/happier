@@ -26,7 +26,7 @@ describe('createSessionConnectedServiceAccountAdoptionVerifier', () => {
         profileId: 'work',
       },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },

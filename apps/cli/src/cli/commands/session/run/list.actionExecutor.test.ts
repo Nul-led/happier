@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
-import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 
 const resolveSessionTransportContext = vi.fn();
 const listExecutionRuns = vi.fn();
@@ -116,11 +115,17 @@ describe('happier session run list', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.list',
         {
+          sessionId: 'sess-1',
           backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
           status: 'running',
           limit: 5,
         },
-        { surface: 'cli', defaultSessionId: 'sess-1' },
+        expect.objectContaining({
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-1',
+          actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        }),
       );
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
       expect(listExecutionRuns).not.toHaveBeenCalled();
@@ -157,9 +162,15 @@ describe('happier session run list', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.list',
         {
+          sessionId: 'sess-1',
           backendTarget: { kind: 'backend', backendId: 'com.acme.review/review-bot', sourceKind: 'built_in' },
         },
-        { surface: 'cli', defaultSessionId: 'sess-1' },
+        expect.objectContaining({
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-1',
+          actionRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        }),
       );
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_list' }));
     } finally {
@@ -198,14 +209,11 @@ describe('happier session run list', () => {
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_list',
-        error: {
-          code: 'invalid_arguments',
-          message: `Usage: ${SESSION_HELP_LINES.runList}`,
-        },
+        error: { code: 'invalid_arguments' },
       });
       expect(readCredentialsFn).not.toHaveBeenCalled();
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
@@ -216,41 +224,46 @@ describe('happier session run list', () => {
 
   it('rejects an out-of-range limit before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionRunList } = await import('./list');
-
-    await expect(cmdSessionRunList(['session', 'run', 'sess-prefix', '--limit', '201'], { readCredentialsFn }))
-      .rejects.toMatchObject({ code: 'invalid_arguments' });
-
-    expect(readCredentialsFn).not.toHaveBeenCalled();
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'list', 'sess-prefix', '--limit', '201', '--json'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 
   it('rejects an unsupported status before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionRunList } = await import('./list');
-
-    await expect(cmdSessionRunList(
-      ['session', 'run', 'sess-prefix', '--status', 'queued'],
-      { readCredentialsFn },
-    )).rejects.toMatchObject({
-      code: 'invalid_arguments',
-      message: 'Invalid --status "queued". Expected one of: running, succeeded, failed, cancelled, timeout.',
-    });
-
-    expect(readCredentialsFn).not.toHaveBeenCalled();
-    expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'list', 'sess-prefix', '--status', 'queued', '--json'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 
   it('rejects a malformed Agent target before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionRunList } = await import('./list');
-
-    await expect(cmdSessionRunList(
-      ['session', 'run', 'sess-prefix', '--agent', 'claude,codex'],
-      { readCredentialsFn },
-    )).rejects.toThrow('Usage: happier session run list');
-
-    expect(readCredentialsFn).not.toHaveBeenCalled();
-    expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'list', 'sess-prefix', '--agent=', '--json'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 
   it.each([
@@ -261,16 +274,18 @@ describe('happier session run list', () => {
     ['--agent', {
       message: expect.stringContaining('Usage: happier session run list'),
     }],
-  ] as const)('rejects %s without a value before reading credentials', async (flag, expectedError) => {
+  ] as const)('rejects %s without a value before reading credentials', async (flag, _expectedError) => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionRunList } = await import('./list');
-
-    await expect(cmdSessionRunList(
-      ['session', 'run', 'sess-prefix', flag],
-      { readCredentialsFn },
-    )).rejects.toMatchObject(expectedError);
-
-    expect(readCredentialsFn).not.toHaveBeenCalled();
-    expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'list', 'sess-prefix', flag, '--json'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 });

@@ -4,7 +4,11 @@ import { captureStderr, captureStdout } from '@/testkit/logger/captureOutput';
 
 const executeFromCredentials = vi.fn();
 const executeDirect = vi.fn();
-const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute: executeFromCredentials }));
+const resolveSessionTarget = vi.fn(async (idOrPrefix: string) => ({ ok: true as const, sessionId: idOrPrefix }));
+const createCliActionExecutorFromCredentials = vi.fn(() => ({
+  execute: executeFromCredentials,
+  resolveSessionTarget,
+}));
 const createCliActionExecutor = vi.fn(() => ({ execute: executeDirect }));
 const resolveSessionTransportContext = vi.fn();
 const resolveSessionIdOrPrefix = vi.fn();
@@ -50,6 +54,8 @@ function actionResultFor(actionId: string): unknown {
   switch (actionId) {
     case 'session.list':
       return { ok: true, result: { sessions: [], nextCursor: null, hasNext: false } };
+    case 'session.message.send':
+      return { ok: true, result: { status: 'accepted', localId: 'local-1' } };
     case 'session.status.get':
       return { ok: true, result: { session: { id: 'sess-1', active: false } } };
     case 'session.transcript.get':

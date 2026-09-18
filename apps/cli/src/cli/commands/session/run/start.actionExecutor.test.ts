@@ -56,7 +56,7 @@ describe('happier session run start (action executor)', () => {
   it('routes through ActionExecutor with the expected action id and args', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, runId: 'run-1' },
+      result: { ok: true, runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1' },
     });
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
@@ -106,7 +106,7 @@ describe('happier session run start (action executor)', () => {
           runClass: 'bounded',
           ioMode: 'request_response',
         },
-        { surface: 'cli', defaultSessionId: 'sess-1' },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -123,7 +123,10 @@ describe('happier session run start (action executor)', () => {
   });
 
   it('resolves a qualified external Agent run start target through the catalog', async () => {
-    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, runId: 'run-ext-1' } });
+    execute.mockResolvedValueOnce({
+      ok: true,
+      result: { ok: true, runId: 'run-ext-1', callId: 'call-ext-1', sidechainId: 'sidechain-ext-1' },
+    });
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
@@ -145,7 +148,7 @@ describe('happier session run start (action executor)', () => {
           intent: 'review',
           backendTarget: { kind: 'backend', backendId: 'com.acme.review/review-bot', sourceKind: 'built_in' },
         }),
-        { surface: 'cli', defaultSessionId: 'sess-1' },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_start' }));
     } finally {
@@ -154,7 +157,10 @@ describe('happier session run start (action executor)', () => {
   });
 
   it('selects the public Action transport before legacy Session bootstrap for API tokens', async () => {
-    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, runId: 'run-1' } });
+    execute.mockResolvedValueOnce({
+      ok: true,
+      result: { ok: true, runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1' },
+    });
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();

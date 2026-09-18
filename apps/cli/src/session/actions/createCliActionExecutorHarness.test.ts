@@ -35,6 +35,8 @@ describe('createCliActionExecutorHarness', () => {
     const harness = createCliActionExecutorHarness(
       {
         token: 'token',
+        serverId: 'server-1',
+        serverHttpBaseUrl: 'https://server-1.example.test',
         sessionId: 'sess_1',
         mode: 'e2ee',
         ctx: {
@@ -52,7 +54,7 @@ describe('createCliActionExecutorHarness', () => {
     const result = await harness.executor.execute(
       'session.title.set',
       { sessionId: 'sess_1', title: 'Updated' },
-      { surface: 'agent', defaultSessionId: 'sess_1' },
+      { surface: 'agent', defaultSessionId: 'sess_1', actionRequestId: 'request-1' },
     );
 
     expect(result).toMatchObject({

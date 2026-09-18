@@ -52,6 +52,8 @@ type SegmentKey = StreamedTranscriptSegmentKey;
 
 type SegmentRuntime = StreamedTranscriptSegmentRuntime;
 
+const DURABLE_COMMIT_FAILURE_RETRY_DELAY_MS = 2_000;
+
 function didSegmentDurablyFlush(segment: SegmentRuntime, expectedState: SegmentState): boolean {
   if (segment.accumulatedText.length === 0) return false;
   return segment.lastCommittedTextVersion === segment.textVersion && segment.lastCommittedState === expectedState;
@@ -113,6 +115,7 @@ export function createStreamedTranscriptWriter(params: {
   const liveCheckpointIntervalMs = resolveLiveCheckpointIntervalMs(params.liveCheckpointIntervalMs);
 
   const segments = new Set<SegmentRuntime>();
+  let scheduleDurableCheckpoint: (segment: SegmentRuntime) => void;
 
   const findAppendableSegment = (key: SegmentKey): SegmentRuntime | null => {
     for (const segment of segments) {
@@ -122,6 +125,10 @@ export function createStreamedTranscriptWriter(params: {
   };
 
   const commitDurableSnapshot = (segment: SegmentRuntime, opts: { state: SegmentState; interruptedReason?: string; force?: boolean }) => {
+    if (opts.state === 'streaming' && Date.now() < segment.durableRetryNotBeforeMs) {
+      scheduleDurableCheckpoint(segment);
+      return;
+    }
     clearDurableCheckpointTimer(segment);
     if (!durableCommitsEnabled && opts.force !== true) return;
     commitStreamedTranscriptSegmentSnapshot({
@@ -130,6 +137,8 @@ export function createStreamedTranscriptWriter(params: {
       segment,
       state: opts.state,
       interruptedReason: opts.interruptedReason,
+      failureRetryDelayMs: DURABLE_COMMIT_FAILURE_RETRY_DELAY_MS,
+      onStreamingCommitFailure: () => scheduleDurableCheckpoint(segment),
     });
   };
 
@@ -155,6 +164,8 @@ export function createStreamedTranscriptWriter(params: {
       lastCommittedTextVersion: 0,
       lastCommittedState: null,
       lastCommitFailedAtMs: 0,
+      durableCommitFailure: null,
+      durableRetryNotBeforeMs: 0,
       liveDelivery: createLiveDeliveryState(),
       durableCheckpointTimer: null,
       liveSnapshotTimer: null,
@@ -205,7 +216,7 @@ export function createStreamedTranscriptWriter(params: {
     commitDurableSnapshot(segment, { state: 'streaming' });
   };
 
-  const scheduleDurableCheckpoint = (segment: SegmentRuntime) => {
+  scheduleDurableCheckpoint = (segment: SegmentRuntime) => {
     if (!durableCommitsEnabled) {
       clearDurableCheckpointTimer(segment);
       return;
@@ -218,7 +229,9 @@ export function createStreamedTranscriptWriter(params: {
 
     const elapsedMs = segment.didWriteDurable ? Date.now() - segment.lastCheckpointAtMs : 0;
     const targetDelayMs = segment.didWriteDurable ? checkpointIntervalMs : initialCheckpointDelayMs;
-    const delayMs = targetDelayMs <= 0 ? 0 : Math.max(0, targetDelayMs - elapsedMs);
+    const cadenceDelayMs = targetDelayMs <= 0 ? 0 : Math.max(0, targetDelayMs - elapsedMs);
+    const failureDelayMs = Math.max(0, segment.durableRetryNotBeforeMs - Date.now());
+    const delayMs = Math.max(cadenceDelayMs, failureDelayMs);
 
     if (delayMs <= 0) {
       commitScheduledDurableSnapshot(segment);

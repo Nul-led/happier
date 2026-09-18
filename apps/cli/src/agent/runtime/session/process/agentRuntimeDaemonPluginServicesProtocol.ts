@@ -511,7 +511,7 @@ export const RUNNER_DAEMON_PLUGIN_SERVICE_OPERATION_V1_SCHEMAS = [
         retained: RunnerDaemonManagedProviderRetentionV1Schema,
         endpointUrl: z.string().url().max(8_192),
         credentialPlaceholder:
-            z.string().min(32).max(512),
+            z.string().min(32).max(512).nullable(),
     }).strict(),
     z.object({
         kind: z.literal('plugin_services.close_v1'),

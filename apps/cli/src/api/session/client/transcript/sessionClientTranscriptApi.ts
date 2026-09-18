@@ -1,3 +1,4 @@
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { randomUUID } from 'node:crypto';
 
 import { logger } from '@/ui/logger';
@@ -14,8 +15,11 @@ import {
 } from '@happier-dev/protocol';
 import type {
     PrimaryTurnStatusV1,
-    SessionInputRequestV1,
-    SessionMessageProvenanceV1,
+    PendingRequestedActionV1,
+    ParticipantRecipientV1,
+    SessionInputAdmissionResultV1,
+    SessionInputRequest,
+    SessionMessageProvenance,
     SessionTranscriptObservationProvenanceV1,
 } from '@happier-dev/protocol';
 import { runSupervisedRequest } from '@/api/connection/requestSupervision/runSupervisedRequest';
@@ -77,6 +81,18 @@ import type { PersistedSessionUserMessageAdmission } from './sessionUserMessageA
 type PlainOrEncryptedPayload = string | { t: 'plain'; v: unknown };
 type SessionMessageRole = 'user' | 'agent' | 'event' | 'unknown';
 type SessionEventType = 'ready';
+
+export class SessionUserMessageAdmissionDispositionError extends Error {
+    readonly disposition: Extract<SessionInputAdmissionResultV1, Readonly<{
+        status: 'rejected' | 'outcomeUnknown';
+    }>>;
+
+    constructor(disposition: SessionUserMessageAdmissionDispositionError['disposition']) {
+        super(`Session user input admission ${disposition.status}: ${disposition.code}`);
+        this.name = 'SessionUserMessageAdmissionDispositionError';
+        this.disposition = disposition;
+    }
+}
 
 function readSessionMediaMetadata(meta: Readonly<Record<string, unknown>>): Readonly<{
     key: 'happier' | 'happierMedia';
@@ -214,6 +230,7 @@ async function settleSessionInputAdmissionFailure(
 
 export type SessionClientTranscriptApiDeps = Readonly<{
     token: string;
+    serverUrl?: string;
     sessionId: string;
     turnAssistantTextSnapshotStore?: TurnAssistantTextSnapshotStore;
     outboundShapeLogger: {
@@ -257,12 +274,14 @@ export type SessionClientTranscriptApiDeps = Readonly<{
         text: string;
         meta: Record<string, unknown>;
         composerAttachments: readonly ComposerAttachmentInputV1[];
+        requestedAction?: PendingRequestedActionV1;
+        recipient?: ParticipantRecipientV1;
         settlement?: SessionInputAdmissionSettlement;
         inputAdmission?: Readonly<{
-            provenance: SessionMessageProvenanceV1;
-            request: SessionInputRequestV1;
+            provenance: SessionMessageProvenance;
+            request: SessionInputRequest;
         }>;
-    }>) => Promise<void>;
+    }>) => Promise<SessionInputAdmissionResultV1>;
     findPersistedSessionUserMessageAdmission: (params: Readonly<{
         localId: string;
     }>) => Promise<PersistedSessionUserMessageAdmission | null>;
@@ -285,12 +304,26 @@ export type SessionClientTranscriptApi = Readonly<{
         text: string;
         localId?: string;
         meta?: Record<string, unknown>;
+        requestedAction?: PendingRequestedActionV1;
+        recipient?: ParticipantRecipientV1;
         structuredInputAdmissionPolicy?: SessionStructuredInputAdmissionPolicyV1;
         inputAdmission?: Readonly<{
-            provenance: SessionMessageProvenanceV1;
-            request: SessionInputRequestV1;
+            provenance: SessionMessageProvenance;
+            request: SessionInputRequest;
         }>;
     }>) => Promise<void>;
+    enqueueSessionUserMessageWithDisposition: (params: Readonly<{
+        text: string;
+        localId: string;
+        meta?: Record<string, unknown>;
+        requestedAction?: PendingRequestedActionV1;
+        recipient?: ParticipantRecipientV1;
+        structuredInputAdmissionPolicy?: SessionStructuredInputAdmissionPolicyV1;
+        inputAdmission?: Readonly<{
+            provenance: SessionMessageProvenance;
+            request: SessionInputRequest;
+        }>;
+    }>) => Promise<SessionInputAdmissionResultV1>;
     preparePendingMessageComposerAdmission: (params: Readonly<{
         localId: string;
         text: string;
@@ -349,6 +382,7 @@ export type SessionClientTranscriptApi = Readonly<{
 export function createSessionClientTranscriptApi(
     deps: SessionClientTranscriptApiDeps,
 ): SessionClientTranscriptApi {
+    const serverUrl = deps.serverUrl ?? resolveServerHttpBaseUrl();
     let latestSessionPresence: SessionPresenceSnapshot | null = null;
     let hasPublishedSessionPresence = false;
     let terminalThinkingEvidenceAtMs: number | null = null;
@@ -686,6 +720,68 @@ export function createSessionClientTranscriptApi(
         return result;
     };
 
+    const enqueueSessionUserMessageWithDisposition = async (params: Readonly<{
+        text: string;
+        localId: string;
+        meta?: Record<string, unknown>;
+        requestedAction?: PendingRequestedActionV1;
+        recipient?: ParticipantRecipientV1;
+        structuredInputAdmissionPolicy?: SessionStructuredInputAdmissionPolicyV1;
+        inputAdmission?: Readonly<{
+            provenance: SessionMessageProvenance;
+            request: SessionInputRequest;
+        }>;
+    }>): Promise<SessionInputAdmissionResultV1> => {
+        const originalText = String(params.text ?? '');
+        const localId = params.localId;
+
+        const meta: Record<string, unknown> = params.meta && typeof params.meta === 'object' ? { ...params.meta } : {};
+        if (typeof meta.source !== 'string' || meta.source.trim().length === 0) meta.source = 'ui';
+        if (typeof meta.sentFrom !== 'string' || meta.sentFrom.trim().length === 0) meta.sentFrom = 'ui';
+        const selectedComposerAttachment = hasRawComposerAttachmentSelectionV1(meta);
+        if (originalText.length === 0 && !selectedComposerAttachment) {
+            return { status: 'rejected', code: 'session_input_invalid' };
+        }
+        if (selectedComposerAttachment) {
+            const persisted = await deps.findPersistedSessionUserMessageAdmission({ localId });
+            if (persisted !== null) {
+                validateComposerAttachmentRejoinCorrespondenceV1({
+                    meta,
+                    preparedComposerAttachments: persisted.composerAttachments,
+                });
+                return await deps.admitSessionUserMessage({
+                    localId,
+                    text: persisted.text,
+                    meta: persisted.meta,
+                    composerAttachments: persisted.composerAttachments,
+                    ...(params.requestedAction ? { requestedAction: params.requestedAction } : {}),
+                    ...(params.recipient ? { recipient: params.recipient } : {}),
+                    ...(params.inputAdmission ? { inputAdmission: params.inputAdmission } : {}),
+                });
+            }
+        }
+        const createdAt = Date.now();
+        const transformed = await transformSessionInputPayloadBeforeCommit({
+            localId,
+            text: originalText,
+            meta,
+            timestampMs: createdAt,
+            ...(params.structuredInputAdmissionPolicy
+                ? { structuredInputAdmissionPolicy: params.structuredInputAdmissionPolicy }
+                : {}),
+        });
+        return await deps.admitSessionUserMessage({
+            localId,
+            text: transformed.text,
+            meta: transformed.meta,
+            composerAttachments: transformed.composerAttachments,
+            ...(params.requestedAction ? { requestedAction: params.requestedAction } : {}),
+            ...(params.recipient ? { recipient: params.recipient } : {}),
+            ...(transformed.settlement ? { settlement: transformed.settlement } : {}),
+            ...(params.inputAdmission ? { inputAdmission: params.inputAdmission } : {}),
+        });
+    };
+
     return {
         async preparePendingMessageComposerAdmission(params) {
             const transformed = await transformSessionInputPayloadBeforeCommit({
@@ -759,55 +855,18 @@ export function createSessionClientTranscriptApi(
 
         async enqueueSessionUserMessage(params) {
             const originalText = String(params.text ?? '');
-            const localId = typeof params.localId === 'string' && params.localId.length > 0 ? params.localId : randomUUID();
-
-            const meta: Record<string, unknown> = params.meta && typeof params.meta === 'object' ? { ...params.meta } : {};
-            if (typeof meta.source !== 'string' || meta.source.trim().length === 0) {
-                meta.source = 'ui';
-            }
-            if (typeof meta.sentFrom !== 'string' || meta.sentFrom.trim().length === 0) {
-                meta.sentFrom = 'ui';
-            }
-            const selectedComposerAttachment = hasRawComposerAttachmentSelectionV1(meta);
+            const selectedComposerAttachment = hasRawComposerAttachmentSelectionV1(params.meta);
             if (originalText.length === 0 && !selectedComposerAttachment) return;
-            if (selectedComposerAttachment) {
-                const persisted = await deps.findPersistedSessionUserMessageAdmission({ localId });
-                if (persisted !== null) {
-                    validateComposerAttachmentRejoinCorrespondenceV1({
-                        meta,
-                        preparedComposerAttachments: persisted.composerAttachments,
-                    });
-                    await deps.admitSessionUserMessage({
-                        localId,
-                        text: persisted.text,
-                        meta: persisted.meta,
-                        composerAttachments: persisted.composerAttachments,
-                        ...(params.inputAdmission ? { inputAdmission: params.inputAdmission } : {}),
-                    });
-                    return;
-                }
+            const disposition = await enqueueSessionUserMessageWithDisposition({
+                ...params,
+                localId: typeof params.localId === 'string' && params.localId.length > 0 ? params.localId : randomUUID(),
+            });
+            if (disposition.status === 'rejected' || disposition.status === 'outcomeUnknown') {
+                throw new SessionUserMessageAdmissionDispositionError(disposition);
             }
-            const createdAt = Date.now();
-            const transformed = await transformSessionInputPayloadBeforeCommit({
-                localId,
-                text: originalText,
-                meta,
-                timestampMs: createdAt,
-                ...(params.structuredInputAdmissionPolicy
-                    ? { structuredInputAdmissionPolicy: params.structuredInputAdmissionPolicy }
-                    : {}),
-            });
-            const text = transformed.text;
-
-            await deps.admitSessionUserMessage({
-                localId,
-                text,
-                meta: transformed.meta,
-                composerAttachments: transformed.composerAttachments,
-                ...(transformed.settlement ? { settlement: transformed.settlement } : {}),
-                ...(params.inputAdmission ? { inputAdmission: params.inputAdmission } : {}),
-            });
         },
+
+        enqueueSessionUserMessageWithDisposition,
 
         enqueueAgentMessageCommitted,
         enqueueVoiceAgentTranscriptTurnCommitted,
@@ -866,12 +925,12 @@ export function createSessionClientTranscriptApi(
 
         async fetchRecentTranscriptTextItemsForAcpImport(opts) {
             const transcriptQueryContext = deps.getTranscriptQueryContext();
-            const request = () => fetchRecentTranscriptTextItemsForAcpImportFromServer({
+            const request = () => runWithServerHttpBaseUrl(serverUrl, async () => fetchRecentTranscriptTextItemsForAcpImportFromServer({
                 token: deps.token,
                 sessionId: deps.sessionId,
                 ...transcriptQueryContext,
                 take: opts?.take,
-            });
+            }));
             const supervisor = deps.getSessionConnectionSupervisor();
             if (!supervisor) {
                 return request();
@@ -886,12 +945,12 @@ export function createSessionClientTranscriptApi(
 
         async fetchLatestUserPermissionIntentFromTranscript(opts) {
             const transcriptQueryContext = deps.getTranscriptQueryContext();
-            const request = () => fetchLatestUserPermissionIntentFromEncryptedTranscript({
+            const request = () => runWithServerHttpBaseUrl(serverUrl, async () => fetchLatestUserPermissionIntentFromEncryptedTranscript({
                 token: deps.token,
                 sessionId: deps.sessionId,
                 ...transcriptQueryContext,
                 take: opts?.take,
-            });
+            }));
             const supervisor = deps.getSessionConnectionSupervisor();
             if (!supervisor) {
                 return request();

@@ -58,6 +58,32 @@ const sessionCreationCorrespondence: SessionCreationCorrespondenceV1 = {
 };
 
 describe('buildHappySessionControlArgs', () => {
+  it('carries the Team credential binding only through daemon-to-runner session control', () => {
+    const teamCredentialBinding = {
+      v: 1 as const,
+      slot: { kind: 'provider_model' as const },
+      resourceId: 'resource-1',
+      expectedResourceRevision: 7,
+    };
+    const teamCredentialBindings = [{
+      ...teamCredentialBinding,
+      deliveryMode: 'brokered' as const,
+    }];
+    const args = buildHappySessionControlArgs({ teamCredentialBindings });
+
+    expect(args).toEqual([
+      '--session-team-credential-bindings-v1',
+      JSON.stringify(teamCredentialBindings),
+    ]);
+    expect(partitionProviderSessionArgs({
+      args: ['codex', '--started-by', 'daemon', ...args, '--provider-arg'],
+      providerSubcommand: 'codex',
+    })).toMatchObject({
+      teamCredentialBindings,
+      providerArgs: ['--provider-arg'],
+    });
+  });
+
   it('includes permission mode flags when provided', () => {
     expect(buildHappySessionControlArgs({
       permissionMode: 'safe-yolo',
@@ -128,6 +154,27 @@ describe('buildHappySessionControlArgs', () => {
     });
   });
 
+  it('carries strict Machine Pool placement origin only as a daemon-to-runner control value', () => {
+    const placementOrigin = {
+      kind: 'machine_pool' as const,
+      poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+    };
+
+    const args = buildHappySessionControlArgs({ placementOrigin });
+
+    expect(args).toEqual([
+      '--session-placement-origin-v1',
+      JSON.stringify(placementOrigin),
+    ]);
+    expect(partitionProviderSessionArgs({
+      args: ['codex', '--started-by', 'daemon', ...args, '--provider-arg'],
+      providerSubcommand: 'codex',
+    })).toMatchObject({
+      placementOrigin,
+      providerArgs: ['--provider-arg'],
+    });
+  });
+
   it('carries the immutable creation correspondence beside its tag', () => {
     const args = buildHappySessionControlArgs({
       sessionCreationTag: sessionCreationCorrespondence.sessionCreationTag,
@@ -178,10 +225,12 @@ describe('buildHappySessionControlArgs', () => {
   });
 
   it('includes resume and existing-session flags when values are present', () => {
+    // The resume id belongs to the Agent and crosses to the runner byte for
+    // byte; the Happier Session id is ours and stays canonicalized.
     expect(buildHappySessionControlArgs({
       resume: '  resume-id  ',
       existingSessionId: ' existing-session-id ',
-    })).toEqual(['--resume', 'resume-id', '--existing-session', 'existing-session-id']);
+    })).toEqual(['--resume', '  resume-id  ', '--existing-session', 'existing-session-id']);
   });
 
   it('round-trips a native fork source without forwarding the carrier to provider arguments', () => {

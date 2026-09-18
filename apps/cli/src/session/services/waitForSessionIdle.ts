@@ -9,6 +9,7 @@ import { detectLatestSessionTurnActivity } from '@/session/query/detectLatestSes
 import { waitForIdleViaSocket } from '@/session/transport/socket/sessionSocketAgentState';
 
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 function unknownTranscriptTurnActivity(): SessionTurnActivity {
   return {
@@ -22,6 +23,7 @@ export async function waitForSessionIdle(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
   timeoutMs: number;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<
   | Readonly<{ ok: true; sessionId: string; idle: true; observedAt: number }>
   | Readonly<{ ok: false; code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'unsupported' | 'encryption_material_unavailable' | 'timeout'; candidates?: string[] }>
@@ -33,6 +35,7 @@ export async function waitForSessionIdle(params: Readonly<{
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
     return {

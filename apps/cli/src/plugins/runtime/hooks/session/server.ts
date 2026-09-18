@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
     SESSION_PROVIDER_HOOK_EVENT_ID_V1,
     SessionProviderHookEventPayloadV1Schema,
+    readNonBlankOpaqueIdentifier,
 } from '@happier-dev/protocol';
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -142,8 +143,12 @@ function redactProviderPath(value: unknown): string | null {
     return readString(value) ? REDACTED_HOOK_PATH : null;
 }
 
+// The Agent mints its own session id. Happier hands it straight back to the issuer through
+// host-event publication, the transcript grant and `onSessionHook`, so only presence is decided
+// here — the bytes, including padding, stay exactly as the Agent wrote them.
 function readProviderSessionId(data: SessionHookPayload | PermissionHookPayload): string | null {
-    return readString(data.session_id) ?? readString(data.sessionId);
+    return readNonBlankOpaqueIdentifier(data.session_id)
+        ?? readNonBlankOpaqueIdentifier(data.sessionId);
 }
 
 function readHookEventName(data: SessionHookPayload | PermissionHookPayload, fallback: string): string {

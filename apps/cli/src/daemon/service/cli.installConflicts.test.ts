@@ -133,7 +133,7 @@ describe('runDaemonServiceCliCommand install conflict preflight', () => {
         serviceLabel: paths.label,
       },
     });
-    await expect(runDaemonServiceCliCommand({ argv: ['install', '--yes', '--json'] })).rejects.toThrow(/did not become the active daemon/i);
+    await expect(runDaemonServiceCliCommand({ argv: ['install', '--yes', '--json'] })).rejects.toThrow(/active daemon for the selected Home/i);
     expect(installDaemonServiceMock).toHaveBeenCalledWith(expect.objectContaining({
       strategy: 'add',
     }));

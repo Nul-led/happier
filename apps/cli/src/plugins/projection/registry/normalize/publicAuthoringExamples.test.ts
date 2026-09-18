@@ -8,6 +8,7 @@ import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
 
 import { createResolvedContributionRegistry } from '../createResolvedContributionRegistry';
+import { buildPluginProjectionV2 } from '../projection/v2';
 import { projectLoadedPluginContributes } from '../resolvePluginContributions';
 import { resolveDeclarativeProjectionModels } from '../ui/declarativeModels';
 import { listDeclarativeNodesInPreorder } from '@/plugins/runtime/invocation/services/declarativeModel.testkit';
@@ -81,7 +82,106 @@ async function loadCodeDefinedBackgroundIndexer(): Promise<LoadedPlugin> {
   return loadedExamplePluginFromManifest(exampleRoot, entryPath, module.manifest);
 }
 
+async function loadCodeDefinedPublicAuthoring(): Promise<LoadedPlugin> {
+  const exampleRoot = join(examplesRoot, 'public-authoring');
+  const entryPath = join(exampleRoot, 'index.ts');
+  const module = await import(pathToFileURL(entryPath).href) as Readonly<{ manifest: unknown }>;
+  return loadedExamplePluginFromManifest(exampleRoot, entryPath, module.manifest);
+}
+
+async function loadCodeDefinedChannels(): Promise<LoadedPlugin> {
+  const pluginRoot = fileURLToPath(new URL('../../../../../../../packages/plugins/channels', import.meta.url));
+  const entryPath = join(pluginRoot, 'src', 'manifest.ts');
+  const module = await import(pathToFileURL(entryPath).href) as Readonly<{ PLUGIN_MANIFEST: unknown }>;
+  return loadedExamplePluginFromManifest(pluginRoot, entryPath, module.PLUGIN_MANIFEST);
+}
+
 describe('plugin SDK public installable examples', () => {
+  it('projects public-authored inline HTML identically for built-in and external provenance without an Artifact', async () => {
+    const publicAuthoring = await loadCodeDefinedPublicAuthoring();
+    const project = (provenance: 'first_party' | 'external') => {
+      const registry = createResolvedContributionRegistry(projectLoadedPluginContributes({
+        loadResult: { loadedPlugins: [publicAuthoring], diagnosticsByPluginId: {} },
+        provenance,
+      }));
+      return buildPluginProjectionV2({ registry, generation: 11 }).familiesById.pluginUi?.entriesById ?? {};
+    };
+
+    const externalEntries = project('external');
+    const firstPartyEntries = project('first_party');
+    for (const surfaceId of ['review-services-hosted-html', 'review-project-hosted-html']) {
+      const entryId = `surfacePlacement:${publicAuthoring.pluginId}:${surfaceId}`;
+      expect(externalEntries[entryId]).toEqual(firstPartyEntries[entryId]);
+      expect(externalEntries[entryId]).toMatchObject({
+        pluginId: publicAuthoring.pluginId,
+        contributionKind: 'surfacePlacement',
+        descriptorId: surfaceId,
+        renderer: {
+          kind: 'hostedHtml',
+          contributionId: `${surfaceId}-renderer`,
+          source: { kind: 'html' },
+        },
+        availability: { state: 'available', reason: 'available' },
+      });
+      expect(externalEntries[`hostedWeb:${publicAuthoring.pluginId}:${surfaceId}-renderer`]).toBeUndefined();
+      expect(externalEntries[`reactNativeBundle:${publicAuthoring.pluginId}:${surfaceId}-renderer`]).toBeUndefined();
+    }
+
+    const sessionWidgetEntryId = `surfacePlacement:${publicAuthoring.pluginId}:review-status-widget`;
+    expect(externalEntries[sessionWidgetEntryId]).toEqual(firstPartyEntries[sessionWidgetEntryId]);
+    expect(externalEntries[sessionWidgetEntryId]).toMatchObject({
+      pluginId: publicAuthoring.pluginId,
+      contributionKind: 'surfacePlacement',
+      descriptorId: 'review-status-widget',
+      binding: {
+        role: 'sessionWidget',
+        rendererChain: [
+          { pluginId: publicAuthoring.pluginId, localId: 'review-native' },
+          { pluginId: publicAuthoring.pluginId, localId: 'review-web' },
+        ],
+      },
+      renderer: {
+        kind: 'reactNative',
+        contributionId: 'review-native',
+      },
+      availability: { state: 'blocked', reason: 'generated_react_native_artifact_missing' },
+    });
+  });
+
+  it('projects maintained external and built-in sessionWidget declarations through the same public contract', async () => {
+    const external = await loadCodeDefinedPublicAuthoring();
+    const builtIn = await loadCodeDefinedChannels();
+    const project = (plugin: LoadedPlugin, provenance: 'first_party' | 'external') => {
+      const registry = createResolvedContributionRegistry(projectLoadedPluginContributes({
+        loadResult: { loadedPlugins: [plugin], diagnosticsByPluginId: {} },
+        provenance,
+      }));
+      return buildPluginProjectionV2({ registry, generation: 12 }).familiesById.pluginUi?.entriesById ?? {};
+    };
+    const externalWidget = project(external, 'external')[
+      `surfacePlacement:${external.pluginId}:review-status-widget`
+    ];
+    const builtInWidget = project(builtIn, 'first_party')[
+      `surfacePlacement:${builtIn.pluginId}:session-conversations-widget`
+    ];
+    expect(externalWidget).toBeDefined();
+    expect(builtInWidget).toBeDefined();
+    if (!externalWidget || externalWidget.contributionKind !== 'surfacePlacement') {
+      throw new Error('Expected the external sessionWidget surface placement');
+    }
+    if (!builtInWidget || builtInWidget.contributionKind !== 'surfacePlacement') {
+      throw new Error('Expected the built-in sessionWidget surface placement');
+    }
+    const expectedContract = {
+      contributionKind: 'surfacePlacement',
+      binding: { role: 'sessionWidget', targetKind: 'session' },
+      renderer: { kind: 'reactNative' },
+      availability: { state: 'blocked', reason: 'generated_react_native_artifact_missing' },
+    } as const;
+    expect(externalWidget).toMatchObject(expectedContract);
+    expect(builtInWidget).toMatchObject(expectedContract);
+  });
+
   it('projects the public Projects and Tasks direct-Data app page through the canonical manifest owner', () => {
     const projectsTasksRoot = join(examplesRoot, 'projects-tasks');
 

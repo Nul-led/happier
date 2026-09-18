@@ -81,7 +81,10 @@ export async function cmdSessionReviewStart(
   }
   const { sessionId } = sessionTarget;
 
-  const started = await executor.execute('review.start', input, { defaultSessionId: sessionId });
+  const started = await executor.execute('review.start', input, {
+    authority: 'present_user',
+    defaultSessionId: sessionId,
+  });
   const normalized = normalizeSessionStartActionResults(started);
 
   if (!normalized.ok) {

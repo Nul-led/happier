@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiSessionClient } from './session/sessionClient';
 import { createMockSession } from '@/testkit/backends/sessionFixtures';
@@ -41,7 +42,7 @@ describe('ApiSessionClient /v2/changes feature flag', () => {
         const userSocket = createApiSessionSocketStub({ connected: true });
         bindApiSessionSocketPairMock(mockIo, { sessionSocket, userSocket });
 
-        const client = new ApiSessionClient('fake-token', createMockSession({ metadata: { path: '/tmp' } as any }));
+        const client = createTestApiSessionClient(ApiSessionClient, 'fake-token', createMockSession({ metadata: { path: '/tmp' } as any }));
 
         const connectHandler = sessionSocket.getHandler('connect');
         expect(typeof connectHandler).toBe('function');

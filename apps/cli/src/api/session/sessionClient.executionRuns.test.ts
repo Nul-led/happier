@@ -1,13 +1,26 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { buildConfiguredAcpBackendSessionMetadata } from '@/agent/acp/catalog/configured/sessionMetadata';
-import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
+import { createPlainSessionFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { VOICE_AGENT_RUN_TRANSCRIPT_CONTRACT_VERSION } from './voiceAgentRunMetadataV1';
 import { registerSessionClientRuntimeHandlers } from './client/executionRuns/registerSessionClientRuntimeHandlers';
 import { ApiSessionClient } from './sessionClient';
+import { createExecutionRunRpcActionExecutor } from '@/rpc/handlers/executionRuns/dispatchExecutionRunRpcAction';
+import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executionRunPolicy';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { normalizeActionsSettingsV1 } from '@happier-dev/protocol';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
+const TEST_SESSION_SERVER_BINDING = Object.freeze({
+  serverId: 'test-home',
+  serverUrl: 'https://test-home.example.test',
+});
 
 const sessionSocketStubState = vi.hoisted(() => ({
   sessionSocketStub: null as any,
@@ -15,7 +28,10 @@ const sessionSocketStubState = vi.hoisted(() => ({
   executionRunHandlerContext: null as any,
   createExecutionRunRuntimeMock: vi.fn(),
   fetchSessionByIdCompatMock: vi.fn(),
+  fetchSessionByIdMock: vi.fn(),
   importHistoricalSessionTranscriptMock: vi.fn(),
+  listSessionsMock: vi.fn(),
+  resolveRunnerMcpServersMock: vi.fn(),
   executionRunServiceMocks: {
     startExecutionRun: vi.fn(),
     listExecutionRuns: vi.fn(),
@@ -87,7 +103,18 @@ vi.mock('@/session/services/executionRuns', () => ({
   waitForExecutionRun: (...args: unknown[]) => sessionSocketStubState.executionRunServiceMocks.waitForExecutionRun(...args),
 }));
 
+vi.mock('@/session/services/listSessions', () => ({
+  listSessions: (...args: unknown[]) => sessionSocketStubState.listSessionsMock(...args),
+}));
+
+vi.mock('@/mcp/runtime/resolveRunnerMcpServers', () => ({
+  resolveRunnerMcpServers: (...args: unknown[]) =>
+    sessionSocketStubState.resolveRunnerMcpServersMock(...args),
+}));
+
 vi.mock('@/session/transport/http/sessionsHttp', () => ({
+  fetchSessionById: (...args: unknown[]) =>
+    sessionSocketStubState.fetchSessionByIdMock(...args),
   fetchSessionByIdCompat: (...args: unknown[]) =>
     sessionSocketStubState.fetchSessionByIdCompatMock(...args),
   importHistoricalSessionTranscript: (...args: unknown[]) =>
@@ -99,6 +126,10 @@ vi.mock('@/settings/accountSettings/activeAccountSettingsSnapshot', () => ({
 }));
 
 describe('ApiSessionClient execution-run backend wiring', () => {
+  function createJwtWithSub(sub: string): string {
+    return `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.`;
+  }
+
   beforeEach(async () => {
     vi.resetModules();
     const { createApiSessionSocketStub } = await import('@/testkit/backends/apiSessionSocketHarness');
@@ -107,15 +138,26 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     sessionSocketStubState.executionRunHandlerContext = null;
     sessionSocketStubState.createExecutionRunRuntimeMock.mockReset();
     sessionSocketStubState.fetchSessionByIdCompatMock.mockReset();
+    sessionSocketStubState.fetchSessionByIdMock.mockReset();
     sessionSocketStubState.importHistoricalSessionTranscriptMock.mockReset();
+    sessionSocketStubState.listSessionsMock.mockReset();
+    sessionSocketStubState.resolveRunnerMcpServersMock.mockReset();
+    sessionSocketStubState.resolveRunnerMcpServersMock.mockResolvedValue({
+      happierMcpServer: {
+        supportedSessionReadActions: [],
+        stop: vi.fn(),
+      },
+      mcpServers: {},
+    });
     sessionSocketStubState.importHistoricalSessionTranscriptMock.mockResolvedValue({
       imported: 2,
       cursor: '2',
     });
     sessionSocketStubState.createExecutionRunRuntimeMock.mockReturnValue({
       readResumeSupport: vi.fn(async () => false),
-      provisionSession: vi.fn(async () => ({ sessionId: 'run-session-1' })),
-      sendPrompt: vi.fn(),
+      provisionRuntime: vi.fn(async () => ({ runtimeId: 'run-session-1' })),
+      deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+      getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
       cancel: vi.fn(),
       subscribeMessages: vi.fn(() => () => {}),
       dispose: vi.fn(),
@@ -126,8 +168,550 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     }
   });
 
+  it('projects the current canonical V2 Team model selection into exact Run broker custody', async () => {
+    const prepareRunTeamCredentialProviderBinding = vi.fn(async () => ({
+      providerBinding: {
+        source: { kind: 'team_resource' as const, resourceId: 'resource-1', resourceRevision: 3 },
+        model: { id: 'model-1', name: 'Model 1' },
+        upstream: { protocol: 'openai-responses' as const, normalizedUrl: 'http://127.0.0.1:43123/v1', credential: 'apiKey' as const },
+        materialization: { v: 1 as const, kind: 'spawnEnv' as const },
+      },
+      environmentOverlay: [], additionalRedactionValues: [], cleanup: vi.fn(),
+    }));
+    const metadata = createTestMetadata({ path: '/tmp/project' }) as Record<string, unknown>;
+    metadata.modelSelectionIntentV2 = {
+      v: 2, updatedAt: 7,
+      ref: {
+        source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+        expectedResourceRevision: 3, agentTargetKey: 'backend:codex', modelId: 'model-1',
+      },
+    };
+    const session = {
+      sessionId: 's1',
+      getMetadataSnapshot: () => metadata,
+      updateMetadata: vi.fn(), updateAgentState: vi.fn(), enqueueAgentMessageCommitted: vi.fn(),
+    };
+
+    registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
+      rpcHandlerManager: new RpcHandlerManager({
+        scopePrefix: 's1', encryptionMode: 'plain', encryptionKey: new Uint8Array(32),
+        encryptionVariant: 'dataKey', logger: () => undefined,
+      }),
+      token: 'token-1', metadataPath: '/tmp/project', metadata, sessionId: 's1', session: session as never,
+      getSessionMetadata: () => metadata as never,
+      sessionRuntimeControls: { prepareRunTeamCredentialProviderBinding },
+      enqueueSessionUserMessage: vi.fn(),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueVoiceAgentTranscriptTurnCommitted: vi.fn(async () => ({ persisted: true, delivered: true })),
+      sendAgentMessageEphemeral: vi.fn(), getTranscriptQueryContext: () => ({ encryptionMode: 'plain' }),
+      persistVoiceAgentRunMetadataFromPublicRun: vi.fn(), socketEmitExecutionRunUpdated: vi.fn(),
+    });
+
+    await expect(sessionSocketStubState.executionRunHandlerContext.sessionInteractionHost
+      .prepareRunTeamCredentialProviderBinding({ runId: 'run-1' }))
+      .resolves.toMatchObject({ providerBinding: { source: { resourceId: 'resource-1' } } });
+    expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledWith({
+      runId: 'run-1', resourceId: 'resource-1', modelId: 'model-1',
+    });
+    metadata.modelSelectionIntentV2 = {
+      v: 2, updatedAt: 8,
+      ref: {
+        source: 'account_provider_connection', agentTargetKey: 'backend:codex',
+        providerConnectionId: 'pc-1', modelId: 'model-1',
+      },
+    };
+    await expect(sessionSocketStubState.executionRunHandlerContext.sessionInteractionHost
+      .prepareRunTeamCredentialProviderBinding({ runId: 'run-2' }))
+      .resolves.toBeNull();
+    expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledOnce();
+  });
+
+  it('composes Session-owned Run Actions from restricted runtime authority and its reviewed policy', async () => {
+    const rawRuntimeSubject = ' restricted-runner-account ';
+    const runtimeToken = createJwtWithSub(rawRuntimeSubject);
+    const actionsSettingsProvider = Object.freeze({
+      getActionsSettings: () => normalizeActionsSettingsV1({
+        v: 1 as const,
+        actions: {
+          'session.activity.get': { approvalRequiredSurfaces: ['agent'] as const },
+        },
+      }),
+    });
+    const metadata = createTestMetadata({
+      path: '/tmp/runner-project',
+      machineId: 'runner-machine-1',
+    });
+    const rpcHandlerManager = new RpcHandlerManager({
+      scopePrefix: 'runner-session-1',
+      encryptionMode: 'plain',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'dataKey',
+      logger: () => undefined,
+    });
+    const session = {
+      sessionId: 'runner-session-1',
+      rpcHandlerManager,
+      getMetadataSnapshot: () => metadata,
+      updateMetadata: vi.fn(),
+      confirmSessionAction: vi.fn(),
+    };
+
+    registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
+      runtimePrincipalAccountId: rawRuntimeSubject,
+      actionsSettingsProvider,
+      rpcHandlerManager,
+      token: runtimeToken,
+      metadataPath: '/tmp/runner-project',
+      metadata,
+      sessionId: 'runner-session-1',
+      session: session as never,
+      getSessionMetadata: () => metadata as never,
+      enqueueSessionUserMessage: vi.fn(),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueVoiceAgentTranscriptTurnCommitted: vi.fn(async () => ({ persisted: true, delivered: true })),
+      sendAgentMessageEphemeral: vi.fn(),
+      getTranscriptQueryContext: () => ({ encryptionMode: 'plain' as const }),
+      persistVoiceAgentRunMetadataFromPublicRun: vi.fn(),
+      socketEmitExecutionRunUpdated: vi.fn(),
+    });
+
+    const runSignal = new AbortController().signal;
+    await expect(sessionSocketStubState.executionRunHandlerContext.sessionInteractionHost
+      .composeRunToolBinding({
+        runId: 'run-1',
+        cwd: '/tmp/runner-project/run-1',
+        signal: runSignal,
+        isCurrent: () => true,
+        getPermissionMode: () => 'safe-yolo',
+        readActiveTurnAdmissionWitness: () => null,
+        readCurrentRunOccurrence: () => null,
+      }))
+      .resolves.toMatchObject({ supportedSessionReadActions: [] });
+
+    expect(sessionSocketStubState.resolveRunnerMcpServersMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentials: { token: runtimeToken, encryption: null },
+        accountCredentials: null,
+        sessionList: expect.any(Function),
+        accountSettings: null,
+        actionsSettingsProvider,
+        machineId: 'runner-machine-1',
+        directory: '/tmp/runner-project',
+        executionRun: expect.objectContaining({
+          runId: 'run-1',
+          cwd: '/tmp/runner-project/run-1',
+          signal: runSignal,
+        }),
+      }),
+    );
+    expect(sessionSocketStubState.executionRunHandlerContext.runtimeAccountId).toBe(rawRuntimeSubject);
+  });
+
+  it('composes Session-owned Run listing from the exact Home owner credentials', async () => {
+    const runtimeToken = createJwtWithSub('runtime-owner-account');
+    let ownerCredentials: { token: string; encryption: null } | null = {
+      token: runtimeToken,
+      encryption: null,
+    };
+    let observedServerUrl: string | null = null;
+    sessionSocketStubState.listSessionsMock.mockImplementation(async () => {
+      observedServerUrl = resolveServerHttpBaseUrl();
+      return {
+        sessions: [{
+          id: 's1',
+          createdAt: 1,
+          updatedAt: 1,
+          active: true,
+          activeAt: 1,
+          encryption: null,
+        }],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: null,
+        attentionHasNext: false,
+        queryVersion: 1,
+      };
+    });
+    registerSessionClientRuntimeHandlers({
+      readOwnerAccountCredentials: async () => ownerCredentials,
+      serverId: 'home-qualified-a',
+      serverUrl: 'https://home-a.example.test',
+      rpcHandlerManager: new RpcHandlerManager({
+        scopePrefix: 's1',
+        encryptionKey: new Uint8Array(32),
+        encryptionVariant: 'dataKey',
+        encryptionMode: 'plain',
+        logger: () => undefined,
+      }),
+      token: runtimeToken,
+      metadataPath: '/tmp/project',
+      metadata: createTestMetadata({ path: '/tmp/project' }),
+      sessionId: 's1',
+      getSessionMetadata: () => createTestMetadata({ path: '/tmp/project' }),
+      enqueueSessionUserMessage: vi.fn(),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueVoiceAgentTranscriptTurnCommitted: vi.fn(async () => ({ persisted: true, delivered: true })),
+      sendAgentMessageEphemeral: vi.fn(),
+      getTranscriptQueryContext: () => ({ encryptionMode: 'plain' as const }),
+      persistVoiceAgentRunMetadataFromPublicRun: vi.fn(),
+      socketEmitExecutionRunUpdated: vi.fn(),
+    });
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: {
+        get: vi.fn(),
+        getRunningCount: vi.fn(() => 0),
+        getDepthByCallId: vi.fn(() => null),
+        listPublicForRequest: vi.fn(() => []),
+      } as never,
+      context: sessionSocketStubState.executionRunHandlerContext,
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const query = {
+      v: 1,
+      storage: 'active',
+      includeInactive: false,
+      attention: 'any',
+      scope: 'assigned_to_me',
+      audiences: [{ kind: 'team', teamId: 'team-sensitive-selector' }],
+      tagIds: ['tag-sensitive-selector'],
+      limit: 17,
+    } as const;
+
+    await expect(executor.execute('session.list', { query, view: 'summary' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 's1',
+      sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        sessions: [expect.objectContaining({ id: 's1' })],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: null,
+        attentionHasNext: false,
+        queryVersion: 1,
+      },
+    });
+    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: { token: runtimeToken, encryption: null },
+      query,
+      view: 'summary',
+      allowedSessionIds: ['s1'],
+    }));
+    expect(sessionSocketStubState.executionRunHandlerContext.serverId).toBe('home-qualified-a');
+    expect(sessionSocketStubState.executionRunHandlerContext.resolveAccountSettingsSnapshot).toEqual(expect.any(Function));
+    expect(observedServerUrl).toBe('https://home-a.example.test');
+
+    const requestsBeforeDeniedCases = sessionSocketStubState.listSessionsMock.mock.calls.length;
+    for (const deniedContext of [
+      {
+        defaultSessionId: 's1',
+        runtimeAccountId: 'spoofed-message-author',
+      },
+      {
+        defaultSessionId: 'owner-private-session',
+        runtimeAccountId: 'runtime-owner-account',
+      },
+    ]) {
+      await expect(executor.execute('session.list', {}, {
+        surface: 'agent', authority: 'account_automation',
+        sessionListAccess: 'current_session', bypassApprovals: true,
+        ...deniedContext,
+      })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    }
+    const detachedExecutor = createExecutionRunRpcActionExecutor({
+      manager: {
+        get: vi.fn(), getRunningCount: vi.fn(() => 0), getDepthByCallId: vi.fn(() => null),
+        listPublicForRequest: vi.fn(() => []),
+      } as never,
+      context: { ...sessionSocketStubState.executionRunHandlerContext, sessionId: null },
+      policy: resolveExecutionRunPolicy({ defaults: {
+        maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
+        maxTurns: null, maxDepth: 3,
+      } }),
+      isExecutionRunsEnabled: () => true,
+    });
+    await expect(detachedExecutor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 's1',
+      sessionListAccess: 'current_session', runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+
+    ownerCredentials = {
+      token: createJwtWithSub('different-account'),
+      encryption: null,
+    };
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 's1',
+      sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'not_authenticated',
+    });
+    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+
+    ownerCredentials = null;
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 's1',
+      sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'not_authenticated',
+    });
+    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+  });
+
+  it('uses the admitted restricted runtime principal for only its current Session list', async () => {
+    const runtimeToken = createJwtWithSub('runtime-runner-account');
+    sessionSocketStubState.fetchSessionByIdMock.mockResolvedValue(createSessionRecordFixture({
+      id: 'runner-session',
+      encryptionMode: 'plain',
+      metadata: '{}',
+      active: true,
+      activeAt: 1,
+    }));
+    registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
+      runtimePrincipalAccountId: 'runtime-runner-account',
+      serverId: 'runner-home-b',
+      serverUrl: 'https://runner-home-b.example.test',
+      rpcHandlerManager: new RpcHandlerManager({
+        scopePrefix: 'runner-session',
+        encryptionKey: new Uint8Array(32),
+        encryptionVariant: 'dataKey',
+        encryptionMode: 'plain',
+        logger: () => undefined,
+      }),
+      token: runtimeToken,
+      metadataPath: '/tmp/runner-project',
+      metadata: createTestMetadata({ path: '/tmp/runner-project' }),
+      sessionId: 'runner-session',
+      getSessionMetadata: () => createTestMetadata({ path: '/tmp/runner-project' }),
+      enqueueSessionUserMessage: vi.fn(),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueVoiceAgentTranscriptTurnCommitted: vi.fn(async () => ({ persisted: true, delivered: true })),
+      sendAgentMessageEphemeral: vi.fn(),
+      getTranscriptQueryContext: () => ({ encryptionMode: 'plain' as const }),
+      persistVoiceAgentRunMetadataFromPublicRun: vi.fn(),
+      socketEmitExecutionRunUpdated: vi.fn(),
+    });
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: {
+        get: vi.fn(), getRunningCount: vi.fn(() => 0), getDepthByCallId: vi.fn(() => null),
+        listPublicForRequest: vi.fn(() => []),
+      } as never,
+      context: sessionSocketStubState.executionRunHandlerContext,
+      policy: resolveExecutionRunPolicy({ defaults: {
+        maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
+        maxTurns: null, maxDepth: 3,
+      } }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-runner-account',
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { sessions: [expect.objectContaining({ id: 'runner-session' })] },
+    });
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledWith({
+      token: runtimeToken,
+      sessionId: 'runner-session',
+      serverUrl: 'https://runner-home-b.example.test',
+    });
+    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.executionRunHandlerContext.serverId).toBe('runner-home-b');
+
+    // One detail row cannot prove assignment: the restricted reader reports the
+    // shared typed unsupported result instead of a silently empty page.
+    await expect(executor.execute('session.list', {
+      query: {
+        v: 1,
+        storage: 'active',
+        includeInactive: true,
+        scope: 'assigned_to_me',
+        attention: 'any',
+        audiences: [],
+        tagIds: [],
+      },
+    }, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-runner-account',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+
+    await expect(executor.execute('session.list', {
+      query: {
+        v: 1,
+        storage: 'active',
+        includeInactive: true,
+        scope: 'all_accessible',
+        attention: 'any',
+        audiences: [],
+        tagIds: [],
+      },
+    }, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-runner-account',
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        sessions: [expect.objectContaining({ id: 'runner-session' })],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: null,
+        attentionHasNext: false,
+        queryVersion: 1,
+      },
+    });
+
+    const callsBeforeLegacyCursor = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
+    await expect(executor.execute('session.list', {
+      cursor: 'legacy-next-page',
+      includeRows: true,
+    }, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-runner-account',
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        sessions: [],
+        rows: [],
+        nextCursor: null,
+        hasNext: false,
+      },
+    });
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(callsBeforeLegacyCursor);
+    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+
+    const callsBeforeAwarenessCursor = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
+    await expect(executor.execute('session.list', {
+      view: 'awareness',
+      cursor: 'legacy-next-page',
+    }, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-runner-account',
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        view: 'awareness',
+        projectionVersion: 1,
+        sessions: [],
+        nextCursor: null,
+        hasNext: false,
+      },
+    });
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(callsBeforeAwarenessCursor);
+    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+
+    const callsAfterAllowed = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', bypassApprovals: true,
+      defaultSessionId: 'runner-session', sessionListAccess: 'current_session',
+      runtimeAccountId: 'another-account',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(callsAfterAllowed);
+  });
+
+  it('denies a Session-owned Run list without the admitted runtime principal and exact Session corpus', async () => {
+    const runtimeToken = createJwtWithSub('runtime-owner-account');
+    registerSessionClientRuntimeHandlers({
+      readOwnerAccountCredentials: async () => null,
+      runtimePrincipalAccountId: 'different-runtime-account',
+      serverId: 'home-qualified-a',
+      serverUrl: 'https://home-a.example.test',
+      rpcHandlerManager: new RpcHandlerManager({
+        scopePrefix: 's1',
+        encryptionKey: new Uint8Array(32),
+        encryptionVariant: 'dataKey',
+        encryptionMode: 'plain',
+        logger: () => undefined,
+      }),
+      token: runtimeToken,
+      metadataPath: '/tmp/project',
+      metadata: createTestMetadata({ path: '/tmp/project' }),
+      sessionId: 's1',
+      getSessionMetadata: () => createTestMetadata({ path: '/tmp/project' }),
+      enqueueSessionUserMessage: vi.fn(),
+      enqueueUserTextMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
+      enqueueVoiceAgentTranscriptTurnCommitted: vi.fn(async () => ({ persisted: true, delivered: true })),
+      sendAgentMessageEphemeral: vi.fn(),
+      getTranscriptQueryContext: () => ({ encryptionMode: 'plain' as const }),
+      persistVoiceAgentRunMetadataFromPublicRun: vi.fn(),
+      socketEmitExecutionRunUpdated: vi.fn(),
+    });
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: {
+        get: vi.fn(), getRunningCount: vi.fn(() => 0), getDepthByCallId: vi.fn(() => null),
+        listPublicForRequest: vi.fn(() => []),
+      } as never,
+      context: sessionSocketStubState.executionRunHandlerContext,
+      policy: resolveExecutionRunPolicy({ defaults: {
+        maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
+        maxTurns: null, maxDepth: 3,
+      } }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 's1',
+      sessionListAccess: 'current_session', runtimeAccountId: 'spoofed-message-author',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 'owner-private-session',
+      sessionListAccess: 'current_session', runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 's1',
+      sessionListAccess: 'current_session', runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionByIdMock).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     sessionSocketStubState.executionRunHandlerContext = null;
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('exposes the canonical permission request store provider to execution-run handlers', async () => {
@@ -141,6 +725,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     }));
 
     registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
       rpcHandlerManager: new RpcHandlerManager({
         scopePrefix: 's1',
         encryptionKey: new Uint8Array(32),
@@ -225,6 +811,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     ] as const;
 
     registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
       rpcHandlerManager,
       token: 'token-1',
       metadataPath: '/tmp/project',
@@ -270,6 +858,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     };
 
     registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
       rpcHandlerManager: new RpcHandlerManager({
         scopePrefix: 's1',
         encryptionKey: new Uint8Array(32),
@@ -318,6 +908,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     };
 
     registerSessionClientRuntimeHandlers({
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
       rpcHandlerManager: new RpcHandlerManager({
         scopePrefix: 's1',
         encryptionKey: new Uint8Array(32),
@@ -359,6 +951,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     };
     const attachBrowserRecordingToComposer = vi.fn();
     const params = {
+      ...TEST_SESSION_SERVER_BINDING,
+      readOwnerAccountCredentials: async () => null,
       rpcHandlerManager: new RpcHandlerManager({
         scopePrefix: 's1',
         encryptionKey: new Uint8Array(32),
@@ -405,7 +999,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         },
       },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1', metadata }),
     );
@@ -425,7 +1019,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         agent: {},
       },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1', metadata }),
     );
@@ -444,7 +1038,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         title: 'Plugin backed ACP',
       }),
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1', metadata }),
     );
@@ -454,8 +1048,42 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     await client.close();
   });
 
+  it('routes execution-run completion through the canonical Session user-message ingress', async () => {
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
+    const enqueue = vi.spyOn(client, 'enqueueSessionUserMessage').mockResolvedValue(undefined);
+    const input = { text: 'run finished', meta: { source: 'execution_run' } };
+
+    await sessionSocketStubState.executionRunHandlerContext.enqueueParentSessionInput(input);
+
+    expect(enqueue).toHaveBeenCalledWith({
+      ...input,
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    });
+    await client.close();
+  });
+
+  it('publishes a terminal zero after execution-run activity finishes', async () => {
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
+    const activeCounts: number[] = [];
+    const unsubscribe = client.subscribeExecutionRunActivitySnapshots((activeCount) => {
+      activeCounts.push(activeCount);
+    });
+    const observe = sessionSocketStubState.executionRunHandlerContext.onExecutionRunPublicStateUpdated as
+      | ((run: Record<string, unknown>) => void)
+      | undefined;
+
+    observe?.({ runId: 'run_1', status: 'running' });
+    observe?.({ runId: 'run_2', status: 'running' });
+    observe?.({ runId: 'run_1', status: 'succeeded' });
+    observe?.({ runId: 'run_2', status: 'failed' });
+
+    expect(activeCounts).toEqual([0, 1, 2, 1, 0]);
+    unsubscribe();
+    await client.close();
+  });
+
   it('exposes shared execution-run service helpers with the current session transport context', async () => {
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
 
     await client.executionRuns.start({ intent: 'review' });
     await client.executionRuns.list({ status: 'running' });
@@ -466,8 +1094,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     const wait = client.executionRuns.wait;
     expect(wait).toBeDefined();
     if (!wait) throw new Error('Expected executionRuns.wait to be defined');
-    await wait({ runId: 'run_1', timeoutSeconds: 2, pollIntervalMs: 10 });
-    await wait({ runId: 'run_2', pollIntervalMs: 10 });
+    await wait({ runId: 'run_1', timeoutSeconds: 2 });
+    await wait({ runId: 'run_2' });
 
     expect(sessionSocketStubState.executionRunServiceMocks.startExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
       token: 'tok',
@@ -517,7 +1145,6 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       mode: 'plain',
       runId: 'run_1',
       timeoutMs: 2_000,
-      pollIntervalMs: 10,
       ctx: null,
     }));
     expect(sessionSocketStubState.executionRunServiceMocks.waitForExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
@@ -526,7 +1153,6 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       mode: 'plain',
       runId: 'run_2',
       timeoutMs: null,
-      pollIntervalMs: 10,
       ctx: null,
     }));
 
@@ -545,7 +1171,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       })),
       dispatchAction: vi.fn(),
     };
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }),
       { getSimulatorPreviewRoutes: () => simulatorPreview },
@@ -572,7 +1198,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         execute: vi.fn(),
       },
     };
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }),
       { getLocalServicesRuntimeActionRoutes: () => localServices },
@@ -617,8 +1243,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       },
     });
 
-    const client = new ApiSessionClient('tok', session, {
-      credentials: { token: 'tok', encryption: null },
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', session, {
+      metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
     });
     const callback = sessionSocketStubState.executionRunHandlerContext.onExecutionRunPublicStateUpdated as
       | ((run: Record<string, unknown>) => void)
@@ -673,7 +1299,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
   });
 
   it('rejects a durable voice transcript pair whose role metadata does not describe one canonical turn', async () => {
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1', metadata: createTestMetadata({ path: '/tmp/project' }) }));
     const transcriptWriter = sessionSocketStubState.executionRunHandlerContext.transcriptWriter as
       | {
           commitVoiceAgentTranscriptTurn: (turn: Readonly<{

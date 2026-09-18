@@ -62,11 +62,24 @@ export async function decodeServerFeaturesResponseBody(
   body: unknown,
   declaredContentLength?: unknown,
 ): Promise<ServerFeatures | null> {
+  const raw = await decodeBoundedJsonResponseBody(
+    body,
+    declaredContentLength,
+    FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
+  );
+  return raw === null ? null : parseServerFeatures(raw);
+}
+
+export async function decodeBoundedJsonResponseBody(
+  body: unknown,
+  declaredContentLength: unknown,
+  maxUtf8Bytes: number,
+): Promise<unknown | null> {
   const reader = responseBodyReader(body);
   if (!reader) return null;
   if (typeof declaredContentLength === 'string' && /^\d+$/u.test(declaredContentLength)) {
     const length = Number(declaredContentLength);
-    if (!Number.isSafeInteger(length) || length > FEATURES_RESPONSE_MAX_UTF8_BYTES_V1) {
+    if (!Number.isSafeInteger(length) || length > maxUtf8Bytes) {
       await reader.cancel().catch(() => undefined);
       reader.release();
       return null;
@@ -89,7 +102,7 @@ export async function decodeServerFeaturesResponseBody(
         return null;
       }
       totalBytes += chunk.byteLength;
-      if (totalBytes > FEATURES_RESPONSE_MAX_UTF8_BYTES_V1) {
+      if (totalBytes > maxUtf8Bytes) {
         await reader.cancel().catch(() => undefined);
         return null;
       }
@@ -108,7 +121,7 @@ export async function decodeServerFeaturesResponseBody(
     offset += chunk.byteLength;
   }
   try {
-    return parseServerFeatures(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(encoded)));
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(encoded)) as unknown;
   } catch {
     return null;
   }

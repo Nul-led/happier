@@ -48,6 +48,8 @@ export interface RelayRuntimeTaskParams {
     canonicalServerUrl: string | null;
     dataPresent: boolean;
   }>;
+  /** Internal execution cancellation; never parsed from the public task payload. */
+  signal?: AbortSignal;
 }
 
 export interface RelayRuntimeStatusSnapshot {
@@ -209,6 +211,8 @@ const PERSONAL_HOME_DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
   'invalid_archive',
   'hash_mismatch',
   'unsupported_archive',
+  'personal_home_update_candidate_selection_required',
+  'personal_home_update_retry_required',
 ]);
 
 function translatePersonalHomeDomainError(error: unknown): never {
@@ -507,6 +511,8 @@ function createPersonalHomeTaskKind(
               homeServerIdentityId: facts.homeServerIdentityId,
               paths: [...facts.paths],
               estimatedBytes: facts.estimatedBytes,
+              previewComplete: facts.previewComplete,
+              previewReason: facts.previewReason,
             },
           });
           return isExactEraseConfirmation(answer);
@@ -625,7 +631,11 @@ export function createRelayRuntimeInstallOrUpdateTaskKind(deps: Pick<RelayRuntim
         message: 'Installing relay runtime',
       });
 
-      return await deps.installOrUpdate(parsed);
+      try {
+        return await deps.installOrUpdate(parsed);
+      } catch (error) {
+        translatePersonalHomeDomainError(error);
+      }
     },
   };
 }

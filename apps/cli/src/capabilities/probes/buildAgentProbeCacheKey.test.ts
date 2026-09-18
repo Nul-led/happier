@@ -8,6 +8,7 @@ describe('buildAgentProbeCacheKey', () => {
       agentId: 'codex' as const,
       cwd: '/workspace',
       variant: 'appServer',
-    })).toBe('agent:codex:target:none:cwd:/workspace:v:appServer');
+      profile: 'work',
+    })).toBe('agent:codex:target:none:cwd:/workspace:v:appServer:profile:work:connected:none');
   });
 });

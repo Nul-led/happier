@@ -29,7 +29,7 @@ const TEST_RECOVERY_BACKEND_ID = `${'recovery'}.${'backend'}` as never;
 
 type PromptRuntimeHandler = (
   runtime: TestExecutionRunHostRuntime,
-  sessionId: string,
+  runtimeId: string,
   prompt: string,
 ) => void | Promise<void>;
 
@@ -40,8 +40,8 @@ function createPromptRuntime(
   let runtime: TestExecutionRunHostRuntime;
   runtime = createTestExecutionRunHostRuntime({
     ...opts,
-    onSendPrompt: async (sessionId, prompt) => {
-      await onSendPrompt(runtime, sessionId, prompt);
+    onSendPrompt: async (runtimeId, prompt) => {
+      await onSendPrompt(runtime, runtimeId, prompt);
     },
   });
   return runtime;
@@ -165,9 +165,10 @@ describe('executeBoundedBackendRun', () => {
 
     const ctrl: ExecutionRunBackendController = {
       kind: 'backend',
+      controllerOccurrenceId: 'bounded-controller-1',
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId: 'child_session_1',
+      runtimeId: 'child_session_1',
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -178,8 +179,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -194,7 +195,7 @@ describe('executeBoundedBackendRun', () => {
       externalAckReject = reject;
     });
 
-    ctrl.pendingExternalMessages.push({
+    ctrl.admittedLiveInterventions.push({
       message: 'external message',
       delivery: 'interrupt',
       resolve: externalAckResolve,
@@ -235,15 +236,15 @@ describe('executeBoundedBackendRun', () => {
     let resolveTerminal!: () => void;
     const terminalPromise = new Promise<void>((resolve) => { resolveTerminal = resolve; });
     const ctrl: ExecutionRunBackendController = {
-      kind: 'backend', backend: runtime, backendSupportsResume: false, childSessionId: 'child_session_1',
+      kind: 'backend', controllerOccurrenceId: 'bounded-controller-2', backend: runtime, backendSupportsResume: false, runtimeId: 'child_session_1',
       buffer: '', sidechainStreamBuffer: '', sidechainStreamKey: '', streamWriter: null, cancelled: false,
       turnCount: 0, turnEpoch: 0, turnInFlight: false, turnCancelReason: null, turnCancelEpoch: null,
-      pendingExternalMessages: [], pendingExternalMessagesSignal: null, lastMarkerWriteAtMs: 0,
+      admittedLiveInterventions: [], admittedLiveInterventionsSignal: null, lastMarkerWriteAtMs: 0,
       terminalPromise, resolveTerminal,
     };
     const controllers = new Map([[runId, ctrl]]);
     const externalAck = new Promise<void>((resolve, reject) => {
-      ctrl.pendingExternalMessages.push({
+      ctrl.admittedLiveInterventions.push({
         message: 'external message', delivery: 'interrupt', resolve, reject,
         authorizeProviderEffect: async () => {
           const error = new Error('Connected-service credentials changed. Restart or resume this execution run before sending.');
@@ -285,9 +286,10 @@ describe('executeBoundedBackendRun', () => {
 
     const ctrl: ExecutionRunBackendController = {
       kind: 'backend',
+      controllerOccurrenceId: 'bounded-controller-3',
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId: 'child_session_1',
+      runtimeId: 'child_session_1',
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -298,8 +300,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -314,7 +316,7 @@ describe('executeBoundedBackendRun', () => {
       externalAckReject = reject;
     });
 
-    ctrl.pendingExternalMessages.push({
+    ctrl.admittedLiveInterventions.push({
       message: 'external message',
       delivery: 'interrupt',
       resolve: externalAckResolve,
@@ -364,9 +366,10 @@ describe('executeBoundedBackendRun', () => {
 
     const ctrl: ExecutionRunBackendController = {
       kind: 'backend',
+      controllerOccurrenceId: 'bounded-controller-4',
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId: 'child_session_1',
+      runtimeId: 'child_session_1',
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -377,8 +380,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -393,7 +396,7 @@ describe('executeBoundedBackendRun', () => {
       externalAckReject = reject;
     });
 
-    ctrl.pendingExternalMessages.push({
+    ctrl.admittedLiveInterventions.push({
       message: 'external message',
       delivery: 'interrupt',
       resolve: externalAckResolve,
@@ -433,7 +436,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_test_slow_replacement_send_1';
     const callId = 'subagent_run_test_slow_replacement_send_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_slow_replacement_send_1';
+    const runtimeId = 'child_session_slow_replacement_send_1';
 
     let sendPromptCount = 0;
     let unblockFirstPrompt: (() => void) | null = null;
@@ -454,7 +457,7 @@ describe('executeBoundedBackendRun', () => {
         await donePromise;
       },
       {
-        sessionId: childSessionId,
+        runtimeId,
         onCancel: async () => {
           unblockFirstPrompt?.();
           unblockFirstPrompt = null;
@@ -472,9 +475,10 @@ describe('executeBoundedBackendRun', () => {
 
     const ctrl: ExecutionRunBackendController = {
       kind: 'backend',
+      controllerOccurrenceId: 'bounded-controller-5',
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -485,8 +489,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -501,7 +505,7 @@ describe('executeBoundedBackendRun', () => {
       externalAckReject = reject;
     });
 
-    ctrl.pendingExternalMessages.push({
+    ctrl.admittedLiveInterventions.push({
       message: 'external message',
       delivery: 'interrupt',
       resolve: externalAckResolve,
@@ -539,7 +543,7 @@ describe('executeBoundedBackendRun', () => {
   it('logs unexpected canceled turn completion errors (without surfacing them as unhandled rejections)', async () => {
     mockedLogger.debug.mockClear();
 
-    const childSessionId = 'child_session_1';
+    const runtimeId = 'child_session_1';
     let sendPromptCount = 0;
     const turnCompletions: Array<Promise<Error | null>> = [];
 
@@ -575,9 +579,10 @@ describe('executeBoundedBackendRun', () => {
 
     const ctrl: ExecutionRunBackendController = {
       kind: 'backend',
+      controllerOccurrenceId: 'bounded-controller-6',
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -588,8 +593,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -604,7 +609,7 @@ describe('executeBoundedBackendRun', () => {
       externalAckReject = reject;
     });
 
-    ctrl.pendingExternalMessages.push({
+    ctrl.admittedLiveInterventions.push({
       message: 'external message',
       delivery: 'interrupt',
       resolve: externalAckResolve,
@@ -648,7 +653,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_delegate_repair_1';
     const callId = 'subagent_run_delegate_repair_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_delegate_repair';
+    const runtimeId = 'child_session_delegate_repair';
 
     const prompts: string[] = [];
     let sendPromptCount = 0;
@@ -674,14 +679,15 @@ describe('executeBoundedBackendRun', () => {
           '}',
         ].join('\n');
       },
-      { sessionId: childSessionId, onWaitForTurnCompletion: async () => {} },
+      { runtimeId, onWaitForTurnCompletion: async () => {} },
     );
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -692,8 +698,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -741,7 +747,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_delegate_repair_copycat_1';
     const callId = 'subagent_run_delegate_repair_copycat_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_delegate_repair_copycat';
+    const runtimeId = 'child_session_delegate_repair_copycat';
 
     const prompts: string[] = [];
     let sendPromptCount = 0;
@@ -802,14 +808,15 @@ describe('executeBoundedBackendRun', () => {
         }
         ctrl.buffer = extractFirstJsonObject(prompt);
       },
-      { sessionId: childSessionId, onWaitForTurnCompletion: async () => {} },
+      { runtimeId, onWaitForTurnCompletion: async () => {} },
     );
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -820,8 +827,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -869,7 +876,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_review_repair_schema_1';
     const callId = 'subagent_run_review_repair_schema_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_review_repair_schema';
+    const runtimeId = 'child_session_review_repair_schema';
 
     const prompts: string[] = [];
     let sendPromptCount = 0;
@@ -926,14 +933,15 @@ describe('executeBoundedBackendRun', () => {
               '}',
             ].join('\n');
       },
-      { sessionId: childSessionId, onWaitForTurnCompletion: async () => {} },
+      { runtimeId, onWaitForTurnCompletion: async () => {} },
     );
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -944,8 +952,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -995,7 +1003,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_wait_timeout_1';
     const callId = 'subagent_run_wait_timeout_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_wait_timeout';
+    const runtimeId = 'child_session_wait_timeout';
     const waitTimeouts: Array<number | null | undefined> = [];
 
     let resolveTerminal!: () => void;
@@ -1009,7 +1017,7 @@ describe('executeBoundedBackendRun', () => {
         ctrl.buffer = JSON.stringify({ findings: [], summary: 'ok' });
       },
       {
-        sessionId: childSessionId,
+        runtimeId,
         onWaitForTurnCompletion: async (timeoutMs) => {
           waitTimeouts.push(timeoutMs);
         },
@@ -1018,9 +1026,10 @@ describe('executeBoundedBackendRun', () => {
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -1031,8 +1040,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -1078,7 +1087,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_liveness_probe_failed_continues_1';
     const callId = 'subagent_run_liveness_probe_failed_continues_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_liveness_probe_failed';
+    const runtimeId = 'child_session_liveness_probe_failed';
 
     let resolveTurn!: () => void;
     const turnDone = new Promise<void>((resolve) => {
@@ -1096,13 +1105,15 @@ describe('executeBoundedBackendRun', () => {
       async readResumeSupport() {
         return false;
       },
-      async provisionSession() {
-        return { sessionId: childSessionId };
+      async provisionRuntime() {
+        return { runtimeId };
       },
-      async sendPrompt(): Promise<void> {
+      async deliverInput() {
         ctrl.buffer = JSON.stringify({ findings: [], summary: 'ok' });
         setTimeout(resolveTurn, 25);
+        return { status: 'admitted' as const };
       },
+      getRuntimeLifetimeSignal: () => new AbortController().signal,
       cancel,
       async dispose(): Promise<void> {},
       async waitForTurnCompletion(): Promise<void> {
@@ -1115,9 +1126,10 @@ describe('executeBoundedBackendRun', () => {
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -1128,8 +1140,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,
@@ -1175,7 +1187,7 @@ describe('executeBoundedBackendRun', () => {
     const runId = 'run_plan_repair_1';
     const callId = 'subagent_run_plan_repair_1';
     const sidechainId = callId;
-    const childSessionId = 'child_session_plan_repair';
+    const runtimeId = 'child_session_plan_repair';
 
     const prompts: string[] = [];
     let sendPromptCount = 0;
@@ -1201,14 +1213,15 @@ describe('executeBoundedBackendRun', () => {
           '}',
         ].join('\n');
       },
-      { sessionId: childSessionId, onWaitForTurnCompletion: async () => {} },
+      { runtimeId, onWaitForTurnCompletion: async () => {} },
     );
 
     ctrl = {
       kind: 'backend',
+      controllerOccurrenceId: `${runId}-occurrence`,
       backend: runtime,
       backendSupportsResume: false,
-      childSessionId,
+      runtimeId,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -1219,8 +1232,8 @@ describe('executeBoundedBackendRun', () => {
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       terminalPromise,
       resolveTerminal,

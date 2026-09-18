@@ -1,4 +1,5 @@
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
+import { randomUUID } from 'node:crypto';
 import {
   convertBackendTargetRefV2ToV1,
   readBackendTargetRefV2,
@@ -6,7 +7,7 @@ import {
   type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 
-import type { ExecutionRunState } from './executionRunTypes';
+import type { AttachRetainedRunSessionInput, ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunBackendController, ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
 import { areExecutionRunBackendTargetsEqual } from './backendTargets';
@@ -23,6 +24,7 @@ import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPu
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
 import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
+import type { ExecutionRunEnsureResult } from './ensureExecutionRun';
 
 export async function resumeBackendControllerForResumableRun(args: Readonly<{
   runId: string;
@@ -32,6 +34,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
   budgetRegistry: ExecutionBudgetRegistry | null;
   createRuntime: (opts: {
     runId?: string;
+    controllerOccurrenceId: string;
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
@@ -49,20 +52,18 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
   requireReplayCapture?: boolean;
   profileCatalog?: ExecutionRunProfileContributionCatalog;
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
-}>): Promise<
-  | { ok: true }
-  | { ok: false; errorCode: string; error: string }
-> {
+  attachRetainedRunSessionInput?: AttachRetainedRunSessionInput;
+}>): Promise<ExecutionRunEnsureResult> {
   if (args.run.retentionPolicy !== 'resumable') {
-    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable' };
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable', resumeFailureKind: 'permanent' };
   }
 
   if (args.controllers.has(args.runId)) {
-    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress', resumeFailureKind: 'indeterminate' };
   }
 
   if (args.budgetRegistry && !args.budgetRegistry.tryAcquireExecutionRun(args.runId, args.run.intent)) {
-    return { ok: false, errorCode: 'execution_run_budget_exceeded', error: 'Execution run budget exceeded' };
+    return { ok: false, errorCode: 'execution_run_budget_exceeded', error: 'Execution run budget exceeded', resumeFailureKind: 'indeterminate' };
   }
 
   const providerSessionId =
@@ -71,13 +72,15 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
       : null;
   if (!providerSessionId) {
     args.budgetRegistry?.releaseExecutionRun(args.runId);
-    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing resume handle' };
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing resume handle', resumeFailureKind: 'permanent' };
   }
 
+  const controllerOccurrenceId = randomUUID();
   let backend: ExecutionRunHostRuntime;
   try {
     backend = args.createRuntime({
       runId: args.runId,
+      controllerOccurrenceId,
       backendId: args.run.backendId,
       backendTarget: args.run.backendTarget,
       permissionMode: args.run.permissionMode,
@@ -92,6 +95,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
       ok: false,
       errorCode: 'execution_run_failed',
       error: error instanceof Error ? error.message : 'Resume failed',
+      resumeFailureKind: 'indeterminate',
     };
   }
   const wantsReplayCapture = args.requireReplayCapture === true;
@@ -102,9 +106,10 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
 
   const resumeCtrl: ExecutionRunBackendController = {
     kind: 'backend',
+    controllerOccurrenceId,
     backend,
     backendSupportsResume: false,
-    childSessionId: null,
+    runtimeId: null,
     buffer: '',
     sidechainStreamBuffer: '',
     sidechainStreamKey: '',
@@ -129,8 +134,8 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     turnInFlight: false,
     turnCancelReason: null,
     turnCancelEpoch: null,
-    pendingExternalMessages: [],
-    pendingExternalMessagesSignal: null,
+    admittedLiveInterventions: [],
+    admittedLiveInterventionsSignal: null,
     lastMarkerWriteAtMs: 0,
     failureSignal: failureSignal(),
     pendingHostBarrier: Promise.resolve(),
@@ -173,7 +178,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     const canResume = await backend.readResumeSupport({ captureReplay: wantsReplayCapture });
     if (!isCurrentResumeOccurrence()) {
       await retireResumeOccurrence();
-      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded', resumeFailureKind: 'indeterminate' };
     }
     if (!canResume) {
       await retireResumeOccurrence();
@@ -181,6 +186,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
         ok: false,
         errorCode: 'execution_run_not_allowed',
         error: wantsReplayCapture ? 'Backend does not support resumable long-lived runs' : 'Backend does not support resume',
+        resumeFailureKind: 'permanent',
       };
     }
     resumeCtrl.backendSupportsResume = true;
@@ -195,16 +201,16 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
       : async () => {};
     const computeSidechainStreamText = createExecutionRunSidechainStreamText(profile);
 
-    const loaded = await backend.provisionSession({
-      resumeSessionId: providerSessionId,
+    const loaded = await backend.provisionRuntime({
+      resumeRuntimeId: providerSessionId,
       ...(wantsReplayCapture ? { captureReplay: true } : {}),
     });
     if (!isCurrentResumeOccurrence()) {
-      await backend.cancel(loaded.sessionId).catch(() => {});
+      await backend.cancel(loaded.runtimeId).catch(() => {});
       await retireResumeOccurrence();
-      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded', resumeFailureKind: 'indeterminate' };
     }
-    resumeCtrl.childSessionId = loaded.sessionId;
+    resumeCtrl.runtimeId = loaded.runtimeId;
     const onMessage = createExecutionRunControllerMessageHandler({
       ctrl: resumeCtrl,
       runId: args.runId,
@@ -222,12 +228,20 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
       onModelOutput: args.onModelOutput,
     });
     backend.subscribeMessages(onMessage);
+    if (resumeCtrl.backend.interaction && args.run.sessionId && args.attachRetainedRunSessionInput) {
+      const attachment = args.attachRetainedRunSessionInput({
+        runId: args.runId,
+        sidechainId: args.run.sidechainId,
+        controller: resumeCtrl,
+      });
+      resumeCtrl.releaseSessionInputAttachment = attachment?.release;
+    }
     args.runs.set(args.runId, {
       ...args.run,
       status: 'running',
       finishedAtMs: undefined,
       error: undefined,
-      resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(args.run.backendTarget), providerSessionId: loaded.sessionId },
+      resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(args.run.backendTarget), providerSessionId: loaded.runtimeId },
     });
     args.onPublicStateUpdated?.(args.runId);
     return { ok: true };
@@ -237,6 +251,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
       ok: false,
       errorCode: 'execution_run_failed',
       error: error instanceof Error ? error.message : 'Resume failed',
+      resumeFailureKind: 'indeterminate',
     };
   }
 }

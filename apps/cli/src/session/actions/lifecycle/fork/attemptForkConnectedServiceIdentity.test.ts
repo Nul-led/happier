@@ -7,6 +7,14 @@ import type {
   ForkSpawnSession,
 } from './forkLifecycleTypes';
 import type { ForkSurfaceV1 } from '@happier-dev/agents';
+import { updateSessionMetadataTupleWithRetry } from '@happier-dev/cli-common/sessionMetadata';
+import {
+  createSessionOwnerMetadataV1,
+  projectSessionMetadataAgentVocabularyWriteCompatibilityV1,
+  projectSessionOwnerCompatibilityViewV1,
+  projectSessionSharedMetadataV1,
+  type SessionOwnerMetadataV1,
+} from '@happier-dev/protocol';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 
 const mocks = vi.hoisted(() => ({
@@ -45,9 +53,9 @@ import { attemptAcpLatestFork } from './attemptAcpLatestFork';
 import { attemptProviderNativeFork } from './attemptProviderNativeFork';
 
 const CONNECTED_SERVICES = {
-  v: 1,
+  v: 2,
   bindingsByServiceId: {
-    'openai-codex': {
+    'happier.agent.codex/openai-codex': {
       source: 'connected',
       selection: 'profile',
       profileId: 'codex-work',
@@ -124,12 +132,11 @@ function createConnectedServiceInheritedOverrides(): ForkInheritedOverrides {
   };
 }
 
+let updatedCanonicalMetadata: Record<string, unknown> | null = null;
+
 function readUpdatedMetadata(): Record<string, unknown> {
-  const updater = mocks.updateSessionMetadataWithRetry.mock.calls[0]?.[0]?.updater as
-    | ((metadata: Record<string, unknown>) => Record<string, unknown>)
-    | undefined;
-  if (!updater) throw new Error('Expected metadata updater');
-  return updater({});
+  if (!updatedCanonicalMetadata) throw new Error('Expected canonical metadata update');
+  return updatedCanonicalMetadata;
 }
 
 function createParentRawSessionFixture(): ForkLifecycleRawSession {
@@ -138,9 +145,36 @@ function createParentRawSessionFixture(): ForkLifecycleRawSession {
   return { id: 'parent-session', metadata: '{}' } as unknown as ForkLifecycleRawSession;
 }
 
+// The Agent minted the forked child's id. Its surrounding whitespace, embedded
+// newline and `/`, `+`, `=` bytes are identity: the resume request and the fork
+// lineage must carry exactly these bytes or the child cannot be resumed.
+const OPAQUE_FORKED_PROVIDER_SESSION_ID = '  provider\nses/AB+cd==  ';
+
+function readForkLineageSessionIds(metadata: Record<string, unknown>): Readonly<{
+  agentSessionId: unknown;
+  predecessorVendorSessionId: unknown;
+  backendMode: unknown;
+  predecessorBackendMode: unknown;
+}> {
+  const forkV1 = metadata.forkV1 as {
+    agentHint?: { agentSessionId?: unknown; backendMode?: unknown };
+  } | undefined;
+  const predecessor = projectSessionMetadataAgentVocabularyWriteCompatibilityV1(metadata);
+  const predecessorForkV1 = predecessor.forkV1 as {
+    providerHint?: { vendorSessionId?: unknown; backendMode?: unknown };
+  } | undefined;
+  return {
+    agentSessionId: forkV1?.agentHint?.agentSessionId,
+    predecessorVendorSessionId: predecessorForkV1?.providerHint?.vendorSessionId,
+    backendMode: forkV1?.agentHint?.backendMode,
+    predecessorBackendMode: predecessorForkV1?.providerHint?.backendMode,
+  };
+}
+
 describe('fork connected-service child materialization identity', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    updatedCanonicalMetadata = null;
     mocks.cleanupForkChildBestEffort.mockResolvedValue(undefined);
     mocks.archiveSessionBestEffort.mockResolvedValue(undefined);
     mocks.dispatchProviderNativeFork.mockImplementation(async (params: {
@@ -161,13 +195,47 @@ describe('fork connected-service child materialization identity', () => {
       }) ?? null;
     });
     mocks.fetchForkChildSessionOrThrow.mockResolvedValue({ id: 'child-session', metadata: '{}' });
-    mocks.updateSessionMetadataWithRetry.mockResolvedValue(undefined);
+    mocks.updateSessionMetadataWithRetry.mockImplementation(async (params: {
+      updater: (metadata: Record<string, unknown>) => Record<string, unknown>;
+    }) => {
+      const initialMetadata: Record<string, unknown> = {};
+      const created = createSessionOwnerMetadataV1({ metadata: initialMetadata });
+      if (!created.ok) throw new Error('Expected valid initial owner metadata');
+      const result = await updateSessionMetadataTupleWithRetry<Record<string, unknown>, Record<string, unknown>>({
+        initialSnapshot: {
+          mode: 'owner',
+          metadataLayoutVersion: 1,
+          metadataVersion: 1,
+          sharedMetadataCiphertext: 'shared-before',
+          ownerMetadataEnvelope: { t: 'plain', v: created.ownerMetadata },
+          agentStateVersion: 1,
+          agentStateCiphertext: null,
+          value: {
+            metadata: initialMetadata,
+            sharedMetadata: projectSessionSharedMetadataV1({ metadata: initialMetadata }),
+            ownerMetadata: created.ownerMetadata,
+            agentState: null,
+          },
+        },
+        mutation: { kind: 'metadata', update: params.updater },
+        crypto: {
+          encryptPayload: async (value: unknown) => JSON.stringify(value),
+          encodeOwnerMetadata: async (value: SessionOwnerMetadataV1) => ({ t: 'plain', v: value }),
+        },
+        commit: async () => ({ result: 'success', metadataVersion: 2, agentStateVersion: 2 }),
+      });
+      if (result.mode !== 'owner') throw new Error('Expected owner metadata result');
+      updatedCanonicalMetadata = projectSessionOwnerCompatibilityViewV1({
+        sharedMetadata: result.value.sharedMetadata,
+        ownerMetadata: result.value.ownerMetadata,
+      });
+    });
     mocks.materializeConfiguredAcpEnvironment.mockReturnValue({});
   });
 
   it('adds a fresh child identity to provider-native fork spawn options and metadata', async () => {
     const fork = vi.fn().mockResolvedValue({
-      providerSessionId: 'codex-child-thread',
+      providerSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
       launch: {},
     });
     const spawnSession = vi.fn<ForkSpawnSession>()
@@ -215,6 +283,15 @@ describe('fork connected-service child materialization identity', () => {
     expect(spawnIdentity?.id).not.toBe(PARENT_MATERIALIZATION_IDENTITY.id);
     expect(updatedMetadata.connectedServices).toEqual(CONNECTED_SERVICES);
     expect(updatedMetadata.connectedServiceMaterializationIdentityV1).toEqual(spawnIdentity);
+    expect(spawnSession.mock.calls[0]?.[0].resume).toBe(OPAQUE_FORKED_PROVIDER_SESSION_ID);
+    expect(readForkLineageSessionIds(updatedMetadata)).toEqual({
+      agentSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
+      predecessorVendorSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
+      backendMode: undefined,
+      predecessorBackendMode: undefined,
+    });
+    expect(readForkLineageSessionIds(updatedMetadata).agentSessionId)
+      .not.toBe(OPAQUE_FORKED_PROVIDER_SESSION_ID.trim());
   });
 
   it('fails closed without spawning when provider-native fork returns an empty vendor session id', async () => {
@@ -562,8 +639,14 @@ describe('fork connected-service child materialization identity', () => {
       agentHint: {
         agentId: 'opencode',
         backendMode: 'server',
-        providerSessionId: 'opencode-child-thread',
+        agentSessionId: 'opencode-child-thread',
       },
+    });
+    expect(readForkLineageSessionIds(updatedMetadata)).toEqual({
+      agentSessionId: 'opencode-child-thread',
+      predecessorVendorSessionId: 'opencode-child-thread',
+      backendMode: 'server',
+      predecessorBackendMode: 'server',
     });
   });
 
@@ -600,10 +683,18 @@ describe('fork connected-service child materialization identity', () => {
 
   it('uses a bridge-resolved built-in fork surface for ACP latest fork without catalog fallback', async () => {
     const fork = vi.fn().mockResolvedValue({
-      providerSessionId: 'vendor-child-surface',
+      providerSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
       launch: {
         directory: '/tmp/surface-child',
         environmentVariables: { SURFACE_FORK: '1' },
+        sessionStateUpdates: [{
+          fieldId: 'identity.runtimeDescriptor',
+          value: {
+            v: 1,
+            agentId: 'codex',
+            agent: { backendMode: 'acp' },
+          },
+        }],
       },
     });
     mocks.createConfiguredAcpBackend.mockReturnValue(null);
@@ -645,9 +736,17 @@ describe('fork connected-service child materialization identity', () => {
     });
     expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
       directory: '/tmp/surface-child',
-      resume: 'vendor-child-surface',
+      resume: OPAQUE_FORKED_PROVIDER_SESSION_ID,
       environmentVariables: { SURFACE_FORK: '1' },
     }));
+    expect(readForkLineageSessionIds(readUpdatedMetadata())).toEqual({
+      agentSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
+      predecessorVendorSessionId: OPAQUE_FORKED_PROVIDER_SESSION_ID,
+      backendMode: 'acp',
+      predecessorBackendMode: 'acp',
+    });
+    expect(readForkLineageSessionIds(readUpdatedMetadata()).agentSessionId)
+      .not.toBe(OPAQUE_FORKED_PROVIDER_SESSION_ID.trim());
   });
 
   it('fails closed without spawning when ACP latest fork returns an empty vendor session id', async () => {

@@ -2,10 +2,9 @@ import axios from 'axios';
 
 import {
   PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
-  PluginWebhookActionHttpPathsV1,
+  getActionSpec,
   PluginWebhookActionInputSchemasV1,
   PluginWebhookActionOutputSchemasV1,
-  PluginWebhookPluginSurfaceActionHttpPathsV1,
   PluginMachineMaterializationRefV1Schema,
   isPluginWebhookPluginSurfaceActionIdV1,
   type ActionExecutorDeps,
@@ -47,21 +46,26 @@ function createDefaultTransport(credentials: StoredCredentials): PluginWebhookAc
       // owner of that split, so a new plugin-surface operation cannot be routed
       // through the present-user body shape by omission.
       const pluginSurface = isPluginWebhookPluginSurfaceActionIdV1(actionId);
-      const path = pluginSurface
-        ? PluginWebhookPluginSurfaceActionHttpPathsV1[actionId]
-        : PluginWebhookActionHttpPathsV1[actionId];
-      if (!path) throw new TypeError(`Unsupported plugin webhook Action transport: ${actionId}`);
+      const transport = getActionSpec(actionId).serverTransport;
+      if (!transport) throw new TypeError(`Unsupported plugin webhook Action transport: ${actionId}`);
+      const { path, method } = transport;
+      if (method !== 'GET' && method !== 'POST') {
+        throw new TypeError(`Unsupported plugin webhook publisher-proof method: ${method}`);
+      }
       const body = pluginSurface
         ? { caller: options.caller, input }
         : input;
       const publisherHeader = pluginSurface
-        ? await createDefaultPluginInstallationPublisherHeader({ method: 'POST', path, body })
+        ? await createDefaultPluginInstallationPublisherHeader({ method, path, body })
         : null;
       if (pluginSurface && (!options.caller || !publisherHeader)) {
         return failure('plugin_webhook_publisher_proof_unavailable');
       }
       options.signal?.throwIfAborted();
-      const response = await axios.post(`${resolveServerHttpBaseUrl()}${path}`, body, {
+      const response = await axios.request({
+        url: `${resolveServerHttpBaseUrl()}${path}`,
+        method,
+        data: body,
         headers: {
           ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
           Authorization: `Bearer ${credentials.token}`,

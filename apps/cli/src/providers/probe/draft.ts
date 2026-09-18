@@ -12,7 +12,6 @@ import {
   createProviderFingerprintV1,
   createProviderObservationAuthorizationFingerprintV1,
   createProviderProbeRequestFingerprintV1,
-  createProviderSavedSecretRecordFingerprintV1,
   type ProviderErrorV1,
   type ProviderProbeAuthorizationV1,
   type ProviderRuntimeStateFileV1,
@@ -22,8 +21,8 @@ import {
   type DaemonProviderDraftProbeRequestV1,
 } from '@happier-dev/protocol/rpc';
 
-import { indexSavedSecretsByIdFromAccountSettings } from '@/settings/secrets/indexSavedSecretsById';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
 import { readProviderSettingsForCli } from '../settings/read';
 import { resolveProviderConnectionForMachine } from '../registry/resolve';
 import { collectProviderConnectionDnsEvidence } from '../registry/dnsEvidence';
@@ -115,14 +114,11 @@ function selectedSecretReference(
   snapshot: ActiveAccountSettingsSnapshot,
 ): Readonly<{ secretId: string; secretRecordFingerprint: string }> | null | ProviderErrorV1 {
   if (input.savedSecretId === null) return null;
-  const secret = indexSavedSecretsByIdFromAccountSettings(snapshot.settings).get(input.savedSecretId);
-  if (!secret?.encryptedValue) return error(input, 'provider_secret_missing');
+  const inspected = createSavedSecretMaterializerFromSnapshotV1(snapshot).inspect(input.savedSecretId);
+  if (inspected.status !== 'ready') return error(input, 'provider_secret_missing');
   return {
     secretId: input.savedSecretId,
-    secretRecordFingerprint: createProviderSavedSecretRecordFingerprintV1({
-      secretId: input.savedSecretId,
-      persistedEncryptedEnvelope: secret.encryptedValue,
-    }),
+    secretRecordFingerprint: inspected.fingerprint,
   };
 }
 
@@ -196,6 +192,7 @@ export function createProviderDraftProbeService(input: Readonly<{
   authorizationTtlMs?: number;
   maxReplayEntries?: number;
   beforeAuthorizationConsume?: () => void | Promise<void>;
+  openTeamDirect?: Parameters<typeof resolveRuntimeProviderCredential>[0]['openTeamDirect'];
 }>) {
   const now = input.now ?? Date.now;
   const createAuthorizationId = input.createAuthorizationId ?? randomUUID;
@@ -340,6 +337,7 @@ export function createProviderDraftProbeService(input: Readonly<{
     resolveCredential: (reference) => resolveRuntimeProviderCredential({
       credentialRef: reference,
       getAccountSettingsSnapshot: input.getAccountSettingsSnapshot,
+      ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
     }),
   };
 

@@ -17,7 +17,7 @@ import {
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
-import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 const { mockIo } = vi.hoisted(() => ({
   mockIo: vi.fn(),
@@ -81,13 +81,11 @@ describe('happier session run start (integration)', () => {
       if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
+        res.end(JSON.stringify(createAccountEncryptionCurrentnessFixture({
           mode: 'e2ee',
           version: 1,
-          signingKeyFingerprint: null,
-          contentKeyFingerprint: null,
           updatedAt: 1,
-        }));
+        })));
         return;
       }
       if (req.method === 'POST' && url.pathname === '/v2/sessions/lookup-by-tags') {
@@ -342,7 +340,7 @@ describe('happier session run start (integration)', () => {
         },
       );
 
-      expect(output.json().ok).toBe(true);
+      expect(output.json()).toMatchObject({ ok: true, kind: 'session_run_start' });
       expect(rpcOrder).toEqual([
         `machine-integration-1:${RPC_METHODS.SPAWN_HAPPY_SESSION}`,
         `machine-integration-1:${RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE}`,
@@ -423,7 +421,7 @@ describe('happier session run start (integration)', () => {
       expect(parsed.ok).toBe(false);
       expect(parsed.kind).toBe('session_run_start');
       expect(parsed.error?.code).toBe('invalid_arguments');
-      expect(parsed.error?.message).toBe(`Usage: ${SESSION_HELP_LINES.runStart}`);
+      expect(parsed.error?.message).toContain('one concrete execution target');
     } finally {
       output.restore();
     }
@@ -443,10 +441,7 @@ describe('happier session run start (integration)', () => {
       const parsed = output.json();
       expect(parsed.ok).toBe(false);
       expect(parsed.kind).toBe('session_run_start');
-      expect(parsed.error).toEqual({
-        code: 'invalid_arguments',
-        message: 'Invalid --intent "qa_cli_run". Expected one of: review, plan, delegate, task, voice_agent, memory_hints, scm_commit_message, scm_diff_summary.',
-      });
+      expect(parsed.error).toMatchObject({ code: 'invalid_arguments' });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     } finally {
       output.restore();

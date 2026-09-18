@@ -1,6 +1,8 @@
 import type { DaemonFilesystemListDirectoryResponse } from '@happier-dev/protocol'
 import { DaemonFilesystemListDirectoryRequestSchema } from '@happier-dev/protocol'
 
+import type { ScmBackendRegistry } from '@/scm/registry'
+
 import { listDirectoryEntries } from '@/rpc/handlers/fileSystem/directoryListing/listDirectoryEntries'
 
 import { validateMachineBrowsePath } from './machineBrowsePathPolicy'
@@ -11,6 +13,7 @@ export async function listMachineBrowseDirectory(input: Readonly<{
   platform?: NodeJS.Platform
   maxEntries: number
   statConcurrency: number
+  scmRegistry?: ScmBackendRegistry
 }>): Promise<DaemonFilesystemListDirectoryResponse> {
   const parsed = DaemonFilesystemListDirectoryRequestSchema.safeParse(input.raw)
   if (!parsed.success) {
@@ -32,6 +35,8 @@ export async function listMachineBrowseDirectory(input: Readonly<{
       includeFiles: parsed.data.includeFiles !== false,
       maxEntries: parsed.data.maxEntries ?? input.maxEntries,
       statConcurrency: input.statConcurrency,
+      includeGitIgnore: parsed.data.includeGitIgnore === true,
+      scmRegistry: input.scmRegistry,
     })
 
     return {
@@ -43,8 +48,10 @@ export async function listMachineBrowseDirectory(input: Readonly<{
         type: entry.type,
         size: entry.size,
         modified: entry.modified,
+        ...(entry.gitIgnored !== undefined ? { gitIgnored: entry.gitIgnored } : {}),
       })),
       truncated: result.truncated,
+      ...(result.gitIgnoreAvailable !== undefined ? { gitIgnoreAvailable: result.gitIgnoreAvailable } : {}),
     }
   } catch (error) {
     return {

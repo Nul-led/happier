@@ -12,19 +12,19 @@ import {
   type PluginAuthorToolchainSpawnInput,
 } from '@/plugins/authoring/toolchain';
 import { runPluginAuthorDoctor } from '@/plugins/authoring/doctor';
-import type { requestUserPluginChange } from '@/plugins/daemon/changeClient';
 
-import { executePluginDevLoopAction } from './actions';
+import {
+  executePluginDevLoopAction,
+  type PluginDevLoopActionServices,
+} from './actions';
 
-type AuthoringActionServices = Readonly<{
-  runPluginAuthorToolchain: typeof runPluginAuthorToolchain;
-  runPluginAuthorDoctor: typeof runPluginAuthorDoctor;
-  readUserPluginChangeStatus: (input: Readonly<{
-    pendingChangeId: string;
-    signal?: AbortSignal;
-  }>) => Promise<unknown>;
-  requestUserPluginChange?: typeof requestUserPluginChange;
-}>;
+type AuthoringActionServices = Readonly<
+  Required<Pick<
+    PluginDevLoopActionServices,
+    'runPluginAuthorToolchain' | 'runPluginAuthorDoctor' | 'readUserPluginChangeStatus'
+  >>
+  & Pick<PluginDevLoopActionServices, 'requestUserPluginChange'>
+>;
 
 function createAgentActionExecutor(params: Readonly<{
   workspaceRoot: string;
@@ -34,7 +34,7 @@ function createAgentActionExecutor(params: Readonly<{
     executionRunStart: async () => ({}),
     executionRunList: async () => ({}),
     executionRunGet: async () => ({}),
-    executionRunSend: async () => ({}),
+    detachedExecutionRunSend: async () => ({}),
     executionRunStop: async () => ({}),
     executionRunAction: async () => ({}),
     executionRunWait: async () => ({}),
@@ -54,7 +54,13 @@ function createAgentActionExecutor(params: Readonly<{
     sessionPermissionRespond: async () => ({}),
     sessionUserActionAnswer: async () => ({}),
     sessionTargetPrimarySet: async () => ({}),
-    sessionTargetTrackedSet: async () => ({}),
+    sessionTargetTrackedSet: async () => ({
+      ok: true,
+      status: 'ok',
+      sessionIds: [],
+      sessionAddresses: [],
+      sessions: [],
+    }),
     sessionList: async () => ({ sessions: [] }),
     sessionActivityGet: async () => ({}),
     sessionRecentMessagesGet: async () => ({}),
@@ -63,17 +69,7 @@ function createAgentActionExecutor(params: Readonly<{
     daemonMemoryEnsureUpToDate: async () => ({}),
     resetGlobalVoiceAgent: async () => {},
     isActionApprovalRequired: () => false,
-    pluginsDevLoopAction: async ({ actionId, input, context }) => await (
-      executePluginDevLoopAction as unknown as (
-        params: Readonly<{
-          actionId: string;
-          input: unknown;
-          workspaceRoot?: string;
-          context: unknown;
-        }>,
-        services: AuthoringActionServices,
-      ) => Promise<unknown>
-    )({
+    pluginsDevLoopAction: async ({ actionId, input, context }) => await executePluginDevLoopAction({
       actionId,
       input,
       workspaceRoot: params.workspaceRoot,
@@ -147,11 +143,13 @@ describe('Plugin authoring Actions', () => {
       kind: 'sourceRootReviewRequired' as const,
       pendingChangeId: 'pending-external-author-1',
       review: { source: { kind: 'path' as const, locator: targetDir } },
-    }));
+    } satisfies Awaited<ReturnType<NonNullable<
+      PluginDevLoopActionServices['requestUserPluginChange']
+    >>>));
     const services: AuthoringActionServices = {
       ...createToolchainServices({ spawnCalls }),
       readUserPluginChangeStatus: async () => ({ kind: 'expired' }),
-      requestUserPluginChange: requestDevelopmentChange as typeof requestUserPluginChange,
+      requestUserPluginChange: requestDevelopmentChange,
     };
     const executor = createAgentActionExecutor({ workspaceRoot, services });
 

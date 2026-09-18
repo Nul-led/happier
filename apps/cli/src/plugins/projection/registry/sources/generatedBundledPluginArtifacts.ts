@@ -11,19 +11,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5612786,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-OGCI6QRH.js"
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
-          "byteLength": 221,
-          "relativePath": ".happier-plugin/agent/runtime/factory.js"
-        },
-        {
-          "byteLength": 34438,
+          "byteLength": 6831893,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 13094,
+          "byteLength": 10436,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -41,22 +37,6 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 317,
           "relativePath": "dist/activate.js.map"
-        },
-        {
-          "byteLength": 734,
-          "relativePath": "dist/agent/cliPrint/availability.d.ts"
-        },
-        {
-          "byteLength": 4443,
-          "relativePath": "dist/agent/cliPrint/availability.d.ts.map"
-        },
-        {
-          "byteLength": 2907,
-          "relativePath": "dist/agent/cliPrint/availability.js"
-        },
-        {
-          "byteLength": 6543,
-          "relativePath": "dist/agent/cliPrint/availability.js.map"
         },
         {
           "byteLength": 3132,
@@ -91,86 +71,6 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/cliPrint/externalSessions.js.map"
         },
         {
-          "byteLength": 168,
-          "relativePath": "dist/agent/cliPrint/index.d.ts"
-        },
-        {
-          "byteLength": 354,
-          "relativePath": "dist/agent/cliPrint/index.d.ts.map"
-        },
-        {
-          "byteLength": 166,
-          "relativePath": "dist/agent/cliPrint/index.js"
-        },
-        {
-          "byteLength": 352,
-          "relativePath": "dist/agent/cliPrint/index.js.map"
-        },
-        {
-          "byteLength": 380,
-          "relativePath": "dist/agent/cliPrint/launchArgs.d.ts"
-        },
-        {
-          "byteLength": 1696,
-          "relativePath": "dist/agent/cliPrint/launchArgs.d.ts.map"
-        },
-        {
-          "byteLength": 962,
-          "relativePath": "dist/agent/cliPrint/launchArgs.js"
-        },
-        {
-          "byteLength": 2343,
-          "relativePath": "dist/agent/cliPrint/launchArgs.js.map"
-        },
-        {
-          "byteLength": 280,
-          "relativePath": "dist/agent/cliPrint/modelsProbePolicy.d.ts"
-        },
-        {
-          "byteLength": 477,
-          "relativePath": "dist/agent/cliPrint/modelsProbePolicy.d.ts.map"
-        },
-        {
-          "byteLength": 248,
-          "relativePath": "dist/agent/cliPrint/modelsProbePolicy.js"
-        },
-        {
-          "byteLength": 505,
-          "relativePath": "dist/agent/cliPrint/modelsProbePolicy.js.map"
-        },
-        {
-          "byteLength": 309,
-          "relativePath": "dist/agent/cliPrint/nativeExec.d.ts"
-        },
-        {
-          "byteLength": 1940,
-          "relativePath": "dist/agent/cliPrint/nativeExec.d.ts.map"
-        },
-        {
-          "byteLength": 1427,
-          "relativePath": "dist/agent/cliPrint/nativeExec.js"
-        },
-        {
-          "byteLength": 3143,
-          "relativePath": "dist/agent/cliPrint/nativeExec.js.map"
-        },
-        {
-          "byteLength": 621,
-          "relativePath": "dist/agent/cliPrint/nativeSessionRuntime.d.ts"
-        },
-        {
-          "byteLength": 8364,
-          "relativePath": "dist/agent/cliPrint/nativeSessionRuntime.d.ts.map"
-        },
-        {
-          "byteLength": 6705,
-          "relativePath": "dist/agent/cliPrint/nativeSessionRuntime.js"
-        },
-        {
-          "byteLength": 13785,
-          "relativePath": "dist/agent/cliPrint/nativeSessionRuntime.js.map"
-        },
-        {
           "byteLength": 1459,
           "relativePath": "dist/agent/cliPrint/observation.d.ts"
         },
@@ -185,38 +85,6 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 19621,
           "relativePath": "dist/agent/cliPrint/observation.js.map"
-        },
-        {
-          "byteLength": 1946,
-          "relativePath": "dist/agent/cliPrint/oneShot.d.ts"
-        },
-        {
-          "byteLength": 7044,
-          "relativePath": "dist/agent/cliPrint/oneShot.d.ts.map"
-        },
-        {
-          "byteLength": 3349,
-          "relativePath": "dist/agent/cliPrint/oneShot.js"
-        },
-        {
-          "byteLength": 8275,
-          "relativePath": "dist/agent/cliPrint/oneShot.js.map"
-        },
-        {
-          "byteLength": 1570,
-          "relativePath": "dist/agent/cliPrint/runtime.d.ts"
-        },
-        {
-          "byteLength": 11208,
-          "relativePath": "dist/agent/cliPrint/runtime.d.ts.map"
-        },
-        {
-          "byteLength": 8325,
-          "relativePath": "dist/agent/cliPrint/runtime.js"
-        },
-        {
-          "byteLength": 16268,
-          "relativePath": "dist/agent/cliPrint/runtime.js.map"
         },
         {
           "byteLength": 4219,
@@ -251,356 +119,52 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/cliPrint/transcript/mapper.js.map"
         },
         {
-          "byteLength": 1408,
-          "relativePath": "dist/agent/connectedServices/auth.d.ts"
-        },
-        {
-          "byteLength": 6920,
-          "relativePath": "dist/agent/connectedServices/auth.d.ts.map"
-        },
-        {
-          "byteLength": 5106,
-          "relativePath": "dist/agent/connectedServices/auth.js"
-        },
-        {
-          "byteLength": 10498,
-          "relativePath": "dist/agent/connectedServices/auth.js.map"
-        },
-        {
-          "byteLength": 828,
-          "relativePath": "dist/agent/connectedServices/descriptor.d.ts"
-        },
-        {
-          "byteLength": 988,
-          "relativePath": "dist/agent/connectedServices/descriptor.d.ts.map"
-        },
-        {
-          "byteLength": 693,
-          "relativePath": "dist/agent/connectedServices/descriptor.js"
-        },
-        {
-          "byteLength": 1393,
-          "relativePath": "dist/agent/connectedServices/descriptor.js.map"
-        },
-        {
-          "byteLength": 502,
-          "relativePath": "dist/agent/connectedServices/index.d.ts"
-        },
-        {
-          "byteLength": 852,
-          "relativePath": "dist/agent/connectedServices/index.d.ts.map"
-        },
-        {
-          "byteLength": 464,
-          "relativePath": "dist/agent/connectedServices/index.js"
-        },
-        {
-          "byteLength": 832,
-          "relativePath": "dist/agent/connectedServices/index.js.map"
-        },
-        {
-          "byteLength": 275,
-          "relativePath": "dist/agent/connectedServices/runtimeAuthAdapter.d.ts"
-        },
-        {
-          "byteLength": 3355,
-          "relativePath": "dist/agent/connectedServices/runtimeAuthAdapter.d.ts.map"
-        },
-        {
-          "byteLength": 2973,
-          "relativePath": "dist/agent/connectedServices/runtimeAuthAdapter.js"
-        },
-        {
-          "byteLength": 6085,
-          "relativePath": "dist/agent/connectedServices/runtimeAuthAdapter.js.map"
-        },
-        {
-          "byteLength": 344,
-          "relativePath": "dist/agent/connectedServices/serviceIds.d.ts"
-        },
-        {
-          "byteLength": 662,
-          "relativePath": "dist/agent/connectedServices/serviceIds.d.ts.map"
-        },
-        {
-          "byteLength": 221,
-          "relativePath": "dist/agent/connectedServices/serviceIds.js"
-        },
-        {
-          "byteLength": 651,
-          "relativePath": "dist/agent/connectedServices/serviceIds.js.map"
-        },
-        {
-          "byteLength": 127,
-          "relativePath": "dist/agent/connectedServices/stateSharing.d.ts"
-        },
-        {
-          "byteLength": 283,
-          "relativePath": "dist/agent/connectedServices/stateSharing.d.ts.map"
-        },
-        {
-          "byteLength": 125,
-          "relativePath": "dist/agent/connectedServices/stateSharing.js"
-        },
-        {
-          "byteLength": 281,
-          "relativePath": "dist/agent/connectedServices/stateSharing.js.map"
-        },
-        {
-          "byteLength": 2080,
+          "byteLength": 1967,
           "relativePath": "dist/agent/definition.d.ts"
         },
         {
-          "byteLength": 2196,
+          "byteLength": 3074,
           "relativePath": "dist/agent/definition.d.ts.map"
         },
         {
-          "byteLength": 1775,
+          "byteLength": 2461,
           "relativePath": "dist/agent/definition.js"
         },
         {
-          "byteLength": 3259,
+          "byteLength": 3692,
           "relativePath": "dist/agent/definition.js.map"
         },
         {
-          "byteLength": 302,
+          "byteLength": 151,
           "relativePath": "dist/agent/index.d.ts"
         },
         {
-          "byteLength": 550,
+          "byteLength": 305,
           "relativePath": "dist/agent/index.d.ts.map"
         },
         {
-          "byteLength": 300,
+          "byteLength": 149,
           "relativePath": "dist/agent/index.js"
         },
         {
-          "byteLength": 548,
+          "byteLength": 303,
           "relativePath": "dist/agent/index.js.map"
         },
         {
-          "byteLength": 355,
+          "byteLength": 515,
           "relativePath": "dist/agent/install/cliRuntime.d.ts"
         },
         {
-          "byteLength": 596,
+          "byteLength": 750,
           "relativePath": "dist/agent/install/cliRuntime.d.ts.map"
         },
         {
-          "byteLength": 320,
+          "byteLength": 488,
           "relativePath": "dist/agent/install/cliRuntime.js"
         },
         {
-          "byteLength": 640,
+          "byteLength": 786,
           "relativePath": "dist/agent/install/cliRuntime.js.map"
-        },
-        {
-          "byteLength": 736,
-          "relativePath": "dist/agent/lifecycle/runtimeEnv.d.ts"
-        },
-        {
-          "byteLength": 2394,
-          "relativePath": "dist/agent/lifecycle/runtimeEnv.d.ts.map"
-        },
-        {
-          "byteLength": 1473,
-          "relativePath": "dist/agent/lifecycle/runtimeEnv.js"
-        },
-        {
-          "byteLength": 3243,
-          "relativePath": "dist/agent/lifecycle/runtimeEnv.js.map"
-        },
-        {
-          "byteLength": 2545,
-          "relativePath": "dist/agent/lifecycle/runtimeMode.d.ts"
-        },
-        {
-          "byteLength": 7757,
-          "relativePath": "dist/agent/lifecycle/runtimeMode.d.ts.map"
-        },
-        {
-          "byteLength": 3613,
-          "relativePath": "dist/agent/lifecycle/runtimeMode.js"
-        },
-        {
-          "byteLength": 8332,
-          "relativePath": "dist/agent/lifecycle/runtimeMode.js.map"
-        },
-        {
-          "byteLength": 1767,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts"
-        },
-        {
-          "byteLength": 10609,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts.map"
-        },
-        {
-          "byteLength": 6207,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.js"
-        },
-        {
-          "byteLength": 14250,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.js.map"
-        },
-        {
-          "byteLength": 4858,
-          "relativePath": "dist/agent/localharness/__fixtures__/localharness-0.1.4.d.ts"
-        },
-        {
-          "byteLength": 4960,
-          "relativePath": "dist/agent/localharness/__fixtures__/localharness-0.1.4.d.ts.map"
-        },
-        {
-          "byteLength": 4437,
-          "relativePath": "dist/agent/localharness/__fixtures__/localharness-0.1.4.js"
-        },
-        {
-          "byteLength": 6846,
-          "relativePath": "dist/agent/localharness/__fixtures__/localharness-0.1.4.js.map"
-        },
-        {
-          "byteLength": 1537,
-          "relativePath": "dist/agent/localharness/client/handshake.d.ts"
-        },
-        {
-          "byteLength": 7511,
-          "relativePath": "dist/agent/localharness/client/handshake.d.ts.map"
-        },
-        {
-          "byteLength": 5369,
-          "relativePath": "dist/agent/localharness/client/handshake.js"
-        },
-        {
-          "byteLength": 11570,
-          "relativePath": "dist/agent/localharness/client/handshake.js.map"
-        },
-        {
-          "byteLength": 742,
-          "relativePath": "dist/agent/localharness/client/nativeClient.d.ts"
-        },
-        {
-          "byteLength": 3160,
-          "relativePath": "dist/agent/localharness/client/nativeClient.d.ts.map"
-        },
-        {
-          "byteLength": 1802,
-          "relativePath": "dist/agent/localharness/client/nativeClient.js"
-        },
-        {
-          "byteLength": 4106,
-          "relativePath": "dist/agent/localharness/client/nativeClient.js.map"
-        },
-        {
-          "byteLength": 5136,
-          "relativePath": "dist/agent/localharness/client/protocol.d.ts"
-        },
-        {
-          "byteLength": 18647,
-          "relativePath": "dist/agent/localharness/client/protocol.d.ts.map"
-        },
-        {
-          "byteLength": 9226,
-          "relativePath": "dist/agent/localharness/client/protocol.js"
-        },
-        {
-          "byteLength": 22359,
-          "relativePath": "dist/agent/localharness/client/protocol.js.map"
-        },
-        {
-          "byteLength": 267,
-          "relativePath": "dist/agent/localharness/index.d.ts"
-        },
-        {
-          "byteLength": 509,
-          "relativePath": "dist/agent/localharness/index.d.ts.map"
-        },
-        {
-          "byteLength": 265,
-          "relativePath": "dist/agent/localharness/index.js"
-        },
-        {
-          "byteLength": 507,
-          "relativePath": "dist/agent/localharness/index.js.map"
-        },
-        {
-          "byteLength": 209,
-          "relativePath": "dist/agent/localharness/installable.d.ts"
-        },
-        {
-          "byteLength": 369,
-          "relativePath": "dist/agent/localharness/installable.d.ts.map"
-        },
-        {
-          "byteLength": 191,
-          "relativePath": "dist/agent/localharness/installable.js"
-        },
-        {
-          "byteLength": 385,
-          "relativePath": "dist/agent/localharness/installable.js.map"
-        },
-        {
-          "byteLength": 977,
-          "relativePath": "dist/agent/localharness/runtime/mcp.d.ts"
-        },
-        {
-          "byteLength": 3909,
-          "relativePath": "dist/agent/localharness/runtime/mcp.d.ts.map"
-        },
-        {
-          "byteLength": 2215,
-          "relativePath": "dist/agent/localharness/runtime/mcp.js"
-        },
-        {
-          "byteLength": 5496,
-          "relativePath": "dist/agent/localharness/runtime/mcp.js.map"
-        },
-        {
-          "byteLength": 1216,
-          "relativePath": "dist/agent/localharness/runtime/permissions.d.ts"
-        },
-        {
-          "byteLength": 3823,
-          "relativePath": "dist/agent/localharness/runtime/permissions.d.ts.map"
-        },
-        {
-          "byteLength": 1979,
-          "relativePath": "dist/agent/localharness/runtime/permissions.js"
-        },
-        {
-          "byteLength": 5019,
-          "relativePath": "dist/agent/localharness/runtime/permissions.js.map"
-        },
-        {
-          "byteLength": 2002,
-          "relativePath": "dist/agent/localharness/runtime/sessionRuntime.d.ts"
-        },
-        {
-          "byteLength": 21613,
-          "relativePath": "dist/agent/localharness/runtime/sessionRuntime.d.ts.map"
-        },
-        {
-          "byteLength": 18015,
-          "relativePath": "dist/agent/localharness/runtime/sessionRuntime.js"
-        },
-        {
-          "byteLength": 34757,
-          "relativePath": "dist/agent/localharness/runtime/sessionRuntime.js.map"
-        },
-        {
-          "byteLength": 678,
-          "relativePath": "dist/agent/models.d.ts"
-        },
-        {
-          "byteLength": 3011,
-          "relativePath": "dist/agent/models.d.ts.map"
-        },
-        {
-          "byteLength": 1958,
-          "relativePath": "dist/agent/models.js"
-        },
-        {
-          "byteLength": 4069,
-          "relativePath": "dist/agent/models.js.map"
         },
         {
           "byteLength": 256,
@@ -667,86 +231,6 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/normalize/types.js.map"
         },
         {
-          "byteLength": 1020,
-          "relativePath": "dist/agent/preflight/models.d.ts"
-        },
-        {
-          "byteLength": 2189,
-          "relativePath": "dist/agent/preflight/models.d.ts.map"
-        },
-        {
-          "byteLength": 1535,
-          "relativePath": "dist/agent/preflight/models.js"
-        },
-        {
-          "byteLength": 3287,
-          "relativePath": "dist/agent/preflight/models.js.map"
-        },
-        {
-          "byteLength": 285,
-          "relativePath": "dist/agent/runtime/factory.d.ts"
-        },
-        {
-          "byteLength": 780,
-          "relativePath": "dist/agent/runtime/factory.d.ts.map"
-        },
-        {
-          "byteLength": 417,
-          "relativePath": "dist/agent/runtime/factory.js"
-        },
-        {
-          "byteLength": 880,
-          "relativePath": "dist/agent/runtime/factory.js.map"
-        },
-        {
-          "byteLength": 1223,
-          "relativePath": "dist/agent/runtime/nativeRuntime.d.ts"
-        },
-        {
-          "byteLength": 7200,
-          "relativePath": "dist/agent/runtime/nativeRuntime.d.ts.map"
-        },
-        {
-          "byteLength": 4545,
-          "relativePath": "dist/agent/runtime/nativeRuntime.js"
-        },
-        {
-          "byteLength": 10089,
-          "relativePath": "dist/agent/runtime/nativeRuntime.js.map"
-        },
-        {
-          "byteLength": 709,
-          "relativePath": "dist/agent/runtime/nativeSession.d.ts"
-        },
-        {
-          "byteLength": 7258,
-          "relativePath": "dist/agent/runtime/nativeSession.d.ts.map"
-        },
-        {
-          "byteLength": 5444,
-          "relativePath": "dist/agent/runtime/nativeSession.js"
-        },
-        {
-          "byteLength": 11690,
-          "relativePath": "dist/agent/runtime/nativeSession.js.map"
-        },
-        {
-          "byteLength": 2549,
-          "relativePath": "dist/agent/runtime/runtimeDescriptor.d.ts"
-        },
-        {
-          "byteLength": 12075,
-          "relativePath": "dist/agent/runtime/runtimeDescriptor.d.ts.map"
-        },
-        {
-          "byteLength": 7616,
-          "relativePath": "dist/agent/runtime/runtimeDescriptor.js"
-        },
-        {
-          "byteLength": 16134,
-          "relativePath": "dist/agent/runtime/runtimeDescriptor.js.map"
-        },
-        {
           "byteLength": 113,
           "relativePath": "dist/agent/systemTool.d.ts"
         },
@@ -767,15 +251,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/terminal/launchArgs.d.ts"
         },
         {
-          "byteLength": 2413,
+          "byteLength": 2269,
           "relativePath": "dist/agent/terminal/launchArgs.d.ts.map"
         },
         {
-          "byteLength": 1348,
+          "byteLength": 1197,
           "relativePath": "dist/agent/terminal/launchArgs.js"
         },
         {
-          "byteLength": 3181,
+          "byteLength": 2927,
           "relativePath": "dist/agent/terminal/launchArgs.js.map"
         },
         {
@@ -795,67 +279,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/terminal/nativeSurface.js.map"
         },
         {
-          "byteLength": 240,
-          "relativePath": "dist/agent/terminal/statusLine.d.ts"
+          "byteLength": 472,
+          "relativePath": "dist/agent/terminal/runtimeDescriptor.d.ts"
         },
         {
-          "byteLength": 373,
-          "relativePath": "dist/agent/terminal/statusLine.d.ts.map"
+          "byteLength": 1924,
+          "relativePath": "dist/agent/terminal/runtimeDescriptor.d.ts.map"
         },
         {
-          "byteLength": 236,
-          "relativePath": "dist/agent/terminal/statusLine.js"
+          "byteLength": 1600,
+          "relativePath": "dist/agent/terminal/runtimeDescriptor.js"
         },
         {
-          "byteLength": 448,
-          "relativePath": "dist/agent/terminal/statusLine.js.map"
+          "byteLength": 3068,
+          "relativePath": "dist/agent/terminal/runtimeDescriptor.js.map"
         },
         {
-          "byteLength": 1952,
-          "relativePath": "dist/agentSettings/definition.d.ts"
-        },
-        {
-          "byteLength": 3781,
-          "relativePath": "dist/agentSettings/definition.d.ts.map"
-        },
-        {
-          "byteLength": 3363,
-          "relativePath": "dist/agentSettings/definition.js"
-        },
-        {
-          "byteLength": 5074,
-          "relativePath": "dist/agentSettings/definition.js.map"
-        },
-        {
-          "byteLength": 68,
-          "relativePath": "dist/agentSettings/index.d.ts"
-        },
-        {
-          "byteLength": 182,
-          "relativePath": "dist/agentSettings/index.d.ts.map"
-        },
-        {
-          "byteLength": 66,
-          "relativePath": "dist/agentSettings/index.js"
-        },
-        {
-          "byteLength": 180,
-          "relativePath": "dist/agentSettings/index.js.map"
-        },
-        {
-          "byteLength": 234,
+          "byteLength": 192,
           "relativePath": "dist/index.d.ts"
         },
         {
-          "byteLength": 451,
+          "byteLength": 385,
           "relativePath": "dist/index.d.ts.map"
         },
         {
-          "byteLength": 232,
+          "byteLength": 190,
           "relativePath": "dist/index.js"
         },
         {
-          "byteLength": 449,
+          "byteLength": 383,
           "relativePath": "dist/index.js.map"
         },
         {
@@ -863,31 +315,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 8507,
+          "byteLength": 8083,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 9886,
+          "byteLength": 9790,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 13643,
+          "byteLength": 12822,
           "relativePath": "dist/manifest.js.map"
         },
         {
-          "byteLength": 1373,
+          "byteLength": 1461,
           "relativePath": "dist/ui/descriptor.d.ts"
         },
         {
-          "byteLength": 1715,
+          "byteLength": 2143,
           "relativePath": "dist/ui/descriptor.d.ts.map"
         },
         {
-          "byteLength": 1330,
+          "byteLength": 1743,
           "relativePath": "dist/ui/descriptor.js"
         },
         {
-          "byteLength": 2238,
+          "byteLength": 2780,
           "relativePath": "dist/ui/descriptor.js.map"
         },
         {
@@ -895,7 +347,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-da658d8f-f891-4927-8c11-71177cb2df13",
+      "immutableGenerationId": "bundled-90814446-56bd-465e-b200-b3e661ac38be",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.antigravity",
       "schemaVersion": 1,
@@ -910,19 +362,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5727,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-SGIDRI3I.js"
+          "byteLength": 5372,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-OMCDLKNZ.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 125,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 731463,
+          "byteLength": 741391,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 4117,
+          "byteLength": 4208,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -962,35 +418,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/callbacks.js.map"
         },
         {
-          "byteLength": 868,
+          "byteLength": 804,
           "relativePath": "dist/agent/acp/definition.d.ts"
         },
         {
-          "byteLength": 710,
+          "byteLength": 810,
           "relativePath": "dist/agent/acp/definition.d.ts.map"
         },
         {
-          "byteLength": 401,
+          "byteLength": 496,
           "relativePath": "dist/agent/acp/definition.js"
         },
         {
-          "byteLength": 917,
+          "byteLength": 1018,
           "relativePath": "dist/agent/acp/definition.js.map"
         },
         {
-          "byteLength": 704,
+          "byteLength": 566,
           "relativePath": "dist/agent/acp/transport.d.ts"
         },
         {
-          "byteLength": 2862,
+          "byteLength": 2052,
           "relativePath": "dist/agent/acp/transport.d.ts.map"
         },
         {
-          "byteLength": 2476,
+          "byteLength": 1708,
           "relativePath": "dist/agent/acp/transport.js"
         },
         {
-          "byteLength": 4420,
+          "byteLength": 3301,
           "relativePath": "dist/agent/acp/transport.js.map"
         },
         {
@@ -1046,15 +502,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 1140,
+          "byteLength": 1498,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 953,
+          "byteLength": 1101,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 1672,
+          "byteLength": 2219,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -1094,15 +550,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 3053,
+          "byteLength": 3097,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 3333,
+          "byteLength": 3388,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 5016,
+          "byteLength": 5104,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -1142,7 +598,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-030eb324-a054-4bd9-91ba-6d4aa03afcfd",
+      "immutableGenerationId": "bundled-4ca616e1-a45c-4e12-9d92-7e8f0ebeb321",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.auggie",
       "schemaVersion": 1,
@@ -1157,11 +613,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 2320515,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 2712859,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 102715,
+          "byteLength": 103268,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -1333,15 +793,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/discordGatewaySupervisor.d.ts"
         },
         {
-          "byteLength": 39208,
+          "byteLength": 39788,
           "relativePath": "dist/discordGatewaySupervisor.d.ts.map"
         },
         {
-          "byteLength": 35407,
+          "byteLength": 35997,
           "relativePath": "dist/discordGatewaySupervisor.js"
         },
         {
-          "byteLength": 63385,
+          "byteLength": 64200,
           "relativePath": "dist/discordGatewaySupervisor.js.map"
         },
         {
@@ -1477,15 +937,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/plugin.d.ts"
         },
         {
-          "byteLength": 17903,
+          "byteLength": 18105,
           "relativePath": "dist/plugin.d.ts.map"
         },
         {
-          "byteLength": 19609,
+          "byteLength": 19827,
           "relativePath": "dist/plugin.js"
         },
         {
-          "byteLength": 27276,
+          "byteLength": 27567,
           "relativePath": "dist/plugin.js.map"
         },
         {
@@ -1509,7 +969,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-627c9e32-16e2-457f-bed0-a175c66f2549",
+      "immutableGenerationId": "bundled-c3425187-e909-4351-a1aa-8acc5f79d38b",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channel.discord",
       "schemaVersion": 1,
@@ -1524,11 +984,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 2236100,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 2628218,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 174161,
+          "byteLength": 174666,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -1664,15 +1128,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/plugin.d.ts"
         },
         {
-          "byteLength": 15072,
+          "byteLength": 15274,
           "relativePath": "dist/plugin.d.ts.map"
         },
         {
-          "byteLength": 16566,
+          "byteLength": 16780,
           "relativePath": "dist/plugin.js"
         },
         {
-          "byteLength": 23527,
+          "byteLength": 23818,
           "relativePath": "dist/plugin.js.map"
         },
         {
@@ -1712,7 +1176,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-8f02f766-468f-4d57-93bc-af4aebfd4cb0",
+      "immutableGenerationId": "bundled-9b1cb0bd-788f-4400-8b52-73acb0666d06",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channel.telegram",
       "schemaVersion": 1,
@@ -1727,11 +1191,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 7650327,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 9138607,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 1909404,
+          "byteLength": 1913530,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -1947,15 +1415,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/connectionWebhookEndpoint.d.ts"
         },
         {
-          "byteLength": 14876,
+          "byteLength": 16006,
           "relativePath": "dist/connectionWebhookEndpoint.d.ts.map"
         },
         {
-          "byteLength": 9744,
+          "byteLength": 10699,
           "relativePath": "dist/connectionWebhookEndpoint.js"
         },
         {
-          "byteLength": 16762,
+          "byteLength": 18236,
           "relativePath": "dist/connectionWebhookEndpoint.js.map"
         },
         {
@@ -1991,7 +1459,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/deliveryCustody.js.map"
         },
         {
-          "byteLength": 2911449,
+          "byteLength": 3236768,
           "relativePath": "dist/happier-plugin-ui/react-native-web/channels-app-native/entry.mjs.bundle"
         },
         {
@@ -2003,36 +1471,28 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/android.bundle.map"
         },
         {
-          "byteLength": 1612587,
+          "byteLength": 1618097,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle"
         },
         {
-          "byteLength": 453692,
+          "byteLength": 455155,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle.map"
         },
         {
-          "byteLength": 965551,
+          "byteLength": 971023,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 424496,
+          "byteLength": 427188,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6216865,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle"
+          "byteLength": 13602413,
+          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-904e1c.chunk.bundle"
         },
         {
-          "byteLength": 1214576,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle.map"
-        },
-        {
-          "byteLength": 4877352,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle"
-        },
-        {
-          "byteLength": 877736,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map"
+          "byteLength": 2553040,
+          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-904e1c.chunk.bundle.map"
         },
         {
           "byteLength": 35758,
@@ -2043,39 +1503,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 1612587,
+          "byteLength": 1618097,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle"
         },
         {
-          "byteLength": 453692,
+          "byteLength": 455155,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle.map"
         },
         {
-          "byteLength": 965551,
+          "byteLength": 971023,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 424496,
+          "byteLength": 427188,
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6216865,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle"
+          "byteLength": 13602413,
+          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-904e1c.chunk.bundle"
         },
         {
-          "byteLength": 1214576,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-5e1afb.chunk.bundle.map"
+          "byteLength": 2553040,
+          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-904e1c.chunk.bundle.map"
         },
         {
-          "byteLength": 4877352,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle"
-        },
-        {
-          "byteLength": 877736,
-          "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map"
-        },
-        {
-          "byteLength": 7705,
+          "byteLength": 6529,
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json"
         },
         {
@@ -2099,15 +1551,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ingress.d.ts"
         },
         {
-          "byteLength": 303786,
+          "byteLength": 307355,
           "relativePath": "dist/ingress.d.ts.map"
         },
         {
-          "byteLength": 266862,
+          "byteLength": 270387,
           "relativePath": "dist/ingress.js"
         },
         {
-          "byteLength": 490612,
+          "byteLength": 496351,
           "relativePath": "dist/ingress.js.map"
         },
         {
@@ -2115,47 +1567,47 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/management.d.ts"
         },
         {
-          "byteLength": 257745,
+          "byteLength": 258265,
           "relativePath": "dist/management.d.ts.map"
         },
         {
-          "byteLength": 225681,
+          "byteLength": 226244,
           "relativePath": "dist/management.js"
         },
         {
-          "byteLength": 399203,
+          "byteLength": 399920,
           "relativePath": "dist/management.js.map"
         },
         {
-          "byteLength": 1037433,
+          "byteLength": 1038124,
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 51906,
+          "byteLength": 53332,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 42400,
+          "byteLength": 43870,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 59975,
+          "byteLength": 61924,
           "relativePath": "dist/manifest.js.map"
         },
         {
-          "byteLength": 32849,
+          "byteLength": 33841,
           "relativePath": "dist/outwardDelivery.d.ts"
         },
         {
-          "byteLength": 173629,
+          "byteLength": 176661,
           "relativePath": "dist/outwardDelivery.d.ts.map"
         },
         {
-          "byteLength": 126901,
+          "byteLength": 129089,
           "relativePath": "dist/outwardDelivery.js"
         },
         {
-          "byteLength": 249594,
+          "byteLength": 253593,
           "relativePath": "dist/outwardDelivery.js.map"
         },
         {
@@ -2227,15 +1679,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/permissionMediation.d.ts"
         },
         {
-          "byteLength": 3608,
+          "byteLength": 4025,
           "relativePath": "dist/permissionMediation.d.ts.map"
         },
         {
-          "byteLength": 1652,
+          "byteLength": 2095,
           "relativePath": "dist/permissionMediation.js"
         },
         {
-          "byteLength": 3799,
+          "byteLength": 4414,
           "relativePath": "dist/permissionMediation.js.map"
         },
         {
@@ -2387,31 +1839,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/sessionProjection.d.ts"
         },
         {
-          "byteLength": 34679,
+          "byteLength": 35399,
           "relativePath": "dist/sessionProjection.d.ts.map"
         },
         {
-          "byteLength": 24032,
+          "byteLength": 24806,
           "relativePath": "dist/sessionProjection.js"
         },
         {
-          "byteLength": 48288,
+          "byteLength": 49413,
           "relativePath": "dist/sessionProjection.js.map"
         },
         {
-          "byteLength": 1829,
+          "byteLength": 1925,
           "relativePath": "dist/sessionSurfaceIds.d.ts"
         },
         {
-          "byteLength": 2197,
+          "byteLength": 2321,
           "relativePath": "dist/sessionSurfaceIds.d.ts.map"
         },
         {
-          "byteLength": 1763,
+          "byteLength": 1851,
           "relativePath": "dist/sessionSurfaceIds.js"
         },
         {
-          "byteLength": 2274,
+          "byteLength": 2408,
           "relativePath": "dist/sessionSurfaceIds.js.map"
         },
         {
@@ -2547,15 +1999,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 535983,
+          "byteLength": 536156,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 479354,
+          "byteLength": 479536,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 875516,
+          "byteLength": 875846,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
@@ -2579,7 +2031,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d90bf871-e680-4faf-aaa4-8e0d51a14731",
+      "immutableGenerationId": "bundled-3b06123d-d640-440b-b577-c8627e940eb6",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channels",
       "schemaVersion": 1,
@@ -2594,19 +2046,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6975548,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-YMNB2LKC.js"
+          "byteLength": 8286453,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-SAFKHGKW.js"
+        },
+        {
+          "byteLength": 182,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 507,
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js"
         },
         {
-          "byteLength": 132409,
+          "byteLength": 133855,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 81744,
+          "byteLength": 81858,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -2790,15 +2246,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/quota/subscriptionFetcher.d.ts"
         },
         {
-          "byteLength": 31519,
+          "byteLength": 32900,
           "relativePath": "dist/agent/auth/services/quota/subscriptionFetcher.d.ts.map"
         },
         {
-          "byteLength": 23939,
+          "byteLength": 25308,
           "relativePath": "dist/agent/auth/services/quota/subscriptionFetcher.js"
         },
         {
-          "byteLength": 50722,
+          "byteLength": 53427,
           "relativePath": "dist/agent/auth/services/quota/subscriptionFetcher.js.map"
         },
         {
@@ -3110,15 +2566,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/hooks/settings.d.ts"
         },
         {
-          "byteLength": 8362,
+          "byteLength": 8363,
           "relativePath": "dist/agent/hooks/settings.d.ts.map"
         },
         {
-          "byteLength": 4052,
+          "byteLength": 4053,
           "relativePath": "dist/agent/hooks/settings.js"
         },
         {
-          "byteLength": 9733,
+          "byteLength": 9734,
           "relativePath": "dist/agent/hooks/settings.js.map"
         },
         {
@@ -3510,15 +2966,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/issues/runtimeIssues.d.ts"
         },
         {
-          "byteLength": 16623,
+          "byteLength": 16809,
           "relativePath": "dist/agent/runtime/issues/runtimeIssues.d.ts.map"
         },
         {
-          "byteLength": 13601,
+          "byteLength": 13805,
           "relativePath": "dist/agent/runtime/issues/runtimeIssues.js"
         },
         {
-          "byteLength": 29650,
+          "byteLength": 29907,
           "relativePath": "dist/agent/runtime/issues/runtimeIssues.js.map"
         },
         {
@@ -3538,51 +2994,51 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/launchSettings.js.map"
         },
         {
-          "byteLength": 4793,
+          "byteLength": 5213,
           "relativePath": "dist/agent/runtime/nativeRuntime.d.ts"
         },
         {
-          "byteLength": 49195,
+          "byteLength": 56494,
           "relativePath": "dist/agent/runtime/nativeRuntime.d.ts.map"
         },
         {
-          "byteLength": 40660,
+          "byteLength": 47199,
           "relativePath": "dist/agent/runtime/nativeRuntime.js"
         },
         {
-          "byteLength": 77877,
+          "byteLength": 89878,
           "relativePath": "dist/agent/runtime/nativeRuntime.js.map"
         },
         {
-          "byteLength": 553,
+          "byteLength": 868,
           "relativePath": "dist/agent/runtime/nativeServices.d.ts"
         },
         {
-          "byteLength": 8947,
+          "byteLength": 9957,
           "relativePath": "dist/agent/runtime/nativeServices.d.ts.map"
         },
         {
-          "byteLength": 8655,
+          "byteLength": 9298,
           "relativePath": "dist/agent/runtime/nativeServices.js"
         },
         {
-          "byteLength": 15784,
+          "byteLength": 17183,
           "relativePath": "dist/agent/runtime/nativeServices.js.map"
         },
         {
-          "byteLength": 831,
+          "byteLength": 1222,
           "relativePath": "dist/agent/runtime/permissionMode.d.ts"
         },
         {
-          "byteLength": 3165,
+          "byteLength": 3800,
           "relativePath": "dist/agent/runtime/permissionMode.d.ts.map"
         },
         {
-          "byteLength": 1935,
+          "byteLength": 2415,
           "relativePath": "dist/agent/runtime/permissionMode.js"
         },
         {
-          "byteLength": 4325,
+          "byteLength": 5060,
           "relativePath": "dist/agent/runtime/permissionMode.js.map"
         },
         {
@@ -3590,15 +3046,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/providerEvents.d.ts"
         },
         {
-          "byteLength": 4661,
+          "byteLength": 5147,
           "relativePath": "dist/agent/runtime/providerEvents.d.ts.map"
         },
         {
-          "byteLength": 4201,
+          "byteLength": 4661,
           "relativePath": "dist/agent/runtime/providerEvents.js"
         },
         {
-          "byteLength": 8643,
+          "byteLength": 8809,
           "relativePath": "dist/agent/runtime/providerEvents.js.map"
         },
         {
@@ -3606,15 +3062,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/providerOperations.d.ts"
         },
         {
-          "byteLength": 8916,
+          "byteLength": 8974,
           "relativePath": "dist/agent/runtime/providerOperations.d.ts.map"
         },
         {
-          "byteLength": 178,
+          "byteLength": 235,
           "relativePath": "dist/agent/runtime/providerOperations.js"
         },
         {
-          "byteLength": 5149,
+          "byteLength": 5169,
           "relativePath": "dist/agent/runtime/providerOperations.js.map"
         },
         {
@@ -3670,15 +3126,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/remote/sdk/providerActivity.d.ts"
         },
         {
-          "byteLength": 16590,
+          "byteLength": 16793,
           "relativePath": "dist/agent/runtime/remote/sdk/providerActivity.d.ts.map"
         },
         {
-          "byteLength": 13280,
+          "byteLength": 13485,
           "relativePath": "dist/agent/runtime/remote/sdk/providerActivity.js"
         },
         {
-          "byteLength": 27052,
+          "byteLength": 27301,
           "relativePath": "dist/agent/runtime/remote/sdk/providerActivity.js.map"
         },
         {
@@ -3718,15 +3174,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/remote/sdk/resumeIdentity.d.ts"
         },
         {
-          "byteLength": 21617,
+          "byteLength": 21870,
           "relativePath": "dist/agent/runtime/remote/sdk/resumeIdentity.d.ts.map"
         },
         {
-          "byteLength": 16467,
+          "byteLength": 16718,
           "relativePath": "dist/agent/runtime/remote/sdk/resumeIdentity.js"
         },
         {
-          "byteLength": 33043,
+          "byteLength": 33356,
           "relativePath": "dist/agent/runtime/remote/sdk/resumeIdentity.js.map"
         },
         {
@@ -3746,19 +3202,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/remote/sdk/runtimeAuthRetryDecision.js.map"
         },
         {
-          "byteLength": 4199,
+          "byteLength": 4765,
           "relativePath": "dist/agent/runtime/remote/sdk/session.d.ts"
         },
         {
-          "byteLength": 96277,
+          "byteLength": 99505,
           "relativePath": "dist/agent/runtime/remote/sdk/session.d.ts.map"
         },
         {
-          "byteLength": 81872,
+          "byteLength": 84080,
           "relativePath": "dist/agent/runtime/remote/sdk/session.js"
         },
         {
-          "byteLength": 150058,
+          "byteLength": 154120,
           "relativePath": "dist/agent/runtime/remote/sdk/session.js.map"
         },
         {
@@ -3922,19 +3378,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/constants.js.map"
         },
         {
-          "byteLength": 1669,
+          "byteLength": 1629,
           "relativePath": "dist/agent/runtime/terminal/unified/goalRuntime.d.ts"
         },
         {
-          "byteLength": 8764,
+          "byteLength": 8647,
           "relativePath": "dist/agent/runtime/terminal/unified/goalRuntime.d.ts.map"
         },
         {
-          "byteLength": 5122,
+          "byteLength": 5090,
           "relativePath": "dist/agent/runtime/terminal/unified/goalRuntime.js"
         },
         {
-          "byteLength": 10476,
+          "byteLength": 10389,
           "relativePath": "dist/agent/runtime/terminal/unified/goalRuntime.js.map"
         },
         {
@@ -3970,19 +3426,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/injectionFailurePolicy.js.map"
         },
         {
-          "byteLength": 5424,
+          "byteLength": 5799,
           "relativePath": "dist/agent/runtime/terminal/unified/inputArbiter.d.ts"
         },
         {
-          "byteLength": 38397,
+          "byteLength": 42113,
           "relativePath": "dist/agent/runtime/terminal/unified/inputArbiter.d.ts.map"
         },
         {
-          "byteLength": 29596,
+          "byteLength": 33095,
           "relativePath": "dist/agent/runtime/terminal/unified/inputArbiter.js"
         },
         {
-          "byteLength": 56972,
+          "byteLength": 63374,
           "relativePath": "dist/agent/runtime/terminal/unified/inputArbiter.js.map"
         },
         {
@@ -4022,15 +3478,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.d.ts"
         },
         {
-          "byteLength": 11698,
+          "byteLength": 12395,
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.d.ts.map"
         },
         {
-          "byteLength": 9422,
+          "byteLength": 10064,
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.js"
         },
         {
-          "byteLength": 17878,
+          "byteLength": 19278,
           "relativePath": "dist/agent/runtime/terminal/unified/nativeSession.js.map"
         },
         {
@@ -4134,15 +3590,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/providerTranscript.d.ts"
         },
         {
-          "byteLength": 27680,
+          "byteLength": 28091,
           "relativePath": "dist/agent/runtime/terminal/unified/providerTranscript.d.ts.map"
         },
         {
-          "byteLength": 20705,
+          "byteLength": 21171,
           "relativePath": "dist/agent/runtime/terminal/unified/providerTranscript.js"
         },
         {
-          "byteLength": 41801,
+          "byteLength": 42354,
           "relativePath": "dist/agent/runtime/terminal/unified/providerTranscript.js.map"
         },
         {
@@ -4194,19 +3650,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/resumeChoice/types.js.map"
         },
         {
-          "byteLength": 690,
+          "byteLength": 762,
           "relativePath": "dist/agent/runtime/terminal/unified/resumeTurnBarrier.d.ts"
         },
         {
-          "byteLength": 3808,
+          "byteLength": 4193,
           "relativePath": "dist/agent/runtime/terminal/unified/resumeTurnBarrier.d.ts.map"
         },
         {
-          "byteLength": 2882,
+          "byteLength": 3188,
           "relativePath": "dist/agent/runtime/terminal/unified/resumeTurnBarrier.js"
         },
         {
-          "byteLength": 5259,
+          "byteLength": 5810,
           "relativePath": "dist/agent/runtime/terminal/unified/resumeTurnBarrier.js.map"
         },
         {
@@ -4214,15 +3670,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/runtimeControlIntegration.d.ts"
         },
         {
-          "byteLength": 15122,
+          "byteLength": 15362,
           "relativePath": "dist/agent/runtime/terminal/unified/runtimeControlIntegration.d.ts.map"
         },
         {
-          "byteLength": 11146,
+          "byteLength": 11407,
           "relativePath": "dist/agent/runtime/terminal/unified/runtimeControlIntegration.js"
         },
         {
-          "byteLength": 20982,
+          "byteLength": 21306,
           "relativePath": "dist/agent/runtime/terminal/unified/runtimeControlIntegration.js.map"
         },
         {
@@ -4262,15 +3718,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.d.ts"
         },
         {
-          "byteLength": 47446,
+          "byteLength": 48982,
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.d.ts.map"
         },
         {
-          "byteLength": 37479,
+          "byteLength": 38991,
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.js"
         },
         {
-          "byteLength": 71445,
+          "byteLength": 74054,
           "relativePath": "dist/agent/runtime/terminal/unified/screenState.js.map"
         },
         {
@@ -4422,15 +3878,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.d.ts"
         },
         {
-          "byteLength": 25263,
+          "byteLength": 25279,
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.d.ts.map"
         },
         {
-          "byteLength": 16298,
+          "byteLength": 16313,
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.js"
         },
         {
-          "byteLength": 33009,
+          "byteLength": 33035,
           "relativePath": "dist/agent/runtime/terminal/unified/tuiControls/dialogRegistry.js.map"
         },
         {
@@ -4578,35 +4034,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/unified/turnFailures.js.map"
         },
         {
-          "byteLength": 893,
+          "byteLength": 1065,
           "relativePath": "dist/agent/runtime/terminal/unified/turnInput.d.ts"
         },
         {
-          "byteLength": 4136,
+          "byteLength": 5037,
           "relativePath": "dist/agent/runtime/terminal/unified/turnInput.d.ts.map"
         },
         {
-          "byteLength": 2846,
+          "byteLength": 3553,
           "relativePath": "dist/agent/runtime/terminal/unified/turnInput.js"
         },
         {
-          "byteLength": 6272,
+          "byteLength": 7414,
           "relativePath": "dist/agent/runtime/terminal/unified/turnInput.js.map"
         },
         {
-          "byteLength": 12472,
+          "byteLength": 12477,
           "relativePath": "dist/agent/runtime/terminal/unified/turnOperations.d.ts"
         },
         {
-          "byteLength": 191918,
+          "byteLength": 193868,
           "relativePath": "dist/agent/runtime/terminal/unified/turnOperations.d.ts.map"
         },
         {
-          "byteLength": 179987,
+          "byteLength": 181893,
           "relativePath": "dist/agent/runtime/terminal/unified/turnOperations.js"
         },
         {
-          "byteLength": 296509,
+          "byteLength": 299719,
           "relativePath": "dist/agent/runtime/terminal/unified/turnOperations.js.map"
         },
         {
@@ -4678,15 +4134,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/statusline/apply.d.ts"
         },
         {
-          "byteLength": 9111,
+          "byteLength": 9240,
           "relativePath": "dist/agent/statusline/apply.d.ts.map"
         },
         {
-          "byteLength": 5155,
+          "byteLength": 5283,
           "relativePath": "dist/agent/statusline/apply.js"
         },
         {
-          "byteLength": 11520,
+          "byteLength": 11698,
           "relativePath": "dist/agent/statusline/apply.js.map"
         },
         {
@@ -4774,15 +4230,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/files.d.ts"
         },
         {
-          "byteLength": 26344,
+          "byteLength": 26473,
           "relativePath": "dist/agent/surfaces/sessions/external/files.d.ts.map"
         },
         {
-          "byteLength": 20160,
+          "byteLength": 20288,
           "relativePath": "dist/agent/surfaces/sessions/external/files.js"
         },
         {
-          "byteLength": 41335,
+          "byteLength": 41483,
           "relativePath": "dist/agent/surfaces/sessions/external/files.js.map"
         },
         {
@@ -4790,15 +4246,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/hooks.d.ts"
         },
         {
-          "byteLength": 9871,
+          "byteLength": 9977,
           "relativePath": "dist/agent/surfaces/sessions/external/hooks.d.ts.map"
         },
         {
-          "byteLength": 7319,
+          "byteLength": 7424,
           "relativePath": "dist/agent/surfaces/sessions/external/hooks.js"
         },
         {
-          "byteLength": 14423,
+          "byteLength": 14574,
           "relativePath": "dist/agent/surfaces/sessions/external/hooks.js.map"
         },
         {
@@ -4838,15 +4294,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts"
         },
         {
-          "byteLength": 12138,
+          "byteLength": 12361,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts.map"
         },
         {
-          "byteLength": 9897,
+          "byteLength": 10142,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js"
         },
         {
-          "byteLength": 19018,
+          "byteLength": 19388,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js.map"
         },
         {
@@ -4870,15 +4326,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.d.ts"
         },
         {
-          "byteLength": 2656,
+          "byteLength": 2762,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.d.ts.map"
         },
         {
-          "byteLength": 1549,
+          "byteLength": 1654,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.js"
         },
         {
-          "byteLength": 3803,
+          "byteLength": 3954,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.js.map"
         },
         {
@@ -4902,15 +4358,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.d.ts"
         },
         {
-          "byteLength": 17366,
+          "byteLength": 17761,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.d.ts.map"
         },
         {
-          "byteLength": 14295,
+          "byteLength": 14684,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.js"
         },
         {
-          "byteLength": 28956,
+          "byteLength": 29518,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.js.map"
         },
         {
@@ -4950,15 +4406,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.d.ts"
         },
         {
-          "byteLength": 4576,
+          "byteLength": 4946,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.d.ts.map"
         },
         {
-          "byteLength": 3901,
+          "byteLength": 4266,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.js"
         },
         {
-          "byteLength": 7439,
+          "byteLength": 7884,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.js.map"
         },
         {
@@ -4966,31 +4422,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/handoff/runtimeLocalMetadata.d.ts"
         },
         {
-          "byteLength": 4032,
+          "byteLength": 4149,
           "relativePath": "dist/agent/surfaces/sessions/handoff/runtimeLocalMetadata.d.ts.map"
         },
         {
-          "byteLength": 1673,
+          "byteLength": 1789,
           "relativePath": "dist/agent/surfaces/sessions/handoff/runtimeLocalMetadata.js"
         },
         {
-          "byteLength": 4555,
+          "byteLength": 4717,
           "relativePath": "dist/agent/surfaces/sessions/handoff/runtimeLocalMetadata.js.map"
         },
         {
-          "byteLength": 1204,
+          "byteLength": 1274,
           "relativePath": "dist/agent/surfaces/sessions/handoff/types.d.ts"
         },
         {
-          "byteLength": 2262,
+          "byteLength": 2468,
           "relativePath": "dist/agent/surfaces/sessions/handoff/types.d.ts.map"
         },
         {
-          "byteLength": 656,
+          "byteLength": 859,
           "relativePath": "dist/agent/surfaces/sessions/handoff/types.js"
         },
         {
-          "byteLength": 2289,
+          "byteLength": 2575,
           "relativePath": "dist/agent/surfaces/sessions/handoff/types.js.map"
         },
         {
@@ -5046,15 +4502,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/transcripts/goalSource.d.ts"
         },
         {
-          "byteLength": 20008,
+          "byteLength": 20027,
           "relativePath": "dist/agent/transcripts/goalSource.d.ts.map"
         },
         {
-          "byteLength": 14638,
+          "byteLength": 14655,
           "relativePath": "dist/agent/transcripts/goalSource.js"
         },
         {
-          "byteLength": 27212,
+          "byteLength": 27122,
           "relativePath": "dist/agent/transcripts/goalSource.js.map"
         },
         {
@@ -5158,15 +4614,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/transcripts/nativeSemanticProjection.d.ts"
         },
         {
-          "byteLength": 20041,
+          "byteLength": 20233,
           "relativePath": "dist/agent/transcripts/nativeSemanticProjection.d.ts.map"
         },
         {
-          "byteLength": 13695,
+          "byteLength": 13886,
           "relativePath": "dist/agent/transcripts/nativeSemanticProjection.js"
         },
         {
-          "byteLength": 28823,
+          "byteLength": 29070,
           "relativePath": "dist/agent/transcripts/nativeSemanticProjection.js.map"
         },
         {
@@ -5238,15 +4694,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/transcripts/taskNotification.d.ts"
         },
         {
-          "byteLength": 2933,
+          "byteLength": 3074,
           "relativePath": "dist/agent/transcripts/taskNotification.d.ts.map"
         },
         {
-          "byteLength": 2078,
+          "byteLength": 2222,
           "relativePath": "dist/agent/transcripts/taskNotification.js"
         },
         {
-          "byteLength": 5018,
+          "byteLength": 5209,
           "relativePath": "dist/agent/transcripts/taskNotification.js.map"
         },
         {
@@ -5414,15 +4870,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/workflowRecords/correlation.d.ts"
         },
         {
-          "byteLength": 34088,
+          "byteLength": 34269,
           "relativePath": "dist/agent/workflowRecords/correlation.d.ts.map"
         },
         {
-          "byteLength": 25276,
+          "byteLength": 25462,
           "relativePath": "dist/agent/workflowRecords/correlation.js"
         },
         {
-          "byteLength": 51367,
+          "byteLength": 51603,
           "relativePath": "dist/agent/workflowRecords/correlation.js.map"
         },
         {
@@ -5670,16 +5126,32 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 24196,
+          "byteLength": 24249,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 28271,
+          "byteLength": 28335,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 39312,
+          "byteLength": 39419,
           "relativePath": "dist/manifest.js.map"
+        },
+        {
+          "byteLength": 1335,
+          "relativePath": "dist/protocol/providerIdentity.d.ts"
+        },
+        {
+          "byteLength": 1739,
+          "relativePath": "dist/protocol/providerIdentity.d.ts.map"
+        },
+        {
+          "byteLength": 1403,
+          "relativePath": "dist/protocol/providerIdentity.js"
+        },
+        {
+          "byteLength": 1852,
+          "relativePath": "dist/protocol/providerIdentity.js.map"
         },
         {
           "byteLength": 2065,
@@ -5714,11 +5186,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/provider/catalog.js.map"
         },
         {
-          "byteLength": 8321,
+          "byteLength": 8418,
           "relativePath": "dist/provider/contribution.d.ts"
         },
         {
-          "byteLength": 1779,
+          "byteLength": 1781,
           "relativePath": "dist/provider/contribution.d.ts.map"
         },
         {
@@ -5782,7 +5254,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-0525b51f-f8bd-40be-8e1d-2f2fdd865349",
+      "immutableGenerationId": "bundled-50b456d6-e6ca-4063-8694-7483d81fd8dd",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.claude",
       "schemaVersion": 1,
@@ -5797,7 +5269,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 642647,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 653918,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -5805,19 +5281,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
-          "byteLength": 203,
+          "byteLength": 385,
           "relativePath": "dist/index.d.ts"
         },
         {
-          "byteLength": 394,
+          "byteLength": 659,
           "relativePath": "dist/index.d.ts.map"
         },
         {
-          "byteLength": 201,
+          "byteLength": 383,
           "relativePath": "dist/index.js"
         },
         {
-          "byteLength": 392,
+          "byteLength": 657,
           "relativePath": "dist/index.js.map"
         },
         {
@@ -5853,19 +5329,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/provider/contribution.js.map"
         },
         {
-          "byteLength": 4638,
+          "byteLength": 6366,
           "relativePath": "dist/provider/managedContract.d.ts"
         },
         {
-          "byteLength": 4848,
+          "byteLength": 8978,
           "relativePath": "dist/provider/managedContract.d.ts.map"
         },
         {
-          "byteLength": 4413,
+          "byteLength": 6770,
           "relativePath": "dist/provider/managedContract.js"
         },
         {
-          "byteLength": 7423,
+          "byteLength": 12138,
           "relativePath": "dist/provider/managedContract.js.map"
         },
         {
@@ -5873,15 +5349,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/provider/publicManagedRuntime.d.ts"
         },
         {
-          "byteLength": 13495,
+          "byteLength": 15004,
           "relativePath": "dist/provider/publicManagedRuntime.d.ts.map"
         },
         {
-          "byteLength": 12376,
+          "byteLength": 13933,
           "relativePath": "dist/provider/publicManagedRuntime.js"
         },
         {
-          "byteLength": 23683,
+          "byteLength": 26305,
           "relativePath": "dist/provider/publicManagedRuntime.js.map"
         },
         {
@@ -5905,7 +5381,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-e271e20b-fc6c-4233-9324-146e5cb3bcfd",
+      "immutableGenerationId": "bundled-71ad9343-8db5-4279-beb3-e209e8ad8d5f",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.provider.cliproxyapi",
       "schemaVersion": 1,
@@ -5920,19 +5396,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6629285,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-FXAWIL6Z.js"
+          "byteLength": 8080889,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-EQV347YY.js"
+        },
+        {
+          "byteLength": 175,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 197,
           "relativePath": ".happier-plugin/agent/runtime/engine.js"
         },
         {
-          "byteLength": 163088,
+          "byteLength": 153979,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 27302,
+          "byteLength": 27509,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -5968,11 +5448,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/availability.js.map"
         },
         {
-          "byteLength": 487,
+          "byteLength": 548,
           "relativePath": "dist/agent/acp/backend.d.ts"
         },
         {
-          "byteLength": 3371,
+          "byteLength": 3460,
           "relativePath": "dist/agent/acp/backend.d.ts.map"
         },
         {
@@ -5980,7 +5460,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/backend.js"
         },
         {
-          "byteLength": 5344,
+          "byteLength": 5408,
           "relativePath": "dist/agent/acp/backend.js.map"
         },
         {
@@ -6096,19 +5576,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/home/sync/fixedJsonlState.js.map"
         },
         {
-          "byteLength": 1280,
+          "byteLength": 1647,
           "relativePath": "dist/agent/auth/services/home/sync/sessionFiles.d.ts"
         },
         {
-          "byteLength": 4285,
+          "byteLength": 4821,
           "relativePath": "dist/agent/auth/services/home/sync/sessionFiles.d.ts.map"
         },
         {
-          "byteLength": 2364,
+          "byteLength": 2877,
           "relativePath": "dist/agent/auth/services/home/sync/sessionFiles.js"
         },
         {
-          "byteLength": 5366,
+          "byteLength": 5947,
           "relativePath": "dist/agent/auth/services/home/sync/sessionFiles.js.map"
         },
         {
@@ -6260,15 +5740,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/quota/openaiFetcher.d.ts"
         },
         {
-          "byteLength": 16228,
+          "byteLength": 15142,
           "relativePath": "dist/agent/auth/services/quota/openaiFetcher.d.ts.map"
         },
         {
-          "byteLength": 12580,
+          "byteLength": 11332,
           "relativePath": "dist/agent/auth/services/quota/openaiFetcher.js"
         },
         {
-          "byteLength": 24230,
+          "byteLength": 21713,
           "relativePath": "dist/agent/auth/services/quota/openaiFetcher.js.map"
         },
         {
@@ -6288,11 +5768,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/quota/probe.js.map"
         },
         {
-          "byteLength": 326,
+          "byteLength": 539,
           "relativePath": "dist/agent/auth/services/quota/rateLimitResetCredits.d.ts"
         },
         {
-          "byteLength": 4678,
+          "byteLength": 5213,
           "relativePath": "dist/agent/auth/services/quota/rateLimitResetCredits.d.ts.map"
         },
         {
@@ -6300,7 +5780,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/quota/rateLimitResetCredits.js"
         },
         {
-          "byteLength": 8642,
+          "byteLength": 8955,
           "relativePath": "dist/agent/auth/services/quota/rateLimitResetCredits.js.map"
         },
         {
@@ -6320,19 +5800,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/quota/rateLimitResetCreditsClient.js.map"
         },
         {
-          "byteLength": 886,
+          "byteLength": 1232,
           "relativePath": "dist/agent/auth/services/quota/rateLimitSnapshot.d.ts"
         },
         {
-          "byteLength": 7381,
+          "byteLength": 12625,
           "relativePath": "dist/agent/auth/services/quota/rateLimitSnapshot.d.ts.map"
         },
         {
-          "byteLength": 6272,
+          "byteLength": 10308,
           "relativePath": "dist/agent/auth/services/quota/rateLimitSnapshot.js"
         },
         {
-          "byteLength": 13310,
+          "byteLength": 22268,
           "relativePath": "dist/agent/auth/services/quota/rateLimitSnapshot.js.map"
         },
         {
@@ -6384,19 +5864,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/runtime/auth/application.js.map"
         },
         {
-          "byteLength": 2351,
+          "byteLength": 2407,
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.d.ts"
         },
         {
-          "byteLength": 17047,
+          "byteLength": 17428,
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.d.ts.map"
         },
         {
-          "byteLength": 12267,
+          "byteLength": 12493,
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.js"
         },
         {
-          "byteLength": 25838,
+          "byteLength": 26385,
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.js.map"
         },
         {
@@ -6494,6 +5974,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 1883,
           "relativePath": "dist/agent/auth/services/state/sharing/files.js.map"
+        },
+        {
+          "byteLength": 720,
+          "relativePath": "dist/agent/auth/services/state/sharing/reconcileResumeRolloutPath.d.ts"
+        },
+        {
+          "byteLength": 5527,
+          "relativePath": "dist/agent/auth/services/state/sharing/reconcileResumeRolloutPath.d.ts.map"
+        },
+        {
+          "byteLength": 4610,
+          "relativePath": "dist/agent/auth/services/state/sharing/reconcileResumeRolloutPath.js"
+        },
+        {
+          "byteLength": 8783,
+          "relativePath": "dist/agent/auth/services/state/sharing/reconcileResumeRolloutPath.js.map"
         },
         {
           "byteLength": 1316,
@@ -6608,19 +6104,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/cli/detect.js.map"
         },
         {
-          "byteLength": 7405,
+          "byteLength": 7813,
           "relativePath": "dist/agent/definition.d.ts"
         },
         {
-          "byteLength": 7254,
+          "byteLength": 7620,
           "relativePath": "dist/agent/definition.d.ts.map"
         },
         {
-          "byteLength": 5585,
+          "byteLength": 5820,
           "relativePath": "dist/agent/definition.js"
         },
         {
-          "byteLength": 8930,
+          "byteLength": 9320,
           "relativePath": "dist/agent/definition.js.map"
         },
         {
@@ -6788,15 +6284,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts"
         },
         {
-          "byteLength": 7172,
+          "byteLength": 7147,
           "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts.map"
         },
         {
-          "byteLength": 4327,
+          "byteLength": 4297,
           "relativePath": "dist/agent/lifecycle/spawnHooks.js"
         },
         {
-          "byteLength": 9001,
+          "byteLength": 8955,
           "relativePath": "dist/agent/lifecycle/spawnHooks.js.map"
         },
         {
@@ -6836,15 +6332,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/providerBinding/adapter.d.ts"
         },
         {
-          "byteLength": 10977,
+          "byteLength": 11231,
           "relativePath": "dist/agent/providerBinding/adapter.d.ts.map"
         },
         {
-          "byteLength": 9093,
+          "byteLength": 9283,
           "relativePath": "dist/agent/providerBinding/adapter.js"
         },
         {
-          "byteLength": 17827,
+          "byteLength": 18268,
           "relativePath": "dist/agent/providerBinding/adapter.js.map"
         },
         {
@@ -6884,15 +6380,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/rollout/discovery/candidates.d.ts"
         },
         {
-          "byteLength": 33491,
+          "byteLength": 33672,
           "relativePath": "dist/agent/rollout/discovery/candidates.d.ts.map"
         },
         {
-          "byteLength": 24958,
+          "byteLength": 25139,
           "relativePath": "dist/agent/rollout/discovery/candidates.js"
         },
         {
-          "byteLength": 49804,
+          "byteLength": 49952,
           "relativePath": "dist/agent/rollout/discovery/candidates.js.map"
         },
         {
@@ -6916,31 +6412,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/rollout/discovery/indexData.d.ts"
         },
         {
-          "byteLength": 17197,
+          "byteLength": 17556,
           "relativePath": "dist/agent/rollout/discovery/indexData.d.ts.map"
         },
         {
-          "byteLength": 13917,
+          "byteLength": 14271,
           "relativePath": "dist/agent/rollout/discovery/indexData.js"
         },
         {
-          "byteLength": 29803,
+          "byteLength": 30141,
           "relativePath": "dist/agent/rollout/discovery/indexData.js.map"
         },
         {
-          "byteLength": 2186,
+          "byteLength": 2188,
           "relativePath": "dist/agent/rollout/discovery/nativeSessionLog.d.ts"
         },
         {
-          "byteLength": 4326,
+          "byteLength": 4328,
           "relativePath": "dist/agent/rollout/discovery/nativeSessionLog.d.ts.map"
         },
         {
-          "byteLength": 3402,
+          "byteLength": 3404,
           "relativePath": "dist/agent/rollout/discovery/nativeSessionLog.js"
         },
         {
-          "byteLength": 5316,
+          "byteLength": 5318,
           "relativePath": "dist/agent/rollout/discovery/nativeSessionLog.js.map"
         },
         {
@@ -6980,15 +6476,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/rollout/discovery/sessionsForHome.d.ts"
         },
         {
-          "byteLength": 24346,
+          "byteLength": 24486,
           "relativePath": "dist/agent/rollout/discovery/sessionsForHome.d.ts.map"
         },
         {
-          "byteLength": 20666,
+          "byteLength": 20800,
           "relativePath": "dist/agent/rollout/discovery/sessionsForHome.js"
         },
         {
-          "byteLength": 41494,
+          "byteLength": 41558,
           "relativePath": "dist/agent/rollout/discovery/sessionsForHome.js.map"
         },
         {
@@ -7136,19 +6632,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/catalog/index.js.map"
         },
         {
-          "byteLength": 1889,
+          "byteLength": 2810,
           "relativePath": "dist/agent/runtime/appServer/client.d.ts"
         },
         {
-          "byteLength": 19186,
+          "byteLength": 21224,
           "relativePath": "dist/agent/runtime/appServer/client.d.ts.map"
         },
         {
-          "byteLength": 13357,
+          "byteLength": 14110,
           "relativePath": "dist/agent/runtime/appServer/client.js"
         },
         {
-          "byteLength": 29537,
+          "byteLength": 31331,
           "relativePath": "dist/agent/runtime/appServer/client.js.map"
         },
         {
@@ -7156,47 +6652,63 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/client/timeout.d.ts"
         },
         {
-          "byteLength": 3731,
+          "byteLength": 4072,
           "relativePath": "dist/agent/runtime/appServer/client/timeout.d.ts.map"
         },
         {
-          "byteLength": 2631,
+          "byteLength": 2932,
           "relativePath": "dist/agent/runtime/appServer/client/timeout.js"
         },
         {
-          "byteLength": 5191,
+          "byteLength": 5641,
           "relativePath": "dist/agent/runtime/appServer/client/timeout.js.map"
         },
         {
-          "byteLength": 1252,
+          "byteLength": 610,
+          "relativePath": "dist/agent/runtime/appServer/client/unixWebSocket.d.ts"
+        },
+        {
+          "byteLength": 11703,
+          "relativePath": "dist/agent/runtime/appServer/client/unixWebSocket.d.ts.map"
+        },
+        {
+          "byteLength": 10822,
+          "relativePath": "dist/agent/runtime/appServer/client/unixWebSocket.js"
+        },
+        {
+          "byteLength": 22041,
+          "relativePath": "dist/agent/runtime/appServer/client/unixWebSocket.js.map"
+        },
+        {
+          "byteLength": 1364,
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts"
         },
         {
-          "byteLength": 5876,
+          "byteLength": 6175,
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts.map"
         },
         {
-          "byteLength": 4087,
+          "byteLength": 4279,
           "relativePath": "dist/agent/runtime/appServer/compatibility.js"
         },
         {
-          "byteLength": 8841,
+          "byteLength": 9207,
           "relativePath": "dist/agent/runtime/appServer/compatibility.js.map"
         },
         {
-          "byteLength": 332,
+          "byteLength": 420,
           "relativePath": "dist/agent/runtime/appServer/config/overrides.d.ts"
         },
         {
-          "byteLength": 4288,
+          "byteLength": 5729,
           "relativePath": "dist/agent/runtime/appServer/config/overrides.d.ts.map"
         },
         {
-          "byteLength": 3329,
+          "byteLength": 4441,
           "relativePath": "dist/agent/runtime/appServer/config/overrides.js"
         },
         {
-          "byteLength": 7159,
+          "byteLength": 9103,
           "relativePath": "dist/agent/runtime/appServer/config/overrides.js.map"
         },
         {
@@ -7216,27 +6728,27 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/connectedServiceRuntimeIdentity.js.map"
         },
         {
-          "byteLength": 952,
+          "byteLength": 972,
           "relativePath": "dist/agent/runtime/appServer/connection.d.ts"
         },
         {
-          "byteLength": 1766,
+          "byteLength": 1830,
           "relativePath": "dist/agent/runtime/appServer/connection.d.ts.map"
         },
         {
-          "byteLength": 978,
+          "byteLength": 1029,
           "relativePath": "dist/agent/runtime/appServer/connection.js"
         },
         {
-          "byteLength": 2102,
+          "byteLength": 2183,
           "relativePath": "dist/agent/runtime/appServer/connection.js.map"
         },
         {
-          "byteLength": 6416,
+          "byteLength": 6795,
           "relativePath": "dist/agent/runtime/appServer/core.d.ts"
         },
         {
-          "byteLength": 12837,
+          "byteLength": 13601,
           "relativePath": "dist/agent/runtime/appServer/core.d.ts.map"
         },
         {
@@ -7244,7 +6756,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/core.js"
         },
         {
-          "byteLength": 6777,
+          "byteLength": 7167,
           "relativePath": "dist/agent/runtime/appServer/core.js.map"
         },
         {
@@ -7252,15 +6764,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/interactions.d.ts"
         },
         {
-          "byteLength": 14512,
+          "byteLength": 16104,
           "relativePath": "dist/agent/runtime/appServer/interactions.d.ts.map"
         },
         {
-          "byteLength": 12199,
+          "byteLength": 13627,
           "relativePath": "dist/agent/runtime/appServer/interactions.js"
         },
         {
-          "byteLength": 25779,
+          "byteLength": 28779,
           "relativePath": "dist/agent/runtime/appServer/interactions.js.map"
         },
         {
@@ -7280,19 +6792,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/media/generatedMedia.js.map"
         },
         {
-          "byteLength": 1034,
+          "byteLength": 2185,
           "relativePath": "dist/agent/runtime/appServer/native.d.ts"
         },
         {
-          "byteLength": 28794,
+          "byteLength": 39294,
           "relativePath": "dist/agent/runtime/appServer/native.d.ts.map"
         },
         {
-          "byteLength": 27385,
+          "byteLength": 35508,
           "relativePath": "dist/agent/runtime/appServer/native.js"
         },
         {
-          "byteLength": 51345,
+          "byteLength": 67078,
           "relativePath": "dist/agent/runtime/appServer/native.js.map"
         },
         {
@@ -7408,19 +6920,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/runtime.authRefresh.contract.js.map"
         },
         {
-          "byteLength": 5538,
+          "byteLength": 5500,
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts"
         },
         {
-          "byteLength": 136126,
+          "byteLength": 133796,
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map"
         },
         {
-          "byteLength": 127582,
+          "byteLength": 125433,
           "relativePath": "dist/agent/runtime/appServer/runtime.js"
         },
         {
-          "byteLength": 224383,
+          "byteLength": 221101,
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map"
         },
         {
@@ -7440,6 +6952,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/serviceTier.js.map"
         },
         {
+          "byteLength": 1377,
+          "relativePath": "dist/agent/runtime/appServer/sharedServer.d.ts"
+        },
+        {
+          "byteLength": 8388,
+          "relativePath": "dist/agent/runtime/appServer/sharedServer.d.ts.map"
+        },
+        {
+          "byteLength": 5985,
+          "relativePath": "dist/agent/runtime/appServer/sharedServer.js"
+        },
+        {
+          "byteLength": 12156,
+          "relativePath": "dist/agent/runtime/appServer/sharedServer.js.map"
+        },
+        {
           "byteLength": 395,
           "relativePath": "dist/agent/runtime/appServer/state/configOptionIds.d.ts"
         },
@@ -7456,19 +6984,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/state/configOptionIds.js.map"
         },
         {
-          "byteLength": 1931,
+          "byteLength": 2032,
           "relativePath": "dist/agent/runtime/appServer/state/controls.d.ts"
         },
         {
-          "byteLength": 19027,
+          "byteLength": 19392,
           "relativePath": "dist/agent/runtime/appServer/state/controls.d.ts.map"
         },
         {
-          "byteLength": 13439,
+          "byteLength": 13695,
           "relativePath": "dist/agent/runtime/appServer/state/controls.js"
         },
         {
-          "byteLength": 29815,
+          "byteLength": 30332,
           "relativePath": "dist/agent/runtime/appServer/state/controls.js.map"
         },
         {
@@ -7492,63 +7020,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/turns/failure.d.ts"
         },
         {
-          "byteLength": 14337,
+          "byteLength": 14570,
           "relativePath": "dist/agent/runtime/appServer/turns/failure.d.ts.map"
         },
         {
-          "byteLength": 11180,
+          "byteLength": 11408,
           "relativePath": "dist/agent/runtime/appServer/turns/failure.js"
         },
         {
-          "byteLength": 22200,
+          "byteLength": 22618,
           "relativePath": "dist/agent/runtime/appServer/turns/failure.js.map"
         },
         {
-          "byteLength": 607,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts"
-        },
-        {
-          "byteLength": 3960,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts.map"
-        },
-        {
-          "byteLength": 2527,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js"
-        },
-        {
-          "byteLength": 5695,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js.map"
-        },
-        {
-          "byteLength": 1382,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackTracker.d.ts"
-        },
-        {
-          "byteLength": 13776,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackTracker.d.ts.map"
-        },
-        {
-          "byteLength": 10661,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackTracker.js"
-        },
-        {
-          "byteLength": 20759,
-          "relativePath": "dist/agent/runtime/appServer/turns/rollbackTracker.js.map"
-        },
-        {
-          "byteLength": 1517,
+          "byteLength": 1429,
           "relativePath": "dist/agent/runtime/appServer/wire/fields.d.ts"
         },
         {
-          "byteLength": 7920,
+          "byteLength": 7770,
           "relativePath": "dist/agent/runtime/appServer/wire/fields.d.ts.map"
         },
         {
-          "byteLength": 5701,
+          "byteLength": 5677,
           "relativePath": "dist/agent/runtime/appServer/wire/fields.js"
         },
         {
-          "byteLength": 12200,
+          "byteLength": 11922,
           "relativePath": "dist/agent/runtime/appServer/wire/fields.js.map"
         },
         {
@@ -7556,15 +7052,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/work/goalCodec.d.ts"
         },
         {
-          "byteLength": 4901,
+          "byteLength": 5212,
           "relativePath": "dist/agent/runtime/appServer/work/goalCodec.d.ts.map"
         },
         {
-          "byteLength": 3392,
+          "byteLength": 3702,
           "relativePath": "dist/agent/runtime/appServer/work/goalCodec.js"
         },
         {
-          "byteLength": 7682,
+          "byteLength": 8101,
           "relativePath": "dist/agent/runtime/appServer/work/goalCodec.js.map"
         },
         {
@@ -7584,19 +7080,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/work/goalControl.js.map"
         },
         {
-          "byteLength": 491,
+          "byteLength": 1429,
+          "relativePath": "dist/agent/runtime/appServer/work/goalProjection.d.ts"
+        },
+        {
+          "byteLength": 4288,
+          "relativePath": "dist/agent/runtime/appServer/work/goalProjection.d.ts.map"
+        },
+        {
+          "byteLength": 3261,
+          "relativePath": "dist/agent/runtime/appServer/work/goalProjection.js"
+        },
+        {
+          "byteLength": 6804,
+          "relativePath": "dist/agent/runtime/appServer/work/goalProjection.js.map"
+        },
+        {
+          "byteLength": 606,
           "relativePath": "dist/agent/runtime/controls.d.ts"
         },
         {
-          "byteLength": 9946,
+          "byteLength": 7226,
           "relativePath": "dist/agent/runtime/controls.d.ts.map"
         },
         {
-          "byteLength": 9952,
+          "byteLength": 7036,
           "relativePath": "dist/agent/runtime/controls.js"
         },
         {
-          "byteLength": 18616,
+          "byteLength": 12942,
           "relativePath": "dist/agent/runtime/controls.js.map"
         },
         {
@@ -7668,15 +7180,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/engine.d.ts"
         },
         {
-          "byteLength": 5593,
+          "byteLength": 7229,
           "relativePath": "dist/agent/runtime/engine.d.ts.map"
         },
         {
-          "byteLength": 5037,
+          "byteLength": 6427,
           "relativePath": "dist/agent/runtime/engine.js"
         },
         {
-          "byteLength": 9135,
+          "byteLength": 11759,
           "relativePath": "dist/agent/runtime/engine.js.map"
         },
         {
@@ -7760,19 +7272,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/terminal/support.js.map"
         },
         {
+          "byteLength": 598,
+          "relativePath": "dist/agent/surfaces/sessions/attachDescriptor.d.ts"
+        },
+        {
+          "byteLength": 2378,
+          "relativePath": "dist/agent/surfaces/sessions/attachDescriptor.d.ts.map"
+        },
+        {
+          "byteLength": 1648,
+          "relativePath": "dist/agent/surfaces/sessions/attachDescriptor.js"
+        },
+        {
+          "byteLength": 3398,
+          "relativePath": "dist/agent/surfaces/sessions/attachDescriptor.js.map"
+        },
+        {
           "byteLength": 1604,
           "relativePath": "dist/agent/surfaces/sessions/external/candidateSource.d.ts"
         },
         {
-          "byteLength": 41217,
+          "byteLength": 41258,
           "relativePath": "dist/agent/surfaces/sessions/external/candidateSource.d.ts.map"
         },
         {
-          "byteLength": 34426,
+          "byteLength": 34463,
           "relativePath": "dist/agent/surfaces/sessions/external/candidateSource.js"
         },
         {
-          "byteLength": 66237,
+          "byteLength": 66260,
           "relativePath": "dist/agent/surfaces/sessions/external/candidateSource.js.map"
         },
         {
@@ -7796,15 +7324,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.d.ts"
         },
         {
-          "byteLength": 17541,
+          "byteLength": 17688,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.d.ts.map"
         },
         {
-          "byteLength": 16519,
+          "byteLength": 16662,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.js"
         },
         {
-          "byteLength": 29315,
+          "byteLength": 29491,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.js.map"
         },
         {
@@ -7812,15 +7340,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/externalSessionHooks.d.ts"
         },
         {
-          "byteLength": 18541,
+          "byteLength": 18789,
           "relativePath": "dist/agent/surfaces/sessions/external/externalSessionHooks.d.ts.map"
         },
         {
-          "byteLength": 15700,
+          "byteLength": 15938,
           "relativePath": "dist/agent/surfaces/sessions/external/externalSessionHooks.js"
         },
         {
-          "byteLength": 31522,
+          "byteLength": 31842,
           "relativePath": "dist/agent/surfaces/sessions/external/externalSessionHooks.js.map"
         },
         {
@@ -7876,15 +7404,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts"
         },
         {
-          "byteLength": 15418,
+          "byteLength": 15689,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts.map"
         },
         {
-          "byteLength": 14701,
+          "byteLength": 14973,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js"
         },
         {
-          "byteLength": 25987,
+          "byteLength": 26331,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js.map"
         },
         {
@@ -7908,15 +7436,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.d.ts"
         },
         {
-          "byteLength": 5956,
+          "byteLength": 6084,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.d.ts.map"
         },
         {
-          "byteLength": 4718,
+          "byteLength": 4844,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.js"
         },
         {
-          "byteLength": 9474,
+          "byteLength": 9628,
           "relativePath": "dist/agent/surfaces/sessions/external/takeover.js.map"
         },
         {
@@ -7972,15 +7500,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/fork/native.d.ts"
         },
         {
-          "byteLength": 7408,
+          "byteLength": 7541,
           "relativePath": "dist/agent/surfaces/sessions/fork/native.d.ts.map"
         },
         {
-          "byteLength": 3514,
+          "byteLength": 3641,
           "relativePath": "dist/agent/surfaces/sessions/fork/native.js"
         },
         {
-          "byteLength": 8479,
+          "byteLength": 8604,
           "relativePath": "dist/agent/surfaces/sessions/fork/native.js.map"
         },
         {
@@ -7988,15 +7516,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.d.ts"
         },
         {
-          "byteLength": 10810,
+          "byteLength": 10725,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.d.ts.map"
         },
         {
-          "byteLength": 7152,
+          "byteLength": 7148,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.js"
         },
         {
-          "byteLength": 15694,
+          "byteLength": 15480,
           "relativePath": "dist/agent/surfaces/sessions/handoff/bundle.js.map"
         },
         {
@@ -8036,15 +7564,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.d.ts"
         },
         {
-          "byteLength": 4501,
+          "byteLength": 4677,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.d.ts.map"
         },
         {
-          "byteLength": 4406,
+          "byteLength": 4584,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.js"
         },
         {
-          "byteLength": 7488,
+          "byteLength": 7691,
           "relativePath": "dist/agent/surfaces/sessions/handoff/providerOps.js.map"
         },
         {
@@ -8180,15 +7708,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/connectedAccounts/openAiCodexRuntime.d.ts"
         },
         {
-          "byteLength": 19539,
+          "byteLength": 21616,
           "relativePath": "dist/connectedAccounts/openAiCodexRuntime.d.ts.map"
         },
         {
-          "byteLength": 17934,
+          "byteLength": 20217,
           "relativePath": "dist/connectedAccounts/openAiCodexRuntime.js"
         },
         {
-          "byteLength": 33408,
+          "byteLength": 37180,
           "relativePath": "dist/connectedAccounts/openAiCodexRuntime.js.map"
         },
         {
@@ -8228,31 +7756,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 20563,
+          "byteLength": 21051,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 24577,
+          "byteLength": 25103,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 32618,
+          "byteLength": 33381,
           "relativePath": "dist/manifest.js.map"
         },
         {
-          "byteLength": 2662,
+          "byteLength": 3420,
           "relativePath": "dist/protocol/runtimeDescriptorV1.d.ts"
         },
         {
-          "byteLength": 15968,
+          "byteLength": 17655,
           "relativePath": "dist/protocol/runtimeDescriptorV1.d.ts.map"
         },
         {
-          "byteLength": 11214,
+          "byteLength": 12540,
           "relativePath": "dist/protocol/runtimeDescriptorV1.js"
         },
         {
-          "byteLength": 22554,
+          "byteLength": 24648,
           "relativePath": "dist/protocol/runtimeDescriptorV1.js.map"
         },
         {
@@ -8368,11 +7896,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/voice/runtime.js.map"
         },
         {
-          "byteLength": 16677,
+          "byteLength": 16276,
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d4887d06-4e06-4bba-a882-0f56e549763e",
+      "immutableGenerationId": "bundled-3b3e4eb9-8780-45af-aa8a-00564df831b2",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.codex",
       "schemaVersion": 1,
@@ -8387,19 +7915,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 854050,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-2SWUF7XF.js"
+          "byteLength": 879748,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-DNR5SSB6.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 127,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 185260,
+          "byteLength": 193143,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 6666,
+          "byteLength": 6618,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -8439,11 +7971,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/callbacks.js.map"
         },
         {
-          "byteLength": 2356,
+          "byteLength": 1784,
           "relativePath": "dist/agent/acp/definition.d.ts"
         },
         {
-          "byteLength": 752,
+          "byteLength": 741,
           "relativePath": "dist/agent/acp/definition.d.ts.map"
         },
         {
@@ -8471,19 +8003,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/index.js.map"
         },
         {
-          "byteLength": 2126,
+          "byteLength": 1598,
           "relativePath": "dist/agent/acp/transport.d.ts"
         },
         {
-          "byteLength": 1873,
+          "byteLength": 1420,
           "relativePath": "dist/agent/acp/transport.d.ts.map"
         },
         {
-          "byteLength": 1660,
+          "byteLength": 1183,
           "relativePath": "dist/agent/acp/transport.js"
         },
         {
-          "byteLength": 2419,
+          "byteLength": 1784,
           "relativePath": "dist/agent/acp/transport.js.map"
         },
         {
@@ -8635,15 +8167,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 1125,
+          "byteLength": 1501,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 938,
+          "byteLength": 1104,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 1681,
+          "byteLength": 2257,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -8683,15 +8215,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 4233,
+          "byteLength": 3580,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 4751,
+          "byteLength": 3959,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 7090,
+          "byteLength": 5842,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -8747,7 +8279,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-52e3b3a9-0c5c-465c-b51a-47080e5b0a89",
+      "immutableGenerationId": "bundled-6060b7ed-f10c-4d51-be27-455825f31ddc",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.copilot",
       "schemaVersion": 1,
@@ -8762,19 +8294,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1182695,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-T277F3ZD.js"
+          "byteLength": 1189526,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-POOAEQ3C.js"
+        },
+        {
+          "byteLength": 175,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 125,
           "relativePath": ".happier-plugin/agent/runtime/engine.js"
         },
         {
-          "byteLength": 122371,
+          "byteLength": 126760,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 7343,
+          "byteLength": 7434,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -8794,19 +8330,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/activate.js.map"
         },
         {
-          "byteLength": 788,
+          "byteLength": 1048,
           "relativePath": "dist/agent/acp/connection.d.ts"
         },
         {
-          "byteLength": 3061,
+          "byteLength": 4010,
           "relativePath": "dist/agent/acp/connection.d.ts.map"
         },
         {
-          "byteLength": 2342,
+          "byteLength": 2832,
           "relativePath": "dist/agent/acp/connection.js"
         },
         {
-          "byteLength": 4747,
+          "byteLength": 5985,
           "relativePath": "dist/agent/acp/connection.js.map"
         },
         {
@@ -9214,15 +8750,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/resume/session.d.ts"
         },
         {
-          "byteLength": 1563,
+          "byteLength": 1769,
           "relativePath": "dist/agent/resume/session.d.ts.map"
         },
         {
-          "byteLength": 617,
+          "byteLength": 821,
           "relativePath": "dist/agent/resume/session.js"
         },
         {
-          "byteLength": 1675,
+          "byteLength": 1958,
           "relativePath": "dist/agent/resume/session.js.map"
         },
         {
@@ -9230,15 +8766,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/emptyResponse.d.ts"
         },
         {
-          "byteLength": 2244,
+          "byteLength": 2937,
           "relativePath": "dist/agent/runtime/emptyResponse.d.ts.map"
         },
         {
-          "byteLength": 2020,
+          "byteLength": 2773,
           "relativePath": "dist/agent/runtime/emptyResponse.js"
         },
         {
-          "byteLength": 3724,
+          "byteLength": 5043,
           "relativePath": "dist/agent/runtime/emptyResponse.js.map"
         },
         {
@@ -9246,15 +8782,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/engine.d.ts"
         },
         {
-          "byteLength": 559,
+          "byteLength": 651,
           "relativePath": "dist/agent/runtime/engine.d.ts.map"
         },
         {
-          "byteLength": 274,
+          "byteLength": 369,
           "relativePath": "dist/agent/runtime/engine.js"
         },
         {
-          "byteLength": 691,
+          "byteLength": 840,
           "relativePath": "dist/agent/runtime/engine.js.map"
         },
         {
@@ -9294,15 +8830,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 4288,
+          "byteLength": 4332,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 4762,
+          "byteLength": 4817,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 7007,
+          "byteLength": 7095,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -9326,9 +8862,538 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-b76aaa70-5052-427b-b614-7b3276323f9d",
+      "immutableGenerationId": "bundled-19506025-abaf-49c3-b22e-6bf7511bec97",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.cursor",
+      "schemaVersion": 1,
+      "t": "happier_plugin_generation_v1"
+    }
+  },
+  {
+    "daemonEntryRelativePath": ".happier-plugin/daemon.js",
+    "packageEntryRelativePath": "dist/index.js",
+    "packageName": "@happier-dev/plugins-devin",
+    "record": {
+      "createdAtMs": 0,
+      "files": [
+        {
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 749148,
+          "relativePath": ".happier-plugin/daemon.js"
+        },
+        {
+          "byteLength": 13544,
+          "relativePath": ".happier-plugin/plugin.json"
+        },
+        {
+          "byteLength": 1295,
+          "relativePath": "README.md"
+        },
+        {
+          "byteLength": 245,
+          "relativePath": "dist/activate.d.ts"
+        },
+        {
+          "byteLength": 244,
+          "relativePath": "dist/activate.d.ts.map"
+        },
+        {
+          "byteLength": 129,
+          "relativePath": "dist/activate.js"
+        },
+        {
+          "byteLength": 301,
+          "relativePath": "dist/activate.js.map"
+        },
+        {
+          "byteLength": 76,
+          "relativePath": "dist/agent/acp/index.d.ts"
+        },
+        {
+          "byteLength": 189,
+          "relativePath": "dist/agent/acp/index.d.ts.map"
+        },
+        {
+          "byteLength": 74,
+          "relativePath": "dist/agent/acp/index.js"
+        },
+        {
+          "byteLength": 187,
+          "relativePath": "dist/agent/acp/index.js.map"
+        },
+        {
+          "byteLength": 4416,
+          "relativePath": "dist/agent/acp/runtimeDeclaration.d.ts"
+        },
+        {
+          "byteLength": 4084,
+          "relativePath": "dist/agent/acp/runtimeDeclaration.d.ts.map"
+        },
+        {
+          "byteLength": 3154,
+          "relativePath": "dist/agent/acp/runtimeDeclaration.js"
+        },
+        {
+          "byteLength": 4918,
+          "relativePath": "dist/agent/acp/runtimeDeclaration.js.map"
+        },
+        {
+          "byteLength": 64,
+          "relativePath": "dist/agent/auth/index.d.ts"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": "dist/agent/auth/index.d.ts.map"
+        },
+        {
+          "byteLength": 62,
+          "relativePath": "dist/agent/auth/index.js"
+        },
+        {
+          "byteLength": 174,
+          "relativePath": "dist/agent/auth/index.js.map"
+        },
+        {
+          "byteLength": 767,
+          "relativePath": "dist/agent/auth/status.d.ts"
+        },
+        {
+          "byteLength": 2242,
+          "relativePath": "dist/agent/auth/status.d.ts.map"
+        },
+        {
+          "byteLength": 647,
+          "relativePath": "dist/agent/auth/status.js"
+        },
+        {
+          "byteLength": 2107,
+          "relativePath": "dist/agent/auth/status.js.map"
+        },
+        {
+          "byteLength": 1667,
+          "relativePath": "dist/agent/definition.d.ts"
+        },
+        {
+          "byteLength": 2089,
+          "relativePath": "dist/agent/definition.d.ts.map"
+        },
+        {
+          "byteLength": 1688,
+          "relativePath": "dist/agent/definition.js"
+        },
+        {
+          "byteLength": 2831,
+          "relativePath": "dist/agent/definition.js.map"
+        },
+        {
+          "byteLength": 133,
+          "relativePath": "dist/agent/index.d.ts"
+        },
+        {
+          "byteLength": 287,
+          "relativePath": "dist/agent/index.d.ts.map"
+        },
+        {
+          "byteLength": 131,
+          "relativePath": "dist/agent/index.js"
+        },
+        {
+          "byteLength": 285,
+          "relativePath": "dist/agent/index.js.map"
+        },
+        {
+          "byteLength": 423,
+          "relativePath": "dist/agent/terminal/contribution.d.ts"
+        },
+        {
+          "byteLength": 976,
+          "relativePath": "dist/agent/terminal/contribution.d.ts.map"
+        },
+        {
+          "byteLength": 669,
+          "relativePath": "dist/agent/terminal/contribution.js"
+        },
+        {
+          "byteLength": 1226,
+          "relativePath": "dist/agent/terminal/contribution.js.map"
+        },
+        {
+          "byteLength": 553,
+          "relativePath": "dist/agentSettings/definition.d.ts"
+        },
+        {
+          "byteLength": 751,
+          "relativePath": "dist/agentSettings/definition.d.ts.map"
+        },
+        {
+          "byteLength": 468,
+          "relativePath": "dist/agentSettings/definition.js"
+        },
+        {
+          "byteLength": 1091,
+          "relativePath": "dist/agentSettings/definition.js.map"
+        },
+        {
+          "byteLength": 192,
+          "relativePath": "dist/index.d.ts"
+        },
+        {
+          "byteLength": 385,
+          "relativePath": "dist/index.d.ts.map"
+        },
+        {
+          "byteLength": 190,
+          "relativePath": "dist/index.js"
+        },
+        {
+          "byteLength": 383,
+          "relativePath": "dist/index.js.map"
+        },
+        {
+          "byteLength": 693,
+          "relativePath": "dist/manifest.d.ts"
+        },
+        {
+          "byteLength": 3836,
+          "relativePath": "dist/manifest.d.ts.map"
+        },
+        {
+          "byteLength": 4190,
+          "relativePath": "dist/manifest.js"
+        },
+        {
+          "byteLength": 6382,
+          "relativePath": "dist/manifest.js.map"
+        },
+        {
+          "byteLength": 3428,
+          "relativePath": "dist/ui/descriptor.d.ts"
+        },
+        {
+          "byteLength": 3868,
+          "relativePath": "dist/ui/descriptor.d.ts.map"
+        },
+        {
+          "byteLength": 3424,
+          "relativePath": "dist/ui/descriptor.js"
+        },
+        {
+          "byteLength": 4626,
+          "relativePath": "dist/ui/descriptor.js.map"
+        },
+        {
+          "byteLength": 9343,
+          "relativePath": "dist/ui/translations.d.ts"
+        },
+        {
+          "byteLength": 5519,
+          "relativePath": "dist/ui/translations.d.ts.map"
+        },
+        {
+          "byteLength": 5253,
+          "relativePath": "dist/ui/translations.js"
+        },
+        {
+          "byteLength": 8041,
+          "relativePath": "dist/ui/translations.js.map"
+        },
+        {
+          "byteLength": 637,
+          "relativePath": "package.json"
+        }
+      ],
+      "immutableGenerationId": "bundled-4c3dc63f-5fb4-4097-849d-44aecec8e98f",
+      "manifestRelativePath": ".happier-plugin/plugin.json",
+      "pluginId": "happier.agent.devin",
+      "schemaVersion": 1,
+      "t": "happier_plugin_generation_v1"
+    }
+  },
+  {
+    "daemonEntryRelativePath": ".happier-plugin/daemon.js",
+    "packageEntryRelativePath": "dist/index.js",
+    "packageName": "@happier-dev/plugins-droid",
+    "record": {
+      "createdAtMs": 0,
+      "files": [
+        {
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 750298,
+          "relativePath": ".happier-plugin/daemon.js"
+        },
+        {
+          "byteLength": 10289,
+          "relativePath": ".happier-plugin/plugin.json"
+        },
+        {
+          "byteLength": 245,
+          "relativePath": "dist/activate.d.ts"
+        },
+        {
+          "byteLength": 244,
+          "relativePath": "dist/activate.d.ts.map"
+        },
+        {
+          "byteLength": 129,
+          "relativePath": "dist/activate.js"
+        },
+        {
+          "byteLength": 301,
+          "relativePath": "dist/activate.js.map"
+        },
+        {
+          "byteLength": 1667,
+          "relativePath": "dist/agent/definition.d.ts"
+        },
+        {
+          "byteLength": 2307,
+          "relativePath": "dist/agent/definition.d.ts.map"
+        },
+        {
+          "byteLength": 1784,
+          "relativePath": "dist/agent/definition.js"
+        },
+        {
+          "byteLength": 2927,
+          "relativePath": "dist/agent/definition.js.map"
+        },
+        {
+          "byteLength": 492,
+          "relativePath": "dist/agent/terminal/contribution.d.ts"
+        },
+        {
+          "byteLength": 1053,
+          "relativePath": "dist/agent/terminal/contribution.d.ts.map"
+        },
+        {
+          "byteLength": 744,
+          "relativePath": "dist/agent/terminal/contribution.js"
+        },
+        {
+          "byteLength": 1314,
+          "relativePath": "dist/agent/terminal/contribution.js.map"
+        },
+        {
+          "byteLength": 274,
+          "relativePath": "dist/index.d.ts"
+        },
+        {
+          "byteLength": 535,
+          "relativePath": "dist/index.d.ts.map"
+        },
+        {
+          "byteLength": 272,
+          "relativePath": "dist/index.js"
+        },
+        {
+          "byteLength": 533,
+          "relativePath": "dist/index.js.map"
+        },
+        {
+          "byteLength": 693,
+          "relativePath": "dist/manifest.d.ts"
+        },
+        {
+          "byteLength": 3892,
+          "relativePath": "dist/manifest.d.ts.map"
+        },
+        {
+          "byteLength": 4436,
+          "relativePath": "dist/manifest.js"
+        },
+        {
+          "byteLength": 6498,
+          "relativePath": "dist/manifest.js.map"
+        },
+        {
+          "byteLength": 4327,
+          "relativePath": "dist/ui/descriptor.d.ts"
+        },
+        {
+          "byteLength": 5252,
+          "relativePath": "dist/ui/descriptor.d.ts.map"
+        },
+        {
+          "byteLength": 4714,
+          "relativePath": "dist/ui/descriptor.js"
+        },
+        {
+          "byteLength": 6021,
+          "relativePath": "dist/ui/descriptor.js.map"
+        },
+        {
+          "byteLength": 8850,
+          "relativePath": "dist/ui/translations.d.ts"
+        },
+        {
+          "byteLength": 5584,
+          "relativePath": "dist/ui/translations.d.ts.map"
+        },
+        {
+          "byteLength": 5276,
+          "relativePath": "dist/ui/translations.js"
+        },
+        {
+          "byteLength": 7854,
+          "relativePath": "dist/ui/translations.js.map"
+        },
+        {
+          "byteLength": 399,
+          "relativePath": "package.json"
+        }
+      ],
+      "immutableGenerationId": "bundled-a7f98a99-dd7c-4d30-b77f-3189cdc2182f",
+      "manifestRelativePath": ".happier-plugin/plugin.json",
+      "pluginId": "happier.agent.droid",
+      "schemaVersion": 1,
+      "t": "happier_plugin_generation_v1"
+    }
+  },
+  {
+    "daemonEntryRelativePath": ".happier-plugin/daemon.js",
+    "packageEntryRelativePath": "dist/index.js",
+    "packageName": "@happier-dev/plugins-fx",
+    "record": {
+      "createdAtMs": 0,
+      "files": [
+        {
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 748884,
+          "relativePath": ".happier-plugin/daemon.js"
+        },
+        {
+          "byteLength": 10198,
+          "relativePath": ".happier-plugin/plugin.json"
+        },
+        {
+          "byteLength": 245,
+          "relativePath": "dist/activate.d.ts"
+        },
+        {
+          "byteLength": 238,
+          "relativePath": "dist/activate.d.ts.map"
+        },
+        {
+          "byteLength": 123,
+          "relativePath": "dist/activate.js"
+        },
+        {
+          "byteLength": 295,
+          "relativePath": "dist/activate.js.map"
+        },
+        {
+          "byteLength": 1664,
+          "relativePath": "dist/agent/definition.d.ts"
+        },
+        {
+          "byteLength": 2193,
+          "relativePath": "dist/agent/definition.d.ts.map"
+        },
+        {
+          "byteLength": 1665,
+          "relativePath": "dist/agent/definition.js"
+        },
+        {
+          "byteLength": 2787,
+          "relativePath": "dist/agent/definition.js.map"
+        },
+        {
+          "byteLength": 444,
+          "relativePath": "dist/agent/terminal/contribution.d.ts"
+        },
+        {
+          "byteLength": 999,
+          "relativePath": "dist/agent/terminal/contribution.d.ts.map"
+        },
+        {
+          "byteLength": 690,
+          "relativePath": "dist/agent/terminal/contribution.js"
+        },
+        {
+          "byteLength": 1260,
+          "relativePath": "dist/agent/terminal/contribution.js.map"
+        },
+        {
+          "byteLength": 271,
+          "relativePath": "dist/index.d.ts"
+        },
+        {
+          "byteLength": 532,
+          "relativePath": "dist/index.d.ts.map"
+        },
+        {
+          "byteLength": 269,
+          "relativePath": "dist/index.js"
+        },
+        {
+          "byteLength": 530,
+          "relativePath": "dist/index.js.map"
+        },
+        {
+          "byteLength": 684,
+          "relativePath": "dist/manifest.d.ts"
+        },
+        {
+          "byteLength": 3774,
+          "relativePath": "dist/manifest.d.ts.map"
+        },
+        {
+          "byteLength": 4107,
+          "relativePath": "dist/manifest.js"
+        },
+        {
+          "byteLength": 6568,
+          "relativePath": "dist/manifest.js.map"
+        },
+        {
+          "byteLength": 3375,
+          "relativePath": "dist/ui/descriptor.d.ts"
+        },
+        {
+          "byteLength": 4195,
+          "relativePath": "dist/ui/descriptor.d.ts.map"
+        },
+        {
+          "byteLength": 3657,
+          "relativePath": "dist/ui/descriptor.js"
+        },
+        {
+          "byteLength": 4968,
+          "relativePath": "dist/ui/descriptor.js.map"
+        },
+        {
+          "byteLength": 8218,
+          "relativePath": "dist/ui/translations.d.ts"
+        },
+        {
+          "byteLength": 5147,
+          "relativePath": "dist/ui/translations.d.ts.map"
+        },
+        {
+          "byteLength": 4845,
+          "relativePath": "dist/ui/translations.js"
+        },
+        {
+          "byteLength": 7407,
+          "relativePath": "dist/ui/translations.js.map"
+        },
+        {
+          "byteLength": 396,
+          "relativePath": "package.json"
+        }
+      ],
+      "immutableGenerationId": "bundled-d25ee2bb-08f2-431e-8069-455830c4bcec",
+      "manifestRelativePath": ".happier-plugin/plugin.json",
+      "pluginId": "happier.agent.fx",
       "schemaVersion": 1,
       "t": "happier_plugin_generation_v1"
     }
@@ -9341,19 +9406,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1165459,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-44VDWUVS.js"
+          "byteLength": 1507554,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-5UOAM3RO.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 125,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 265555,
+          "byteLength": 277030,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 7767,
+          "byteLength": 8148,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -9573,15 +9642,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/mcp/shaping.d.ts"
         },
         {
-          "byteLength": 6494,
+          "byteLength": 6512,
           "relativePath": "dist/agent/mcp/shaping.d.ts.map"
         },
         {
-          "byteLength": 5095,
+          "byteLength": 5115,
           "relativePath": "dist/agent/mcp/shaping.js"
         },
         {
-          "byteLength": 10610,
+          "byteLength": 10552,
           "relativePath": "dist/agent/mcp/shaping.js.map"
         },
         {
@@ -9637,15 +9706,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 3775,
+          "byteLength": 4898,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 3354,
+          "byteLength": 3776,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 6375,
+          "byteLength": 7884,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -9717,15 +9786,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 6720,
+          "byteLength": 7108,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 7928,
+          "byteLength": 8398,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 10831,
+          "byteLength": 11401,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -9765,7 +9834,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-44b91490-5406-45c2-9770-0eaca1d77cd3",
+      "immutableGenerationId": "bundled-17d74fb5-22c1-427c-99c2-dbc567c0e0a7",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.gemini",
       "schemaVersion": 1,
@@ -9780,7 +9849,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1745102,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 1755151,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -9920,7 +9993,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-b03252a8-30b7-464f-8b6a-d5cc08ea5115",
+      "immutableGenerationId": "bundled-2cfa049f-c104-4191-9cf2-a11c345fadee",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.google",
       "schemaVersion": 1,
@@ -9935,19 +10008,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1019751,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-A77ID2VO.js"
+          "byteLength": 1049937,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-GGNX6SUN.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 121,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 176646,
+          "byteLength": 182952,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 9843,
+          "byteLength": 9957,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -10019,15 +10096,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/historyControls.d.ts"
         },
         {
-          "byteLength": 9637,
+          "byteLength": 9967,
           "relativePath": "dist/agent/acp/historyControls.d.ts.map"
         },
         {
-          "byteLength": 8082,
+          "byteLength": 8415,
           "relativePath": "dist/agent/acp/historyControls.js"
         },
         {
-          "byteLength": 14853,
+          "byteLength": 15222,
           "relativePath": "dist/agent/acp/historyControls.js.map"
         },
         {
@@ -10147,15 +10224,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 964,
+          "byteLength": 1423,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 731,
+          "byteLength": 1279,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 1422,
+          "byteLength": 2269,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -10179,15 +10256,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 4247,
+          "byteLength": 4300,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 5013,
+          "byteLength": 5077,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 6929,
+          "byteLength": 7036,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -10227,7 +10304,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-86a3ce13-53c8-4840-a686-8e0209e5b637",
+      "immutableGenerationId": "bundled-ba232aca-0a89-4f60-b40c-bc785346f478",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.grok",
       "schemaVersion": 1,
@@ -10242,7 +10319,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 672941,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 681272,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -10274,7 +10355,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/activate.js.map"
         },
         {
-          "byteLength": 1126826,
+          "byteLength": 1440880,
           "relativePath": "dist/happier-plugin-ui/react-native-web/inspector-app-native/entry.mjs.bundle"
         },
         {
@@ -10294,11 +10375,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 4238405,
+          "byteLength": 6359902,
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 799105,
+          "byteLength": 1195799,
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle.map"
         },
         {
@@ -10318,15 +10399,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 4238405,
+          "byteLength": 6359902,
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 799105,
+          "byteLength": 1195799,
           "relativePath": "dist/happier-plugin-ui/react-native/inspector-app-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js.chunk.bundle.map"
         },
         {
-          "byteLength": 5390,
+          "byteLength": 5392,
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json"
         },
         {
@@ -10398,7 +10479,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d9e661e5-0e7f-4041-b07d-449e84c56f4b",
+      "immutableGenerationId": "bundled-dbfe60e9-277f-4ef4-a6e3-714d8f4f5ae7",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.inspector",
       "schemaVersion": 1,
@@ -10413,19 +10494,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 857970,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-Q7NXPBAZ.js"
+          "byteLength": 882469,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-BESF7M2C.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 121,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 181347,
+          "byteLength": 189853,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 4181,
+          "byteLength": 4272,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -10465,11 +10550,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/callbacks.js.map"
         },
         {
-          "byteLength": 2360,
+          "byteLength": 1758,
           "relativePath": "dist/agent/acp/definition.d.ts"
         },
         {
-          "byteLength": 731,
+          "byteLength": 720,
           "relativePath": "dist/agent/acp/definition.d.ts.map"
         },
         {
@@ -10497,19 +10582,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/acp/index.js.map"
         },
         {
-          "byteLength": 2124,
+          "byteLength": 1566,
           "relativePath": "dist/agent/acp/transport.d.ts"
         },
         {
-          "byteLength": 1822,
+          "byteLength": 1339,
           "relativePath": "dist/agent/acp/transport.d.ts.map"
         },
         {
-          "byteLength": 1615,
+          "byteLength": 1108,
           "relativePath": "dist/agent/acp/transport.js"
         },
         {
-          "byteLength": 2368,
+          "byteLength": 1703,
           "relativePath": "dist/agent/acp/transport.js.map"
         },
         {
@@ -10597,15 +10682,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 1152,
+          "byteLength": 1612,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 974,
+          "byteLength": 1105,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 1739,
+          "byteLength": 2397,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -10645,15 +10730,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 3221,
+          "byteLength": 3265,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 3588,
+          "byteLength": 3643,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 5342,
+          "byteLength": 5430,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -10693,7 +10778,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-1d21274a-ff43-45ae-ba75-2f2a1266585e",
+      "immutableGenerationId": "bundled-e5da7c39-7791-4a18-911a-a1741fe3d717",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kilo",
       "schemaVersion": 1,
@@ -10708,23 +10793,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 15923,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-PWGARRJ6.js"
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
-          "byteLength": 121,
-          "relativePath": ".happier-plugin/agent/runtime/factory.js"
-        },
-        {
-          "byteLength": 737559,
+          "byteLength": 750572,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 8179,
+          "byteLength": 12268,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
-          "byteLength": 519,
+          "byteLength": 1568,
           "relativePath": "README.md"
         },
         {
@@ -10744,195 +10825,67 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/activate.js.map"
         },
         {
-          "byteLength": 461,
-          "relativePath": "dist/agent/acp/callbacks.d.ts"
-        },
-        {
-          "byteLength": 1706,
-          "relativePath": "dist/agent/acp/callbacks.d.ts.map"
-        },
-        {
-          "byteLength": 908,
-          "relativePath": "dist/agent/acp/callbacks.js"
-        },
-        {
-          "byteLength": 2115,
-          "relativePath": "dist/agent/acp/callbacks.js.map"
-        },
-        {
-          "byteLength": 691,
-          "relativePath": "dist/agent/acp/definition.d.ts"
-        },
-        {
-          "byteLength": 660,
-          "relativePath": "dist/agent/acp/definition.d.ts.map"
-        },
-        {
-          "byteLength": 358,
-          "relativePath": "dist/agent/acp/definition.js"
-        },
-        {
-          "byteLength": 848,
-          "relativePath": "dist/agent/acp/definition.js.map"
-        },
-        {
-          "byteLength": 552,
-          "relativePath": "dist/agent/acp/pythonSelectorEnv.d.ts"
-        },
-        {
-          "byteLength": 2887,
-          "relativePath": "dist/agent/acp/pythonSelectorEnv.d.ts.map"
-        },
-        {
-          "byteLength": 1974,
-          "relativePath": "dist/agent/acp/pythonSelectorEnv.js"
-        },
-        {
-          "byteLength": 4204,
-          "relativePath": "dist/agent/acp/pythonSelectorEnv.js.map"
-        },
-        {
-          "byteLength": 770,
-          "relativePath": "dist/agent/acp/transport.d.ts"
-        },
-        {
-          "byteLength": 3616,
-          "relativePath": "dist/agent/acp/transport.d.ts.map"
-        },
-        {
-          "byteLength": 3060,
-          "relativePath": "dist/agent/acp/transport.js"
-        },
-        {
-          "byteLength": 5930,
-          "relativePath": "dist/agent/acp/transport.js.map"
-        },
-        {
-          "byteLength": 179,
-          "relativePath": "dist/agent/bootstrap/readonlyAgentFile.d.ts"
-        },
-        {
-          "byteLength": 908,
-          "relativePath": "dist/agent/bootstrap/readonlyAgentFile.d.ts.map"
-        },
-        {
-          "byteLength": 712,
-          "relativePath": "dist/agent/bootstrap/readonlyAgentFile.js"
-        },
-        {
-          "byteLength": 1174,
-          "relativePath": "dist/agent/bootstrap/readonlyAgentFile.js.map"
-        },
-        {
-          "byteLength": 1320,
+          "byteLength": 1531,
           "relativePath": "dist/agent/definition.d.ts"
         },
         {
-          "byteLength": 1609,
+          "byteLength": 2296,
           "relativePath": "dist/agent/definition.d.ts.map"
         },
         {
-          "byteLength": 1267,
+          "byteLength": 1923,
           "relativePath": "dist/agent/definition.js"
         },
         {
-          "byteLength": 2228,
+          "byteLength": 3064,
           "relativePath": "dist/agent/definition.js.map"
         },
         {
-          "byteLength": 1311,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts"
+          "byteLength": 1652,
+          "relativePath": "dist/agent/readiness/declaration.d.ts"
         },
         {
-          "byteLength": 6345,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts.map"
+          "byteLength": 1936,
+          "relativePath": "dist/agent/readiness/declaration.d.ts.map"
         },
         {
-          "byteLength": 3472,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.js"
+          "byteLength": 1777,
+          "relativePath": "dist/agent/readiness/declaration.js"
         },
         {
-          "byteLength": 8302,
-          "relativePath": "dist/agent/lifecycle/spawnHooks.js.map"
+          "byteLength": 2689,
+          "relativePath": "dist/agent/readiness/declaration.js.map"
         },
         {
-          "byteLength": 279,
-          "relativePath": "dist/agent/preferences/pythonSelector.d.ts"
+          "byteLength": 520,
+          "relativePath": "dist/agent/terminal/contribution.d.ts"
         },
         {
-          "byteLength": 682,
-          "relativePath": "dist/agent/preferences/pythonSelector.d.ts.map"
+          "byteLength": 1081,
+          "relativePath": "dist/agent/terminal/contribution.d.ts.map"
         },
         {
-          "byteLength": 334,
-          "relativePath": "dist/agent/preferences/pythonSelector.js"
+          "byteLength": 770,
+          "relativePath": "dist/agent/terminal/contribution.js"
         },
         {
-          "byteLength": 821,
-          "relativePath": "dist/agent/preferences/pythonSelector.js.map"
+          "byteLength": 1342,
+          "relativePath": "dist/agent/terminal/contribution.js.map"
         },
         {
-          "byteLength": 525,
-          "relativePath": "dist/agent/preferences/session.d.ts"
-        },
-        {
-          "byteLength": 2106,
-          "relativePath": "dist/agent/preferences/session.d.ts.map"
-        },
-        {
-          "byteLength": 1052,
-          "relativePath": "dist/agent/preferences/session.js"
-        },
-        {
-          "byteLength": 2360,
-          "relativePath": "dist/agent/preferences/session.js.map"
-        },
-        {
-          "byteLength": 186,
-          "relativePath": "dist/agent/runtime/factory.d.ts"
-        },
-        {
-          "byteLength": 1780,
-          "relativePath": "dist/agent/runtime/factory.d.ts.map"
-        },
-        {
-          "byteLength": 1552,
-          "relativePath": "dist/agent/runtime/factory.js"
-        },
-        {
-          "byteLength": 2861,
-          "relativePath": "dist/agent/runtime/factory.js.map"
-        },
-        {
-          "byteLength": 1742,
-          "relativePath": "dist/agentSettings/definition.d.ts"
-        },
-        {
-          "byteLength": 3243,
-          "relativePath": "dist/agentSettings/definition.d.ts.map"
-        },
-        {
-          "byteLength": 3009,
-          "relativePath": "dist/agentSettings/definition.js"
-        },
-        {
-          "byteLength": 4585,
-          "relativePath": "dist/agentSettings/definition.js.map"
-        },
-        {
-          "byteLength": 207,
+          "byteLength": 273,
           "relativePath": "dist/index.d.ts"
         },
         {
-          "byteLength": 400,
+          "byteLength": 534,
           "relativePath": "dist/index.d.ts.map"
         },
         {
-          "byteLength": 205,
+          "byteLength": 271,
           "relativePath": "dist/index.js"
         },
         {
-          "byteLength": 398,
+          "byteLength": 532,
           "relativePath": "dist/index.js.map"
         },
         {
@@ -10940,39 +10893,55 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 4720,
+          "byteLength": 6306,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 5328,
+          "byteLength": 7261,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 7723,
+          "byteLength": 9662,
           "relativePath": "dist/manifest.js.map"
         },
         {
-          "byteLength": 1323,
+          "byteLength": 1470,
           "relativePath": "dist/ui/descriptor.d.ts"
         },
         {
-          "byteLength": 1718,
+          "byteLength": 1891,
           "relativePath": "dist/ui/descriptor.d.ts.map"
         },
         {
-          "byteLength": 1361,
+          "byteLength": 1494,
           "relativePath": "dist/ui/descriptor.js"
         },
         {
-          "byteLength": 2244,
+          "byteLength": 2477,
           "relativePath": "dist/ui/descriptor.js.map"
         },
         {
-          "byteLength": 721,
+          "byteLength": 8592,
+          "relativePath": "dist/ui/translations.d.ts"
+        },
+        {
+          "byteLength": 5563,
+          "relativePath": "dist/ui/translations.d.ts.map"
+        },
+        {
+          "byteLength": 5249,
+          "relativePath": "dist/ui/translations.js"
+        },
+        {
+          "byteLength": 7825,
+          "relativePath": "dist/ui/translations.js.map"
+        },
+        {
+          "byteLength": 420,
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-3d684491-197d-4ba4-ac2d-78643ae171d3",
+      "immutableGenerationId": "bundled-e95ad4e9-b7b1-41a6-a129-9357294d0c5f",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kimi",
       "schemaVersion": 1,
@@ -10987,15 +10956,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
           "byteLength": 121,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 731883,
+          "byteLength": 741811,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 4694,
+          "byteLength": 4785,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -11167,15 +11140,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 3277,
+          "byteLength": 3321,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 3592,
+          "byteLength": 3647,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 5553,
+          "byteLength": 5641,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -11199,7 +11172,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-3dbbabf1-b6e4-437f-af70-5fa279bd964c",
+      "immutableGenerationId": "bundled-126ed0a2-459e-4234-ba97-3b61d241dbfa",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kiro",
       "schemaVersion": 1,
@@ -11214,19 +11187,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5556581,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-L34MQGT3.js"
+          "byteLength": 6844746,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-IICAVWTD.js"
+        },
+        {
+          "byteLength": 175,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 201,
           "relativePath": ".happier-plugin/agent/runtime/engine.js"
         },
         {
-          "byteLength": 33671,
+          "byteLength": 33808,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 18876,
+          "byteLength": 18990,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -11346,19 +11323,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/definition.js.map"
         },
         {
-          "byteLength": 1288,
+          "byteLength": 1313,
           "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts"
         },
         {
-          "byteLength": 5924,
+          "byteLength": 6069,
           "relativePath": "dist/agent/lifecycle/spawnHooks.d.ts.map"
         },
         {
-          "byteLength": 3312,
+          "byteLength": 3411,
           "relativePath": "dist/agent/lifecycle/spawnHooks.js"
         },
         {
-          "byteLength": 7606,
+          "byteLength": 7817,
           "relativePath": "dist/agent/lifecycle/spawnHooks.js.map"
         },
         {
@@ -11382,15 +11359,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/engine.d.ts"
         },
         {
-          "byteLength": 8712,
+          "byteLength": 10361,
           "relativePath": "dist/agent/runtime/engine.d.ts.map"
         },
         {
-          "byteLength": 7897,
+          "byteLength": 9327,
           "relativePath": "dist/agent/runtime/engine.js"
         },
         {
-          "byteLength": 14816,
+          "byteLength": 17541,
           "relativePath": "dist/agent/runtime/engine.js.map"
         },
         {
@@ -11590,15 +11567,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 8785,
+          "byteLength": 8838,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 10075,
+          "byteLength": 10139,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 14016,
+          "byteLength": 14123,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -11638,7 +11615,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d5f2fca8-d7a5-49cd-becc-6d781cc6082a",
+      "immutableGenerationId": "bundled-1f491a30-f7c2-4b1c-a5f3-d5ec85007940",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.ohmypi",
       "schemaVersion": 1,
@@ -11653,7 +11630,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 626904,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 635235,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -11729,7 +11710,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d179d27d-0ae6-4a03-b296-bd948f54e2c8",
+      "immutableGenerationId": "bundled-19ef94cd-1d7b-4286-be2a-4d0f30962743",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.provider.ollama",
       "schemaVersion": 1,
@@ -11744,11 +11725,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1653785,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 1766339,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 12288,
+          "byteLength": 12433,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -11820,15 +11805,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 8226,
+          "byteLength": 8426,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 11293,
+          "byteLength": 11507,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 13495,
+          "byteLength": 13784,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -12028,7 +12013,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-65b4530e-fe26-4fee-b75f-f87262c7db9e",
+      "immutableGenerationId": "bundled-82c82c4e-a938-4228-a542-d07b4a1ef0c3",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.openai",
       "schemaVersion": 1,
@@ -12043,7 +12028,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1216702,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 1226751,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -12151,7 +12140,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-c8901afc-630d-4d85-b91d-55136530525c",
+      "immutableGenerationId": "bundled-c01cb965-691f-4329-a35e-e19259d9b225",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.openai-compat",
       "schemaVersion": 1,
@@ -12166,19 +12155,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5809239,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-PB6HHGQK.js"
+          "byteLength": 7147864,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-RCFBU6Q7.js"
+        },
+        {
+          "byteLength": 182,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 209,
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js"
         },
         {
-          "byteLength": 67246,
+          "byteLength": 68942,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 16845,
+          "byteLength": 16982,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -12262,19 +12255,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/purposes.js.map"
         },
         {
-          "byteLength": 596,
+          "byteLength": 1042,
           "relativePath": "dist/agent/auth/services/qualifiedPurposeLaunch.d.ts"
         },
         {
-          "byteLength": 11882,
+          "byteLength": 13514,
           "relativePath": "dist/agent/auth/services/qualifiedPurposeLaunch.d.ts.map"
         },
         {
-          "byteLength": 10202,
+          "byteLength": 10945,
           "relativePath": "dist/agent/auth/services/qualifiedPurposeLaunch.js"
         },
         {
-          "byteLength": 19511,
+          "byteLength": 21352,
           "relativePath": "dist/agent/auth/services/qualifiedPurposeLaunch.js.map"
         },
         {
@@ -12534,19 +12527,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/config/thinking.js.map"
         },
         {
-          "byteLength": 5271,
+          "byteLength": 5277,
           "relativePath": "dist/agent/definition.d.ts"
         },
         {
-          "byteLength": 5385,
+          "byteLength": 5395,
           "relativePath": "dist/agent/definition.d.ts.map"
         },
         {
-          "byteLength": 4166,
+          "byteLength": 4172,
           "relativePath": "dist/agent/definition.js"
         },
         {
-          "byteLength": 6921,
+          "byteLength": 6931,
           "relativePath": "dist/agent/definition.js.map"
         },
         {
@@ -12586,15 +12579,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/identity/runtimeDescriptor.d.ts"
         },
         {
-          "byteLength": 7896,
+          "byteLength": 8226,
           "relativePath": "dist/agent/identity/runtimeDescriptor.d.ts.map"
         },
         {
-          "byteLength": 5461,
+          "byteLength": 5785,
           "relativePath": "dist/agent/identity/runtimeDescriptor.js"
         },
         {
-          "byteLength": 10681,
+          "byteLength": 11069,
           "relativePath": "dist/agent/identity/runtimeDescriptor.js.map"
         },
         {
@@ -12602,15 +12595,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/identity/session.d.ts"
         },
         {
-          "byteLength": 2297,
+          "byteLength": 2438,
           "relativePath": "dist/agent/identity/session.d.ts.map"
         },
         {
-          "byteLength": 1754,
+          "byteLength": 1895,
           "relativePath": "dist/agent/identity/session.js"
         },
         {
-          "byteLength": 2555,
+          "byteLength": 2704,
           "relativePath": "dist/agent/identity/session.js.map"
         },
         {
@@ -12628,22 +12621,6 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 245,
           "relativePath": "dist/agent/index.js.map"
-        },
-        {
-          "byteLength": 425,
-          "relativePath": "dist/agent/install/runtime.d.ts"
-        },
-        {
-          "byteLength": 543,
-          "relativePath": "dist/agent/install/runtime.d.ts.map"
-        },
-        {
-          "byteLength": 349,
-          "relativePath": "dist/agent/install/runtime.js"
-        },
-        {
-          "byteLength": 691,
-          "relativePath": "dist/agent/install/runtime.js.map"
         },
         {
           "byteLength": 194,
@@ -12714,15 +12691,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/preflight/models.d.ts"
         },
         {
-          "byteLength": 10849,
+          "byteLength": 11309,
           "relativePath": "dist/agent/preflight/models.d.ts.map"
         },
         {
-          "byteLength": 8989,
+          "byteLength": 9412,
           "relativePath": "dist/agent/preflight/models.js"
         },
         {
-          "byteLength": 18547,
+          "byteLength": 19432,
           "relativePath": "dist/agent/preflight/models.js.map"
         },
         {
@@ -12794,23 +12771,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/providerBinding/adapter.d.ts"
         },
         {
-          "byteLength": 8690,
+          "byteLength": 9036,
           "relativePath": "dist/agent/providerBinding/adapter.d.ts.map"
         },
         {
-          "byteLength": 7001,
+          "byteLength": 7296,
           "relativePath": "dist/agent/providerBinding/adapter.js"
         },
         {
-          "byteLength": 14092,
+          "byteLength": 14687,
           "relativePath": "dist/agent/providerBinding/adapter.js.map"
         },
         {
-          "byteLength": 383,
+          "byteLength": 591,
           "relativePath": "dist/agent/providerBinding/runtime.d.ts"
         },
         {
-          "byteLength": 1888,
+          "byteLength": 2416,
           "relativePath": "dist/agent/providerBinding/runtime.d.ts.map"
         },
         {
@@ -12818,7 +12795,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/providerBinding/runtime.js"
         },
         {
-          "byteLength": 2674,
+          "byteLength": 3101,
           "relativePath": "dist/agent/providerBinding/runtime.js.map"
         },
         {
@@ -12858,31 +12835,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/nativeRuntime.d.ts"
         },
         {
-          "byteLength": 5267,
+          "byteLength": 7663,
           "relativePath": "dist/agent/runtime/nativeRuntime.d.ts.map"
         },
         {
-          "byteLength": 4690,
+          "byteLength": 6893,
           "relativePath": "dist/agent/runtime/nativeRuntime.js"
         },
         {
-          "byteLength": 8361,
+          "byteLength": 12384,
           "relativePath": "dist/agent/runtime/nativeRuntime.js.map"
         },
         {
-          "byteLength": 1058,
+          "byteLength": 1831,
           "relativePath": "dist/agent/runtime/server/assembly.d.ts"
         },
         {
-          "byteLength": 9929,
+          "byteLength": 15539,
           "relativePath": "dist/agent/runtime/server/assembly.d.ts.map"
         },
         {
-          "byteLength": 7426,
+          "byteLength": 11489,
           "relativePath": "dist/agent/runtime/server/assembly.js"
         },
         {
-          "byteLength": 15062,
+          "byteLength": 22533,
           "relativePath": "dist/agent/runtime/server/assembly.js.map"
         },
         {
@@ -12890,16 +12867,32 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/attachSpec.d.ts"
         },
         {
-          "byteLength": 3488,
+          "byteLength": 4256,
           "relativePath": "dist/agent/runtime/server/attachSpec.d.ts.map"
         },
         {
-          "byteLength": 2966,
+          "byteLength": 3756,
           "relativePath": "dist/agent/runtime/server/attachSpec.js"
         },
         {
-          "byteLength": 3836,
+          "byteLength": 4810,
           "relativePath": "dist/agent/runtime/server/attachSpec.js.map"
+        },
+        {
+          "byteLength": 11520,
+          "relativePath": "dist/agent/runtime/server/dialect.d.ts"
+        },
+        {
+          "byteLength": 20431,
+          "relativePath": "dist/agent/runtime/server/dialect.d.ts.map"
+        },
+        {
+          "byteLength": 15090,
+          "relativePath": "dist/agent/runtime/server/dialect.js"
+        },
+        {
+          "byteLength": 23313,
+          "relativePath": "dist/agent/runtime/server/dialect.js.map"
         },
         {
           "byteLength": 675,
@@ -12916,6 +12909,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 2453,
           "relativePath": "dist/agent/runtime/server/endpoint.js.map"
+        },
+        {
+          "byteLength": 544,
+          "relativePath": "dist/agent/runtime/server/executionRunRuntime.d.ts"
+        },
+        {
+          "byteLength": 6191,
+          "relativePath": "dist/agent/runtime/server/executionRunRuntime.d.ts.map"
+        },
+        {
+          "byteLength": 5813,
+          "relativePath": "dist/agent/runtime/server/executionRunRuntime.js"
+        },
+        {
+          "byteLength": 10749,
+          "relativePath": "dist/agent/runtime/server/executionRunRuntime.js.map"
         },
         {
           "byteLength": 898,
@@ -12954,16 +12963,32 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/happierAuthoredProviderUserMessages.d.ts"
         },
         {
-          "byteLength": 9448,
+          "byteLength": 9586,
           "relativePath": "dist/agent/runtime/server/happierAuthoredProviderUserMessages.d.ts.map"
         },
         {
-          "byteLength": 8018,
+          "byteLength": 8156,
           "relativePath": "dist/agent/runtime/server/happierAuthoredProviderUserMessages.js"
         },
         {
-          "byteLength": 15582,
+          "byteLength": 15768,
           "relativePath": "dist/agent/runtime/server/happierAuthoredProviderUserMessages.js.map"
+        },
+        {
+          "byteLength": 2341,
+          "relativePath": "dist/agent/runtime/server/managedServerDialect.d.ts"
+        },
+        {
+          "byteLength": 4379,
+          "relativePath": "dist/agent/runtime/server/managedServerDialect.d.ts.map"
+        },
+        {
+          "byteLength": 2028,
+          "relativePath": "dist/agent/runtime/server/managedServerDialect.js"
+        },
+        {
+          "byteLength": 4420,
+          "relativePath": "dist/agent/runtime/server/managedServerDialect.js.map"
         },
         {
           "byteLength": 335,
@@ -12998,20 +13023,36 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/managedServerTurnInterruptionSupervisor.js.map"
         },
         {
-          "byteLength": 1064,
+          "byteLength": 1801,
           "relativePath": "dist/agent/runtime/server/mcpRegistration.d.ts"
         },
         {
-          "byteLength": 5781,
+          "byteLength": 7514,
           "relativePath": "dist/agent/runtime/server/mcpRegistration.d.ts.map"
         },
         {
-          "byteLength": 3936,
+          "byteLength": 4932,
           "relativePath": "dist/agent/runtime/server/mcpRegistration.js"
         },
         {
-          "byteLength": 8489,
+          "byteLength": 10653,
           "relativePath": "dist/agent/runtime/server/mcpRegistration.js.map"
+        },
+        {
+          "byteLength": 385,
+          "relativePath": "dist/agent/runtime/server/nativeExecutionRun.d.ts"
+        },
+        {
+          "byteLength": 2119,
+          "relativePath": "dist/agent/runtime/server/nativeExecutionRun.d.ts.map"
+        },
+        {
+          "byteLength": 1695,
+          "relativePath": "dist/agent/runtime/server/nativeExecutionRun.js"
+        },
+        {
+          "byteLength": 3079,
+          "relativePath": "dist/agent/runtime/server/nativeExecutionRun.js.map"
         },
         {
           "byteLength": 535,
@@ -13046,11 +13087,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/openCodeEventReconnect.js.map"
         },
         {
-          "byteLength": 562,
+          "byteLength": 476,
           "relativePath": "dist/agent/runtime/server/openCodeParsing.d.ts"
         },
         {
-          "byteLength": 1848,
+          "byteLength": 1792,
           "relativePath": "dist/agent/runtime/server/openCodeParsing.d.ts.map"
         },
         {
@@ -13058,7 +13099,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/openCodeParsing.js"
         },
         {
-          "byteLength": 2647,
+          "byteLength": 2518,
           "relativePath": "dist/agent/runtime/server/openCodeParsing.js.map"
         },
         {
@@ -13078,51 +13119,51 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/openCodeRetryStatus.js.map"
         },
         {
-          "byteLength": 1033,
+          "byteLength": 1533,
           "relativePath": "dist/agent/runtime/server/openCodeRuntimeEvents.d.ts"
         },
         {
-          "byteLength": 3564,
+          "byteLength": 4670,
           "relativePath": "dist/agent/runtime/server/openCodeRuntimeEvents.d.ts.map"
         },
         {
-          "byteLength": 1900,
+          "byteLength": 2538,
           "relativePath": "dist/agent/runtime/server/openCodeRuntimeEvents.js"
         },
         {
-          "byteLength": 4242,
+          "byteLength": 5614,
           "relativePath": "dist/agent/runtime/server/openCodeRuntimeEvents.js.map"
         },
         {
-          "byteLength": 5715,
+          "byteLength": 8582,
           "relativePath": "dist/agent/runtime/server/openCodeServerClient.d.ts"
         },
         {
-          "byteLength": 31962,
+          "byteLength": 49171,
           "relativePath": "dist/agent/runtime/server/openCodeServerClient.d.ts.map"
         },
         {
-          "byteLength": 21037,
+          "byteLength": 36667,
           "relativePath": "dist/agent/runtime/server/openCodeServerClient.js"
         },
         {
-          "byteLength": 44908,
+          "byteLength": 69249,
           "relativePath": "dist/agent/runtime/server/openCodeServerClient.js.map"
         },
         {
-          "byteLength": 856,
+          "byteLength": 820,
           "relativePath": "dist/agent/runtime/server/openCodeSse.d.ts"
         },
         {
-          "byteLength": 5645,
+          "byteLength": 6617,
           "relativePath": "dist/agent/runtime/server/openCodeSse.d.ts.map"
         },
         {
-          "byteLength": 4424,
+          "byteLength": 5450,
           "relativePath": "dist/agent/runtime/server/openCodeSse.js"
         },
         {
-          "byteLength": 9044,
+          "byteLength": 9680,
           "relativePath": "dist/agent/runtime/server/openCodeSse.js.map"
         },
         {
@@ -13140,6 +13181,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 9998,
           "relativePath": "dist/agent/runtime/server/openCodeTodoWorkState.js.map"
+        },
+        {
+          "byteLength": 8743,
+          "relativePath": "dist/agent/runtime/server/openCodeV2Wire.d.ts"
+        },
+        {
+          "byteLength": 19531,
+          "relativePath": "dist/agent/runtime/server/openCodeV2Wire.d.ts.map"
+        },
+        {
+          "byteLength": 15719,
+          "relativePath": "dist/agent/runtime/server/openCodeV2Wire.js"
+        },
+        {
+          "byteLength": 26298,
+          "relativePath": "dist/agent/runtime/server/openCodeV2Wire.js.map"
         },
         {
           "byteLength": 1953,
@@ -13162,31 +13219,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/permissionBridge.d.ts"
         },
         {
-          "byteLength": 5770,
+          "byteLength": 6271,
           "relativePath": "dist/agent/runtime/server/permissionBridge.d.ts.map"
         },
         {
-          "byteLength": 4294,
+          "byteLength": 4785,
           "relativePath": "dist/agent/runtime/server/permissionBridge.js"
         },
         {
-          "byteLength": 8907,
+          "byteLength": 9440,
           "relativePath": "dist/agent/runtime/server/permissionBridge.js.map"
         },
         {
-          "byteLength": 423,
+          "byteLength": 762,
           "relativePath": "dist/agent/runtime/server/promptConfig.d.ts"
         },
         {
-          "byteLength": 2954,
+          "byteLength": 4219,
           "relativePath": "dist/agent/runtime/server/promptConfig.d.ts.map"
         },
         {
-          "byteLength": 1976,
+          "byteLength": 2659,
           "relativePath": "dist/agent/runtime/server/promptConfig.js"
         },
         {
-          "byteLength": 4660,
+          "byteLength": 6249,
           "relativePath": "dist/agent/runtime/server/promptConfig.js.map"
         },
         {
@@ -13222,19 +13279,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/providerEvents.js.map"
         },
         {
-          "byteLength": 561,
+          "byteLength": 586,
           "relativePath": "dist/agent/runtime/server/retryFailure.d.ts"
         },
         {
-          "byteLength": 3237,
+          "byteLength": 3259,
           "relativePath": "dist/agent/runtime/server/retryFailure.d.ts.map"
         },
         {
-          "byteLength": 2141,
+          "byteLength": 2126,
           "relativePath": "dist/agent/runtime/server/retryFailure.js"
         },
         {
-          "byteLength": 4555,
+          "byteLength": 4563,
           "relativePath": "dist/agent/runtime/server/retryFailure.js.map"
         },
         {
@@ -13254,67 +13311,67 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/runOpenCodePromptTurn.js.map"
         },
         {
-          "byteLength": 822,
+          "byteLength": 893,
           "relativePath": "dist/agent/runtime/server/runtime.d.ts"
         },
         {
-          "byteLength": 1673,
+          "byteLength": 1883,
           "relativePath": "dist/agent/runtime/server/runtime.d.ts.map"
         },
         {
-          "byteLength": 229,
+          "byteLength": 368,
           "relativePath": "dist/agent/runtime/server/runtime.js"
         },
         {
-          "byteLength": 1190,
+          "byteLength": 1464,
           "relativePath": "dist/agent/runtime/server/runtime.js.map"
         },
         {
-          "byteLength": 2549,
+          "byteLength": 3167,
           "relativePath": "dist/agent/runtime/server/runtimeContext.d.ts"
         },
         {
-          "byteLength": 10133,
+          "byteLength": 11017,
           "relativePath": "dist/agent/runtime/server/runtimeContext.d.ts.map"
         },
         {
-          "byteLength": 4799,
+          "byteLength": 4865,
           "relativePath": "dist/agent/runtime/server/runtimeContext.js"
         },
         {
-          "byteLength": 12673,
+          "byteLength": 13426,
           "relativePath": "dist/agent/runtime/server/runtimeContext.js.map"
         },
         {
-          "byteLength": 842,
+          "byteLength": 909,
           "relativePath": "dist/agent/runtime/server/runtimeController.d.ts"
         },
         {
-          "byteLength": 83995,
+          "byteLength": 85176,
           "relativePath": "dist/agent/runtime/server/runtimeController.d.ts.map"
         },
         {
-          "byteLength": 86894,
+          "byteLength": 88099,
           "relativePath": "dist/agent/runtime/server/runtimeController.js"
         },
         {
-          "byteLength": 144023,
+          "byteLength": 145654,
           "relativePath": "dist/agent/runtime/server/runtimeController.js.map"
         },
         {
-          "byteLength": 1815,
+          "byteLength": 2396,
           "relativePath": "dist/agent/runtime/server/runtimeEvents.d.ts"
         },
         {
-          "byteLength": 3985,
+          "byteLength": 5315,
           "relativePath": "dist/agent/runtime/server/runtimeEvents.d.ts.map"
         },
         {
-          "byteLength": 52,
+          "byteLength": 294,
           "relativePath": "dist/agent/runtime/server/runtimeEvents.js"
         },
         {
-          "byteLength": 1992,
+          "byteLength": 2972,
           "relativePath": "dist/agent/runtime/server/runtimeEvents.js.map"
         },
         {
@@ -13338,15 +13395,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/sessionRuntime.d.ts"
         },
         {
-          "byteLength": 23996,
+          "byteLength": 24799,
           "relativePath": "dist/agent/runtime/server/sessionRuntime.d.ts.map"
         },
         {
-          "byteLength": 22577,
+          "byteLength": 23508,
           "relativePath": "dist/agent/runtime/server/sessionRuntime.js"
         },
         {
-          "byteLength": 40860,
+          "byteLength": 42187,
           "relativePath": "dist/agent/runtime/server/sessionRuntime.js.map"
         },
         {
@@ -13366,51 +13423,67 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/skills.js.map"
         },
         {
-          "byteLength": 2313,
+          "byteLength": 2999,
           "relativePath": "dist/agent/runtime/server/spawnSpec.d.ts"
         },
         {
-          "byteLength": 5672,
+          "byteLength": 6649,
           "relativePath": "dist/agent/runtime/server/spawnSpec.d.ts.map"
         },
         {
-          "byteLength": 4384,
+          "byteLength": 5220,
           "relativePath": "dist/agent/runtime/server/spawnSpec.js"
         },
         {
-          "byteLength": 6982,
+          "byteLength": 8001,
           "relativePath": "dist/agent/runtime/server/spawnSpec.js.map"
         },
         {
-          "byteLength": 1844,
+          "byteLength": 2065,
           "relativePath": "dist/agent/runtime/server/state.d.ts"
         },
         {
-          "byteLength": 5994,
+          "byteLength": 6544,
           "relativePath": "dist/agent/runtime/server/state.d.ts.map"
         },
         {
-          "byteLength": 3022,
+          "byteLength": 3559,
           "relativePath": "dist/agent/runtime/server/state.js"
         },
         {
-          "byteLength": 7121,
+          "byteLength": 7763,
           "relativePath": "dist/agent/runtime/server/state.js.map"
         },
         {
-          "byteLength": 600,
+          "byteLength": 1766,
+          "relativePath": "dist/agent/runtime/server/timeoutPolicy.d.ts"
+        },
+        {
+          "byteLength": 2005,
+          "relativePath": "dist/agent/runtime/server/timeoutPolicy.d.ts.map"
+        },
+        {
+          "byteLength": 1750,
+          "relativePath": "dist/agent/runtime/server/timeoutPolicy.js"
+        },
+        {
+          "byteLength": 2023,
+          "relativePath": "dist/agent/runtime/server/timeoutPolicy.js.map"
+        },
+        {
+          "byteLength": 667,
           "relativePath": "dist/agent/runtime/server/toolEvents.d.ts"
         },
         {
-          "byteLength": 3056,
+          "byteLength": 3269,
           "relativePath": "dist/agent/runtime/server/toolEvents.d.ts.map"
         },
         {
-          "byteLength": 2211,
+          "byteLength": 2305,
           "relativePath": "dist/agent/runtime/server/toolEvents.js"
         },
         {
-          "byteLength": 4834,
+          "byteLength": 5062,
           "relativePath": "dist/agent/runtime/server/toolEvents.js.map"
         },
         {
@@ -13434,15 +13507,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/transcript/indexedTranscript.d.ts"
         },
         {
-          "byteLength": 16182,
+          "byteLength": 16240,
           "relativePath": "dist/agent/runtime/server/transcript/indexedTranscript.d.ts.map"
         },
         {
-          "byteLength": 10852,
+          "byteLength": 10925,
           "relativePath": "dist/agent/runtime/server/transcript/indexedTranscript.js"
         },
         {
-          "byteLength": 24129,
+          "byteLength": 24238,
           "relativePath": "dist/agent/runtime/server/transcript/indexedTranscript.js.map"
         },
         {
@@ -13450,15 +13523,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/transcript/projection/completion.d.ts"
         },
         {
-          "byteLength": 2354,
+          "byteLength": 2476,
           "relativePath": "dist/agent/runtime/server/transcript/projection/completion.d.ts.map"
         },
         {
-          "byteLength": 1985,
+          "byteLength": 2110,
           "relativePath": "dist/agent/runtime/server/transcript/projection/completion.js"
         },
         {
-          "byteLength": 3987,
+          "byteLength": 4159,
           "relativePath": "dist/agent/runtime/server/transcript/projection/completion.js.map"
         },
         {
@@ -13482,15 +13555,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/transcript/projection/message.d.ts"
         },
         {
-          "byteLength": 3323,
+          "byteLength": 3443,
           "relativePath": "dist/agent/runtime/server/transcript/projection/message.d.ts.map"
         },
         {
-          "byteLength": 2830,
+          "byteLength": 2953,
           "relativePath": "dist/agent/runtime/server/transcript/projection/message.js"
         },
         {
-          "byteLength": 5685,
+          "byteLength": 5845,
           "relativePath": "dist/agent/runtime/server/transcript/projection/message.js.map"
         },
         {
@@ -13574,19 +13647,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/server/transport.js.map"
         },
         {
-          "byteLength": 684,
+          "byteLength": 709,
           "relativePath": "dist/agent/runtime/server/turnCompletion.d.ts"
         },
         {
-          "byteLength": 2471,
+          "byteLength": 2547,
           "relativePath": "dist/agent/runtime/server/turnCompletion.d.ts.map"
         },
         {
-          "byteLength": 1050,
+          "byteLength": 1089,
           "relativePath": "dist/agent/runtime/server/turnCompletion.js"
         },
         {
-          "byteLength": 2786,
+          "byteLength": 2872,
           "relativePath": "dist/agent/runtime/server/turnCompletion.js.map"
         },
         {
@@ -13606,51 +13679,51 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/workState.js.map"
         },
         {
-          "byteLength": 692,
+          "byteLength": 729,
           "relativePath": "dist/agent/surfaces/sessions/attach/descriptor.d.ts"
         },
         {
-          "byteLength": 2802,
+          "byteLength": 2816,
           "relativePath": "dist/agent/surfaces/sessions/attach/descriptor.d.ts.map"
         },
         {
-          "byteLength": 1888,
+          "byteLength": 1916,
           "relativePath": "dist/agent/surfaces/sessions/attach/descriptor.js"
         },
         {
-          "byteLength": 4011,
+          "byteLength": 4073,
           "relativePath": "dist/agent/surfaces/sessions/attach/descriptor.js.map"
         },
         {
-          "byteLength": 2241,
+          "byteLength": 2430,
           "relativePath": "dist/agent/surfaces/sessions/external/candidates.d.ts"
         },
         {
-          "byteLength": 17047,
+          "byteLength": 23618,
           "relativePath": "dist/agent/surfaces/sessions/external/candidates.d.ts.map"
         },
         {
-          "byteLength": 13514,
+          "byteLength": 18604,
           "relativePath": "dist/agent/surfaces/sessions/external/candidates.js"
         },
         {
-          "byteLength": 27312,
+          "byteLength": 37057,
           "relativePath": "dist/agent/surfaces/sessions/external/candidates.js.map"
         },
         {
-          "byteLength": 2599,
+          "byteLength": 4310,
           "relativePath": "dist/agent/surfaces/sessions/external/client.d.ts"
         },
         {
-          "byteLength": 16045,
+          "byteLength": 22534,
           "relativePath": "dist/agent/surfaces/sessions/external/client.d.ts.map"
         },
         {
-          "byteLength": 10986,
+          "byteLength": 16014,
           "relativePath": "dist/agent/surfaces/sessions/external/client.js"
         },
         {
-          "byteLength": 23479,
+          "byteLength": 32499,
           "relativePath": "dist/agent/surfaces/sessions/external/client.js.map"
         },
         {
@@ -13658,15 +13731,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.d.ts"
         },
         {
-          "byteLength": 20076,
+          "byteLength": 21441,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.d.ts.map"
         },
         {
-          "byteLength": 17673,
+          "byteLength": 18873,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.js"
         },
         {
-          "byteLength": 34286,
+          "byteLength": 36160,
           "relativePath": "dist/agent/surfaces/sessions/external/contribution.js.map"
         },
         {
@@ -13702,19 +13775,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/managedEndpointFetch.js.map"
         },
         {
-          "byteLength": 1068,
+          "byteLength": 2635,
           "relativePath": "dist/agent/surfaces/sessions/external/managedServer.d.ts"
         },
         {
-          "byteLength": 3770,
+          "byteLength": 7071,
           "relativePath": "dist/agent/surfaces/sessions/external/managedServer.d.ts.map"
         },
         {
-          "byteLength": 3188,
+          "byteLength": 5627,
           "relativePath": "dist/agent/surfaces/sessions/external/managedServer.js"
         },
         {
-          "byteLength": 5164,
+          "byteLength": 9203,
           "relativePath": "dist/agent/surfaces/sessions/external/managedServer.js.map"
         },
         {
@@ -13738,31 +13811,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts"
         },
         {
-          "byteLength": 17906,
+          "byteLength": 19019,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.d.ts.map"
         },
         {
-          "byteLength": 16400,
+          "byteLength": 17590,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js"
         },
         {
-          "byteLength": 29370,
+          "byteLength": 30701,
           "relativePath": "dist/agent/surfaces/sessions/external/observation.js.map"
         },
         {
-          "byteLength": 828,
+          "byteLength": 945,
           "relativePath": "dist/agent/surfaces/sessions/external/pageTranscript.d.ts"
         },
         {
-          "byteLength": 10758,
+          "byteLength": 10983,
           "relativePath": "dist/agent/surfaces/sessions/external/pageTranscript.d.ts.map"
         },
         {
-          "byteLength": 8912,
+          "byteLength": 8945,
           "relativePath": "dist/agent/surfaces/sessions/external/pageTranscript.js"
         },
         {
-          "byteLength": 17467,
+          "byteLength": 17645,
           "relativePath": "dist/agent/surfaces/sessions/external/pageTranscript.js.map"
         },
         {
@@ -13782,19 +13855,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/surfaces/sessions/external/provider.js.map"
         },
         {
-          "byteLength": 2233,
+          "byteLength": 2350,
           "relativePath": "dist/agent/surfaces/sessions/external/readAfterTranscript.d.ts"
         },
         {
-          "byteLength": 13477,
+          "byteLength": 13702,
           "relativePath": "dist/agent/surfaces/sessions/external/readAfterTranscript.d.ts.map"
         },
         {
-          "byteLength": 10807,
+          "byteLength": 10840,
           "relativePath": "dist/agent/surfaces/sessions/external/readAfterTranscript.js"
         },
         {
-          "byteLength": 21008,
+          "byteLength": 21186,
           "relativePath": "dist/agent/surfaces/sessions/external/readAfterTranscript.js.map"
         },
         {
@@ -13894,19 +13967,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/cli.js.map"
         },
         {
-          "byteLength": 1855,
+          "byteLength": 1811,
           "relativePath": "dist/index.d.ts"
         },
         {
-          "byteLength": 2838,
+          "byteLength": 2770,
           "relativePath": "dist/index.d.ts.map"
         },
         {
-          "byteLength": 1853,
+          "byteLength": 1809,
           "relativePath": "dist/index.js"
         },
         {
-          "byteLength": 2836,
+          "byteLength": 2768,
           "relativePath": "dist/index.js.map"
         },
         {
@@ -13914,31 +13987,47 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 13812,
+          "byteLength": 14671,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 16135,
+          "byteLength": 17058,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 22464,
+          "byteLength": 23529,
           "relativePath": "dist/manifest.js.map"
+        },
+        {
+          "byteLength": 1731,
+          "relativePath": "dist/protocol/opaqueIdentifier.d.ts"
+        },
+        {
+          "byteLength": 2032,
+          "relativePath": "dist/protocol/opaqueIdentifier.d.ts.map"
+        },
+        {
+          "byteLength": 1780,
+          "relativePath": "dist/protocol/opaqueIdentifier.js"
+        },
+        {
+          "byteLength": 2129,
+          "relativePath": "dist/protocol/opaqueIdentifier.js.map"
         },
         {
           "byteLength": 2801,
           "relativePath": "dist/protocol/runtimeDescriptorV1.d.ts"
         },
         {
-          "byteLength": 13586,
+          "byteLength": 13748,
           "relativePath": "dist/protocol/runtimeDescriptorV1.d.ts.map"
         },
         {
-          "byteLength": 10212,
+          "byteLength": 10370,
           "relativePath": "dist/protocol/runtimeDescriptorV1.js"
         },
         {
-          "byteLength": 20102,
+          "byteLength": 20322,
           "relativePath": "dist/protocol/runtimeDescriptorV1.js.map"
         },
         {
@@ -13962,7 +14051,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-63cd4717-e7a3-4a88-8c4e-e6a243de436c",
+      "immutableGenerationId": "bundled-d2a2bab7-806a-4de5-a6ce-083ff6ed8c42",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.opencode",
       "schemaVersion": 1,
@@ -13977,19 +14066,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5733291,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-ZJD4XV3N.js"
+          "byteLength": 7047626,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-JFDVRMN5.js"
+        },
+        {
+          "byteLength": 175,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 185,
           "relativePath": ".happier-plugin/agent/runtime/engine.js"
         },
         {
-          "byteLength": 40938,
+          "byteLength": 40990,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 17390,
+          "byteLength": 17504,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -14305,23 +14398,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/models/catalog.d.ts"
         },
         {
-          "byteLength": 3747,
+          "byteLength": 3807,
           "relativePath": "dist/agent/models/catalog.d.ts.map"
         },
         {
-          "byteLength": 2756,
+          "byteLength": 2817,
           "relativePath": "dist/agent/models/catalog.js"
         },
         {
-          "byteLength": 6068,
+          "byteLength": 6169,
           "relativePath": "dist/agent/models/catalog.js.map"
         },
         {
-          "byteLength": 1769,
+          "byteLength": 1810,
           "relativePath": "dist/agent/preflight/models.d.ts"
         },
         {
-          "byteLength": 2445,
+          "byteLength": 2446,
           "relativePath": "dist/agent/preflight/models.d.ts.map"
         },
         {
@@ -14385,15 +14478,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/engine.d.ts"
         },
         {
-          "byteLength": 4918,
+          "byteLength": 11038,
           "relativePath": "dist/agent/runtime/engine.d.ts.map"
         },
         {
-          "byteLength": 4354,
+          "byteLength": 10548,
           "relativePath": "dist/agent/runtime/engine.js"
         },
         {
-          "byteLength": 8364,
+          "byteLength": 18929,
           "relativePath": "dist/agent/runtime/engine.js.map"
         },
         {
@@ -14413,19 +14506,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/modelsSource.js.map"
         },
         {
-          "byteLength": 659,
+          "byteLength": 766,
           "relativePath": "dist/agent/runtime/qualifiedConnectedAccounts.d.ts"
         },
         {
-          "byteLength": 12352,
+          "byteLength": 13158,
           "relativePath": "dist/agent/runtime/qualifiedConnectedAccounts.d.ts.map"
         },
         {
-          "byteLength": 10643,
+          "byteLength": 11260,
           "relativePath": "dist/agent/runtime/qualifiedConnectedAccounts.js"
         },
         {
-          "byteLength": 20434,
+          "byteLength": 21596,
           "relativePath": "dist/agent/runtime/qualifiedConnectedAccounts.js.map"
         },
         {
@@ -14433,15 +14526,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/rpc/args.d.ts"
         },
         {
-          "byteLength": 5390,
+          "byteLength": 5497,
           "relativePath": "dist/agent/runtime/rpc/args.d.ts.map"
         },
         {
-          "byteLength": 3965,
+          "byteLength": 4079,
           "relativePath": "dist/agent/runtime/rpc/args.js"
         },
         {
-          "byteLength": 7775,
+          "byteLength": 7936,
           "relativePath": "dist/agent/runtime/rpc/args.js.map"
         },
         {
@@ -14449,31 +14542,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/rpc/client.d.ts"
         },
         {
-          "byteLength": 10888,
+          "byteLength": 11033,
           "relativePath": "dist/agent/runtime/rpc/client.d.ts.map"
         },
         {
-          "byteLength": 9109,
+          "byteLength": 9345,
           "relativePath": "dist/agent/runtime/rpc/client.js"
         },
         {
-          "byteLength": 17653,
+          "byteLength": 17925,
           "relativePath": "dist/agent/runtime/rpc/client.js.map"
         },
         {
-          "byteLength": 2268,
+          "byteLength": 2461,
           "relativePath": "dist/agent/runtime/rpc/events.d.ts"
         },
         {
-          "byteLength": 21544,
+          "byteLength": 21742,
           "relativePath": "dist/agent/runtime/rpc/events.d.ts.map"
         },
         {
-          "byteLength": 17919,
+          "byteLength": 17809,
           "relativePath": "dist/agent/runtime/rpc/events.js"
         },
         {
-          "byteLength": 36229,
+          "byteLength": 36213,
           "relativePath": "dist/agent/runtime/rpc/events.js.map"
         },
         {
@@ -14509,51 +14602,51 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/rpc/lifecycle.js.map"
         },
         {
-          "byteLength": 1107,
+          "byteLength": 2817,
           "relativePath": "dist/agent/runtime/rpc/operations.d.ts"
         },
         {
-          "byteLength": 52650,
+          "byteLength": 65436,
           "relativePath": "dist/agent/runtime/rpc/operations.d.ts.map"
         },
         {
-          "byteLength": 48553,
+          "byteLength": 59738,
           "relativePath": "dist/agent/runtime/rpc/operations.js"
         },
         {
-          "byteLength": 90103,
+          "byteLength": 108590,
           "relativePath": "dist/agent/runtime/rpc/operations.js.map"
         },
         {
-          "byteLength": 710,
+          "byteLength": 932,
           "relativePath": "dist/agent/runtime/rpc/permissions.d.ts"
         },
         {
-          "byteLength": 3088,
+          "byteLength": 3243,
           "relativePath": "dist/agent/runtime/rpc/permissions.d.ts.map"
         },
         {
-          "byteLength": 1824,
+          "byteLength": 1688,
           "relativePath": "dist/agent/runtime/rpc/permissions.js"
         },
         {
-          "byteLength": 3903,
+          "byteLength": 3767,
           "relativePath": "dist/agent/runtime/rpc/permissions.js.map"
         },
         {
-          "byteLength": 467,
+          "byteLength": 904,
           "relativePath": "dist/agent/runtime/rpc/providerFailureDiagnostic.d.ts"
         },
         {
-          "byteLength": 4956,
+          "byteLength": 9850,
           "relativePath": "dist/agent/runtime/rpc/providerFailureDiagnostic.d.ts.map"
         },
         {
-          "byteLength": 4102,
+          "byteLength": 7848,
           "relativePath": "dist/agent/runtime/rpc/providerFailureDiagnostic.js"
         },
         {
-          "byteLength": 8595,
+          "byteLength": 16767,
           "relativePath": "dist/agent/runtime/rpc/providerFailureDiagnostic.js.map"
         },
         {
@@ -14721,15 +14814,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 8922,
+          "byteLength": 8975,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 10097,
+          "byteLength": 10161,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 13900,
+          "byteLength": 14007,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -14817,7 +14910,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-3d233dc0-d6f3-4b77-bf7d-3a7be5f84c19",
+      "immutableGenerationId": "bundled-8e263c41-b72c-4963-bb40-8c2aeb3bf030",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.pi",
       "schemaVersion": 1,
@@ -14832,11 +14925,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 2472771,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 2868219,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 468052,
+          "byteLength": 516580,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -14952,19 +15049,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/api/types/directory.js.map"
         },
         {
-          "byteLength": 2224,
+          "byteLength": 2718,
           "relativePath": "dist/api/types/events.d.ts"
         },
         {
-          "byteLength": 5211,
+          "byteLength": 5829,
           "relativePath": "dist/api/types/events.d.ts.map"
         },
         {
-          "byteLength": 3593,
+          "byteLength": 3655,
           "relativePath": "dist/api/types/events.js"
         },
         {
-          "byteLength": 6866,
+          "byteLength": 7497,
           "relativePath": "dist/api/types/events.js.map"
         },
         {
@@ -15048,19 +15145,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/connect/account.js.map"
         },
         {
-          "byteLength": 1130,
+          "byteLength": 2581,
           "relativePath": "dist/connect/configuration.d.ts"
         },
         {
-          "byteLength": 2276,
+          "byteLength": 4950,
           "relativePath": "dist/connect/configuration.d.ts.map"
         },
         {
-          "byteLength": 874,
+          "byteLength": 2673,
           "relativePath": "dist/connect/configuration.js"
         },
         {
-          "byteLength": 2221,
+          "byteLength": 5530,
           "relativePath": "dist/connect/configuration.js.map"
         },
         {
@@ -15096,11 +15193,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/connect/origin.js.map"
         },
         {
-          "byteLength": 2284249,
+          "byteLength": 2623565,
           "relativePath": "dist/happier-plugin-ui/react-native-web/posthog-issue-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2344273,
+          "byteLength": 2684836,
           "relativePath": "dist/happier-plugin-ui/react-native-web/posthog-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -15112,19 +15209,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 153458,
+          "byteLength": 161972,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 69807,
+          "byteLength": 73191,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6079922,
+          "byteLength": 8141834,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle"
         },
         {
-          "byteLength": 1200714,
+          "byteLength": 1585630,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map"
         },
         {
@@ -15136,19 +15233,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 153458,
+          "byteLength": 161972,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 69807,
+          "byteLength": 73191,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6079922,
+          "byteLength": 8141834,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle"
         },
         {
-          "byteLength": 1200714,
+          "byteLength": 1585630,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-issue-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map"
         },
         {
@@ -15160,19 +15257,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/android.bundle.map"
         },
         {
-          "byteLength": 45996,
+          "byteLength": 47334,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 21559,
+          "byteLength": 22294,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6241794,
+          "byteLength": 8299637,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1220612,
+          "byteLength": 1605406,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -15184,19 +15281,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 45996,
+          "byteLength": 47334,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 21559,
+          "byteLength": 22294,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6241794,
+          "byteLength": 8299637,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1220612,
+          "byteLength": 1605406,
           "relativePath": "dist/happier-plugin-ui/react-native/posthog-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -15220,35 +15317,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/index.js.map"
         },
         {
-          "byteLength": 4346,
+          "byteLength": 4666,
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 25182,
+          "byteLength": 26225,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 24549,
+          "byteLength": 25565,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 35708,
+          "byteLength": 37320,
           "relativePath": "dist/manifest.js.map"
         },
         {
-          "byteLength": 4925,
+          "byteLength": 5072,
           "relativePath": "dist/posthogContracts.d.ts"
         },
         {
-          "byteLength": 5929,
+          "byteLength": 6105,
           "relativePath": "dist/posthogContracts.d.ts.map"
         },
         {
-          "byteLength": 4725,
+          "byteLength": 4863,
           "relativePath": "dist/posthogContracts.js"
         },
         {
-          "byteLength": 6095,
+          "byteLength": 6271,
           "relativePath": "dist/posthogContracts.js.map"
         },
         {
@@ -15320,32 +15417,48 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/source/detail/issueEvents.d.ts"
         },
         {
-          "byteLength": 8043,
+          "byteLength": 8057,
           "relativePath": "dist/source/detail/issueEvents.d.ts.map"
         },
         {
-          "byteLength": 4294,
+          "byteLength": 4308,
           "relativePath": "dist/source/detail/issueEvents.js"
         },
         {
-          "byteLength": 9208,
+          "byteLength": 9242,
           "relativePath": "dist/source/detail/issueEvents.js.map"
         },
         {
-          "byteLength": 11510,
+          "byteLength": 11670,
           "relativePath": "dist/source/detail/issueEventsContract.d.ts"
         },
         {
-          "byteLength": 11525,
+          "byteLength": 12129,
           "relativePath": "dist/source/detail/issueEventsContract.d.ts.map"
         },
         {
-          "byteLength": 9098,
+          "byteLength": 9687,
           "relativePath": "dist/source/detail/issueEventsContract.js"
         },
         {
-          "byteLength": 15643,
+          "byteLength": 16352,
           "relativePath": "dist/source/detail/issueEventsContract.js.map"
+        },
+        {
+          "byteLength": 9985,
+          "relativePath": "dist/source/detail/nativeOverviewContract.d.ts"
+        },
+        {
+          "byteLength": 1366,
+          "relativePath": "dist/source/detail/nativeOverviewContract.d.ts.map"
+        },
+        {
+          "byteLength": 755,
+          "relativePath": "dist/source/detail/nativeOverviewContract.js"
+        },
+        {
+          "byteLength": 1456,
+          "relativePath": "dist/source/detail/nativeOverviewContract.js.map"
         },
         {
           "byteLength": 1753,
@@ -15540,19 +15653,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/source/map/state.js.map"
         },
         {
-          "byteLength": 9126,
+          "byteLength": 9533,
           "relativePath": "dist/source/operations.d.ts"
         },
         {
-          "byteLength": 65226,
+          "byteLength": 67324,
           "relativePath": "dist/source/operations.d.ts.map"
         },
         {
-          "byteLength": 52304,
+          "byteLength": 53967,
           "relativePath": "dist/source/operations.js"
         },
         {
-          "byteLength": 99148,
+          "byteLength": 102056,
           "relativePath": "dist/source/operations.js.map"
         },
         {
@@ -15636,51 +15749,51 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/codeVariablesController.js.map"
         },
         {
-          "byteLength": 2092,
+          "byteLength": 3028,
           "relativePath": "dist/ui/detail/issueEventProjection.d.ts"
         },
         {
-          "byteLength": 6993,
+          "byteLength": 8172,
           "relativePath": "dist/ui/detail/issueEventProjection.d.ts.map"
         },
         {
-          "byteLength": 4545,
+          "byteLength": 4908,
           "relativePath": "dist/ui/detail/issueEventProjection.js"
         },
         {
-          "byteLength": 10051,
+          "byteLength": 11248,
           "relativePath": "dist/ui/detail/issueEventProjection.js.map"
         },
         {
-          "byteLength": 5611,
+          "byteLength": 6594,
           "relativePath": "dist/ui/detail/model.d.ts"
         },
         {
-          "byteLength": 14327,
+          "byteLength": 16469,
           "relativePath": "dist/ui/detail/model.d.ts.map"
         },
         {
-          "byteLength": 6634,
+          "byteLength": 7484,
           "relativePath": "dist/ui/detail/model.js"
         },
         {
-          "byteLength": 16074,
+          "byteLength": 18588,
           "relativePath": "dist/ui/detail/model.js.map"
         },
         {
-          "byteLength": 4642,
+          "byteLength": 4938,
           "relativePath": "dist/ui/detail/occurrenceController.d.ts"
         },
         {
-          "byteLength": 15753,
+          "byteLength": 16083,
           "relativePath": "dist/ui/detail/occurrenceController.d.ts.map"
         },
         {
-          "byteLength": 9819,
+          "byteLength": 10133,
           "relativePath": "dist/ui/detail/occurrenceController.js"
         },
         {
-          "byteLength": 21074,
+          "byteLength": 21415,
           "relativePath": "dist/ui/detail/occurrenceController.js.map"
         },
         {
@@ -15720,31 +15833,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 43076,
+          "byteLength": 49817,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 29945,
+          "byteLength": 34730,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 64378,
+          "byteLength": 74199,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
-          "byteLength": 107636,
+          "byteLength": 113103,
           "relativePath": "dist/ui/renderTranslations.d.ts"
         },
         {
-          "byteLength": 107484,
+          "byteLength": 113047,
           "relativePath": "dist/ui/renderTranslations.d.ts.map"
         },
         {
-          "byteLength": 103488,
+          "byteLength": 108955,
           "relativePath": "dist/ui/renderTranslations.js"
         },
         {
-          "byteLength": 133931,
+          "byteLength": 140632,
           "relativePath": "dist/ui/renderTranslations.js.map"
         },
         {
@@ -15764,11 +15877,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/settings/renderSettingsSurface.js.map"
         },
         {
-          "byteLength": 131109,
+          "byteLength": 136576,
           "relativePath": "dist/ui/translations.d.ts"
         },
         {
-          "byteLength": 26283,
+          "byteLength": 26331,
           "relativePath": "dist/ui/translations.d.ts.map"
         },
         {
@@ -15784,7 +15897,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-3b2c54ee-3fed-4fec-ada8-498ea337e54a",
+      "immutableGenerationId": "bundled-324f2091-a135-462f-9ee8-e550a86b9657",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.posthog",
       "schemaVersion": 1,
@@ -15799,19 +15912,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1547,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-QU3FEF3D.js"
+          "byteLength": 1771,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-SVYKR5DS.js"
+        },
+        {
+          "byteLength": 176,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
         },
         {
           "byteLength": 121,
           "relativePath": ".happier-plugin/agent/runtime/factory.js"
         },
         {
-          "byteLength": 729089,
+          "byteLength": 739017,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 3533,
+          "byteLength": 3624,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -15871,15 +15988,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/factory.d.ts"
         },
         {
-          "byteLength": 1107,
+          "byteLength": 1493,
           "relativePath": "dist/agent/runtime/factory.d.ts.map"
         },
         {
-          "byteLength": 920,
+          "byteLength": 1085,
           "relativePath": "dist/agent/runtime/factory.js"
         },
         {
-          "byteLength": 1663,
+          "byteLength": 2271,
           "relativePath": "dist/agent/runtime/factory.js.map"
         },
         {
@@ -15903,15 +16020,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 2562,
+          "byteLength": 2606,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 2890,
+          "byteLength": 2945,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 4324,
+          "byteLength": 4412,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -15919,7 +16036,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-6256718d-d93c-4219-aa69-c11f2cf45b68",
+      "immutableGenerationId": "bundled-eb82b673-3dd8-4e41-aeb4-54dbd4a47d46",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.qwen",
       "schemaVersion": 1,
@@ -15934,7 +16051,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 4941962,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6228522,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -16190,7 +16311,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "resources/review-prompt.md"
         }
       ],
-      "immutableGenerationId": "bundled-326a78bc-8397-4b1f-8439-a7078087e47e",
+      "immutableGenerationId": "bundled-3606e7ad-0eb9-46f9-878d-efad773e0cf2",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.review.coderabbit",
       "schemaVersion": 1,
@@ -16205,7 +16326,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 4934213,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6220773,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -16513,7 +16638,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "resources/review-prompt.md"
         }
       ],
-      "immutableGenerationId": "bundled-283e19f8-2019-4b1b-b7b0-c1d0efbc66ca",
+      "immutableGenerationId": "bundled-c569781f-c418-416f-a55f-3895f5421f8e",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.review.deepsec",
       "schemaVersion": 1,
@@ -16528,11 +16653,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5562796,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6839702,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 1814251,
+          "byteLength": 1815728,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -16604,23 +16733,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/detection/adapter.d.ts"
         },
         {
-          "byteLength": 10013,
+          "byteLength": 10346,
           "relativePath": "dist/detection/adapter.d.ts.map"
         },
         {
-          "byteLength": 8381,
+          "byteLength": 8727,
           "relativePath": "dist/detection/adapter.js"
         },
         {
-          "byteLength": 16773,
+          "byteLength": 17310,
           "relativePath": "dist/detection/adapter.js.map"
         },
         {
-          "byteLength": 213,
+          "byteLength": 217,
           "relativePath": "dist/detection/remoteUrl.d.ts"
         },
         {
-          "byteLength": 726,
+          "byteLength": 730,
           "relativePath": "dist/detection/remoteUrl.d.ts.map"
         },
         {
@@ -16628,15 +16757,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/detection/remoteUrl.js"
         },
         {
-          "byteLength": 731,
+          "byteLength": 735,
           "relativePath": "dist/detection/remoteUrl.js.map"
         },
         {
-          "byteLength": 4865775,
+          "byteLength": 5972541,
           "relativePath": "dist/happier-plugin-ui/react-native-web/azure-devops-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2321298,
+          "byteLength": 2661861,
           "relativePath": "dist/happier-plugin-ui/react-native-web/azure-devops-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -16648,19 +16777,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 420650,
+          "byteLength": 423955,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 196197,
+          "byteLength": 197307,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11076887,
+          "byteLength": 13590829,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle"
         },
         {
-          "byteLength": 2111687,
+          "byteLength": 2576281,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map"
         },
         {
@@ -16672,19 +16801,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 420650,
+          "byteLength": 423955,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 196197,
+          "byteLength": 197307,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11076887,
+          "byteLength": 13590829,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle"
         },
         {
-          "byteLength": 2111687,
+          "byteLength": 2576281,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map"
         },
         {
@@ -16696,19 +16825,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/android.bundle.map"
         },
         {
-          "byteLength": 170259,
+          "byteLength": 172236,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle"
         },
         {
-          "byteLength": 82748,
+          "byteLength": 83537,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6253821,
+          "byteLength": 8316093,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle"
         },
         {
-          "byteLength": 1232700,
+          "byteLength": 1620513,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map"
         },
         {
@@ -16720,19 +16849,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 170259,
+          "byteLength": 172236,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle"
         },
         {
-          "byteLength": 82748,
+          "byteLength": 83537,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6253821,
+          "byteLength": 8316093,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle"
         },
         {
-          "byteLength": 1232700,
+          "byteLength": 1620513,
           "relativePath": "dist/happier-plugin-ui/react-native/azure-devops-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map"
         },
         {
@@ -16760,15 +16889,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 40217,
+          "byteLength": 40417,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 42622,
+          "byteLength": 42836,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 57996,
+          "byteLength": 58285,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -16932,19 +17061,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/continuation.js.map"
         },
         {
-          "byteLength": 1924,
+          "byteLength": 2935,
           "relativePath": "dist/triage/decode.d.ts"
         },
         {
-          "byteLength": 12442,
+          "byteLength": 13923,
           "relativePath": "dist/triage/decode.d.ts.map"
         },
         {
-          "byteLength": 10397,
+          "byteLength": 11623,
           "relativePath": "dist/triage/decode.js"
         },
         {
-          "byteLength": 20074,
+          "byteLength": 21863,
           "relativePath": "dist/triage/decode.js.map"
         },
         {
@@ -16996,35 +17125,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/detail/contracts.js.map"
         },
         {
-          "byteLength": 5729,
+          "byteLength": 5974,
           "relativePath": "dist/triage/detail/projection.d.ts"
         },
         {
-          "byteLength": 22294,
+          "byteLength": 22842,
           "relativePath": "dist/triage/detail/projection.d.ts.map"
         },
         {
-          "byteLength": 13839,
+          "byteLength": 14225,
           "relativePath": "dist/triage/detail/projection.js"
         },
         {
-          "byteLength": 33071,
+          "byteLength": 33290,
           "relativePath": "dist/triage/detail/projection.js.map"
         },
         {
-          "byteLength": 6124,
+          "byteLength": 6510,
           "relativePath": "dist/triage/detail/reads.d.ts"
         },
         {
-          "byteLength": 18343,
+          "byteLength": 19393,
           "relativePath": "dist/triage/detail/reads.d.ts.map"
         },
         {
-          "byteLength": 11159,
+          "byteLength": 11735,
           "relativePath": "dist/triage/detail/reads.js"
         },
         {
-          "byteLength": 22714,
+          "byteLength": 24212,
           "relativePath": "dist/triage/detail/reads.js.map"
         },
         {
@@ -17060,19 +17189,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/failureProjection.js.map"
         },
         {
-          "byteLength": 2954,
+          "byteLength": 3591,
           "relativePath": "dist/triage/failures.d.ts"
         },
         {
-          "byteLength": 11482,
+          "byteLength": 12281,
           "relativePath": "dist/triage/failures.d.ts.map"
         },
         {
-          "byteLength": 9824,
+          "byteLength": 10624,
           "relativePath": "dist/triage/failures.js"
         },
         {
-          "byteLength": 16096,
+          "byteLength": 17031,
           "relativePath": "dist/triage/failures.js.map"
         },
         {
@@ -17208,15 +17337,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/operations.d.ts"
         },
         {
-          "byteLength": 63356,
+          "byteLength": 64386,
           "relativePath": "dist/triage/operations.d.ts.map"
         },
         {
-          "byteLength": 48781,
+          "byteLength": 49846,
           "relativePath": "dist/triage/operations.js"
         },
         {
-          "byteLength": 89153,
+          "byteLength": 90459,
           "relativePath": "dist/triage/operations.js.map"
         },
         {
@@ -17288,15 +17417,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/reviewPublication.d.ts"
         },
         {
-          "byteLength": 41911,
+          "byteLength": 43121,
           "relativePath": "dist/triage/reviewPublication.d.ts.map"
         },
         {
-          "byteLength": 37400,
+          "byteLength": 38589,
           "relativePath": "dist/triage/reviewPublication.js"
         },
         {
-          "byteLength": 75635,
+          "byteLength": 76897,
           "relativePath": "dist/triage/reviewPublication.js.map"
         },
         {
@@ -17352,15 +17481,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/panelReaders.d.ts"
         },
         {
-          "byteLength": 24311,
+          "byteLength": 24692,
           "relativePath": "dist/ui/detail/panelReaders.d.ts.map"
         },
         {
-          "byteLength": 19477,
+          "byteLength": 19913,
           "relativePath": "dist/ui/detail/panelReaders.js"
         },
         {
-          "byteLength": 37998,
+          "byteLength": 38513,
           "relativePath": "dist/ui/detail/panelReaders.js.map"
         },
         {
@@ -17496,7 +17625,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-1e72642f-4115-45fd-94c7-797937882d3c",
+      "immutableGenerationId": "bundled-5e922dca-5d9b-4558-bf60-60888919dcda",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.azure-devops",
       "schemaVersion": 1,
@@ -17511,11 +17640,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5473532,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6757823,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 1417803,
+          "byteLength": 1426114,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -17539,15 +17672,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/adapter.d.ts"
         },
         {
-          "byteLength": 4278,
+          "byteLength": 4446,
           "relativePath": "dist/adapter.d.ts.map"
         },
         {
-          "byteLength": 3002,
+          "byteLength": 3188,
           "relativePath": "dist/adapter.js"
         },
         {
-          "byteLength": 6266,
+          "byteLength": 6533,
           "relativePath": "dist/adapter.js.map"
         },
         {
@@ -17603,15 +17736,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/bitbucketCloneUrl.d.ts"
         },
         {
-          "byteLength": 1648,
+          "byteLength": 1843,
           "relativePath": "dist/bitbucketCloneUrl.d.ts.map"
         },
         {
-          "byteLength": 1452,
+          "byteLength": 1658,
           "relativePath": "dist/bitbucketCloneUrl.js"
         },
         {
-          "byteLength": 2676,
+          "byteLength": 3006,
           "relativePath": "dist/bitbucketCloneUrl.js.map"
         },
         {
@@ -17647,11 +17780,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/connectedAccounts/builtInLegacyCompatibility.js.map"
         },
         {
-          "byteLength": 4838745,
+          "byteLength": 5950696,
           "relativePath": "dist/happier-plugin-ui/react-native-web/bitbucket-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2320637,
+          "byteLength": 2661200,
           "relativePath": "dist/happier-plugin-ui/react-native-web/bitbucket-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -17663,19 +17796,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 147512,
+          "byteLength": 154765,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 66102,
+          "byteLength": 69506,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11033767,
+          "byteLength": 13543280,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle"
         },
         {
-          "byteLength": 2092339,
+          "byteLength": 2554666,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map"
         },
         {
@@ -17687,19 +17820,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 147512,
+          "byteLength": 154765,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 66102,
+          "byteLength": 69506,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11033767,
+          "byteLength": 13543280,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle"
         },
         {
-          "byteLength": 2092339,
+          "byteLength": 2554666,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map"
         },
         {
@@ -17719,11 +17852,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241802,
+          "byteLength": 8299645,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1224320,
+          "byteLength": 1610118,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -17743,11 +17876,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241802,
+          "byteLength": 8299645,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1224320,
+          "byteLength": 1610118,
           "relativePath": "dist/happier-plugin-ui/react-native/bitbucket-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -17775,15 +17908,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 37050,
+          "byteLength": 37250,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 39593,
+          "byteLength": 39807,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 53487,
+          "byteLength": 53776,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -17883,11 +18016,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/parsing/bitbucketCoordinates.js.map"
         },
         {
-          "byteLength": 213,
+          "byteLength": 217,
           "relativePath": "dist/remoteUrl.d.ts"
         },
         {
-          "byteLength": 723,
+          "byteLength": 727,
           "relativePath": "dist/remoteUrl.d.ts.map"
         },
         {
@@ -17895,7 +18028,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/remoteUrl.js"
         },
         {
-          "byteLength": 728,
+          "byteLength": 732,
           "relativePath": "dist/remoteUrl.js.map"
         },
         {
@@ -17903,15 +18036,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/apiClient.d.ts"
         },
         {
-          "byteLength": 11697,
+          "byteLength": 12105,
           "relativePath": "dist/triage/apiClient.d.ts.map"
         },
         {
-          "byteLength": 7940,
+          "byteLength": 8324,
           "relativePath": "dist/triage/apiClient.js"
         },
         {
-          "byteLength": 15848,
+          "byteLength": 16313,
           "relativePath": "dist/triage/apiClient.js.map"
         },
         {
@@ -18059,19 +18192,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/entries.js.map"
         },
         {
-          "byteLength": 1056,
+          "byteLength": 2819,
           "relativePath": "dist/triage/failures.d.ts"
         },
         {
-          "byteLength": 5865,
+          "byteLength": 8116,
           "relativePath": "dist/triage/failures.d.ts.map"
         },
         {
-          "byteLength": 4192,
+          "byteLength": 6153,
           "relativePath": "dist/triage/failures.js"
         },
         {
-          "byteLength": 7841,
+          "byteLength": 10286,
           "relativePath": "dist/triage/failures.js.map"
         },
         {
@@ -18139,19 +18272,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mutations/pullRequestWrites.js.map"
         },
         {
-          "byteLength": 2734,
+          "byteLength": 3133,
           "relativePath": "dist/triage/mutations/reviewPublication.d.ts"
         },
         {
-          "byteLength": 28724,
+          "byteLength": 31340,
           "relativePath": "dist/triage/mutations/reviewPublication.d.ts.map"
         },
         {
-          "byteLength": 24272,
+          "byteLength": 26183,
           "relativePath": "dist/triage/mutations/reviewPublication.js"
         },
         {
-          "byteLength": 48969,
+          "byteLength": 52392,
           "relativePath": "dist/triage/mutations/reviewPublication.js.map"
         },
         {
@@ -18171,19 +18304,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/pagination.js.map"
         },
         {
-          "byteLength": 11934,
+          "byteLength": 11899,
           "relativePath": "dist/triage/pullRequests.d.ts"
         },
         {
-          "byteLength": 32740,
+          "byteLength": 32615,
           "relativePath": "dist/triage/pullRequests.d.ts.map"
         },
         {
-          "byteLength": 21812,
+          "byteLength": 21520,
           "relativePath": "dist/triage/pullRequests.js"
         },
         {
-          "byteLength": 40951,
+          "byteLength": 40673,
           "relativePath": "dist/triage/pullRequests.js.map"
         },
         {
@@ -18191,15 +18324,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/repositoryFrontier.d.ts"
         },
         {
-          "byteLength": 8422,
+          "byteLength": 9436,
           "relativePath": "dist/triage/repositoryFrontier.d.ts.map"
         },
         {
-          "byteLength": 6093,
+          "byteLength": 7252,
           "relativePath": "dist/triage/repositoryFrontier.js"
         },
         {
-          "byteLength": 10861,
+          "byteLength": 12266,
           "relativePath": "dist/triage/repositoryFrontier.js.map"
         },
         {
@@ -18287,15 +18420,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/source/detailActions.d.ts"
         },
         {
-          "byteLength": 19333,
+          "byteLength": 21792,
           "relativePath": "dist/triage/source/detailActions.d.ts.map"
         },
         {
-          "byteLength": 16876,
+          "byteLength": 19381,
           "relativePath": "dist/triage/source/detailActions.js"
         },
         {
-          "byteLength": 30797,
+          "byteLength": 34518,
           "relativePath": "dist/triage/source/detailActions.js.map"
         },
         {
@@ -18315,19 +18448,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/source/detailContinuation.js.map"
         },
         {
-          "byteLength": 38785,
+          "byteLength": 38955,
           "relativePath": "dist/triage/source/detailContracts.d.ts"
         },
         {
-          "byteLength": 14048,
+          "byteLength": 14317,
           "relativePath": "dist/triage/source/detailContracts.d.ts.map"
         },
         {
-          "byteLength": 10788,
+          "byteLength": 11062,
           "relativePath": "dist/triage/source/detailContracts.js"
         },
         {
-          "byteLength": 17889,
+          "byteLength": 18267,
           "relativePath": "dist/triage/source/detailContracts.js.map"
         },
         {
@@ -18363,19 +18496,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/source/get.js.map"
         },
         {
-          "byteLength": 1559,
+          "byteLength": 1529,
           "relativePath": "dist/triage/source/index.d.ts"
         },
         {
-          "byteLength": 2481,
+          "byteLength": 2435,
           "relativePath": "dist/triage/source/index.d.ts.map"
         },
         {
-          "byteLength": 1390,
+          "byteLength": 1360,
           "relativePath": "dist/triage/source/index.js"
         },
         {
-          "byteLength": 2389,
+          "byteLength": 2343,
           "relativePath": "dist/triage/source/index.js.map"
         },
         {
@@ -18415,63 +18548,63 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/source/mutationActions.d.ts"
         },
         {
-          "byteLength": 36548,
+          "byteLength": 35659,
           "relativePath": "dist/triage/source/mutationActions.d.ts.map"
         },
         {
-          "byteLength": 33498,
+          "byteLength": 32685,
           "relativePath": "dist/triage/source/mutationActions.js"
         },
         {
-          "byteLength": 56544,
+          "byteLength": 55539,
           "relativePath": "dist/triage/source/mutationActions.js.map"
         },
         {
-          "byteLength": 164229,
+          "byteLength": 164333,
           "relativePath": "dist/triage/source/mutationContracts.d.ts"
         },
         {
-          "byteLength": 21109,
+          "byteLength": 21576,
           "relativePath": "dist/triage/source/mutationContracts.d.ts.map"
         },
         {
-          "byteLength": 14606,
+          "byteLength": 15095,
           "relativePath": "dist/triage/source/mutationContracts.js"
         },
         {
-          "byteLength": 21566,
+          "byteLength": 22099,
           "relativePath": "dist/triage/source/mutationContracts.js.map"
         },
         {
-          "byteLength": 3641,
+          "byteLength": 3219,
           "relativePath": "dist/triage/source/observations.d.ts"
         },
         {
-          "byteLength": 19598,
+          "byteLength": 18939,
           "relativePath": "dist/triage/source/observations.d.ts.map"
         },
         {
-          "byteLength": 16541,
+          "byteLength": 16072,
           "relativePath": "dist/triage/source/observations.js"
         },
         {
-          "byteLength": 28321,
+          "byteLength": 27578,
           "relativePath": "dist/triage/source/observations.js.map"
         },
         {
-          "byteLength": 2395,
+          "byteLength": 2528,
           "relativePath": "dist/triage/source/observeEntry.d.ts"
         },
         {
-          "byteLength": 5661,
+          "byteLength": 5851,
           "relativePath": "dist/triage/source/observeEntry.d.ts.map"
         },
         {
-          "byteLength": 2475,
+          "byteLength": 2488,
           "relativePath": "dist/triage/source/observeEntry.js"
         },
         {
-          "byteLength": 6842,
+          "byteLength": 7002,
           "relativePath": "dist/triage/source/observeEntry.js.map"
         },
         {
@@ -18479,15 +18612,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/source/prepareReviewWorkspace.d.ts"
         },
         {
-          "byteLength": 12274,
+          "byteLength": 11943,
           "relativePath": "dist/triage/source/prepareReviewWorkspace.d.ts.map"
         },
         {
-          "byteLength": 10280,
+          "byteLength": 9956,
           "relativePath": "dist/triage/source/prepareReviewWorkspace.js"
         },
         {
-          "byteLength": 19854,
+          "byteLength": 19222,
           "relativePath": "dist/triage/source/prepareReviewWorkspace.js.map"
         },
         {
@@ -18559,15 +18692,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/additionalTranslations.d.ts"
         },
         {
-          "byteLength": 105130,
+          "byteLength": 107562,
           "relativePath": "dist/ui/additionalTranslations.d.ts.map"
         },
         {
-          "byteLength": 105768,
+          "byteLength": 108320,
           "relativePath": "dist/ui/additionalTranslations.js"
         },
         {
-          "byteLength": 131854,
+          "byteLength": 134624,
           "relativePath": "dist/ui/additionalTranslations.js.map"
         },
         {
@@ -18575,31 +18708,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/mutations.d.ts"
         },
         {
-          "byteLength": 40719,
+          "byteLength": 41368,
           "relativePath": "dist/ui/detail/mutations.d.ts.map"
         },
         {
-          "byteLength": 35422,
+          "byteLength": 36040,
           "relativePath": "dist/ui/detail/mutations.js"
         },
         {
-          "byteLength": 65209,
+          "byteLength": 66092,
           "relativePath": "dist/ui/detail/mutations.js.map"
         },
         {
-          "byteLength": 3069,
+          "byteLength": 3135,
           "relativePath": "dist/ui/detail/panelReaders.d.ts"
         },
         {
-          "byteLength": 19118,
+          "byteLength": 21633,
           "relativePath": "dist/ui/detail/panelReaders.d.ts.map"
         },
         {
-          "byteLength": 14498,
+          "byteLength": 16973,
           "relativePath": "dist/ui/detail/panelReaders.js"
         },
         {
-          "byteLength": 29850,
+          "byteLength": 34279,
           "relativePath": "dist/ui/detail/panelReaders.js.map"
         },
         {
@@ -18619,19 +18752,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/panelState.js.map"
         },
         {
-          "byteLength": 2606,
+          "byteLength": 2608,
           "relativePath": "dist/ui/detail/tabDeclarations.d.ts"
         },
         {
-          "byteLength": 5204,
+          "byteLength": 5217,
           "relativePath": "dist/ui/detail/tabDeclarations.d.ts.map"
         },
         {
-          "byteLength": 3129,
+          "byteLength": 3140,
           "relativePath": "dist/ui/detail/tabDeclarations.js"
         },
         {
-          "byteLength": 5650,
+          "byteLength": 5663,
           "relativePath": "dist/ui/detail/tabDeclarations.js.map"
         },
         {
@@ -18639,31 +18772,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 31820,
+          "byteLength": 33992,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 26809,
+          "byteLength": 28922,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 50911,
+          "byteLength": 55096,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
-          "byteLength": 43736,
+          "byteLength": 45680,
           "relativePath": "dist/ui/renderTranslations.d.ts"
         },
         {
-          "byteLength": 44831,
+          "byteLength": 46823,
           "relativePath": "dist/ui/renderTranslations.d.ts.map"
         },
         {
-          "byteLength": 43812,
+          "byteLength": 45756,
           "relativePath": "dist/ui/renderTranslations.js"
         },
         {
-          "byteLength": 55629,
+          "byteLength": 58187,
           "relativePath": "dist/ui/renderTranslations.js.map"
         },
         {
@@ -18687,7 +18820,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-510ec59b-1863-4928-8169-eebeaa2b308e",
+      "immutableGenerationId": "bundled-f5da0911-067d-44e0-8f11-458c5e3a9b28",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.bitbucket",
       "schemaVersion": 1,
@@ -18702,7 +18835,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 1103372,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 1120856,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -18730,23 +18867,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/backend.d.ts"
         },
         {
-          "byteLength": 12725,
+          "byteLength": 12799,
           "relativePath": "dist/backend.d.ts.map"
         },
         {
-          "byteLength": 11851,
+          "byteLength": 11921,
           "relativePath": "dist/backend.js"
         },
         {
-          "byteLength": 19487,
+          "byteLength": 19599,
           "relativePath": "dist/backend.js.map"
         },
         {
-          "byteLength": 7136,
+          "byteLength": 7166,
           "relativePath": "dist/capabilities.d.ts"
         },
         {
-          "byteLength": 4973,
+          "byteLength": 5116,
           "relativePath": "dist/capabilities.d.ts.map"
         },
         {
@@ -18754,24 +18891,8 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/capabilities.js"
         },
         {
-          "byteLength": 6704,
+          "byteLength": 6790,
           "relativePath": "dist/capabilities.js.map"
-        },
-        {
-          "byteLength": 747,
-          "relativePath": "dist/capabilities/resolveScmBackendCapabilities.d.ts"
-        },
-        {
-          "byteLength": 4791,
-          "relativePath": "dist/capabilities/resolveScmBackendCapabilities.d.ts.map"
-        },
-        {
-          "byteLength": 3144,
-          "relativePath": "dist/capabilities/resolveScmBackendCapabilities.js"
-        },
-        {
-          "byteLength": 6926,
-          "relativePath": "dist/capabilities/resolveScmBackendCapabilities.js.map"
         },
         {
           "byteLength": 494,
@@ -18804,6 +18925,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
         {
           "byteLength": 1209,
           "relativePath": "dist/deriveGitWorktreeId.js.map"
+        },
+        {
+          "byteLength": 378,
+          "relativePath": "dist/directoryIgnores.d.ts"
+        },
+        {
+          "byteLength": 2555,
+          "relativePath": "dist/directoryIgnores.d.ts.map"
+        },
+        {
+          "byteLength": 2064,
+          "relativePath": "dist/directoryIgnores.js"
+        },
+        {
+          "byteLength": 4284,
+          "relativePath": "dist/directoryIgnores.js.map"
         },
         {
           "byteLength": 63,
@@ -18918,6 +19055,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/installables/gitInstallable.js.map"
         },
         {
+          "byteLength": 183,
+          "relativePath": "dist/literalPathspec.d.ts"
+        },
+        {
+          "byteLength": 531,
+          "relativePath": "dist/literalPathspec.d.ts.map"
+        },
+        {
+          "byteLength": 294,
+          "relativePath": "dist/literalPathspec.js"
+        },
+        {
+          "byteLength": 582,
+          "relativePath": "dist/literalPathspec.js.map"
+        },
+        {
           "byteLength": 951,
           "relativePath": "dist/manifest.d.ts"
         },
@@ -19002,15 +19155,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/changeApply.d.ts"
         },
         {
-          "byteLength": 4091,
+          "byteLength": 4197,
           "relativePath": "dist/operations/changeApply.d.ts.map"
         },
         {
-          "byteLength": 3136,
+          "byteLength": 3241,
           "relativePath": "dist/operations/changeApply.js"
         },
         {
-          "byteLength": 6437,
+          "byteLength": 6642,
           "relativePath": "dist/operations/changeApply.js.map"
         },
         {
@@ -19018,15 +19171,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/changeDiscard.d.ts"
         },
         {
-          "byteLength": 3547,
+          "byteLength": 4157,
           "relativePath": "dist/operations/changeDiscard.d.ts.map"
         },
         {
-          "byteLength": 2870,
+          "byteLength": 3460,
           "relativePath": "dist/operations/changeDiscard.js"
         },
         {
-          "byteLength": 5771,
+          "byteLength": 6629,
           "relativePath": "dist/operations/changeDiscard.js.map"
         },
         {
@@ -19034,15 +19187,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/commitExecutionRuntime.d.ts"
         },
         {
-          "byteLength": 5687,
+          "byteLength": 5626,
           "relativePath": "dist/operations/commitExecutionRuntime.d.ts.map"
         },
         {
-          "byteLength": 3671,
+          "byteLength": 3604,
           "relativePath": "dist/operations/commitExecutionRuntime.js"
         },
         {
-          "byteLength": 7988,
+          "byteLength": 7866,
           "relativePath": "dist/operations/commitExecutionRuntime.js.map"
         },
         {
@@ -19050,15 +19203,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/commitOperations.d.ts"
         },
         {
-          "byteLength": 18141,
+          "byteLength": 18626,
           "relativePath": "dist/operations/commitOperations.d.ts.map"
         },
         {
-          "byteLength": 16593,
+          "byteLength": 17070,
           "relativePath": "dist/operations/commitOperations.js"
         },
         {
-          "byteLength": 30048,
+          "byteLength": 30842,
           "relativePath": "dist/operations/commitOperations.js.map"
         },
         {
@@ -19094,19 +19247,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/ensureGitWorktreeMaterialized.js.map"
         },
         {
-          "byteLength": 2613,
+          "byteLength": 2655,
           "relativePath": "dist/operations/gitWorktreeAdd.d.ts"
         },
         {
-          "byteLength": 4620,
+          "byteLength": 4797,
           "relativePath": "dist/operations/gitWorktreeAdd.d.ts.map"
         },
         {
-          "byteLength": 2326,
+          "byteLength": 2396,
           "relativePath": "dist/operations/gitWorktreeAdd.js"
         },
         {
-          "byteLength": 5202,
+          "byteLength": 5433,
           "relativePath": "dist/operations/gitWorktreeAdd.js.map"
         },
         {
@@ -19130,15 +19283,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/materializeGitWorkspaceCheckout.d.ts"
         },
         {
-          "byteLength": 23842,
+          "byteLength": 26491,
           "relativePath": "dist/operations/materializeGitWorkspaceCheckout.d.ts.map"
         },
         {
-          "byteLength": 18738,
+          "byteLength": 21105,
           "relativePath": "dist/operations/materializeGitWorkspaceCheckout.js"
         },
         {
-          "byteLength": 37809,
+          "byteLength": 42009,
           "relativePath": "dist/operations/materializeGitWorkspaceCheckout.js.map"
         },
         {
@@ -19306,15 +19459,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/readOperations.d.ts"
         },
         {
-          "byteLength": 12652,
+          "byteLength": 14358,
           "relativePath": "dist/operations/readOperations.d.ts.map"
         },
         {
-          "byteLength": 10445,
+          "byteLength": 12109,
           "relativePath": "dist/operations/readOperations.js"
         },
         {
-          "byteLength": 20985,
+          "byteLength": 24086,
           "relativePath": "dist/operations/readOperations.js.map"
         },
         {
@@ -19398,19 +19551,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/repairGitWorktreeAdminReference.js.map"
         },
         {
-          "byteLength": 1987,
+          "byteLength": 2099,
           "relativePath": "dist/operations/repositoryCloneDestination.d.ts"
         },
         {
-          "byteLength": 19588,
+          "byteLength": 20513,
           "relativePath": "dist/operations/repositoryCloneDestination.d.ts.map"
         },
         {
-          "byteLength": 14035,
+          "byteLength": 14738,
           "relativePath": "dist/operations/repositoryCloneDestination.js"
         },
         {
-          "byteLength": 28083,
+          "byteLength": 29413,
           "relativePath": "dist/operations/repositoryCloneDestination.js.map"
         },
         {
@@ -19418,15 +19571,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/repositoryCloneOperations.d.ts"
         },
         {
-          "byteLength": 16648,
+          "byteLength": 16929,
           "relativePath": "dist/operations/repositoryCloneOperations.d.ts.map"
         },
         {
-          "byteLength": 10955,
+          "byteLength": 11241,
           "relativePath": "dist/operations/repositoryCloneOperations.js"
         },
         {
-          "byteLength": 24224,
+          "byteLength": 24706,
           "relativePath": "dist/operations/repositoryCloneOperations.js.map"
         },
         {
@@ -19526,19 +19679,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/stashOperations.js.map"
         },
         {
-          "byteLength": 434,
+          "byteLength": 137,
           "relativePath": "dist/operations/worktreeName.d.ts"
         },
         {
-          "byteLength": 2068,
+          "byteLength": 496,
           "relativePath": "dist/operations/worktreeName.d.ts.map"
         },
         {
-          "byteLength": 1529,
+          "byteLength": 293,
           "relativePath": "dist/operations/worktreeName.js"
         },
         {
-          "byteLength": 3224,
+          "byteLength": 653,
           "relativePath": "dist/operations/worktreeName.js.map"
         },
         {
@@ -19546,15 +19699,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/operations/worktreeOperations.d.ts"
         },
         {
-          "byteLength": 9505,
+          "byteLength": 9462,
           "relativePath": "dist/operations/worktreeOperations.d.ts.map"
         },
         {
-          "byteLength": 7506,
+          "byteLength": 7469,
           "relativePath": "dist/operations/worktreeOperations.js"
         },
         {
-          "byteLength": 15375,
+          "byteLength": 15299,
           "relativePath": "dist/operations/worktreeOperations.js.map"
         },
         {
@@ -19642,15 +19795,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/repository.d.ts"
         },
         {
-          "byteLength": 13209,
+          "byteLength": 11476,
           "relativePath": "dist/repository.d.ts.map"
         },
         {
-          "byteLength": 11297,
+          "byteLength": 9704,
           "relativePath": "dist/repository.js"
         },
         {
-          "byteLength": 22198,
+          "byteLength": 18789,
           "relativePath": "dist/repository.js.map"
         },
         {
@@ -19658,15 +19811,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/runtime.d.ts"
         },
         {
-          "byteLength": 6696,
+          "byteLength": 6842,
           "relativePath": "dist/runtime.d.ts.map"
         },
         {
-          "byteLength": 4717,
+          "byteLength": 4862,
           "relativePath": "dist/runtime.js"
         },
         {
-          "byteLength": 9901,
+          "byteLength": 10116,
           "relativePath": "dist/runtime.js.map"
         },
         {
@@ -19686,19 +19839,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/statusParser.js.map"
         },
         {
-          "byteLength": 878,
+          "byteLength": 953,
           "relativePath": "dist/statusSnapshot.d.ts"
         },
         {
-          "byteLength": 10807,
+          "byteLength": 11394,
           "relativePath": "dist/statusSnapshot.d.ts.map"
         },
         {
-          "byteLength": 8705,
+          "byteLength": 9144,
           "relativePath": "dist/statusSnapshot.js"
         },
         {
-          "byteLength": 18187,
+          "byteLength": 19201,
           "relativePath": "dist/statusSnapshot.js.map"
         },
         {
@@ -19834,15 +19987,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/workspaceIntegration.d.ts"
         },
         {
-          "byteLength": 17646,
+          "byteLength": 17892,
           "relativePath": "dist/workspaceIntegration.d.ts.map"
         },
         {
-          "byteLength": 12946,
+          "byteLength": 13192,
           "relativePath": "dist/workspaceIntegration.js"
         },
         {
-          "byteLength": 23497,
+          "byteLength": 24024,
           "relativePath": "dist/workspaceIntegration.js.map"
         },
         {
@@ -19898,7 +20051,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-2f8a824b-b77a-4aba-87ab-522a7fcc5ec7",
+      "immutableGenerationId": "bundled-3a1d38a7-2dd2-4e72-9aa4-1e631928c67d",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.backend.git",
       "schemaVersion": 1,
@@ -19913,11 +20066,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6096604,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 7385914,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 2742921,
+          "byteLength": 2750475,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -19945,15 +20102,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/adapter.d.ts"
         },
         {
-          "byteLength": 5536,
+          "byteLength": 5798,
           "relativePath": "dist/adapter.d.ts.map"
         },
         {
-          "byteLength": 3778,
+          "byteLength": 4071,
           "relativePath": "dist/adapter.js"
         },
         {
-          "byteLength": 8187,
+          "byteLength": 8562,
           "relativePath": "dist/adapter.js.map"
         },
         {
@@ -19993,15 +20150,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/githubAutomationEventActions.d.ts"
         },
         {
-          "byteLength": 9205,
+          "byteLength": 9385,
           "relativePath": "dist/githubAutomationEventActions.d.ts.map"
         },
         {
-          "byteLength": 7274,
+          "byteLength": 7678,
           "relativePath": "dist/githubAutomationEventActions.js"
         },
         {
-          "byteLength": 13758,
+          "byteLength": 14073,
           "relativePath": "dist/githubAutomationEventActions.js.map"
         },
         {
@@ -20037,11 +20194,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/githubChannelActions.js.map"
         },
         {
-          "byteLength": 4941272,
+          "byteLength": 6051358,
           "relativePath": "dist/happier-plugin-ui/react-native-web/github-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2321040,
+          "byteLength": 2661603,
           "relativePath": "dist/happier-plugin-ui/react-native-web/github-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -20053,19 +20210,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 388801,
+          "byteLength": 394938,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 181245,
+          "byteLength": 184678,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11074340,
+          "byteLength": 13588282,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle"
         },
         {
-          "byteLength": 2092161,
+          "byteLength": 2553239,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map"
         },
         {
@@ -20077,19 +20234,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 388801,
+          "byteLength": 394938,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 181245,
+          "byteLength": 184678,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11074340,
+          "byteLength": 13588282,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle"
         },
         {
-          "byteLength": 2092161,
+          "byteLength": 2553239,
           "relativePath": "dist/happier-plugin-ui/react-native/github-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map"
         },
         {
@@ -20109,11 +20266,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241790,
+          "byteLength": 8299633,
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1218758,
+          "byteLength": 1603050,
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -20133,11 +20290,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241790,
+          "byteLength": 8299633,
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1218758,
+          "byteLength": 1603050,
           "relativePath": "dist/happier-plugin-ui/react-native/github-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -20165,15 +20322,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 77015,
+          "byteLength": 77215,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 86105,
+          "byteLength": 86323,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 115050,
+          "byteLength": 115339,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -20229,15 +20386,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/observations/githubAutomationEventObserver.d.ts"
         },
         {
-          "byteLength": 83339,
+          "byteLength": 84201,
           "relativePath": "dist/observations/githubAutomationEventObserver.d.ts.map"
         },
         {
-          "byteLength": 70170,
+          "byteLength": 71083,
           "relativePath": "dist/observations/githubAutomationEventObserver.js"
         },
         {
-          "byteLength": 134879,
+          "byteLength": 136084,
           "relativePath": "dist/observations/githubAutomationEventObserver.js.map"
         },
         {
@@ -20497,11 +20654,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/pullRequests/restAdapter.js.map"
         },
         {
-          "byteLength": 213,
+          "byteLength": 217,
           "relativePath": "dist/remoteUrl.d.ts"
         },
         {
-          "byteLength": 720,
+          "byteLength": 724,
           "relativePath": "dist/remoteUrl.d.ts.map"
         },
         {
@@ -20509,7 +20666,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/remoteUrl.js"
         },
         {
-          "byteLength": 725,
+          "byteLength": 729,
           "relativePath": "dist/remoteUrl.js.map"
         },
         {
@@ -20517,15 +20674,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/repositoryProvisioning/createRepositoryWithAuthFallback.d.ts"
         },
         {
-          "byteLength": 10272,
+          "byteLength": 10500,
           "relativePath": "dist/repositoryProvisioning/createRepositoryWithAuthFallback.d.ts.map"
         },
         {
-          "byteLength": 7287,
+          "byteLength": 7526,
           "relativePath": "dist/repositoryProvisioning/createRepositoryWithAuthFallback.js"
         },
         {
-          "byteLength": 15231,
+          "byteLength": 15571,
           "relativePath": "dist/repositoryProvisioning/createRepositoryWithAuthFallback.js.map"
         },
         {
@@ -20677,15 +20834,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/checks.d.ts"
         },
         {
-          "byteLength": 16288,
+          "byteLength": 16860,
           "relativePath": "dist/triage/checks.d.ts.map"
         },
         {
-          "byteLength": 10811,
+          "byteLength": 11388,
           "relativePath": "dist/triage/checks.js"
         },
         {
-          "byteLength": 24515,
+          "byteLength": 25189,
           "relativePath": "dist/triage/checks.js.map"
         },
         {
@@ -20737,35 +20894,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/detail/continuation.js.map"
         },
         {
-          "byteLength": 63365,
+          "byteLength": 63625,
           "relativePath": "dist/triage/detail/contracts.d.ts"
         },
         {
-          "byteLength": 26321,
+          "byteLength": 26482,
           "relativePath": "dist/triage/detail/contracts.d.ts.map"
         },
         {
-          "byteLength": 22569,
+          "byteLength": 22728,
           "relativePath": "dist/triage/detail/contracts.js"
         },
         {
-          "byteLength": 36031,
+          "byteLength": 36256,
           "relativePath": "dist/triage/detail/contracts.js.map"
         },
         {
-          "byteLength": 2591,
+          "byteLength": 2830,
           "relativePath": "dist/triage/detail/files/orderChangedFiles.d.ts"
         },
         {
-          "byteLength": 11700,
+          "byteLength": 15264,
           "relativePath": "dist/triage/detail/files/orderChangedFiles.d.ts.map"
         },
         {
-          "byteLength": 8659,
+          "byteLength": 12287,
           "relativePath": "dist/triage/detail/files/orderChangedFiles.js"
         },
         {
-          "byteLength": 18448,
+          "byteLength": 25792,
           "relativePath": "dist/triage/detail/files/orderChangedFiles.js.map"
         },
         {
@@ -20801,35 +20958,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/detail/overview.js.map"
         },
         {
-          "byteLength": 7839,
+          "byteLength": 7972,
           "relativePath": "dist/triage/detail/projection.d.ts"
         },
         {
-          "byteLength": 25396,
+          "byteLength": 25838,
           "relativePath": "dist/triage/detail/projection.d.ts.map"
         },
         {
-          "byteLength": 17603,
+          "byteLength": 17865,
           "relativePath": "dist/triage/detail/projection.js"
         },
         {
-          "byteLength": 37413,
+          "byteLength": 38029,
           "relativePath": "dist/triage/detail/projection.js.map"
         },
         {
-          "byteLength": 4349,
+          "byteLength": 4513,
           "relativePath": "dist/triage/detail/reads.d.ts"
         },
         {
-          "byteLength": 12794,
+          "byteLength": 13932,
           "relativePath": "dist/triage/detail/reads.d.ts.map"
         },
         {
-          "byteLength": 7026,
+          "byteLength": 7805,
           "relativePath": "dist/triage/detail/reads.js"
         },
         {
-          "byteLength": 16528,
+          "byteLength": 18011,
           "relativePath": "dist/triage/detail/reads.js.map"
         },
         {
@@ -20897,19 +21054,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/feedback.js.map"
         },
         {
-          "byteLength": 7370,
+          "byteLength": 8221,
           "relativePath": "dist/triage/get.d.ts"
         },
         {
-          "byteLength": 30027,
+          "byteLength": 33824,
           "relativePath": "dist/triage/get.d.ts.map"
         },
         {
-          "byteLength": 19724,
+          "byteLength": 23139,
           "relativePath": "dist/triage/get.js"
         },
         {
-          "byteLength": 43825,
+          "byteLength": 49112,
           "relativePath": "dist/triage/get.js.map"
         },
         {
@@ -20961,19 +21118,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/locator.js.map"
         },
         {
-          "byteLength": 3149,
+          "byteLength": 3569,
           "relativePath": "dist/triage/mapping/entry.d.ts"
         },
         {
-          "byteLength": 15185,
+          "byteLength": 15761,
           "relativePath": "dist/triage/mapping/entry.d.ts.map"
         },
         {
-          "byteLength": 11188,
+          "byteLength": 11757,
           "relativePath": "dist/triage/mapping/entry.js"
         },
         {
-          "byteLength": 23260,
+          "byteLength": 24011,
           "relativePath": "dist/triage/mapping/entry.js.map"
         },
         {
@@ -21073,19 +21230,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mutations/graphql.js.map"
         },
         {
-          "byteLength": 3907,
+          "byteLength": 3863,
           "relativePath": "dist/triage/mutations/issue.d.ts"
         },
         {
-          "byteLength": 26810,
+          "byteLength": 27143,
           "relativePath": "dist/triage/mutations/issue.d.ts.map"
         },
         {
-          "byteLength": 18601,
+          "byteLength": 19075,
           "relativePath": "dist/triage/mutations/issue.js"
         },
         {
-          "byteLength": 38827,
+          "byteLength": 39374,
           "relativePath": "dist/triage/mutations/issue.js.map"
         },
         {
@@ -21105,19 +21262,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mutations/publicationCapability.js.map"
         },
         {
-          "byteLength": 9830,
+          "byteLength": 1755,
+          "relativePath": "dist/triage/mutations/publicationSettlement.d.ts"
+        },
+        {
+          "byteLength": 3199,
+          "relativePath": "dist/triage/mutations/publicationSettlement.d.ts.map"
+        },
+        {
+          "byteLength": 1235,
+          "relativePath": "dist/triage/mutations/publicationSettlement.js"
+        },
+        {
+          "byteLength": 3448,
+          "relativePath": "dist/triage/mutations/publicationSettlement.js.map"
+        },
+        {
+          "byteLength": 9739,
           "relativePath": "dist/triage/mutations/pullRequest.d.ts"
         },
         {
-          "byteLength": 57855,
+          "byteLength": 58260,
           "relativePath": "dist/triage/mutations/pullRequest.d.ts.map"
         },
         {
-          "byteLength": 45613,
+          "byteLength": 46269,
           "relativePath": "dist/triage/mutations/pullRequest.js"
         },
         {
-          "byteLength": 89856,
+          "byteLength": 90625,
           "relativePath": "dist/triage/mutations/pullRequest.js.map"
         },
         {
@@ -21157,15 +21330,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/operations.d.ts"
         },
         {
-          "byteLength": 26839,
+          "byteLength": 27504,
           "relativePath": "dist/triage/operations.d.ts.map"
         },
         {
-          "byteLength": 20194,
+          "byteLength": 20830,
           "relativePath": "dist/triage/operations.js"
         },
         {
-          "byteLength": 40698,
+          "byteLength": 41711,
           "relativePath": "dist/triage/operations.js.map"
         },
         {
@@ -21313,19 +21486,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/types.js.map"
         },
         {
-          "byteLength": 221990,
+          "byteLength": 226435,
           "relativePath": "dist/ui/additionalTranslations.d.ts"
         },
         {
-          "byteLength": 226910,
+          "byteLength": 231403,
           "relativePath": "dist/ui/additionalTranslations.d.ts.map"
         },
         {
-          "byteLength": 222066,
+          "byteLength": 226511,
           "relativePath": "dist/ui/additionalTranslations.js"
         },
         {
-          "byteLength": 281393,
+          "byteLength": 286462,
           "relativePath": "dist/ui/additionalTranslations.js.map"
         },
         {
@@ -21381,15 +21554,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/panelReaders.d.ts"
         },
         {
-          "byteLength": 36048,
+          "byteLength": 36364,
           "relativePath": "dist/ui/detail/panelReaders.d.ts.map"
         },
         {
-          "byteLength": 28054,
+          "byteLength": 28406,
           "relativePath": "dist/ui/detail/panelReaders.js"
         },
         {
-          "byteLength": 56019,
+          "byteLength": 56451,
           "relativePath": "dist/ui/detail/panelReaders.js.map"
         },
         {
@@ -21445,15 +21618,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 136887,
+          "byteLength": 138819,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 117007,
+          "byteLength": 118552,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 222663,
+          "byteLength": 225120,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
@@ -21493,15 +21666,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/webhookAction.d.ts"
         },
         {
-          "byteLength": 14543,
+          "byteLength": 15398,
           "relativePath": "dist/webhookAction.d.ts.map"
         },
         {
-          "byteLength": 12105,
+          "byteLength": 13023,
           "relativePath": "dist/webhookAction.js"
         },
         {
-          "byteLength": 22691,
+          "byteLength": 23965,
           "relativePath": "dist/webhookAction.js.map"
         },
         {
@@ -21509,7 +21682,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d91cea47-f08f-4193-ab24-ef36c8874f9f",
+      "immutableGenerationId": "bundled-ab0520d9-085f-441e-8eaf-cbbabc0ba5b5",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.github",
       "schemaVersion": 1,
@@ -21524,11 +21697,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5599739,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6881287,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 1333734,
+          "byteLength": 1335247,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -21552,15 +21729,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/adapter.d.ts"
         },
         {
-          "byteLength": 5722,
+          "byteLength": 10491,
           "relativePath": "dist/adapter.d.ts.map"
         },
         {
-          "byteLength": 3976,
+          "byteLength": 8162,
           "relativePath": "dist/adapter.js"
         },
         {
-          "byteLength": 8611,
+          "byteLength": 16043,
           "relativePath": "dist/adapter.js.map"
         },
         {
@@ -21580,11 +21757,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/auth/connectedAccountRuntime.js.map"
         },
         {
-          "byteLength": 4910032,
+          "byteLength": 6018456,
           "relativePath": "dist/happier-plugin-ui/react-native-web/gitlab-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 4906178,
+          "byteLength": 6011394,
           "relativePath": "dist/happier-plugin-ui/react-native-web/gitlab-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -21596,19 +21773,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 280128,
+          "byteLength": 286172,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 118389,
+          "byteLength": 120650,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11062411,
+          "byteLength": 13571924,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle"
         },
         {
-          "byteLength": 2089462,
+          "byteLength": 2550031,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map"
         },
         {
@@ -21620,19 +21797,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 280128,
+          "byteLength": 286172,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 118389,
+          "byteLength": 120650,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11062411,
+          "byteLength": 13571924,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle"
         },
         {
-          "byteLength": 2089462,
+          "byteLength": 2550031,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-detail-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map"
         },
         {
@@ -21644,19 +21821,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/android.bundle.map"
         },
         {
-          "byteLength": 115517,
+          "byteLength": 118143,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle"
         },
         {
-          "byteLength": 47838,
+          "byteLength": 48947,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 11224373,
+          "byteLength": 13729817,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle"
         },
         {
-          "byteLength": 2120129,
+          "byteLength": 2582418,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle.map"
         },
         {
@@ -21668,19 +21845,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 115517,
+          "byteLength": 118143,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle"
         },
         {
-          "byteLength": 47838,
+          "byteLength": 48947,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 11224373,
+          "byteLength": 13729817,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle"
         },
         {
-          "byteLength": 2120129,
+          "byteLength": 2582418,
           "relativePath": "dist/happier-plugin-ui/react-native/gitlab-triage-sources-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_tr-7658bb.chunk.bundle.map"
         },
         {
@@ -21708,15 +21885,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 21110,
+          "byteLength": 21403,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 22728,
+          "byteLength": 23050,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 31903,
+          "byteLength": 32329,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -21800,11 +21977,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/pullRequests/index.js.map"
         },
         {
-          "byteLength": 213,
+          "byteLength": 217,
           "relativePath": "dist/remoteUrl.d.ts"
         },
         {
-          "byteLength": 720,
+          "byteLength": 724,
           "relativePath": "dist/remoteUrl.d.ts.map"
         },
         {
@@ -21812,7 +21989,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/remoteUrl.js"
         },
         {
-          "byteLength": 725,
+          "byteLength": 729,
           "relativePath": "dist/remoteUrl.js.map"
         },
         {
@@ -21896,35 +22073,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/detail/continuation.js.map"
         },
         {
-          "byteLength": 54715,
+          "byteLength": 54851,
           "relativePath": "dist/triage/detail/contracts.d.ts"
         },
         {
-          "byteLength": 20490,
+          "byteLength": 20666,
           "relativePath": "dist/triage/detail/contracts.d.ts.map"
         },
         {
-          "byteLength": 15792,
+          "byteLength": 15968,
           "relativePath": "dist/triage/detail/contracts.js"
         },
         {
-          "byteLength": 25637,
+          "byteLength": 25843,
           "relativePath": "dist/triage/detail/contracts.js.map"
         },
         {
-          "byteLength": 7571,
+          "byteLength": 7837,
           "relativePath": "dist/triage/detail/projection.d.ts"
         },
         {
-          "byteLength": 25780,
+          "byteLength": 26236,
           "relativePath": "dist/triage/detail/projection.d.ts.map"
         },
         {
-          "byteLength": 16519,
+          "byteLength": 16682,
           "relativePath": "dist/triage/detail/projection.js"
         },
         {
-          "byteLength": 36347,
+          "byteLength": 36869,
           "relativePath": "dist/triage/detail/projection.js.map"
         },
         {
@@ -21944,19 +22121,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/detail/reads.js.map"
         },
         {
-          "byteLength": 6743,
+          "byteLength": 7369,
           "relativePath": "dist/triage/detail/routes.d.ts"
         },
         {
-          "byteLength": 12690,
+          "byteLength": 13675,
           "relativePath": "dist/triage/detail/routes.d.ts.map"
         },
         {
-          "byteLength": 9255,
+          "byteLength": 10011,
           "relativePath": "dist/triage/detail/routes.js"
         },
         {
-          "byteLength": 15748,
+          "byteLength": 16894,
           "relativePath": "dist/triage/detail/routes.js.map"
         },
         {
@@ -22088,6 +22265,22 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mapping/bounded.js.map"
         },
         {
+          "byteLength": 1183,
+          "relativePath": "dist/triage/mapping/discussionResolution.d.ts"
+        },
+        {
+          "byteLength": 2287,
+          "relativePath": "dist/triage/mapping/discussionResolution.d.ts.map"
+        },
+        {
+          "byteLength": 1750,
+          "relativePath": "dist/triage/mapping/discussionResolution.js"
+        },
+        {
+          "byteLength": 2943,
+          "relativePath": "dist/triage/mapping/discussionResolution.js.map"
+        },
+        {
           "byteLength": 2835,
           "relativePath": "dist/triage/mapping/gitlabEntry.d.ts"
         },
@@ -22156,15 +22349,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mutations/discussionResolution.d.ts"
         },
         {
-          "byteLength": 5088,
+          "byteLength": 5561,
           "relativePath": "dist/triage/mutations/discussionResolution.d.ts.map"
         },
         {
-          "byteLength": 4449,
+          "byteLength": 4912,
           "relativePath": "dist/triage/mutations/discussionResolution.js"
         },
         {
-          "byteLength": 8884,
+          "byteLength": 9400,
           "relativePath": "dist/triage/mutations/discussionResolution.js.map"
         },
         {
@@ -22364,15 +22557,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/mutations/reviewPublication.d.ts"
         },
         {
-          "byteLength": 45412,
+          "byteLength": 48683,
           "relativePath": "dist/triage/mutations/reviewPublication.d.ts.map"
         },
         {
-          "byteLength": 42231,
+          "byteLength": 44551,
           "relativePath": "dist/triage/mutations/reviewPublication.js"
         },
         {
-          "byteLength": 82874,
+          "byteLength": 87201,
           "relativePath": "dist/triage/mutations/reviewPublication.js.map"
         },
         {
@@ -22440,19 +22633,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/triage/origin.js.map"
         },
         {
-          "byteLength": 1579,
+          "byteLength": 1769,
           "relativePath": "dist/triage/reviewWorkspace.d.ts"
         },
         {
-          "byteLength": 13210,
+          "byteLength": 16295,
           "relativePath": "dist/triage/reviewWorkspace.d.ts.map"
         },
         {
-          "byteLength": 10562,
+          "byteLength": 13192,
           "relativePath": "dist/triage/reviewWorkspace.js"
         },
         {
-          "byteLength": 20914,
+          "byteLength": 25337,
           "relativePath": "dist/triage/reviewWorkspace.js.map"
         },
         {
@@ -22604,15 +22797,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/additionalTranslations.d.ts"
         },
         {
-          "byteLength": 140943,
+          "byteLength": 140530,
           "relativePath": "dist/ui/additionalTranslations.d.ts.map"
         },
         {
-          "byteLength": 144410,
+          "byteLength": 143936,
           "relativePath": "dist/ui/additionalTranslations.js"
         },
         {
-          "byteLength": 180874,
+          "byteLength": 180310,
           "relativePath": "dist/ui/additionalTranslations.js.map"
         },
         {
@@ -22648,19 +22841,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/changeEvidence.js.map"
         },
         {
-          "byteLength": 402,
+          "byteLength": 1519,
           "relativePath": "dist/ui/detail/discussionReplies.d.ts"
         },
         {
-          "byteLength": 884,
+          "byteLength": 2323,
           "relativePath": "dist/ui/detail/discussionReplies.d.ts.map"
         },
         {
-          "byteLength": 321,
+          "byteLength": 1509,
           "relativePath": "dist/ui/detail/discussionReplies.js"
         },
         {
-          "byteLength": 933,
+          "byteLength": 2490,
           "relativePath": "dist/ui/detail/discussionReplies.js.map"
         },
         {
@@ -22716,15 +22909,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/panelReaders.d.ts"
         },
         {
-          "byteLength": 34602,
+          "byteLength": 36936,
           "relativePath": "dist/ui/detail/panelReaders.d.ts.map"
         },
         {
-          "byteLength": 26358,
+          "byteLength": 28829,
           "relativePath": "dist/ui/detail/panelReaders.js"
         },
         {
-          "byteLength": 52598,
+          "byteLength": 55939,
           "relativePath": "dist/ui/detail/panelReaders.js.map"
         },
         {
@@ -22764,15 +22957,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/tabDeclarations.d.ts"
         },
         {
-          "byteLength": 8563,
+          "byteLength": 8640,
           "relativePath": "dist/ui/detail/tabDeclarations.d.ts.map"
         },
         {
-          "byteLength": 4453,
+          "byteLength": 4535,
           "relativePath": "dist/ui/detail/tabDeclarations.js"
         },
         {
-          "byteLength": 10146,
+          "byteLength": 10236,
           "relativePath": "dist/ui/detail/tabDeclarations.js.map"
         },
         {
@@ -22780,15 +22973,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 51228,
+          "byteLength": 51977,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 44190,
+          "byteLength": 44435,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 83732,
+          "byteLength": 84667,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
@@ -22828,7 +23021,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-b1067e2c-a6d3-481a-8e34-2f2c687545a9",
+      "immutableGenerationId": "bundled-02b22704-bf2b-449d-bb6d-1d9efec8e0e7",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.gitlab",
       "schemaVersion": 1,
@@ -22843,7 +23036,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 722537,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 734448,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -22871,15 +23068,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/backend.d.ts"
         },
         {
-          "byteLength": 4616,
+          "byteLength": 4896,
           "relativePath": "dist/backend.d.ts.map"
         },
         {
-          "byteLength": 4021,
+          "byteLength": 4286,
           "relativePath": "dist/backend.js"
         },
         {
-          "byteLength": 6894,
+          "byteLength": 7316,
           "relativePath": "dist/backend.js.map"
         },
         {
@@ -23111,15 +23308,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/repository.d.ts"
         },
         {
-          "byteLength": 11497,
+          "byteLength": 9834,
           "relativePath": "dist/repository.d.ts.map"
         },
         {
-          "byteLength": 9918,
+          "byteLength": 8429,
           "relativePath": "dist/repository.js"
         },
         {
-          "byteLength": 20007,
+          "byteLength": 17367,
           "relativePath": "dist/repository.js.map"
         },
         {
@@ -23143,7 +23340,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-8200dd4c-73cd-4187-a510-64219b72e77c",
+      "immutableGenerationId": "bundled-91220301-b09d-46e1-a374-efac4d5b069c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.backend.sapling",
       "schemaVersion": 1,
@@ -23158,11 +23355,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 2473569,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 2880706,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 500493,
+          "byteLength": 516840,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -23214,19 +23415,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/api/sentryFailure.js.map"
         },
         {
-          "byteLength": 1165,
+          "byteLength": 3212,
           "relativePath": "dist/api/sentryLinkHeader.d.ts"
         },
         {
-          "byteLength": 3903,
+          "byteLength": 7472,
           "relativePath": "dist/api/sentryLinkHeader.d.ts.map"
         },
         {
-          "byteLength": 2597,
+          "byteLength": 3577,
           "relativePath": "dist/api/sentryLinkHeader.js"
         },
         {
-          "byteLength": 5594,
+          "byteLength": 9549,
           "relativePath": "dist/api/sentryLinkHeader.js.map"
         },
         {
@@ -23246,19 +23447,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/api/sentryRateLimit.js.map"
         },
         {
-          "byteLength": 3966,
+          "byteLength": 4247,
           "relativePath": "dist/api/sentryRoutes.d.ts"
         },
         {
-          "byteLength": 9303,
+          "byteLength": 9840,
           "relativePath": "dist/api/sentryRoutes.d.ts.map"
         },
         {
-          "byteLength": 6574,
+          "byteLength": 6801,
           "relativePath": "dist/api/sentryRoutes.js"
         },
         {
-          "byteLength": 11363,
+          "byteLength": 11977,
           "relativePath": "dist/api/sentryRoutes.js.map"
         },
         {
@@ -23310,19 +23511,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/auth/sentryOrigin.js.map"
         },
         {
-          "byteLength": 2006,
+          "byteLength": 3326,
           "relativePath": "dist/composer/candidate.d.ts"
         },
         {
-          "byteLength": 7020,
+          "byteLength": 9895,
           "relativePath": "dist/composer/candidate.d.ts.map"
         },
         {
-          "byteLength": 5416,
+          "byteLength": 6719,
           "relativePath": "dist/composer/candidate.js"
         },
         {
-          "byteLength": 10159,
+          "byteLength": 13858,
           "relativePath": "dist/composer/candidate.js.map"
         },
         {
@@ -23330,31 +23531,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/composer/reference.d.ts"
         },
         {
-          "byteLength": 11453,
+          "byteLength": 11179,
           "relativePath": "dist/composer/reference.d.ts.map"
         },
         {
-          "byteLength": 10460,
+          "byteLength": 10206,
           "relativePath": "dist/composer/reference.js"
         },
         {
-          "byteLength": 20550,
+          "byteLength": 19836,
           "relativePath": "dist/composer/reference.js.map"
         },
         {
-          "byteLength": 45047,
+          "byteLength": 45725,
           "relativePath": "dist/detail/detailContracts.d.ts"
         },
         {
-          "byteLength": 24500,
+          "byteLength": 25629,
           "relativePath": "dist/detail/detailContracts.d.ts.map"
         },
         {
-          "byteLength": 19243,
+          "byteLength": 19755,
           "relativePath": "dist/detail/detailContracts.js"
         },
         {
-          "byteLength": 33342,
+          "byteLength": 34616,
           "relativePath": "dist/detail/detailContracts.js.map"
         },
         {
@@ -23374,19 +23575,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/detail/detailProjection.js.map"
         },
         {
-          "byteLength": 7315,
+          "byteLength": 7420,
           "relativePath": "dist/detail/detailReads.d.ts"
         },
         {
-          "byteLength": 22376,
+          "byteLength": 23751,
           "relativePath": "dist/detail/detailReads.d.ts.map"
         },
         {
-          "byteLength": 13482,
+          "byteLength": 14794,
           "relativePath": "dist/detail/detailReads.js"
         },
         {
-          "byteLength": 29208,
+          "byteLength": 31439,
           "relativePath": "dist/detail/detailReads.js.map"
         },
         {
@@ -23394,31 +23595,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/entries/getIssueOutcome.d.ts"
         },
         {
-          "byteLength": 5880,
+          "byteLength": 6116,
           "relativePath": "dist/entries/getIssueOutcome.d.ts.map"
         },
         {
-          "byteLength": 4105,
+          "byteLength": 4339,
           "relativePath": "dist/entries/getIssueOutcome.js"
         },
         {
-          "byteLength": 7755,
+          "byteLength": 7981,
           "relativePath": "dist/entries/getIssueOutcome.js.map"
         },
         {
-          "byteLength": 1973,
+          "byteLength": 3077,
           "relativePath": "dist/entries/sentryIssueMapping.d.ts"
         },
         {
-          "byteLength": 13972,
+          "byteLength": 15946,
           "relativePath": "dist/entries/sentryIssueMapping.d.ts.map"
         },
         {
-          "byteLength": 11706,
+          "byteLength": 12248,
           "relativePath": "dist/entries/sentryIssueMapping.js"
         },
         {
-          "byteLength": 22795,
+          "byteLength": 24963,
           "relativePath": "dist/entries/sentryIssueMapping.js.map"
         },
         {
@@ -23438,11 +23639,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/entries/sentryIssueTypes.js.map"
         },
         {
-          "byteLength": 2297595,
+          "byteLength": 2636249,
           "relativePath": "dist/happier-plugin-ui/react-native-web/sentry-detail-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2319928,
+          "byteLength": 2660491,
           "relativePath": "dist/happier-plugin-ui/react-native-web/sentry-triage-sources-native/entry.mjs.bundle"
         },
         {
@@ -23454,19 +23655,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/android.bundle.map"
         },
         {
-          "byteLength": 204535,
+          "byteLength": 212631,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 87983,
+          "byteLength": 90907,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6079906,
+          "byteLength": 8141818,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle"
         },
         {
-          "byteLength": 1193306,
+          "byteLength": 1576206,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map"
         },
         {
@@ -23478,19 +23679,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 204535,
+          "byteLength": 212631,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 87983,
+          "byteLength": 90907,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6079906,
+          "byteLength": 8141818,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle"
         },
         {
-          "byteLength": 1193306,
+          "byteLength": 1576206,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-detail-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map"
         },
         {
@@ -23510,11 +23711,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241790,
+          "byteLength": 8299633,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1218758,
+          "byteLength": 1603050,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -23534,11 +23735,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map"
         },
         {
-          "byteLength": 6241790,
+          "byteLength": 8299633,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle"
         },
         {
-          "byteLength": 1218758,
+          "byteLength": 1603050,
           "relativePath": "dist/happier-plugin-ui/react-native/sentry-triage-sources-native/ios/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map"
         },
         {
@@ -23546,19 +23747,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json"
         },
         {
-          "byteLength": 7000,
+          "byteLength": 7077,
           "relativePath": "dist/index.d.ts"
         },
         {
-          "byteLength": 11158,
+          "byteLength": 11297,
           "relativePath": "dist/index.d.ts.map"
         },
         {
-          "byteLength": 4535,
+          "byteLength": 4564,
           "relativePath": "dist/index.js"
         },
         {
-          "byteLength": 9743,
+          "byteLength": 9854,
           "relativePath": "dist/index.js.map"
         },
         {
@@ -23630,15 +23831,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 24029,
+          "byteLength": 24322,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 25518,
+          "byteLength": 25840,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 35329,
+          "byteLength": 35755,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -23646,15 +23847,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/privacy/sentryEventProjection.d.ts"
         },
         {
-          "byteLength": 34184,
+          "byteLength": 34570,
           "relativePath": "dist/privacy/sentryEventProjection.d.ts.map"
         },
         {
-          "byteLength": 25887,
+          "byteLength": 26268,
           "relativePath": "dist/privacy/sentryEventProjection.js"
         },
         {
-          "byteLength": 48493,
+          "byteLength": 48982,
           "relativePath": "dist/privacy/sentryEventProjection.js.map"
         },
         {
@@ -23678,15 +23879,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/scan/scanIssuesPage.d.ts"
         },
         {
-          "byteLength": 11273,
+          "byteLength": 11475,
           "relativePath": "dist/scan/scanIssuesPage.d.ts.map"
         },
         {
-          "byteLength": 8991,
+          "byteLength": 9197,
           "relativePath": "dist/scan/scanIssuesPage.js"
         },
         {
-          "byteLength": 15805,
+          "byteLength": 15965,
           "relativePath": "dist/scan/scanIssuesPage.js.map"
         },
         {
@@ -23758,15 +23959,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/source/detailOperations.d.ts"
         },
         {
-          "byteLength": 20291,
+          "byteLength": 20843,
           "relativePath": "dist/source/detailOperations.d.ts.map"
         },
         {
-          "byteLength": 19084,
+          "byteLength": 19646,
           "relativePath": "dist/source/detailOperations.js"
         },
         {
-          "byteLength": 33614,
+          "byteLength": 34413,
           "relativePath": "dist/source/detailOperations.js.map"
         },
         {
@@ -23790,15 +23991,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/source/operations.d.ts"
         },
         {
-          "byteLength": 22346,
+          "byteLength": 23131,
           "relativePath": "dist/source/operations.d.ts.map"
         },
         {
-          "byteLength": 18920,
+          "byteLength": 19305,
           "relativePath": "dist/source/operations.js"
         },
         {
-          "byteLength": 34665,
+          "byteLength": 35415,
           "relativePath": "dist/source/operations.js.map"
         },
         {
@@ -23818,19 +24019,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/detail/model.js.map"
         },
         {
-          "byteLength": 3684,
+          "byteLength": 4144,
           "relativePath": "dist/ui/detail/panelReaders.d.ts"
         },
         {
-          "byteLength": 18044,
+          "byteLength": 18912,
           "relativePath": "dist/ui/detail/panelReaders.d.ts.map"
         },
         {
-          "byteLength": 13603,
+          "byteLength": 14468,
           "relativePath": "dist/ui/detail/panelReaders.js"
         },
         {
-          "byteLength": 26929,
+          "byteLength": 28014,
           "relativePath": "dist/ui/detail/panelReaders.js.map"
         },
         {
@@ -23886,31 +24087,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/renderSurface.d.ts"
         },
         {
-          "byteLength": 59010,
+          "byteLength": 63546,
           "relativePath": "dist/ui/renderSurface.d.ts.map"
         },
         {
-          "byteLength": 51890,
+          "byteLength": 56404,
           "relativePath": "dist/ui/renderSurface.js"
         },
         {
-          "byteLength": 96222,
+          "byteLength": 102925,
           "relativePath": "dist/ui/renderSurface.js.map"
         },
         {
-          "byteLength": 115490,
+          "byteLength": 130532,
           "relativePath": "dist/ui/renderTranslations.d.ts"
         },
         {
-          "byteLength": 116838,
+          "byteLength": 132072,
           "relativePath": "dist/ui/renderTranslations.d.ts.map"
         },
         {
-          "byteLength": 113166,
+          "byteLength": 128208,
           "relativePath": "dist/ui/renderTranslations.js"
         },
         {
-          "byteLength": 147635,
+          "byteLength": 165161,
           "relativePath": "dist/ui/renderTranslations.js.map"
         },
         {
@@ -23930,11 +24131,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/settings/renderSettingsSurface.js.map"
         },
         {
-          "byteLength": 128179,
+          "byteLength": 143221,
           "relativePath": "dist/ui/translations.d.ts"
         },
         {
-          "byteLength": 14663,
+          "byteLength": 14759,
           "relativePath": "dist/ui/translations.d.ts.map"
         },
         {
@@ -23950,7 +24151,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-8010c912-45e9-4bfa-b868-ca28d29b4db7",
+      "immutableGenerationId": "bundled-b4d6b799-41b0-4be0-8ef4-bf89ea2d881c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.sentry",
       "schemaVersion": 1,
@@ -23965,11 +24166,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 5637125,
+          "byteLength": 71,
+          "relativePath": ".happier-plugin/.happier-daemon-outputs.json"
+        },
+        {
+          "byteLength": 6922765,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
-          "byteLength": 1171575,
+          "byteLength": 1191467,
           "relativePath": ".happier-plugin/plugin.json"
         },
         {
@@ -24057,31 +24262,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/actions/entrySession.d.ts"
         },
         {
-          "byteLength": 28663,
+          "byteLength": 31453,
           "relativePath": "dist/actions/entrySession.d.ts.map"
         },
         {
-          "byteLength": 22149,
+          "byteLength": 24724,
           "relativePath": "dist/actions/entrySession.js"
         },
         {
-          "byteLength": 43529,
+          "byteLength": 47946,
           "relativePath": "dist/actions/entrySession.js.map"
         },
         {
-          "byteLength": 51116,
+          "byteLength": 52214,
           "relativePath": "dist/actions/entrySessionProtocol.d.ts"
         },
         {
-          "byteLength": 31627,
+          "byteLength": 33094,
           "relativePath": "dist/actions/entrySessionProtocol.d.ts.map"
         },
         {
-          "byteLength": 27716,
+          "byteLength": 29129,
           "relativePath": "dist/actions/entrySessionProtocol.js"
         },
         {
-          "byteLength": 39523,
+          "byteLength": 41197,
           "relativePath": "dist/actions/entrySessionProtocol.js.map"
         },
         {
@@ -24213,19 +24418,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/actions/savedViewsProtocol.js.map"
         },
         {
-          "byteLength": 1826,
+          "byteLength": 708,
           "relativePath": "dist/actions/searchEntries.d.ts"
         },
         {
-          "byteLength": 7156,
+          "byteLength": 7615,
           "relativePath": "dist/actions/searchEntries.d.ts.map"
         },
         {
-          "byteLength": 4726,
+          "byteLength": 6390,
           "relativePath": "dist/actions/searchEntries.js"
         },
         {
-          "byteLength": 9586,
+          "byteLength": 11114,
           "relativePath": "dist/actions/searchEntries.js.map"
         },
         {
@@ -24361,15 +24566,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/composer/attachmentRuntime.d.ts"
         },
         {
-          "byteLength": 2784,
+          "byteLength": 2993,
           "relativePath": "dist/composer/attachmentRuntime.d.ts.map"
         },
         {
-          "byteLength": 2079,
+          "byteLength": 2076,
           "relativePath": "dist/composer/attachmentRuntime.js"
         },
         {
-          "byteLength": 3826,
+          "byteLength": 4094,
           "relativePath": "dist/composer/attachmentRuntime.js.map"
         },
         {
@@ -24441,15 +24646,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/composer/entryPicker.d.ts"
         },
         {
-          "byteLength": 23115,
+          "byteLength": 24027,
           "relativePath": "dist/composer/entryPicker.d.ts.map"
         },
         {
-          "byteLength": 18815,
+          "byteLength": 19709,
           "relativePath": "dist/composer/entryPicker.js"
         },
         {
-          "byteLength": 34339,
+          "byteLength": 35776,
           "relativePath": "dist/composer/entryPicker.js.map"
         },
         {
@@ -24489,31 +24694,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/composer/pickerFacts.d.ts"
         },
         {
-          "byteLength": 4371,
+          "byteLength": 4479,
           "relativePath": "dist/composer/pickerFacts.d.ts.map"
         },
         {
-          "byteLength": 3579,
+          "byteLength": 3685,
           "relativePath": "dist/composer/pickerFacts.js"
         },
         {
-          "byteLength": 5746,
+          "byteLength": 5916,
           "relativePath": "dist/composer/pickerFacts.js.map"
         },
         {
-          "byteLength": 7446,
+          "byteLength": 7578,
           "relativePath": "dist/composer/pickerModel.d.ts"
         },
         {
-          "byteLength": 18871,
+          "byteLength": 19259,
           "relativePath": "dist/composer/pickerModel.d.ts.map"
         },
         {
-          "byteLength": 7136,
+          "byteLength": 7234,
           "relativePath": "dist/composer/pickerModel.js"
         },
         {
-          "byteLength": 19467,
+          "byteLength": 19773,
           "relativePath": "dist/composer/pickerModel.js.map"
         },
         {
@@ -25013,19 +25218,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/displayName.js.map"
         },
         {
-          "byteLength": 2060795,
+          "byteLength": 2401330,
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-entries-compact-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 2313111,
+          "byteLength": 2652370,
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-entry-picker-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 5780384,
+          "byteLength": 6912043,
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-list-page-native/entry.mjs.bundle"
         },
         {
-          "byteLength": 4778668,
+          "byteLength": 2330917,
+          "relativePath": "dist/happier-plugin-ui/react-native-web/triage-search-action-native/entry.mjs.bundle"
+        },
+        {
+          "byteLength": 5885187,
           "relativePath": "dist/happier-plugin-ui/react-native-web/triage-session-entries-native/entry.mjs.bundle"
         },
         {
@@ -25037,19 +25246,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/android.bundle.map"
         },
         {
-          "byteLength": 20921,
+          "byteLength": 21102,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/src_composer_controlCompact_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 9397,
+          "byteLength": 9468,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/src_composer_controlCompact_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6046319,
+          "byteLength": 8104162,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle"
         },
         {
-          "byteLength": 1193628,
+          "byteLength": 1578171,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map"
         },
         {
@@ -25061,19 +25270,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 20921,
+          "byteLength": 21102,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/src_composer_controlCompact_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 9397,
+          "byteLength": 9468,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/src_composer_controlCompact_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6046319,
+          "byteLength": 8104162,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle"
         },
         {
-          "byteLength": 1193628,
+          "byteLength": 1578171,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entries-compact-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map"
         },
         {
@@ -25085,19 +25294,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/android.bundle.map"
         },
         {
-          "byteLength": 230323,
+          "byteLength": 246935,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 97907,
+          "byteLength": 105178,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6046313,
+          "byteLength": 8104156,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle"
         },
         {
-          "byteLength": 1190892,
+          "byteLength": 1574682,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map"
         },
         {
@@ -25109,19 +25318,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 230323,
+          "byteLength": 246935,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 97907,
+          "byteLength": 105178,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 6046313,
+          "byteLength": 8104156,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle"
         },
         {
-          "byteLength": 1190892,
+          "byteLength": 1574682,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-entry-picker-native/ios/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map"
         },
         {
@@ -25133,19 +25342,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/android.bundle.map"
         },
         {
-          "byteLength": 1568299,
+          "byteLength": 1611210,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 532994,
+          "byteLength": 545199,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11069223,
+          "byteLength": 13583165,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle"
         },
         {
-          "byteLength": 2096897,
+          "byteLength": 2558854,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map"
         },
         {
@@ -25157,20 +25366,68 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 1568299,
+          "byteLength": 1611210,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 532994,
+          "byteLength": 545199,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 11069223,
+          "byteLength": 13583165,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle"
         },
         {
-          "byteLength": 2096897,
+          "byteLength": 2558854,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-list-page-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map"
+        },
+        {
+          "byteLength": 33411,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/android.bundle"
+        },
+        {
+          "byteLength": 5679,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/android.bundle.map"
+        },
+        {
+          "byteLength": 176947,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/src_actions_searchEntries_ts.chunk.bundle"
+        },
+        {
+          "byteLength": 74910,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/src_actions_searchEntries_ts.chunk.bundle.map"
+        },
+        {
+          "byteLength": 4701807,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-60f431.chunk.bundle"
+        },
+        {
+          "byteLength": 970068,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-60f431.chunk.bundle.map"
+        },
+        {
+          "byteLength": 33407,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/ios.bundle"
+        },
+        {
+          "byteLength": 5675,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/ios.bundle.map"
+        },
+        {
+          "byteLength": 176947,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/src_actions_searchEntries_ts.chunk.bundle"
+        },
+        {
+          "byteLength": 74910,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/src_actions_searchEntries_ts.chunk.bundle.map"
+        },
+        {
+          "byteLength": 4701807,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-60f431.chunk.bundle"
+        },
+        {
+          "byteLength": 970068,
+          "relativePath": "dist/happier-plugin-ui/react-native/triage-search-action-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-60f431.chunk.bundle.map"
         },
         {
           "byteLength": 34229,
@@ -25181,19 +25438,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/android.bundle.map"
         },
         {
-          "byteLength": 250333,
+          "byteLength": 252320,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/src_sessions_cockpit_sessionLinkedEntriesSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 111763,
+          "byteLength": 112458,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/src_sessions_cockpit_sessionLinkedEntriesSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 10959395,
+          "byteLength": 13464839,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle"
         },
         {
-          "byteLength": 2083232,
+          "byteLength": 2545813,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle.map"
         },
         {
@@ -25205,23 +25462,23 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/ios.bundle.map"
         },
         {
-          "byteLength": 250333,
+          "byteLength": 252320,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/src_sessions_cockpit_sessionLinkedEntriesSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle"
         },
         {
-          "byteLength": 111763,
+          "byteLength": 112458,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/src_sessions_cockpit_sessionLinkedEntriesSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map"
         },
         {
-          "byteLength": 10959395,
+          "byteLength": 13464839,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle"
         },
         {
-          "byteLength": 2083232,
+          "byteLength": 2545813,
           "relativePath": "dist/happier-plugin-ui/react-native/triage-session-entries-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-233e65.chunk.bundle.map"
         },
         {
-          "byteLength": 22861,
+          "byteLength": 28420,
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json"
         },
         {
@@ -25257,19 +25514,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/index.js.map"
         },
         {
-          "byteLength": 261717,
+          "byteLength": 261985,
           "relativePath": "dist/manifest.d.ts"
         },
         {
-          "byteLength": 39961,
+          "byteLength": 39959,
           "relativePath": "dist/manifest.d.ts.map"
         },
         {
-          "byteLength": 37306,
+          "byteLength": 37348,
           "relativePath": "dist/manifest.js"
         },
         {
-          "byteLength": 47121,
+          "byteLength": 47142,
           "relativePath": "dist/manifest.js.map"
         },
         {
@@ -25321,19 +25578,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/projection/listWindow.js.map"
         },
         {
-          "byteLength": 9046,
+          "byteLength": 9201,
           "relativePath": "dist/projection/listWindowStore.d.ts"
         },
         {
-          "byteLength": 73343,
+          "byteLength": 77152,
           "relativePath": "dist/projection/listWindowStore.d.ts.map"
         },
         {
-          "byteLength": 57484,
+          "byteLength": 60534,
           "relativePath": "dist/projection/listWindowStore.js"
         },
         {
-          "byteLength": 99696,
+          "byteLength": 104497,
           "relativePath": "dist/projection/listWindowStore.js.map"
         },
         {
@@ -25533,15 +25790,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/sessions/cockpit/sessionLinkedEntriesSurface.d.ts"
         },
         {
-          "byteLength": 15593,
+          "byteLength": 15852,
           "relativePath": "dist/sessions/cockpit/sessionLinkedEntriesSurface.d.ts.map"
         },
         {
-          "byteLength": 11373,
+          "byteLength": 11542,
           "relativePath": "dist/sessions/cockpit/sessionLinkedEntriesSurface.js"
         },
         {
-          "byteLength": 23033,
+          "byteLength": 23464,
           "relativePath": "dist/sessions/cockpit/sessionLinkedEntriesSurface.js.map"
         },
         {
@@ -25565,31 +25822,31 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/sessions/cockpit/useSessionLinkedEntries.d.ts"
         },
         {
-          "byteLength": 9266,
+          "byteLength": 9837,
           "relativePath": "dist/sessions/cockpit/useSessionLinkedEntries.d.ts.map"
         },
         {
-          "byteLength": 7220,
+          "byteLength": 7741,
           "relativePath": "dist/sessions/cockpit/useSessionLinkedEntries.js"
         },
         {
-          "byteLength": 13606,
+          "byteLength": 14781,
           "relativePath": "dist/sessions/cockpit/useSessionLinkedEntries.js.map"
         },
         {
-          "byteLength": 4402,
+          "byteLength": 4509,
           "relativePath": "dist/sessions/entrySessionDelivery.d.ts"
         },
         {
-          "byteLength": 8592,
+          "byteLength": 8700,
           "relativePath": "dist/sessions/entrySessionDelivery.d.ts.map"
         },
         {
-          "byteLength": 2696,
+          "byteLength": 2699,
           "relativePath": "dist/sessions/entrySessionDelivery.js"
         },
         {
-          "byteLength": 8912,
+          "byteLength": 9008,
           "relativePath": "dist/sessions/entrySessionDelivery.js.map"
         },
         {
@@ -25625,19 +25882,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/sessions/entrySessionOpen.js.map"
         },
         {
-          "byteLength": 9843,
+          "byteLength": 9858,
           "relativePath": "dist/sessions/entrySessionOrchestrator.d.ts"
         },
         {
-          "byteLength": 29512,
+          "byteLength": 29527,
           "relativePath": "dist/sessions/entrySessionOrchestrator.d.ts.map"
         },
         {
-          "byteLength": 15755,
+          "byteLength": 15761,
           "relativePath": "dist/sessions/entrySessionOrchestrator.js"
         },
         {
-          "byteLength": 34650,
+          "byteLength": 34665,
           "relativePath": "dist/sessions/entrySessionOrchestrator.js.map"
         },
         {
@@ -25849,19 +26106,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/targetedContributions.js.map"
         },
         {
-          "byteLength": 1048,
+          "byteLength": 1503,
           "relativePath": "dist/ui/actions/ActionsEditor.d.ts"
         },
         {
-          "byteLength": 24507,
+          "byteLength": 26459,
           "relativePath": "dist/ui/actions/ActionsEditor.d.ts.map"
         },
         {
-          "byteLength": 19936,
+          "byteLength": 22308,
           "relativePath": "dist/ui/actions/ActionsEditor.js"
         },
         {
-          "byteLength": 38943,
+          "byteLength": 41140,
           "relativePath": "dist/ui/actions/ActionsEditor.js.map"
         },
         {
@@ -25945,19 +26202,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/actions/useTriageActions.js.map"
         },
         {
-          "byteLength": 159530,
+          "byteLength": 170965,
           "relativePath": "dist/ui/additionalTranslations.d.ts"
         },
         {
-          "byteLength": 162910,
+          "byteLength": 174609,
           "relativePath": "dist/ui/additionalTranslations.d.ts.map"
         },
         {
-          "byteLength": 159606,
+          "byteLength": 171041,
           "relativePath": "dist/ui/additionalTranslations.js"
         },
         {
-          "byteLength": 200247,
+          "byteLength": 214968,
           "relativePath": "dist/ui/additionalTranslations.js.map"
         },
         {
@@ -25977,19 +26234,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/configuration/useTriageConfiguredSources.js.map"
         },
         {
-          "byteLength": 2512,
+          "byteLength": 2681,
           "relativePath": "dist/ui/contributions.d.ts"
         },
         {
-          "byteLength": 3096,
+          "byteLength": 3309,
           "relativePath": "dist/ui/contributions.d.ts.map"
         },
         {
-          "byteLength": 2349,
+          "byteLength": 2510,
           "relativePath": "dist/ui/contributions.js"
         },
         {
-          "byteLength": 3136,
+          "byteLength": 3359,
           "relativePath": "dist/ui/contributions.js.map"
         },
         {
@@ -26189,15 +26446,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/header/PullRequestReviewChooser.d.ts"
         },
         {
-          "byteLength": 12665,
+          "byteLength": 13625,
           "relativePath": "dist/ui/header/PullRequestReviewChooser.d.ts.map"
         },
         {
-          "byteLength": 10536,
+          "byteLength": 11471,
           "relativePath": "dist/ui/header/PullRequestReviewChooser.js"
         },
         {
-          "byteLength": 21024,
+          "byteLength": 22412,
           "relativePath": "dist/ui/header/PullRequestReviewChooser.js.map"
         },
         {
@@ -26265,19 +26522,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/header/newSessionSeedCommand.js.map"
         },
         {
-          "byteLength": 1499,
+          "byteLength": 1946,
           "relativePath": "dist/ui/header/sessionStartOutcome.d.ts"
         },
         {
-          "byteLength": 11234,
+          "byteLength": 12767,
           "relativePath": "dist/ui/header/sessionStartOutcome.d.ts.map"
         },
         {
-          "byteLength": 8370,
+          "byteLength": 9796,
           "relativePath": "dist/ui/header/sessionStartOutcome.js"
         },
         {
-          "byteLength": 14186,
+          "byteLength": 16095,
           "relativePath": "dist/ui/header/sessionStartOutcome.js.map"
         },
         {
@@ -26297,19 +26554,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/header/startEntrySessionCommand.js.map"
         },
         {
-          "byteLength": 9499,
+          "byteLength": 12739,
           "relativePath": "dist/ui/header/useEntrySessionStart.d.ts"
         },
         {
-          "byteLength": 47693,
+          "byteLength": 59432,
           "relativePath": "dist/ui/header/useEntrySessionStart.d.ts.map"
         },
         {
-          "byteLength": 30614,
+          "byteLength": 37709,
           "relativePath": "dist/ui/header/useEntrySessionStart.js"
         },
         {
-          "byteLength": 62279,
+          "byteLength": 75811,
           "relativePath": "dist/ui/header/useEntrySessionStart.js.map"
         },
         {
@@ -26329,19 +26586,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/list/BulkActionBar.js.map"
         },
         {
-          "byteLength": 2158,
+          "byteLength": 2500,
           "relativePath": "dist/ui/list/bulkEntrySessionExecution.d.ts"
         },
         {
-          "byteLength": 12151,
+          "byteLength": 15022,
           "relativePath": "dist/ui/list/bulkEntrySessionExecution.d.ts.map"
         },
         {
-          "byteLength": 8494,
+          "byteLength": 10500,
           "relativePath": "dist/ui/list/bulkEntrySessionExecution.js"
         },
         {
-          "byteLength": 16504,
+          "byteLength": 20676,
           "relativePath": "dist/ui/list/bulkEntrySessionExecution.js.map"
         },
         {
@@ -26381,15 +26638,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/list/bulkSessionOutcome.d.ts"
         },
         {
-          "byteLength": 8415,
+          "byteLength": 8491,
           "relativePath": "dist/ui/list/bulkSessionOutcome.d.ts.map"
         },
         {
-          "byteLength": 4467,
+          "byteLength": 4542,
           "relativePath": "dist/ui/list/bulkSessionOutcome.js"
         },
         {
-          "byteLength": 10078,
+          "byteLength": 10215,
           "relativePath": "dist/ui/list/bulkSessionOutcome.js.map"
         },
         {
@@ -26425,35 +26682,35 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/list/continuation.js.map"
         },
         {
-          "byteLength": 8845,
+          "byteLength": 9470,
           "relativePath": "dist/ui/list/rows.d.ts"
         },
         {
-          "byteLength": 17567,
+          "byteLength": 19403,
           "relativePath": "dist/ui/list/rows.d.ts.map"
         },
         {
-          "byteLength": 11948,
+          "byteLength": 13100,
           "relativePath": "dist/ui/list/rows.js"
         },
         {
-          "byteLength": 20086,
+          "byteLength": 22059,
           "relativePath": "dist/ui/list/rows.js.map"
         },
         {
-          "byteLength": 4473,
+          "byteLength": 4892,
           "relativePath": "dist/ui/list/sections.d.ts"
         },
         {
-          "byteLength": 8407,
+          "byteLength": 8922,
           "relativePath": "dist/ui/list/sections.d.ts.map"
         },
         {
-          "byteLength": 3694,
+          "byteLength": 3724,
           "relativePath": "dist/ui/list/sections.js"
         },
         {
-          "byteLength": 9767,
+          "byteLength": 10258,
           "relativePath": "dist/ui/list/sections.js.map"
         },
         {
@@ -26461,15 +26718,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/list/useBulkEntrySessions.d.ts"
         },
         {
-          "byteLength": 51499,
+          "byteLength": 52763,
           "relativePath": "dist/ui/list/useBulkEntrySessions.d.ts.map"
         },
         {
-          "byteLength": 33655,
+          "byteLength": 34776,
           "relativePath": "dist/ui/list/useBulkEntrySessions.js"
         },
         {
-          "byteLength": 72840,
+          "byteLength": 74717,
           "relativePath": "dist/ui/list/useBulkEntrySessions.js.map"
         },
         {
@@ -26489,19 +26746,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/marks/pinCommand.js.map"
         },
         {
-          "byteLength": 2749,
+          "byteLength": 3795,
           "relativePath": "dist/ui/marks/pinnedRows.d.ts"
         },
         {
-          "byteLength": 5639,
+          "byteLength": 8145,
           "relativePath": "dist/ui/marks/pinnedRows.d.ts.map"
         },
         {
-          "byteLength": 2444,
+          "byteLength": 3616,
           "relativePath": "dist/ui/marks/pinnedRows.js"
         },
         {
-          "byteLength": 6537,
+          "byteLength": 9418,
           "relativePath": "dist/ui/marks/pinnedRows.js.map"
         },
         {
@@ -26653,15 +26910,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/shell/root.d.ts"
         },
         {
-          "byteLength": 110697,
+          "byteLength": 114198,
           "relativePath": "dist/ui/shell/root.d.ts.map"
         },
         {
-          "byteLength": 100555,
+          "byteLength": 103230,
           "relativePath": "dist/ui/shell/root.js"
         },
         {
-          "byteLength": 162534,
+          "byteLength": 166734,
           "relativePath": "dist/ui/shell/root.js.map"
         },
         {
@@ -26745,11 +27002,11 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/surface.js.map"
         },
         {
-          "byteLength": 855933,
+          "byteLength": 878803,
           "relativePath": "dist/ui/translations.d.ts"
         },
         {
-          "byteLength": 280861,
+          "byteLength": 281125,
           "relativePath": "dist/ui/translations.d.ts.map"
         },
         {
@@ -26761,19 +27018,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/translations.js.map"
         },
         {
-          "byteLength": 1550,
+          "byteLength": 1652,
           "relativePath": "dist/ui/views/control.d.ts"
         },
         {
-          "byteLength": 10901,
+          "byteLength": 11639,
           "relativePath": "dist/ui/views/control.d.ts.map"
         },
         {
-          "byteLength": 7280,
+          "byteLength": 7834,
           "relativePath": "dist/ui/views/control.js"
         },
         {
-          "byteLength": 15176,
+          "byteLength": 16241,
           "relativePath": "dist/ui/views/control.js.map"
         },
         {
@@ -26841,19 +27098,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/window/boundDisplayText.js.map"
         },
         {
-          "byteLength": 1811,
+          "byteLength": 5608,
           "relativePath": "dist/ui/window/entryDisplay.d.ts"
         },
         {
-          "byteLength": 3968,
+          "byteLength": 12644,
           "relativePath": "dist/ui/window/entryDisplay.d.ts.map"
         },
         {
-          "byteLength": 1708,
+          "byteLength": 6233,
           "relativePath": "dist/ui/window/entryDisplay.js"
         },
         {
-          "byteLength": 4547,
+          "byteLength": 14861,
           "relativePath": "dist/ui/window/entryDisplay.js.map"
         },
         {
@@ -26873,20 +27130,36 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/ui/window/ephemeralSharedScope.test-support.js.map"
         },
         {
-          "byteLength": 3744,
+          "byteLength": 4090,
           "relativePath": "dist/ui/window/mountedWindow.d.ts"
         },
         {
-          "byteLength": 12200,
+          "byteLength": 12769,
           "relativePath": "dist/ui/window/mountedWindow.d.ts.map"
         },
         {
-          "byteLength": 7981,
+          "byteLength": 8269,
           "relativePath": "dist/ui/window/mountedWindow.js"
         },
         {
-          "byteLength": 16329,
+          "byteLength": 16926,
           "relativePath": "dist/ui/window/mountedWindow.js.map"
+        },
+        {
+          "byteLength": 1774,
+          "relativePath": "dist/ui/window/refreshEligibilityClock.d.ts"
+        },
+        {
+          "byteLength": 3155,
+          "relativePath": "dist/ui/window/refreshEligibilityClock.d.ts.map"
+        },
+        {
+          "byteLength": 2765,
+          "relativePath": "dist/ui/window/refreshEligibilityClock.js"
+        },
+        {
+          "byteLength": 3870,
+          "relativePath": "dist/ui/window/refreshEligibilityClock.js.map"
         },
         {
           "byteLength": 1893,
@@ -26941,7 +27214,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-ff9be22a-72af-47f7-bf18-15558c2ba05b",
+      "immutableGenerationId": "bundled-93b08c00-8f48-4099-bc70-6c43ddef9ddd",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.triage",
       "schemaVersion": 1,

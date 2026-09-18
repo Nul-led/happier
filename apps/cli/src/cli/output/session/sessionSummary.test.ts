@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createPlainSessionOwnerMetadataEnvelopeV1,
+  projectLegacySessionAccessCapabilitiesV1,
   SessionOwnerMetadataV1Schema,
+  SessionSummarySchema,
 } from '@happier-dev/protocol';
 import { encodeBase64, encryptLegacy } from '@/api/encryption';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -146,6 +148,94 @@ describe('summarizeSessionRow', () => {
     for (const key of ['title', 'tag', 'path', 'host', 'isSystem', 'systemPurpose'] as const) {
       expect(futureLayoutSummary).not.toHaveProperty(key);
     }
+  });
+
+  it('preserves every operational fact the public Session summary schema supports', () => {
+    const row = createSessionRecordFixture({
+      id: 'session-operational',
+      encryptionMode: 'plain',
+      metadata: JSON.stringify({ tag: 'Operational' }),
+      latestTurnId: 'turn-7',
+      latestTurnStatus: 'in_progress',
+      latestTurnStatusObservedAt: 1_700_000_000_100,
+      lastRuntimeIssue: {
+        v: 1,
+        scope: 'primary_session',
+        status: 'failed',
+        code: 'agent_process_exit',
+        source: 'agent_process_exit',
+        occurredAt: 1_700_000_000_000,
+      },
+      runtimeActivityState: 'active',
+      runtimeActivityActiveCount: 2,
+      runtimeActivityObservedAt: 1_700_000_000_050,
+      runtimeActivityRevision: 4,
+      rollbackEligibleTurnStarts: [12, 34],
+    } as never);
+
+    const summary = summarizeSessionRow({ credentials, row });
+
+    expect(summary).toMatchObject({
+      latestTurnId: 'turn-7',
+      latestTurnStatus: 'in_progress',
+      latestTurnStatusObservedAt: 1_700_000_000_100,
+      runtimeActivityState: 'active',
+      runtimeActivityActiveCount: 2,
+      runtimeActivityObservedAt: 1_700_000_000_050,
+      runtimeActivityRevision: 4,
+      rollbackEligibleTurnStarts: [12, 34],
+    });
+    expect(summary.lastRuntimeIssue).toMatchObject({ code: 'agent_process_exit' });
+    expect(SessionSummarySchema.safeParse(summary).success).toBe(true);
+  });
+
+  it('omits operational facts an older producer did not project rather than inventing them', () => {
+    const summary = summarizeSessionRow({
+      credentials,
+      row: createSessionRecordFixture({
+        id: 'session-no-operational-facts',
+        encryptionMode: 'plain',
+        metadata: JSON.stringify({ tag: 'Bare' }),
+      }),
+    });
+
+    for (const key of [
+      'latestTurnStatus',
+      'lastRuntimeIssue',
+      'runtimeActivityState',
+      'rollbackEligibleTurnStarts',
+      'pendingActivationAuthorization',
+    ] as const) {
+      expect(summary).not.toHaveProperty(key);
+    }
+  });
+
+  it('preserves collective effective access without fabricating a direct share', () => {
+    const effectiveAccess = {
+      v: 1 as const,
+      level: 'view' as const,
+      sources: [{
+        kind: 'team' as const,
+        teamId: 'team-1',
+        requiredByTeamPolicy: false,
+      }],
+      capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+      audienceContext: { kind: 'team' as const, teamId: 'team-1' },
+      primaryTeamId: 'team-1',
+    };
+    const summary = summarizeSessionRow({
+      credentials,
+      row: createSessionRecordFixture({
+        id: 'session-team-access',
+        encryptionMode: 'plain',
+        metadata: JSON.stringify({ summary: { text: 'Team session' } }),
+        effectiveAccess,
+      }),
+    });
+
+    expect(summary.effectiveAccess).toEqual(effectiveAccess);
+    expect(summary).not.toHaveProperty('share');
+    expect(SessionSummarySchema.parse(summary)).toEqual(summary);
   });
 
   it('is tolerant of malformed metadata', () => {

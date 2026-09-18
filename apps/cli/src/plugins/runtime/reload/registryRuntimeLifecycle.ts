@@ -21,6 +21,7 @@ import {
   resolveExecutablePluginRuntimeRegistry,
   type PluginRuntimeActivationRegistryLease,
   type PluginRuntimeGenerationAuthority,
+  type PluginRuntimeMachineAdmissionTransport,
 } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import {
   prepareBundledExecutableGenerationAdmission,
@@ -161,6 +162,8 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
   happyHomeDir: string;
   /** Daemon-owned live machine identity for host-stamped nested Action callers. */
   resolveCurrentMachineId?: () => string | null;
+  /** Existing authenticated Machine admission authority for protected Session input. */
+  machineAdmissionTransport?: PluginRuntimeMachineAdmissionTransport;
   /** Existing daemon-local transfer carrier for host-authored Composer media. */
   resolveComposerMediaStageTransferRpcHandler?: () => RpcHandlerInvoker | null;
   /** Fresh server/machine identity; never a retained feature snapshot. */
@@ -300,6 +303,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             generation: activationGeneration,
           ...(params.resolveCurrentMachineId
             ? { resolveCurrentMachineId: params.resolveCurrentMachineId }
+            : {}),
+          ...(params.machineAdmissionTransport
+            ? { machineAdmissionTransport: params.machineAdmissionTransport }
             : {}),
           ...(params.resolveComposerMediaStageTransferRpcHandler
             ? {

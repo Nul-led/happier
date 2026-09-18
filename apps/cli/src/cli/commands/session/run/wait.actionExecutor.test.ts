@@ -76,7 +76,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1' },
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
       );
       expect(resolveSessionTarget).toHaveBeenCalledWith('sess-1');
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
@@ -105,7 +105,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1', timeoutSeconds: 42 },
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -120,15 +120,17 @@ describe('happier session run wait (action executor)', () => {
 
   it('rejects an explicit invalid timeout before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionRunWait } = await import('./wait');
-
-    await expect(cmdSessionRunWait(
-      ['session', 'run', 'sess-prefix', 'run-1', '--timeout', '0'],
-      { readCredentialsFn },
-    )).rejects.toMatchObject({ code: 'invalid_arguments' });
-
-    expect(readCredentialsFn).not.toHaveBeenCalled();
-    expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'wait', 'sess-prefix', 'run-1', '--timeout', '0', '--json'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 
   it('does not resolve an API-token Session through the generic transport', async () => {
@@ -166,7 +168,7 @@ describe('happier session run wait (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.wait',
         { sessionId: 'sess-canonical', runId: 'run-1', timeoutSeconds: 1 },
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
       );
       const text = output.logs.join('\n');
       expect(text).not.toContain('run finished');
@@ -207,6 +209,35 @@ describe('happier session run wait (action executor)', () => {
       });
     } finally {
       output.restore();
+    }
+  });
+
+  it('preserves the canonical cancelled disposition as a stable failure envelope', async () => {
+    execute.mockResolvedValueOnce({ ok: true, result: { ok: false, code: 'cancelled' } });
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'wait', 'sess-1', 'run-1', '--json'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+
+      expect(execute).toHaveBeenCalledWith(
+        'execution.run.wait',
+        { sessionId: 'sess-canonical', runId: 'run-1' },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-canonical' }),
+      );
+      expect(output.json()).toEqual({
+        v: 1,
+        ok: false,
+        kind: 'session_run_wait',
+        error: { code: 'cancelled' },
+      });
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
     }
   });
 });

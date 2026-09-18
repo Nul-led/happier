@@ -11,9 +11,18 @@ import { dispatchBuiltInHappierTool } from '@/agent/tools/happierTools/dispatchB
 import type { HappierBuiltInToolDispatchResult } from '@/agent/tools/happierTools/types';
 import { normalizeExecutionRunRpcPayload } from '@/session/services/executionRuns';
 import { registerHappierMcpBuiltInTools } from '@/mcp/server/registerHappierMcpBuiltInTools';
-import type { StoredCredentials } from '@/persistence';
+import {
+  readStoredCredentialsForServerId,
+  sameStoredCredentials,
+  type StoredCredentials,
+} from '@/persistence';
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
-import { createDaemonPluginActionExecutor } from '@/session/actions/createDaemonPluginActionExecutor';
+import {
+  createDaemonPluginActionExecutor,
+  createPluginActionExecutor,
+} from '@/session/actions/createDaemonPluginActionExecutor';
+import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
+import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permissions/modeFromMetadata';
 import {
@@ -25,17 +34,24 @@ import {
   type BackendTargetRefV2,
   getActionSpec,
   isActionSpecSurfacedOn,
+  normalizeServerIdentityIdCapability,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { MemorySearchResultV1Schema, MemoryWindowV1Schema, type MemorySearchResultV1, type MemoryWindowV1, type SessionStateCapabilitiesV1 } from '@happier-dev/protocol';
 import { createSessionStateSyncEngine } from '@happier-dev/agents';
 import {
   createMcpActionApprovalRequirement,
-  createMcpActionEnablement,
+  createMcpActionEnablementWithServerFeatureAvailability,
   createMcpActionSettingsProvider,
 } from '@/mcp/server/createMcpActionEnablement';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { isSessionBoundMemoryTarget } from '@/mcp/sessionBoundMemoryTarget';
+import { createSessionDiscussionActionDeps } from '@/session/discussions/sessionDiscussionActionDeps';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import { createSessionFollowActionDeps } from '@/api/sessionFollowActionDeps';
+import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
 
 const MCP_SESSION_STATE_CAPABILITIES: SessionStateCapabilitiesV1 = {
   display: {
@@ -109,10 +125,19 @@ async function writeMcpSessionTitleMetadata(params: Readonly<{
 export function createHappierMcpServer(
   client: HappyMcpSessionClient,
   opts?: Readonly<{
+    /** Session transport authentication; does not grant Account-wide Action authority. */
+    sessionCredentials?: StoredCredentials | null;
+    /** Account-scoped Action authority. Existing callers default this from credentials. */
     credentials?: StoredCredentials | null;
+    authorityScope?: 'account' | 'session';
+    sessionList?: ActionExecutorDeps['sessionList'];
+    actionsSettingsProvider?: RuntimeActionSettingsProvider;
     accountSettings?: AccountSettings | null;
     getAccountSettings?: (() => AccountSettings | null) | null;
     pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
+    /** Exact caller-owned registry lease for daemonless scoped runtimes. */
+    pluginRuntimeRegistryLease?: PluginRuntimeRegistryLease;
+    requiredDirectActionIds?: readonly ActionId[];
     sessionInputVia?: 'action' | 'mcp';
   }>,
 ): {
@@ -128,24 +153,39 @@ export function createHappierMcpServer(
   // It must use the `agent` surface so action enablement + approvals can be
   // configured separately from the external MCP surface (`mcp`).
   const toolSurface = 'agent' as const;
-  const credentials = opts?.credentials ?? null;
-  const actionSettingsProvider = createMcpActionSettingsProvider({
+  const credentials = opts?.authorityScope === 'session' ? null : opts?.credentials ?? null;
+  const sessionCredentials = opts?.sessionCredentials ?? opts?.credentials ?? null;
+  const { serverId, serverUrl: serverHttpBaseUrl } = client.getServerBinding();
+  const serverFeaturesSnapshot = client.getServerFeaturesSnapshot?.();
+  const serverIdentityId = serverFeaturesSnapshot?.status === 'ready'
+    ? normalizeServerIdentityIdCapability(
+        serverFeaturesSnapshot.features.capabilities.serverIdentity?.serverIdentityId,
+      ) ?? null
+    : null;
+  const actionSettingsProvider = opts?.actionsSettingsProvider ?? createMcpActionSettingsProvider({
     accountSettings: opts?.accountSettings ?? null,
     getAccountSettings: opts?.getAccountSettings ?? null,
+    scopeKey: credentials
+      ? resolveAccountSettingsScopeKeyForToken(credentials.token)
+      : null,
   });
   const readActionsSettings = () => actionSettingsProvider.getActionsSettings();
   const readSessionAgentSpawnPolicyV1 = () =>
-    actionSettingsProvider.getAccountSettings()?.sessionAgentSpawnPolicyV1;
-  const isActionEnabled = createMcpActionEnablement({
+    actionSettingsProvider.getAccountSettings?.()?.sessionAgentSpawnPolicyV1;
+  const isActionEnabledByRuntime = createMcpActionEnablementWithServerFeatureAvailability({
     actionSettingsProvider,
     surface: toolSurface,
+    hasAuthenticatedRuntime: sessionCredentials !== null,
+    readServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.(),
   });
+  const isActionEnabled = (id: ActionId) => isActionEnabledByRuntime(id)
+    && (opts?.authorityScope !== 'session' || getActionSpec(id).executionPlacement === 'session');
   const isActionApprovalRequired = createMcpActionApprovalRequirement({
     actionSettingsProvider,
     surface: toolSurface,
   });
-  const ctx = credentials
-    ? resolveSessionEncryptionContextFromCredentials(credentials)
+  const ctx = sessionCredentials
+    ? resolveSessionEncryptionContextFromCredentials(sessionCredentials)
     : null;
   const cryptoContext = ctx
     ? { mode: 'e2ee' as const, ctx }
@@ -203,10 +243,6 @@ export function createHappierMcpServer(
       normalizeExecutionRunRpcPayload(
         await (client.executionRuns?.get?.(request) ?? sessionScopedRpc('execution.run.get', request)),
       ),
-    send: async (request: unknown) =>
-      normalizeExecutionRunRpcPayload(
-        await (client.executionRuns?.send?.(request) ?? sessionScopedRpc('execution.run.send', request)),
-      ),
     stop: async (request: unknown) =>
       normalizeExecutionRunRpcPayload(
         await (client.executionRuns?.stop?.(request) ?? sessionScopedRpc('execution.run.stop', request)),
@@ -220,8 +256,20 @@ export function createHappierMcpServer(
         await (client.executionRuns?.wait?.(request) ?? sessionScopedRpc('execution.run.wait', request)),
       ),
   };
+  const executionRunScopeMismatch = () => ({
+    ok: false as const,
+    errorCode: 'execution_run_scope_mismatch' as const,
+    error: 'The session-bound MCP bridge cannot operate on a different or detached execution-run scope',
+  });
+  const runForBoundSession = async <T>(
+    requestedSessionId: string | null,
+    operation: () => Promise<T>,
+  ): Promise<T | ReturnType<typeof executionRunScopeMismatch>> => {
+    if (requestedSessionId !== client.sessionId) return executionRunScopeMismatch();
+    return await operation();
+  };
   const executionRunStartRpc = async (
-    _sessionId: string | null,
+    sessionId: string | null,
     request: unknown,
     actionOptions?: Parameters<ActionExecutorDeps['executionRunStart']>[2],
   ) => {
@@ -229,28 +277,108 @@ export function createHappierMcpServer(
       actionOptions
       && Object.prototype.hasOwnProperty.call(actionOptions, 'causalPermissionAuthority'),
     );
-    return await executionRuns.start(
-      request,
-      hasCausalPermissionAuthority
-        ? {
-            surface: toolSurface,
-            callerPermissionMode: resolveAgentCallerPermissionMode(),
-            causalPermissionAuthority: actionOptions?.causalPermissionAuthority ?? null,
-          }
-        : undefined,
+    return await runForBoundSession(
+      sessionId,
+      async () => await executionRuns.start(
+        request,
+        hasCausalPermissionAuthority
+          ? {
+              surface: toolSurface,
+              callerPermissionMode: resolveAgentCallerPermissionMode(),
+              causalPermissionAuthority: actionOptions?.causalPermissionAuthority ?? null,
+            }
+          : undefined,
+      ),
     );
   };
 
   const harness = createCliActionExecutorHarness(
     {
-      token: credentials?.token ?? '',
+      actionsSettingsProvider: actionSettingsProvider,
+      token: sessionCredentials?.token ?? '',
       ...(credentials ? { credentials } : {}),
       sessionId: client.sessionId,
       ...cryptoContext,
       rawSession,
       getCurrentSessionBackendTarget: () => resolveLiveClientBackendTarget(client),
+      serverId,
+      ...(serverIdentityId ? { serverIdentityId } : {}),
+      serverHttpBaseUrl,
+      ...(client.getServerFeaturesSnapshot
+        ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
+        : {}),
     },
     {
+      ...(credentials
+        ? {
+            ...createAccountServerActionDeps({
+              token: credentials.token,
+              credentials,
+              isCredentialCurrent: async () => sameStoredCredentials(
+                credentials,
+                await readStoredCredentialsForServerId(serverId).catch(() => null),
+              ),
+              serverId,
+              serverHttpBaseUrl,
+              ...(serverIdentityId ? { serverIdentityId } : {}),
+              ...(client.getServerFeaturesSnapshot
+                ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
+                : {}),
+            }),
+            ...createSessionFollowActionDeps({
+              token: credentials.token,
+              serverId,
+              serverHttpBaseUrl,
+              ...(serverIdentityId ? { serverIdentityId } : {}),
+              prepareSourceKeyAfterSet: createSessionFollowSourceKeyPreparationAfterSet({
+                credentials,
+                serverHttpBaseUrl,
+                ...(serverIdentityId ? { serverIdentityId } : {}),
+                ...(client.getServerFeaturesSnapshot
+                  ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
+                  : {}),
+              }),
+            }),
+          }
+        : {}),
+      sessionActionConfirmation: async (request) => {
+        if (!client.confirmSessionAction) return null;
+        if (client.getSessionActionConfirmationBinding) {
+          return await client.confirmSessionAction(request, client.getSessionActionConfirmationBinding());
+        }
+        const witness = client.getActiveTurnPermissionWitness?.();
+        const lifetimeSignal = client.getRuntimeLifetimeSignal?.();
+        return await client.confirmSessionAction(request, witness && lifetimeSignal ? {
+          turnId: witness.turnId,
+          lifetimeSignal,
+          isCurrent: () => client.getRuntimeLifetimeSignal?.() === lifetimeSignal
+            && client.getActiveTurnPermissionWitness?.()?.turnId === witness.turnId,
+        } : null);
+      },
+      ...(credentials
+        ? createSessionDiscussionActionDeps({
+            credentials,
+            serverId,
+            ...(serverIdentityId ? { serverIdentityId } : {}),
+            serverHttpBaseUrl,
+            ...(client.getServerFeaturesSnapshot
+              ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
+              : {}),
+            ...(client.postAgentDiscussionMessage
+              ? {
+                  postAgentMessage: async (request, options) => await client.postAgentDiscussionMessage!(
+                    {
+                      discussionId: request.discussionId,
+                      request: request.request,
+                      ...(request.runId ? { runId: request.runId } : {}),
+                      ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+                    },
+                    options,
+                  ),
+                }
+              : {}),
+          })
+        : {}),
       sessionTitleSet: async ({ sessionId, title }) => {
         const normalizedSessionId = String(sessionId ?? '').trim();
         if (!normalizedSessionId) {
@@ -289,12 +417,13 @@ export function createHappierMcpServer(
         };
       },
       executionRunStart: executionRunStartRpc,
-      executionRunList: async (_sessionId, request) => await executionRuns.list(request),
-      executionRunGet: async (_sessionId, request) => await executionRuns.get(request),
-      executionRunSend: async (_sessionId, request) => await executionRuns.send(request),
-      executionRunStop: async (_sessionId, request) => await executionRuns.stop(request),
-      executionRunAction: async (_sessionId, request) => await executionRuns.action(request),
-      executionRunWait: async (_sessionId, request) => await executionRuns.wait(request),
+      executionRunList: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.list(request)),
+      executionRunGet: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.get(request)),
+      executionRunStop: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.stop(request)),
+      executionRunAction: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.action(request)),
+      executionRunWait: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.wait(request)),
+
+      ...(opts?.sessionList ? { sessionList: opts.sessionList } : {}),
 
       ...(credentials
         ? {}
@@ -354,7 +483,26 @@ export function createHappierMcpServer(
     },
   );
 
-  const executor = createDaemonPluginActionExecutor({ base: harness.executor });
+  const scopedPluginRuntimeRegistryLease = opts?.pluginRuntimeRegistryLease;
+  const executor = scopedPluginRuntimeRegistryLease
+    ? createPluginActionExecutor({
+        base: harness.executor,
+        requestPluginActionExecution: async (request, options) => await executeContributedAction({
+          runtimeRegistry: scopedPluginRuntimeRegistryLease.registry,
+          actionId: request.actionId,
+          input: request.input,
+          actionsSettings: actionSettingsProvider.getActionsSettings(),
+          ...(request.expectedContributorImmutableGenerationId
+            ? { expectedContributorImmutableGenerationId: request.expectedContributorImmutableGenerationId }
+            : {}),
+          context: {
+            surface: request.surface,
+            ...(request.defaultSessionId ? { defaultSessionId: request.defaultSessionId } : {}),
+            ...(options?.signal ? { signal: options.signal } : {}),
+          },
+        }),
+      })
+    : createDaemonPluginActionExecutor({ base: harness.executor });
 
   registerHappierMcpResources(mcp as any, {
     surface: toolSurface,
@@ -376,6 +524,7 @@ export function createHappierMcpServer(
     sessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1(),
     getSessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1,
     pluginToolCatalog: opts?.pluginToolCatalog,
+    requiredDirectActionIds: opts?.requiredDirectActionIds,
     defaultSessionMachineId: sessionLocation?.machineId ?? null,
   });
 
@@ -396,6 +545,7 @@ export function createHappierMcpServer(
     actionsSettings: readActionsSettings(),
     getActionsSettings: readActionsSettings,
     pluginToolCatalog: opts?.pluginToolCatalog,
+    requiredDirectActionIds: opts?.requiredDirectActionIds,
     deps: toolDeps,
   });
 
@@ -411,6 +561,7 @@ export function createHappierMcpServer(
       actionsSettings: readActionsSettings(),
       getActionsSettings: readActionsSettings,
       pluginToolCatalog: opts?.pluginToolCatalog,
+      requiredDirectActionIds: opts?.requiredDirectActionIds,
       ...(request.toolCallId
         ? {
             approvalOrigin: {

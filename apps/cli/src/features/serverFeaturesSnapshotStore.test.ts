@@ -8,13 +8,14 @@ import {
 } from './serverFeaturesSnapshotStore';
 
 function ready(features: Record<string, unknown>): Extract<CliServerFeaturesSnapshot, { status: 'ready' }> {
-  return { status: 'ready', features: FeaturesResponseSchema.parse({ features }) };
+  return { status: 'ready', features: FeaturesResponseSchema.parse({ features }), provenance: 'authenticated' };
 }
 
 const READY_ENABLED = ready({ localServices: { enabled: true } });
 const READY_DISABLED = ready({ localServices: { enabled: false } });
 const HOME_INDEXING: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
   status: 'ready',
+  provenance: 'authenticated',
   features: FeaturesResponseSchema.parse({
     features: {},
     capabilities: { homeSearch: { enabled: false, reason: 'indexing' } },
@@ -22,6 +23,7 @@ const HOME_INDEXING: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
 };
 const HOME_UNAVAILABLE: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
   status: 'ready',
+  provenance: 'authenticated',
   features: FeaturesResponseSchema.parse({
     features: {},
     capabilities: { homeSearch: { enabled: false, reason: 'index_unavailable' } },
@@ -29,6 +31,7 @@ const HOME_UNAVAILABLE: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> 
 };
 const HOME_READY: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
   status: 'ready',
+  provenance: 'authenticated',
   features: FeaturesResponseSchema.parse({
     features: {},
     capabilities: { homeSearch: { enabled: true } },
@@ -48,14 +51,14 @@ describe('createServerFeaturesSnapshotStore', () => {
   });
 
   it('caches the ready snapshot after refresh and exposes it synchronously', async () => {
-    const onReady = vi.fn(async () => undefined);
+    const onAuthenticatedReady = vi.fn(async () => undefined);
     const store = createServerFeaturesSnapshotStore({
       fetchSnapshot: async () => READY_ENABLED,
-      onReady,
+      onAuthenticatedReady,
     });
     await store.refresh();
     expect(store.getSnapshot()).toEqual(READY_ENABLED);
-    expect(onReady).toHaveBeenCalledWith(READY_ENABLED.features);
+    expect(onAuthenticatedReady).toHaveBeenCalledWith(READY_ENABLED.features);
   });
 
   it('reflects a server-disabled ready snapshot (fail-closed source of truth)', async () => {
@@ -77,6 +80,19 @@ describe('createServerFeaturesSnapshotStore', () => {
     await store.refresh();
 
     // The transient error must NOT flip the cached enabled snapshot to a server-error state.
+    expect(store.getSnapshot()).toEqual(READY_ENABLED);
+  });
+
+  it('retains the authenticated last-known-good snapshot across an unsupported refresh', async () => {
+    const fetchSnapshot = vi
+      .fn<() => Promise<CliServerFeaturesSnapshot>>()
+      .mockResolvedValueOnce(READY_ENABLED)
+      .mockResolvedValueOnce({ status: 'unsupported', reason: 'endpoint_missing' });
+    const store = createServerFeaturesSnapshotStore({ fetchSnapshot });
+
+    await store.refresh();
+    await store.refresh();
+
     expect(store.getSnapshot()).toEqual(READY_ENABLED);
   });
 
@@ -166,5 +182,17 @@ describe('createServerFeaturesSnapshotStore', () => {
       'http://127.0.0.1:41001/v1/features/authenticated',
       expect.objectContaining({ headers: { Authorization: 'Bearer home-token' } }),
     );
+  });
+
+  it('reports public fallback provenance to the daemon callback instead of promoting it to exact', async () => {
+    const onAuthenticatedReady = vi.fn(async () => undefined);
+    const store = createServerFeaturesSnapshotStore({
+      fetchSnapshot: async () => ({ ...READY_ENABLED, provenance: 'public' }),
+      onAuthenticatedReady,
+    });
+
+    await store.refresh();
+
+    expect(onAuthenticatedReady).not.toHaveBeenCalled();
   });
 });

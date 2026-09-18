@@ -253,7 +253,10 @@ function resolveManagedJavaScriptRuntimeBootstrapLockPath(processEnv: NodeJS.Pro
 export async function ensureManagedJavaScriptRuntimeCommand(
   processEnv: NodeJS.ProcessEnv = process.env,
   deps: EnsureManagedJavaScriptRuntimeDeps = {},
+  options: Readonly<{ signal?: AbortSignal }> = {},
 ): Promise<string | null> {
+  const { signal } = options;
+  signal?.throwIfAborted();
   const rawOverride = readExplicitJavaScriptRuntimeCommand(processEnv);
   if (rawOverride) {
     return resolveExplicitJavaScriptRuntimeCommand(processEnv);
@@ -271,12 +274,14 @@ export async function ensureManagedJavaScriptRuntimeCommand(
 
   try {
     return await withWorkspaceBundleLock(async () => {
+      signal?.throwIfAborted();
       const managedAfterLock = resolveExistingManagedJavaScriptRuntimeCommand(processEnv);
       if (managedAfterLock) {
         return managedAfterLock;
       }
 
-      const release = await fetchNodeRelease({ processEnv });
+      const release = await fetchNodeRelease({ processEnv, signal });
+      signal?.throwIfAborted();
       const scratchDir = await createManagedToolScratchDir({
         installDir,
         prefix: 'bootstrap',
@@ -288,14 +293,17 @@ export async function ensureManagedJavaScriptRuntimeCommand(
         const nextNodeBinaryPath = resolveNextManagedNodeBinaryPath(processEnv, release.binaryRelativePath);
 
         await downloadAsset({
+          signal,
           url: release.url,
           destinationPath: archivePath,
           digest: release.digest,
           userAgent: 'happier-cli',
         });
 
+        signal?.throwIfAborted();
         await rm(nextDir, { recursive: true, force: true });
         await extractAsset({
+          signal,
           archivePath,
           archiveName: release.name,
           extractDir,
@@ -310,17 +318,24 @@ export async function ensureManagedJavaScriptRuntimeCommand(
           runtimeBinaryPath: process.platform === 'win32' ? '%~dp0..\\runtime\\node.exe' : '${0%/*}/../runtime/bin/node',
         });
 
-        await promoteManagedCurrentInstall({ installRoot: installDir, candidatePath: nextDir });
+        signal?.throwIfAborted();
+        await promoteManagedCurrentInstall({ signal, installRoot: installDir, candidatePath: nextDir });
         return managedJavaScriptRuntimeBinPath(processEnv);
       } finally {
-        await rm(scratchDir, { recursive: true, force: true });
+        try {
+          await rm(nextDir, { recursive: true, force: true });
+        } finally {
+          await rm(scratchDir, { recursive: true, force: true });
+        }
       }
     }, {
+      signal,
       lockPath: resolveManagedJavaScriptRuntimeBootstrapLockPath(processEnv),
       staleAfterMs: JS_RUNTIME_BOOTSTRAP_LOCK_STALE_MS,
       errorLabel: 'managed JavaScript runtime bootstrap lock',
     });
   } catch (error) {
+    signal?.throwIfAborted();
     throw new Error('Managed JavaScript runtime is unavailable: bootstrap failed', { cause: error });
   }
 }

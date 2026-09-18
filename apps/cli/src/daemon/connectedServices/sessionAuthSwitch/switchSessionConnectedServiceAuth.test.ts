@@ -7,8 +7,9 @@ import {
   BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
   QualifiedConnectedAccountGroupV4Schema,
   QualifiedConnectedAccountListResponseV4Schema,
+  ingestPluginManifestV2,
   type ConnectedServiceAuthGroupV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceMaterializationIdentityV1,
 } from '@happier-dev/protocol';
 import { CODEX_PLUGIN } from '@happier-dev/plugins-codex/manifest';
@@ -45,9 +46,14 @@ async function readCodexRuntimeAuthAdapterRegistration() {
     connectedAccountLaunch?: AgentConnectedAccountLaunchContributionV1;
   }> | undefined)?.connectedAccountLaunch;
   if (!launch) return undefined;
+  const ingestedManifest = ingestPluginManifestV2(CODEX_PLUGIN.manifest);
+  if (!ingestedManifest.ok) {
+    throw new Error('Expected the bundled Codex manifest to pass canonical ingestion');
+  }
   return await projectAgentConnectedAccountLaunchCatalogEntry({
     agentId: 'codex',
     connectedAccountLaunch: launch,
+    hostAccess: ingestedManifest.manifest.hostAccess,
     isCurrent: () => true,
   }).getConnectedServiceRuntimeAuthAdapter?.();
 }
@@ -55,7 +61,7 @@ async function readCodexRuntimeAuthAdapterRegistration() {
 type RuntimeAuthSelectionContinuityInput = Parameters<SwitchSessionConnectedServiceAuthInput['resolveContinuity']>[0];
 type RecoverAfterRuntimeAuthSwitch = (input: Readonly<{
   tracked: TrackedSession;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   serviceIds: ReadonlySet<string>;
   action: 'hot_applied' | 'restart_requested';
   runtimeAuthSelectionsByServiceId?: ReadonlyMap<string, unknown>;
@@ -70,7 +76,7 @@ type VerifyProviderAccountAdoption = (input: Readonly<{
     profileId: string | null;
     groupId?: string | null;
   }>;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   action: 'hot_applied' | 'restart_requested';
   runtimeAuthSelection?: unknown;
 }>) => Promise<
@@ -101,9 +107,9 @@ function trackedSession(overrides: Partial<TrackedSession> = {}): TrackedSession
       directory: '/tmp/project',
       backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          anthropic: { source: 'connected', selection: 'profile', profileId: 'old-profile' },
+          'happier.agent.claude/anthropic': { source: 'connected', selection: 'profile', profileId: 'old-profile' },
         },
       },
     },
@@ -275,29 +281,29 @@ function switchSessionConnectedServiceAuth(input: SwitchTestInput) {
   });
 }
 
-function bindings(profileId: string): ConnectedServiceBindingsV1 {
+function bindings(profileId: string): ConnectedServiceBindingsV2 {
   return {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
-      anthropic: { source: 'connected', selection: 'profile', profileId },
+      'happier.agent.claude/anthropic': { source: 'connected', selection: 'profile', profileId },
     },
   };
 }
 
-function codexBindings(profileId: string): ConnectedServiceBindingsV1 {
+function codexBindings(profileId: string): ConnectedServiceBindingsV2 {
   return {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
-      'openai-codex': { source: 'connected', selection: 'profile', profileId },
+      'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId },
     },
   };
 }
 
-function claudeSubscriptionBindings(profileId: string): ConnectedServiceBindingsV1 {
+function claudeSubscriptionBindings(profileId: string): ConnectedServiceBindingsV2 {
   return {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
-      'claude-subscription': { source: 'connected', selection: 'profile', profileId },
+      'happier.agent.claude/claude-subscription': { source: 'connected', selection: 'profile', profileId },
     },
   };
 }
@@ -305,12 +311,12 @@ function claudeSubscriptionBindings(profileId: string): ConnectedServiceBindings
 function multiServiceBindings(input: Readonly<{
   anthropicProfileId: string;
   claudeSubscriptionProfileId: string;
-}>): ConnectedServiceBindingsV1 {
+}>): ConnectedServiceBindingsV2 {
   return {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
-      anthropic: { source: 'connected', selection: 'profile', profileId: input.anthropicProfileId },
-      'claude-subscription': {
+      'happier.agent.claude/anthropic': { source: 'connected', selection: 'profile', profileId: input.anthropicProfileId },
+      'happier.agent.claude/claude-subscription': {
         source: 'connected',
         selection: 'profile',
         profileId: input.claudeSubscriptionProfileId,
@@ -342,16 +348,19 @@ function expectMaterializationIdentity(value: unknown): ConnectedServiceMaterial
 }
 
 describe('switchSessionConnectedServiceAuth', () => {
-  it('preserves a qualified Connected Account service through inactive Session switching', async () => {
-    const service = { pluginId: 'happier.agent.claude', localId: 'anthropic' } as const;
+  it('persists an exact team-resource V2 selection for an inactive Session', async () => {
     const serviceKey = 'happier.agent.claude/anthropic';
     const requested = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
         [serviceKey]: {
-          source: 'connected' as const,
-          selection: 'profile' as const,
-          profileId: 'new-profile',
+          source: 'team_resource' as const,
+          resourceId: 'resource-1',
+          deliveryMode: 'direct' as const,
+          disclosedMember: {
+            service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+            accountId: 'account-1',
+          },
         },
       },
     };
@@ -363,8 +372,71 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [],
       resolveInactiveSession: async () => ({
         agentId: 'claude',
+        connectedServices: { v: 2, bindingsByServiceId: {} },
+      }),
+      api: {
+        listConnectedServiceProfiles: async () => ({ serviceId: 'anthropic', profiles: [] }),
+      },
+      qualifiedConnectedAccountApi: {
+        listAccounts: async () => { throw new Error('not used'); },
+        readGroup: async () => { throw new Error('not used'); },
+      },
+      resolveContinuity: async ({ next }) => {
+        expect(next).toMatchObject({
+          source: 'team_resource',
+          resourceId: 'resource-1',
+          deliveryMode: 'direct',
+          disclosedMember: {
+            service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
+            accountId: 'account-1',
+          },
+        });
+        return { mode: 'restart_rematerialize' };
+      },
+      restartSession: vi.fn(async () => {}),
+      persistSessionBindings,
+      hotApply: async () => ({ ok: true }),
+      registerHotApplyTargets: () => {},
+      emitSessionEvent: () => {},
+      request: {
+        sessionId: 'sess_team_resource',
+        agentId: 'claude',
+        bindings: requested,
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      action: 'metadata_updated',
+      normalizedBindings: requested,
+    });
+    expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
+      normalizedBindings: requested,
+    }));
+  });
+
+  it('preserves a qualified Connected Account service through inactive Session switching', async () => {
+    const service = { pluginId: 'happier.agent.claude', localId: 'anthropic' } as const;
+    const serviceKey = 'happier.agent.claude/anthropic';
+    const requested: ConnectedServiceBindingsV2 = {
+      v: 2,
+      bindingsByServiceId: {
+        [serviceKey]: {
+          source: 'connected' as const,
+          selection: 'profile' as const,
+          profileId: 'new-profile',
+        },
+      },
+    };
+    const normalizedRequested = requested;
+    const persistSessionBindings = vi.fn(async () => {});
+
+    await expect(switchSessionConnectedServiceAuth({
+      core: createCore(),
+      postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
+      getChildren: () => [],
+      resolveInactiveSession: async () => ({
+        agentId: 'claude',
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
             [serviceKey]: {
               source: 'connected',
@@ -410,11 +482,11 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: true,
       action: 'metadata_updated',
-      normalizedBindings: requested,
+      normalizedBindings: normalizedRequested,
     });
 
     expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
-      normalizedBindings: requested,
+      normalizedBindings: normalizedRequested,
     }));
   });
 
@@ -426,7 +498,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
       getChildren: () => [],
       api: {
-        listConnectedServiceProfiles: async () => ({ serviceId: 'anthropic', profiles: [] }),
+        listConnectedServiceProfiles: async () => ({ serviceId: 'happier.agent.claude/anthropic', profiles: [] }),
         getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async () => ({ mode: 'restart_rematerialize' }),
@@ -466,7 +538,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       }),
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -488,7 +560,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       ok: true,
       action: 'metadata_updated',
       normalizedBindings: bindings('new-profile'),
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'restart_rematerialize' },
     });
 
     expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
@@ -497,12 +569,12 @@ describe('switchSessionConnectedServiceAuth', () => {
     }));
     expect(resolveContinuity).toHaveBeenCalledWith(expect.objectContaining({
       tracked: null,
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
     }));
     expect(restartSession).not.toHaveBeenCalled();
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_inactive', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       fromProfileId: 'old-profile',
       toProfileId: 'new-profile',
       reason: 'manual',
@@ -522,7 +594,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
       },
@@ -537,9 +609,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -555,7 +627,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       groupId: 'work',
       groupLabel: 'Work Pool',
       fromProfileId: 'old-profile',
@@ -580,7 +652,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'old-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({
@@ -611,9 +683,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -629,7 +701,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(emitSessionEvent).not.toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
     }));
   });
 
@@ -644,7 +716,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({ displayName: 'Work Pool' }),
@@ -659,9 +731,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -677,7 +749,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(emitSessionEvent).not.toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       reason: 'pre_turn_group_policy',
     }));
   });
@@ -701,7 +773,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -714,9 +786,9 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_failed',
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         serviceResultsByServiceId: {
-          anthropic: { status: 'failed', errorCode: 'no_safe_apply_window' },
+          'happier.agent.claude/anthropic': { status: 'failed', errorCode: 'no_safe_apply_window' },
         },
         underlyingError: 'no safe apply window within bound',
       }),
@@ -758,7 +830,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       }),
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -780,7 +852,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(resolveContinuity).toHaveBeenCalledWith(expect.objectContaining({
       tracked: null,
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       cwd: '/tmp/inactive-project',
       candidatePersistedSessionFile: '/tmp/inactive-project/.pi/session-1.jsonl',
       vendorResumeId: 'pi-session-1',
@@ -806,7 +878,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -837,7 +909,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(emitSessionEvent).toHaveBeenCalledTimes(1);
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       fromProfileId: 'old-profile',
       toProfileId: 'new-profile',
       reason: 'manual',
@@ -854,7 +926,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'refresh_failed_retryable' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -901,11 +973,11 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
     const resolveContinuity = vi.fn(async ({ previous, next, previousBindings: resolvedPreviousBindings }) => {
       expect(previous).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'old-profile',
       }));
       expect(next).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'new-profile',
       }));
       expect(resolvedPreviousBindings).toEqual(previousBindings);
@@ -920,7 +992,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -946,7 +1018,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(restartSession).toHaveBeenCalledWith(tracked);
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       fromProfileId: 'old-profile',
       toProfileId: 'new-profile',
       reason: 'manual',
@@ -973,11 +1045,11 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
     const materializeRuntimeAuthSelection = vi.fn(async ({ previous, next, previousBindings: resolvedPreviousBindings }) => {
       expect(previous).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'old-profile',
       }));
       expect(next).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'old-profile',
       }));
       expect(resolvedPreviousBindings).toEqual(previousBindings);
@@ -985,11 +1057,11 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
     const resolveContinuity = vi.fn(async ({ previous, next, previousBindings: resolvedPreviousBindings }) => {
       expect(previous).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'old-profile',
       }));
       expect(next).toEqual(expect.objectContaining({
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         profileId: 'old-profile',
       }));
       expect(resolvedPreviousBindings).toEqual(previousBindings);
@@ -1003,7 +1075,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'old-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1025,13 +1097,13 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: previousBindings,
-        rematerializeServiceId: 'anthropic',
+        rematerializeServiceId: 'happier.agent.claude/anthropic',
       },
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
       normalizedBindings: previousBindings,
-      continuityByServiceId: { anthropic: 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'hot_apply' },
     });
 
     expect(materializeRuntimeAuthSelection).toHaveBeenCalledOnce();
@@ -1098,7 +1170,7 @@ describe('switchSessionConnectedServiceAuth', () => {
           materializationDiagnostics: [{
             code: 'claude_subscription_missing_claude_code_scope',
             providerId: 'claude',
-            serviceId: 'claude-subscription',
+            serviceId: 'happier.agent.claude/claude-subscription',
             severity: 'blocking',
             reason: 'missing_claude_code_scope',
           }],
@@ -1119,14 +1191,14 @@ describe('switchSessionConnectedServiceAuth', () => {
       expect(result).toMatchObject({
         ok: false,
         errorCode: 'post_switch_verification_failed',
-        serviceId: 'claude-subscription',
+        serviceId: 'happier.agent.claude/claude-subscription',
         diagnostics: {
           failurePhase: 'materialization',
           uxDiagnostic: expect.objectContaining({
             code: 'claude_subscription_missing_claude_code_scope',
             failurePhase: 'materialization',
             source: expectedSource,
-            serviceId: 'claude-subscription',
+            serviceId: 'happier.agent.claude/claude-subscription',
             agentId: 'claude',
             retryable: false,
           }),
@@ -1159,10 +1231,10 @@ describe('switchSessionConnectedServiceAuth', () => {
         resume: 'spawn-resume-1',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: { source: 'native' },
-            'claude-subscription': { source: 'native' },
+            'happier.agent.claude/anthropic': { source: 'native' },
+            'happier.agent.claude/claude-subscription': { source: 'native' },
           },
         },
       },
@@ -1221,8 +1293,8 @@ describe('switchSessionConnectedServiceAuth', () => {
         claudeSubscriptionProfileId: 'subscription-new',
       }),
       continuityByServiceId: {
-        anthropic: 'restart_rematerialize',
-        'claude-subscription': 'restart_rematerialize',
+        'happier.agent.claude/anthropic': 'restart_rematerialize',
+        'happier.agent.claude/claude-subscription': 'restart_rematerialize',
       },
     });
 
@@ -1246,7 +1318,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1290,7 +1362,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1350,7 +1422,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1409,7 +1481,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1439,7 +1511,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     const tracked = trackedSession();
     const restartSession = vi.fn(async () => {
       expect(tracked.spawnOptions?.connectedServices).toEqual({
-        v: 1,
+        v: 2,
         bindingsByServiceId: {},
       });
     });
@@ -1451,7 +1523,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1460,7 +1532,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         expect(next).toMatchObject({
           source: 'native',
           selection: 'native',
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
         });
         return { mode: 'restart_rematerialize' };
       },
@@ -1472,7 +1544,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {},
         },
       },
@@ -1480,7 +1552,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       ok: true,
       action: 'restart_requested',
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {},
       },
     });
@@ -1488,7 +1560,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(restartSession).toHaveBeenCalledWith(tracked);
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       fromProfileId: 'old-profile',
       toProfileId: null,
       reason: 'manual',
@@ -1498,7 +1570,7 @@ describe('switchSessionConnectedServiceAuth', () => {
   it('rejects connected-service bindings unsupported by the target agent before profile lookup', async () => {
     const tracked = trackedSession();
     const listConnectedServiceProfiles = vi.fn(async () => ({
-      serviceId: 'openai-codex' as const,
+      serviceId: 'happier.agent.codex/openai-codex' as const,
       profiles: [{ profileId: 'codex-profile', status: 'connected' as const }],
     }));
     const resolveContinuity = vi.fn(async () => ({ mode: 'restart_rematerialize' as const }));
@@ -1522,9 +1594,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            'happier.agent.codex/openai-codex': {
               source: 'connected',
               selection: 'profile',
               profileId: 'codex-profile',
@@ -1535,7 +1607,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toEqual({
       ok: false,
       errorCode: 'unsupported_service',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
     });
 
     expect(listConnectedServiceProfiles).not.toHaveBeenCalled();
@@ -1552,7 +1624,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'needs_reauth' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1572,7 +1644,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: false,
       errorCode: 'profile_action_required',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       diagnostics: {
         failurePhase: 'normalization',
         actionRequired: {
@@ -1607,7 +1679,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
           {
             kind: 'group',
-            serviceId: 'anthropic',
+            serviceId: 'happier.agent.claude/anthropic',
             groupId: 'work',
             activeProfileId: 'group-active',
             fallbackProfileId: 'group-active',
@@ -1623,7 +1695,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({ generation: 5 }),
@@ -1636,11 +1708,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 4 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 4 },
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -1729,9 +1801,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         return {
           ok: false as const,
           errorCode: 'credential_revision_superseded' as const,
-          serviceId: 'anthropic' as const,
+          serviceId: 'happier.agent.claude/anthropic' as const,
           serviceResultsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               status: 'failed' as const,
               errorCode: 'credential_revision_superseded' as const,
             },
@@ -1752,7 +1824,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [
             { profileId: 'first-active', status: 'connected' },
             { profileId: 'second-active', status: 'connected' },
@@ -1771,9 +1843,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -1789,7 +1861,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       action: 'hot_applied',
       normalizedBindings: {
         bindingsByServiceId: {
-          anthropic: {
+          'happier.agent.claude/anthropic': {
             source: 'connected',
             selection: 'group',
             groupId: 'work',
@@ -1827,7 +1899,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
       getChildren: () => [tracked],
       api: {
-        listConnectedServiceProfiles: async () => ({ serviceId: 'anthropic', profiles: [] }),
+        listConnectedServiceProfiles: async () => ({ serviceId: 'happier.agent.claude/anthropic', profiles: [] }),
         getConnectedServiceAuthGroup: async () => group({ generation: 5 }),
       },
       resolveContinuity: async () => ({ mode: 'restart_rematerialize' }),
@@ -1838,11 +1910,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 3 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 3 },
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -1854,7 +1926,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toEqual({
       ok: false,
       errorCode: 'group_generation_conflict',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
     });
 
     expect(tracked.spawnOptions?.connectedServices).toEqual(bindings('old-profile'));
@@ -1873,7 +1945,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
           {
             kind: 'group',
-            serviceId: 'anthropic',
+            serviceId: 'happier.agent.claude/anthropic',
             groupId: 'work',
             activeProfileId: 'group-active',
             fallbackProfileId: 'fallback-profile',
@@ -1889,7 +1961,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [
             { profileId: 'group-active', status: 'connected' },
             { profileId: 'fallback-profile', status: 'connected' },
@@ -1933,9 +2005,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -1961,7 +2033,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -1984,7 +2056,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toEqual({
       ok: false,
       errorCode: 'provider_state_sharing_required',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       diagnostics: {
         failurePhase: 'continuity',
       },
@@ -2002,7 +2074,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2035,7 +2107,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: false,
       errorCode: 'provider_session_state_unavailable_for_resume',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       diagnostics: {
 	        failurePhase: 'continuity',
 	        continuity: {
@@ -2061,7 +2133,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2107,7 +2179,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2148,7 +2220,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2159,7 +2231,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         ok: false,
         errorCode: 'provider_rejected',
         serviceResultsByServiceId: {
-          anthropic: { status: 'failed', errorCode: 'provider_rejected' },
+          'happier.agent.claude/anthropic': { status: 'failed', errorCode: 'provider_rejected' },
         },
         underlyingError: 'provider refused Bearer raw-secret-token accessToken=raw-access-token',
       }),
@@ -2203,7 +2275,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2248,7 +2320,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     const registerHotApplyTargets = vi.fn(async (input: unknown) => {
       expect(input).toEqual(expect.objectContaining({
         tracked,
-        runtimeAuthSelectionsByServiceId: new Map([['anthropic', runtimeAuthSelection]]),
+        runtimeAuthSelectionsByServiceId: new Map([['happier.agent.claude/anthropic', runtimeAuthSelection]]),
       }));
       throw new Error('runtime target registration rejected');
     });
@@ -2259,7 +2331,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2307,7 +2379,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2354,7 +2426,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2418,7 +2490,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2456,7 +2528,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(tracked.spawnOptions?.connectedServices).toEqual(bindings('new-profile'));
     expect(recoverAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
-      serviceIds: new Set(['anthropic']),
+      serviceIds: new Set(['happier.agent.claude/anthropic']),
     }));
     expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(restartSession).not.toHaveBeenCalled();
@@ -2524,7 +2596,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(restartSession).not.toHaveBeenCalled();
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       target: expect.objectContaining({ profileId: 'bot' }),
       action: 'hot_applied',
     }));
@@ -2561,7 +2633,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'bot', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2594,7 +2666,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       target: expect.objectContaining({ profileId: 'bot' }),
       action: 'hot_applied',
     }));
@@ -2648,7 +2720,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'leeroy', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2682,7 +2754,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       target: expect.objectContaining({ profileId: 'leeroy' }),
     }));
     expect(calls).toEqual([
@@ -2724,7 +2796,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2748,7 +2820,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     await expect(switchSessionConnectedServiceAuth(input)).resolves.toMatchObject({
       ok: true,
       action: 'restart_requested',
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'restart_rematerialize' },
     });
 
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
@@ -2756,7 +2828,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       toProfileId: 'new-profile',
       mode: 'restart_resume',
     }));
@@ -2780,7 +2852,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2802,7 +2874,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     } satisfies SwitchInputWithVerification)).resolves.toMatchObject({
       ok: true,
       action: 'restart_requested',
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'restart_rematerialize' },
     });
 
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
@@ -2844,7 +2916,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'bot', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2866,9 +2938,9 @@ describe('switchSessionConnectedServiceAuth', () => {
     } satisfies SwitchInputWithVerification)).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { 'openai-codex': 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.codex/openai-codex': 'hot_apply' },
       verificationByServiceId: {
-        'openai-codex': {
+        'happier.agent.codex/openai-codex': {
           status: 'weakly_verified',
           reason: 'provider_account_email_verified_without_account_id',
         },
@@ -2877,7 +2949,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       target: expect.objectContaining({ profileId: 'bot' }),
     }));
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
@@ -2901,7 +2973,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2923,7 +2995,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     } satisfies SwitchInputWithVerification)).resolves.toMatchObject({
       ok: true,
       action: 'restart_requested',
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'restart_rematerialize' },
     });
 
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
@@ -2931,7 +3003,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       action: 'restart_requested',
-      serviceIds: new Set(['anthropic']),
+      serviceIds: new Set(['happier.agent.claude/anthropic']),
     }));
   });
 
@@ -2967,7 +3039,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' as const }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -2997,7 +3069,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       action: 'restart_requested',
-      serviceIds: new Set(['anthropic']),
+      serviceIds: new Set(['happier.agent.claude/anthropic']),
     }));
     expect(verifyProviderAccountAdoption).not.toHaveBeenCalled();
     expect(calls).toEqual(['restart', 'continue']);
@@ -3013,7 +3085,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -3064,7 +3136,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -3088,7 +3160,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       reason: 'automatic_runtime_failure',
     }));
   });
@@ -3101,7 +3173,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -3144,18 +3216,18 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'old-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async ({ previous, next }) => {
         expect(previous).toEqual(expect.objectContaining({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profileId: 'old-profile',
         }));
         expect(next).toEqual(expect.objectContaining({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profileId: 'old-profile',
         }));
         return { mode: 'restart_rematerialize' };
@@ -3169,13 +3241,13 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'claude',
         bindings: bindings('old-profile'),
-        rematerializeServiceId: 'anthropic',
+        rematerializeServiceId: 'happier.agent.claude/anthropic',
       },
     })).resolves.toMatchObject({
       ok: true,
       action: 'restart_requested',
       normalizedBindings: bindings('old-profile'),
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'restart_rematerialize' },
     });
 
     expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
@@ -3195,9 +3267,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3220,7 +3292,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({
@@ -3230,13 +3302,13 @@ describe('switchSessionConnectedServiceAuth', () => {
       },
       resolveContinuity: async ({ previous, next }) => {
         expect(previous).toEqual(expect.objectContaining({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           selection: 'group',
           groupId: 'work',
           profileId: 'group-active',
         }));
         expect(next).toEqual(expect.objectContaining({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           selection: 'group',
           groupId: 'work',
           profileId: 'group-active',
@@ -3255,40 +3327,40 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 67 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 67 },
         bindings: {
-          v: 1 as const,
+          v: 2 as const,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
               profileId: 'group-active',
             },
           },
-        } satisfies ConnectedServiceBindingsV1,
+        } satisfies ConnectedServiceBindingsV2,
       },
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          anthropic: {
+          'happier.agent.claude/anthropic': {
             source: 'connected',
             selection: 'group',
             groupId: 'work',
           },
         },
       },
-      continuityByServiceId: { anthropic: 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'hot_apply' },
     });
 
     expect(hotApply).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
-      attemptId: 'connected-service-auth-switch|hot_applied|anthropic:group:work::67',
+      attemptId: 'connected-service-auth-switch|hot_applied|happier.agent.claude/anthropic:group:work::67',
       action: 'hot_applied',
     }));
   });
@@ -3299,9 +3371,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3312,7 +3384,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         environmentVariables: {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([{
             kind: 'group',
-            serviceId: 'anthropic',
+            serviceId: 'happier.agent.claude/anthropic',
             groupId: 'work',
             activeProfileId: 'group-active',
             fallbackProfileId: 'group-active',
@@ -3338,7 +3410,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({
@@ -3359,11 +3431,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 67 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 67 },
         bindings: {
-          v: 1 as const,
+          v: 2 as const,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3376,16 +3448,16 @@ describe('switchSessionConnectedServiceAuth', () => {
       ok: true,
       action: 'hot_applied',
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          anthropic: {
+          'happier.agent.claude/anthropic': {
             source: 'connected',
             selection: 'group',
             groupId: 'work',
           },
         },
       },
-      continuityByServiceId: { anthropic: 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'hot_apply' },
     });
     expect(materializeRuntimeAuthSelection).toHaveBeenCalledOnce();
     expect(resolveContinuity).toHaveBeenCalledOnce();
@@ -3400,9 +3472,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            'happier.agent.codex/openai-codex': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3413,7 +3485,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         environmentVariables: {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([{
             kind: 'group',
-            serviceId: 'openai-codex',
+            serviceId: 'happier.agent.codex/openai-codex',
             groupId: 'work',
             activeProfileId: 'backup',
             fallbackProfileId: 'backup',
@@ -3477,11 +3549,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'codex',
-        expectedGroupGenerationByServiceId: { 'openai-codex': 5 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.codex/openai-codex': 5 },
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            'happier.agent.codex/openai-codex': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3493,7 +3565,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { 'openai-codex': 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.codex/openai-codex': 'hot_apply' },
     });
 
     expect(materializeRuntimeAuthSelection).toHaveBeenCalledOnce();
@@ -3509,9 +3581,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3551,7 +3623,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'group-active', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => group({
@@ -3572,11 +3644,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 68 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 68 },
         bindings: {
-          v: 1 as const,
+          v: 2 as const,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3600,7 +3672,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
     }));
     expect(calls).toEqual([
       'verify:hot_applied',
@@ -3626,7 +3698,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
     let nativeAuthFiles: Readonly<Record<string, Uint8Array>> = {};
     const runtimeAuthSelection = {
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       profileId: 'backup',
       groupId: 'work',
       activeProfileId: 'backup',
@@ -3651,9 +3723,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            'happier.agent.codex/openai-codex': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3665,7 +3737,7 @@ describe('switchSessionConnectedServiceAuth', () => {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
             {
               kind: 'group',
-              serviceId: 'openai-codex',
+              serviceId: 'happier.agent.codex/openai-codex',
               groupId: 'work',
               activeProfileId: 'primary',
               fallbackProfileId: 'fallback',
@@ -3701,7 +3773,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [
             { profileId: 'backup', status: 'connected' },
             { profileId: 'primary', status: 'connected' },
@@ -3732,7 +3804,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         throw new Error('restart should not run');
       },
       hotApply: async (input) => {
-        hotApplySelections.push(input.runtimeAuthSelectionsByServiceId?.get('openai-codex'));
+        hotApplySelections.push(input.runtimeAuthSelectionsByServiceId?.get('happier.agent.codex/openai-codex'));
         return await hotApply(input);
       },
       persistSessionBindings: async () => undefined,
@@ -3742,9 +3814,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'codex',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            'happier.agent.codex/openai-codex': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3756,7 +3828,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { 'openai-codex': 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.codex/openai-codex': 'hot_apply' },
     });
 
     expect(resolveContinuity).toHaveBeenCalledWith(expect.objectContaining({
@@ -3765,9 +3837,9 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(hotApplySelections).toEqual([runtimeAuthSelection]);
     expect(registerHotApplyTargets).toHaveBeenCalledWith(expect.objectContaining({
       acceptedConnectedServicesBindingsRaw: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          'openai-codex': {
+          'happier.agent.codex/openai-codex': {
             source: 'connected',
             selection: 'group',
             groupId: 'work',
@@ -3778,7 +3850,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
           {
             kind: 'group',
-            serviceId: 'openai-codex',
+            serviceId: 'happier.agent.codex/openai-codex',
             groupId: 'work',
             activeProfileId: 'backup',
             fallbackProfileId: 'fallback',
@@ -3791,7 +3863,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(tracked.spawnOptions?.environmentVariables?.[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]).toBe(JSON.stringify([
       {
         kind: 'group',
-        serviceId: 'openai-codex',
+        serviceId: 'happier.agent.codex/openai-codex',
         groupId: 'work',
         activeProfileId: 'backup',
         fallbackProfileId: 'fallback',
@@ -3807,9 +3879,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3839,7 +3911,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic' as const,
+          serviceId: 'happier.agent.claude/anthropic' as const,
           profiles: [
             { profileId: 'primary', status: 'connected' as const },
             { profileId: 'group-active', status: 'connected' as const },
@@ -3864,25 +3936,25 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 67 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 67 },
         bindings: {
-          v: 1 as const,
+          v: 2 as const,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
               profileId: 'group-active',
             },
           },
-        } satisfies ConnectedServiceBindingsV1,
+        } satisfies ConnectedServiceBindingsV2,
       },
     };
 
     await expect(switchSessionConnectedServiceAuth(input)).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { anthropic: 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'hot_apply' },
     });
     expect(materializeRuntimeAuthSelection).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'preflight',
@@ -3906,9 +3978,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
         connectedServices: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -3919,7 +3991,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         environmentVariables: {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([{
             kind: 'group',
-            serviceId: 'anthropic',
+            serviceId: 'happier.agent.claude/anthropic',
             groupId: 'work',
             activeProfileId: 'primary',
             fallbackProfileId: 'backup',
@@ -3954,7 +4026,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic' as const,
+          serviceId: 'happier.agent.claude/anthropic' as const,
           profiles: [
             { profileId: 'primary', status: 'connected' as const },
             { profileId: 'backup', status: 'connected' as const },
@@ -4000,11 +4072,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        expectedGroupGenerationByServiceId: { anthropic: 5 },
+        expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 5 },
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            anthropic: {
+            'happier.agent.claude/anthropic': {
               source: 'connected',
               selection: 'group',
               groupId: 'work',
@@ -4016,7 +4088,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { anthropic: 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.claude/anthropic': 'hot_apply' },
     });
 
     expect(tracked.spawnOptions).toBe(originalSpawnOptions);
@@ -4032,11 +4104,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       spawnOptions: {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-        connectedServices: { v: 1, bindingsByServiceId: {} },
+        connectedServices: { v: 2, bindingsByServiceId: {} },
       },
     });
     const resolveContinuity = vi.fn(async ({ serviceId }) => {
-      if (serviceId === 'openai-codex') return { mode: 'hot_apply' as const };
+      if (serviceId === 'happier.agent.codex/openai-codex') return { mode: 'hot_apply' as const };
       return { mode: 'unsupported' as const, errorCode: 'unsupported_service' as const };
     });
 
@@ -4046,7 +4118,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'happier', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -4061,9 +4133,9 @@ describe('switchSessionConnectedServiceAuth', () => {
         sessionId: 'sess_1',
         agentId: 'codex',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': { source: 'connected', selection: 'profile', profileId: 'happier' },
+            'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'happier' },
             openai: { source: 'native' },
           },
         },
@@ -4071,18 +4143,18 @@ describe('switchSessionConnectedServiceAuth', () => {
     })).resolves.toMatchObject({
       ok: true,
       action: 'hot_applied',
-      continuityByServiceId: { 'openai-codex': 'hot_apply' },
+      continuityByServiceId: { 'happier.agent.codex/openai-codex': 'hot_apply' },
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'happier' },
+          'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'happier' },
         },
       },
     });
 
     expect(resolveContinuity).toHaveBeenCalledOnce();
     expect(resolveContinuity).toHaveBeenCalledWith(expect.objectContaining({
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
     }));
   });
 
@@ -4098,7 +4170,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -4155,14 +4227,14 @@ describe('switchSessionConnectedServiceAuth', () => {
   it('does not turn a declared hot-apply continuity into restart recovery', async () => {
     const service = { pluginId: 'happier.agent.codex', localId: 'openai-codex' } as const;
     const serviceKey = 'happier.agent.codex/openai-codex';
-    const oldBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const oldBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
         [serviceKey]: { source: 'connected', selection: 'profile', profileId: 'old-profile' },
       },
     };
-    const newBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const newBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
         [serviceKey]: { source: 'connected', selection: 'profile', profileId: 'new-profile' },
       },
@@ -4184,7 +4256,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
       getChildren: () => [tracked],
       api: {
-        listConnectedServiceProfiles: async () => ({ serviceId: 'openai-codex', profiles: [] }),
+        listConnectedServiceProfiles: async () => ({ serviceId: 'happier.agent.codex/openai-codex', profiles: [] }),
       },
       qualifiedConnectedAccountApi: {
         readGroup: async () => null,
@@ -4253,7 +4325,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -4278,7 +4350,7 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
       type: 'connected_service_account_switch',
-      serviceId: 'anthropic',
+      serviceId: 'happier.agent.claude/anthropic',
       mode: 'hot_apply',
     }));
   });
@@ -4318,10 +4390,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_failed',
-        serviceId: 'claude-subscription',
+        serviceId: 'happier.agent.claude/claude-subscription',
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          'happier.agent.claude/anthropic': { status: 'applied' },
+          'happier.agent.claude/claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4340,7 +4412,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       // API for it, so this is not a rollback-safe failure. It settles as the partial state the
       // session-scope Retry/Revert surface already reconciles.
       errorCode: 'partial_applied_pending_reconciliation',
-      serviceId: 'claude-subscription',
+      serviceId: 'happier.agent.claude/claude-subscription',
       diagnostics: {
         failurePhase: 'reconciliation',
         application: {
@@ -4348,8 +4420,8 @@ describe('switchSessionConnectedServiceAuth', () => {
           phase: 'hot_apply',
         },
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          'happier.agent.claude/anthropic': { status: 'applied' },
+          'happier.agent.claude/claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       },
     });
@@ -4409,10 +4481,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_failed',
-        serviceId: 'claude-subscription',
+        serviceId: 'happier.agent.claude/claude-subscription',
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          'happier.agent.claude/anthropic': { status: 'applied' },
+          'happier.agent.claude/claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4472,10 +4544,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'credential_revision_superseded',
-        serviceId: 'anthropic',
+        serviceId: 'happier.agent.claude/anthropic',
         serviceResultsByServiceId: {
-          anthropic: { status: 'failed', errorCode: 'credential_revision_superseded' },
-          'claude-subscription': { status: 'not_attempted' },
+          'happier.agent.claude/anthropic': { status: 'failed', errorCode: 'credential_revision_superseded' },
+          'happier.agent.claude/claude-subscription': { status: 'not_attempted' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4521,7 +4593,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
+          serviceId: 'happier.agent.claude/anthropic',
           profiles: [{ profileId: 'new-profile', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -4567,7 +4639,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'new-codex', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,
@@ -4579,7 +4651,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: true as const,
         verificationByServiceId: {
-          'openai-codex': {
+          'happier.agent.codex/openai-codex': {
             status: 'verified' as const,
             activeAccountId: 'acct_new',
             proofStrength: 'exact' as const,
@@ -4600,7 +4672,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       ok: true,
       action: 'hot_applied',
       verificationByServiceId: {
-        'openai-codex': {
+        'happier.agent.codex/openai-codex': {
           status: 'verified',
           activeAccountId: 'acct_new',
           proofStrength: 'exact',
@@ -4641,7 +4713,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async ({ serviceId }) => (
-        serviceId === 'anthropic'
+        serviceId === 'happier.agent.claude/anthropic'
           ? { mode: 'hot_apply' }
           : { mode: 'restart_rematerialize' }
       ),
@@ -4661,8 +4733,8 @@ describe('switchSessionConnectedServiceAuth', () => {
       ok: true,
       action: 'restart_requested',
       continuityByServiceId: {
-        anthropic: 'hot_apply',
-        'claude-subscription': 'restart_rematerialize',
+        'happier.agent.claude/anthropic': 'hot_apply',
+        'happier.agent.claude/claude-subscription': 'restart_rematerialize',
       },
     });
 
@@ -4705,10 +4777,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_restart_required',
-        serviceId: 'claude-subscription',
+        serviceId: 'happier.agent.claude/claude-subscription',
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_restart_required' },
+          'happier.agent.claude/anthropic': { status: 'applied' },
+          'happier.agent.claude/claude-subscription': { status: 'failed', errorCode: 'hot_apply_restart_required' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4763,7 +4835,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       getChildren: () => [tracked],
       api: {
         listConnectedServiceProfiles: async () => ({
-          serviceId: 'openai-codex',
+          serviceId: 'happier.agent.codex/openai-codex',
           profiles: [{ profileId: 'bot', status: 'connected' }],
         }),
         getConnectedServiceAuthGroup: async () => null,

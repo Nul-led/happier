@@ -119,6 +119,7 @@ export async function executeWebhookHandlerV1(
   options: Readonly<{
     target: PluginWebhookDeliveryTargetV1;
     signal?: AbortSignal;
+    beforeHandlerInvocation?: () => Promise<void>;
   }>,
 ): Promise<PluginWebhookActionResultV1> {
   const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
@@ -143,6 +144,17 @@ export async function executeWebhookHandlerV1(
         surface: 'plugin',
         invocationSurface: 'background',
         ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.beforeHandlerInvocation ? {
+          beforeHandlerInvocation: async () => {
+            const current = lease.resolveCurrentPluginMaterializationRef?.(
+              options.target.materialization.pluginId,
+            ) ?? null;
+            if (!current || !arePluginMachineMaterializationRefsEqual(current, options.target.materialization)) {
+              throw new Error('plugin_webhook_target_unavailable');
+            }
+            await options.beforeHandlerInvocation!();
+          },
+        } : {}),
         caller: {
           kind: 'host',
           domain: 'ingress',
@@ -235,6 +247,7 @@ export function startPluginWebhookDaemonWorkerV1(params: Readonly<{
             {
               target: claim.target,
               ...(options?.signal ? { signal: options.signal } : {}),
+              ...(options?.beforeHandlerInvocation ? { beforeHandlerInvocation: options.beforeHandlerInvocation } : {}),
             },
           ),
           signal: shutdownController.signal,

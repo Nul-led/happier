@@ -5,6 +5,7 @@ import type {
   SessionMediaItemV1,
 } from '@happier-dev/protocol';
 import type { HappierStructuredInputV1 } from '@happier-dev/protocol/runtime';
+import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 
 export type PermissionModeQueuedPromptMode = Readonly<{
   permissionMode: PermissionMode;
@@ -32,6 +33,11 @@ export type PermissionModeQueuedPrompt = Readonly<{
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   /** Host-rendered descriptive block applied only at the provider boundary. */
   inputContextBlock?: string;
+  /** Trusted host-only turn input. It is never inserted into MessageQueue/Pending/transcript. */
+  hostContextOnly?: Readonly<{
+    kind: 'session_follow';
+    prepared: SessionFollowPreparedContext;
+  }>;
 }>;
 
 function appendUniqueString(target: string[], value: unknown): void {
@@ -77,6 +83,9 @@ export function readHighestPermissionModeQueuedPromptUserMessageSeq(
 export function combinePermissionModeQueuedPrompts(
   prompts: readonly PermissionModeQueuedPrompt[],
 ): PermissionModeQueuedPrompt {
+  if (prompts.some((prompt) => prompt.hostContextOnly)) {
+    throw new Error('Host context-only prompts cannot be queued or batched');
+  }
   if (prompts.length > 1 && prompts.some((prompt) => prompt.structuredInput)) {
     // Structured input carries one message's fresh dispatch-time context. Queue insertion must
     // isolate it, so reaching the prose batcher would either merge incompatible context or drop

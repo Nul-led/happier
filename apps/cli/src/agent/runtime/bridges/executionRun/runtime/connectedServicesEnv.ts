@@ -1,15 +1,21 @@
-import type { ConnectedServiceBindingSelectionV1, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
-import { ConnectedServiceBindingsV1Schema } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingSelectionV2, ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
+import { ConnectedServiceBindingsV2Schema } from '@happier-dev/protocol';
 
 import {
     releaseExecutionRunConnectedServices,
     requestExecutionRunConnectedServicesMaterialization,
 } from '@/daemon/controlClient';
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
-import { resolveSessionSpawnConnectedServicesDefaultsPayload } from '@/session/services/spawnConnectedServicesDefaults';
+import {
+    createSpawnConnectedServicesTeamResourceCatalogResolver,
+    resolveSessionSpawnConnectedServicesDefaultsPayload,
+} from '@/session/services/spawnConnectedServicesDefaults';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
 import { logger } from '@/ui/logger';
 import type { ExecutionRunConnectedServicesRegistrationV1 } from '@/daemon/connectedServices/runs/materializeContract';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { configuration } from '@/configuration';
 
 /**
  * Generic (provider-agnostic) connected-services env resolution for execution-run backends.
@@ -51,7 +57,7 @@ export class ExecutionRunConnectedServicesError extends Error {
 type ResolveSessionSpawnDefaults = (params: Readonly<{
     agentId: string;
     credentials: StoredCredentials;
-}>) => Promise<Readonly<{ connectedServices: ConnectedServiceBindingsV1 }> | null>;
+}>) => Promise<Readonly<{ connectedServices: ConnectedServiceBindingsV2 }> | null>;
 
 type MaterializationDeps = Readonly<{
     requestMaterialization: typeof requestExecutionRunConnectedServicesMaterialization;
@@ -69,13 +75,14 @@ export type ResolvedExecutionRunConnectedServicesEnv = Readonly<{
 }>;
 
 export type ResolvedExecutionRunConnectedServicesSelection = Readonly<{
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     source: 'explicit' | 'session_default';
     hadCredentials: boolean | null;
 }>;
 
-export function hasConnectedExecutionRunBinding(bindings: ConnectedServiceBindingsV1): boolean {
-    return Object.values(bindings.bindingsByServiceId).some((binding) => binding.source === 'connected');
+export function hasConnectedExecutionRunBinding(bindings: ConnectedServiceBindingsV2): boolean {
+    return Object.values(bindings.bindingsByServiceId)
+        .some((binding) => binding.source === 'connected' || binding.source === 'team_resource');
 }
 
 function resolveExecutionRunDeclaredConnectedServiceIds(params: Readonly<{
@@ -86,12 +93,12 @@ function resolveExecutionRunDeclaredConnectedServiceIds(params: Readonly<{
 }
 
 function hasUndeclaredConnectedExecutionRunBinding(
-    bindings: ConnectedServiceBindingsV1,
+    bindings: ConnectedServiceBindingsV2,
     declaredServiceIds: readonly string[],
 ): boolean {
     return Object.entries(bindings.bindingsByServiceId).some(
         ([serviceId, binding]) => (
-            binding.source === 'connected'
+            (binding.source === 'connected' || binding.source === 'team_resource')
             && !declaredServiceIds.includes(serviceId)
         ),
     );
@@ -102,7 +109,26 @@ function defaultDeps(): MaterializationDeps {
         requestMaterialization: requestExecutionRunConnectedServicesMaterialization,
         release: releaseExecutionRunConnectedServices,
         readCredentials: async () => await readStoredCredentials(),
-        resolveSessionSpawnDefaults: resolveSessionSpawnConnectedServicesDefaultsPayload,
+        resolveSessionSpawnDefaults: async (params) => {
+            const accountId = decodeJwtPayload(params.credentials.token)?.sub;
+            const homeDomainAction = createAccountServerActionDeps({
+                token: params.credentials.token,
+                credentials: params.credentials,
+            }).homeDomainAction;
+            return await resolveSessionSpawnConnectedServicesDefaultsPayload({
+                ...params,
+                ...(typeof accountId === 'string' && accountId.trim() && homeDomainAction
+                    ? {
+                        resolveTeamCredentialResourceCatalog:
+                            createSpawnConnectedServicesTeamResourceCatalogResolver({
+                                homeDomainAction,
+                                serverId: configuration.activeServerId,
+                                accountId: accountId.trim(),
+                            }),
+                    }
+                    : {}),
+            });
+        },
         runnerPid: process.pid,
     };
 }
@@ -115,7 +141,7 @@ function defaultDeps(): MaterializationDeps {
 export async function resolveExecutionRunConnectedServicesSelection(params: Readonly<{
     backendId: string;
     backendSourceKind: 'built_in' | 'configured' | (string & {});
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesDefaultServiceIds?: readonly string[];
     deps?: Pick<MaterializationDeps, 'readCredentials' | 'resolveSessionSpawnDefaults'>;
 }>): Promise<ResolvedExecutionRunConnectedServicesSelection | null> {
@@ -145,7 +171,7 @@ export async function resolveExecutionRunConnectedServicesSelection(params: Read
         );
     }
 
-    const explicitBindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV1> =
+    const explicitBindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV2> =
         params.connectedServices !== undefined
             ? { ...params.connectedServices.bindingsByServiceId }
             : {};
@@ -168,20 +194,20 @@ export async function resolveExecutionRunConnectedServicesSelection(params: Read
         const resolvedDefaults = credentials
             ? await deps.resolveSessionSpawnDefaults({ agentId: backendId, credentials })
             : null;
-        const merged: Record<string, ConnectedServiceBindingSelectionV1> = {
+        const merged: Record<string, ConnectedServiceBindingSelectionV2> = {
             ...explicitBindingsByServiceId,
         };
         for (const serviceId of defaultServiceIdsToResolve) {
             const binding = resolvedDefaults?.connectedServices.bindingsByServiceId[serviceId];
-            if (!binding || binding.source !== 'connected') {
+            if (!binding || binding.source === 'native') {
                 throw new ExecutionRunConnectedServicesError(
                     `No stored connected-service default for '${serviceId}' on backend '${backendId}'`,
                 );
             }
             merged[serviceId] = binding;
         }
-        const bindings = ConnectedServiceBindingsV1Schema.parse({
-            v: 1,
+        const bindings = ConnectedServiceBindingsV2Schema.parse({
+            v: 2,
             bindingsByServiceId: merged,
         });
         return {
@@ -221,7 +247,7 @@ export async function resolveExecutionRunConnectedServicesEnv(params: Readonly<{
     runId: string;
     backendId: string;
     backendSourceKind: 'built_in' | 'configured' | (string & {});
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     /**
      * Bare per-service default tokens (RO-F5): serviceIds asking for their STORED account default,
      * threaded from the run-start request alongside `connectedServices`. Each is resolved to a concrete

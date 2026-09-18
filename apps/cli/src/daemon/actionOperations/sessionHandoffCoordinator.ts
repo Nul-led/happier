@@ -37,6 +37,8 @@ type HandoffInput = Readonly<{
   workspaceAction?: HandoffWorkspaceActionV1;
   accountServerId?: string;
   targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+  targetReplacementApprovalReceiptId?: string;
+  targetReplacementApprovalActionInput?: unknown;
   workspaceSyncSourceRootPath?: string;
   workspaceSyncTargetRootPath?: string;
   workspaceSyncTargetSessionRelativeCwd?: string;
@@ -253,8 +255,8 @@ function defaultWait(signal: AbortSignal): Promise<void> {
 function buildWorkspaceOutcome(
   committed: WorkspaceSyncHandoffCommitted | undefined,
   cleanupWarning: WorkspaceSyncCleanupWarningV1 | null,
-): HandoffWorkspaceOutcomeV1 | null {
-  if (!committed || committed.kind === 'none') return null;
+): HandoffWorkspaceOutcomeV1 {
+  if (!committed || committed.kind === 'none') return { kind: 'none' };
   const shared = {
     ...(committed.status === undefined ? {} : { status: committed.status }),
     ...(cleanupWarning ? { cleanupWarning } : {}),
@@ -266,7 +268,7 @@ function buildWorkspaceOutcome(
       ...shared,
     });
   }
-  if (!committed.relationshipId) return null;
+  if (!committed.relationshipId) return { kind: 'none' };
   return HandoffWorkspaceOutcomeV1Schema.parse({
     kind: 'relationship',
     relationshipId: committed.relationshipId,
@@ -343,6 +345,10 @@ export async function coordinateTrackedSessionHandoff(
       operationId: workspaceOperationId,
       ...(input.input.accountServerId ? { accountServerId: input.input.accountServerId } : {}),
       ...(input.input.targetReplacementApproval ? { targetReplacementApproval: input.input.targetReplacementApproval } : {}),
+      ...(input.input.targetReplacementApprovalReceiptId ? {
+        targetReplacementApprovalReceiptId: input.input.targetReplacementApprovalReceiptId,
+        targetReplacementApprovalActionInput: input.input.targetReplacementApprovalActionInput,
+      } : {}),
       action: workspaceSyncAction,
       sourceMachineId: source.sourceMachineId,
       targetMachineId: input.input.targetMachineId,
@@ -422,10 +428,11 @@ export async function coordinateTrackedSessionHandoff(
     targetMachineId: input.input.targetMachineId,
     targetPath: input.input.targetPath ?? started.data.targetPath,
     ...(input.input.workspaceSyncTargetRootPath
-      ? { workspaceRootPath: input.input.workspaceSyncTargetRootPath }
-      : {}),
-    ...(input.input.workspaceSyncTargetSessionRelativeCwd !== undefined
-      ? { workspaceSessionRelativeCwd: input.input.workspaceSyncTargetSessionRelativeCwd }
+      && input.input.workspaceSyncTargetSessionRelativeCwd !== undefined
+      ? {
+          workspaceRootPath: input.input.workspaceSyncTargetRootPath,
+          workspaceSessionRelativeCwd: input.input.workspaceSyncTargetSessionRelativeCwd,
+        }
       : {}),
     negotiatedTransportStrategy,
     sourceSessionStorageMode: source.sessionStorageMode,
@@ -608,7 +615,7 @@ export async function coordinateTrackedSessionHandoff(
     result: {
       handoffId,
       status: committedResponse.data.status,
-      ...(committedWorkspaceOutcome ? { workspace: committedWorkspaceOutcome } : {}),
+      workspace: committedWorkspaceOutcome,
       ...(cleanupWarning
         ? {
             warning: {

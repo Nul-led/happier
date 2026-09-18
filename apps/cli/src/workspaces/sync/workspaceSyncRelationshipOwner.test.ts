@@ -79,7 +79,7 @@ function createHarness() {
       const values = ['source_ref', 'target_ref'];
       return () => values.shift() ?? 'unexpected_id';
     })(),
-    deriveRelationshipId: () => 'relationship_1',
+    deriveRelationshipId: (operationId) => operationId === 'handoff_1' ? 'relationship_1' : `relationship_${operationId}`,
     nowMs: () => 100,
   });
   return {
@@ -111,29 +111,77 @@ const createInput = {
 };
 
 describe('WorkspaceSyncRelationshipOwner', () => {
-  it('persists the relationship only after the engine is ensured and flushed', async () => {
+  it('persists and reconciles disabled intent before target preparation, then enables only after READY commit', async () => {
     const harness = createHarness();
+    let relationshipAtEnsure: unknown;
+    let reconciliationsAtEnsure = 0;
+    harness.ensureRelationship.mockImplementationOnce(async (definition) => {
+      relationshipAtEnsure = (harness.read().workspaceSyncRelationshipsV1 as readonly unknown[])[0];
+      reconciliationsAtEnsure = harness.waitForSettingsReconciliation.mock.calls.length;
+      return status(definition.relationshipId);
+    });
     const prepared = await harness.owner.prepareCreate(createInput);
 
     expect(harness.ensureRelationship).toHaveBeenCalledOnce();
+    expect(harness.ensureRelationship).toHaveBeenCalledWith(
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: true }),
+      undefined,
+      expect.objectContaining({ transient: true }),
+    );
     expect(harness.flushRelationship).toHaveBeenCalledWith('relationship_1', undefined);
-    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([]);
+    expect(relationshipAtEnsure).toEqual(expect.objectContaining({
+      relationshipId: 'relationship_1',
+      enabled: false,
+    }));
+    expect(reconciliationsAtEnsure).toBeGreaterThanOrEqual(2);
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
+    ]);
 
     await prepared.commit();
     expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
-      expect.objectContaining({ relationshipId: 'relationship_1', alphaWorkspaceRefId: 'source_ref', betaWorkspaceRefId: 'target_ref' }),
+      expect.objectContaining({
+        relationshipId: 'relationship_1',
+        alphaWorkspaceRefId: 'source_ref',
+        betaWorkspaceRefId: 'target_ref',
+        enabled: true,
+      }),
     ]);
     expect(harness.commitRelationshipTarget).toHaveBeenCalledWith(expect.objectContaining({ relationshipId: 'relationship_1' }));
   });
 
-  it('reuses one exact endpoint-pair definition and rejects a competing mode', async () => {
+  it('keeps the durable relationship disabled until target READY commit succeeds', async () => {
+    const harness = createHarness();
+    const crashAtTargetCommit = new Error('injected process loss before target READY');
+    let relationshipAtTargetCommit: unknown;
+    harness.commitRelationshipTarget.mockImplementationOnce(async () => {
+      relationshipAtTargetCommit = (harness.read().workspaceSyncRelationshipsV1 as readonly unknown[])[0];
+      throw crashAtTargetCommit;
+    });
+    const prepared = await harness.owner.prepareCreate(createInput);
+
+    await expect(prepared.commit()).rejects.toBe(crashAtTargetCommit);
+    expect(relationshipAtTargetCommit).toEqual(expect.objectContaining({
+      relationshipId: 'relationship_1',
+      enabled: false,
+    }));
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
+    ]);
+  });
+
+  it('reuses only the exact Action-derived relationship and requires replacement for an occupied endpoint pair', async () => {
     const harness = createHarness();
     const first = await harness.owner.prepareCreate(createInput);
     await first.commit();
-    const exact = await harness.owner.prepareCreate({ ...createInput, operationId: 'handoff_2' });
+    const exact = await harness.owner.prepareCreate(createInput);
     expect(exact.relationship.relationshipId).toBe('relationship_1');
     expect(exact.reused).toBe(true);
 
+    await expect(harness.owner.prepareCreate({ ...createInput, operationId: 'handoff_2' }))
+      .rejects.toMatchObject({ code: 'relationship_replacement_required' });
+    await expect(harness.owner.prepareCreate({ ...createInput, mode: 'mirror_exactly' }))
+      .rejects.toMatchObject({ code: 'relationship_definition_conflict' });
     await expect(harness.owner.prepareCreate({ ...createInput, mode: 'mirror_exactly', operationId: 'handoff_3' }))
       .rejects.toMatchObject({ code: 'relationship_replacement_required' });
   });
@@ -156,7 +204,9 @@ describe('WorkspaceSyncRelationshipOwner', () => {
 
     await expect(prepared.commit()).rejects.toMatchObject({ code: 'indeterminate' });
     expect(harness.terminateRelationshipRuntime).not.toHaveBeenCalled();
-    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([]);
+    expect(harness.read().workspaceSyncRelationshipsV1).toEqual([
+      expect.objectContaining({ relationshipId: 'relationship_1', enabled: false }),
+    ]);
 
     await expect(prepared.commit()).resolves.toMatchObject({ relationshipId: 'relationship_1' });
     expect(harness.read().workspaceSyncRelationshipsV1).toEqual([

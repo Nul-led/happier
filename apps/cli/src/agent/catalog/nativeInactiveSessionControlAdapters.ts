@@ -239,6 +239,12 @@ async function buildControlContext(params: Readonly<{
             message: 'Session protocol composition is unavailable to inactive controls',
           });
         },
+        async openExecutionRunV1(): Promise<never> {
+          throw new PluginError({
+            code: 'inactive_agent_session_protocol_unavailable',
+            message: 'Execution Run protocol composition is unavailable to inactive controls',
+          });
+        },
       }),
     }),
     session: Object.freeze({

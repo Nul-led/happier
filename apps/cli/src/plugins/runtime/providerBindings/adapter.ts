@@ -26,10 +26,11 @@ import type { PluginRuntimeRegistryLease } from '../reload/controller';
 
 const MaterializationKindSchema = z.enum(['spawnEnv', 'engineConfig', 'configFile']);
 
-const PrepareInputSchema = z.object({
+const ProviderBindingKeySchema = z.string().trim().min(1).max(512);
+
+const PrepareInputBaseSchema = z.object({
     v: z.literal(1),
     agentTargetKey: ProviderAgentTargetKeySchema,
-    connectionId: ProviderConnectionIdSchema,
     reservedBindingCandidate: z.object({
         contributionKey: ProviderContributionKeySchema,
         endpointTemplateId: ProviderLocalIdSchema,
@@ -38,19 +39,30 @@ const PrepareInputSchema = z.object({
     }).strict().optional(),
 }).strict();
 
+const PrepareInputSchema = z.union([
+    PrepareInputBaseSchema.extend({ bindingKey: ProviderBindingKeySchema }),
+    PrepareInputBaseSchema.extend({ connectionId: ProviderConnectionIdSchema }),
+]);
+
 const PreparedSchema = z.object({
     v: z.literal(1),
     materialization: MaterializationKindSchema,
     adapterBindingKey: ProviderAdapterBindingKeyV1Schema.optional(),
 }).strict();
 
+const ResolvedSelectionBaseSchema = z.object({
+    model: ProviderModelDescriptorV1Schema,
+}).strict();
+
+const ResolvedSelectionSchema = z.union([
+    ResolvedSelectionBaseSchema.extend({ bindingKey: ProviderBindingKeySchema }),
+    ResolvedSelectionBaseSchema.extend({ connectionId: ProviderConnectionIdSchema }),
+]);
+
 const ResolvedFactsSchema = z.object({
     v: z.literal(1),
     agentTargetKey: ProviderAgentTargetKeySchema,
-    selection: z.object({
-        connectionId: ProviderConnectionIdSchema,
-        model: ProviderModelDescriptorV1Schema,
-    }).strict(),
+    selection: ResolvedSelectionSchema,
     contributionKey: ProviderContributionKeySchema.nullable(),
     endpoint: z.object({
         endpointTemplateId: ProviderLocalIdSchema,

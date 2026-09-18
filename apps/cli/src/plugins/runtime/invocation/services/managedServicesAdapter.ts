@@ -87,7 +87,7 @@ export type ManagedProviderEndpointPath = Readonly<{
 export type ManagedProviderEndpointHttpAccess = Readonly<{
     endpointUrl(endpointTemplateId: string): string | null;
     request(
-        request: ManagedServiceRequest & Readonly<{ timeoutMs: number }>,
+        request: ManagedServiceRequest,
     ): Promise<ManagedServiceResponse>;
 }>;
 

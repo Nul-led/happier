@@ -10,8 +10,15 @@ import {
   createEphemeralPeerRouteProofHandleV2,
 } from '@happier-dev/protocol';
 
-import type { WorkspaceSyncMachineTunnelOpen } from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
+import type {
+  FiniteTransferMachineTunnel,
+  WorkspaceSyncMachineTunnel,
+  WorkspaceSyncMachineTunnelOpen,
+  WorkspaceSyncMachineTunnelOpenInput,
+} from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import {
+  awaitMachineCarrierControlPlane,
+  awaitMachineCarrierTunnelOpen,
   MachineCarrierError,
   machineCarrierUnavailableError,
   verifyMachineCarrierHandshakeV1,
@@ -25,82 +32,16 @@ type TargetMachineCarrierSnapshot = Readonly<{
   daemonStateVersion: number;
 }>;
 
-function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? Object.assign(new Error('The workspace machine tunnel open was aborted.'), { name: 'AbortError' });
-}
-
-async function awaitNativeTunnelOpen<T extends Readonly<{ close: () => Promise<void> }>>(
-  opening: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (!signal) return await opening;
-  if (signal.aborted) {
-    void opening.then(async (late) => await late.close()).catch(() => undefined);
-    throw abortReason(signal);
-  }
-
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      // The native ABI cannot cancel an admitted dial. Keep ownership in this
-      // closure until a late handle arrives and its lifecycle is closed.
-      void opening.then(async (late) => await late.close()).catch(() => undefined);
-      reject(abortReason(signal));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    opening.then(
-      (tunnel) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        resolve(tunnel);
-      },
-      (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-async function awaitControlPlane<T>(opening: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return await opening;
-  if (signal.aborted) {
-    // Attach a rejection handler even when the caller is already cancelled so a
-    // late control-plane failure cannot become an unhandled rejection.
-    void opening.catch(() => undefined);
-    throw abortReason(signal);
-  }
-
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      reject(abortReason(signal));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    opening.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
+async function requireExpectedRemoteEndpoint<T extends Readonly<{
+  remoteEndpointId: string;
+  close(): Promise<void>;
+}>>(tunnel: T, expectedRemoteEndpointId: string): Promise<T> {
+  if (tunnel.remoteEndpointId === expectedRemoteEndpointId) return tunnel;
+  await tunnel.close().catch(() => undefined);
+  throw new MachineCarrierError(
+    'transport_identity_mismatch',
+    'Authenticated transport endpoint identity does not match the machine handshake.',
+  );
 }
 
 /**
@@ -118,7 +59,15 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
   mintGrant: (request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>, signal?: AbortSignal) => Promise<unknown>;
   nowMs?: () => number;
 }>): WorkspaceSyncMachineTunnelOpen {
-  return async (request) => {
+  async function open(
+    request: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'file_transfer' }>,
+  ): Promise<FiniteTransferMachineTunnel>;
+  async function open(
+    request: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>,
+  ): Promise<WorkspaceSyncMachineTunnel>;
+  async function open(
+    request: WorkspaceSyncMachineTunnelOpenInput,
+  ): Promise<FiniteTransferMachineTunnel | WorkspaceSyncMachineTunnel> {
     if (request.sourceMachineId !== input.localMachineId) {
       throw machineCarrierUnavailableError();
     }
@@ -126,7 +75,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
     const targetRead = request.signal
       ? input.readTargetMachine(request.targetMachineId, request.signal)
       : input.readTargetMachine(request.targetMachineId);
-    const target = await awaitControlPlane(targetRead, request.signal);
+    const target = await awaitMachineCarrierControlPlane(targetRead, request.signal);
     const daemonState = target?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null;
     const parsedEndpoint = IrohEndpointDescriptorV1Schema.safeParse(daemonState?.peerMediation?.iroh?.endpoint);
     if (!target || target.id !== request.targetMachineId || !parsedEndpoint.success) {
@@ -175,7 +124,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
       const grantRequestResult = request.signal
         ? input.mintGrant(grantRequest, request.signal)
         : input.mintGrant(grantRequest);
-      const grant = SignedDirectRouteGrantV2Schema.parse(await awaitControlPlane(
+      const grant = SignedDirectRouteGrantV2Schema.parse(await awaitMachineCarrierControlPlane(
         grantRequestResult,
         request.signal,
       ));
@@ -184,7 +133,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
       const currentRead = request.signal
         ? input.readTargetMachine(request.targetMachineId, request.signal)
         : input.readTargetMachine(request.targetMachineId);
-      const current = await awaitControlPlane(currentRead, request.signal);
+      const current = await awaitMachineCarrierControlPlane(currentRead, request.signal);
       const currentEndpoint = IrohEndpointDescriptorV1Schema.safeParse(
         (current?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null)
           ?.peerMediation?.iroh?.endpoint,
@@ -218,23 +167,26 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         nowMs: (input.nowMs ?? Date.now)(),
       });
       request.signal?.throwIfAborted();
-      const openNativeTunnel = request.flow === 'file_transfer'
-        ? input.runtime.openHttpTunnel
-        : input.runtime.openTunnel;
-      const tunnel = await awaitNativeTunnelOpen(openNativeTunnel({
-        alpn: MACHINE_ALPN,
-        remoteEndpointId: verified.remoteEndpointId,
-        flow: handshake.flow,
-        ...('operationId' in handshake ? { operationId: handshake.operationId } : {}),
-        handshake,
-      }, currentEndpoint.data), request.signal);
-      if (tunnel.remoteEndpointId !== verified.remoteEndpointId) {
-        await tunnel.close().catch(() => undefined);
-        throw new MachineCarrierError(
-          'transport_identity_mismatch',
-          'Authenticated transport endpoint identity does not match the machine handshake.',
-        );
+      if (request.flow === 'file_transfer') {
+        const tunnel = await requireExpectedRemoteEndpoint(await awaitMachineCarrierTunnelOpen(input.runtime.openTunnel({
+            alpn: MACHINE_ALPN,
+            remoteEndpointId: verified.remoteEndpointId,
+            flow: 'finite_transfer',
+            handshake,
+          }, currentEndpoint.data), request.signal), verified.remoteEndpointId);
+        return {
+          localPort: tunnel.localPort,
+          observedPath: tunnel.observedPath,
+          close: tunnel.close,
+        };
       }
+      const tunnel = await requireExpectedRemoteEndpoint(await awaitMachineCarrierTunnelOpen(input.runtime.openTunnel({
+            alpn: MACHINE_ALPN,
+            remoteEndpointId: verified.remoteEndpointId,
+            flow: 'workspace_sync',
+            operationId: request.operationId,
+            handshake,
+          }, currentEndpoint.data), request.signal), verified.remoteEndpointId);
       return {
         localPort: tunnel.localPort,
         localCapability: tunnel.localCapability,
@@ -244,5 +196,6 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
     } finally {
       proofHandle.dispose();
     }
-  };
+  }
+  return open;
 }

@@ -66,12 +66,29 @@ import {
 } from '@/agent/runtime/session/process/runnerAgentSessionRuntimeSource';
 import { configuration } from '@/configuration';
 import { tryAcquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { logger } from '@/ui/logger';
 
 type SessionHostRunOptions = Readonly<{
   beforeRuntimePlanCommit?: () => void | Promise<void>;
   agentRuntimeRunnerBootstrapFilePath?: string;
   agentRuntimeDaemonServiceAuthorityFilePath?: string;
+  /**
+   * Exact host-owned plugin registry lease for a scoped process such as
+   * Happier Runner. Its caller retains and releases custody; the bridge only
+   * consumes the pinned registry and never falls back to the daemon singleton.
+   */
+  pluginRuntimeRegistryLease?: PluginRuntimeRegistryLease;
+  /**
+   * Scoped host authority for an exact Team credential binding. This is
+   * intentionally separate from the daemon runner source: the standalone
+   * Runner already owns its pinned plugin runtime lease.
+   */
+  prepareTeamCredentialProviderBinding?: NonNullable<
+    NonNullable<Parameters<typeof resolveBackendEngineAdapterResolution>[1]>[
+      'prepareTeamCredentialProviderBinding'
+    ]
+  >;
 }>;
 
 /**
@@ -137,11 +154,23 @@ export class SessionHostBridge implements SessionHostBridgeContract {
     const record = params as Readonly<Record<string, unknown>>;
     const resolutionParams: {
       happyHomeDir?: string;
+      runtimeRegistry?: PluginRuntimeRegistryLease['registry'];
       requireRunnerAgentSessionRuntimeSource?: boolean;
       runnerAgentSessionRuntimeSource?: NonNullable<
         Parameters<typeof resolveBackendEngineAdapterResolution>[1]
       >['runnerAgentSessionRuntimeSource'];
+      prepareTeamCredentialProviderBinding?: NonNullable<
+        Parameters<typeof resolveBackendEngineAdapterResolution>[1]
+      >['prepareTeamCredentialProviderBinding'];
     } = {};
+
+    if (hostOptions?.pluginRuntimeRegistryLease) {
+      resolutionParams.runtimeRegistry = hostOptions.pluginRuntimeRegistryLease.registry;
+    }
+    if (hostOptions?.prepareTeamCredentialProviderBinding) {
+      resolutionParams.prepareTeamCredentialProviderBinding =
+        hostOptions.prepareTeamCredentialProviderBinding;
+    }
 
     const happyHomeDir = record.happyHomeDir;
     if (typeof happyHomeDir === 'string') {
@@ -239,7 +268,11 @@ export class SessionHostBridge implements SessionHostBridgeContract {
       throw new Error(`Unsupported session runtime backend: ${backendId}`);
     }
     throwIfPluginRuntimeStartBlocked(resolution);
-    const injectedParams = this.injectProviderMessageMetaEnricher(params, resolution.engineAdapter.messageMeta);
+    const hostScopedParams = hostOptions?.prepareTeamCredentialProviderBinding
+      && params && typeof params === 'object'
+      ? { ...(params as Readonly<Record<string, unknown>>), allowAttachedTeamCredentialBinding: true }
+      : params;
+    const injectedParams = this.injectProviderMessageMetaEnricher(hostScopedParams, resolution.engineAdapter.messageMeta);
     const runtime = await resolution.engineAdapter.runtimeCore.createSessionRuntime(injectedParams);
     const canonicalRuntime = this.requireCanonicalSessionRuntime(runtime, backendId);
     const sessionStateFacet = resolution.engineAdapter.facets?.sessionState;
@@ -258,6 +291,11 @@ export class SessionHostBridge implements SessionHostBridgeContract {
     const publishHostRuntimeEvent: NonNullable<
       HostSessionRuntimePlan['config']['publishHostRuntimeEvent']
     > = (event) => {
+      const scopedRegistry = hostOptions?.pluginRuntimeRegistryLease?.registry;
+      if (scopedRegistry) {
+        scopedRegistry.publishHostEvent?.(event);
+        return;
+      }
       const lease = tryAcquireAuthoritativePluginRuntimeRegistryLease();
       if (!lease) {
         resolution.publishHostEvent?.(event);
@@ -278,6 +316,9 @@ export class SessionHostBridge implements SessionHostBridgeContract {
       config: {
         ...planWithSessionState.config,
         publishHostRuntimeEvent,
+        ...(hostOptions?.pluginRuntimeRegistryLease
+          ? { pluginRuntimeRegistryLease: hostOptions.pluginRuntimeRegistryLease }
+          : {}),
       },
     };
     const planWithIdentity = withHostSessionRuntimeIdentityPublication({

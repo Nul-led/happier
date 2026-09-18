@@ -217,6 +217,7 @@ export async function runCanonicalBundledPluginArtifactPublisher({
   quiet = false,
   mode = String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1' ? 'check' : 'write',
   aggregateOnly = false,
+  compilerInputsOnly = false,
 }) {
   const generatorPath = resolve(repoRoot, BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH);
   if (!existsSync(generatorPath)) {
@@ -233,9 +234,11 @@ export async function runCanonicalBundledPluginArtifactPublisher({
     repoRoot,
     '--mode',
     mode,
-    ...(aggregateOnly
-      ? ['--aggregate']
-      : workspaceNames.flatMap((workspaceName) => ['--workspace', workspaceName])),
+    ...(compilerInputsOnly
+      ? ['--compiler-inputs']
+      : aggregateOnly
+        ? ['--aggregate']
+        : workspaceNames.flatMap((workspaceName) => ['--workspace', workspaceName])),
   ];
   await new Promise((resolvePromise, reject) => {
     let stderr = '';
@@ -270,6 +273,44 @@ export async function runCanonicalBundledPluginArtifactPublisher({
       error.stderr = null;
       reject(error);
     });
+  });
+  return true;
+}
+
+/**
+ * The single pre-build choke point for the manifest-derived generated
+ * TypeScript *compiler inputs*.
+ *
+ * `packages/agents/src/generated/agentIds.ts` compiles into
+ * `@happier-dev/agents/agent-ids`, which `packages/cli-common` imports for
+ * `BUNDLED_AGENT_CONTRIBUTION_IDENTITIES`, and `plugin-sdk` depends on
+ * `cli-common`. The canonical bundled-plugin publisher imports that same
+ * `cli-common` output, so it cannot be what first publishes those inputs: a
+ * newly manifested bundled Agent would need its own generated id to exist
+ * before the generator that emits it could run. This runs the one canonical
+ * producer in its `--compiler-inputs` mode, which reads only committed plugin
+ * manifest artifacts plus the Protocol/Agents runtime, before any workspace in
+ * that cycle compiles.
+ *
+ * There is no second generator, lock owner, or receipt here. The generator's
+ * `--compiler-inputs` branch serializes its bounded read/compare/write under
+ * the canonical publication lock and reuses an inherited owner lease when this
+ * choke point is called from an already-running workspace publication.
+ */
+export async function runCanonicalGeneratedCompilerInputs({
+  repoRoot,
+  env = process.env,
+  quiet = false,
+  mode = String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1' ? 'check' : 'write',
+} = {}) {
+  const resolvedRepoRoot = resolveRepoRootOption(repoRoot);
+  if (!existsSync(resolve(resolvedRepoRoot, BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH))) return false;
+  await runCanonicalBundledPluginArtifactPublisher({
+    repoRoot: resolvedRepoRoot,
+    env,
+    quiet,
+    mode,
+    compilerInputsOnly: true,
   });
   return true;
 }
@@ -1852,15 +1893,49 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   const shouldPublishBundledPluginArtifacts = opts.publishBundledPluginArtifacts !== false;
   const prepareGeneratedCompilerInputs = opts.prepareGeneratedCompilerInputsImpl
     ?? runCanonicalPluginSdkGeneratedCompilerInputs;
+  const prepareBundledPluginCompilerInputs = opts.prepareBundledPluginCompilerInputsImpl
+    ?? runCanonicalGeneratedCompilerInputs;
   const generatedCompilerInputMode = opts.generatedCompilerInputMode
     ?? (String(env.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1' ? 'check' : 'write');
+  const childBuildEnv = createWorkspaceChildBuildEnv({
+    env,
+    heldLockValue:
+      opts.lockOptions?.heldLockValue
+      ?? opts.lockOptions?.heldLockPath,
+  });
+  // Bundled Agent ids reach `packages/agents` and `packages/protocol`, which are
+  // upstream of `cli-common` and therefore of the Plugin SDK Action map below.
+  // Both generated inputs must precede every workspace build in this closure.
+  //
+  // A caller that makes several bounded passes over one unchanged set of
+  // committed plugin manifests opts later passes out: the projection reads only
+  // those manifests, so re-running it re-derives identical bytes. The canonical
+  // generator does exactly that. The projection measured ~20s on an idle machine
+  // and 565s on a saturated one, so the repeat is cheap in the normal case and
+  // lengthens a workspace-lock convoy in exactly the case that already hurts.
+  const shouldPrepareBundledPluginCompilerInputs =
+    opts.prepareBundledPluginCompilerInputs !== false;
+  if (
+    shouldPrepareBundledPluginCompilerInputs
+    && (
+      opts.prepareBundledPluginCompilerInputsImpl
+      || exists(resolve(repoRoot, BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH))
+    )
+  ) {
+    await prepareBundledPluginCompilerInputs({
+      repoRoot,
+      env: childBuildEnv,
+      quiet: opts.quiet === true,
+      mode: generatedCompilerInputMode,
+    });
+  }
   if (
     opts.prepareGeneratedCompilerInputsImpl
     || exists(resolve(repoRoot, PLUGIN_SDK_GENERATED_INPUTS_RELATIVE_PATH))
   ) {
     await prepareGeneratedCompilerInputs({
       repoRoot,
-      env,
+      env: childBuildEnv,
       quiet: opts.quiet === true,
       mode: generatedCompilerInputMode,
     });
@@ -1979,7 +2054,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       ensureWorkspacePackagesBuiltByNameImpl: ensureWorkspacePackagesBuilt,
       buildOptions: {
         quiet: opts.quiet !== false,
-        env,
+        env: childBuildEnv,
         // Each package owner rechecks currentness after taking its own lock.
         force: false,
         includeDevDependencies: false,
@@ -2103,10 +2178,10 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       syncBundledWorkspaceDistImpl: opts.syncBundledWorkspaceDistImpl,
       // Generated source publication owns the CLI distribution lock. Never
       // hide an already-held outer lease behind the later shared-copy lease.
-      env,
+      env: childBuildEnv,
       quiet: opts.quiet === true,
       bundledPluginArtifactPublication: opts.bundledPluginArtifactPublication
-        ?? (String(env.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
+        ?? (String(childBuildEnv.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
           ? {
               // A one-way dev-target replica owns the ignored plugin build trees
               // consumed by its daemon. Publish the matching generated CLI
@@ -2122,7 +2197,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
         repoRoot,
         workspaceNames,
         includeUiArtifacts: includeRuntimeDependencies,
-        env,
+        env: childBuildEnv,
         quiet: opts.quiet === true,
         includeDevDependencies: false,
         timeoutMs: workspaceBuildTimeoutMs,
@@ -2389,7 +2464,7 @@ function isArtifactPublicationMode(publicationMode) {
   return publicationMode === WORKSPACE_BUNDLE_PUBLICATION_MODES.ARTIFACT;
 }
 
-async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
+export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
   const resolvedRepoRoot = resolveRepoRootOption(opts.repoRoot);
   const workspaceNames = Array.isArray(opts.workspaceNames)
     ? opts.workspaceNames

@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import packageJson from '../../package.json'
 import { buildDoctorSnapshot, type DoctorSnapshot } from '@/ui/doctorSnapshot'
+import { redactCliApiTokenArgv } from '@/auth/cliApiToken'
 import {
     buildDoctorRuntimeDiagnostics,
     formatDoctorRuntimeLabel,
@@ -65,7 +66,7 @@ export function getEnvironmentInfo(): Record<string, any> {
         NODE_ENV: process.env.NODE_ENV,
         DEBUG: process.env.DEBUG,
         workingDirectory: process.cwd(),
-        processArgv: process.argv,
+        processArgv: redactCliApiTokenArgv(process.argv),
         happyDir: configuration?.happyHomeDir,
         serverUrl: configuration?.serverUrl,
         logsDir: configuration?.logsDir,

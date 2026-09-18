@@ -1,22 +1,26 @@
-import { createHmac, hkdfSync } from 'node:crypto';
-
 import {
+  deriveSessionMutationEqualityTagV1,
+  ENCRYPTED_DATA_KEY_V1_BYTES,
   openSessionOwnerMetadataEnvelopeV1,
   projectSessionOwnerCompatibilityViewV1,
+  SESSION_INPUT_EQUALITY_HKDF_LABEL_V1,
   SESSION_METADATA_LAYOUT_VERSION_V1,
   serializeSessionInputRequestEqualityIntentV1,
   SessionSharedMetadataV1Schema,
-  stringifySerializedJsonValue,
+  readSessionAccessProjectionRoleV1,
   type PendingRequestedActionV1,
+  type AccountRecipientEnvelopeReadiness,
+  type SessionContentAvailabilityInputV1,
   type SessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
 import type { Credentials, StoredCredentials } from '../../../persistence';
+import type { SessionMessageContent } from '../../../api/types';
 import {
   decodeBase64,
   decrypt,
+  decryptResult,
   encodeBase64,
   encrypt,
-  encryptWithDerivedNonce,
 } from '../../../api/encryption';
 import { openSessionDataEncryptionKey } from '../../../api/client/openSessionDataEncryptionKey';
 import { tryParseJsonRecord } from '../../../utils/tryParseJsonRecord';
@@ -24,90 +28,234 @@ import {
   readSessionMetadataLayoutVersion,
   tryReadSessionMetadataRecordForLayout,
 } from '../../metadata/sessionMetadataLayout';
+import {
+  decryptSessionPayload,
+  encryptSessionPayload,
+  openSessionStoredContent,
+  sealSessionStoredContent,
+  SessionStoredContentError,
+  type SessionEncryptionContext,
+  type SessionStoredContentCryptoContext,
+  type SessionStoredContentEncryptionMode,
+} from './sessionStoredContentCodec';
 
-export type SessionEncryptionContext = Readonly<{
-  encryptionKey: Uint8Array;
-  encryptionVariant: 'legacy' | 'dataKey';
+export {
+  decryptSessionPayload,
+  encryptSessionPayload,
+  openSessionStoredContent,
+  sealSessionStoredContent,
+  SessionStoredContentError,
+};
+export type {
+  SessionEncryptionContext,
+  SessionStoredContentCryptoContext,
+  SessionStoredContentEncryptionMode,
+};
+
+type AccountEncryptionMode = 'e2ee' | 'plain';
+
+// The transcript-facing name remains an alias of the one stored-content error
+// owner while its callers migrate independently.
+export { SessionStoredContentError as SessionMessageContentError };
+
+/** Opens an already parsed envelope only under its established Session mode. */
+export function openSessionMessageContent(
+  params: SessionStoredContentCryptoContext & Readonly<{ content: SessionMessageContent }>,
+): unknown {
+  return openSessionStoredContent(params);
+}
+
+export type SessionTransportEncryptionMaterial =
+  | Readonly<{ mode: 'plain' }>
+  | Readonly<{ mode: 'e2ee'; dataEncryptionKey: Uint8Array }>;
+
+export type ResolveSessionTransportContextFromMaterialResult =
+  | (Readonly<{ ok: true }> & SessionStoredContentCryptoContext)
+  | Readonly<{ ok: false; code: 'encryption_material_unavailable' }>;
+
+type SessionEncryptionContextSource = Readonly<{
+  dataEncryptionKey?: unknown;
+  effectiveAccess?: unknown;
+  share?: unknown;
+  metadataLayoutVersion?: unknown;
 }>;
 
-export type SessionStoredContentEncryptionMode = 'e2ee' | 'plain';
-type AccountEncryptionMode = 'e2ee' | 'plain';
-export type SessionStoredContentCryptoContext =
-  | Readonly<{ mode: 'plain'; ctx: null }>
-  | Readonly<{ mode: 'e2ee'; ctx: SessionEncryptionContext }>;
+type SessionMetadataSource = SessionEncryptionContextSource & Readonly<{
+  metadata?: unknown;
+  metadataLayoutVersion?: unknown;
+  ownerMetadata?: unknown;
+  encryptionMode?: unknown;
+}>;
+
+export type SessionPresentationContent = Readonly<{
+  metadata: Record<string, unknown> | null;
+  content: SessionContentAvailabilityInputV1;
+}>;
+
+export type SessionPresentationContentInput = Readonly<{
+  credentials: StoredCredentials;
+  accountEncryptionMode: AccountEncryptionMode;
+  recipientEnvelopeReadiness?: AccountRecipientEnvelopeReadiness;
+  rawSession: SessionMetadataSource;
+}>;
+
+type SessionEncryptionContextResolution =
+  | Readonly<{ ctx: SessionEncryptionContext }>
+  | Readonly<{ ctx: null; failure: 'missing_envelope' | 'unopenable_envelope' | 'unknown' }>;
 
 export function resolveSessionStoredContentEncryptionMode(rawSession?: Readonly<{ encryptionMode?: unknown }>): SessionStoredContentEncryptionMode {
+  if (rawSession && Object.prototype.hasOwnProperty.call(rawSession, 'encryptionMode')
+    && rawSession.encryptionMode !== undefined
+    && rawSession.encryptionMode !== 'plain'
+    && rawSession.encryptionMode !== 'e2ee') {
+    throw new SessionStoredContentError('session_content_mode_mismatch');
+  }
   return rawSession?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+}
+
+function createSessionDataKeyEncryptionContext(dataEncryptionKey: Uint8Array): SessionEncryptionContext | null {
+  if (!(dataEncryptionKey instanceof Uint8Array) || dataEncryptionKey.length !== ENCRYPTED_DATA_KEY_V1_BYTES) return null;
+  return { encryptionKey: new Uint8Array(dataEncryptionKey), encryptionVariant: 'dataKey' };
+}
+
+/**
+ * Material only: the caller owns authenticated fetch/admission and the returned
+ * context's lifetime. Possession of this key supplies no resource authority.
+ * No Account credentials, owner-private metadata, currentness or cache is used.
+ */
+export function resolveSessionTransportContextFromMaterial(params: Readonly<{
+  rawSession: Readonly<{ encryptionMode?: unknown }>;
+  material: SessionTransportEncryptionMaterial;
+}>): ResolveSessionTransportContextFromMaterialResult {
+  const failure = { ok: false, code: 'encryption_material_unavailable' } as const;
+  let mode: SessionStoredContentEncryptionMode;
+  try {
+    mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
+  } catch (error) {
+    if (error instanceof SessionStoredContentError) return failure;
+    throw error;
+  }
+  if (params.material.mode !== mode) return failure;
+  if (params.material.mode === 'plain') {
+    if ('dataEncryptionKey' in params.material) return failure;
+    return { ok: true, mode: 'plain', ctx: null };
+  }
+  const ctx = createSessionDataKeyEncryptionContext(params.material.dataEncryptionKey);
+  return ctx ? { ok: true, mode: 'e2ee', ctx } : failure;
 }
 
 export function resolveSessionEncryptionContextFromCredentials(
   credentials: Credentials,
-  rawSession?: Readonly<{ dataEncryptionKey?: unknown }>,
 ): SessionEncryptionContext;
 export function resolveSessionEncryptionContextFromCredentials(
   credentials: StoredCredentials,
-  rawSession?: Readonly<{ dataEncryptionKey?: unknown }>,
+  rawSession?: SessionEncryptionContextSource,
 ): SessionEncryptionContext | null;
 export function resolveSessionEncryptionContextFromCredentials(
   credentials: StoredCredentials,
-  rawSession?: Readonly<{ dataEncryptionKey?: unknown }>,
+  rawSession?: SessionEncryptionContextSource,
 ): SessionEncryptionContext | null {
-  if (!credentials.encryption) return null;
-  if (credentials.encryption.type === 'legacy') {
-    return { encryptionKey: credentials.encryption.secret, encryptionVariant: 'legacy' };
+  return resolveSessionEncryptionContext(credentials, rawSession).ctx;
+}
+
+function resolveSessionEncryptionContext(
+  credentials: StoredCredentials,
+  rawSession?: SessionEncryptionContextSource,
+): SessionEncryptionContextResolution {
+  const published = rawSession?.dataEncryptionKey;
+  if (published !== null && published !== undefined) {
+    if (!credentials.encryption) return { ctx: null, failure: 'unknown' };
+    const opened = openSessionDataEncryptionKey({
+      credential: credentials,
+      encryptedDataEncryptionKeyBase64: published,
+    });
+    const ctx = opened ? createSessionDataKeyEncryptionContext(opened) : null;
+    return ctx
+      ? { ctx }
+      : { ctx: null, failure: 'unopenable_envelope' };
   }
 
-  const encryptedDekBase64 =
-    typeof rawSession?.dataEncryptionKey === 'string' ? String(rawSession.dataEncryptionKey).trim() : '';
+  // Current access is authoritative. Only a valid owner projection or the
+  // released owner marker may use historical Account-key material.
+  const accessRole = readSessionAccessProjectionRoleV1(rawSession ?? {});
+  if (accessRole === 'unavailable') return { ctx: null, failure: 'unknown' };
+  if (accessRole === 'recipient') {
+    return { ctx: null, failure: 'missing_envelope' };
+  }
 
-  // Prefer the session's published DEK, but allow machineKey fallback for older sessions.
-  const opened = openSessionDataEncryptionKey({
-    credential: credentials,
-    encryptedDataEncryptionKeyBase64: encryptedDekBase64 || null,
-  });
+  if (!credentials.encryption) return { ctx: null, failure: 'unknown' };
 
-  return { encryptionKey: opened ?? credentials.encryption.machineKey, encryptionVariant: 'dataKey' };
+  // Retain the cli-v0.2.11 owner-only absent-envelope readers. These Account
+  // keys are historical content material, never transferable Session DEKs.
+  return { ctx: credentials.encryption.type === 'legacy'
+    ? { encryptionKey: credentials.encryption.secret, encryptionVariant: 'legacy' }
+    : { encryptionKey: credentials.encryption.machineKey, encryptionVariant: 'dataKey' } };
 }
 
 export function tryDecryptSessionMetadata(params: Readonly<{
   credentials: StoredCredentials;
-  rawSession: Readonly<{
-    metadata?: unknown;
-    metadataLayoutVersion?: unknown;
-    dataEncryptionKey?: unknown;
-    encryptionMode?: unknown;
-  }>;
+  rawSession: SessionMetadataSource;
 }>): Record<string, unknown> | null {
-  const encryptedMetadataBase64 =
-    typeof params.rawSession.metadata === 'string' ? String(params.rawSession.metadata).trim() : '';
-  if (!encryptedMetadataBase64) return null;
+  return readSessionMetadataContent(params).metadata;
+}
 
+function readSessionMetadataContent(params: Readonly<{
+  credentials: StoredCredentials;
+  recipientEnvelopeReadiness?: AccountRecipientEnvelopeReadiness;
+  rawSession: SessionMetadataSource;
+}>): SessionPresentationContent {
+  const encodedMetadata =
+    typeof params.rawSession.metadata === 'string' ? String(params.rawSession.metadata).trim() : '';
   const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
   if (mode === 'plain') {
-    const metadata = tryParseJsonRecord(encryptedMetadataBase64);
-    return metadata
-      ? tryReadSessionMetadataRecordForLayout(
-          metadata,
-          params.rawSession.metadataLayoutVersion,
-        )
-      : null;
+    return {
+      metadata: tryReadSessionMetadataRecordForLayout(
+        tryParseJsonRecord(encodedMetadata),
+        params.rawSession.metadataLayoutVersion,
+      ),
+      content: { mode },
+    };
   }
 
-  const { encryptionKey, encryptionVariant } = resolveSessionEncryptionContextFromCredentials(
+  const resolved = resolveSessionEncryptionContext(
     params.credentials,
     params.rawSession,
-  ) ?? {};
-  if (!encryptionKey || !encryptionVariant) return null;
+  );
+  if (!resolved.ctx) {
+    const readiness = params.recipientEnvelopeReadiness;
+    let keyState: Extract<SessionContentAvailabilityInputV1, { mode: 'e2ee' }>['keyState'] = 'unknown';
+    if (resolved.failure === 'unopenable_envelope') {
+      keyState = 'inconsistent';
+    } else if (resolved.failure === 'missing_envelope') {
+      if (readiness?.status === 'available') keyState = 'access_pending';
+      else if (readiness?.status === 'unavailable') {
+        if (readiness.reason === 'encryption_inconsistent') keyState = 'inconsistent';
+        else if (readiness.reason === 'plain_account' || readiness.reason === 'encryption_setup_required') keyState = 'setup_required';
+      }
+    }
+    return { metadata: null, content: { mode, keyState } };
+  }
+
+  const unknown: SessionPresentationContent = { metadata: null, content: { mode, keyState: 'unknown' } };
+  if (!encodedMetadata) return unknown;
 
   try {
-    const decrypted = decrypt(encryptionKey, encryptionVariant, decodeBase64(encryptedMetadataBase64, 'base64'));
-    if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) return null;
-    return tryReadSessionMetadataRecordForLayout(
-      Object.fromEntries(Object.entries(decrypted)),
+    const decrypted = decryptResult(
+      resolved.ctx.encryptionKey,
+      resolved.ctx.encryptionVariant,
+      decodeBase64(encodedMetadata, 'base64'),
+    );
+    if (decrypted.status === 'authentication_failed') {
+      return { metadata: null, content: { mode, keyState: 'content_unavailable' } };
+    }
+    if (decrypted.status !== 'authenticated') return unknown;
+    const metadata = tryReadSessionMetadataRecordForLayout(
+      decrypted.value,
       params.rawSession.metadataLayoutVersion,
     );
+    return metadata ? { metadata, content: { mode, keyState: 'opened' } } : unknown;
   } catch {
-    return null;
+    return unknown;
   }
 }
 
@@ -139,18 +287,14 @@ export function tryDecryptSessionOwnerMetadata(params: Readonly<{
   return opened.ok ? opened.ownerMetadata : null;
 }
 
-export function tryDecryptSessionOwnerMetadataView(params: Readonly<{
-  credentials: StoredCredentials;
-  accountEncryptionMode: AccountEncryptionMode;
-  rawSession: Readonly<{
-    metadata?: unknown;
-    metadataLayoutVersion?: unknown;
-    ownerMetadata?: unknown;
-    dataEncryptionKey?: unknown;
-    encryptionMode?: unknown;
-  }>;
-}>): Record<string, unknown> | null {
-  const sharedOrLegacyMetadata = tryDecryptSessionMetadata(params);
+export function tryDecryptSessionOwnerMetadataView(params: SessionPresentationContentInput): Record<string, unknown> | null {
+  return projectSessionOwnerMetadataView(params, tryDecryptSessionMetadata(params));
+}
+
+function projectSessionOwnerMetadataView(
+  params: SessionPresentationContentInput,
+  sharedOrLegacyMetadata: Record<string, unknown> | null,
+): Record<string, unknown> | null {
   if (!sharedOrLegacyMetadata) return null;
 
   const metadataLayoutVersion = readSessionMetadataLayoutVersion(
@@ -171,19 +315,61 @@ export function tryDecryptSessionOwnerMetadataView(params: Readonly<{
   });
 }
 
-export function tryDecryptSessionPresentationMetadataView(params: Readonly<{
-  credentials: StoredCredentials;
-  accountEncryptionMode: AccountEncryptionMode;
-  rawSession: Readonly<{
-    metadata?: unknown;
-    metadataLayoutVersion?: unknown;
-    ownerMetadata?: unknown;
-    dataEncryptionKey?: unknown;
-    encryptionMode?: unknown;
-  }>;
-}>): Record<string, unknown> | null {
-  return tryDecryptSessionOwnerMetadataView(params)
-    ?? tryDecryptSessionMetadata(params);
+export function readSessionPresentationContent(params: SessionPresentationContentInput): SessionPresentationContent {
+  const result = readSessionMetadataContent(params);
+  return {
+    ...result,
+    // Owner-private metadata is independent Account content. Its absence or
+    // failure cannot invalidate successfully authenticated shared metadata.
+    metadata: projectSessionOwnerMetadataView(params, result.metadata) ?? result.metadata,
+  };
+}
+
+/** Opens shared Session presentation metadata from already-authorized material. */
+export function readSessionPresentationContentFromMaterial(params: Readonly<{
+  rawSession: SessionMetadataSource;
+  material: SessionTransportEncryptionMaterial;
+}>): SessionPresentationContent {
+  const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
+  if (mode === 'plain') {
+    const encodedMetadata = typeof params.rawSession.metadata === 'string' ? params.rawSession.metadata.trim() : '';
+    return {
+      metadata: tryReadSessionMetadataRecordForLayout(
+        tryParseJsonRecord(encodedMetadata),
+        params.rawSession.metadataLayoutVersion,
+      ),
+      content: { mode: 'plain' },
+    };
+  }
+  const resolved = resolveSessionTransportContextFromMaterial({ rawSession: params.rawSession, material: params.material });
+  if (!resolved.ok || resolved.mode !== 'e2ee') {
+    return { metadata: null, content: { mode: 'e2ee', keyState: 'unknown' } };
+  }
+  const encodedMetadata = typeof params.rawSession.metadata === 'string' ? params.rawSession.metadata.trim() : '';
+  if (!encodedMetadata) return { metadata: null, content: { mode: 'e2ee', keyState: 'unknown' } };
+  try {
+    const decrypted = decryptResult(
+      resolved.ctx.encryptionKey,
+      resolved.ctx.encryptionVariant,
+      decodeBase64(encodedMetadata, 'base64'),
+    );
+    if (decrypted.status === 'authentication_failed') {
+      return { metadata: null, content: { mode: 'e2ee', keyState: 'content_unavailable' } };
+    }
+    if (decrypted.status !== 'authenticated') {
+      return { metadata: null, content: { mode: 'e2ee', keyState: 'unknown' } };
+    }
+    const metadata = tryReadSessionMetadataRecordForLayout(decrypted.value, params.rawSession.metadataLayoutVersion);
+    return metadata
+      ? { metadata, content: { mode: 'e2ee', keyState: 'opened' } }
+      : { metadata: null, content: { mode: 'e2ee', keyState: 'unknown' } };
+  } catch {
+    return { metadata: null, content: { mode: 'e2ee', keyState: 'unknown' } };
+  }
+}
+
+export function tryDecryptSessionPresentationMetadataView(params: SessionPresentationContentInput): Record<string, unknown> | null {
+  return readSessionPresentationContent(params).metadata;
 }
 
 export function encryptStoredSessionPayload(
@@ -213,68 +399,13 @@ export function decryptStoredSessionPayload(
   );
 }
 
-export function encryptSessionPayload(params: Readonly<{
-  ctx: SessionEncryptionContext;
-  payload: unknown;
-  idempotencyKey?: string;
-}>): string {
-  const nonce = params.idempotencyKey === undefined
-    ? undefined
-    : deriveIdempotentSessionPayloadNonce({
-        ctx: params.ctx,
-        idempotencyKey: params.idempotencyKey,
-        payload: params.payload,
-      });
-  const ciphertext = nonce === undefined
-    ? encrypt(params.ctx.encryptionKey, params.ctx.encryptionVariant, params.payload)
-    : encryptWithDerivedNonce(params.ctx.encryptionKey, params.ctx.encryptionVariant, params.payload, nonce);
-  return encodeBase64(ciphertext, 'base64');
-}
-
-/**
- * Keep these exact bytes for the existing idempotent Session-payload namespace.
- * The `session-pending` wording is historical: this shared primitive also
- * supports transition dividers. Retain it to preserve durable Pending retry
- * ciphertext; changing it would change a predecessor-created row on retry.
- */
-const IDEMPOTENT_SESSION_PAYLOAD_NONCE_DOMAIN_V1 =
-  'happier.session-pending.idempotent-content.v1';
-
-function deriveIdempotentSessionPayloadNonce(params: Readonly<{
-  ctx: SessionEncryptionContext;
-  idempotencyKey: string;
-  payload: unknown;
-}>): Uint8Array {
-  // A keyed synthetic nonce makes same-ID/same-content retries byte-identical
-  // without reusing a nonce when either the identity or plaintext changes.
-  const fields = [
-    IDEMPOTENT_SESSION_PAYLOAD_NONCE_DOMAIN_V1,
-    params.ctx.encryptionVariant,
-    params.idempotencyKey,
-    stringifySerializedJsonValue(params.payload),
-  ];
-  const encodedFields = fields.map((field) => new TextEncoder().encode(field));
-  const totalLength = encodedFields.reduce((total, field) => total + 4 + field.length, 0);
-  const input = new Uint8Array(totalLength);
-  const view = new DataView(input.buffer);
-  let offset = 0;
-  for (const field of encodedFields) {
-    view.setUint32(offset, field.length, false);
-    offset += 4;
-    input.set(field, offset);
-    offset += field.length;
-  }
-  const digest = createHmac('sha256', params.ctx.encryptionKey).update(input).digest();
-  const nonceLength = params.ctx.encryptionVariant === 'legacy' ? 24 : 12;
-  return new Uint8Array(digest.subarray(0, nonceLength));
-}
-
-const SESSION_INPUT_EQUALITY_HKDF_LABEL_V1 = 'happier.session-input-equality.v1';
-
 /**
  * Derives the server-opaque equality fact used only to reconcile an E2EE
  * Session input after its randomized request ciphertext has been replaced.
- * The Session id is HKDF salt so tags cannot be correlated across Sessions.
+ *
+ * The derivation itself belongs to the shared Protocol Session-mutation
+ * equality primitive, which the UI owner consumes through the same purpose
+ * label; this remains the CLI-side convenience that knows the Session cipher.
  */
 export function deriveSessionInputEqualityTagV1(params: Readonly<{
   ctx: SessionEncryptionContext;
@@ -282,30 +413,13 @@ export function deriveSessionInputEqualityTagV1(params: Readonly<{
   requestEnvelope: unknown;
   requestedAction: PendingRequestedActionV1;
 }>): string {
-  const encoder = new TextEncoder();
-  const equalityKey = new Uint8Array(hkdfSync(
-    'sha256',
-    params.ctx.encryptionKey,
-    encoder.encode(params.sessionId),
-    encoder.encode(SESSION_INPUT_EQUALITY_HKDF_LABEL_V1),
-    32,
-  ));
-  const canonicalIntent = serializeSessionInputRequestEqualityIntentV1({
-    requestEnvelope: params.requestEnvelope,
-    requestedAction: params.requestedAction,
+  return deriveSessionMutationEqualityTagV1({
+    keyMaterial: params.ctx.encryptionKey,
+    sessionId: params.sessionId,
+    purpose: SESSION_INPUT_EQUALITY_HKDF_LABEL_V1,
+    canonicalIntent: serializeSessionInputRequestEqualityIntentV1({
+      requestEnvelope: params.requestEnvelope,
+      requestedAction: params.requestedAction,
+    }),
   });
-  return createHmac('sha256', equalityKey)
-    .update(canonicalIntent, 'utf8')
-    .digest('base64url');
-}
-
-export function decryptSessionPayload(params: Readonly<{
-  ctx: SessionEncryptionContext;
-  ciphertextBase64: string;
-}>): unknown {
-  return decrypt(
-    params.ctx.encryptionKey,
-    params.ctx.encryptionVariant,
-    decodeBase64(params.ciphertextBase64, 'base64'),
-  );
 }

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import axios from 'axios';
 import {
+  projectLegacySessionAccessCapabilitiesV1,
+} from '@happier-dev/protocol';
+import {
   createSessionListResponseFixture,
   createSessionRecordFixture,
 } from '@/testkit/backends/sessionFixtures';
@@ -12,6 +15,81 @@ import {
 } from './sessionsHttp';
 
 describe('sessionControl.sessionsHttp.fetchSessionByIdCompat', () => {
+  it('rejects a qualified current detail response that omits responsibility', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: {
+        session: createSessionRecordFixture({
+          id: 's1',
+          effectiveAccess: {
+            v: 1,
+            level: 'view',
+            sources: [{ kind: 'direct', shareId: 'share-1' }],
+            capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
+          },
+          viewer: {
+            readState: { state: 'not_started' },
+            relevance: { relevant: false, reasons: [] },
+            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'none', source: 'none' },
+          },
+        }),
+      },
+    } as any);
+
+    await expect(fetchSessionByIdCompat({
+      token: 't',
+      sessionId: 's1',
+      accessProjectionVersion: 1,
+    })).rejects.toThrow('Unexpected /v2/sessions response shape');
+  });
+
+  it('rejects a qualified detail response that omits the negotiated effective-access projection', async () => {
+    const getSpy = vi.spyOn(axios, 'get');
+    getSpy.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        session: createSessionRecordFixture({ id: 's1' }),
+      },
+    } as any);
+
+    await expect(fetchSessionByIdCompat({
+      token: 't',
+      sessionId: 's1',
+      accessProjectionVersion: 1,
+    })).rejects.toThrow('Unexpected /v2/sessions response shape');
+
+    expect(getSpy.mock.calls[0]?.[0]).toContain('accessProjectionVersion=1');
+  });
+
+  it('does not reinterpret a qualified route miss through the released list fallback', async () => {
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 404,
+      data: { error: 'Not found', path: '/v2/sessions/s1', method: 'GET' },
+    } as any);
+
+    await expect(fetchSessionByIdCompat({
+      token: 't',
+      sessionId: 's1',
+      accessProjectionVersion: 1,
+    })).rejects.toThrow('Unexpected /v2/sessions response shape');
+
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues accepting the released owner/direct detail shape for a bare request', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: {
+        session: createSessionRecordFixture({ id: 's1' }),
+      },
+    } as any);
+
+    await expect(fetchSessionByIdCompat({ token: 't', sessionId: 's1' }))
+      .resolves.toMatchObject({ id: 's1' });
+  });
+
   it('falls back to scanning /v2/sessions pages when the single-session route is missing (404 Not found)', async () => {
     const getSpy = vi.spyOn(axios, 'get');
     getSpy

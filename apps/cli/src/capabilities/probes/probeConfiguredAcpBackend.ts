@@ -17,6 +17,7 @@ export async function probeConfiguredAcpBackend<T>(params: Readonly<{
   cwd: string;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   credentials?: StoredCredentials | null;
+  processEnv?: NodeJS.ProcessEnv;
   onBackend: (backend: AcpProbeBackend) => Promise<T>;
 }>): Promise<ConfiguredAcpProbeBackendResult<T>> {
   const backend = await createConfiguredAcpProbeBackend({
@@ -25,6 +26,7 @@ export async function probeConfiguredAcpBackend<T>(params: Readonly<{
     cwd: params.cwd,
     accountSettings: params.accountSettings,
     credentials: params.credentials,
+    processEnv: params.processEnv,
   });
   if (!backend) return { kind: 'missing' };
 

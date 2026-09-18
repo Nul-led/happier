@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   SessionServerStartIngressRequestV1Schema,
   type MachineLiveStreamFrameV1,
+  type WorkspaceSyncRuntimeReadinessV1,
   type WorkspaceSyncStatusV1,
 } from '@happier-dev/protocol';
 import type { DaemonState } from '@/api/types';
@@ -14,6 +15,9 @@ import type {
   startAutomationWorker,
 } from '../automation/automationWorker';
 import { cleanupAndShutdown } from '../lifecycle/cleanupAndShutdown';
+import { createServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
+import { isWorkflowRuntimeEnabled } from '../automation/workflowFeatureGate';
+import type { WorkflowCoordinatorResult } from '../workflows/coordinator';
 
 import { createDaemonMachineBootstrapRuntime } from './createDaemonMachineBootstrapRuntime';
 
@@ -69,7 +73,6 @@ function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaem
     awaitAgentSessionOpen: vi.fn(),
     isSessionAlreadyRunning: vi.fn(),
     loadLocalSessionMetadataForHandoff: vi.fn(),
-    savePreparedTargetLocalMetadata: vi.fn(),
     beforeShutdown: vi.fn(),
     requestShutdown: vi.fn(),
     directPeerServerLifecycle: null,
@@ -86,6 +89,149 @@ function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaem
 }
 
 describe('createDaemonMachineBootstrapRuntime', () => {
+  it('authorizes the exact Runner broker readiness request before publishing the fixed application target', async () => {
+    const request = {
+      v: 1 as const,
+      kind: 'provider_broker_readiness' as const,
+      homeServerIdentityId: 'srv_home',
+      activationId: '00000000-0000-4000-8000-000000000010',
+      launchManifestCommitment: 'A'.repeat(43),
+      resourceId: 'resource-1',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
+      protocol: 'openai-responses' as const,
+      modelId: 'gpt-5',
+      initiator: { installationId: 'installation-1', endpointId: 'a'.repeat(64) },
+      target: { machineId: 'broker-machine', endpointId: 'b'.repeat(64) },
+      activationSignature: 'A'.repeat(86),
+      installationSignature: 'A'.repeat(86),
+    };
+    const authorization = {
+      v: 1 as const,
+      binding: {
+        homeServerIdentityId: request.homeServerIdentityId,
+        activationId: request.activationId,
+        launchManifestCommitment: request.launchManifestCommitment,
+        resourceId: request.resourceId,
+        agentTargetKey: request.agentTargetKey,
+        protocol: request.protocol,
+        modelId: request.modelId,
+        initiator: request.initiator,
+        target: request.target,
+      },
+      credentialSelectionBinding: {
+        v: 1 as const,
+        resourceId: request.resourceId,
+        brokerMachineId: request.target.machineId,
+        revision: 7,
+        application: {
+          agentTargetKey: request.agentTargetKey,
+          implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+          endpointTemplateId: 'responses',
+          protocol: request.protocol,
+        },
+        sourceRevision: 'source-revision-7',
+      },
+      readiness: { kind: 'available' as const },
+    };
+    const authorizeRunnerBrokerReadiness = vi.fn()
+      .mockResolvedValueOnce(authorization)
+      .mockResolvedValueOnce({
+        ...authorization,
+        binding: {
+          ...authorization.binding,
+          activationId: '00000000-0000-4000-8000-000000000011',
+        },
+      })
+      .mockResolvedValueOnce({ ...authorization, readiness: { kind: 'resource_unavailable' as const } })
+      .mockRejectedValueOnce(new Error('home unavailable'));
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: { machineSyncClient: vi.fn(), authorizeRunnerBrokerReadiness } as never,
+    }));
+    const resolve = runtime.peerMediationMachineRpc?.resolveRunnerBrokerReadinessApplicationTarget;
+    expect(resolve).toBeDefined();
+    const signal = new AbortController().signal;
+
+    try {
+      await expect(resolve?.({
+        request,
+        authenticatedRemoteEndpointId: request.initiator.endpointId,
+        localEndpointId: request.target.endpointId,
+        signal,
+      } as never)).resolves.toEqual({ port: expect.any(Number) });
+      expect(authorizeRunnerBrokerReadiness).toHaveBeenCalledWith(request, signal);
+      await expect(resolve?.({
+        request,
+        authenticatedRemoteEndpointId: request.initiator.endpointId,
+        localEndpointId: request.target.endpointId,
+        signal,
+      } as never)).resolves.toBeNull();
+      await expect(resolve?.({
+        request,
+        authenticatedRemoteEndpointId: request.initiator.endpointId,
+        localEndpointId: request.target.endpointId,
+        signal,
+      } as never)).resolves.toBeNull();
+      await expect(resolve?.({
+        request,
+        authenticatedRemoteEndpointId: request.initiator.endpointId,
+        localEndpointId: request.target.endpointId,
+        signal,
+      } as never)).resolves.toBeNull();
+    } finally {
+      await runtime.beforeShutdown();
+    }
+  });
+
+  it('installs the broker application for the registered machine, advertises it only while live, and shuts it down', async () => {
+    const resolveProviderBrokerApplicationTarget = vi.fn(async () => ({ port: 47_001, localCapability: 'local-capability' }));
+    const resolveExternalProviderBrokerApplicationTarget = vi.fn(async () => ({ port: 47_002, localCapability: 'external-capability' }));
+    const checkRunnerCredentialSelectionCurrentness = vi.fn(async () => 'available' as const);
+    const close = vi.fn(async () => undefined);
+    const setProviderBrokerIngressLive = vi.fn(async () => undefined);
+    const startProviderBrokerApplication = vi.fn(async () => ({
+      resolveProviderBrokerApplicationTarget,
+      resolveExternalProviderBrokerApplicationTarget,
+      checkRunnerCredentialSelectionCurrentness,
+      close,
+    }));
+    const withOwner = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: {
+        machineSyncClient: vi.fn(() => ({ setProviderBrokerIngressLive })),
+      } as never,
+      startProviderBrokerApplication,
+    }));
+    const input = {
+      handshake: { v: 1, kind: 'provider_broker' },
+      authority: {},
+      authenticatedRemoteEndpointId: 'a'.repeat(64),
+      localEndpointId: 'b'.repeat(64),
+      signal: new AbortController().signal,
+    } as never;
+    await expect(withOwner.peerMediationMachineRpc?.resolveProviderBrokerApplicationTarget?.(input))
+      .resolves.toBeNull();
+    await withOwner.createConnectedApiMachine({ id: 'registered-machine' } as never);
+    expect(startProviderBrokerApplication).toHaveBeenCalledWith({
+      machineId: 'registered-machine',
+      apiMachine: expect.anything(),
+    });
+    expect(setProviderBrokerIngressLive).toHaveBeenCalledWith(true);
+    await expect(withOwner.peerMediationMachineRpc?.resolveProviderBrokerApplicationTarget?.(input))
+      .resolves.toEqual({ port: 47_001, localCapability: 'local-capability' });
+    expect(resolveProviderBrokerApplicationTarget).toHaveBeenCalledWith(input);
+    const externalInput = { binding: { v: 1, requestId: 'request-1' } } as never;
+    await expect(withOwner.peerMediationMachineRpc?.resolveExternalProviderBrokerApplicationTarget?.(externalInput))
+      .resolves.toEqual({ port: 47_002, localCapability: 'external-capability' });
+    expect(resolveExternalProviderBrokerApplicationTarget).toHaveBeenCalledWith(externalInput);
+    await withOwner.beforeShutdown();
+    expect(setProviderBrokerIngressLive).toHaveBeenLastCalledWith(false);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(setProviderBrokerIngressLive.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(close.mock.invocationCallOrder[0]!);
+
+    const withoutOwner = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams());
+    expect(withoutOwner.peerMediationMachineRpc?.resolveProviderBrokerApplicationTarget).toBeUndefined();
+  });
+
   it('does not start the daemon inference worker while its canonical feature decision is disabled', async () => {
     const previous = process.env.HAPPIER_FEATURE_VOICE_DAEMON_INFERENCE__ENABLED;
     delete process.env.HAPPIER_FEATURE_VOICE_DAEMON_INFERENCE__ENABLED;
@@ -100,8 +246,14 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     }
   });
 
-  it('keeps daemon quiescence out of ownership metadata and forwards it as a lifecycle dependency', () => {
-    const machineSyncClient = vi.fn(() => ({}));
+  it('keeps daemon quiescence out of ownership metadata and forwards the daemon feature refresh owner as a lifecycle dependency', async () => {
+    const machineSyncClient = vi.fn((
+      _machine: unknown,
+      _metadata: unknown,
+      _lifecycleDependencies: Readonly<{
+        resolveServerFeaturesSnapshot?: () => Promise<unknown>;
+      }>,
+    ) => ({}));
     const isShuttingDown = vi.fn(() => false);
     const workspaceSyncHandoffAdapter = {
       prepare: vi.fn(),
@@ -114,12 +266,16 @@ describe('createDaemonMachineBootstrapRuntime', () => {
       deleteConflictLoserAtTarget: vi.fn(),
       readFileAtTarget: vi.fn(),
     } as never;
+    const serverFeaturesSnapshot = { status: 'ready', features: { capabilities: {} } } as const;
+    const refreshServerFeaturesSnapshot = vi.fn(async () => serverFeaturesSnapshot as never);
     const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
       // Test fixture boundary: only machineSyncClient call arguments are observed.
       api: { machineSyncClient } as never,
       isShuttingDown,
       workspaceSyncHandoffAdapter,
       workspaceSync,
+      getServerFeaturesSnapshot: () => serverFeaturesSnapshot as never,
+      refreshServerFeaturesSnapshot,
     }));
     expect(runtime.deviceLocalSecretStorage).toBe(
       deviceLocalSecretStorage,
@@ -143,8 +299,12 @@ describe('createDaemonMachineBootstrapRuntime', () => {
         isDaemonQuiescing: isShuttingDown,
         workspaceSyncHandoffAdapter,
         workspaceSync,
+        resolveServerFeaturesSnapshot: expect.any(Function),
       },
     );
+    const lifecycleDependencies = machineSyncClient.mock.calls[0]?.[2];
+    await expect(lifecycleDependencies?.resolveServerFeaturesSnapshot?.()).resolves.toBe(serverFeaturesSnapshot);
+    expect(refreshServerFeaturesSnapshot).toHaveBeenCalledOnce();
   });
 
   it('constructs workspace sync from the registered machine identity before publishing the machine client', async () => {
@@ -161,10 +321,15 @@ describe('createDaemonMachineBootstrapRuntime', () => {
       deleteConflictLoserAtTarget: vi.fn(),
       readFileAtTarget: vi.fn(),
     } as never;
-    const createWorkspaceSyncRuntime = vi.fn(async ({ machineId, onStatusPublished }: Readonly<{
+    const createWorkspaceSyncRuntime = vi.fn(async ({ machineId, onReadinessPublished, onStatusPublished }: Readonly<{
       machineId: string;
+      onReadinessPublished(readiness: WorkspaceSyncRuntimeReadinessV1): void;
       onStatusPublished(status: WorkspaceSyncStatusV1): void;
     }>) => {
+      onReadinessPublished({
+        engine: { state: 'ready' },
+        carrier: { state: 'unavailable', errorCode: 'machine_carrier_unavailable' },
+      });
       onStatusPublished({
         relationshipId: 'relationship_1',
         controllerMachineId: machineId,
@@ -201,6 +366,7 @@ describe('createDaemonMachineBootstrapRuntime', () => {
 
     expect(createWorkspaceSyncRuntime).toHaveBeenCalledWith({
       machineId: 'registered-machine',
+      onReadinessPublished: expect.any(Function),
       onStatusPublished: expect.any(Function),
     });
     expect(machineSyncClient).toHaveBeenCalledWith(
@@ -217,6 +383,10 @@ describe('createDaemonMachineBootstrapRuntime', () => {
       status: 'running',
       workspaceSync: {
         v: 1,
+        readiness: {
+          engine: { state: 'ready' },
+          carrier: { state: 'unavailable', errorCode: 'machine_carrier_unavailable' },
+        },
         status: {
           relationshipId: 'relationship_1',
           controllerMachineId: 'registered-machine',
@@ -235,12 +405,15 @@ describe('createDaemonMachineBootstrapRuntime', () => {
   it('forwards the daemon-owned inventory snapshot reader without creating a second scanner', () => {
     const readLocalServiceInventorySnapshot = vi.fn();
     const getServerFeaturesSnapshot = vi.fn();
+    const resolvePeerMediationTrustRoots = vi.fn(() => []);
     const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
       readLocalServiceInventorySnapshot,
       getServerFeaturesSnapshot,
+      resolvePeerMediationTrustRoots,
     }));
     expect(runtime.readLocalServiceInventorySnapshot).toBe(readLocalServiceInventorySnapshot);
     expect(runtime.getServerFeaturesSnapshot).toBe(getServerFeaturesSnapshot);
+    expect(runtime.resolvePeerMediationTrustRoots).toBe(resolvePeerMediationTrustRoots);
   });
 
   it('forwards the durable connected-services projection reconciler into machine cursor composition', () => {
@@ -250,6 +423,37 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     }));
 
     expect(runtime.reconcileConnectedServicesProjection).toBe(reconcileConnectedServicesProjection);
+  });
+
+  it('constructs one workflow recovery reader for the connected machine and forwards lifecycle triggers', async () => {
+    const recover = vi.fn(async () => {});
+    const createWorkflowRecoveryForMachine = vi.fn(() => recover);
+    const enqueueSessionPendingByMachine = vi.fn();
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: {
+        machineSyncClient: vi.fn(() => ({ enqueueSessionPendingByMachine })),
+      } as never,
+      isWorkflowFeatureEnabled: () => true,
+      createWorkflowRecoveryForMachine,
+    }));
+    const machine = {
+      id: 'machine_1',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'legacy' as const,
+      metadata: null,
+      metadataVersion: 0,
+      daemonState: null,
+      daemonStateVersion: 0,
+    };
+
+    await runtime.createConnectedApiMachine(machine);
+    await runtime.recoverWorkflowRuns?.('startup');
+
+    expect(createWorkflowRecoveryForMachine).toHaveBeenCalledWith(expect.objectContaining({
+      machineId: machine.id,
+      machineAdmissionTransport: expect.any(Function),
+    }));
+    expect(recover).toHaveBeenCalledWith('startup');
   });
 
   it('forwards the daemon runtime-open attestation reader into machine bootstrap', () => {
@@ -327,6 +531,108 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     } finally {
       exitSpy.mockRestore();
     }
+  });
+
+  it('injects the production workflow coordinator into the existing Automation worker after Machine sync exists', async () => {
+    const enqueueSessionPendingByMachine = vi.fn();
+    const apiMachine = { enqueueSessionPendingByMachine, dispatchSessionServerStart: vi.fn() } as never;
+    const coordinateWorkflowRun = vi.fn();
+    const createWorkflowRunCoordinatorForMachine = vi.fn(() => coordinateWorkflowRun);
+    automationWorkerMocks.startAutomationWorker.mockReturnValueOnce({
+      stop: vi.fn(), refreshAssignments: vi.fn(), pause: vi.fn(), resume: vi.fn(), handleServerUpdate: vi.fn(),
+    });
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: { machineSyncClient: vi.fn(() => apiMachine) } as never,
+      isWorkflowFeatureEnabled: () => true,
+      createWorkflowRunCoordinatorForMachine,
+    }));
+
+    await runtime.createConnectedApiMachine({ id: 'machine_1' } as never);
+    runtime.startAutomationWorkerForMachine('machine_1');
+
+    expect(createWorkflowRunCoordinatorForMachine).toHaveBeenCalledWith({
+      machineId: 'machine_1',
+      machineAdmissionTransport: expect.any(Function),
+      machineActionDirectTargetTransport: {
+        machineId: 'machine_1',
+        invoke: expect.any(Function),
+      },
+    });
+    const workerParams = automationWorkerMocks.startAutomationWorker.mock.calls.at(-1)?.[0] as
+      | Parameters<typeof startAutomationWorker>[0]
+      | undefined;
+    await expect(workerParams?.coordinateWorkflowRun?.({} as never)).resolves.toBeUndefined();
+    expect(coordinateWorkflowRun).toHaveBeenCalledOnce();
+  });
+
+  it('uses the live server feature decision for the existing Workflow coordinator without restarting Automation', async () => {
+    const enabledFeatures = {
+      status: 'ready' as const,
+      provenance: 'authenticated' as const,
+      features: {
+        features: {
+          automations: { enabled: true },
+          workflows: { enabled: true },
+        },
+        capabilities: {},
+      },
+    };
+    const disabledFeatures = {
+      ...enabledFeatures,
+      features: {
+        ...enabledFeatures.features,
+        features: {
+          automations: { enabled: true },
+          workflows: { enabled: false },
+        },
+      },
+    };
+    const fetchSnapshot = vi.fn()
+      .mockRejectedValueOnce(new Error('Home unavailable'))
+      .mockResolvedValueOnce(enabledFeatures)
+      .mockResolvedValueOnce(disabledFeatures);
+    const featureStore = createServerFeaturesSnapshotStore({ fetchSnapshot });
+    const coordinatedOutcome: WorkflowCoordinatorResult = { state: 'succeeded' };
+    const coordinateWorkflowRun = vi.fn(async () => coordinatedOutcome);
+    const recoverWorkflowRuns = vi.fn(async () => {});
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: {
+        machineSyncClient: vi.fn(() => ({
+          enqueueSessionPendingByMachine: vi.fn(),
+          dispatchSessionServerStart: vi.fn(),
+        })),
+      } as never,
+      isWorkflowFeatureEnabled: () => isWorkflowRuntimeEnabled({}, featureStore.getSnapshot()),
+      createWorkflowRunCoordinatorForMachine: vi.fn(() => coordinateWorkflowRun),
+      createWorkflowRecoveryForMachine: vi.fn(() => recoverWorkflowRuns),
+    }));
+    automationWorkerMocks.startAutomationWorker.mockReturnValueOnce({
+      stop: vi.fn(), refreshAssignments: vi.fn(), pause: vi.fn(), resume: vi.fn(), handleServerUpdate: vi.fn(),
+    });
+
+    await runtime.createConnectedApiMachine({ id: 'machine_1' } as never);
+    runtime.startAutomationWorkerForMachine('machine_1');
+    const workerParams = automationWorkerMocks.startAutomationWorker.mock.calls.at(-1)?.[0] as
+      | Parameters<typeof startAutomationWorker>[0]
+      | undefined;
+    const coordinate = workerParams?.coordinateWorkflowRun;
+    expect(coordinate).toBeDefined();
+
+    await expect(coordinate?.({} as never)).rejects.toThrow('Workflow Run coordinator is unavailable');
+    await runtime.recoverWorkflowRuns?.('startup');
+    expect(recoverWorkflowRuns).not.toHaveBeenCalled();
+    await featureStore.refresh();
+    await expect(coordinate?.({} as never)).rejects.toThrow('Workflow Run coordinator is unavailable');
+    await featureStore.refresh();
+    await expect(coordinate?.({} as never)).resolves.toEqual(coordinatedOutcome);
+    await runtime.recoverWorkflowRuns?.('reconnect');
+    expect(coordinateWorkflowRun).toHaveBeenCalledOnce();
+    expect(recoverWorkflowRuns).toHaveBeenCalledOnce();
+    await featureStore.refresh();
+    await expect(coordinate?.({} as never)).rejects.toThrow('Workflow Run coordinator is unavailable');
+    await runtime.recoverWorkflowRuns?.('reconnect');
+    expect(coordinateWorkflowRun).toHaveBeenCalledOnce();
+    expect(recoverWorkflowRuns).toHaveBeenCalledOnce();
   });
 
   it('supplies the connected Session-start ingress to the Automation worker', async () => {

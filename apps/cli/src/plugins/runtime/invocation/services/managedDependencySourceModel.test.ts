@@ -41,6 +41,23 @@ function contribution(
 }
 
 describe('V2 managed dependency source model', () => {
+    it('projects a pinned archive as the managed immutable version for the selected platform', () => {
+        const model = createV2ManagedDependencySourceModel({
+            platform: 'linux', architecture: 'x64',
+            contributions: [contribution('acme.one', 'tool', { architectures: ['x64'], sources: [{
+                kind: 'pinnedArchive', installId: 'dep.acme.tool', version: '1.1.1', assetsByPlatform: {
+                    'linux-x64': {
+                        archiveUrl: 'https://downloads.example.test/tool-1.1.1.zip', sha256: 'a'.repeat(64),
+                        executableSubpath: 'bin/tool', args: ['--platform-default'],
+                    },
+                },
+            }] })],
+        });
+        expect(model.resolve({ pluginId: 'acme.one', localId: 'tool' }).sources).toEqual([
+            expect.objectContaining({ kind: 'pinnedArchive', version: '1.1.1', updatePolicy: 'managed', disposition: 'executable' }),
+        ]);
+    });
+
     it('owns retirement on the direct model instance without a registry-wide identity', () => {
         const currentContribution = contribution('acme.one', 'tool');
         const model = createV2ManagedDependencySourceModel({

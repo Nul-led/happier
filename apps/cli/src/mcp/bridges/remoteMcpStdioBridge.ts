@@ -107,6 +107,8 @@ async function main(): Promise<void> {
             toolName: name,
             args,
             ...(options?.signal === undefined ? {} : { signal: options.signal }),
+            ...(options?.requestMetadata === undefined ? {} : { requestMetadata: options.requestMetadata }),
+            ...(options?.onprogress === undefined ? {} : { onprogress: options.onprogress }),
           }),
       });
 

@@ -96,6 +96,7 @@ type PendingFollowStatusPublication = Readonly<{
     resource: ExternalSessionFollowResource | null;
     followStatusV1: ExternalSessionFollowStatusV1;
     lastFollowIssueV1?: ExternalSessionFollowIssueV1;
+    sourceUnavailableOccurrenceAtMs?: number;
 }>;
 
 type SessionFollowState = {
@@ -124,6 +125,10 @@ type ExternalSessionFollowLeaseManagerParams = Readonly<{
         followStatusV1: ExternalSessionFollowStatusV1;
         lastFollowIssueV1?: ExternalSessionFollowIssueV1;
     }>) => Promise<void>;
+    publishSourceUnavailableOccurrence?: (input: Readonly<{
+        sessionId: string;
+        observedAtMs: number;
+    }>) => void | Promise<void>;
 }>;
 
 function resourceKey(resource: ExternalSessionFollowResource | undefined): string {
@@ -206,14 +211,14 @@ export function createExternalSessionFollowLeaseManager(params?: ExternalSession
     const retryPendingFollowStatus = async (
         sessionId: string,
         state: SessionFollowState,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
         const pending = state.pendingFollowStatus;
-        if (!pending) return;
+        if (!pending) return false;
         if (!params?.writeFollowStatus) {
             if (state.pendingFollowStatus === pending) {
                 state.pendingFollowStatus = null;
             }
-            return;
+            return false;
         }
         try {
             await params.writeFollowStatus({
@@ -229,12 +234,22 @@ export function createExternalSessionFollowLeaseManager(params?: ExternalSession
             if (state.pendingFollowStatus === pending) {
                 state.pendingFollowStatus = null;
             }
+            if (pending.sourceUnavailableOccurrenceAtMs !== undefined) {
+                await Promise.resolve(params?.publishSourceUnavailableOccurrence?.({
+                    sessionId,
+                    observedAtMs: pending.sourceUnavailableOccurrenceAtMs,
+                })).catch(() => {
+                    logger.debug('[externalSessions.follow] Source-unavailable occurrence publication failed (non-fatal)', { sessionId });
+                });
+            }
+            return true;
         } catch {
             logger.debug('[externalSessions.follow] Follow-status metadata write failed (non-fatal)', {
                 sessionId,
                 status: pending.followStatusV1.status,
                 reason: pending.followStatusV1.reason,
             });
+            return false;
         }
     };
 
@@ -245,14 +260,21 @@ export function createExternalSessionFollowLeaseManager(params?: ExternalSession
         reason: string,
         lastFollowIssueV1?: ExternalSessionFollowIssueV1,
         updatedAtMs = now(),
-    ): Promise<void> => {
+        sourceUnavailableOccurrenceAtMs?: number,
+    ): Promise<boolean> => {
         const state = stateFor(sessionId);
+        const retainedOccurrenceAtMs = state.pendingFollowStatus?.followStatusV1.reason === reason
+            ? state.pendingFollowStatus.sourceUnavailableOccurrenceAtMs
+            : undefined;
         state.pendingFollowStatus = {
             resource,
             followStatusV1: { v: 1, status, reason, updatedAtMs },
             ...(lastFollowIssueV1 === undefined ? {} : { lastFollowIssueV1 }),
+            ...(sourceUnavailableOccurrenceAtMs !== undefined
+                ? { sourceUnavailableOccurrenceAtMs }
+                : retainedOccurrenceAtMs !== undefined ? { sourceUnavailableOccurrenceAtMs: retainedOccurrenceAtMs } : {}),
         };
-        await retryPendingFollowStatus(sessionId, state);
+        return await retryPendingFollowStatus(sessionId, state);
     };
 
     const publishFollowFailure = async (
@@ -786,6 +808,8 @@ export function createExternalSessionFollowLeaseManager(params?: ExternalSession
             let retryableFailure = false;
             await applyStatusMutation(async () => {
                 if (!input.isCurrent()) return;
+                const enteredSourceUnavailable = refreshResult.outcome === 'source_unavailable'
+                    && input.state.refreshIssueCode !== issueCode;
                 input.state.refreshIssueCode = issueCode;
                 const observedAtMs = now();
                 await publishFollowStatus(
@@ -800,6 +824,7 @@ export function createExternalSessionFollowLeaseManager(params?: ExternalSession
                         observedAtMs,
                     },
                     observedAtMs,
+                    enteredSourceUnavailable ? observedAtMs : undefined,
                 );
                 retryableFailure = true;
             });

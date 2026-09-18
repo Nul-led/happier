@@ -424,4 +424,20 @@ describe('ApiClient sessionSyncClient runtime-action routes', () => {
       afterComposerAttachmentMessageAccepted,
     );
   }, 60_000);
+
+  it('keeps restricted Session authority and Action policy out of the Account owner path', async () => {
+    const { ApiClient } = await import('./api');
+    const api = await ApiClient.create({ token: 'runner-token', encryption: null });
+    const actionsSettingsProvider = { getActionsSettings: () => ({ v: 1 as const, actions: {} }) };
+
+    api.sessionSyncClient({ id: 'runner-session' } as never, {
+      metadataAuthority: { kind: 'shared_editor' },
+      actionsSettingsProvider,
+    });
+
+    expect(apiSessionClientConstructorMock.mock.calls[0]?.[2]).toMatchObject({
+      metadataAuthority: { kind: 'shared_editor' },
+      actionsSettingsProvider,
+    });
+  });
 });

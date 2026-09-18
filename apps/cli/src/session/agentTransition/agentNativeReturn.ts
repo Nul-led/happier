@@ -1,3 +1,4 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 
@@ -343,7 +344,7 @@ export async function invalidateFailedAgentNativeReturnIdentity(params: Readonly
   targetAgentId: AgentId;
   vendorResumeId: string;
 }>): Promise<void> {
-  const vendorResumeId = params.vendorResumeId.trim();
+  const vendorResumeId = readNonBlankOpaqueIdentifier(params.vendorResumeId);
   if (!vendorResumeId) return;
   const key: LocalAgentNativeResumeRecordKey = {
     happierSessionId: params.sessionId,
@@ -370,7 +371,7 @@ export async function hasMatchingAgentNativeReturnIdentity(params: Readonly<{
   targetAgentId: AgentId;
   vendorResumeId: string;
 }>): Promise<boolean> {
-  const vendorResumeId = params.vendorResumeId.trim();
+  const vendorResumeId = readNonBlankOpaqueIdentifier(params.vendorResumeId);
   if (!vendorResumeId) return false;
   const record = await params.store.readAgentNativeResumeRecord({
     happierSessionId: params.sessionId,

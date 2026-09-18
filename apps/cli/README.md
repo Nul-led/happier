@@ -185,7 +185,7 @@ happier gemini project get          # Show current Google Cloud Project ID
 ### Claude Options
 
 - `-m, --model <model>` - Claude model to use (default: sonnet)
-- `-p, --permission-mode <mode>` - Permission mode: `default`, `read-only`, `safe-yolo`, `yolo`, `plan` (aliases like `ro`, `safe`, `full-access`, `accept-edits`, `bypass-permissions` are accepted)
+- `-p, --permission-mode <mode>` - Permission intent: `read_only`, `default`, `auto`, or `yolo` (legacy aliases like `read-only`, `safe-yolo`, `workspace_write`, `accept-edits`, and `bypass-permissions` are accepted)
 - `--permission-mode-updated-at <unix-ms>` - Optional timestamp (ms) for ordering permission changes across devices
 - `--claude-arg ARG` - Pass additional argument to Claude CLI
 
@@ -193,7 +193,7 @@ happier gemini project get          # Show current Google Cloud Project ID
 
 These flags are accepted by agent commands like `codex`, `gemini`, `opencode`, `auggie`, `qwen`, `kimi`, `kilo`:
 
-- `--permission-mode <mode>` - Permission mode (aliases accepted; stored canonically in session metadata)
+- `--permission-mode <mode>` - Permission intent: `read_only`, `default`, `auto`, or `yolo` (compatible aliases accepted)
 - `--permission-mode-updated-at <unix-ms>` - Optional timestamp (ms) for ordering permission changes across devices
 - `--agent-mode <id>` - ACP session mode id (e.g. `plan`), when supported by the provider
 - `--agent-mode-updated-at <unix-ms>` - Optional timestamp (ms) for ordering ACP mode changes across devices
@@ -213,16 +213,16 @@ You can set permissions either:
 - from the CLI when starting a session (`--permission-mode ...`), or
 - from the app UI (in-session picker and Session settings).
 
-The selected permission mode is stored canonically in **session metadata** so it stays consistent across devices and when switching local ↔ remote.
+The selected permission intent is normalized into compatible **session metadata** so it stays consistent across devices and when switching local ↔ remote.
 
 ### Common examples
 
 ```bash
-# Claude (default) in safe-yolo
-happier --permission-mode safe-yolo
+# Claude (default) in Auto
+happier --permission-mode auto
 
-# Codex in read-only (deny write-like tools)
-happier codex --permission-mode read-only
+# Codex in Read-only (deny write-like tools)
+happier codex --permission-mode read_only
 
 # Gemini in yolo (aliases accepted)
 happier gemini --permission-mode full-access
@@ -236,9 +236,10 @@ happier kilo --agent-mode plan
 # Select a model when supported
 happier gemini --model gemini-2.5-pro
 
-# Provider-native legacy tokens are accepted as aliases
-happier --permission-mode accept-edits        # => safe-yolo (canonical)
-happier --permission-mode bypass-permissions  # => yolo (canonical)
+# Older Happier and provider-native tokens remain compatible aliases
+happier --permission-mode workspace_write     # => Auto intent
+happier --permission-mode accept-edits        # => Auto intent
+happier --permission-mode bypass-permissions  # => YOLO intent
 
 # Legacy: some ACP agents used to accept plan as a permission. Happier still accepts it,
 # but will map it to `--agent-mode plan` (and warn) when the provider exposes ACP modes.
@@ -250,12 +251,13 @@ happier kilo --permission-mode plan            # => --agent-mode plan (deprecate
 
 Depending on the provider, a permission mode can map to:
 - a provider-native “session mode” (when available), and/or
-- Happier’s tool approval gating (read-only/safe-yolo/yolo behavior).
+- Happier’s tool approval gating (Read-only/Auto/YOLO behavior).
 
 Important provider constraints:
 - **Codex (ACP)**: provider session modes are policy presets (approval + sandbox), not generic “plan/build” agent modes. Happier keeps permissions as the primary user control and maps to the closest preset.
 - **Codex (MCP)**: approval behavior can change mid-session, but many sandbox/environment constraints are decided at session start.
 - **Claude**: `read-only` is best-effort (Claude does not have a strict read-only mode); Happier will map to the closest supported behavior.
+- **Pi**: Read-only uses a tool allowlist. Auto, Default, and YOLO preserve Pi's native tool catalog, including its platform shell tool and installed extension/custom tools such as subagents; they are not a workspace-confinement guarantee.
 - **ACP “Mode”** (`--agent-mode`): this is separate from permissions and is provider-defined (for example OpenCode “plan” vs “build”).
 
 Model selection behavior:
@@ -281,6 +283,7 @@ For the full user guide (UI behavior, defaults, apply timing), see the app docs:
 - `HAPPIER_HOME_DIR` - Custom home directory for Happier data (default: ~/.happier)
 - `HAPPIER_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
 - `HAPPIER_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
+- `HAPPIER_ENCRYPTION_REQUIREMENT` - Set to `require_e2ee` to make the CLI/daemon refuse plaintext Account settings and sessions regardless of the server-advertised mode. The default is `follow_account`; invalid non-empty values stop startup.
 
 ### Gemini Configuration
 

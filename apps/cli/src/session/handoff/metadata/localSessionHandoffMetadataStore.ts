@@ -1,5 +1,5 @@
+import { NonBlankOpaqueIdentifierSchema } from '@happier-dev/protocol';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { AgentId } from '@happier-dev/agents';
@@ -12,23 +12,8 @@ import {
     writeProtectedLocalStateFileAtomic,
 } from '@/utils/fs/protectedLocalState';
 
-type MetadataRecord = Record<string, unknown>;
-
-function asMetadataRecord(value: unknown): MetadataRecord | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return null;
-    }
-    return value as MetadataRecord;
-}
-
-function buildVendorResumeIdFingerprint(vendorResumeId: string): string {
-    return createHash('sha256').update(vendorResumeId).digest('hex');
-}
-
 /**
- * Domain-separated so a Session+Agent record can never collide with the
- * vendor-resume overlay fingerprints stored beside it, and so neither Session
- * IDs nor Agent IDs appear in a filename.
+ * Domain-separated so neither Session IDs nor Agent IDs appear in a filename.
  */
 const AGENT_NATIVE_RESUME_RECORD_FINGERPRINT_DOMAIN = 'happier.local-agent-native-resume.v1';
 
@@ -44,12 +29,6 @@ function buildAgentNativeResumeRecordFingerprint(
         .update(agentId)
         .digest('hex');
 }
-
-type StoredLocalSessionHandoffMetadataRecord = Readonly<{
-    vendorResumeId: string;
-    exportMetadataOverlay: MetadataRecord;
-    updatedAtMs: number;
-}>;
 
 /**
  * Machine-local record of an INACTIVE Agent's native conversation.
@@ -76,7 +55,7 @@ const StoredLocalAgentResumeRecordV1Schema = z.object({
     agentId: z.string().trim().min(1),
 
     // What to resume: the Agent's own conversation id, in its catalog's terms.
-    vendorResumeId: z.string().trim().min(1).max(512),
+    vendorResumeId: NonBlankOpaqueIdentifierSchema.max(512),
 
     /**
      * Transcript head at this Agent's departure — the boundary its own
@@ -112,11 +91,7 @@ export type LocalAgentNativeResumeRecordV1 = Readonly<{
 export function createLocalSessionHandoffMetadataStore(params: Readonly<{
     activeServerDir: string;
 }>) {
-    const rootDir = join(params.activeServerDir, 'session-handoff', 'local-metadata');
     const agentNativeResumeDir = join(params.activeServerDir, 'session-handoff', 'agent-native-resume');
-
-    const resolveRecordPath = (vendorResumeId: string): string =>
-        join(rootDir, `${buildVendorResumeIdFingerprint(vendorResumeId)}.json`);
 
     const resolveAgentNativeResumeRecordPath = (key: LocalAgentNativeResumeRecordKey): string =>
         join(
@@ -159,49 +134,6 @@ export function createLocalSessionHandoffMetadataStore(params: Readonly<{
     };
 
     return {
-        async loadByVendorResumeId(vendorResumeId: string): Promise<MetadataRecord | null> {
-            const normalizedVendorResumeId = vendorResumeId.trim();
-            if (!normalizedVendorResumeId) {
-                return null;
-            }
-
-            const raw = await readFile(resolveRecordPath(normalizedVendorResumeId), 'utf8').catch(() => null);
-            if (!raw) {
-                return null;
-            }
-
-            try {
-                const parsed = JSON.parse(raw) as StoredLocalSessionHandoffMetadataRecord;
-                if (parsed.vendorResumeId !== normalizedVendorResumeId) {
-                    return null;
-                }
-                return asMetadataRecord(parsed.exportMetadataOverlay);
-            } catch {
-                return null;
-            }
-        },
-
-        async saveByVendorResumeId(input: Readonly<{
-            vendorResumeId: string;
-            exportMetadataOverlay: MetadataRecord;
-        }>): Promise<void> {
-            const normalizedVendorResumeId = input.vendorResumeId.trim();
-            if (!normalizedVendorResumeId) {
-                return;
-            }
-
-            await mkdir(rootDir, { recursive: true });
-            await writeFile(
-                resolveRecordPath(normalizedVendorResumeId),
-                JSON.stringify({
-                    vendorResumeId: normalizedVendorResumeId,
-                    exportMetadataOverlay: input.exportMetadataOverlay,
-                    updatedAtMs: Date.now(),
-                } satisfies StoredLocalSessionHandoffMetadataRecord, null, 2),
-                'utf8',
-            );
-        },
-
         resolveAgentNativeResumeRecordPath,
 
         /**
@@ -248,7 +180,7 @@ export function createLocalSessionHandoffMetadataStore(params: Readonly<{
                 v: 1,
                 happierSessionId,
                 agentId: input.agentId,
-                vendorResumeId: input.identity.vendorResumeId.trim(),
+                vendorResumeId: input.identity.vendorResumeId,
                 departureSeqInclusive: input.departureSeqInclusive,
             });
             if (!candidate.success) return;

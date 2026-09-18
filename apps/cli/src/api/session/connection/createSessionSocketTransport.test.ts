@@ -99,6 +99,28 @@ describe('createSessionSocketTransport', () => {
         expect(socket.connect).toHaveBeenCalledTimes(1);
     });
 
+    it('uses a materializer-proven access key without invoking Account-wide key bootstrap', async () => {
+        const socket = createApiSessionSocketStub();
+        bindApiSessionSocketMock(mockIo, socket);
+        vi.mocked(axios.get).mockReset();
+        vi.mocked(axios.post).mockReset();
+
+        const { createSessionSocketTransport } = await import('./createSessionSocketTransport');
+        const { transport } = createSessionSocketTransport({
+            token: 'runner-token',
+            sessionId: 'runner-session',
+            machineId: 'runner-machine',
+            serverUrl: 'http://127.0.0.1:4321',
+            accessKeyBinding: 'preestablished',
+        });
+
+        await transport.connect();
+
+        expect(axios.get).not.toHaveBeenCalled();
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(socket.connect).toHaveBeenCalledTimes(1);
+    });
+
     it('does not resolve connect until the session-scoped socket has actually connected', async () => {
         const socket = createApiSessionSocketStub();
         socket.connect.mockImplementation(() => socket);

@@ -26,16 +26,20 @@ import type {
   AutomationClaimRunResponse,
 } from './automationTypes';
 import type { Update } from '@/api/types';
-import type { StoredCredentials } from '@/persistence';
+import { readStoredCredentials, type StoredCredentials } from '@/persistence';
 import type {
-  SessionInputAdmissionResultV1,
-  SessionPendingEnqueueByMachineRequestV1,
   SessionServerStartDispatchResultV1,
   SessionServerStartIngressRequestV1,
 } from '@happier-dev/protocol';
 import { DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE } from '@happier-dev/protocol';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { invalidateActiveAutomationRun } from './automationRunInvalidation';
+import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
+import type { createProductionWorkflowRunCoordinator } from '@/daemon/workflows/production';
+
+type AutomationMachineAdmissionTransport = NonNullable<
+  Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']
+>;
 
 const ASSIGNMENT_RECONCILIATION_DELAY_MS = 45_000;
 const ASSIGNMENT_RECONCILIATION_JITTER_MS = 15_000;
@@ -47,8 +51,31 @@ export type AutomationWorkerHandle = Readonly<{
   resume: () => void;
 }>;
 
+/** One daemon Account-currentness/material owner shared by Automation execution and Workflow preflight. */
+export async function resolveAutomationWorkerAccountEncryption(params: Readonly<{
+  token: string;
+  credentials?: StoredCredentials;
+  signal?: AbortSignal;
+}>) {
+  const controller = params.signal ? null : new AbortController();
+  const signal = params.signal ?? controller!.signal;
+  return await resolveValidatedAutomationAccountEncryptionV1({
+    signal,
+    resolveAccountEncryptionCurrentness: async (currentnessSignal) =>
+      await fetchAccountEncryptionCurrentness({
+        token: params.token,
+        ...(currentnessSignal ? { signal: currentnessSignal } : {}),
+      }),
+    resolveAccountEncryptionMaterial: async () => (
+      params.credentials
+        ? createAutomationAccountEncryptionMaterialSnapshotV1(params.credentials)
+        : null
+    ),
+  });
+}
+
 function toClaimableRunPayload(claimResult: AutomationClaimRunResponse): ClaimableRunPayload | null {
-  if (claimResult.run === null || claimResult.automation === null) {
+  if (claimResult.run === null) {
     return null;
   }
   return claimResult as AutomationClaimedRunPayload;
@@ -60,16 +87,16 @@ export function startAutomationWorker(params: {
   machineId: string;
   encryption?: AutomationTemplateEncryption;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-  machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<SessionInputAdmissionResultV1>;
+  machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   /** The connected daemon's Session-owned Automation start ingress. */
   dispatchSessionServerStart?: (
     request: SessionServerStartIngressRequestV1,
     options?: Readonly<{ signal?: AbortSignal }>,
   ) => Promise<SessionServerStartDispatchResultV1>;
   env?: NodeJS.ProcessEnv;
+  coordinateWorkflowRun?: ReturnType<typeof createProductionWorkflowRunCoordinator>;
+  /** Existing lifecycle-indexed custody reader, woken by an exact persisted control invalidation. */
+  recoverWorkflowRuns?: () => Promise<void>;
 }): AutomationWorkerHandle {
   const env = params.env ?? process.env;
   const workerDecision = getAutomationWorkerFeatureDecision(env);
@@ -96,14 +123,6 @@ export function startAutomationWorker(params: {
 
   const scheduler = resolveAutomationPollingConfig(env);
   const claimClient = createAutomationClaimClient({ token: params.token });
-  const actionExecutor = params.credentials
-    ? createCliActionExecutorFromCredentials({
-      credentials: params.credentials,
-      ...(params.machineAdmissionTransport
-        ? { machineAdmissionTransport: params.machineAdmissionTransport }
-        : {}),
-    })
-    : null;
   const assignments = createAutomationAssignmentCache();
 
   let stopped = false;
@@ -127,9 +146,24 @@ export function startAutomationWorker(params: {
   // execution settles. The server still owns every durable lifecycle fact.
   const activeExecutions = new Map<string, {
     runId: string;
+    automationId: string | null;
     attempt: number;
     controller: AbortController;
   }>();
+  const actionExecutor = params.credentials
+    ? createCliActionExecutorFromCredentials({
+      credentials: params.credentials,
+      readCredentials: async () => await readStoredCredentials().catch(() => null),
+      machineId: params.machineId,
+      isAutomationRunCurrent: (caller) => {
+        const active = activeExecutions.get(caller.runId);
+        return active?.runId === caller.runId && active.automationId === caller.automationId;
+      },
+      ...(params.machineAdmissionTransport
+        ? { machineAdmissionTransport: params.machineAdmissionTransport }
+        : {}),
+    })
+    : null;
   let maxActiveRunsPerMachine = DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE;
 
   const nullClaimBackoffMs = Math.min(
@@ -394,6 +428,7 @@ export function startAutomationWorker(params: {
       const executionController = new AbortController();
       activeExecutions.set(claimed.run.id, {
         runId: claimed.run.id,
+        automationId: claimed.run.automationId,
         attempt: claimed.run.attempt,
         controller: executionController,
       });
@@ -416,18 +451,13 @@ export function startAutomationWorker(params: {
             ...(params.dispatchSessionServerStart
               ? { dispatchSessionServerStart: params.dispatchSessionServerStart }
               : {}),
-            resolveAutomationAccountEncryption: async (signal) => await resolveValidatedAutomationAccountEncryptionV1({
+            ...(params.coordinateWorkflowRun
+              ? { coordinateWorkflowRun: params.coordinateWorkflowRun }
+              : {}),
+            resolveAutomationAccountEncryption: async (signal) => await resolveAutomationWorkerAccountEncryption({
+              token: params.token,
+              ...(params.credentials ? { credentials: params.credentials } : {}),
               signal,
-              resolveAccountEncryptionCurrentness: async (currentnessSignal) =>
-                await fetchAccountEncryptionCurrentness({
-                  token: params.token,
-                  ...(currentnessSignal ? { signal: currentnessSignal } : {}),
-                }),
-              resolveAccountEncryptionMaterial: async () => (
-                params.credentials
-                  ? createAutomationAccountEncryptionMaterialSnapshotV1(params.credentials)
-                  : null
-              ),
             }),
             ...(actionExecutor ? { executeAction: actionExecutor.execute } : {}),
             signal: executionController.signal,
@@ -439,7 +469,7 @@ export function startAutomationWorker(params: {
             logAutomationWarn('Failed to refresh automation assignments after run', error, {
               machineId: params.machineId,
               runId: claimed.run.id,
-              automationId: claimed.automation.id,
+              automationId: claimed.run.automationId,
             });
           });
 
@@ -453,7 +483,7 @@ export function startAutomationWorker(params: {
             machineId: params.machineId,
             errorClass,
             runId: claimed.run.id,
-            automationId: claimed.automation.id,
+            automationId: claimed.run.automationId,
           });
         } finally {
           const active = activeExecutions.get(claimed.run.id);
@@ -560,6 +590,21 @@ export function startAutomationWorker(params: {
       }
 
       invalidateActiveExecution(update);
+
+      if (
+        body.t === 'automation-run-updated'
+        && body.targetMachineId === params.machineId
+        && body.workflowControl === 'cancel_requested'
+        && !activeExecutions.has(body.runId)
+      ) {
+        void params.recoverWorkflowRuns?.().catch((error) => {
+          logAutomationWarn('Workflow cancellation custody recovery failed; pending custody retained', error, {
+            machineId: params.machineId,
+            runId: body.runId,
+          });
+        });
+        return;
+      }
 
       if (body.t === 'automation-run-updated' && body.state === 'queued') {
         pendingQueuedWake = true;

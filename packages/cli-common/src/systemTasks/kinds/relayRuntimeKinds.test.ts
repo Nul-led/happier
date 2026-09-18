@@ -6,7 +6,10 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { SYSTEM_TASK_PROTOCOL_VERSION } from '@happier-dev/protocol';
 
-import { createPersonalHomeOperations } from '../../firstPartyRuntime/personalHome/operations.js';
+import {
+  createPersonalHomeOperations,
+  type PersonalHomeEraseConfirmationFacts,
+} from '../../firstPartyRuntime/personalHome/operations.js';
 import { createPersonalHomeBackup } from '../../firstPartyRuntime/personalHome/backup.js';
 import { serializePersonalHomeManifest, type PersonalHomeBackupManifestV1 } from '../../firstPartyRuntime/personalHome/manifest.js';
 import { resolvePersonalHomeRuntimeLayout } from '../../firstPartyRuntime/personalHome/layout.js';
@@ -39,6 +42,20 @@ import {
 } from './relayRuntimeKinds.js';
 import { createExecutionRunnerFromKind } from '../createExecutionRunnerFromKind.js';
 import { createSystemTaskRegistry, executeSystemTask } from '../runSystemTask.js';
+
+function createCompleteEraseConfirmationFacts(params: Readonly<{
+  paths: readonly string[];
+  estimatedBytes: number;
+}>): PersonalHomeEraseConfirmationFacts {
+  return {
+    canonicalServerUrl: 'http://127.0.0.1:43123',
+    homeServerIdentityId: 'home-1',
+    paths: params.paths,
+    estimatedBytes: params.estimatedBytes,
+    previewComplete: true,
+    previewReason: null,
+  };
+}
 
 async function seedActivatingCanonicalHome(params: Readonly<{ validReadiness: boolean }>) {
   const homeDir = await mkdtemp(join(tmpdir(), 'happier-restore-contact-root-'));
@@ -439,7 +456,7 @@ describe('relay runtime shared system task kinds', () => {
     const operations: PersonalHomeSystemTaskOperations = {
       inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), reconcileRestore: async () => undefined, recoverRestore: async () => ({}),
       erase: async (context) => {
-        confirmed = await context.confirm!({ canonicalServerUrl: 'http://127.0.0.1:43123', homeServerIdentityId: 'home-1', paths: ['/data/home.sqlite'], estimatedBytes: 42 });
+        confirmed = await context.confirm!(createCompleteEraseConfirmationFacts({ paths: ['/data/home.sqlite'], estimatedBytes: 42 }));
         if (!confirmed) throw Object.assign(new Error('declined'), { code: 'confirmation_required' });
         return {};
       },
@@ -456,7 +473,12 @@ describe('relay runtime shared system task kinds', () => {
     const prompts: unknown[] = [];
     const operations: PersonalHomeSystemTaskOperations = {
       inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), reconcileRestore: async () => undefined, recoverRestore: async () => ({}),
-      erase: async (context) => ({ confirmed: await context.confirm!({ canonicalServerUrl: 'http://127.0.0.1:43123', homeServerIdentityId: 'home-1', paths: ['/canonical/home.sqlite'], estimatedBytes: 73 }) }),
+      erase: async (context) => ({
+        confirmed: await context.confirm!(createCompleteEraseConfirmationFacts({
+          paths: ['/canonical/home.sqlite'],
+          estimatedBytes: 73,
+        })),
+      }),
     };
     await expect(createPersonalHomeEraseTaskKind({ operations }).run({
       params: { target: { kind: 'local' }, channel: 'stable', mode: 'user', purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } },
@@ -467,7 +489,14 @@ describe('relay runtime shared system task kinds', () => {
       kind: 'personal_home.confirm_erase.v1',
       stepId: 'personal_home.confirm_erase',
       message: 'Confirm permanent deletion of these Personal Home paths.',
-      data: { canonicalServerUrl: 'http://127.0.0.1:43123', homeServerIdentityId: 'home-1', paths: ['/canonical/home.sqlite'], estimatedBytes: 73 },
+      data: {
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        homeServerIdentityId: 'home-1',
+        paths: ['/canonical/home.sqlite'],
+        estimatedBytes: 73,
+        previewComplete: true,
+        previewReason: null,
+      },
     }]);
   });
 

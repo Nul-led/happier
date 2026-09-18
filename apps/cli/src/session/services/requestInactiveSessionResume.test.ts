@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { RpcError } from '@happier-dev/protocol/rpcErrors';
+import {
+  deriveSessionCreationTagV1,
+  SessionCreationCorrespondenceV1Schema,
+} from '@happier-dev/protocol';
 
 const { callMachineRpc } = vi.hoisted(() => ({ callMachineRpc: vi.fn() }));
 vi.mock('@/session/transport/rpc/machineRpc', () => ({ callMachineRpc }));
@@ -57,6 +61,49 @@ const providerMetadata = {
   },
 } as const;
 
+function metadataWithLaunchCorrespondence() {
+  const sessionCreationTag = deriveSessionCreationTagV1({
+    callerCreationNamespace: 'user',
+    creationKey: 'creation-resume-rpc',
+  });
+  const correspondence = SessionCreationCorrespondenceV1Schema.parse({
+    v: 1,
+    sessionCreationTag,
+    recipe: {
+      execution: { machineId: 'machine-1', directory: '/repo' },
+      organization: { folderId: null, tagIds: [] },
+      agentTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+      },
+      modelSelection: null,
+      profileId: 'profile-shared',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          ANTHROPIC_API_KEY: {
+            ref: 'happier:shared-secret:v1:shared-anthropic',
+            revision: 5,
+          },
+        },
+      },
+      requestedPermissionMode: null,
+      agentModeId: null,
+      configuration: null,
+      connectedServices: null,
+      mcpSelection: null,
+      transcriptStorage: null,
+      terminal: null,
+      agentSessionStartupInstructionsMarkerV1: null,
+      checkout: null,
+    },
+  });
+  return {
+    correspondence,
+    metadata: { ...metadata, sessionCreationCorrespondenceV1: correspondence },
+  };
+}
+
 describe('requestInactiveSessionResume', () => {
   afterEach(() => {
     callMachineRpc.mockReset();
@@ -83,6 +130,28 @@ describe('requestInactiveSessionResume', () => {
     expect(callMachineRpc.mock.calls[0]?.[0]?.request).not.toHaveProperty('spawnNonce');
     expect(callMachineRpc.mock.calls[0]?.[0]?.request).not.toHaveProperty('agentRuntimeDescriptorV1');
     expect(callMachineRpc.mock.calls[0]?.[0]?.request).not.toHaveProperty('codexBackendMode');
+  });
+
+  it('carries immutable launch profile and Saved Secret references through the resume RPC', async () => {
+    callMachineRpc.mockResolvedValue({ type: 'success' });
+    const persisted = metadataWithLaunchCorrespondence();
+
+    await expect(requestInactiveSessionResume({
+      credentials,
+      sessionId: 'session-1',
+      localId: 'local-1',
+      rawSession: rawSession(),
+      metadata: persisted.metadata,
+    })).resolves.toEqual({ ok: true });
+
+    expect(callMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        sessionCreationTag: persisted.correspondence.sessionCreationTag,
+        sessionCreationCorrespondence: persisted.correspondence,
+        profileId: 'profile-shared',
+        secretReferenceOverlay: persisted.correspondence.recipe.secretReferenceOverlay,
+      }),
+    }));
   });
 
   it('refuses an externally linked inactive session before spawn so takeover owns hosted admission', async () => {

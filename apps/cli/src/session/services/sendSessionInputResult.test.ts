@@ -31,6 +31,36 @@ describe('waitForSessionInputResult', () => {
     };
   }
 
+  function rawTurnUsage(params: Readonly<{
+    input: number;
+    output: number;
+    reportedUsd: number;
+    scope?: 'turn_delta' | 'session_cumulative';
+  }>) {
+    return {
+      role: 'agent',
+      content: {
+        type: 'acp',
+        agentId: 'codex',
+        data: {
+          type: 'token_count',
+          scope: params.scope ?? 'turn_delta',
+          source: 'provider_result',
+          tokens: {
+            input: params.input,
+            output: params.output,
+          },
+          cost: {
+            reportedUsd: params.reportedUsd,
+            estimatedUsd: 0,
+            currency: 'USD',
+            costSource: 'provider_reported',
+          },
+        },
+      },
+    };
+  }
+
   function rawClaudeOutput(params: Readonly<{
     content: readonly unknown[];
     stopReason?: string;
@@ -116,14 +146,83 @@ describe('waitForSessionInputResult', () => {
         localId: inputRow.localId,
         timeoutMs,
       });
+    const waitWithObservation = (
+      observation:
+        | Readonly<{ kind: 'no_deadline' }>
+        | Readonly<{ kind: 'absolute_deadline'; deadlineMs: number }>,
+      signal?: AbortSignal,
+    ) => waitForSessionInputResult({
+      credentials: {
+        token: 'token',
+        encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+      },
+      idOrPrefix: 'sess-1',
+      localId: inputRow.localId,
+      observation,
+      ...(signal ? { signal } : {}),
+    });
 
     return {
       wait,
+      waitWithObservation,
       enqueuePendingQueueV2MessageViaHttp,
       fetchEncryptedTranscriptPageAfterSeq,
       waitForTranscriptEncryptedMessageByLocalId,
     };
   }
+
+  it('observes without an authored deadline instead of normalizing omission to one millisecond', async () => {
+    const { waitWithObservation, waitForTranscriptEncryptedMessageByLocalId } = await arrange({
+      rowsAfterInput: () => [rawAssistantText('completed without a workflow deadline'), rawLifecycle('task_complete')],
+    });
+
+    await expect(waitWithObservation({ kind: 'no_deadline' })).resolves.toEqual({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'automation:run:run-1',
+      result: { kind: 'final_text', text: 'completed without a workflow deadline' },
+    });
+    expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
+      maxWaitMs: 250,
+    }));
+  });
+
+  it('stops no-deadline observation through the incumbent cancellation signal', async () => {
+    const cancellation = new AbortController();
+    cancellation.abort();
+    const { waitWithObservation, waitForTranscriptEncryptedMessageByLocalId } = await arrange({
+      rowsAfterInput: () => [],
+    });
+
+    await expect(waitWithObservation({ kind: 'no_deadline' }, cancellation.signal)).resolves.toEqual({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'automation:run:run-1',
+      result: { kind: 'pending' },
+    });
+    expect(waitForTranscriptEncryptedMessageByLocalId).not.toHaveBeenCalled();
+  });
+
+  it('uses the authored absolute deadline without restarting it at observation time', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    try {
+      const { waitWithObservation, waitForTranscriptEncryptedMessageByLocalId } = await arrange({
+        rowsAfterInput: () => [rawAssistantText('completed under the original deadline'), rawLifecycle('task_complete')],
+      });
+
+      await expect(waitWithObservation({ kind: 'absolute_deadline', deadlineMs: 10_125 })).resolves.toEqual(
+        expect.objectContaining({
+          ok: true,
+          result: { kind: 'final_text', text: 'completed under the original deadline' },
+        }),
+      );
+      expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
+        maxWaitMs: 125,
+      }));
+    } finally {
+      now.mockRestore();
+    }
+  });
 
   it('returns the exact input turn’s final assistant text under the caller-provided UTF-8 ceiling', async () => {
     const { wait } = await arrange({
@@ -141,6 +240,29 @@ describe('waitForSessionInputResult', () => {
       sessionId: 'sess-1',
       localId: 'automation:run:run-1',
       result: { kind: 'final_text', text: 'exact final answer' },
+    });
+  });
+
+  it('returns owner-reported turn usage with the exact completed input', async () => {
+    const { wait } = await arrange({
+      rowsAfterInput: () => [
+        rawTurnUsage({ input: 9_000, output: 4_000, reportedUsd: 8, scope: 'session_cumulative' }),
+        rawTurnUsage({ input: 120, output: 30, reportedUsd: 0.04 }),
+        rawTurnUsage({ input: 5, output: 7, reportedUsd: 0.01 }),
+        rawAssistantText('usage-bearing answer'),
+        rawLifecycle('task_complete'),
+      ],
+    });
+
+    await expect(wait()).resolves.toEqual({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'automation:run:run-1',
+      result: {
+        kind: 'final_text',
+        text: 'usage-bearing answer',
+        usage: { inputTokens: 125, outputTokens: 37, costUsd: 0.05 },
+      },
     });
   });
 
@@ -252,6 +374,28 @@ describe('waitForSessionInputResult', () => {
       sessionId: 'sess-1',
       localId: 'automation:run:run-1',
       result,
+    });
+  });
+
+  it.each([
+    ['fails', rawLifecycle('turn_failed'), { kind: 'failed', message: 'Current turn failed' }],
+    ['is cancelled', rawLifecycle('turn_cancelled'), { kind: 'cancelled', message: 'Current turn cancelled' }],
+  ] as const)('preserves usage incurred before the exact input %s', async (_label, terminal, expected) => {
+    const { wait } = await arrange({
+      rowsAfterInput: () => [
+        rawTurnUsage({ input: 8, output: 3, reportedUsd: 0.02 }),
+        terminal,
+      ],
+    });
+
+    await expect(wait()).resolves.toEqual({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'automation:run:run-1',
+      result: {
+        ...expected,
+        usage: { inputTokens: 8, outputTokens: 3, costUsd: 0.02 },
+      },
     });
   });
 

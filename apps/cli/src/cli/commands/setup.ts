@@ -1,3 +1,5 @@
+import { hostname } from 'node:os';
+
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 
 import type { CommandContext } from '@/cli/commandRegistry';
@@ -8,6 +10,8 @@ import {
     errorFrame,
     neutral,
     ok,
+    createSetupChoicePrompt,
+    renderSetupWelcome,
     renderHelpPage,
     warn,
     type HelpPageOptions,
@@ -35,7 +39,8 @@ import {
     syncInstalledFirstPartyShims,
     writeDefaultManagedReleaseChannel,
 } from '@happier-dev/cli-common/firstPartyRuntime';
-import { AGENT_IDS, getAgentCliSetupRecommendedIds } from '@happier-dev/agents';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
+import { AGENTS_CORE, getAgentCliSetupRecommendedIds } from '@happier-dev/agents';
 import { resolvePublicReleaseRingIdForLabel } from '@happier-dev/release-runtime/releaseRings';
 import {
     buildSetupPlan,
@@ -44,8 +49,9 @@ import {
 
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import {
-    applyBackgroundServiceSetupGuidance,
     readBackgroundServiceSetupGuidance,
+    resolveBackgroundServiceSetupGuidance,
+    resolveBackgroundServiceSetupReconciliationDisposition,
     type BackgroundServiceSetupGuidance,
     formatBackgroundServiceReleaseChannelSwitchPrompt,
     formatBackgroundServiceManualRelayTakeoverPrompt,
@@ -59,11 +65,11 @@ function buildSetupHelpPage(): HelpPageOptions {
         : 'happier setup --home-url https://home.example.test --provider <id>';
     return {
         title: 'setup',
-        subtitle: 'Connect this computer to an existing Home',
+        subtitle: 'Choose or create a Home for this computer',
         usage: [
             {
                 label: cmd('happier setup [--home <saved>] [--home-url <https-url>] [--home-descriptor-file <path|->] [--provider <id> ...] [--skip-daemon] [--skip-providers] [--yes|--non-interactive]'),
-                description: 'Connects this computer to an existing Home.',
+                description: 'Finds linked Homes, connects to an existing Home, or creates a Personal Home here.',
             },
             {
                 label: cmd('happier setup plan [--home <saved>|--home-url <url>|--home-descriptor-file <path|->] [--json]'),
@@ -83,8 +89,9 @@ function buildSetupHelpPage(): HelpPageOptions {
         ],
         notes: [
             'Connects this computer to a Home (Home selection → auth → background service → agents).',
-            'With no usable active Home, uses the selected sign-in service (Happier Cloud by default) to find your linked Homes and opens the preferred Home.',
-            'Pass --home, --home-url, or --home-descriptor-file to connect directly to a specific Home instead.',
+            'With no usable active Home, choose whether to find linked Homes through your sign-in service, connect directly, or create a Personal Home here.',
+            'Finding linked Homes is recommended and uses the independently selected sign-in service (Happier Cloud by default).',
+            'Pass --home, --home-url, or --home-descriptor-file to connect directly and skip that choice.',
             'A strict descriptor can reach an Iroh-only Home without a public HTTPS address.',
             '--yes adopts an explicitly named Home, then exits incomplete before interactive continuation. --non-interactive changes nothing.',
         ],
@@ -123,17 +130,92 @@ function takeRepeatedFlagValues(args: readonly string[], flag: string): Readonly
     return { values, rest };
 }
 
+function parseSetupExecutionOptions(args: readonly string[]): Readonly<{
+    skipDaemon: boolean;
+    skipProviders: boolean;
+    providers: readonly string[];
+    yes: boolean;
+}> {
+    const { present: skipDaemon, rest: withoutSkipDaemon } = takeFlag(args, '--skip-daemon');
+    const { present: skipProviders, rest: withoutSkipProviders } = takeFlag(withoutSkipDaemon, '--skip-providers');
+    const { values: providers, rest: remaining } = takeRepeatedFlagValues(withoutSkipProviders, '--provider');
+    const { present: yes, rest: withoutYes } = takeFlag(remaining, '--yes');
+    const { rest: withoutJson } = takeFlag(withoutYes, '--json');
+    const { rest: withoutNonInteractive } = takeFlag(withoutJson, '--non-interactive');
+    if (withoutNonInteractive.length > 0) {
+        throw new Error(`Unknown setup arguments: ${withoutNonInteractive.join(' ')}`);
+    }
+    return { skipDaemon, skipProviders, providers, yes };
+}
+
 function normalizeRelayUrl(raw: string): string {
     return raw.trim().replace(/\/+$/u, '');
 }
 
+function createSetupSubmenuPrompt(options: Readonly<{
+    question: string;
+    description?: string;
+    choices: Parameters<typeof createSetupChoicePrompt>[0]['choices'];
+}>) {
+    return createSetupChoicePrompt({
+        machineName: '',
+        subtitle: '',
+        showWelcome: false,
+        ...options,
+    });
+}
+
+async function promptForExistingHomeTargetArgs(
+    promptInputFn: typeof promptInput,
+): Promise<readonly string[] | null> {
+    const connectionPrompt = createSetupSubmenuPrompt({
+        question: 'How will you connect to the Home?',
+        choices: [
+            { id: 'saved', key: 's', label: 'Saved Home', isDefault: true },
+            { id: 'https', key: 'h', label: 'HTTPS address' },
+            { id: 'descriptor', key: 'd', label: 'Home descriptor file', description: 'including Iroh-only Homes' },
+            { id: 'exit', key: 'x', label: 'Exit' },
+        ],
+    });
+    const connection = await promptMultipleChoice(
+        connectionPrompt.message,
+        [
+            { id: 'saved', keys: ['s', 'saved', ''], short: 's' },
+            { id: 'https', keys: ['h', 'https'], short: 'h' },
+            { id: 'descriptor', keys: ['d', 'descriptor'], short: 'd' },
+            { id: 'exit', keys: ['x', 'exit'], short: 'x' },
+        ] as const,
+        {
+            defaultId: 'saved',
+            maxAttempts: 3,
+            promptInputFn,
+            ...(connectionPrompt.renderMessage
+                ? { animate: connectionPrompt.animate === true, renderMessage: connectionPrompt.renderMessage }
+                : {}),
+        },
+    );
+    if (connection === 'exit') return null;
+
+    const prompt = connection === 'saved'
+        ? 'Saved Home name: '
+        : connection === 'https'
+            ? 'Home HTTPS address: '
+            : 'Home descriptor file: ';
+    const value = (await promptInputFn(prompt)).trim();
+    if (!value) return null;
+    if (connection === 'saved') return ['--home', value];
+    if (connection === 'https') return ['--home-url', value];
+    return ['--home-descriptor-file', value];
+}
+
 async function runHappyCliStep(
     args: readonly string[],
-    opts?: Readonly<{ env?: NodeJS.ProcessEnv }>,
+    opts?: Readonly<{ env?: NodeJS.ProcessEnv; signal?: AbortSignal }>,
 ): Promise<number> {
     const child = spawnHappyCLI([...args], {
         stdio: 'inherit',
         env: opts?.env,
+        signal: opts?.signal,
         shell: false,
     });
     return await new Promise<number>((resolve) => {
@@ -142,8 +224,11 @@ async function runHappyCliStep(
     });
 }
 
-async function runHappyCliStepQuiet(args: readonly string[]): Promise<number> {
-    const child = spawnHappyCLI([...args], { stdio: 'ignore', shell: false });
+async function runHappyCliStepQuiet(
+    args: readonly string[],
+    opts?: Readonly<{ env?: NodeJS.ProcessEnv; signal?: AbortSignal }>,
+): Promise<number> {
+    const child = spawnHappyCLI([...args], { stdio: 'ignore', env: opts?.env, signal: opts?.signal, shell: false });
     return await new Promise<number>((resolve) => {
         child.once('exit', (code) => resolve(typeof code === 'number' ? code : 1));
         child.once('error', () => resolve(1));
@@ -151,24 +236,25 @@ async function runHappyCliStepQuiet(args: readonly string[]): Promise<number> {
 }
 
 /**
- * The bundled agent CLIs that actually resolve on this computer.
- *
- * `AGENT_IDS` is the bundled agent list and, by construction, excludes the
- * `customAcp` compatibility family — that is a way of pointing Happier at an ACP
- * binary, not an installable CLI, so it could never answer "is an agent here".
+ * Agent CLIs from the resolved contribution catalog that actually resolve on
+ * this computer. This is loaded at the finish line so setup does not create a
+ * bundled-only second catalog or eagerly load the plugin/runtime graph.
  */
 async function listInstalledAgentIds(): Promise<readonly string[]> {
-    // Loaded on demand. Agent CLI resolution drags in the whole install/runtime
-    // graph, and every setup path except this one final check gets there without it.
-    const { resolveAgentCliCommand } = await import('@/packagedRuntime/managedTools/agentCliResolution');
-    return AGENT_IDS.filter((agentId) => {
+    const [{ resolveMergedContributionRegistry }, { resolveAgentCliCommandForRuntime }] = await Promise.all([
+        import('@/plugins/projection/registry/createResolvedContributionRegistry'),
+        import('@happier-dev/cli-common/agents'),
+    ]);
+    const registry = await resolveMergedContributionRegistry({ happyHomeDir: configuration.happyHomeDir });
+    return registry.agents.filter((agent) => {
+        if (!agent.runtimeSpec) return false;
         try {
-            return resolveAgentCliCommand(agentId, { processEnv: process.env }) !== null;
+            return resolveAgentCliCommandForRuntime(agent.runtimeSpec, { processEnv: process.env }) !== null;
         } catch {
             // A resolver failure means "not usable here", which is what we asked.
             return false;
         }
-    });
+    }).map((agent) => agent.id);
 }
 
 /**
@@ -191,10 +277,13 @@ function printNoCodingAgentWarning(): void {
     }
     out.blank();
     out.line(`  See them all with ${cmd('happier agents list')}, or choose interactively with ${cmd('happier agents setup')}.`);
+    out.blank();
+    out.line('This computer is connected, but you still need a coding agent before starting a session.');
+    out.line('  App: Settings → Agents → CLI & Authentication');
     console.log(out.render());
 }
 
-async function warnWhenNoCodingAgentIsInstalled(
+async function printSetupAgentReadiness(
     listInstalledAgentIdsFn: () => Promise<readonly string[]>,
 ): Promise<void> {
     let installedAgentIds: readonly string[];
@@ -208,8 +297,22 @@ async function warnWhenNoCodingAgentIsInstalled(
         console.log(out.render());
         return;
     }
-    if (installedAgentIds.length > 0) return;
-    printNoCodingAgentWarning();
+    if (installedAgentIds.length === 0) {
+        printNoCodingAgentWarning();
+        return;
+    }
+    const agentId = installedAgentIds[0]!;
+    const cliSubcommand = (AGENTS_CORE as Readonly<Record<string, Readonly<{ cliSubcommand?: string }>>>)[agentId]?.cliSubcommand
+        ?? agentId;
+    const out = createOutputBuilder();
+    out.blank();
+    out.line(ok('Computer connected. Coding agent installed.'));
+    out.line('Start your first session:');
+    out.line(`  App: New session → this computer → choose a project`);
+    out.line(`  CLI: ${cmd(`happier ${cliSubcommand}`)}`);
+    out.line('Agent installation and sign-in are separate. Manage both in the app:');
+    out.line('  Settings → Agents → CLI & Authentication');
+    console.log(out.render());
 }
 
 type SetupCommandDeps = Readonly<{
@@ -238,6 +341,181 @@ type SetupCommandDeps = Readonly<{
     /** Trusted composition after Home creation has atomically committed authenticated credentials. */
     invocation?: 'authenticated-home-create-continuation';
 }>;
+
+type SetupContinuationOutcome =
+    | Readonly<{ kind: 'continued' }>
+    | Readonly<{ kind: 'cancelled' }>
+    | Readonly<{ kind: 'failed'; exitCode: number }>;
+
+async function continueSetupForSelectedHome(input: Readonly<{
+    serverUrl: string;
+    relaySelectionChanged: boolean;
+    includeAuth: boolean;
+    forceWebAuthentication: boolean;
+    recoverAccountMaterial: boolean;
+    execution: ReturnType<typeof parseSetupExecutionOptions>;
+    quiet: boolean;
+    authenticatedHomeCreateContinuation: boolean;
+    isInteractiveTerminalFn: typeof isInteractiveTerminal;
+    promptInputFn: typeof promptInput;
+    runHappyCliStepFn: typeof runHappyCliStep;
+    readBackgroundServiceSetupGuidanceFn: typeof readBackgroundServiceSetupGuidance;
+    writeDefaultManagedReleaseChannelFn: typeof writeDefaultManagedReleaseChannel;
+    syncInstalledFirstPartyShimsFn: typeof syncInstalledFirstPartyShims;
+    listInstalledAgentIdsFn: () => Promise<readonly string[]>;
+    initialInstalledAgentIds?: readonly string[];
+    onAuthCompleted?: () => Promise<void>;
+    signal?: AbortSignal;
+}>): Promise<SetupContinuationOutcome> {
+    const initialInstalledAgentIds = input.initialInstalledAgentIds
+        ?? await input.listInstalledAgentIdsFn().catch(() => []);
+    const plan = buildSetupPlan({
+        serverUrl: input.serverUrl,
+        includeAuth: input.includeAuth,
+        forceWebAuthentication: input.forceWebAuthentication,
+        includeDaemon: !input.execution.skipDaemon,
+        skipProviders: input.execution.skipProviders,
+        installedAgentIds: initialInstalledAgentIds,
+        providers: input.execution.providers,
+        assumeYes: input.execution.yes,
+        recoverAccountMaterial: input.recoverAccountMaterial,
+    });
+
+    let daemonSteps: readonly Readonly<{ argv: readonly string[]; display: string }>[] = [];
+    let applyAcceptedBackgroundServiceGuidance = async (): Promise<void> => undefined;
+    if (!input.execution.skipDaemon) {
+        const guidance = await input.readBackgroundServiceSetupGuidanceFn({
+            targetReleaseChannel: configuration.publicReleaseRing,
+            targetServerUrl: input.serverUrl,
+        });
+
+        if (
+            (
+                guidance.shouldOfferDefaultReleaseChannelSwitch
+                || guidance.shouldPromptForManualRelayTakeover
+                || guidance.shouldPromptForServiceReplacement
+            )
+            && !input.isInteractiveTerminalFn()
+        ) {
+            throw new Error('Background service setup requires interactive guidance. Re-run in an interactive terminal or pass --skip-daemon.');
+        }
+
+        const guidanceDecision = await resolveBackgroundServiceSetupGuidance({
+            guidance,
+            promptSwitchDefaultReleaseChannel: async () => await promptForSetupReleaseChannelSwitch({
+                promptInputFn: input.promptInputFn,
+                guidance,
+            }),
+            promptTakeOverManualRelayRuntime: async () => await promptForSetupManualRelayTakeover({
+                promptInputFn: input.promptInputFn,
+                guidance,
+            }),
+            promptReplaceExistingServices: async () => await promptForSetupServiceReplacement({
+                promptInputFn: input.promptInputFn,
+                guidance,
+            }),
+        });
+
+        if (guidanceDecision.cancelled) {
+            if (input.authenticatedHomeCreateContinuation) {
+                throw Object.assign(new Error('Created Home service reconciliation was cancelled.'), {
+                    code: 'home_create_reconciliation_failed',
+                });
+            }
+            const out = createOutputBuilder();
+            out.line('Aborted.');
+            console.log(out.render());
+            process.exitCode = 1;
+            return { kind: 'cancelled' };
+        }
+
+        applyAcceptedBackgroundServiceGuidance = async () => {
+            if (guidanceDecision.shouldSwitchDefaultReleaseChannel) {
+                const targetReleaseChannelId: PublicReleaseRingId = resolvePublicReleaseRingIdForLabel(guidance.targetReleaseChannel);
+                await input.writeDefaultManagedReleaseChannelFn({
+                    processEnv: process.env,
+                    releaseChannel: targetReleaseChannelId,
+                });
+                await input.syncInstalledFirstPartyShimsFn({
+                    componentId: 'happier-cli',
+                    channel: targetReleaseChannelId,
+                    processEnv: process.env,
+                });
+            }
+        };
+
+        daemonSteps = resolveBackgroundServiceSetupReconciliationDisposition({
+            guidance,
+            targetChanged: input.relaySelectionChanged,
+            tookOverManualRelayRuntime: guidanceDecision.shouldTakeOverManualRelayRuntime,
+            replacedExistingServices: guidanceDecision.shouldReplaceExistingServices,
+        }).map((action) => {
+            if (action.kind === 'remove-existing') {
+                return { argv: ['service', 'uninstall', '--all', '--yes'], display: 'happier service uninstall --all --yes' };
+            }
+            if (action.kind === 'restart') {
+                return { argv: ['service', 'restart'], display: 'happier service restart' };
+            }
+            const takeoverArg = action.takeover ? ['--takeover'] : [];
+            return {
+                argv: ['service', action.kind, ...takeoverArg],
+                display: `happier service ${action.kind}${action.takeover ? ' --takeover' : ''}`,
+            };
+        });
+    }
+
+    const runSetupStep = async (step: Readonly<{
+        id?: string;
+        argv: readonly string[];
+        display: string;
+    }>): Promise<SetupContinuationOutcome | null> => {
+        const display = step.display;
+        const exitCode = await input.runHappyCliStepFn(
+            step.argv,
+            input.signal ? { signal: input.signal } : undefined,
+        );
+        if (exitCode !== 0) {
+            if (input.quiet || input.authenticatedHomeCreateContinuation) {
+                throw Object.assign(new Error(`Setup step failed (exit ${exitCode}): ${display}`), {
+                    code: 'home_create_reconciliation_failed',
+                });
+            }
+            console.error(errorFrame('Error:', [`Setup step failed (exit ${exitCode}): ${display}`]));
+            process.exitCode = exitCode;
+            return { kind: 'failed', exitCode };
+        }
+        if (step.id === 'auth_login') {
+            await input.onAuthCompleted?.();
+        }
+        return null;
+    };
+
+    for (const step of plan.steps) {
+        if (step.id === 'daemon_install') {
+            await applyAcceptedBackgroundServiceGuidance();
+            for (const daemonStep of daemonSteps) {
+                const outcome = await runSetupStep(daemonStep);
+                if (outcome) return outcome;
+            }
+            continue;
+        }
+        if (step.id === 'daemon_start') continue;
+        const outcome = await runSetupStep(step);
+        if (outcome) return outcome;
+    }
+
+    const out = createOutputBuilder();
+    out.line(ok('Setup complete.'));
+    if (!input.quiet) console.log(out.render());
+    if (!input.quiet) {
+        await printSetupAgentReadiness(
+            plan.steps.some((step) => step.id === 'agents_setup')
+                ? input.listInstalledAgentIdsFn
+                : async () => initialInstalledAgentIds,
+        );
+    }
+    return { kind: 'continued' };
+}
 
 function ensurePersistWhenServerUrlIsProvided(args: readonly string[]): string[] {
     const hasServerUrl = args.some((a) => a === '--server-url' || String(a).startsWith('--server-url='));
@@ -276,7 +554,12 @@ function ensurePersistWhenServerUrlIsProvided(args: readonly string[]): string[]
     return [...copied, '--persist'];
 }
 
-export async function handleSetupCommand(args: string[], deps: SetupCommandDeps = {}): Promise<void> {
+export async function handleSetupCommand(
+    args: string[],
+    deps: SetupCommandDeps = {},
+    signal?: AbortSignal,
+): Promise<void> {
+    signal?.throwIfAborted();
     const readCredentialsFn = deps.readCredentialsFn ?? readStoredCredentials;
     const readSettingsFn = deps.readSettingsFn ?? readSettings;
     const isInteractiveTerminalFn = deps.isInteractiveTerminalFn ?? isInteractiveTerminal;
@@ -336,26 +619,28 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         return;
     }
 
-    const parsedHomeTargetArgs = await parseHomeTargetArgsFn(
+    if (!planMode && !assumeYesFlag && !isInteractiveTerminalFn()) {
+        const out = createOutputBuilder();
+        out.line(neutral('Setup needs an interactive terminal and changed nothing. Re-run `happier setup`, or name a Home and pass `--yes` for deterministic target setup only.'));
+        console.log(out.render());
+        process.exitCode = 1;
+        return;
+    }
+
+    let parsedHomeTargetArgs = await parseHomeTargetArgsFn(
         argsForRun,
         deps.readHomeDescriptorTextFn
             ? { readDescriptorText: async (source) => await deps.readHomeDescriptorTextFn!(source) }
             : undefined,
     );
-    const explicitHomeTarget = parsedHomeTargetArgs.target;
-    const explicitRelayUrl = explicitHomeTarget?.kind === 'https_url' ? explicitHomeTarget.url : null;
-    const explicitDescriptor = explicitHomeTarget?.kind === 'descriptor' ? explicitHomeTarget.descriptor : null;
     const currentRelayUrl = normalizeRelayUrl(configuration.serverUrl);
-    const explicitRelayUrlMatchesCurrent = explicitRelayUrl != null && normalizeRelayUrl(explicitRelayUrl) === currentRelayUrl;
-    const hasRelaySelectionOverrides = explicitHomeTarget?.kind === 'saved_profile'
-        || (explicitHomeTarget?.kind === 'https_url'
-            && (explicitHomeTarget.localUrl !== undefined || explicitHomeTarget.webappUrl !== undefined));
 
     // Settled before anything else mutates state, because credentials are stored
     // per relay profile: signing in first and pointing at a self-hosted relay
     // afterwards leaves two accounts rather than a moved one.
-    const relayNamedOnCommandLine = explicitHomeTarget !== null;
+    const relayNamedOnCommandLine = parsedHomeTargetArgs.target !== null;
     let useDefaultAccountService = false;
+    let createPersonalHome = false;
 
     // `--yes` authorizes deterministic work, but it cannot choose the relay: a
     // wrong guess creates an account on the wrong server and cannot be migrated
@@ -377,6 +662,7 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         ? await resolveActiveServerAuthReadiness({
             readCredentialsFn,
             readSettingsFn,
+            ...(signal ? { signal } : {}),
         })
         : null;
     let initialDecision = readiness
@@ -386,13 +672,13 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
             hasExplicitTarget: false,
         })
         : null;
-
-    if (!planMode && !assumeYesFlag && !isInteractiveTerminalFn()) {
-        const out = createOutputBuilder();
-        out.line(neutral('Setup needs an interactive terminal and changed nothing. Re-run `happier setup`, or name a Home and pass `--yes` for deterministic target setup only.'));
-        console.log(out.render());
-        process.exitCode = 1;
-        return;
+    let setupWelcomeRendered = false;
+    if (!planMode && !assumeYesFlag && !quiet && !json && initialDecision?.kind !== 'select-home') {
+        console.log(renderSetupWelcome({
+            machineName: hostname(),
+            subtitle: 'Choose or create a Home. Your coding agents run here.',
+        }));
+        setupWelcomeRendered = true;
     }
 
     if (!planMode && initialDecision?.kind === 'home-unavailable') {
@@ -400,17 +686,36 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         out.line(warn(`Home at ${currentRelayUrl} did not answer.`));
         out.line(neutral('Stored sign-in was kept.'));
         console.log(out.render());
+        const unavailablePrompt = createSetupSubmenuPrompt({
+            question: 'What would you like to do?',
+            choices: [
+                { id: 'retry', key: 'r', label: 'Retry' },
+                { id: 'choose', key: 'c', label: 'Choose another Home' },
+                { id: 'exit', key: 'x', label: 'Exit and try later', isDefault: true },
+            ],
+        });
         const choice = await promptMultipleChoice(
-            ['Retry', 'Choose another Home', 'Exit and try later'].join('\n'),
+            unavailablePrompt.message,
             [
                 { id: 'retry', keys: ['r', 'retry'], short: 'r' },
                 { id: 'choose', keys: ['c', 'choose'], short: 'c' },
                 { id: 'exit', keys: ['x', 'exit'], short: 'x' },
             ] as const,
-            { defaultId: 'exit', maxAttempts: 3, promptInputFn },
+            {
+                defaultId: 'exit',
+                maxAttempts: 3,
+                promptInputFn,
+                ...(unavailablePrompt.renderMessage
+                    ? { animate: unavailablePrompt.animate === true, renderMessage: unavailablePrompt.renderMessage }
+                    : {}),
+            },
         );
         if (choice === 'retry') {
-            readiness = await resolveActiveServerAuthReadiness({ readCredentialsFn, readSettingsFn });
+            readiness = await resolveActiveServerAuthReadiness({
+                readCredentialsFn,
+                readSettingsFn,
+                ...(signal ? { signal } : {}),
+            });
             initialDecision = decideSetupReadiness({
                 credentialState: readiness.credentialState,
                 machineRegistrationState: readiness.machineRegistrationState,
@@ -434,17 +739,76 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
 
     if (!planMode && !relayNamedOnCommandLine && !assumeYesFlag) {
         if (initialDecision?.kind === 'select-home') {
-            useDefaultAccountService = true;
+            const firstChoice = {
+                question: 'How would you like to set up this computer?',
+                description: 'A Home keeps your Happier account, sessions, and settings together.',
+                choices: [
+                    { id: 'find', key: 'f', label: 'Find my linked Homes (recommended)', description: 'Sign in through your sign-in service', isDefault: true },
+                    { id: 'existing', key: 'e', label: 'Connect to an existing Home' },
+                    { id: 'create', key: 'c', label: 'Create a Personal Home on this computer' },
+                    { id: 'exit', key: 'x', label: 'Exit' },
+                ],
+            } as const;
+            const setupChoicePrompt = setupWelcomeRendered
+                ? createSetupSubmenuPrompt(firstChoice)
+                : createSetupChoicePrompt({
+                    machineName: hostname(),
+                    subtitle: 'Choose or create a Home. Your coding agents run here.',
+                    ...firstChoice,
+                });
+            const choice = await promptMultipleChoice(
+                setupChoicePrompt.message,
+                [
+                    { id: 'find', keys: ['f', 'find', ''], short: 'f' },
+                    { id: 'existing', keys: ['e', 'existing'], short: 'e' },
+                    { id: 'create', keys: ['c', 'create'], short: 'c' },
+                    { id: 'exit', keys: ['x', 'exit'], short: 'x' },
+                ] as const,
+                {
+                    defaultId: 'find',
+                    maxAttempts: 3,
+                    promptInputFn,
+                    ...('renderMessage' in setupChoicePrompt && setupChoicePrompt.renderMessage
+                        ? { animate: setupChoicePrompt.animate === true, renderMessage: setupChoicePrompt.renderMessage }
+                        : {}),
+                },
+            );
+            if (choice === 'exit') {
+                process.exitCode = 1;
+                return;
+            }
+            if (choice === 'find') {
+                useDefaultAccountService = true;
+            } else if (choice === 'create') {
+                createPersonalHome = true;
+            } else {
+                const targetArgs = await promptForExistingHomeTargetArgs(promptInputFn);
+                if (!targetArgs) {
+                    process.exitCode = 1;
+                    return;
+                }
+                parsedHomeTargetArgs = await parseHomeTargetArgsFn(
+                    [...targetArgs, ...parsedHomeTargetArgs.rest],
+                    deps.readHomeDescriptorTextFn
+                        ? { readDescriptorText: async (source) => await deps.readHomeDescriptorTextFn!(source) }
+                        : undefined,
+                );
+            }
         }
     }
 
     // Confirmation is deliberately before relay installation or profile writes.
     // Choosing an answer previews intent; it is not itself consent to mutate.
-    if (!planMode && !assumeYesFlag) {
+    if (!planMode && !assumeYesFlag && !createPersonalHome) {
         if (!isInteractiveTerminalFn()) {
             throw new Error('Non-interactive mode: pass --yes with an explicit Home to run deterministic target setup only.');
         }
-        const confirm = (await promptInputFn('Run setup now? [Y/n] ')).trim().toLowerCase();
+        const confirmationPrompt = useDefaultAccountService
+            ? 'Sign in through your sign-in service (which may link or create its Account), find linked Homes, and continue now? [Y/n] '
+            : parsedHomeTargetArgs.target
+                ? 'Connect this computer to the selected Home now? [Y/n] '
+                : 'Finish setting up this computer now? [Y/n] ';
+        const confirm = (await promptInputFn(confirmationPrompt)).trim().toLowerCase();
         if (confirm.startsWith('n')) {
             const out = createOutputBuilder();
             out.line('Aborted.');
@@ -453,6 +817,256 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
             return;
         }
     }
+
+    if (createPersonalHome) {
+        const exitCode = await runHappyCliStepFn(['home', 'create'], signal ? { signal } : undefined);
+        if (exitCode !== 0) process.exitCode = exitCode;
+        return;
+    }
+
+    let accountServiceContinuationCompleted = false;
+    let accountServiceHomeAuthRecoveryRequired = false;
+    const targetedAccountServiceContext = !useDefaultAccountService
+        && (parsedHomeTargetArgs.target?.kind === 'descriptor'
+            || parsedHomeTargetArgs.target?.kind === 'https_url')
+        ? { kind: 'explicit' as const, target: parsedHomeTargetArgs.target }
+        : !useDefaultAccountService && parsedHomeTargetArgs.target?.kind === 'saved_profile'
+          ? { kind: 'selected' as const, target: parsedHomeTargetArgs.target }
+          : null;
+    if (!planMode && !assumeYesFlag && (useDefaultAccountService || targetedAccountServiceContext)) {
+        const accountServiceExecution = parseSetupExecutionOptions(
+            parsedHomeTargetArgs.rest.filter((argument) => argument !== '--persist' && argument !== '--no-persist'),
+        );
+        let result = await runAccountServiceHomeEntryFn({
+            context: targetedAccountServiceContext ?? { kind: 'none' },
+            builtInNoTargetDefault: { endpoint: DEFAULT_HAPPIER_CLOUD_SERVER_URL },
+            ...(targetedAccountServiceContext
+                ? {}
+                : { intent: { kind: 'enter' as const, target: { kind: 'automatic' as const } } }),
+            promptInputFn,
+            ...(signal ? { signal } : {}),
+            continueMachineAndService: async () => {
+                // `runCliAccountServiceHomeEntry` deliberately crosses a
+                // non-cancellable boundary after it focuses the enrolled Home.
+                // Reload that canonical selection, then reuse the one setup
+                // continuation owner without threading the pre-focus signal.
+                reloadConfiguration();
+                const selectedServerUrl = normalizeRelayUrl(configuration.serverUrl);
+                const continuation = await continueSetupForSelectedHome({
+                    serverUrl: selectedServerUrl,
+                    relaySelectionChanged: selectedServerUrl !== currentRelayUrl,
+                    includeAuth: false,
+                    forceWebAuthentication: false,
+                    recoverAccountMaterial: false,
+                    execution: accountServiceExecution,
+                    quiet,
+                    authenticatedHomeCreateContinuation,
+                    isInteractiveTerminalFn,
+                    promptInputFn,
+                    runHappyCliStepFn,
+                    readBackgroundServiceSetupGuidanceFn,
+                    writeDefaultManagedReleaseChannelFn,
+                    syncInstalledFirstPartyShimsFn,
+                    listInstalledAgentIdsFn,
+                });
+                if (continuation.kind === 'continued') {
+                    accountServiceContinuationCompleted = true;
+                    return continuation;
+                }
+                return { kind: continuation.kind === 'cancelled' ? 'cancelled' : 'failed' };
+            },
+        });
+        if (result.kind === 'home_entered' && result.directoryAdoptionFailures?.length) {
+            const out = createOutputBuilder();
+            const failedHomes = result.directoryAdoptionFailures.map(({ label }) => label).join(', ');
+            out.line(warn(`Setup completed for the selected Home, but ${failedHomes} could not be added from the Account Service.`));
+            console.log(out.render());
+        }
+        if (result.kind === 'failure'
+            && result.stage === 'material'
+            && result.homeCredentialCommitted
+            && result.retry) {
+            const retryPrompt = createSetupSubmenuPrompt({
+                question: 'This Home is connected, but its encryption mode could not be checked.',
+                choices: [
+                    { id: 'retry', key: 'r', label: 'Retry the Home material check' },
+                    { id: 'exit', key: 'x', label: 'Exit', isDefault: true },
+                ],
+            });
+            const choice = await promptMultipleChoice(
+                retryPrompt.message,
+                [
+                    { id: 'retry', keys: ['r', 'retry'], short: 'r' },
+                    { id: 'exit', keys: ['x', 'exit'], short: 'x' },
+                ] as const,
+                {
+                    defaultId: 'exit',
+                    maxAttempts: 3,
+                    promptInputFn,
+                    ...(retryPrompt.renderMessage
+                        ? { animate: retryPrompt.animate === true, renderMessage: retryPrompt.renderMessage }
+                        : {}),
+                },
+            );
+            if (choice === 'retry') result = await result.retry();
+        }
+        // A Directory/Account Service failure before a Home credential is
+        // committed is recoverable setup state, not a terminal setup error.
+        // Keep the retry bounded to the disposition supplied by the shared
+        // owner, then retain the existing direct-Home chooser as the fallback.
+        if (result.kind === 'failure'
+            && !result.homeCredentialCommitted
+            && targetedAccountServiceContext === null) {
+            if (result.recovery === 'retry_stage' && result.retry) {
+                const recoveryPrompt = createSetupSubmenuPrompt({
+                    question: 'Sign-in service setup failed. Retry the failed step or choose a Home directly.',
+                    choices: [
+                        { id: 'retry', key: 'r', label: 'Retry the failed step' },
+                        { id: 'choose', key: 'h', label: 'Choose a Home directly' },
+                        { id: 'exit', key: 'x', label: 'Exit', isDefault: true },
+                    ],
+                });
+                const choice = await promptMultipleChoice(
+                    recoveryPrompt.message,
+                    [
+                        { id: 'retry', keys: ['r', 'retry'], short: 'r' },
+                        { id: 'choose', keys: ['h', 'choose'], short: 'h' },
+                        { id: 'exit', keys: ['x', 'exit'], short: 'x' },
+                    ] as const,
+                    {
+                        defaultId: 'exit',
+                        maxAttempts: 3,
+                        promptInputFn,
+                        ...(recoveryPrompt.renderMessage
+                            ? { animate: recoveryPrompt.animate === true, renderMessage: recoveryPrompt.renderMessage }
+                            : {}),
+                    },
+                );
+                if (choice === 'exit') {
+                    process.exitCode = 1;
+                    return;
+                }
+                if (choice === 'retry') {
+                    try {
+                        result = await result.retry();
+                    } catch {
+                        // Keep the original typed failure so the existing
+                        // direct-Home chooser remains available after an
+                        // unsuccessful retry attempt.
+                    }
+                }
+            }
+        }
+        if (result.kind === 'cancelled') {
+            if (process.exitCode === undefined || process.exitCode === 0) {
+                const out = createOutputBuilder();
+                out.line('Aborted.');
+                console.log(out.render());
+                process.exitCode = 1;
+            }
+            return;
+        }
+        const targetedServiceFallback = targetedAccountServiceContext !== null
+            && result.kind !== 'direct_home_selected'
+            && result.kind !== 'home_entered'
+            && result.kind !== 'home_material_required'
+            && !(result.kind === 'failure' && result.homeCredentialCommitted);
+        if (result.kind === 'direct_home_selected' || targetedServiceFallback) {
+            useDefaultAccountService = false;
+        } else if (result.kind === 'account_connected_no_homes'
+            || result.kind === 'account_service_unavailable'
+            || result.kind === 'home_unavailable'
+            || (result.kind === 'failure' && !result.homeCredentialCommitted)) {
+            const recoveryPrompt = createSetupSubmenuPrompt({
+                question: result.kind === 'account_connected_no_homes'
+                    ? 'No linked Homes were found.'
+                    : result.kind === 'failure'
+                        ? 'Sign-in service setup did not complete. You can still connect directly to a Home.'
+                        : 'Your sign-in service is unavailable. You can still connect directly to a Home.',
+                choices: [
+                    { id: 'create', key: 'c', label: 'Create a Personal Home on this computer' },
+                    { id: 'connect', key: 'h', label: 'Connect to an existing Home' },
+                    { id: 'exit', key: 'x', label: 'Exit', isDefault: true },
+                ],
+            });
+            const choice = await promptMultipleChoice(
+                recoveryPrompt.message,
+                [
+                    { id: 'create', keys: ['c', 'create'], short: 'c' },
+                    { id: 'connect', keys: ['h', 'connect'], short: 'h' },
+                    { id: 'exit', keys: ['x', 'exit'], short: 'x' },
+                ] as const,
+                {
+                    defaultId: 'exit',
+                    maxAttempts: 3,
+                    promptInputFn,
+                    ...(recoveryPrompt.renderMessage
+                        ? { animate: recoveryPrompt.animate === true, renderMessage: recoveryPrompt.renderMessage }
+                        : {}),
+                },
+            );
+            if (choice === 'create') {
+                const exitCode = await runHappyCliStepFn(['home', 'create'], signal ? { signal } : undefined);
+                if (exitCode !== 0) process.exitCode = exitCode;
+                return;
+            }
+            if (choice === 'connect') {
+                const targetArgs = await promptForExistingHomeTargetArgs(promptInputFn);
+                if (!targetArgs) {
+                    process.exitCode = 1;
+                    return;
+                }
+                parsedHomeTargetArgs = await parseHomeTargetArgsFn(
+                    [...targetArgs, ...parsedHomeTargetArgs.rest],
+                    deps.readHomeDescriptorTextFn
+                        ? { readDescriptorText: async (source) => await deps.readHomeDescriptorTextFn!(source) }
+                        : undefined,
+                );
+                useDefaultAccountService = false;
+            } else {
+                process.exitCode = 1;
+                return;
+            }
+        } else if (result.kind === 'home_material_required') {
+            parsedHomeTargetArgs = {
+                target: { kind: 'saved_profile', profileRef: result.profileId },
+                source: '--home',
+                rest: parsedHomeTargetArgs.rest,
+            };
+            useDefaultAccountService = false;
+            accountServiceHomeAuthRecoveryRequired = true;
+        } else if (result.kind !== 'home_entered') {
+            if (process.exitCode === undefined || process.exitCode === 0) {
+                const out = createOutputBuilder();
+                out.line(warn(result.kind === 'awaiting_approval'
+                    ? 'Home approval is still required.'
+                    : result.kind === 'explicit_target_not_linked'
+                        ? 'That Home is not linked to this account. Connect to that exact Home directly.'
+                        : result.kind === 'failure' && result.homeCredentialCommitted
+                          ? 'This Home is connected. Machine registration can be retried with `happier setup`.'
+                          : 'Setup could not enter a Home.'));
+                console.log(out.render());
+                process.exitCode = 1;
+            }
+            return;
+        } else {
+            if (accountServiceContinuationCompleted) return;
+            const out = createOutputBuilder();
+            out.line(warn('Setup entered the Home without completing machine and service setup. Run `happier setup` to retry.'));
+            console.log(out.render());
+            process.exitCode = 1;
+            return;
+        }
+    }
+
+    const explicitHomeTarget = parsedHomeTargetArgs.target;
+    const explicitRelayUrl = explicitHomeTarget?.kind === 'https_url' ? explicitHomeTarget.url : null;
+    const explicitDescriptor = explicitHomeTarget?.kind === 'descriptor' ? explicitHomeTarget.descriptor : null;
+    const explicitRelayUrlMatchesCurrent = explicitRelayUrl != null && normalizeRelayUrl(explicitRelayUrl) === currentRelayUrl;
+    const hasRelaySelectionOverrides = explicitHomeTarget?.kind === 'saved_profile'
+        || (explicitHomeTarget?.kind === 'https_url'
+            && (explicitHomeTarget.localUrl !== undefined || explicitHomeTarget.webappUrl !== undefined));
+    const hasSelectedHomeTarget = explicitHomeTarget !== null;
 
     let argsAfterServerSelection = parsedHomeTargetArgs.rest.filter(
         (argument) => argument !== '--persist' && argument !== '--no-persist',
@@ -516,15 +1130,13 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
     let relayUrl = normalizeRelayUrl(explicitRelayUrl ?? plannedRelayUrl ?? configuration.serverUrl);
     let relaySelectionChanged = relayUrl !== currentRelayUrl;
 
-    const { present: skipDaemon, rest: withoutSkipDaemon } = takeFlag(argsAfterServerSelection, '--skip-daemon');
-    const { present: skipProviders, rest: withoutSkipProviders } = takeFlag(withoutSkipDaemon, '--skip-providers');
-    const { values: providers, rest: remaining } = takeRepeatedFlagValues(withoutSkipProviders, '--provider');
-    const { present: yesFlag, rest: withoutYes } = takeFlag(remaining, '--yes');
-    const { rest: withoutJson } = takeFlag(withoutYes, '--json');
-    const { rest: withoutNonInteractive } = takeFlag(withoutJson, '--non-interactive');
-    if (withoutNonInteractive.length > 0) {
-        throw new Error(`Unknown setup arguments: ${withoutNonInteractive.join(' ')}`);
-    }
+    const execution = parseSetupExecutionOptions(argsAfterServerSelection);
+    const {
+        skipDaemon,
+        skipProviders,
+        providers,
+        yes: yesFlag,
+    } = execution;
 
     // Public --yes can authorize only deterministic target adoption. Even when
     // the named Home already has credentials, service/provider continuation is
@@ -554,86 +1166,19 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         return;
     }
 
-    let accountServiceEntryCompleted = false;
-    if (useDefaultAccountService) {
-        const result = await runAccountServiceHomeEntryFn({
-            promptInputFn,
-            timeoutMs: 300_000,
+    readiness = readiness && !relaySelectionChanged
+        ? readiness
+        : await resolveActiveServerAuthReadiness({
+            readCredentialsFn,
+            readSettingsFn,
+            ...(signal ? { signal } : {}),
         });
-        if (result.kind === 'no_linked_homes' || result.kind === 'no_preferred_home') {
-            const choice = await promptMultipleChoice(
-                [
-                    result.kind === 'no_linked_homes' ? 'No linked Homes were found.' : 'No preferred Home is available.',
-                    'Create a Personal Home on this computer',
-                    'Connect using a saved Home or HTTPS address',
-                    'Exit',
-                ].join('\n'),
-                [
-                    { id: 'create', keys: ['c', 'create'], short: 'c' },
-                    { id: 'connect', keys: ['h', 'connect'], short: 'h' },
-                    { id: 'exit', keys: ['x', 'exit'], short: 'x' },
-                ] as const,
-                { defaultId: 'exit', maxAttempts: 3, promptInputFn },
-            );
-            if (choice === 'create') {
-                const exitCode = await runHappyCliStepFn(['home', 'create']);
-                if (exitCode !== 0) process.exitCode = exitCode;
-                return;
-            }
-            if (choice === 'connect') {
-                const target = (await promptInputFn('Saved Home name or HTTPS address: ')).trim();
-                if (!target) {
-                    process.exitCode = 1;
-                    return;
-                }
-                const selectionArgs = /^https:\/\//iu.test(target)
-                    ? ['--server-url', target, '--persist']
-                    : ['--server', target];
-                const prepared = await prepareServerSelectionFromArgsFn(selectionArgs);
-                pendingHomeProfileId = prepared.profileId;
-                relayUrl = normalizeRelayUrl(configuration.serverUrl);
-                relaySelectionChanged = relayUrl !== currentRelayUrl;
-            } else {
-                process.exitCode = 1;
-                return;
-            }
-        } else if (result.kind !== 'preferred_home_enrolled') {
-            const out = createOutputBuilder();
-            out.line(warn(result.kind === 'awaiting_approval'
-                ? 'Home approval is still required.'
-                : 'Setup could not enter a Home.'));
-            console.log(out.render());
-            process.exitCode = 1;
-            return;
-        } else {
-            accountServiceEntryCompleted = true;
-            reloadConfiguration();
-            relayUrl = normalizeRelayUrl(configuration.serverUrl);
-            relaySelectionChanged = relayUrl !== currentRelayUrl;
-        }
-    }
-
-    if (!accountServiceEntryCompleted) {
-        readiness = readiness && !relaySelectionChanged
-            ? readiness
-            : await resolveActiveServerAuthReadiness({ readCredentialsFn, readSettingsFn });
-    }
-    // A completed Account Service entry is already a strict authenticated
-    // enrollment proof: its carrier verified identity/destination, committed
-    // the Home credential, and registered this machine before release. A
-    // second URL-only readiness probe here would reject an Iroh-only Home after
-    // the bounded enrollment carrier has correctly closed.
-    let readinessDecision: ReturnType<typeof decideSetupReadiness>;
-    if (accountServiceEntryCompleted) {
-        readinessDecision = { kind: 'ready' };
-    } else {
-        if (readiness === null) throw new Error('Setup readiness was not resolved for the selected Home.');
-        readinessDecision = decideSetupReadiness({
-            credentialState: readiness.credentialState,
-            machineRegistrationState: readiness.machineRegistrationState,
-            hasExplicitTarget: relayNamedOnCommandLine,
-        });
-    }
+    if (readiness === null) throw new Error('Setup readiness was not resolved for the selected Home.');
+    const readinessDecision = decideSetupReadiness({
+        credentialState: readiness.credentialState,
+        machineRegistrationState: readiness.machineRegistrationState,
+        hasExplicitTarget: hasSelectedHomeTarget,
+    });
     if (readinessDecision.kind === 'home-unavailable') {
         if (authenticatedHomeCreateContinuation) {
             throw Object.assign(new Error(`Created Home at ${relayUrl} did not answer during service reconciliation.`), {
@@ -647,11 +1192,13 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         process.exitCode = 1;
         return;
     }
-    const includeAuth = !accountServiceEntryCompleted
-        && (readinessDecision.kind === 'authenticate' || readinessDecision.kind === 'select-home');
+    const includeAuth = accountServiceHomeAuthRecoveryRequired
+        || readinessDecision.kind === 'authenticate'
+        || readinessDecision.kind === 'select-home';
     const selectedHomeTarget = plannedHomeTarget
         ?? await resolveCurrentHomeTargetFn().catch(() => null);
 
+    const initialInstalledAgentIds = await listInstalledAgentIdsFn().catch(() => []);
     const plan = buildSetupPlan({
         serverUrl: relayUrl,
         includeAuth,
@@ -660,9 +1207,11 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         // URL-only path needs setup to constrain the method to same-machine web.
         forceWebAuthentication: selectedHomeTarget?.descriptor == null && isLoopbackServerHost(relayUrl),
         includeDaemon: !skipDaemon,
-        includeProviders: !skipProviders,
+        skipProviders,
+        installedAgentIds: initialInstalledAgentIds,
         providers,
         assumeYes: yesFlag,
+        recoverAccountMaterial: accountServiceHomeAuthRecoveryRequired,
     });
 
     if (planMode) {
@@ -712,164 +1261,30 @@ export async function handleSetupCommand(args: string[], deps: SetupCommandDeps 
         await focusPendingHome();
     }
 
-    const daemonSetupPreflightSteps: string[][] = [];
-    let daemonStepOverrides: readonly Readonly<{ id: 'daemon_install' | 'daemon_start'; argv: readonly string[]; display: string }>[] =
-      skipDaemon
-        ? []
-        : [
-            {
-                id: 'daemon_install',
-                argv: ['service', 'install'],
-                display: 'happier service install',
-            },
-            {
-                id: 'daemon_start',
-                argv: ['service', 'start'],
-                display: 'happier service start',
-            },
-        ];
-    if (!skipDaemon) {
-        const guidance = await readBackgroundServiceSetupGuidanceFn({
-            targetReleaseChannel: configuration.publicReleaseRing,
-            targetServerUrl: relayUrl,
-        });
-
-        if (
-            (
-                guidance.shouldOfferDefaultReleaseChannelSwitch
-                || guidance.shouldPromptForManualRelayTakeover
-                || guidance.shouldPromptForServiceReplacement
-            )
-            && !isInteractiveTerminalFn()
-        ) {
-            throw new Error('Background service setup requires interactive guidance. Re-run in an interactive terminal or pass --skip-daemon.');
-        }
-
-        const guidanceResult = await applyBackgroundServiceSetupGuidance({
-            guidance,
-            promptSwitchDefaultReleaseChannel: async () => await promptForSetupReleaseChannelSwitch({
-                promptInputFn,
-                guidance,
-            }),
-            promptTakeOverManualRelayRuntime: async () => await promptForSetupManualRelayTakeover({
-                promptInputFn,
-                guidance,
-            }),
-            promptReplaceExistingServices: async () => await promptForSetupServiceReplacement({
-                promptInputFn,
-                guidance,
-            }),
-            switchDefaultReleaseChannel: async () => {
-                const targetReleaseChannelId: PublicReleaseRingId = resolvePublicReleaseRingIdForLabel(guidance.targetReleaseChannel);
-                await writeDefaultManagedReleaseChannelFn({
-                    processEnv: process.env,
-                    releaseChannel: targetReleaseChannelId,
-                });
-                await syncInstalledFirstPartyShimsFn({
-                    componentId: 'happier-cli',
-                    channel: targetReleaseChannelId,
-                    processEnv: process.env,
-                });
-            },
-            takeOverManualRelayRuntime: async () => undefined,
-            replaceExistingServices: async () => {
-                daemonSetupPreflightSteps.push(['service', 'uninstall', '--all', '--yes']);
-            },
-        });
-
-        if (guidanceResult.cancelled) {
-            if (authenticatedHomeCreateContinuation) {
-                throw Object.assign(new Error('Created Home service reconciliation was cancelled.'), {
-                    code: 'home_create_reconciliation_failed',
-                });
-            }
-            const out = createOutputBuilder();
-            out.line('Aborted.');
-            console.log(out.render());
-            process.exitCode = 1;
-            return;
-        }
-
-        if (guidance.exactDefaultServiceExists && !guidanceResult.replacedExistingServices) {
-            daemonStepOverrides = guidanceResult.tookOverManualRelayRuntime
-                ? [{
-                    id: 'daemon_start',
-                    argv: ['service', 'start', '--takeover'],
-                    display: 'happier service start --takeover',
-                }]
-                // The installed service resolved its relay once, when it
-                // started — before this run switched the machine. Reusing it
-                // untouched leaves the daemon on the previous relay while setup
-                // reports success against the new one.
-                : relaySelectionChanged
-                    ? [{
-                        id: 'daemon_start',
-                        argv: ['service', 'restart'],
-                        display: 'happier service restart',
-                    }]
-                    : [];
-        } else {
-            daemonStepOverrides = [
-                {
-                    id: 'daemon_install',
-                    argv: ['service', 'install', ...(guidanceResult.tookOverManualRelayRuntime ? ['--takeover'] : [])],
-                    display: `happier service install${guidanceResult.tookOverManualRelayRuntime ? ' --takeover' : ''}`,
-                },
-                {
-                    id: 'daemon_start',
-                    argv: ['service', 'start', ...(guidanceResult.tookOverManualRelayRuntime ? ['--takeover'] : [])],
-                    display: `happier service start${guidanceResult.tookOverManualRelayRuntime ? ' --takeover' : ''}`,
-                },
-            ];
-        }
-    }
-
-    const setupSteps = plan.steps.flatMap((step) => {
-        if (step.id !== 'daemon_install' && step.id !== 'daemon_start') {
-            return [step];
-        }
-        const override = daemonStepOverrides.find((entry) => entry.id === step.id);
-        if (!override) {
-            return [];
-        }
-        return [{
-            ...step,
-            argv: override.argv,
-            display: override.display,
-        }];
+    await continueSetupForSelectedHome({
+        serverUrl: relayUrl,
+        relaySelectionChanged,
+        includeAuth,
+        forceWebAuthentication: selectedHomeTarget?.descriptor == null && isLoopbackServerHost(relayUrl),
+        recoverAccountMaterial: accountServiceHomeAuthRecoveryRequired,
+        execution,
+        quiet,
+        authenticatedHomeCreateContinuation,
+        isInteractiveTerminalFn,
+        promptInputFn,
+        runHappyCliStepFn,
+        readBackgroundServiceSetupGuidanceFn,
+        writeDefaultManagedReleaseChannelFn,
+        syncInstalledFirstPartyShimsFn,
+        listInstalledAgentIdsFn,
+        initialInstalledAgentIds,
+        onAuthCompleted: focusPendingHome,
+        ...(signal ? { signal } : {}),
     });
-    for (const step of [...daemonSetupPreflightSteps.map((argv) => ({ argv })), ...setupSteps]) {
-        const display = 'display' in step ? step.display : `happier ${step.argv.join(' ')}`;
-        const exitCode = await runHappyCliStepFn(step.argv);
-        if (exitCode !== 0) {
-            if (quiet || authenticatedHomeCreateContinuation) {
-                throw Object.assign(new Error(`Setup step failed (exit ${exitCode}): ${display}`), {
-                    code: 'home_create_reconciliation_failed',
-                });
-            }
-            console.error(errorFrame('Error:', [`Setup step failed (exit ${exitCode}): ${display}`]));
-            process.exitCode = exitCode;
-            return;
-        }
-        if ('id' in step && step.id === 'auth_login') {
-            await focusPendingHome();
-        }
-    }
-
-    const out = createOutputBuilder();
-    out.line(ok('Setup complete.'));
-    if (!quiet) console.log(out.render());
-
-    // Only when the user asked for no agent installs. Every other path just ran
-    // `happier agents setup`, which fails loudly on a failed install and shows the
-    // agent list when it asks — so a warning there would be either wrong or noise.
-    if (skipProviders && !quiet) {
-        await warnWhenNoCodingAgentIsInstalled(listInstalledAgentIdsFn);
-    }
 }
 
 export async function handleSetupCliCommand(context: CommandContext): Promise<void> {
-    await handleSetupCommand(context.args.slice(1));
+    await handleSetupCommand(context.args.slice(1), {}, context.signal);
 }
 
 async function promptForSetupReleaseChannelSwitch(params: Readonly<{

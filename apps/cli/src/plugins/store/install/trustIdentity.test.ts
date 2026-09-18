@@ -178,7 +178,7 @@ describe('whole-plugin installation trust identity', () => {
     })).rejects.toThrow(/integrity/i);
   });
 
-  it('drops unsupported remote archive query parameters from durable identity', async () => {
+  it('preserves remote archive query parameters as part of the durable source and rollback lineage', async () => {
     await expect(createArchivePluginDistributionIdentity({
       source: { kind: 'remoteUrl', url: 'https://example.test/plugins/acme.tgz?download=1' },
       integrity: archiveIntegrityA,
@@ -189,8 +189,22 @@ describe('whole-plugin installation trust identity', () => {
       source: { kind: 'remoteUrl', url: 'https://example.test/plugins/acme.tgz?download=1&token=secret' },
       integrity: archiveIntegrityA,
     })).resolves.toMatchObject({
-      source: { canonicalUrl: 'https://example.test/plugins/acme.tgz?download=1' },
+      source: { canonicalUrl: 'https://example.test/plugins/acme.tgz?download=1&token=secret' },
     });
+    const identity = await createArchivePluginDistributionIdentity({
+      source: { kind: 'remoteUrl', url: 'https://example.test/download?asset=a%20b&asset=c' },
+      integrity: archiveIntegrityA,
+    });
+    const replacement = await createArchivePluginDistributionIdentity({
+      source: { kind: 'remoteUrl', url: 'https://example.test/download?asset=a%20b&asset=c' },
+      integrity: archiveIntegrityB,
+    });
+    const otherSource = await createArchivePluginDistributionIdentity({
+      source: { kind: 'remoteUrl', url: 'https://example.test/download?asset=other' },
+      integrity: archiveIntegrityA,
+    });
+    expect(pluginDistributionRollbackLineagesEqual(identity, replacement)).toBe(true);
+    expect(pluginDistributionRollbackLineagesEqual(identity, otherSource)).toBe(false);
   });
 
   it('fails closed for malformed or missing trust records', () => {

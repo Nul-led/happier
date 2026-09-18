@@ -18,6 +18,10 @@ import { decryptAccountSettingsCiphertext } from '@/settings/accountSettingsClie
 import { assertBackendEnabledByAccountSettings } from '@/settings/backendEnabled';
 import { applyAccountSettingsToProcessEnv } from '@/settings/applyAccountSettingsToProcessEnv';
 import { deriveSettingsSecretsReadKeysForCredentials } from '@/settings/secrets/settingsSecretsKey';
+import type {
+  SavedSecretCatalogResourceInputV1,
+  SavedSecretCatalogState,
+} from '@/settings/secrets/savedSecretCatalog';
 
 import {
   type AccountSettingsCache,
@@ -36,6 +40,10 @@ import {
 } from './activeAccountSettingsSnapshot';
 import { resolveAccountSettingsHttpBaseUrl } from './resolveAccountSettingsHttpBaseUrl';
 import { AccountSettingsStaleError } from './accountSettingsRefreshError';
+import {
+  assertAccountEncryptionModeAllowedByEffectiveClientRequirement,
+  isClientE2eeRequiredError,
+} from './resolveEffectiveClientEncryptionRequirement';
 import {
   isAccountSettingsVersionAtLeast,
   normalizeAccountSettingsVersionHint,
@@ -56,6 +64,8 @@ export type AccountSettingsContext = Readonly<{
   settingsVersion: number;
   loadedAtMs: number;
   settingsSecretsReadKeys: readonly Uint8Array[];
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
+  savedSecretCatalogState?: SavedSecretCatalogState;
   scopeKey?: string;
   whenRefreshed: Promise<AccountSettingsContext> | null;
 }>;
@@ -106,11 +116,21 @@ class AccountSettingsV2RequestError extends Error {
   }
 }
 
-async function requestAccountSettingsV2(credentials: StoredCredentials): Promise<AccountSettingsV2GetResponse> {
+async function requestAccountSettingsV2(
+  credentials: StoredCredentials,
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET';
+    path: string;
+  }>) => Readonly<Record<string, string>> | null,
+): Promise<AccountSettingsV2GetResponse> {
+  const path = '/v2/account/settings';
+  const authorizationHeaders = resolveAuthorizationHeaders?.({ method: 'GET', path })
+    ?? (resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${credentials.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
   const response = await axios.get(`${resolveAccountSettingsHttpBaseUrl()}/v2/account/settings`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${credentials.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
     timeout: 15_000,
@@ -211,6 +231,9 @@ export async function applyAccountSettingsV2Update(params: Readonly<{
     }
   }
   const settings = accountSettingsParse(rawSettings ?? {});
+  if (content?.t === 'plain') {
+    assertAccountEncryptionModeAllowedByEffectiveClientRequirement('plain', settings);
+  }
 
   if (params.shouldCommit && !params.shouldCommit()) {
     throw createAccountSettingsLiveApplyError(
@@ -376,6 +399,10 @@ export function resetInMemoryAccountSettingsContextForTests(): void {
 
 export async function bootstrapAccountSettingsContext(params: Readonly<{
   credentials: StoredCredentials;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET';
+    path: string;
+  }>) => Readonly<Record<string, string>> | null;
   agentId?: AgentId;
   backendTarget?: BackendTargetRefV1;
   mode?: AccountSettingsBootstrapMode;
@@ -410,14 +437,22 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
     writeCache: params.deps?.writeCache ?? writeAccountSettingsCacheAtomic,
     fetchFromServer: params.deps?.fetchFromServer ?? (async ({ credentials }) => {
       try {
-        const update = await requestAccountSettingsV2(credentials);
+        const update = await requestAccountSettingsV2(credentials, params.resolveAuthorizationHeaders);
         return { settingsContent: update.content, settingsVersion: update.version };
       } catch (err) {
         if (!(err instanceof AccountSettingsV2RequestError) || err.status !== 404) throw err;
-        const response = await axios.get(`${resolveAccountSettingsHttpBaseUrl()}/v1/account/settings`, {
+        const path = '/v1/account/settings';
+        const fallbackAuthorizationHeaders = params.resolveAuthorizationHeaders?.({
+          method: 'GET',
+          path,
+        }) ?? (params.resolveAuthorizationHeaders
+          ? null
+          : { Authorization: `Bearer ${credentials.token}` });
+        if (!fallbackAuthorizationHeaders) throw new Error('External Action authorization unavailable');
+        const response = await axios.get(`${resolveAccountSettingsHttpBaseUrl()}${path}`, {
           headers: {
             ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-            Authorization: `Bearer ${credentials.token}`,
+            ...fallbackAuthorizationHeaders,
             'Content-Type': 'application/json',
           },
           timeout: 15_000,
@@ -611,9 +646,11 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
     }
     if (content.t === 'plain') {
       const rawSettings = readRawAccountSettingsObject(content.v);
+      const settings = accountSettingsParse(rawSettings);
+      assertAccountEncryptionModeAllowedByEffectiveClientRequirement('plain', settings);
       return {
         rawSettings,
-        settings: accountSettingsParse(rawSettings),
+        settings,
       };
     }
     const ciphertext = typeof content.c === 'string' ? content.c : '';
@@ -716,6 +753,7 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
 
     // Fire refresh immediately; expose promise for long-running processes.
     const whenRefreshed = fetchAndPersist().catch(async (err) => {
+      if (isClientE2eeRequiredError(err)) throw err;
       if (minSettingsVersion !== null || isAccountSettingsContentUnavailableError(err)) {
         throw err;
       }
@@ -733,6 +771,7 @@ export async function bootstrapAccountSettingsContext(params: Readonly<{
   try {
     return await fetchAndPersist();
   } catch (err) {
+    if (isClientE2eeRequiredError(err)) throw err;
     if (minSettingsVersion !== null || isAccountSettingsContentUnavailableError(err)) {
       throw err;
     }

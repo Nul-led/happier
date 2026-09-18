@@ -11,6 +11,7 @@ describe('applyBackgroundServiceSetupGuidance', () => {
     managedReleaseChannels: [],
     manualRelayOwner: null,
     exactDefaultServiceExists: false,
+    exactDefaultServiceRunning: false,
     conflictingServices: [],
     foreignHomeConflictingServices: [],
     shouldOfferDefaultReleaseChannelSwitch: true,

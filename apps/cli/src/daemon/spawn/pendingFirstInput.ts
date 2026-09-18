@@ -1,7 +1,7 @@
 import { buildSpawnedFirstTurnLocalId } from '@happier-dev/protocol';
 import type {
-  SessionInputRequestV1,
-  SessionMessageProvenanceV1,
+  SessionInputRequest,
+  SessionMessageProvenance,
 } from '@happier-dev/protocol';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
@@ -14,8 +14,8 @@ export type PendingFirstInput = Readonly<{
   localId: string;
   meta?: Record<string, unknown>;
   inputAdmission?: Readonly<{
-    provenance: SessionMessageProvenanceV1;
-    request: SessionInputRequestV1;
+    provenance: SessionMessageProvenance;
+    request: SessionInputRequest;
   }>;
 }>;
 

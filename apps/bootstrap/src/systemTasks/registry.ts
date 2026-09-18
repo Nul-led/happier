@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 
 import { relayAccess, systemTasks } from '@happier-dev/cli-common';
-import { parseSetupRepairThisComputerParams } from '@happier-dev/cli-common/systemTasks';
 import { TailscaleCommandError } from '@happier-dev/cli-common/tailscale';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 import type { RelayAccessExecutionContext } from '@happier-dev/cli-common/relayAccess';
@@ -12,7 +9,6 @@ import { SystemTaskJsonValueSchema, type SystemTaskJsonObject, type SystemTaskJs
 
 import { buildScpCommand, redactSshText } from '../ssh/index.js';
 
-import { runLocalHappierJsonCommand } from './happierCli.js';
 import { createSecureAccessTailscaleHandler } from './kinds/secureAccessTailscale.js';
 import { createTailscaleEnsureReadyHandler } from './kinds/tailscaleEnsureReady.js';
 import {
@@ -22,23 +18,10 @@ import {
   createDaemonServiceStopHandler,
 } from './kinds/daemonService.js';
 import {
-  createSetupThisComputerInteractiveTaskKind,
-  type SetupThisComputerInteractiveDeps,
-} from './kinds/setupThisComputerInteractiveKind.js';
-import {
-  type AuthStatusSnapshot,
-  configureRelay,
-  installService,
-  pairLocalMachineIfNeeded,
-  readActiveRelayProfile,
-  readAuthStatus,
-  readDaemonStatus,
-  requestAuthPairing,
-  startService,
-  waitForAuthPairing,
-  waitForReadyDaemon,
-} from './localDaemonCli.js';
-import { approveLocalRemoteAuthRequestDefault, createRemoteEnrollmentExecutorDefault, installRemoteCliDefault, resolveRemoteSshHostTrustDefault, runRemoteBootstrapCommandDefault } from './remoteSshBootstrapTasks.js';
+  createCliPathExposureEnsureHandler,
+  createCliPathExposureRemoveHandler,
+} from './kinds/cliPathExposure.js';
+import { resolveRemoteSshHostTrustDefault } from './remoteSshBootstrapTasks.js';
 import {
   createRemoteSshPersonalHomeRelocationDestinationDefault,
   installRemoteCliForManageHostDefault,
@@ -57,7 +40,7 @@ import {
   readRelayRuntimeStatusDefault,
 } from './relayRuntimeTasks.js';
 import { createRelayAccessConfigStore } from './relayAccessConfigStore.js';
-import { normalizeBootstrapChannel, runCommandCapture } from './taskRuntime.js';
+import { runCommandCapture } from './taskRuntime.js';
 
 function stableStringify(value: SystemTaskJsonValue): string {
   if (value === null) return 'null';
@@ -90,9 +73,7 @@ type HsetupRegistryDeps = Readonly<{
   loadPersonalHomeRelocationDestination?: systemTasks.PersonalHomeTaskKindDeps['loadRelocationDestination'];
   remoteSshBootstrap?: Partial<RemoteSshBootstrapDeps>;
   remoteSshManageHost?: Partial<systemTasks.RemoteSshManageHostDeps>;
-  relayDriftRepair?: Partial<RelayDriftRepairDeps>;
   relayAccess?: Partial<RelayAccessDeps>;
-  setupThisComputer?: Partial<SetupThisComputerInteractiveDeps>;
 }>;
 
 type RelayRuntimeDeps = Readonly<{
@@ -104,19 +85,6 @@ type RelayRuntimeDeps = Readonly<{
 
 type RemoteSshBootstrapDeps = systemTasks.RemoteSshBootstrapMachineDeps;
 
-type RelayDriftRepairDeps = Readonly<{
-  connectBackgroundService: (params: Readonly<{
-    activeRelayUrl: string;
-    activeWebappUrl: string;
-    activeLocalRelayUrl: string | null;
-    channel?: 'stable' | 'preview' | 'dev' | 'publicdev';
-    surface?: string;
-  }>, context: Readonly<{
-    signal: AbortSignal;
-    emitProgress: (stepId: string, message?: string) => void;
-  }>) => Promise<SystemTaskJsonObject>;
-}>;
-
 type RelayAccessDeps = Readonly<{
   readConfig: (params: Readonly<{ target: systemTasks.RelayAccessTaskTarget }>) => Promise<relayAccess.RelayAccessConfig | null>;
   writeConfig: (params: Readonly<{ target: systemTasks.RelayAccessTaskTarget; config: relayAccess.RelayAccessConfig | null }>) => Promise<void>;
@@ -126,8 +94,6 @@ type RelayAccessDeps = Readonly<{
 
 export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): SystemTaskRegistry {
   const relayRuntimeDeps = createRelayRuntimeDeps(deps.relayRuntime);
-  const remoteBootstrapDeps = createRemoteSshBootstrapDeps(deps.remoteSshBootstrap);
-  const relayDriftRepairDeps = createRelayDriftRepairDeps(deps.relayDriftRepair);
   const relayAccessDeps = createRelayAccessDeps(deps.relayAccess);
   const personalHomeOperations = deps.personalHomeOperations
     ?? systemTasks.createDeferredPersonalHomeSystemTaskOperations(
@@ -217,20 +183,13 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
       createExecutionContext: relayAccessDeps.createExecutionContext,
     }),
   );
-  const remoteBootstrapHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRemoteSshBootstrapMachineTaskKind(remoteBootstrapDeps),
-  );
   const remoteManageHostHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRemoteSshManageHostTaskKind(createRemoteSshManageHostDeps(deps.remoteSshBootstrap, deps.remoteSshManageHost)),
-  );
-  const setupThisComputerHandler = systemTasks.createExecutionRunnerFromKind(
-    createSetupThisComputerInteractiveTaskKind(deps.setupThisComputer),
   );
   const daemonServiceStatusHandler = createDaemonServiceStatusHandler();
   const daemonServiceStartHandler = createDaemonServiceStartHandler();
   const daemonServiceStopHandler = createDaemonServiceStopHandler();
   const daemonServiceRestartHandler = createDaemonServiceRestartHandler();
-  const setupRepairThisComputerHandler = createSetupRepairThisComputerHandler();
 
   return systemTasks.createSystemTaskRegistry([
     {
@@ -248,6 +207,14 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     {
       kind: 'daemon.service.restart.v1',
       handler: daemonServiceRestartHandler,
+    },
+    {
+      kind: 'cli.pathExposure.ensure.v1',
+      handler: createCliPathExposureEnsureHandler(),
+    },
+    {
+      kind: 'cli.pathExposure.remove.v1',
+      handler: createCliPathExposureRemoveHandler(),
     },
     {
       kind: 'system.noop.v1',
@@ -289,40 +256,6 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
           kind: 'system.ping.v1',
           paramDigest,
         };
-      },
-    },
-    {
-      kind: 'setup.thisComputer.v1',
-      handler: setupThisComputerHandler,
-    },
-    {
-      kind: 'setup.repairThisComputer.v1',
-      handler: setupRepairThisComputerHandler,
-    },
-    {
-      kind: 'relay.connectBackgroundService.v1',
-      handler: async function* (params, context) {
-        const parsed = parseRelayConnectBackgroundServiceParams(params);
-
-        yield {
-          type: 'progress',
-          stepId: 'relay.drift.repair.start',
-          message: 'Connecting background service to the selected Relay',
-        };
-
-        const progressEvents: Array<Readonly<{ type: 'progress'; stepId: string; message?: string }>> = [];
-        const result = await relayDriftRepairDeps.connectBackgroundService(parsed, {
-          signal: context.signal,
-          emitProgress(stepId, message) {
-            progressEvents.push({ type: 'progress', stepId, ...(message ? { message } : {}) });
-          },
-        });
-
-        for (const event of progressEvents) {
-          yield event;
-        }
-
-        return result;
       },
     },
     {
@@ -381,207 +314,10 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
       handler: createTailscaleEnsureReadyHandler(),
     },
     {
-      kind: 'remote.ssh.bootstrapMachine.v1',
-      handler: remoteBootstrapHandler,
-    },
-    {
       kind: 'remote.ssh.manageHost.v1',
       handler: remoteManageHostHandler,
     },
   ]);
-}
-
-function createSetupRepairThisComputerHandler(): systemTasks.SystemTaskExecutionRunner {
-  return async function* (params, context) {
-    const parsed = parseSetupRepairThisComputerParams(params);
-    const releaseRing = parsed.channel ? normalizeBootstrapChannel(parsed.channel).releaseChannel : undefined;
-    const deps = createSetupRepairThisComputerDeps(context.signal, releaseRing);
-    const runner = systemTasks.createExecutionRunnerFromKind(
-      systemTasks.createSetupRepairThisComputerTaskKind(deps),
-    );
-    return yield* runner(params, context);
-  };
-}
-
-function createSetupRepairThisComputerDeps(
-  signal: AbortSignal,
-  releaseRing?: 'stable' | 'preview' | 'publicdev',
-): systemTasks.SetupRepairThisComputerDeps {
-  let cachedRelayProfile: Awaited<ReturnType<typeof readActiveRelayProfile>> | null = null;
-  let cachedAuthStatus: AuthStatusSnapshot | null = null;
-
-  return {
-    async readActiveRelayProfile() {
-      if (cachedRelayProfile) return cachedRelayProfileToRepairProfile(cachedRelayProfile);
-      cachedRelayProfile = await readActiveRelayProfile({ releaseRing });
-      return cachedRelayProfileToRepairProfile(cachedRelayProfile);
-    },
-    async readAuthStatus() {
-      const status = await readCachedAuthStatus();
-      if (!status.authenticated) {
-        return { authenticated: false };
-      }
-      return { authenticated: true, machineId: status.machineId };
-    },
-    async configureRelay(params) {
-      const profile = cachedRelayProfile ?? await readActiveRelayProfile({ releaseRing });
-      cachedRelayProfile = profile;
-      await configureRelay({
-        serverUrl: params.relayUrl,
-        webappUrl: params.webappUrl,
-        localServerUrl: params.activeLocalRelayUrl,
-      }, { releaseRing });
-    },
-    async requestAuthPairing() {
-      return await requestAuthPairing({ releaseRing });
-    },
-    async waitForAuthPairing(publicKey) {
-      const result = await waitForAuthPairing(publicKey, { releaseRing });
-      const machineId = String(result.machineId ?? '').trim();
-      if (!machineId) {
-        throw new systemTasks.SystemTaskExecutionError(
-          'system_task_failed',
-          'Auth pairing did not return a machine id.',
-        );
-      }
-      return { machineId };
-    },
-    async pairLocalMachineIfNeeded() {
-      const status = await readCachedAuthStatus();
-      const machineId = await pairLocalMachineIfNeeded(status, { releaseRing });
-      return machineId ?? '';
-    },
-    async installDaemonService() {
-      await installService({ releaseRing });
-    },
-    async startDaemonService() {
-      await startService({ releaseRing });
-    },
-    async waitForReadyDaemon() {
-      return await waitForReadyDaemon({
-        readDaemonStatus: async () => await readDaemonStatus({ releaseRing }),
-        signal,
-      });
-    },
-  };
-
-  async function readCachedAuthStatus(): Promise<AuthStatusSnapshot> {
-    if (cachedAuthStatus) return cachedAuthStatus;
-    cachedAuthStatus = await readAuthStatus({ releaseRing });
-    return cachedAuthStatus;
-  }
-
-  function cachedRelayProfileToRepairProfile(
-    profile: Awaited<ReturnType<typeof readActiveRelayProfile>>,
-  ): systemTasks.SetupRepairThisComputerRelayProfile {
-    return {
-      serverUrl: profile.serverUrl,
-      webappUrl: profile.webappUrl,
-      activeLocalRelayUrl: profile.localServerUrl,
-    };
-  }
-}
-function createRelayDriftRepairDeps(override?: Partial<RelayDriftRepairDeps>): RelayDriftRepairDeps {
-  return {
-    async connectBackgroundService(params, context) {
-      const releaseRing = params.channel ? normalizeBootstrapChannel(params.channel).releaseChannel : undefined;
-      context.emitProgress('relay.connectBackgroundService.prepare');
-      context.emitProgress('relay.connectBackgroundService.configureRelay');
-      await configureRelay({
-        serverUrl: params.activeRelayUrl,
-        localServerUrl: params.activeLocalRelayUrl,
-        webappUrl: params.activeWebappUrl,
-      }, { releaseRing });
-
-      const authStatus = await readAuthStatus({ releaseRing });
-      if (!authStatus.authenticated) {
-        throw new systemTasks.SystemTaskExecutionError(
-          'not_authenticated',
-          'Authenticate this computer with the selected Relay before continuing.',
-        );
-      }
-
-      const machineId = await repairRelayDriftAuthIfNeeded(authStatus, context.emitProgress, releaseRing);
-
-      context.emitProgress('relay.connectBackgroundService.finish');
-      await installService({ releaseRing });
-      await startService({ releaseRing });
-      const daemonStatus = await waitForReadyDaemon({
-        readDaemonStatus: async () => await readDaemonStatus({ releaseRing }),
-        signal: context.signal,
-      });
-      if (!daemonStatus.serviceInstalled || !daemonStatus.daemonRunning || daemonStatus.needsAuth) {
-        throw new systemTasks.SystemTaskExecutionError(
-          'daemon_service_not_ready',
-          'Background service did not reach a ready state for the selected Relay.',
-        );
-      }
-
-      return {
-        repaired: true,
-        activeRelayUrl: params.activeRelayUrl,
-        activeWebappUrl: params.activeWebappUrl,
-        activeLocalRelayUrl: params.activeLocalRelayUrl,
-        ...(machineId ?? daemonStatus.machineId ? { machineId: machineId ?? daemonStatus.machineId } : {}),
-      };
-    },
-    ...override,
-  };
-}
-
-async function repairRelayDriftAuthIfNeeded(
-  authStatus: AuthStatusSnapshot,
-  emitProgress: (stepId: string, message?: string) => void,
-  releaseRing?: 'stable' | 'preview' | 'publicdev',
-): Promise<string | null> {
-  if (authStatus.machineId) {
-    return authStatus.machineId;
-  }
-  emitProgress('relay.connectBackgroundService.authenticate');
-  return await pairLocalMachineIfNeeded(authStatus, { releaseRing });
-}
-
-function parseRelayConnectBackgroundServiceParams(params: unknown): Readonly<{
-  activeRelayUrl: string;
-  activeWebappUrl: string;
-  activeLocalRelayUrl: string | null;
-  channel?: 'stable' | 'preview' | 'dev' | 'publicdev';
-  surface?: string;
-}> {
-  if (!params || typeof params !== 'object' || Array.isArray(params)) {
-    throw new systemTasks.SystemTaskExecutionError(
-      'invalid_params',
-      'Expected relay drift repair params to be an object.',
-    );
-  }
-  const record = params as Record<string, unknown>;
-  const activeRelayUrl = String(record.activeRelayUrl ?? '').trim();
-  const activeWebappUrl = String(record.activeWebappUrl ?? '').trim();
-  const activeLocalRelayUrlRaw = record.activeLocalRelayUrl;
-  const channel = typeof record.channel === 'string' && record.channel.trim()
-    ? record.channel.trim()
-    : undefined;
-  const surface = typeof record.surface === 'string' && record.surface.trim()
-    ? record.surface.trim()
-    : undefined;
-
-  if (!activeRelayUrl) {
-    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'activeRelayUrl is required.');
-  }
-  if (!activeWebappUrl) {
-    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'activeWebappUrl is required.');
-  }
-  const activeLocalRelayUrl = activeLocalRelayUrlRaw === null || activeLocalRelayUrlRaw === undefined
-    ? null
-    : String(activeLocalRelayUrlRaw ?? '').trim() || null;
-
-  return {
-    activeRelayUrl,
-    activeWebappUrl,
-    activeLocalRelayUrl,
-    ...(channel ? { channel: channel as 'stable' | 'preview' | 'dev' | 'publicdev' } : {}),
-    surface,
-  };
 }
 
 export function createSystemTaskId(): string {
@@ -659,16 +395,6 @@ function createRelayRuntimeDeps(overrides: HsetupRegistryDeps['relayRuntime']): 
   };
 }
 
-function createRemoteSshBootstrapDeps(overrides: HsetupRegistryDeps['remoteSshBootstrap']): RemoteSshBootstrapDeps {
-  return {
-    resolveHostTrust: overrides?.resolveHostTrust ?? resolveRemoteSshHostTrustDefault,
-    installRemoteCli: overrides?.installRemoteCli ?? installRemoteCliDefault,
-    approveLocalAuthRequest: overrides?.approveLocalAuthRequest ?? approveLocalRemoteAuthRequestDefault,
-    createRemoteEnrollmentExecutor: overrides?.createRemoteEnrollmentExecutor ?? createRemoteEnrollmentExecutorDefault,
-    runRemoteCommand: overrides?.runRemoteCommand ?? runRemoteBootstrapCommandDefault,
-  };
-}
-
 function createRemoteSshManageHostDeps(
   bootstrapOverrides: HsetupRegistryDeps['remoteSshBootstrap'],
   overrides: HsetupRegistryDeps['remoteSshManageHost'],
@@ -692,7 +418,7 @@ function createRemoteSshManageHostDeps(
         knownHostsMode: params.knownHostsMode,
         channel: params.channel,
         mode: params.mode,
-        ensureRuntime: async (purpose) => {
+        ensureRuntime: async (purpose, signal) => {
           await runRelayRuntimeCommand({
             ssh: params.ssh,
             auth: params.auth,
@@ -701,6 +427,7 @@ function createRemoteSshManageHostDeps(
             channel: params.channel,
             mode: params.mode,
             purpose,
+            ...(signal ? { signal } : {}),
           });
         },
       });

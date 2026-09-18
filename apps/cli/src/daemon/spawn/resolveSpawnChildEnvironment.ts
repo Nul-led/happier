@@ -2,11 +2,12 @@ import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 import type { SpawnSessionErrorCode } from '@/session/shared/spawnSessionContract';
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   SessionEnvOverlayV1Schema,
   type ProviderErrorV1,
   type SessionEnvOverlayV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import type { ProviderBindingLaunchHandoffV1 } from '@/plugins/runtime/providerBindings/handoff';
 import { readCanonicalSpawnRuntimeSelection } from '@/rpc/handlers/spawnRuntimeSelection';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
@@ -94,32 +95,43 @@ type ProviderBindingPrerequisiteContext = Readonly<{
   modelId: string;
 }>;
 
-function projectDaemonSpawnConnectedServices(value: unknown): NonNullable<
+type DaemonSpawnConnectedServicesProjection = NonNullable<
   Parameters<NonNullable<DaemonSpawnHooks['resolveRuntimePrerequisites']>>[0]['connectedServices']
-> | undefined {
+>;
+
+function projectDaemonSpawnConnectedServices(
+  value: unknown,
+): DaemonSpawnConnectedServicesProjection | undefined {
   try {
-    const parsed = ConnectedServiceBindingsV1Schema.safeParse(value);
+    const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
     if (!parsed.success) return undefined;
-    const bindingsByServiceId = Object.fromEntries(
-      Object.entries(parsed.data.bindingsByServiceId).map(([serviceId, binding]) => {
-        if (binding.source === 'native') {
-          return [serviceId, Object.freeze({ source: 'native' as const })];
-        }
-        if (binding.selection === 'profile') {
-          return [serviceId, Object.freeze({
-            source: 'connected' as const,
-            selection: 'profile' as const,
-            profileId: binding.profileId,
-          })];
-        }
-        return [serviceId, Object.freeze({
+    const bindingsByServiceId: Record<
+      string,
+      DaemonSpawnConnectedServicesProjection['bindingsByServiceId'][string]
+    > = {};
+    for (const [serviceId, binding] of Object.entries(parsed.data.bindingsByServiceId)) {
+      // The legacy Agent daemon-spawn hook cannot represent revision-bound team
+      // resource authority. Never down-project it into native/connected V1.
+      if (binding.source === 'team_resource') return undefined;
+      if (binding.source === 'native') {
+        bindingsByServiceId[serviceId] = Object.freeze({ source: 'native' as const });
+        continue;
+      }
+      if (binding.selection === 'profile') {
+        bindingsByServiceId[serviceId] = Object.freeze({
           source: 'connected' as const,
-          selection: 'group' as const,
-          groupId: binding.groupId,
-          ...(binding.profileId ? { profileId: binding.profileId } : {}),
-        })];
-      }),
-    );
+          selection: 'profile' as const,
+          profileId: binding.profileId,
+        });
+        continue;
+      }
+      bindingsByServiceId[serviceId] = Object.freeze({
+        source: 'connected' as const,
+        selection: 'group' as const,
+        groupId: binding.groupId,
+        ...(binding.profileId ? { profileId: binding.profileId } : {}),
+      });
+    }
     return Object.freeze({
       v: 1,
       bindingsByServiceId: Object.freeze(bindingsByServiceId),
@@ -216,26 +228,27 @@ async function resolveSpawnChildEnvironmentImpl(params: {
     ? params.pluginRuntimeRegistry?.contributes.agentDefinitionsById
       .get(resolvedAgentId)?.cliMetadata?.auth.environmentVariables ?? []
     : [];
-  const explicitResumeId = typeof params.options.resume === 'string' && params.options.resume.trim().length > 0
-    ? params.options.resume.trim()
-    : null;
+  const explicitResumeId = readNonBlankOpaqueIdentifier(params.options.resume);
   const runtimeDescriptorV1 = readCanonicalSpawnRuntimeSelection(params.options).runtimeDescriptorV1;
   const connectedServices = projectDaemonSpawnConnectedServices(
     params.options.connectedServices,
   );
   const spawnHookTimestampMs = () => Date.now();
   const spawnHookBackendId = resolvedAgentId ?? backendTarget?.backendId;
-  const toolResolutionContext = createDaemonSpawnToolResolutionContext({
-    processEnv: params.processEnv,
-    installablesRegistry: () => resolveSpawnHookInstallablesRegistry(
-      params.happyHomeDir,
-      params.pluginRuntimeRegistry
-        ? { contributions: params.pluginRuntimeRegistry.contributes }
-        : {},
-    ),
-    logInfo: params.logInfo,
-    logWarn: params.logWarn,
-  });
+  const createToolResolutionContext = (signal?: AbortSignal) =>
+    createDaemonSpawnToolResolutionContext({
+      processEnv: params.processEnv,
+      ...(signal ? { signal } : {}),
+      installablesRegistry: () => resolveSpawnHookInstallablesRegistry(
+        params.happyHomeDir,
+        params.pluginRuntimeRegistry
+          ? { contributions: params.pluginRuntimeRegistry.contributes }
+          : {},
+      ),
+      logInfo: params.logInfo,
+      logWarn: params.logWarn,
+    });
+  const toolResolutionContext = createToolResolutionContext();
 
   let cleanupOnFailure: (() => void | Promise<void>) | null = null;
   let cleanupOnExit: (() => void | Promise<void>) | null = null;
@@ -288,9 +301,10 @@ async function resolveSpawnChildEnvironmentImpl(params: {
           runtimeSelection: buildRuntimeSelectionPayload(),
           ...(explicitResumeId ? { resumeId: explicitResumeId } : {}),
         },
-        context: {
-          tools: toolResolutionContext,
-        },
+        contextFactory: ({ signal }) => ({
+          signal,
+          tools: createToolResolutionContext(signal),
+        }),
       },
     });
 
@@ -359,9 +373,10 @@ async function resolveSpawnChildEnvironmentImpl(params: {
           runtimeSelection: buildRuntimeSelectionPayload(),
           ...(explicitResumeId ? { resumeId: explicitResumeId } : {}),
         },
-        context: {
-          tools: toolResolutionContext,
-        },
+        contextFactory: ({ signal }) => ({
+          signal,
+          tools: createToolResolutionContext(signal),
+        }),
       },
     });
 

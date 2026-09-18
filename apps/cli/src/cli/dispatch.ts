@@ -3,6 +3,7 @@ import {
   commandRegistry,
   ensureMergedAgentCommandRegistryLoaded,
   findCommandDispatchDescriptor,
+  resolveAdmittedActionCliCommand,
   resolvePluginCommandTmuxMode,
   type CommandContext,
 } from '@/cli/commandRegistry';
@@ -19,6 +20,7 @@ import { errorFrame } from '@happier-dev/cli-common/output';
 import packageJson from '../../package.json';
 import { resolveExplicitSpawnScopedEnvironmentFromProcessEnv } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
 import {
+  CliApiTokenChildContinuationError,
   redactCliApiTokenArgv,
   takeCliApiTokenEnvironment,
   takePrefixCliApiTokenFlag,
@@ -26,6 +28,7 @@ import {
   withCliApiToken,
 } from '@/auth/cliApiToken';
 import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
+import { argvBeforeOptionTerminator } from '@/cli/commands/shared/argvFlags';
 
 function isTopLevelVersionRequest(args: readonly string[]): boolean {
   return args.length === 1 && (args[0] === '--version' || args[0] === '-v');
@@ -36,9 +39,8 @@ function isTopLevelHelpRequest(args: readonly string[]): boolean {
 }
 
 function isCredentialFreeInvocation(args: readonly string[]): boolean {
-  return args.some((arg) => arg === '--help' || arg === '-h')
-    || isTopLevelVersionRequest(args)
-    || args[0] === 'completion';
+  if (isTopLevelVersionRequest(args) || args[0] === 'completion') return true;
+  return argvBeforeOptionTerminator(args).some((arg) => arg === '--help' || arg === '-h');
 }
 
 function applyCommandDaemonAutostartDefaultPolicy(params: Readonly<{
@@ -80,7 +82,7 @@ function buildUnknownCommandMessage(command: string, suggestedCommand: string | 
 }
 
 function hasEphemeralServerSelectionPrefixArgs(args: readonly string[]): boolean {
-  for (const arg of args) {
+  for (const arg of argvBeforeOptionTerminator(args)) {
     if (
       arg === '--server'
       || arg.startsWith('--server=')
@@ -242,12 +244,15 @@ async function launchCommandInTmux(
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     if (json) {
+      const code = error instanceof CliApiTokenChildContinuationError
+        ? error.code
+        : 'tmux_launch_failed';
       await printJsonEnvelope(
         {
           ok: false,
           kind: 'cli_dispatch',
           error: {
-            code: 'tmux_launch_failed',
+            code,
             message,
           },
         },
@@ -304,6 +309,7 @@ export async function dispatchCli(params: Readonly<{
   }
 
   let args = [...params.args];
+  const globalOptionArgs = argvBeforeOptionTerminator(args);
   const { terminalRuntime, rawArgv } = params;
   let signal = params.signal;
   const scopedEnvironment =
@@ -331,7 +337,7 @@ export async function dispatchCli(params: Readonly<{
   }
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
-  if (!args.includes('--version')) {
+  if (!globalOptionArgs.includes('--version')) {
     debugCliStart(rawArgv);
   }
 
@@ -368,22 +374,22 @@ export async function dispatchCli(params: Readonly<{
   }
 
   applyCommandDaemonAutostartDefaultPolicy({
-    args,
+    args: [...globalOptionArgs],
     env: process.env,
     policy: commandDescriptor?.policy,
   });
 
-  applyDaemonAutostartEnvForInvocation({ args, env: process.env });
+  applyDaemonAutostartEnvForInvocation({ args: [...globalOptionArgs], env: process.env });
 
-  const pluginTmuxMode = resolvePluginCommandTmuxMode(args);
-  const isHelpOrVersionRequest = args.includes('-h') || args.includes('--help') || args.includes('-v') || args.includes('--version');
+  const pluginTmuxMode = resolvePluginCommandTmuxMode(globalOptionArgs);
+  const isHelpOrVersionRequest = globalOptionArgs.includes('-h') || globalOptionArgs.includes('--help') || globalOptionArgs.includes('-v') || globalOptionArgs.includes('--version');
   const isRunningInTmux = terminalRuntime?.mode === 'tmux' || Boolean(process.env.TMUX?.trim());
 
   // Headless tmux launcher (CLI flow)
-  if (args.includes('--tmux')) {
+  if (globalOptionArgs.includes('--tmux')) {
     // If user is asking for help/version, don't start a session.
     if (isHelpOrVersionRequest) {
-      const idx = args.indexOf('--tmux');
+      const idx = globalOptionArgs.indexOf('--tmux');
       if (idx !== -1) args.splice(idx, 1);
     } else {
       if (pluginTmuxMode === 'forbidden' || (subcommand && !isTmuxAllowedCommand(subcommand))) {
@@ -402,47 +408,80 @@ export async function dispatchCli(params: Readonly<{
     await launchCommandInTmux(args, subcommand);
     return;
   }
-  let disposePluginSignal: (() => void) | undefined;
-  const ownsInterruptSignal = pluginTmuxMode !== null
-    || (subcommand === 'plugins' && args[1] === 'dev');
+
+  // Resolve the admitted compiled leaf before establishing command-scoped
+  // cancellation. Signal ownership belongs to this dispatch, not to an Action
+  // definition or parser, and the same signal must reach both compiled leaves
+  // and the retained low-level `actions invoke` host.
+  const actionCliCommand = subcommand ? await resolveAdmittedActionCliCommand(args) : null;
+  let disposeCommandSignal: (() => void) | undefined;
+  const ownsInterruptSignal = actionCliCommand !== null
+    || (subcommand === 'actions' && args[1] === 'invoke')
+    || pluginTmuxMode !== null
+    || (subcommand === 'plugins' && args[1] === 'dev')
+    || subcommand === 'auth'
+    || subcommand === 'setup'
+    || subcommand === 'home';
   if (ownsInterruptSignal && !signal) {
     const commandAbort = new AbortController();
-    const onSigint = () => commandAbort.abort(new Error('Plugin command interrupted by SIGINT'));
-    const onSigterm = () => commandAbort.abort(new Error('Plugin command interrupted by SIGTERM'));
+    const onSigint = () => commandAbort.abort(new Error('Command interrupted by SIGINT'));
+    const onSigterm = () => commandAbort.abort(new Error('Command interrupted by SIGTERM'));
     process.once('SIGINT', onSigint);
     process.once('SIGTERM', onSigterm);
     signal = commandAbort.signal;
-    disposePluginSignal = () => {
+    disposeCommandSignal = () => {
       process.removeListener('SIGINT', onSigint);
       process.removeListener('SIGTERM', onSigterm);
     };
   }
-  let commandHandler = commandDescriptor?.handler ?? (subcommand ? commandRegistry[subcommand] : undefined);
-  if (!commandHandler && subcommand && !mergedCommandRegistryForSubcommand) {
-    await ensureMergedAgentCommandRegistryLoaded();
-    commandDescriptor = findCommandDispatchDescriptor(subcommand);
-    commandHandler = commandDescriptor?.handler ?? commandRegistry[subcommand];
-  }
-  if (commandHandler) {
-    try {
-      await commandHandler(buildCommandContext(args));
-    } finally {
-      disposePluginSignal?.();
+  try {
+    // Workflow documents share the `workflow` root with compiled Action
+    // commands. Keep that specialized path lazy: importing it for unrelated
+    // commands also imports the Action execution dependencies before their
+    // command surface has been selected.
+    if (subcommand === 'workflow') {
+      const { tryHandleWorkflowDocumentCliCommand } = await import('@/cli/actions/workflowDocumentCommands');
+      if (await tryHandleWorkflowDocumentCliCommand({ argv: args, ...(signal ? { signal } : {}) })) return;
     }
-    return;
-  }
-  if (subcommand && await failClosedReservedRootCommand(args, subcommand)) {
-    return;
-  }
 
-  const [{ requireCatalogEntry }, { DEFAULT_CATALOG_AGENT_ID }] = await Promise.all([
-    import('@/agent/catalog/registry'),
-    import('@/agent/catalog/ids'),
-  ]);
-  const defaultEntry = requireCatalogEntry(DEFAULT_CATALOG_AGENT_ID);
-  if (!defaultEntry.getCliCommandHandler) {
-    throw new Error(`Default agent '${DEFAULT_CATALOG_AGENT_ID}' has no CLI command handler registered`);
+    // An exact compiled Action leaf wins only once the one registry has resolved
+    // its path owner; every other spelling under the same root — including
+    // multi-step workflows and help — still reaches the dedicated root handler.
+    if (actionCliCommand) {
+      const { runCompiledActionCliCommand } = await import('@/cli/actions/executeCommand');
+      await runCompiledActionCliCommand({
+        command: actionCliCommand,
+        argv: args,
+        ...(signal ? { signal } : {}),
+      });
+      return;
+    }
+
+    let commandHandler = commandDescriptor?.handler ?? (subcommand ? commandRegistry[subcommand] : undefined);
+    if (!commandHandler && subcommand && !mergedCommandRegistryForSubcommand) {
+      await ensureMergedAgentCommandRegistryLoaded();
+      commandDescriptor = findCommandDispatchDescriptor(subcommand);
+      commandHandler = commandDescriptor?.handler ?? commandRegistry[subcommand];
+    }
+    if (commandHandler) {
+      await commandHandler(buildCommandContext(args));
+      return;
+    }
+    if (subcommand && await failClosedReservedRootCommand(args, subcommand)) {
+      return;
+    }
+
+    const [{ requireCatalogEntry }, { DEFAULT_CATALOG_AGENT_ID }] = await Promise.all([
+      import('@/agent/catalog/registry'),
+      import('@/agent/catalog/ids'),
+    ]);
+    const defaultEntry = requireCatalogEntry(DEFAULT_CATALOG_AGENT_ID);
+    if (!defaultEntry.getCliCommandHandler) {
+      throw new Error(`Default agent '${DEFAULT_CATALOG_AGENT_ID}' has no CLI command handler registered`);
+    }
+    const defaultHandler = await defaultEntry.getCliCommandHandler();
+    await defaultHandler(buildCommandContext(args));
+  } finally {
+    disposeCommandSignal?.();
   }
-  const defaultHandler = await defaultEntry.getCliCommandHandler();
-  await defaultHandler(buildCommandContext(args));
 }

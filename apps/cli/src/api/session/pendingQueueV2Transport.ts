@@ -28,10 +28,27 @@ import {
     type SessionInputAdmissionReceiptV1,
     type SessionPendingAdmissionSettlementRequestV1,
     type SessionMessageRole,
+    SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2,
+    SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2,
+    SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2,
+    SessionPendingExecutionRunMaterializeNextRequestV2Schema,
+    SessionPendingExecutionRunMaterializeNextResponseV2Schema,
+    SessionPendingExecutionRunAcceptedRequestV2Schema,
+    SessionPendingExecutionRunAcceptedResponseV2Schema,
+    SessionPendingExecutionRunBlockRequestV2Schema,
+    SessionPendingExecutionRunBlockResponseV2Schema,
+    type SessionPendingExecutionRunMaterializeNextRequestV2,
+    type SessionPendingExecutionRunAcceptedRequestV2,
+    type SessionPendingExecutionRunBlockRequestV2,
+    type AcceptedPendingSettlementResponseV1,
+    SessionExecutionRunPendingEnqueueRequestV1Schema,
+    ParticipantExecutionRunRecipientRoutingIdentityV1Schema,
+    SessionAccessErrorCodeV1Schema,
+    type SessionExecutionRunPendingEnqueueRequestV1,
 } from '@happier-dev/protocol';
 import { SessionMessageContentSchema, type SessionMessageContent } from '../types';
 import { readKnownPendingQueueState, type KnownPendingQueueState } from './pendingQueueState';
-import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 
 export type PendingMaterializationDeliveryTiming = 'after_foreground_ready' | 'after_runtime_idle';
 export type PendingClaimForegroundState = 'ready' | 'active_steerable' | 'active_unsteerable';
@@ -108,6 +125,39 @@ function readErrorCode(error: unknown): string | undefined {
     if (!error || typeof error !== 'object') return undefined;
     const code = (error as { code?: unknown }).code;
     return typeof code === 'string' ? code : undefined;
+}
+
+function rethrowPendingSessionAccessContinuation(error: unknown): never {
+    const response = error && typeof error === 'object'
+        ? (error as { response?: unknown }).response
+        : null;
+    const responseRecord = response && typeof response === 'object' && !Array.isArray(response)
+        ? response as { status?: unknown; data?: unknown }
+        : null;
+    const data = responseRecord?.data && typeof responseRecord.data === 'object' && !Array.isArray(responseRecord.data)
+        ? responseRecord.data as { error?: unknown }
+        : null;
+    const parsed = SessionAccessErrorCodeV1Schema.safeParse(data?.error);
+    if (parsed.success && (
+        parsed.data === 'session_access_authentication_required'
+        || parsed.data === 'session_access_authentication_unavailable'
+    )) {
+        const status = typeof responseRecord?.status === 'number' ? responseRecord.status : undefined;
+        throw Object.assign(
+            new Error(
+                parsed.data === 'session_access_authentication_required'
+                    ? 'Team authentication required'
+                    : 'Team authentication is unavailable',
+                { cause: error },
+            ),
+            {
+                code: parsed.data,
+                ...(status === undefined ? {} : { status }),
+                retryable: parsed.data === 'session_access_authentication_unavailable',
+            },
+        );
+    }
+    throw error;
 }
 
 function classifyPendingQueueMaterializationTransportError(
@@ -653,6 +703,13 @@ export async function listPendingQueueV2LocalIdsFromServer(params: {
             })
             .filter((value: string | null): value is string => typeof value === 'string' && value.length > 0);
     } catch (error) {
+        const responseError = error && typeof error === 'object'
+            ? (error as { response?: { data?: { error?: unknown } } }).response?.data?.error
+            : undefined;
+        if (responseError === 'session_access_authentication_required'
+            || responseError === 'session_access_authentication_unavailable') {
+            rethrowPendingSessionAccessContinuation(error);
+        }
         if (isAuthenticationError(error)) {
             throw error;
         }
@@ -685,11 +742,10 @@ export async function readPendingQueueV2ActivationEligibilityFromServer(params: 
         const record = row as Record<string, unknown>;
         if (readPendingLocalId(record.localId) !== params.requestId) continue;
         const messageRole = SessionMessageRoleSchema.safeParse(record.messageRole);
-        const requestedAction = normalizePendingRequestedActionV1(record.requestedAction);
+        normalizePendingRequestedActionV1(record.requestedAction);
         const deliveryStatus = readPendingDeliveryStatusFromRecord(record);
         return messageRole.success
             && messageRole.data === 'user'
-            && requestedAction?.kind === 'send_now'
             && deliveryStatus.status === 'queued'
             ? 'eligible'
             : 'ineligible';
@@ -739,6 +795,12 @@ export type PendingQueueV2DeliveryStatusEntry = Readonly<{
     deliveryStatus: PendingDeliveryStatusV1;
 }>;
 
+type ResolvePendingQueueAuthorizationHeaders = (request: Readonly<{
+    method: 'GET' | 'POST';
+    path: string;
+    body?: unknown;
+}>) => Readonly<Record<string, string>> | null;
+
 /**
  * Projects the server-owned delivery status for each current pending row. A canonical local claim
  * whose id is absent from this projection has reached a terminal outcome and must be retired.
@@ -751,14 +813,31 @@ export async function listPendingQueueV2DeliveryStatusesFromServer(params: {
     token: string;
     sessionId: string;
     includeDiscarded?: boolean;
+    recipient?: Readonly<{ kind: 'execution_run'; runId: string }>;
+    resolveAuthorizationHeaders?: ResolvePendingQueueAuthorizationHeaders;
 }): Promise<PendingQueueV2DeliveryStatusEntry[]> {
     const serverUrl = resolveServerHttpBaseUrl();
-    const response = await axios.get(`${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`, {
-        headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.token}` },
+    const recipient = params.recipient === undefined
+        ? undefined
+        : ParticipantExecutionRunRecipientRoutingIdentityV1Schema.parse(params.recipient);
+    const basePath = recipient
+        ? `/v2/sessions/${encodeURIComponent(params.sessionId)}/execution-runs/${encodeURIComponent(recipient.runId)}/pending`
+        : `/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`;
+    const path = params.includeDiscarded === true ? `${basePath}?includeDiscarded=true` : basePath;
+    const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+        ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+    if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+    const response = await axios.get(`${serverUrl}${path}`, {
+        headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), ...authorizationHeaders },
         timeout: 10_000,
-        ...(params.includeDiscarded === true ? { params: { includeDiscarded: 'true' } } : {}),
     });
-    const data = response?.data as { pending?: unknown } | null | undefined;
+    const data = response?.data as { pending?: unknown; recipient?: unknown } | null | undefined;
+    if (recipient) {
+        const echoedRecipient = ParticipantExecutionRunRecipientRoutingIdentityV1Schema.safeParse(data?.recipient);
+        if (!echoedRecipient.success || echoedRecipient.data.runId !== recipient.runId) {
+            throw new Error('Target pending status recipient mismatch');
+        }
+    }
     const pending = Array.isArray(data?.pending) ? data.pending : [];
     const seen = new Set<string>();
     const entries: PendingQueueV2DeliveryStatusEntry[] = [];
@@ -817,11 +896,16 @@ export async function readBlockedPendingQueueV2DeliveryByLocalIdFromServer(param
     token: string;
     sessionId: string;
     localId: string;
+    resolveAuthorizationHeaders?: ResolvePendingQueueAuthorizationHeaders;
 }): Promise<PendingQueueBlockedDelivery | null> {
     try {
         const serverUrl = resolveServerHttpBaseUrl();
-        const response = await axios.get(`${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`, {
-            headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.token}` },
+        const path = `/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`;
+        const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+            ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+        if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+        const response = await axios.get(`${serverUrl}${path}`, {
+            headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), ...authorizationHeaders },
             timeout: 10_000,
         });
         const data = response?.data as { pending?: unknown } | null | undefined;
@@ -867,6 +951,13 @@ export async function discardPendingQueueV2Messages(params: {
             );
             discarded += 1;
         } catch (error) {
+            const responseError = error && typeof error === 'object'
+                ? (error as { response?: { data?: { error?: unknown } } }).response?.data?.error
+                : undefined;
+            if (responseError === 'session_access_authentication_required'
+                || responseError === 'session_access_authentication_unavailable') {
+                rethrowPendingSessionAccessContinuation(error);
+            }
             if (isAuthenticationError(error)) {
                 throw error;
             }
@@ -881,21 +972,61 @@ export async function enqueuePendingQueueV2MessageViaHttp(params: {
     sessionId: string;
     body: PendingQueueWriteBody;
     signal?: AbortSignal;
+    resolveAuthorizationHeaders?: ResolvePendingQueueAuthorizationHeaders;
+}): Promise<Readonly<{ didWrite: boolean | null; terminal: boolean; suppressed: boolean }>> {
+    return postPendingQueueMessageViaHttp({
+        ...params,
+        path: `/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`,
+    });
+}
+
+export async function enqueuePendingExecutionRunMessageViaHttp(params: {
+    token: string;
+    sessionId: string;
+    recipient: SessionPendingExecutionRunMaterializeNextRequestV2['recipient'];
+    body: SessionExecutionRunPendingEnqueueRequestV1;
+    signal?: AbortSignal;
+    resolveAuthorizationHeaders?: ResolvePendingQueueAuthorizationHeaders;
+}): Promise<Readonly<{ didWrite: boolean | null; terminal: boolean; suppressed: boolean }>> {
+    const recipient = ParticipantExecutionRunRecipientRoutingIdentityV1Schema.parse(params.recipient);
+    return postPendingQueueMessageViaHttp({
+        ...params,
+        path: `/v2/sessions/${encodeURIComponent(params.sessionId)}/execution-runs/${encodeURIComponent(recipient.runId)}/pending`,
+        body: SessionExecutionRunPendingEnqueueRequestV1Schema.parse(params.body),
+    });
+}
+
+async function postPendingQueueMessageViaHttp(params: {
+    token: string;
+    path: string;
+    body: PendingQueueWriteBody | SessionExecutionRunPendingEnqueueRequestV1;
+    signal?: AbortSignal;
+    resolveAuthorizationHeaders?: ResolvePendingQueueAuthorizationHeaders;
 }): Promise<Readonly<{ didWrite: boolean | null; terminal: boolean; suppressed: boolean }>> {
     const serverUrl = resolveServerHttpBaseUrl();
-    const response = await axios.post(
-        `${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`,
-        params.body,
-        {
-            headers: {
-                ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-                Authorization: `Bearer ${params.token}`,
-                'Content-Type': 'application/json',
-            },
-            timeout: 10_000,
-            ...(params.signal ? { signal: params.signal } : {}),
-        },
-    );
+    const authorizationHeaders = params.resolveAuthorizationHeaders?.({
+        method: 'POST', path: params.path, body: params.body,
+    }) ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+    if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+    const response = await (async () => {
+        try {
+            return await axios.post(
+                `${serverUrl}${params.path}`,
+                params.body,
+                {
+                    headers: {
+                        ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+                        ...authorizationHeaders,
+                        'Content-Type': 'application/json',
+                    },
+                    timeout: 10_000,
+                    ...(params.signal ? { signal: params.signal } : {}),
+                },
+            );
+        } catch (error) {
+            rethrowPendingSessionAccessContinuation(error);
+        }
+    })();
     const data = response?.data;
     return {
         didWrite: data && typeof data === 'object' && typeof (data as { didWrite?: unknown }).didWrite === 'boolean'
@@ -920,7 +1051,14 @@ export async function resolveAcceptedPendingQueueV2Delivery(params: {
     });
     const parsed = AcceptedPendingSettlementResponseV1Schema.safeParse(raw);
     if (!parsed.success) throw new Error('Invalid pending delivery accepted settlement acknowledgement');
-    const result = parsed.data;
+    return readAcceptedPendingSettlementResult(parsed.data, localId);
+}
+
+function readAcceptedPendingSettlementResult(result: AcceptedPendingSettlementResponseV1, localId: string): {
+    didResolve: boolean;
+    pendingQueueState?: KnownPendingQueueState;
+    message?: PendingQueueMaterializedMessage | null;
+} {
     if (!result.ok) {
         throw new PendingQueueAcceptedSettlementError(
             result.error,
@@ -938,6 +1076,82 @@ export async function resolveAcceptedPendingQueueV2Delivery(params: {
         ...(pendingQueueState ? { pendingQueueState } : {}),
         ...('message' in result ? { message } : { message: null }),
     };
+}
+
+/** Target requests never share the permissive main event or HTTP fallback. */
+export async function materializeNextPendingExecutionRunMessage(params: Omit<SessionPendingExecutionRunMaterializeNextRequestV2, 'v'> & {
+    socket: Socket<ServerToClientEvents, ClientToServerEvents>;
+}): Promise<PendingQueueMaterializeNextResult & {
+    recipient: SessionPendingExecutionRunMaterializeNextRequestV2['recipient'];
+    sidechainId: string;
+    authorAccountId: string | null;
+}> {
+    const { socket, ...input } = params;
+    const request = SessionPendingExecutionRunMaterializeNextRequestV2Schema.parse({ v: 2, ...input });
+    try {
+        const raw = await emitSocketWithAck({
+            socket, event: SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2, payload: request,
+        });
+        const parsed = SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse(raw);
+        if (!parsed.success) {
+            throw addPendingQueueMaterializationTransportDiagnostic(new Error('Invalid target pending acknowledgement'), 'malformed_ack');
+        }
+        const result = parsed.data;
+        if (!result.ok) {
+            const retryAfterMs = result.error === 'transaction-unavailable' ? result.retryAfterMs : undefined;
+            throw addPendingQueueMaterializationTransportDiagnostic(
+                new Error(`Target pending materialization failed: ${result.error}`),
+                retryAfterMs === undefined ? 'server_rejected' : 'server_retryable', result.error, retryAfterMs,
+            );
+        }
+        if (result.recipient.runId !== request.recipient.runId || result.sidechainId !== request.sidechainId) {
+            throw addPendingQueueMaterializationTransportDiagnostic(new Error('Target pending identity mismatch'), 'malformed_ack');
+        }
+        const message = result.didMaterialize ? readMaterializedMessageFromAck(result) : null;
+        if (result.didMaterialize && (!message?.localId || !message.content || !message.providerAction)) {
+            throw addPendingQueueMaterializationTransportDiagnostic(new Error('Invalid target pending input'), 'malformed_ack');
+        }
+        return {
+            recipient: result.recipient, sidechainId: result.sidechainId, authorAccountId: result.authorAccountId,
+            didMaterialize: result.didMaterialize,
+            didWrite: result.didMaterialize ? result.didWrite : false,
+            localId: result.didMaterialize ? result.message.localId : result.localId ?? null,
+            message, deliveryState: result.deliveryState,
+            pendingQueueState: readKnownPendingQueueState(result),
+            ...(!result.didMaterialize && result.deferredReason ? { deferredReason: result.deferredReason } : {}),
+        };
+    } catch (error) {
+        if (isAuthenticationError(error)) throw error;
+        throw readPendingQueueMaterializationTransportDiagnostic(error)
+            ? error : addPendingQueueMaterializationTransportDiagnostic(error);
+    }
+}
+
+export async function resolveAcceptedPendingExecutionRunDelivery(params: Omit<SessionPendingExecutionRunAcceptedRequestV2, 'v'> & {
+    socket: Socket<ServerToClientEvents, ClientToServerEvents>;
+}): Promise<ReturnType<typeof readAcceptedPendingSettlementResult>> {
+    const { socket, ...input } = params;
+    const request = SessionPendingExecutionRunAcceptedRequestV2Schema.parse({ v: 2, ...input });
+    const raw = await emitSocketWithAck({ socket, event: SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2, payload: request });
+    const response = SessionPendingExecutionRunAcceptedResponseV2Schema.parse(raw);
+    if (response.recipient.runId !== request.recipient.runId || response.sidechainId !== request.sidechainId) {
+        throw new Error('Target pending settlement identity mismatch');
+    }
+    return readAcceptedPendingSettlementResult(response.result, request.localId);
+}
+
+export async function blockPendingExecutionRunDelivery(params: Omit<SessionPendingExecutionRunBlockRequestV2, 'v'> & {
+    socket: Socket<ServerToClientEvents, ClientToServerEvents>;
+}): Promise<{ didUpdate: boolean; pendingQueueState: KnownPendingQueueState | null }> {
+    const { socket, ...input } = params;
+    const request = SessionPendingExecutionRunBlockRequestV2Schema.parse({ v: 2, ...input });
+    const raw = await emitSocketWithAck({ socket, event: SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2, payload: request });
+    const response = SessionPendingExecutionRunBlockResponseV2Schema.parse(raw);
+    if (response.recipient.runId !== request.recipient.runId || response.localId !== request.localId) {
+        throw new Error('Target pending block identity mismatch');
+    }
+    if (!response.result.ok) throw new Error(`Target pending block failed: ${response.result.error}`);
+    return { didUpdate: response.result.didUpdate, pendingQueueState: readKnownPendingQueueState(response.result) };
 }
 
 export async function settlePendingQueueV2Admission(params: Readonly<{

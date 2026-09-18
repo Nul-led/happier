@@ -26,12 +26,20 @@ import {
   getActiveAccountSettingsSnapshot,
   subscribeActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import {
+  refreshSavedSecretCatalogForOperation,
+  SavedSecretOperationAdmissionError,
+} from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import {
   ForegroundProfileSecretRecoveryRequiredError,
+  LaunchSecretReferenceOverlayError,
   readForegroundProfileRequiredSecretNamesMissingBinding,
+  readLaunchSecretReferenceOverlayProviderErrorCodeV1,
+  resolveEffectiveLaunchProfileSecretBindings,
   resolveForegroundProfileSavedSecretEnvironment,
 } from './resolveForegroundProfileSavedSecretEnvironment';
+
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
@@ -111,7 +119,32 @@ function refusal(
   return { ok: false, error };
 }
 
+function readExactForegroundProfileSnapshot(
+  request: ForegroundAgentRuntimeAdmissionOwnerRequestV1,
+) {
+  if (!request.profileId) return null;
+  const settingsSnapshot = getActiveAccountSettingsSnapshot();
+  if (
+    !settingsSnapshot
+    || typeof settingsSnapshot.scopeKey !== 'string'
+    || settingsSnapshot.scopeKey.length === 0
+    || settingsSnapshot.scopeKey !== request.accountSettingsScopeKey
+    || settingsSnapshot.settingsVersion !== request.accountSettingsVersion
+  ) {
+    return null;
+  }
+  const profile = readProfilesFromAccountSettings(
+    settingsSnapshot.settings,
+  ).visibleProfiles.find(
+    (candidate) => candidate.id === request.profileId,
+  );
+  return profile
+    ? Object.freeze({ settingsSnapshot, profile, scopeKey: settingsSnapshot.scopeKey })
+    : null;
+}
+
 export type PrepareForegroundAgentRuntimeAdmissionDependencies = Readonly<{
+  refreshSavedSecretCatalogForOperation?: typeof refreshSavedSecretCatalogForOperation;
   activateSessionPurposeBindings?:
     ConnectedAccountPurposeBindingOwner['activateSessionPurposeBindings'];
   /**
@@ -309,7 +342,6 @@ async function prepareForegroundProviderLaunch(input: Readonly<{
       featureId: 'providers',
       env: process.env,
       serverUrl: configuration.serverUrl,
-      timeoutMs: 1_500,
     })
   ).decision.state === 'enabled';
   return await prepareDirectProviderLaunch({
@@ -317,7 +349,7 @@ async function prepareForegroundProviderLaunch(input: Readonly<{
     backendTarget: request.backendTarget,
     machineId: request.machineId,
     agentId: request.agentId,
-    sessionId: request.sessionId,
+    scope: { kind: 'session', sessionId: request.sessionId },
     previousBinding: request.previousBinding ?? null,
     confirmation: null,
     connectedServices: request.connectedServices ?? null,
@@ -399,6 +431,53 @@ export async function prepareForegroundAgentRuntimeAdmission(
   | Readonly<{ ok: true; prepared: PreparedForegroundAgentRuntimeAdmission }>
   | Extract<ForegroundAgentRuntimeAdmissionResponseV1, { ok: false }>
 > {
+  const initialExactProfileSnapshot = readExactForegroundProfileSnapshot(request);
+  if (request.profileId && !initialExactProfileSnapshot) {
+    return refusal(createProviderErrorV1(
+      'provider_agent_runtime_unsupported',
+      {
+        machineId: request.machineId,
+        sourceProfileId: request.profileId,
+      },
+    ));
+  }
+  if (initialExactProfileSnapshot) {
+    const expectedScopeKey = initialExactProfileSnapshot.scopeKey;
+    let references: readonly Readonly<{ ref: string; revision?: number }>[];
+    try {
+      references = Object.freeze(Object.values(
+        resolveEffectiveLaunchProfileSecretBindings({
+          profile: initialExactProfileSnapshot.profile,
+          accountSettings: initialExactProfileSnapshot.settingsSnapshot.settings,
+          ...(request.secretReferenceOverlay
+            ? { secretReferenceOverlay: request.secretReferenceOverlay }
+            : {}),
+        }),
+      ));
+    } catch (error) {
+      if (!(error instanceof LaunchSecretReferenceOverlayError)) throw error;
+      return refusal(createProviderErrorV1(
+        readLaunchSecretReferenceOverlayProviderErrorCodeV1(error.reason),
+        { machineId: request.machineId, sourceProfileId: request.profileId },
+      ));
+    }
+    try {
+      await (
+        dependencies.refreshSavedSecretCatalogForOperation
+        ?? refreshSavedSecretCatalogForOperation
+      )({
+        expectedScopeKey,
+        references,
+      });
+    } catch (error) {
+      return refusal(createProviderErrorV1(
+        error instanceof SavedSecretOperationAdmissionError
+          ? readLaunchSecretReferenceOverlayProviderErrorCodeV1(error.reason)
+          : 'provider_secret_unavailable',
+        { machineId: request.machineId, sourceProfileId: request.profileId },
+      ));
+    }
+  }
   const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
     happyHomeDir: configuration.happyHomeDir,
   });
@@ -834,37 +913,8 @@ export async function prepareForegroundAgentRuntimeAdmission(
     let ownsConnectedServiceLaunchScope = Boolean(
       effectiveConnectedServices || requestAuthMaterializedRoot,
     );
-    const readExactProfileSnapshot = () => {
-      if (!request.profileId) return null;
-      const settingsSnapshot = getActiveAccountSettingsSnapshot();
-      if (
-        !settingsSnapshot
-        || typeof settingsSnapshot.scopeKey !== 'string'
-        || settingsSnapshot.scopeKey.length === 0
-        || settingsSnapshot.scopeKey !== request.accountSettingsScopeKey
-        || settingsSnapshot.settingsVersion !== request.accountSettingsVersion
-      ) {
-        return null;
-      }
-      const profile = readProfilesFromAccountSettings(
-        settingsSnapshot.settings,
-      ).visibleProfiles.find(
-        (candidate) => candidate.id === request.profileId,
-      );
-      return profile
-        ? Object.freeze({ settingsSnapshot, profile })
-        : null;
-    };
-    const initialExactProfileSnapshot = readExactProfileSnapshot();
-    if (request.profileId && !initialExactProfileSnapshot) {
-      return refusal(createProviderErrorV1(
-        'provider_agent_runtime_unsupported',
-        {
-          machineId: request.machineId,
-          sourceProfileId: request.profileId,
-        },
-      ));
-    }
+    const readExactProfileSnapshot = () =>
+      readExactForegroundProfileSnapshot(request);
     const stateSharingCatalogEntry = lease.registry.acquireAgentCatalogEntry
       ? await lease.registry.acquireAgentCatalogEntry(request.agentId)
       : lease.registry.contributes.catalogEntriesById[request.agentId] ?? null;
@@ -884,6 +934,9 @@ export async function prepareForegroundAgentRuntimeAdmission(
                 profile: initialExactProfileSnapshot.profile,
                 accountSettings:
                   initialExactProfileSnapshot.settingsSnapshot.settings,
+                ...(request.secretReferenceOverlay
+                  ? { secretReferenceOverlay: request.secretReferenceOverlay }
+                  : {}),
               })
             : Object.freeze([]),
         ...(stateSharingDescriptor?.providerSupportStatus === 'supported'
@@ -951,17 +1004,39 @@ export async function prepareForegroundAgentRuntimeAdmission(
                   ),
                 };
               }
-              savedProfileEnvironment =
-                resolveForegroundProfileSavedSecretEnvironment({
-                  profile: exactProfileSnapshot.profile,
-                  accountSettings:
-                    exactProfileSnapshot.settingsSnapshot.settings,
-                  settingsSecretsReadKeys:
-                    exactProfileSnapshot.settingsSnapshot
-                      .settingsSecretsReadKeys,
-                  foregroundSatisfiedSecretRequirementNames:
-                    foregroundSatisfiedProfileSecretRequirementNames,
-                });
+              try {
+                savedProfileEnvironment =
+                  resolveForegroundProfileSavedSecretEnvironment({
+                    profile: exactProfileSnapshot.profile,
+                    accountSettings:
+                      exactProfileSnapshot.settingsSnapshot.settings,
+                    settingsSecretsReadKeys:
+                      exactProfileSnapshot.settingsSnapshot
+                        .settingsSecretsReadKeys,
+                    savedSecretResources:
+                      exactProfileSnapshot.settingsSnapshot.savedSecretResources,
+                    foregroundSatisfiedSecretRequirementNames:
+                      foregroundSatisfiedProfileSecretRequirementNames,
+                    ...(request.secretReferenceOverlay
+                      ? { secretReferenceOverlay: request.secretReferenceOverlay }
+                      : {}),
+                  });
+              } catch (error) {
+                if (!(error instanceof LaunchSecretReferenceOverlayError)) throw error;
+                // The caller chose these exact Saved Secrets for this launch.
+                // Falling back to the Profile binding would silently launch
+                // with credentials they did not select.
+                return {
+                  ok: false as const,
+                  error: createProviderErrorV1(
+                    readLaunchSecretReferenceOverlayProviderErrorCodeV1(error.reason),
+                    {
+                      machineId: request.machineId,
+                      sourceProfileId: request.profileId,
+                    },
+                  ),
+                };
+              }
               profileRedactionCleanup =
                 registerSensitiveDiagnosticValues(
                   Object.values(savedProfileEnvironment),

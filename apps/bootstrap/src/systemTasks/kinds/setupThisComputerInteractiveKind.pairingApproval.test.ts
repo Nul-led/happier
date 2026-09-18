@@ -8,6 +8,11 @@ import { createSystemTasksRunner, type SetupMachineRecipeExecutor } from '@happi
 
 import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
 
+/** The CLI acquisition the executor reports: managed install path, with the command it resolved. */
+const MANAGED_CLI = { provenance: 'managed', command: '/home/tester/.happier/bin/happier' } as const;
+/** An env/repo override: usable, but never approved for pairing without a human. */
+const OVERRIDE_CLI = { provenance: 'override', command: '/repo/apps/cli/bin/happier.mjs' } as const;
+
 async function waitForPendingPrompt(
   runner: ReturnType<typeof createSystemTasksRunner>,
   params: Readonly<{ taskId: string; cursor: number }>,
@@ -123,6 +128,7 @@ function noGuidanceDeps() {
       conflictingServices: [],
       foreignHomeConflictingServices: [],
       exactDefaultServiceExists: false,
+      exactDefaultServiceRunning: false,
       shouldOfferDefaultReleaseChannelSwitch: false,
       shouldPromptForManualRelayTakeover: false,
       shouldPromptForServiceReplacement: false,
@@ -142,8 +148,10 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
+        return MANAGED_CLI;
       },
       readActiveRelayProfile: async () => ({
         serverUrl: RELAY_SERVER_URL,
@@ -158,7 +166,12 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     await runner.start({
       taskId: 'setup-ordering',
       kind: 'setup.thisComputer.v1',
-      params: { surface: 'desktop.ui', target: 'thisComputer' },
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: RELAY_SERVER_URL,
+        activeWebappUrl: RELAY_WEBAPP_URL,
+      },
     });
 
     // The automatic approval prompt is part of the flow; answer it so the task completes.
@@ -180,8 +193,10 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
+        return MANAGED_CLI;
       },
       readActiveRelayProfile: async () => ({
         serverUrl: RELAY_SERVER_URL,
@@ -196,14 +211,23 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     await runner.start({
       taskId: 'setup-approval',
       kind: 'setup.thisComputer.v1',
-      params: { surface: 'desktop.ui', target: 'thisComputer' },
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: RELAY_SERVER_URL,
+        activeWebappUrl: RELAY_WEBAPP_URL,
+      },
     });
 
     const promptPoll = await waitForPendingPrompt(runner, { taskId: 'setup-approval', cursor: 0 });
     const promptData = promptPoll.pendingPrompt?.data as Record<string, unknown>;
     expect(promptData).toBeTruthy();
-    // Only the opaque response, its kind, the public key, and the explicit target identity.
+    // Only the opaque response, its kind, the public key, the explicit target identity, and which
+    // CLI this run resolved and how — the facts the approval owner decides on (R8/R13). The
+    // command is a local filesystem path, never a credential.
     expect(Object.keys(promptData).sort()).toEqual([
+      'cliCommand',
+      'cliProvenance',
       'kind',
       'publicKey',
       'relayUrl',
@@ -211,6 +235,8 @@ describe('setup.thisComputer.v1 pairing approval', () => {
       'responseKind',
       'webappUrl',
     ]);
+    expect(promptData.cliProvenance).toBe('managed');
+    expect(promptData.cliCommand).toBe(MANAGED_CLI.command);
     expect(promptData.kind).toBe('authRequest');
     expect(promptData.publicKey).toBe(fixture.publicKeyB64);
     expect(promptData.responseKind).toBe('tokenOnly');
@@ -243,12 +269,14 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     expect(invocations).toContain(`waitForAuthPairing:${fixture.publicKeyB64}`);
   });
 
-  it('falls back to the legacy manual approval surface when the approval answer is declined', async () => {
+  it('fails by name when the approval owner declines, with no second approval surface to wait on', async () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
+        return MANAGED_CLI;
       },
       readActiveRelayProfile: async () => ({
         serverUrl: RELAY_SERVER_URL,
@@ -263,24 +291,114 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     await runner.start({
       taskId: 'setup-declined',
       kind: 'setup.thisComputer.v1',
-      params: { surface: 'desktop.ui', target: 'thisComputer' },
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: RELAY_SERVER_URL,
+        activeWebappUrl: RELAY_WEBAPP_URL,
+      },
     });
 
     const promptPoll = await waitForPendingPrompt(runner, { taskId: 'setup-declined', cursor: 0 });
     await runner.respond({ taskId: 'setup-declined', answer: { approved: false } });
 
     const finalPoll = await waitForResult(runner, { taskId: 'setup-declined', cursor: promptPoll.nextCursor });
-    expect(finalPoll.result).toMatchObject({ ok: true, data: { machineId: 'machine-1' } });
+    // A declined approval stops the run and says so, exactly as local repair does. Proceeding to
+    // claim the pairing would pair a computer the person just refused.
+    expect(finalPoll.result).toMatchObject({ ok: false, error: { code: 'approval_declined' } });
+    expect(invocations).not.toContain(`waitForAuthPairing:${fixture.publicKeyB64}`);
+    expect(invocations).not.toContain('installDaemonService');
 
-    // The legacy manual surface remains available: a non-blocking authRequest prompt without
-    // response material, and the task never hangs waiting for another answer.
+    // No second, non-blocking approval prompt: nothing in the app reads one, so emitting it only
+    // replaced this named failure with a silent wait for the executor timeout.
     const legacyPrompt = finalPoll.events.find((event) => (
       (event as { type?: string }).type === 'prompt'
       && (event as { data?: Record<string, unknown> }).data != null
       && (event as { data?: Record<string, unknown> }).data!.response === undefined
     ));
-    expect(legacyPrompt).toBeTruthy();
-    const legacyData = (legacyPrompt as { data: Record<string, unknown> }).data;
-    expect(Object.keys(legacyData).sort()).toEqual(['kind', 'publicKey', 'relayUrl', 'webappUrl']);
+    expect(legacyPrompt).toBeUndefined();
+  });
+
+  it('fails closed by name when the CLI supplies no token-only pairing material', async () => {
+    const invocations: string[] = [];
+    const fixture = createPairingFixture();
+    const executor = createUnauthenticatedPairingExecutor(invocations, fixture);
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      ensureLocalHappierTools: async () => MANAGED_CLI,
+      readActiveRelayProfile: async () => ({
+        serverUrl: RELAY_SERVER_URL,
+        webappUrl: RELAY_WEBAPP_URL,
+        localServerUrl: null,
+      }),
+      createRecipeExecutor: () => ({
+        ...executor,
+        // A CLI old enough to predate token-only pairing: a public key and nothing to seal.
+        requestAuthPairing: async () => {
+          invocations.push('requestAuthPairing');
+          return { publicKey: fixture.publicKeyB64 };
+        },
+      }),
+      ...noGuidanceDeps(),
+    });
+
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({
+      taskId: 'setup-no-token-only',
+      kind: 'setup.thisComputer.v1',
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: RELAY_SERVER_URL,
+        activeWebappUrl: RELAY_WEBAPP_URL,
+      },
+    });
+
+    const finalPoll = await waitForResult(runner, { taskId: 'setup-no-token-only', cursor: 0 });
+    expect(finalPoll.result).toMatchObject({ ok: false, error: { code: 'pairing_approval_unavailable' } });
+    expect(finalPoll.events.some((event) => (event as { type?: string }).type === 'prompt')).toBe(false);
+    expect(invocations).not.toContain('installDaemonService');
+  });
+
+  it('stamps an override-resolved CLI and its command on the prompt so the approval owner can ask about it', async () => {
+    // An env/repo override went through no release verification. The executor does not decide —
+    // it reports which CLI it resolved and how, and the desktop approval owner asks the person at
+    // the keyboard about anything that is not `managed`, naming that exact command (R8/R13).
+    const invocations: string[] = [];
+    const fixture = createPairingFixture();
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      ensureLocalHappierTools: async () => {
+        invocations.push('ensureLocalHappierTools');
+        return OVERRIDE_CLI;
+      },
+      readActiveRelayProfile: async () => ({
+        serverUrl: RELAY_SERVER_URL,
+        webappUrl: RELAY_WEBAPP_URL,
+        localServerUrl: null,
+      }),
+      createRecipeExecutor: () => createUnauthenticatedPairingExecutor(invocations, fixture),
+      ...noGuidanceDeps(),
+    });
+
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({
+      taskId: 'setup-override-provenance',
+      kind: 'setup.thisComputer.v1',
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: RELAY_SERVER_URL,
+        activeWebappUrl: RELAY_WEBAPP_URL,
+      },
+    });
+
+    const promptPoll = await waitForPendingPrompt(runner, { taskId: 'setup-override-provenance', cursor: 0 });
+    const overridePromptData = promptPoll.pendingPrompt?.data as Record<string, unknown>;
+    expect(overridePromptData.cliProvenance).toBe('override');
+    expect(overridePromptData.cliCommand).toBe(OVERRIDE_CLI.command);
+
+    await runner.respond({ taskId: 'setup-override-provenance', answer: { approved: true } });
+    await waitForResult(runner, { taskId: 'setup-override-provenance', cursor: promptPoll.nextCursor });
   });
 });

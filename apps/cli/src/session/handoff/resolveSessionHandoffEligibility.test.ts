@@ -424,4 +424,93 @@ describe('resolveSessionHandoffEligibility', () => {
       storageMode: 'persisted',
     });
   });
+
+  // The Agent minted this id and Happier hands it straight back to that Agent.
+  // Surrounding whitespace, the embedded newline and `/`, `+`, `=` punctuation
+  // are part of the identity, so the handoff id is presence-checked, never
+  // renormalized.
+  const providerMintedId = '  provider\nses/AB+cd==  ';
+
+  it('hands the exact provider-minted session bytes to the Agent handoff surface', async () => {
+    await expect(
+      resolveEligibilityFromOwnerMetadata({
+        metadata: {
+          machineId: 'machine_source',
+        },
+        sessionAgentId: 'acme.handoff',
+        sessionProviderSessionId: providerMintedId,
+        runtimeDeps: {
+          resolveCurrentExecutionSurfacesForAgent: async () => ({
+            backendId: 'acme.handoff.backend',
+            executionSurfaces: {
+              terminalRuntime: null,
+              externalSession: null,
+              attach: null,
+              handoff: {
+                evaluateAvailability: async (request: { sessionId?: string }) => {
+                  expect(request.sessionId).toBe(providerMintedId);
+                  return { available: true as const };
+                },
+                exportBundle: async () => ({ ok: false as const, code: 'handoff_failed' as const }),
+                importBundle: async () => ({ ok: false as const, code: 'handoff_failed' as const }),
+              },
+              fork: null,
+              checkpoint: null,
+            },
+          }),
+        },
+      }),
+    ).resolves.toEqual({
+      eligible: true,
+      agentId: 'acme.handoff',
+      backendId: 'acme.handoff.backend',
+      storageMode: 'persisted',
+      sourceMachineId: 'machine_source',
+      vendorHandoffId: providerMintedId,
+    });
+  });
+
+  it('keeps a linked external session id exact when it is the only handoff identity', async () => {
+    await expect(
+      resolveEligibilityFromOwnerMetadata({
+        metadata: {
+          machineId: 'machine_source',
+          externalSessionV1: {
+            v: 1,
+            agentId: 'opencode',
+            machineId: 'machine_source',
+            remoteSessionId: providerMintedId,
+            source: { kind: 'opencodeServer', baseUrl: 'http://127.0.0.1:4096/' },
+            linkedAtMs: 1,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      eligible: true,
+      agentId: 'opencode',
+      backendId: 'opencode',
+      storageMode: 'direct',
+      sourceMachineId: 'machine_source',
+      vendorHandoffId: providerMintedId,
+    });
+  });
+
+  it('refuses an all-whitespace provider session id as a handoff identity', async () => {
+    for (const blank of ['   ', '\n', ' \t ']) {
+      await expect(
+        resolveEligibilityFromOwnerMetadata({
+          metadata: {
+            machineId: 'machine_source',
+          },
+          sessionAgentId: 'acme.handoff',
+          sessionProviderSessionId: blank,
+        }),
+      ).resolves.toEqual({
+        eligible: false,
+        reasonCode: 'vendor_handoff_id_missing',
+        agentId: 'acme.handoff',
+        storageMode: 'persisted',
+      });
+    }
+  });
 });

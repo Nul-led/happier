@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
@@ -166,10 +167,10 @@ describe('ApiSessionClient socket write readiness', () => {
       encryptionMode: 'plain',
       dataEncryptionKey: null,
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       session,
-      { credentials: { token: 'tok', encryption: null } },
+      { metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } } },
     );
     const updater = vi.fn((metadata) => ({
       ...metadata,
@@ -213,10 +214,10 @@ describe('ApiSessionClient socket write readiness', () => {
     harness.userSocket = createApiSessionSocketStub({ connected: true });
 
     const session = createPlainSessionFixture({ id: 's-publisher-check' });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       session,
-      { credentials: { token: 'tok', encryption: null } },
+      { metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } } },
     );
     (client as never as {
       sessionSyncPendingInputServerContractResult: unknown;
@@ -235,10 +236,10 @@ describe('ApiSessionClient socket write readiness', () => {
     harness.sessionSocket = createApiSessionSocketStub({ connected: true });
     harness.userSocket = createApiSessionSocketStub({ connected: true });
 
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's-remote-v2-publisher-check' }),
-      { credentials: ownerCredentials },
+      { metadataAuthority: { kind: 'owner', credentials: ownerCredentials } },
     );
     (client as never as {
       sessionSyncPendingInputServerContractResult: unknown;
@@ -289,10 +290,10 @@ describe('ApiSessionClient socket write readiness', () => {
       encryptionMode: 'plain',
       dataEncryptionKey: null,
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       session,
-      { credentials: { token: 'tok', encryption: null } },
+      { metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } } },
     );
     const updater = vi.fn((agentState) => ({ ...agentState, startupReady: true }));
 
@@ -338,7 +339,7 @@ describe('ApiSessionClient socket write readiness', () => {
       encryptionKey: ownerCredentials.encryption.secret,
       encryptionVariant: 'legacy',
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       {
         ...legacySession,
@@ -353,10 +354,11 @@ describe('ApiSessionClient socket write readiness', () => {
         agentStateVersion: 2,
       },
       {
-        credentials: ownerCredentials,
+        metadataAuthority: { kind: 'owner', credentials: ownerCredentials },
         getAccountEncryptionCurrentness: async () => ({
           mode: 'e2ee', version: 1, signingKeyFingerprint: null,
           contentKeyFingerprint: 'content-fingerprint', updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'available' },
         }),
       },
     );
@@ -450,7 +452,7 @@ describe('ApiSessionClient socket write readiness', () => {
       encryptionKey: ownerCredentials.encryption.secret,
       encryptionVariant: 'legacy',
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       {
         ...legacySession,
@@ -465,10 +467,11 @@ describe('ApiSessionClient socket write readiness', () => {
         agentStateVersion: 2,
       },
       {
-        credentials: ownerCredentials,
+        metadataAuthority: { kind: 'owner', credentials: ownerCredentials },
         getAccountEncryptionCurrentness: async () => ({
           mode: 'e2ee', version: 1, signingKeyFingerprint: null,
           contentKeyFingerprint: 'content-fingerprint', updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'available' },
         }),
       },
     );
@@ -534,7 +537,7 @@ describe('ApiSessionClient socket write readiness', () => {
     });
     harness.userSocket = createApiSessionSocketStub({ connected: true });
 
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's-ready-runtime-activity' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's-ready-runtime-activity' }));
 
     const updatePromise = client.updateRuntimeActivityProjection({
       runtimeActivityState: 'active',
@@ -588,7 +591,7 @@ describe('ApiSessionClient socket write readiness', () => {
     });
     harness.userSocket = createApiSessionSocketStub({ connected: true });
     const session = createPlainSessionFixture({ id: 's-startup-publisher-claim' });
-    const client = new ApiSessionClient('tok', session, {
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', session, {
       initialRegisteredSessionStateFieldMutations: [
         createRegisteredSessionStateFieldMutation({
           sessionId: session.id,
@@ -645,7 +648,7 @@ describe('ApiSessionClient socket write readiness', () => {
     harness.startDeferred.resolve();
     harness.sessionSocket = createApiSessionSocketStub({ connected: true });
     harness.userSocket = createApiSessionSocketStub({ connected: true });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's-released-startup' }),
       { durableMutationDeliveryInitiallyActive: false },
@@ -719,7 +722,7 @@ describe('ApiSessionClient socket write readiness', () => {
     const session = createPlainSessionFixture({
       id: 's-superseded-startup-publisher-claim',
     });
-    const client = new ApiSessionClient('tok', session, {
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', session, {
       initialRegisteredSessionStateFieldMutations: [
         createRegisteredSessionStateFieldMutation({
           sessionId: session.id,

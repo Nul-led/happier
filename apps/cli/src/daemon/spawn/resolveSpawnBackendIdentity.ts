@@ -1,12 +1,11 @@
 import {
-  readLegacyConfiguredAcpBackendId,
   type AgentExecutionTargetV1,
   type BackendTargetRefV2,
   type SessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import type { SessionAttachFilePayload } from '@/agent/runtime/sessionAttachPayload';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
-import { isCatalogAgentId } from '@/agent/catalog/resolution';
 import {
   normalizeDaemonBackendTargetV2Input,
   resolveDaemonCatalogAgentIdFromBackendTarget,
@@ -17,15 +16,8 @@ import {
   resolveExistingSessionAttachContext,
   type ExistingSessionAttachContextFailureReason,
 } from '../sessionEncryption/resolveExistingSessionAttachContext';
-import {
-  resolveConcreteCompatBackendTargetRefs,
-} from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
-import { readSessionHandoffAgentId } from '@/session/handoff/metadata/sessionHandoffMetadataV1';
+import { resolveConcreteCompatBackendTargetRefs } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
 import { resolveCurrentExternalSessionAgentRoutingId } from '@/api/session/external/linking/qualifiedLinkIdentityRegistry';
-
-function isConcreteBuiltInCatalogAgentId(value: string): value is CatalogAgentId {
-  return value !== 'customAcp' && isCatalogAgentId(value);
-}
 
 function mapExistingSessionAttachFailureToSpawnError(reason: ExistingSessionAttachContextFailureReason): SpawnSessionResult {
   switch (reason) {
@@ -77,32 +69,13 @@ function mapExistingSessionAttachFailureToSpawnError(reason: ExistingSessionAtta
         errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
         errorMessage: 'Linked session Agent identity is unavailable for resume.',
       };
+    case 'clientE2eeRequired':
+      return {
+        type: 'error',
+        errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+        errorMessage: 'This daemon requires end-to-end encryption and will not attach to a plaintext session.',
+      };
   }
-}
-
-function resolveBackendTargetFromLocalHandoffOverlay(metadata: Record<string, unknown> | null): BackendTargetRefV2 | null {
-  const handoff = metadata?.handoffV1;
-  const agentId = readSessionHandoffAgentId(handoff);
-  if (!agentId) {
-    return null;
-  }
-
-  const configuredBackendId = readLegacyConfiguredAcpBackendId(agentId);
-  if (configuredBackendId) {
-    return resolveConcreteCompatBackendTargetRefs({
-      kind: 'configuredAcpBackend',
-      backendId: configuredBackendId,
-    })?.backendTargetV2 ?? null;
-  }
-
-  if (isConcreteBuiltInCatalogAgentId(agentId)) {
-    return resolveConcreteCompatBackendTargetRefs({
-      kind: 'builtInAgent',
-      agentId,
-    })?.backendTargetV2 ?? null;
-  }
-
-  return null;
 }
 
 type ResolveSpawnBackendIdentitySuccess = Readonly<{
@@ -127,10 +100,10 @@ export async function resolveSpawnBackendIdentity(params: Readonly<{
   agentTarget: AgentExecutionTargetV1 | undefined;
   backendTarget: BackendTargetRefV2 | undefined;
   credentials: StoredCredentials | null;
-  loadLocalHandoffMetadataByVendorResumeId: (vendorResumeId: string) => Promise<Record<string, unknown> | null>;
 }>): Promise<ResolveSpawnBackendIdentitySuccess | ResolveSpawnBackendIdentityFailure> {
   const normalizedExistingSessionId = params.existingSessionId.trim();
-  let effectiveResume = params.resume.trim();
+  // Opaque Agent identity: presence is decided, bytes are never rewritten.
+  let effectiveResume = readNonBlankOpaqueIdentifier(params.resume) ?? '';
   const resolvedAgentRoutingId = params.agentTarget
     ? await resolveCurrentExternalSessionAgentRoutingId(params.agentTarget.identity)
     : null;
@@ -202,22 +175,13 @@ export async function resolveSpawnBackendIdentity(params: Readonly<{
         effectiveBackendTargetV2 = attachedBackendTarget.backendTargetV2;
       }
     }
-    const linkedVendorResumeId = typeof attachContext.linkedVendorResumeId === 'string'
-      ? attachContext.linkedVendorResumeId.trim()
-      : '';
+    const linkedVendorResumeId = readNonBlankOpaqueIdentifier(attachContext.linkedVendorResumeId) ?? '';
     if (linkedVendorResumeId) {
       effectiveResume = linkedVendorResumeId;
     } else if (!effectiveResume) {
-      const derivedResume = typeof attachContext.vendorResumeId === 'string' ? attachContext.vendorResumeId.trim() : '';
+      const derivedResume = readNonBlankOpaqueIdentifier(attachContext.vendorResumeId) ?? '';
       if (derivedResume) {
         effectiveResume = derivedResume;
-      }
-    }
-    if (!params.agentTarget && !effectiveBackendTargetV2 && effectiveResume) {
-      const localHandoffMetadataOverlay = await params.loadLocalHandoffMetadataByVendorResumeId(effectiveResume).catch(() => null);
-      const localHandoffBackendTarget = resolveBackendTargetFromLocalHandoffOverlay(localHandoffMetadataOverlay);
-      if (localHandoffBackendTarget) {
-        effectiveBackendTargetV2 = localHandoffBackendTarget;
       }
     }
   }

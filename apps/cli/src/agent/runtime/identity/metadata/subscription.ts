@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { Metadata } from '@/api/types';
 import type { RuntimeTurnOperations } from '@/agent/runtime/turns/runtimeTurnOperations';
@@ -25,6 +27,8 @@ export function subscribeSessionRuntimePublicationToMetadata(params: Readonly<{
   sessionState: Pick<SessionStateSyncEngine, 'writeHappierField'>;
   runtime: RuntimeTurnOperations;
   providerSessionMetadataKey?: string | null;
+  /** Shared-editor runtimes retain runtime-local publications but cannot write owner metadata. */
+  publishOwnerMetadata?: boolean;
 }>): () => void {
   let lastPublishedNativeIdentity: string | null = null;
   let lastPublishedDescriptor: unknown = undefined;
@@ -44,10 +48,10 @@ export function subscribeSessionRuntimePublicationToMetadata(params: Readonly<{
       && params.providerSessionMetadataKey.trim().length > 0
       ? params.providerSessionMetadataKey.trim()
       : null;
-    const providerSessionId = typeof rawProviderSessionId === 'string'
-      ? rawProviderSessionId.trim()
-      : '';
-    if (!providerSessionId) {
+    // The Agent minted this id; Happier stores it and hands it straight back.
+    // Presence is the only judgement made here -- the bytes are identity.
+    const providerSessionId = readNonBlankOpaqueIdentifier(rawProviderSessionId);
+    if (providerSessionId === null) {
       return;
     }
     const nativeSessionLogPath = typeof rawNativeSessionLogPath === 'string'
@@ -125,6 +129,7 @@ export function subscribeSessionRuntimePublicationToMetadata(params: Readonly<{
       }
 
       if (publication.fact === 'runtimeCapabilities') {
+        if (params.publishOwnerMetadata === false) return;
         const nextCapabilities = publication.value ?? null;
         if (isDeepStrictEqual(lastPublishedCapabilities, nextCapabilities)) {
           return;
@@ -139,6 +144,7 @@ export function subscribeSessionRuntimePublicationToMetadata(params: Readonly<{
       }
 
       const nextFacets = publication.value;
+      if (params.publishOwnerMetadata === false) return;
       if (isDeepStrictEqual(lastPublishedFacets, nextFacets)) {
         return;
       }

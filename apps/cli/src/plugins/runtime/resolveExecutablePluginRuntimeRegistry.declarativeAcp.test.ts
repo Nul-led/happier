@@ -317,6 +317,7 @@ describe('resolveExecutablePluginRuntimeRegistry declarative ACP admission', () 
             contributes: createResolvedContributionRegistry({
                 agents: [{
                     id: agentId,
+                    identity: { pluginId, localId: agentId },
                     provenance: 'external',
                     source: { kind: 'path' },
                     definition: { kindVersion: 1, id: agentId, ownedBackendIds: [] },

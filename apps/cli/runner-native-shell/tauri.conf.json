@@ -1,0 +1,31 @@
+{
+  "$schema": "../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Happier Runner",
+  "mainBinaryName": "happier-runner",
+  "version": "0.3.0",
+  "identifier": "dev.happier.runner",
+  "build": { "frontendDist": "./web" },
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": "default-src 'self'; style-src 'self'; script-src 'self'" },
+    "windows": [{ "title": "Happier Runner", "width": 680, "height": 760, "minWidth": 360, "minHeight": 520, "resizable": true }]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "appimage"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
+    "externalBin": ["binaries/happier-runner-core"],
+    "shortDescription": "Run one Happier Session on a temporary computer",
+    "longDescription": "Happier Runner starts exactly one reviewed Happier Session on this computer and exits. It installs no service, no updater and no background agent.",
+    "category": "DeveloperTool",
+    "copyright": "Happier",
+    "publisher": "Happier",
+    "macOS": {
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "appimage": { "bundleMediaFramework": false }
+    }
+  }
+}

@@ -36,7 +36,7 @@ describe('dispatchConnectedServiceQuotaLifecycleNotificationAsync', () => {
       expoPushSender: { sendToAllDevicesAsync },
       transition: {
         phase: 'blocked',
-        serviceId: 'openai-codex',
+        serviceId: 'happier.agent.codex/openai-codex',
         groupId: 'main',
         activeProfileId: 'primary',
         sessionIds: ['sess-1', 'sess-2'],
@@ -53,7 +53,7 @@ describe('dispatchConnectedServiceQuotaLifecycleNotificationAsync', () => {
     expect(data).toMatchObject({
       topic: 'connected_service_quota_blocked',
       sessionId: 'sess-1',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       serviceDisplayName: 'Codex',
       groupId: 'main',
       profileId: 'primary',
@@ -71,7 +71,7 @@ describe('dispatchConnectedServiceQuotaLifecycleNotificationAsync', () => {
       expoPushSender: { sendToAllDevicesAsync },
       transition: {
         phase: 'blocked',
-        serviceId: 'openai-codex',
+        serviceId: 'happier.agent.codex/openai-codex',
         groupId: 'main',
         activeProfileId: 'primary',
         sessionIds: ['sess-1'],
@@ -95,7 +95,7 @@ describe('dispatchConnectedServiceQuotaLifecycleNotificationAsync', () => {
       expoPushSender: { sendToAllDevicesAsync },
       transition: {
         phase: 'recovered',
-        serviceId: 'openai-codex',
+        serviceId: 'happier.agent.codex/openai-codex',
         groupId: 'main',
         activeProfileId: 'backup',
         sessionIds: ['sess-1'],
@@ -112,7 +112,7 @@ describe('dispatchConnectedServiceQuotaLifecycleNotificationAsync', () => {
     expect(data).toMatchObject({
       topic: 'connected_service_quota_recovered',
       sessionId: 'sess-1',
-      serviceId: 'openai-codex',
+      serviceId: 'happier.agent.codex/openai-codex',
       serviceDisplayName: 'Codex',
       profileId: 'backup',
       retryAfterMs: null,

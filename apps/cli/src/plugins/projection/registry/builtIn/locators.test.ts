@@ -237,4 +237,49 @@ describe('bundled plugin locators', () => {
         });
     });
 
+    it('gives every bundled ACP Agent that passes MCP through a tool delivery the host actually builds', () => {
+        // `runHostSessionRuntime` builds a session's MCP servers only when the
+        // Agent's `tools.delivery` is `native_mcp`. An Agent whose runtime
+        // declares `mcp: { policy: 'pass_through' }` under any other delivery
+        // forwards an empty set and advertises tools it never receives — the
+        // exact defect Kimi shipped while declaring `shell_bridge`.
+        //
+        // `projectAgent` flattens the authored `declaration` wrapper away, so a
+        // manifest contribution carries `runtime`/`capabilities` directly. Reading
+        // a `declaration` here would make every branch below unreachable and the
+        // assertion vacuously true.
+        type BundledAgentContribution = Readonly<{
+            id?: unknown;
+            runtime?: Readonly<{
+                kind?: unknown;
+                definition?: Readonly<{ mcp?: Readonly<{ policy?: unknown }> }>;
+            }>;
+            capabilities?: Readonly<{ tools?: Readonly<{ delivery?: unknown }> }>;
+        }>;
+
+        const agentContributions = BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS.flatMap((locator) => {
+            const manifest = locator.manifest as Readonly<{
+                contributes?: Readonly<{ agents?: readonly BundledAgentContribution[] }>;
+            }>;
+            return (manifest.contributes?.agents ?? []).map((agent) => ({ locator, agent }));
+        });
+
+        // Guards the reachability of the check itself: bundled Agents exist and at
+        // least one of them is a declarative ACP Agent to inspect.
+        expect(agentContributions.length).toBeGreaterThan(0);
+        expect(
+            agentContributions.filter(({ agent }) => agent.runtime?.kind === 'acp').length,
+        ).toBeGreaterThan(0);
+
+        const inertPassThroughAgents = agentContributions.flatMap(({ locator, agent }) => {
+            if (agent.runtime?.kind !== 'acp') return [];
+            if (agent.runtime.definition?.mcp?.policy !== 'pass_through') return [];
+            const delivery = agent.capabilities?.tools?.delivery;
+            if (delivery === 'native_mcp') return [];
+            return [`${locator.pluginId}/${String(agent.id)}:${String(delivery)}`];
+        });
+
+        expect(inertPassThroughAgents).toEqual([]);
+    });
+
 });

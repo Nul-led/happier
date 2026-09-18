@@ -15,7 +15,7 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import { createPluginSessionSystemRecordsService } from './pluginSessionSystemRecordsService';
 
-const sessionId = 'session-123456789';
+const sessionId = 'c123456789012345678901234';
 const plainCredentials = {
   token: 'token-1',
   encryption: null,
@@ -26,6 +26,7 @@ const e2eeCredentials = {
 } satisfies StoredCredentials;
 const plainCurrentness = {
   mode: 'plain' as const,
+  recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
   version: 1,
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
@@ -33,6 +34,7 @@ const plainCurrentness = {
 } satisfies AccountEncryptionCurrentnessResponse;
 const e2eeCurrentness = {
   mode: 'e2ee' as const,
+  recipientEnvelopeReadiness: { status: 'available' },
   version: 1,
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
@@ -84,7 +86,7 @@ function installNetworkBoundary(params: Readonly<{
     capabilities: { session: { systemRecords: { protocolVersions: [1] } } },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
   const getSpy = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
-    if (url.endsWith(`/v2/sessions/${sessionId}`)) {
+    if (url.includes(`/v2/sessions/${sessionId}`)) {
       return { status: 200, data: { session: rawSession(params.mode) } } as never;
     }
     if (url.endsWith('/v1/account/encryption/currentness')) {

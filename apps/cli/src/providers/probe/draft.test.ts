@@ -3,6 +3,7 @@ import {
   AccountSettingsSchema,
   createProviderProbeRequestFingerprintV1,
   encryptSecretStringV1,
+  sealSavedSecretResourceStoredContentV1,
 } from '@happier-dev/protocol';
 
 import { createProviderProbeHttpClient } from './client';
@@ -67,6 +68,27 @@ function snapshotWithoutSecrets() {
   return {
     ...snapshot(),
     settings: AccountSettingsSchema.parse({ secrets: [] }),
+  };
+}
+
+function sharedSecretSnapshot() {
+  return {
+    ...snapshot(),
+    settings: AccountSettingsSchema.parse({ secrets: [] }),
+    savedSecretResources: [{
+      resourceId: 'resource-draft-probe',
+      ownerAccountId: 'owner-account',
+      displayName: 'Shared draft probe key',
+      kind: 'apiKey' as const,
+      encryptionMode: 'plain' as const,
+      revision: 1,
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId: 'resource-draft-probe',
+        mode: 'plain',
+        content: { v: 1, name: 'Shared draft probe key', kind: 'apiKey', value: 'shared-draft-value' },
+      }),
+      materialStatus: 'ready' as const,
+    }],
   };
 }
 
@@ -346,6 +368,29 @@ describe('draft provider probe service', () => {
     await expect(service.probe(request('draft-action-0003', true))).resolves.toMatchObject({
       status: 'error', error: { code: 'provider_authorization_changed' },
     });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a shared Saved Secret for a draft Provider probe', async () => {
+    const transport = vi.fn(async (request: Readonly<{ headers: Readonly<Record<string, string>> }>) => ({
+      status: request.headers.authorization === 'Bearer shared-draft-value' ? 200 : 401,
+      headers: {},
+      body: Buffer.from(JSON.stringify({ data: [{ id: 'shared-model' }] }), 'utf8'),
+    }));
+    const currentSnapshot = sharedSecretSnapshot();
+    const service = createProviderDraftProbeService({
+      machineId: 'machine-a',
+      getAccountSettingsSnapshot: () => currentSnapshot,
+      resolveAddresses: async () => ['1.1.1.1'],
+      client: createProviderProbeHttpClient({ resolveAddresses: async () => ['1.1.1.1'], transport }),
+      createAuthorizationId: () => 'authorization-shared-secret',
+      now: () => 1_000,
+    });
+
+    await expect(service.probe({
+      ...request('draft-action-shared-secret', true),
+      savedSecretId: 'happier:shared-secret:v1:resource-draft-probe',
+    })).resolves.toMatchObject({ status: 'success', models: [{ id: 'shared-model' }] });
     expect(transport).toHaveBeenCalledTimes(1);
   });
 });

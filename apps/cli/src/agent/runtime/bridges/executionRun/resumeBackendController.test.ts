@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
+import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import { resumeBackendControllerForResumableRun } from '@/agent/runtime/bridges/executionRun/resumeBackendController';
 import { createTestExecutionRunHostRuntime } from './testkit/runtime';
 import { startExecutionRun } from './startExecutionRun';
@@ -52,9 +53,9 @@ describe('resumeBackendControllerForResumableRun', () => {
             await resumeSupportGate;
             return true;
           },
-          provisionSession: async () => {
+          provisionRuntime: async () => {
             provisionCount += 1;
-            return { sessionId: `child_${runtimeCount}` };
+            return { runtimeId: `runtime_${runtimeCount}` };
           },
         }).runtime;
       },
@@ -72,13 +73,17 @@ describe('resumeBackendControllerForResumableRun', () => {
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual({ ok: true });
-    expect(secondResult).toMatchObject({ ok: false, errorCode: 'execution_run_not_allowed' });
+    expect(secondResult).toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_not_allowed',
+      resumeFailureKind: 'indeterminate',
+    });
     expect(runtimeCount).toBe(1);
     expect(provisionCount).toBe(1);
     expect(controllers.get(run.runId)?.kind).toBe('backend');
   });
 
-  it('retires a provisioned child when the exact resume occurrence was stopped before provisioning settled', async () => {
+  it('retires a provisioned runtime when the exact resume occurrence was stopped before provisioning settled', async () => {
     let releaseProvision!: () => void;
     let provisionStarted!: () => void;
     const provisionStartedPromise = new Promise<void>((resolve) => {
@@ -87,16 +92,16 @@ describe('resumeBackendControllerForResumableRun', () => {
     const provisionGate = new Promise<void>((resolve) => {
       releaseProvision = resolve;
     });
-    const cancelledChildren: string[] = [];
+    const cancelledRuntimeIds: string[] = [];
     const runtimeHarness = createTestExecutionRunHostRuntime({
       readResumeSupport: async () => true,
-      provisionSession: async () => {
+      provisionRuntime: async () => {
         provisionStarted();
         await provisionGate;
-        return { sessionId: 'late_child' };
+        return { runtimeId: 'late_runtime' };
       },
-      cancel: async (sessionId) => {
-        cancelledChildren.push(sessionId);
+      cancel: async (runtimeId) => {
+        cancelledRuntimeIds.push(runtimeId);
       },
     });
     const run: ExecutionRunState = {
@@ -152,9 +157,10 @@ describe('resumeBackendControllerForResumableRun', () => {
     await expect(resultPromise).resolves.toMatchObject({
       ok: false,
       errorCode: 'execution_run_not_allowed',
+      resumeFailureKind: 'indeterminate',
     });
     expect(runs.get(run.runId)).toBe(stoppedRun);
-    expect(cancelledChildren).toEqual(['late_child']);
+    expect(cancelledRuntimeIds).toEqual(['late_runtime']);
     expect(publicUpdates).toEqual([]);
   });
 
@@ -167,16 +173,16 @@ describe('resumeBackendControllerForResumableRun', () => {
     const provisionStartedPromise = new Promise<void>((resolve) => {
       provisionStarted = resolve;
     });
-    const cancelledChildren: string[] = [];
+    const cancelledRuntimeIds: string[] = [];
     const runtime = createTestExecutionRunHostRuntime({
       readResumeSupport: async () => true,
-      provisionSession: async () => {
+      provisionRuntime: async () => {
         provisionStarted();
         await provisionGate;
-        return { sessionId: 'superseded_child' };
+        return { runtimeId: 'superseded_runtime' };
       },
-      cancel: async (sessionId) => {
-        cancelledChildren.push(sessionId);
+      cancel: async (runtimeId) => {
+        cancelledRuntimeIds.push(runtimeId);
       },
     }).runtime;
     const run: ExecutionRunState = {
@@ -230,10 +236,77 @@ describe('resumeBackendControllerForResumableRun', () => {
     await expect(resultPromise).resolves.toMatchObject({
       ok: false,
       errorCode: 'execution_run_not_allowed',
+      resumeFailureKind: 'indeterminate',
     });
-    expect(cancelledChildren).toEqual(['superseded_child']);
+    expect(cancelledRuntimeIds).toEqual(['superseded_runtime']);
     expect(controllers.has(run.runId)).toBe(false);
     expect(budgetRegistry.getInFlightSnapshot().executionRuns).toBe(0);
+  });
+
+  it('distinguishes a backend-declared permanent resume refusal from a transient provision failure', async () => {
+    const run: ExecutionRunState = {
+      runId: 'run_resume_classification',
+      callId: 'call_resume_classification',
+      sidechainId: 'sidechain_resume_classification',
+      sessionId: 'parent_session_1',
+      depth: 0,
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      backendId: 'codex',
+      instructions: '',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+      status: 'running',
+      startedAtMs: 1,
+      resumeHandle: {
+        kind: 'provider_session.v1',
+        backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+        providerSessionId: 'vendor_session_1',
+      },
+    };
+    const common = {
+      runId: run.runId,
+      run,
+      budgetRegistry: null,
+      sendAcp: async () => undefined,
+      parentProvider: 'codex' as const,
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => undefined,
+      getNowMs: () => 1,
+    };
+
+    const permanentlyUnsupported = await resumeBackendControllerForResumableRun({
+      ...common,
+      runs: new Map([[run.runId, run]]),
+      controllers: new Map(),
+      createRuntime: () => createTestExecutionRunHostRuntime({
+        readResumeSupport: async () => false,
+      }).runtime,
+    });
+    expect(permanentlyUnsupported).toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_not_allowed',
+      resumeFailureKind: 'permanent',
+    });
+
+    const transientFailure = await resumeBackendControllerForResumableRun({
+      ...common,
+      runs: new Map([[run.runId, run]]),
+      controllers: new Map(),
+      createRuntime: () => createTestExecutionRunHostRuntime({
+        readResumeSupport: async () => true,
+        provisionRuntime: async () => {
+          throw new Error('transport unavailable');
+        },
+      }).runtime,
+    });
+    expect(transientFailure).toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_failed',
+      resumeFailureKind: 'indeterminate',
+    });
   });
 
   it('persists a cloned runtime account settings snapshot when starting a run', async () => {
@@ -292,11 +365,11 @@ describe('resumeBackendControllerForResumableRun', () => {
     }
   });
 
-  it('resumes using loadSession when loadSessionWithReplayCapture is unavailable', async () => {
+  it('resumes through the runtime provisioner when replay capture is not requested', async () => {
     let disposed = false;
     const runtime = createTestExecutionRunHostRuntime({
-      async provisionSession(opts) {
-        return { sessionId: opts?.resumeSessionId ? 'child_session_2' : 'child_session_1' };
+      async provisionRuntime(opts) {
+        return { runtimeId: opts?.resumeRuntimeId ? 'runtime_2' : 'runtime_1' };
       },
       async dispose() {
         disposed = true;
@@ -348,9 +421,73 @@ describe('resumeBackendControllerForResumableRun', () => {
     expect(controllers.has(run.runId)).toBe(true);
   });
 
+  it('attaches a retained Session input consumer after a resumed backend is provisioned', async () => {
+    const harness = createTestExecutionRunHostRuntime({
+      provisionRuntime: async (opts) => ({
+        runtimeId: opts?.resumeRuntimeId ? 'runtime_resumed' : 'runtime_started',
+      }),
+    });
+    const interaction: NonNullable<ExecutionRunHostRuntime['interaction']> = {
+      kind: 'retained_agent_session.v1',
+      capabilities: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+    };
+    const runtime: ExecutionRunHostRuntime = Object.freeze({
+      ...harness.runtime,
+      interaction,
+    });
+    const run: ExecutionRunState = {
+      runId: 'run_attach',
+      callId: 'call_attach',
+      sidechainId: 'sidechain_attach',
+      sessionId: 'parent_session_1',
+      depth: 0,
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      backendId: 'codex',
+      instructions: '',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+      status: 'cancelled',
+      startedAtMs: 1,
+      resumeHandle: {
+        kind: 'provider_session.v1',
+        backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+        providerSessionId: 'vendor_session_1',
+      },
+    };
+    const runs = new Map([[run.runId, run]]);
+    const controllers = new Map();
+    const attached: Array<{ runId: string; sidechainId: string; controller: unknown }> = [];
+
+    const result = await resumeBackendControllerForResumableRun({
+      runId: run.runId,
+      run,
+      runs,
+      controllers,
+      budgetRegistry: null,
+      createRuntime: () => runtime,
+      sendAcp: async () => undefined,
+      parentProvider: 'codex',
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => undefined,
+      getNowMs: () => 1,
+      attachRetainedRunSessionInput: ({ runId, sidechainId, controller }) => {
+        attached.push({ runId, sidechainId, controller });
+        return null;
+      },
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(attached).toHaveLength(1);
+    expect(attached[0]).toMatchObject({ runId: run.runId, sidechainId: run.sidechainId });
+    expect(attached[0]?.controller).toBe(controllers.get(run.runId));
+  });
+
   it('passes persisted runtime account settings to the recreated backend runtime', async () => {
     const runtime = createTestExecutionRunHostRuntime({
-      provisionSession: async (opts) => ({ sessionId: opts?.resumeSessionId ? 'child_session_2' : 'child_session_1' }),
+      provisionRuntime: async (opts) => ({ runtimeId: opts?.resumeRuntimeId ? 'runtime_2' : 'runtime_1' }),
     }).runtime;
     const runtimeOptions: Array<Readonly<Record<string, unknown>>> = [];
 

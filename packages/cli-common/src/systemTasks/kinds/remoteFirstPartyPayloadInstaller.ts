@@ -43,17 +43,20 @@ export interface RemoteFirstPartyInstallDeps {
   resolveRemoteReleaseTarget: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<Readonly<{ os: 'linux' | 'darwin'; arch: 'x64' | 'arm64' }>>;
   runRemoteText: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     remoteCommand: string;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<RemoteFirstPartyCommandResult>;
   copyLocalDirectoryToRemote: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     localPath: string;
     remotePath: string;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<void>;
   preparePayload?: (params: Readonly<{
     componentId: FirstPartyComponentId;
@@ -84,6 +87,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
   installerBinaryPath?: string;
   remoteHomeDir?: string;
   strategy?: 'scp-upload' | 'remote-self-download';
+  signal?: AbortSignal;
 }>, deps: RemoteFirstPartyInstallDeps): Promise<Readonly<{ binaryPath: string; versionId: string; source: string | null }>> {
   const resolvedDeps = {
     preparePayload: async (payloadParams: Parameters<NonNullable<RemoteFirstPartyInstallDeps['preparePayload']>>[0]) => await prepareFirstPartyComponentPayloadFromGitHubRelease(payloadParams),
@@ -93,9 +97,11 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
   } satisfies Required<RemoteFirstPartyInstallDeps>;
   const channel = normalizeBootstrapReleaseChannel(params.channel);
   const remoteHomeDir = normalizeRemoteFirstPartyHomeDir(params.remoteHomeDir);
+  params.signal?.throwIfAborted();
   const target = await resolvedDeps.resolveRemoteReleaseTarget({
     ssh: params.ssh,
     knownHostsMode: params.knownHostsMode,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   if (params.strategy === 'remote-self-download') {
     const plan = await resolvedDeps.resolveSelfDownloadInstallPlan({
@@ -109,6 +115,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
       ssh: params.ssh,
       knownHostsMode: params.knownHostsMode,
       remoteCommand: plan.command,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     if (installResult.status !== 0) {
       throw new Error(installResult.stderr.trim() || 'Remote self-download install failed.');
@@ -120,6 +127,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
     };
   }
 
+  params.signal?.throwIfAborted();
   const prepared = await resolvedDeps.preparePayload({
     componentId: params.componentId,
     channel,
@@ -129,6 +137,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
   });
 
   try {
+    params.signal?.throwIfAborted();
     const scpReadyPayload = await createScpReadyPayloadArchive(prepared.payloadRoot);
     try {
       const stageParent = `${remoteHomeDir}/bootstrap-staging/${sanitizeRemoteFirstPartyPathSegment(params.componentId)}-${sanitizeRemoteFirstPartyPathSegment(prepared.versionId)}-${resolvedDeps.now()}`;
@@ -137,12 +146,14 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
         ssh: params.ssh,
         knownHostsMode: params.knownHostsMode,
         remoteCommand: `mkdir -p ${stageParent}`,
+        ...(params.signal ? { signal: params.signal } : {}),
       });
       await resolvedDeps.copyLocalDirectoryToRemote({
         ssh: params.ssh,
         knownHostsMode: params.knownHostsMode,
         localPath: scpReadyPayload.archiveStageRoot,
         remotePath: stageParentForScp,
+        ...(params.signal ? { signal: params.signal } : {}),
       });
 
       const remoteArchiveRoot = `${stageParent}/${sanitizeRemoteFirstPartyPathSegment(basename(scpReadyPayload.archiveStageRoot))}`;
@@ -171,6 +182,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
             payloadRootExpression: remotePayloadRoot,
           }),
         ].join('; '),
+        ...(params.signal ? { signal: params.signal } : {}),
       });
     } finally {
       await scpReadyPayload.cleanup();

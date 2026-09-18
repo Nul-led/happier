@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+import fastify from 'fastify';
 import {
+    accountSettingsParse,
     ProviderConnectionIdSchema,
     type ProviderRuntimeBindingBasisV1,
 } from '@happier-dev/protocol';
@@ -20,6 +22,7 @@ import {
     PluginError,
     type PluginServices,
 } from '@happier-dev/plugin-sdk';
+import type { AgentInvocationTurnAdmissionWitness } from './invocation/services/types';
 
 import {
     RunnerAgentDaemonFacetOperationV1Schema,
@@ -99,6 +102,12 @@ import {
     selectBundledExecutableImmutableArtifacts,
 } from './bundledActivationSource';
 import { createPluginReloadController } from './reload/controller';
+import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
+import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { resetActiveAccountSettingsSnapshotForTests, setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 
 const externalSessionsBoundary = vi.hoisted(() => ({
     ensureExternalSessionLink: vi.fn(async () => ({
@@ -870,6 +879,99 @@ function providerClaim(
 }
 
 describe('retained Agent composed daemon-service routing (integration)', () => {
+    it('lists through the bound runtime Account across input authors and rejects disabled or retired admission', async () => {
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-retained-list-home-'));
+        const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-retained-list-plugin-'));
+        const home = fastify();
+        const homeUrl = 'http://retained-list-home.test';
+        const credentials = { token: 'retained-list-alice', encryption: null } as const;
+        const restoreHttp = installAxiosFastifyAdapter({ app: home, origin: homeUrl });
+        const publishPolicy = (token: string, enabled: boolean, version: number) => setActiveAccountSettingsSnapshot({
+            scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+            settingsVersion: version,
+            loadedAtMs: version,
+            source: 'network',
+            settingsSecretsReadKeys: [],
+            settings: accountSettingsParse({ actionsSettingsV1: { v: 1, actions: { 'session.list': { enabled } } } }),
+        });
+        const query = {
+            v: 1 as const, storage: 'active' as const, includeInactive: false,
+            scope: 'my_work' as const, attention: 'any' as const,
+            audiences: [], tagIds: [], limit: 10,
+        };
+        const domainRequests: string[] = [];
+        home.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture());
+        home.post('/v2/sessions/query', async (request) => {
+            domainRequests.push(String(request.headers.authorization));
+            expect(request.body).toEqual(query);
+            return {
+                sessions: [createSessionRecordFixture({
+                    id: 'runtime-alice-session', encryptionMode: 'plain',
+                    metadata: JSON.stringify({ summary: { text: 'Runtime Account work' } }),
+                })],
+                nextCursor: null, hasNext: false,
+                attentionNextCursor: 'cursor_v1_attention-next', attentionHasNext: true,
+            };
+        });
+        let registry: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
+        vi.stubEnv('HAPPIER_ACCOUNT_SETTINGS_MODE', 'never');
+        vi.stubEnv('HAPPIER_ACTIONS_SETTINGS_V1', '');
+        resetInMemoryAccountSettingsContextForTests();
+        publishPolicy(credentials.token, true, 1);
+        try {
+            await writePluginSource({ pluginRoot, version: 'G', accountServiceId: 'account-g', toolName: process.execPath });
+            await installCurrentSource({ happyHomeDir, pluginRoot, version: '1.0.0' });
+            registry = await resolveExecutablePluginRuntimeRegistry({
+                happyHomeDir,
+            });
+            await registry.activateContributionsOnDemand([{ pluginId: PLUGIN_ID, family: 'agents', localId: AGENT_ID }]);
+            const binding = registry.agentRuntimesByAgentId.get(AGENT_ID)?.sessionRunnerFactoryBinding;
+            if (!binding || !registry.createRetainedRunnerAgentCurrentGlobalActionsService) throw new Error('Retained Agent binding unavailable');
+            let current = true;
+            // Input/turn witnesses carry causal facts only; alternating human inputs never supply credentials.
+            let witness: AgentInvocationTurnAdmissionWitness = {
+                ...FIRST_WITNESS,
+                inputId: 'alice-input',
+                callerPermissionMode: 'default',
+            };
+            const actions = await registry.createRetainedRunnerAgentCurrentGlobalActionsService({
+                binding, sessionId: SESSION_ID, correlationId: 'retained-list',
+                signal: new AbortController().signal,
+                readActiveTurnAdmissionWitness: () => witness,
+                isGenerationCurrent: () => current,
+            });
+            const invoke = () => runWithServerHttpBaseUrl('http://unrelated-home.test', () => actions.execute('session.list', { query, view: 'awareness' }));
+            const awarenessResult = await invoke();
+            expect(awarenessResult).toMatchObject({
+                view: 'awareness',
+                sessions: [{ sessionId: 'runtime-alice-session' }],
+            });
+            expect(Object.keys(awarenessResult).sort()).toEqual([
+                'hasNext', 'nextCursor', 'projectionVersion', 'sessions', 'view',
+            ]);
+            externalSessionsBoundary.readStoredCredentials.mockResolvedValue({ token: 'retained-list-bob', encryption: null });
+            publishPolicy('retained-list-bob', false, 1);
+            witness = { ...LATER_WITNESS, inputId: 'bob-input', callerPermissionMode: 'default' };
+            await expect(invoke()).resolves.toMatchObject({ sessions: [{ sessionId: 'runtime-alice-session' }] });
+            expect(domainRequests).toEqual([`Bearer ${credentials.token}`, `Bearer ${credentials.token}`]);
+            publishPolicy(credentials.token, false, 2);
+            await expect(invoke()).rejects.toMatchObject({ code: 'action_disabled' });
+            publishPolicy(credentials.token, true, 3);
+            current = false;
+            await expect(invoke()).rejects.toMatchObject({ code: 'plugin_action_generation_retired' });
+            expect(domainRequests).toHaveLength(2);
+        } finally {
+            restoreHttp();
+            vi.unstubAllEnvs();
+            resetActiveAccountSettingsSnapshotForTests();
+            resetInMemoryAccountSettingsContextForTests();
+            externalSessionsBoundary.readStoredCredentials.mockResolvedValue({ token: 'current-global-routing-token', encryption: null });
+            await registry?.dispose();
+            await home.close();
+            await Promise.all([rm(happyHomeDir, { recursive: true, force: true }), rm(pluginRoot, { recursive: true, force: true })]);
+        }
+    }, 60_000);
+
     it('routes retained G through stable/current/private owners without H aliasing or replay and keeps adopted P distinct', async () => {
         const happyHomeDir = await mkdtemp(join(
             tmpdir(),

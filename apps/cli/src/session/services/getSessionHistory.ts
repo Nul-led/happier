@@ -1,4 +1,5 @@
 import type { StoredCredentials } from '@/persistence';
+import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import { getSessionEvents } from './getSessionEvents';
 import { fetchTranscriptSemanticPage } from './transcript/fetchTranscriptSemanticPage';
@@ -18,15 +19,14 @@ export type GetSessionHistoryResult =
 export async function readRawSessionHistoryRows(params: Readonly<{
   token: string;
   sessionId: string;
-  ctx: Readonly<{ encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' }> | null;
   limit: number;
   includeMeta?: boolean;
   includeStructuredPayload?: boolean;
-}>): Promise<readonly RawHistoryRow[]> {
+}> & SessionStoredContentCryptoContext): Promise<readonly RawHistoryRow[]> {
   const page = await fetchTranscriptSemanticPage({
     token: params.token,
     sessionId: params.sessionId,
-    ctx: params.ctx,
+    contentContext: params,
     limit: params.limit,
     rawPageLimit: Math.min(200, Math.max(1, params.limit)),
     maxRawRowsToScan: Math.max(1, params.limit),

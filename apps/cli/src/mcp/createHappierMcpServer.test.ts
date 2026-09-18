@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = process.env;
 
+const getTestServerBinding = () => ({
+  serverId: 'test-home',
+  serverUrl: 'https://test-home.example.test',
+} as const);
+
 describe('createHappierMcpServer', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -15,6 +20,147 @@ describe('createHappierMcpServer', () => {
     vi.doUnmock('@/session/actions/createCliActionExecutorHarness');
     vi.doUnmock('@/mcp/server/registerHappierMcpBuiltInTools');
     vi.doUnmock('@/agent/tools/happierTools/dispatchBuiltInHappierTool');
+    vi.doUnmock('@/session/discussions/sessionDiscussionActionDeps');
+    vi.doUnmock('@/api/accountServerActionDeps');
+    vi.doUnmock('@/api/sessionFollowActionDeps');
+  });
+
+  it('wires Account-server, Pool, Follow, and Discussion owners into the authenticated in-session Agent host', async () => {
+    const captured: { params?: Record<string, unknown>; overrides?: Record<string, unknown> } = {};
+    const accountInputs: Array<Record<string, unknown>> = [];
+    const followInputs: Array<Record<string, unknown>> = [];
+    const discussionInputs: Array<Record<string, unknown>> = [];
+    const machinePoolAction = vi.fn();
+    const homeDomainAction = vi.fn();
+    const sessionFollowGet = vi.fn();
+    const sessionDiscussionAction = vi.fn();
+    const resolveServerFeaturesSnapshot = vi.fn(() => ({
+      status: 'ready' as const,
+      provenance: 'authenticated' as const,
+      features: {
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'stable-home-identity' } },
+      },
+    }));
+
+    vi.doMock('@/api/accountServerActionDeps', () => ({
+      createAccountServerActionDeps: (input: Record<string, unknown>) => {
+        accountInputs.push(input);
+        return { machinePoolAction, homeDomainAction };
+      },
+    }));
+    vi.doMock('@/api/sessionFollowActionDeps', () => ({
+      createSessionFollowActionDeps: (input: Record<string, unknown>) => {
+        followInputs.push(input);
+        return { sessionFollowGet };
+      },
+    }));
+    vi.doMock('@/session/discussions/sessionDiscussionActionDeps', () => ({
+      createSessionDiscussionActionDeps: (input: Record<string, unknown>) => {
+        discussionInputs.push(input);
+        return { sessionDiscussionAction };
+      },
+    }));
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: (params: Record<string, unknown>, overrides: Record<string, unknown>) => {
+        captured.params = params;
+        captured.overrides = overrides;
+        return { executor: { execute: vi.fn(async () => ({ ok: true, result: { ok: true } })) } };
+      },
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const credentials = { token: 'agent-account-token', encryption: null } as const;
+    createHappierMcpServer({
+      sessionId: 'sess_account_actions_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+      getServerBinding: () => ({
+        serverId: 'session-home-b',
+        serverUrl: 'https://session-home-b.example.test',
+      }),
+      getServerFeaturesSnapshot: resolveServerFeaturesSnapshot,
+    } as any, { credentials });
+
+    expect(accountInputs).toHaveLength(1);
+    expect(followInputs).toHaveLength(1);
+    expect(accountInputs[0]).toMatchObject({ token: credentials.token, credentials });
+    expect(accountInputs[0]).toMatchObject({
+      serverId: 'session-home-b',
+      serverHttpBaseUrl: 'https://session-home-b.example.test',
+    });
+    expect((accountInputs[0]?.resolveServerFeaturesSnapshot as (() => unknown))()).toEqual(
+      resolveServerFeaturesSnapshot.mock.results[0]?.value,
+    );
+    expect(resolveServerFeaturesSnapshot).toHaveBeenCalledTimes(2);
+    expect(followInputs[0]).toMatchObject({
+      token: credentials.token,
+      prepareSourceKeyAfterSet: expect.any(Function),
+    });
+    expect(accountInputs[0]?.serverId).toEqual(followInputs[0]?.serverId);
+    expect(accountInputs[0]?.serverHttpBaseUrl).toEqual(followInputs[0]?.serverHttpBaseUrl);
+    expect(captured.params).toMatchObject({ serverIdentityId: 'stable-home-identity' });
+    expect(captured.params?.resolveServerFeaturesSnapshot).toBeTypeOf('function');
+    expect(accountInputs[0]).toMatchObject({ serverIdentityId: 'stable-home-identity' });
+    expect(followInputs[0]).toMatchObject({ serverIdentityId: 'stable-home-identity' });
+    expect(discussionInputs[0]).toMatchObject({
+      credentials,
+      serverIdentityId: 'stable-home-identity',
+    });
+    expect(captured.overrides).toMatchObject({
+      machinePoolAction,
+      homeDomainAction,
+      sessionFollowGet,
+      sessionDiscussionAction,
+    });
+  });
+
+  it('keeps restricted runtime credentials Session-scoped and omits Account-wide Action owners', async () => {
+    const captured: { params?: Record<string, unknown>; overrides?: Record<string, unknown>; enabled?: (id: string) => boolean } = {};
+    const accountOwner = vi.fn(() => ({}));
+    const followOwner = vi.fn(() => ({}));
+    const discussionOwner = vi.fn(() => ({}));
+    const sessionList = vi.fn();
+    vi.doMock('@/api/accountServerActionDeps', () => ({ createAccountServerActionDeps: accountOwner }));
+    vi.doMock('@/api/sessionFollowActionDeps', () => ({ createSessionFollowActionDeps: followOwner }));
+    vi.doMock('@/session/discussions/sessionDiscussionActionDeps', () => ({ createSessionDiscussionActionDeps: discussionOwner }));
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: (params: Record<string, unknown>, overrides: Record<string, unknown>) => {
+        captured.params = params;
+        captured.overrides = overrides;
+        return { executor: { execute: vi.fn(async () => ({ ok: true, result: {} })) } };
+      },
+    }));
+    vi.doMock('@/mcp/server/registerHappierMcpBuiltInTools', () => ({
+      registerHappierMcpBuiltInTools: (_server: unknown, params: { deps: { isActionEnabled: (id: string) => boolean } }) => {
+        captured.enabled = params.deps.isActionEnabled;
+        return { toolNames: [] };
+      },
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const sessionCredentials = { token: 'restricted-session-token', encryption: null } as const;
+    createHappierMcpServer({
+      sessionId: 'restricted-session',
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+    } as any, {
+      sessionCredentials,
+      credentials: null,
+      authorityScope: 'session',
+      sessionList,
+    });
+
+    expect(accountOwner).not.toHaveBeenCalled();
+    expect(followOwner).not.toHaveBeenCalled();
+    expect(discussionOwner).not.toHaveBeenCalled();
+    expect(captured.params).toMatchObject({ token: sessionCredentials.token });
+    expect(captured.params).not.toHaveProperty('credentials');
+    expect(captured.overrides?.sessionList).toBe(sessionList);
+    expect(captured.enabled?.('session.title.set')).toBe(true);
+    expect(captured.enabled?.('account.apiTokens.list')).toBe(false);
+    expect(captured.enabled?.('machines.list')).toBe(false);
   });
 
   it('returns toolNames aligned with current MCP action settings', async () => {
@@ -29,6 +175,7 @@ describe('createHappierMcpServer', () => {
 
     const fakeClient = {
       sessionId: 'sess_mcp_tool_names_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any;
@@ -37,6 +184,54 @@ describe('createHappierMcpServer', () => {
     expect(toolNames).not.toContain('review_start');
     expect(toolNames).not.toContain('subagents_plan_start');
     expect(toolNames).toContain('action_spec_search');
+  });
+
+  it('advertises server-backed Session Actions only when the exact Home enables them and the runtime is authenticated', async () => {
+    const capturedEnablement: Array<(id: string) => boolean> = [];
+
+    vi.doMock('@/mcp/server/registerHappierMcpBuiltInTools', () => ({
+      registerHappierMcpBuiltInTools: (_server: unknown, params: { deps: { isActionEnabled: (id: string) => boolean } }) => {
+        capturedEnablement.push(params.deps.isActionEnabled);
+        return { toolNames: [] };
+      },
+    }));
+
+    const { FeaturesResponseSchema } = await import('@happier-dev/protocol');
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const credentials = { token: 'agent-account-token', encryption: null } as const;
+    const createClient = (boardEnabled: boolean, conversationsEnabled: boolean) => ({
+      sessionId: `sess_server_backed_action_availability_${boardEnabled}_${conversationsEnabled}`,
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+      getServerFeaturesSnapshot: () => ({
+        status: 'ready' as const,
+        provenance: 'authenticated' as const,
+        features: FeaturesResponseSchema.parse({
+          features: {
+            sessions: {
+              enabled: true,
+              board: { enabled: boardEnabled },
+              conversations: { enabled: conversationsEnabled },
+            },
+          },
+          capabilities: {},
+        }),
+      }),
+    });
+
+    createHappierMcpServer(createClient(false, false) as any, { credentials });
+    createHappierMcpServer(createClient(true, true) as any, { credentials });
+    createHappierMcpServer(createClient(true, true) as any, { credentials: null });
+
+    expect(capturedEnablement).toHaveLength(3);
+    expect(capturedEnablement[0]?.('session.board.get')).toBe(false);
+    expect(capturedEnablement[1]?.('session.board.get')).toBe(true);
+    expect(capturedEnablement[2]?.('session.board.get')).toBe(false);
+    expect(capturedEnablement[0]?.('session.discussion.list')).toBe(false);
+    expect(capturedEnablement[1]?.('session.discussion.list')).toBe(true);
+    expect(capturedEnablement[2]?.('session.discussion.list')).toBe(false);
+    expect(capturedEnablement[0]?.('session.list')).toBe(true);
   });
 
   it('uses account action settings for the in-session MCP tool registry when provided', async () => {
@@ -51,6 +246,7 @@ describe('createHappierMcpServer', () => {
 
     const fakeClient = {
       sessionId: 'sess_mcp_tool_names_account_settings_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any;
@@ -101,6 +297,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_live_settings_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any, {
@@ -210,6 +407,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_approval_policy_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any, {
@@ -266,6 +464,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_live_spawn_policy_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any, {
@@ -324,6 +523,7 @@ describe('createHappierMcpServer', () => {
     const spawnPolicy = { allowedBackendTargetKeys: ['agent:codex'] };
     const runtime = createHappierMcpServer({
       sessionId: 'sess_native_agent_tool_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
       getPermissionMode: () => 'yolo',
@@ -335,6 +535,7 @@ describe('createHappierMcpServer', () => {
       accountSettings: {
         sessionAgentSpawnPolicyV1: spawnPolicy,
       },
+      requiredDirectActionIds: ['session.transcript.get'],
       sessionInputVia: 'action',
     } as any);
 
@@ -370,7 +571,79 @@ describe('createHappierMcpServer', () => {
         },
       }),
     );
+
+    await runtime.executeTool({
+      toolName: 'session_transcript_get',
+      args: { limit: 10 },
+      toolCallId: 'native_tool_call_2',
+    });
+    expect(executorExecute).toHaveBeenCalledWith(
+      'session.transcript.get',
+      expect.objectContaining({ sessionId: 'sess_native_agent_tool_1', limit: 10 }),
+      expect.objectContaining({
+        defaultSessionId: 'sess_native_agent_tool_1',
+        surface: 'agent',
+        actionRequestId: 'native_tool_call_2',
+      }),
+    );
   });
+
+  it('binds Agent Discussion posts to the live Session publisher carrier', async () => {
+    const postAgentDiscussionMessage = vi.fn(async () => ({
+      ok: false as const,
+      v: 1 as const,
+      error: 'session_discussion_post_denied' as const,
+    }));
+    let capturedTransport: ((request: any, options?: any) => Promise<unknown>) | undefined;
+
+    vi.doMock('@/session/discussions/sessionDiscussionActionDeps', () => ({
+      createSessionDiscussionActionDeps: (options: any) => {
+        capturedTransport = options.postAgentMessage;
+        return { sessionDiscussionAction: vi.fn() };
+      },
+    }));
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: () => ({
+        executor: { execute: vi.fn() },
+      }),
+    }));
+    vi.doMock('@/mcp/server/registerHappierMcpBuiltInTools', () => ({
+      registerHappierMcpBuiltInTools: () => ({ toolNames: [] }),
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    createHappierMcpServer({
+      sessionId: 'session-1',
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+      postAgentDiscussionMessage,
+    } as any, {
+      credentials: { token: 'token-1' } as any,
+    });
+
+    expect(capturedTransport).toBeTypeOf('function');
+    const signal = new AbortController().signal;
+    await capturedTransport!({
+      v: 1,
+      sessionId: 'session-1',
+      discussionId: 'discussion-1',
+      request: {
+        localId: 'message-1',
+        content: { t: 'plain', v: { v: 1, parts: [{ t: 'text', text: 'Done' }] } },
+        mentionedAccountIds: [],
+      },
+      runId: 'run-1',
+      toolCallId: 'tool-1',
+    }, { signal });
+
+    expect(postAgentDiscussionMessage).toHaveBeenCalledWith({
+      discussionId: 'discussion-1',
+      request: expect.objectContaining({ localId: 'message-1' }),
+      runId: 'run-1',
+      toolCallId: 'tool-1',
+    }, { signal });
+  }, 60_000);
 
   it('uses the live session permission mode for session-agent action execution instead of stale metadata', async () => {
     const executorExecute = vi.fn(async (actionId: string, input: unknown, ctx: unknown) => ({
@@ -402,6 +675,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_live_permission_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
       getMetadataSnapshot: () => ({ permissionMode: 'default', permissionModeUpdatedAt: 1 }),
@@ -441,6 +715,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_live_backend_target_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
       getMetadataSnapshot: () => ({ path: '/repo/current' }),
@@ -473,6 +748,7 @@ describe('createHappierMcpServer', () => {
     const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
     createHappierMcpServer({
       sessionId: 'bound-session',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: {
         invokeLocal: async () => ({
           v: 1,
@@ -523,6 +799,7 @@ describe('createHappierMcpServer', () => {
     const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
     createHappierMcpServer({
       sessionId: 'bound-session',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal },
       updateMetadata: () => {},
     } as any, { credentials: null } as any);
@@ -553,6 +830,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_live_location_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
       getMetadataSnapshot: () => ({
@@ -597,6 +875,7 @@ describe('createHappierMcpServer', () => {
     const invokeLocal = vi.fn(async (_method: string, params: unknown) => params);
     createHappierMcpServer({
       sessionId: 'sess_mcp_payload_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal },
       updateMetadata: () => {},
     } as any);
@@ -626,6 +905,7 @@ describe('createHappierMcpServer', () => {
     const list = vi.fn(async () => ({ ok: true, data: { runs: [{ runId: 'run_1' }] } }));
     createHappierMcpServer({
       sessionId: 'sess_mcp_payload_2',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal },
       updateMetadata: () => {},
       executionRuns: {
@@ -666,6 +946,7 @@ describe('createHappierMcpServer', () => {
     }));
     createHappierMcpServer({
       sessionId: 'sess_mcp_payload_3',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal },
       updateMetadata: () => {},
     } as any);
@@ -701,6 +982,7 @@ describe('createHappierMcpServer', () => {
     }));
     createHappierMcpServer({
       sessionId: 'sess_mcp_prompt_registry_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal },
       updateMetadata: () => {},
     } as any);
@@ -750,6 +1032,7 @@ describe('createHappierMcpServer', () => {
 
     createHappierMcpServer({
       sessionId: 'sess_mcp_session_control_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any);
@@ -784,6 +1067,7 @@ describe('createHappierMcpServer', () => {
 
     const fakeClient = {
       sessionId: 'sess_mcp_surface_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any;
@@ -822,6 +1106,7 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(
       {
         sessionId: 'sess_change_title_1',
+        getServerBinding: getTestServerBinding,
         rpcHandlerManager: { invokeLocal: async () => ({}) },
         updateMetadata: () => {},
       } as any,
@@ -867,6 +1152,7 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(
       {
         sessionId: 'sess_change_title_refresh_1',
+        getServerBinding: getTestServerBinding,
         rpcHandlerManager: { invokeLocal: async () => ({}) },
         updateMetadata,
       } as any,
@@ -925,6 +1211,7 @@ describe('createHappierMcpServer', () => {
     createHappierMcpServer(
       {
         sessionId: 'sess_execution_run_start_1',
+        getServerBinding: getTestServerBinding,
         rpcHandlerManager: { invokeLocal },
         updateMetadata: () => {},
         // The mutable Session mode has widened since this turn was admitted.

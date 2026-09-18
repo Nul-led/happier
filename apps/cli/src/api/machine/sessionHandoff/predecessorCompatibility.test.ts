@@ -381,7 +381,7 @@ describe('session handoff predecessor wire compatibility', () => {
       });
   });
 
-  it('fails predecessor atomic resume closed when a matching spawn cannot prove runner ownership', async () => {
+  it('stops the exact target before acknowledging abort after predecessor resume acceptance', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-predecessor-unowned-'));
     try {
       const store = createSessionHandoffPrepareTargetJobStore({ activeServerDir });
@@ -424,6 +424,14 @@ describe('session handoff predecessor wire compatibility', () => {
         sessionId: 'session-unowned',
       }));
       const stopSessionForHandoff = vi.fn(async () => 'stopped' as const);
+      const abort = vi.fn(async () => ({
+        handoffId: status.handoffId,
+        status: {
+          ...status,
+          status: 'aborted' as const,
+          recoveryActions: ['restart_on_source', 'keep_stopped'] as const,
+        },
+      }));
       registerSessionHandoffPredecessorCompatibilityHandlers({
         rpcHandlerManager: {
           registerHandler(method: string, handler: (raw: unknown) => Promise<unknown>) {
@@ -434,7 +442,7 @@ describe('session handoff predecessor wire compatibility', () => {
         prepareTarget: vi.fn(),
         prepareTargetResultGet: vi.fn(),
         commit: vi.fn(),
-        abort: vi.fn(),
+        abort,
         spawnSessionForHandoff,
         stopSessionForHandoff,
         now: () => 20,
@@ -469,17 +477,23 @@ describe('session handoff predecessor wire compatibility', () => {
       await expect(registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_ABORT_V2)!({
         handoffId: status.handoffId,
         sessionId: 'session-unowned',
-        reason: 'do not stop an ambiguously matching runner',
+        reason: 'cancel before commit',
       })).resolves.toMatchObject({
         status: {
-          status: 'awaiting_recovery',
+          status: 'aborted',
         },
         targetCleanup: {
-          status: 'failed',
-          reason: 'unreachable',
+          status: 'proved_absent',
+          proof: 'stopped',
         },
       });
-      expect(stopSessionForHandoff).not.toHaveBeenCalled();
+      expect(stopSessionForHandoff).toHaveBeenCalledOnce();
+      expect(stopSessionForHandoff).toHaveBeenCalledWith('session-unowned');
+      expect(abort).toHaveBeenCalledOnce();
+      expect(await store.findByHandoffId(status.handoffId)).toMatchObject({
+        terminal: { status: 'aborted' },
+        targetCleanup: { status: 'proved_absent', proof: 'stopped' },
+      });
     } finally {
       await rm(activeServerDir, { recursive: true, force: true });
     }

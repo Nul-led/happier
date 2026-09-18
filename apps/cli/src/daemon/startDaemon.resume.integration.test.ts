@@ -7,7 +7,6 @@ import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionResult } from '@/rpc/handle
 import { configuration } from '@/configuration';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
-import { createLocalSessionHandoffMetadataStore } from '@/session/handoff/metadata/localSessionHandoffMetadataStore';
 import { writeExecutableShim } from '@/testkit/fs/executableShim';
 import { waitForSessionWebhook } from './spawn/waitForSessionWebhook';
 
@@ -1746,7 +1745,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     }
   });
 
-  it('uses the local handoff overlay when the source session metadata does not expose a provider id', async () => {
+  it('uses the explicit canonical backend target when source session metadata does not expose an Agent id', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     const claudePathOriginal = process.env.HAPPIER_CLAUDE_PATH;
@@ -1768,24 +1767,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
 
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-overlay-'));
     configurationMutable.activeServerDir = activeServerDir;
-    await createLocalSessionHandoffMetadataStore({ activeServerDir }).saveByVendorResumeId({
-      vendorResumeId: 'sess-handoff-direct',
-      exportMetadataOverlay: {
-        handoffV1: {
-          v: 1,
-          sourceMachineId: 'machine_source',
-          targetMachineId: 'machine_target',
-          providerId: 'claude',
-          sessionStorageBefore: 'direct',
-          sessionStorageAfter: 'direct',
-          transportStrategy: 'direct_peer',
-          completedAtMs: 1,
-          sourceWorkspaceRootPath: '/repo-source-root',
-          targetWorkspaceRootPath: '/repo-target-root',
-        },
-      },
-    });
-
     vi.mocked(fetchSessionByIdCompat).mockResolvedValueOnce(
       createSessionRecordFixture({
         id: 'sess-handoff-source',
@@ -1852,7 +1833,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     }
   });
 
-  it('fails closed when local handoff overlay resolves built-in providerId to customAcp', async () => {
+  it('fails closed when canonical session metadata and request omit an Agent target', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     const configurationMutable = configuration as { activeServerDir: string };
@@ -1861,24 +1842,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
 
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-overlay-customacp-'));
     configurationMutable.activeServerDir = activeServerDir;
-    await createLocalSessionHandoffMetadataStore({ activeServerDir }).saveByVendorResumeId({
-      vendorResumeId: 'sess-handoff-direct',
-      exportMetadataOverlay: {
-        handoffV1: {
-          v: 1,
-          sourceMachineId: 'machine_source',
-          targetMachineId: 'machine_target',
-          providerId: 'customAcp',
-          sessionStorageBefore: 'direct',
-          sessionStorageAfter: 'direct',
-          transportStrategy: 'direct_peer',
-          completedAtMs: 1,
-          sourceWorkspaceRootPath: '/repo-source-root',
-          targetWorkspaceRootPath: '/repo-target-root',
-        },
-      },
-    });
-
     vi.mocked(fetchSessionByIdCompat).mockResolvedValueOnce(
       createSessionRecordFixture({
         id: 'sess-handoff-source',

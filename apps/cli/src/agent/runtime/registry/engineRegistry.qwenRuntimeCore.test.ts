@@ -98,6 +98,7 @@ describe('engineRegistry (qwen runtimeCore)', () => {
       expect(plan.config.createSessionRuntime).toEqual(expect.any(Function));
 
       const executionRunRuntime = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+        scope: 'detached',
         backendId: QWEN_BACKEND_ID,
         cwd: '/tmp/qwen',
         permissionMode: 'read_only',

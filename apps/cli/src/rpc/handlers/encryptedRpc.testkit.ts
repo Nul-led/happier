@@ -31,12 +31,14 @@ export function createEncryptedRpcTestClient(
     logger,
   });
   options.registerHandlers(manager);
+  let requestSequence = 0;
 
   const call = async <TResponse, TRequest>(method: string, request: TRequest): Promise<TResponse> => {
     const encryptedParams = encodeBase64(encrypt(encryptionKey, encryptionVariant, request));
     const rpcRequest: RpcRequest = {
       method: `${options.scopePrefix}:${method}`,
       params: encryptedParams,
+      requestId: `${options.scopePrefix}:test-request:${++requestSequence}`,
     };
     const encryptedResponse = await manager.handleRequest(rpcRequest);
     return decrypt(encryptionKey, encryptionVariant, decodeBase64(encryptedResponse)) as TResponse;

@@ -125,7 +125,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
         AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
       };
-      const install = async () => await installOrUpdateRelayRuntimeLocal({
+      const install = async (env: Readonly<Record<string, string>> = personalHomeEnv) => await installOrUpdateRelayRuntimeLocal({
         serverBinaryPath,
         channel: 'preview',
         mode: 'user',
@@ -134,13 +134,17 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
         homeDir,
         purpose: { kind: 'personal-home' as const, canonicalServerUrl },
         assertPersonalHomeStopped: async () => undefined,
-        env: personalHomeEnv,
+        env,
         runServiceCommands: false,
         skipHealthCheck: true,
       });
 
       process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '1';
-      await install();
+      await install({
+        ...personalHomeEnv,
+        HAPPIER_IROH_RELAY_POLICY: 'automatic',
+        HAPPIER_IROH_RELAY_URLS: 'https://relay-b.example.test,https://relay-a.example.test',
+      });
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
       await writeFile(join(defaults.configDir, 'server.env'), `${await readFileText(join(defaults.configDir, 'server.env'))}HAPPIER_PUBLIC_SERVER_URL=${canonicalServerUrl}\nHAPPIER_PUBLIC_SERVER_URL_INFERRED=1\n`, 'utf8');
       await install();
@@ -159,6 +163,21 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       expect(envText).toContain('HAPPIER_PUBLIC_SERVER_URL=https://home.example.test');
       expect(envText).not.toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=1');
       expect(envText).not.toContain('HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=0');
+      expect(envText.match(/^HAPPIER_IROH_RELAY_POLICY=automatic$/gmu)).toHaveLength(1);
+      expect(envText.match(/^HAPPIER_IROH_RELAY_URLS=https:\/\/relay-a\.example\.test,https:\/\/relay-b\.example\.test$/gmu)).toHaveLength(1);
+
+      await install({ ...personalHomeEnv, HAPPIER_IROH_RELAY_POLICY: 'automatic' });
+      const automaticEnvText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(automaticEnvText).not.toContain('HAPPIER_IROH_RELAY_URLS=');
+      await install({
+        ...personalHomeEnv,
+        HAPPIER_IROH_RELAY_POLICY: 'automatic',
+        HAPPIER_IROH_RELAY_URLS: 'https://relay.example.test',
+      });
+      await install({ ...personalHomeEnv, HAPPIER_IROH_RELAY_POLICY: 'disabled' });
+      const directEnvText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(directEnvText.match(/^HAPPIER_IROH_RELAY_POLICY=disabled$/gmu)).toHaveLength(1);
+      expect(directEnvText).not.toContain('HAPPIER_IROH_RELAY_URLS=');
     } finally {
       if (previousApproval === undefined) delete process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED;
       else process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = previousApproval;

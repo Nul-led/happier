@@ -1,3 +1,4 @@
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { logger } from '@/ui/logger';
 
 import { encodeBase64, encrypt } from '../../../encryption';
@@ -89,6 +90,7 @@ export type SessionClientCommitQueueRuntime = Readonly<{
 export function createSessionClientCommitQueueRuntime(
     deps: Readonly<{
         token: string;
+        serverUrl?: string;
         sessionId: string;
         transcriptStorage: 'persisted' | 'direct';
         getSocket: () => Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -101,6 +103,7 @@ export function createSessionClientCommitQueueRuntime(
         requestReconnect?: (localId: string) => void;
     }> & SessionStoredContentCryptoContext,
 ): SessionClientCommitQueueRuntime {
+    const serverUrl = deps.serverUrl ?? resolveServerHttpBaseUrl();
     const queuedDisconnectedSessionMessages = new Map<string, QueuedDisconnectedSessionMessage>();
     const commitRetryByLocalId = new Map<string, CommitRetryRecord>();
     let nextRetryGeneration = 1;
@@ -265,7 +268,7 @@ export function createSessionClientCommitQueueRuntime(
         params: CommitSessionMessageParams,
         token: CommitRetryToken,
     ): Promise<boolean> => {
-        const ack = await deliverRequiredDirectSessionMessageViaHttp({
+        const ack = await runWithServerHttpBaseUrl(serverUrl, async () => deliverRequiredDirectSessionMessageViaHttp({
             token: deps.token,
             sessionId: deps.sessionId,
             localId: params.localId,
@@ -273,7 +276,7 @@ export function createSessionClientCommitQueueRuntime(
             sidechainId: params.sidechainId,
             ...(params.messageRole ? { messageRole: params.messageRole } : {}),
             ...(params.sessionEventType ? { sessionEventType: params.sessionEventType } : {}),
-        });
+        }));
         if (!ack) return false;
         completeRetryIntent(token);
         deps.markCommittedLocalIdAwaitingEcho(params.localId);

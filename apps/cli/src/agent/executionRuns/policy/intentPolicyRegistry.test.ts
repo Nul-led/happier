@@ -22,10 +22,11 @@ describe('executionRun intent policy registry', () => {
     }
   });
 
-  it('keeps delegate and voice-agent permission-intent capable while bounded evidence/read intents stay safe-only', () => {
+  it('keeps general Agent, delegate, and voice-agent permission-intent capable while bounded evidence/read intents stay safe-only', () => {
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.review.permissionModePolicy).toBe('safe_only');
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.plan.permissionModePolicy).toBe('safe_only');
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.delegate.permissionModePolicy).toBe('permissive');
+    expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.agent.permissionModePolicy).toBe('permissive');
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.voice_agent.permissionModePolicy).toBe('permissive');
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.memory_hints.permissionModePolicy).toBe('safe_only');
     expect(EXECUTION_RUN_INTENT_POLICY_REGISTRY.scm_commit_message.permissionModePolicy).toBe('safe_only');
@@ -34,6 +35,7 @@ describe('executionRun intent policy registry', () => {
     expect(isSafePermissionModeForIntent('review', 'workspace_write')).toBe(false);
     expect(isSafePermissionModeForIntent('plan', 'read_only')).toBe(true);
     expect(isSafePermissionModeForIntent('delegate', 'workspace_write')).toBe(true);
+    expect(isSafePermissionModeForIntent('agent', 'workspace_write')).toBe(true);
     expect(isSafePermissionModeForIntent('voice_agent', 'read-only')).toBe(true);
     expect(isSafePermissionModeForIntent('voice_agent', 'safe-yolo')).toBe(true);
     expect(isSafePermissionModeForIntent('voice_agent', 'yolo')).toBe(true);
@@ -115,6 +117,16 @@ describe('executionRun intent policy registry', () => {
       retentionPolicy: 'resumable',
       runClass: 'long_lived',
       ioMode: 'request_response',
+    })).toEqual({ ok: true });
+  });
+
+  it('allows the general Agent profile to declare bounded or retained native execution', () => {
+    expect(validateExecutionRunStartIntentPolicy({
+      intent: 'agent',
+      permissionMode: 'workspace_write',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
     })).toEqual({ ok: true });
   });
 });

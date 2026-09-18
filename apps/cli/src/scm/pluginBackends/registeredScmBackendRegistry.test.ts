@@ -17,6 +17,8 @@ import { readCurrentBackendRuntimeServices as readCurrentScmBackendRuntimeServic
 import { readCurrentHostingProviderRuntimeServices as readCurrentScmHostingProviderRuntimeServices } from '@happier-dev/plugin-sdk/scm/hosting';
 
 import { createRegisteredScmBackendRegistry } from './registeredScmBackendRegistry';
+import { createRegisteredScmBackendAdapter } from './registeredScmBackendAdapter';
+import { createGitBackend, createGitScmBackendRuntimeRegistration } from '../../../../../packages/plugins/scm-git/src/backend';
 import type { ScmBackend } from '../types';
 
 const TEST_LAST_ACTIVITY_AT_MS = Date.UTC(2026, 4, 13, 4, 0, 0);
@@ -162,6 +164,24 @@ function createDefinition(input?: Readonly<{
 }
 
 describe('registered SCM backend registry', () => {
+    it.each(['.git', '.sl', null] as const)('keeps registered Git inspection and describe policy aligned for %s', async (mode) => {
+        const registration = createGitScmBackendRuntimeRegistration();
+        const adapter = createRegisteredScmBackendAdapter({
+            definition: { id: 'git', kind: 'git' },
+            qualifiedId: 'happier.scm.git/git',
+            executableDefinition: registration.runtime!,
+            registration,
+        });
+        const description = await adapter.describeBackend({
+            context: { cwd: '/repo', projectKey: 'repo', detection: { isRepo: mode !== null, rootPath: '/repo', mode } },
+            request: {},
+        });
+        expect(description.backendId).toBe('happier.scm.git/git');
+        expect(description.capabilities).toEqual(adapter.getCapabilities({ mode }));
+        expect(adapter.getCapabilities({ mode, executableAvailable: false }))
+            .toEqual(createGitBackend().getCapabilities({ mode, executableAvailable: false }));
+    });
+
     it('activates a workspace-transfer backend that registers only the combined resolver', () => {
         const registration: ScmBackendRuntimeRegistration = {
             id: 'acme-vcs',
@@ -706,6 +726,7 @@ describe('registered SCM backend registry', () => {
                     inspectWorkspaceLocation: async () => ({
                         rootPath: '/repo',
                         scmProvider: 'git',
+                        committedRevision: '0123456789abcdef0123456789abcdef01234567',
                         checkoutProviderKinds: ['git_worktree'],
                     }),
                     realizeWorkspaceCheckout: async ({ workspaceCheckoutRealization }) => ({
@@ -813,6 +834,7 @@ describe('registered SCM backend registry', () => {
         await expect(backend.workspaceIntegration?.inspectWorkspaceLocation?.({ context })).resolves.toEqual({
             rootPath: '/repo',
             scmProvider: 'git',
+            committedRevision: '0123456789abcdef0123456789abcdef01234567',
             checkoutProviderKinds: ['git_worktree'],
         });
         await expect(backend.workspaceIntegration?.realizeWorkspaceCheckout?.({

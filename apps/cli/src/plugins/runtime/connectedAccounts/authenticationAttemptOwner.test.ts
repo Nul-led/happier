@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+    CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
     PluginConnectedAccountAuthenticationModeV2Schema,
     PluginConnectedAccountConfigurationV2Schema,
     type PluginConnectedAccountConfigurationV2,
@@ -81,6 +82,7 @@ function manualMode(
             id: modeId,
             kind: 'manual',
             outcomeReconciliation: 'none',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
             fields: [{
                 id: 'token',
                 title: 'Token',
@@ -480,6 +482,7 @@ describe('ConnectedAccountAuthenticationAttemptOwner', () => {
             service,
             attemptId: 'attempt-1',
             authenticationModeId: 'manual',
+            directExportContract: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
             configurationState: 'configured',
         });
         expect(h.invoke).not.toHaveBeenCalled();

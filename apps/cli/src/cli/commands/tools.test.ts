@@ -2,6 +2,28 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { handleToolsCommand } from './tools';
 import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
+import { listBuiltInHappierTools as projectBuiltInHappierTools } from '@/agent/tools/happierTools/listBuiltInHappierTools';
+
+const BOARD_TOOL_NAMES = [
+  'session_board_get',
+  'session_board_item_upsert',
+  'session_board_item_remove',
+  'session_board_layout_update',
+] as const;
+
+function serverFeaturesSnapshot(boardEnabled: unknown) {
+  return {
+    status: 'ready' as const,
+    features: {
+      features: {
+        sessions: {
+          enabled: true,
+          board: { enabled: boardEnabled },
+        },
+      },
+    },
+  } as any;
+}
 
 function createBaseDeps() {
   return {
@@ -9,7 +31,10 @@ function createBaseDeps() {
       token: 'token',
       encryption: null,
     }),
-    initializeBackendApiContext: async () => ({ api: {} as any, machineId: 'machine-1' }),
+    initializeBackendApiContext: async () => ({
+      api: { getServerFeaturesSnapshot: async () => undefined } as any,
+      machineId: 'machine-1',
+    }),
     bootstrapAccountSettingsContext: async () => ({ settings: {}, source: 'network', settingsVersion: 1, loadedAtMs: 1, whenRefreshed: null }),
     resolveCustomHappierToolsContext: async () => ({ mcpServers: {}, warnings: [] }),
   };
@@ -20,6 +45,7 @@ describe('happier tools --json', () => {
     const output = captureStdoutJsonOutput();
     const initializeBackendApiContext = vi.fn(async () => ({ api: {} as any, machineId: 'machine-1' }));
     const resolveCustomHappierToolsContext = vi.fn(async () => ({ mcpServers: {}, warnings: [] }));
+    const savedSecretResources = [{ resourceId: 'shared-secret-resource' }];
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
 
@@ -27,6 +53,14 @@ describe('happier tools --json', () => {
       await handleToolsCommand(['list', '--session-id', 'sess-1', '--directory', '/tmp/workspace', '--json'], {
         ...createBaseDeps(),
         initializeBackendApiContext,
+        bootstrapAccountSettingsContext: async () => ({
+          settings: {},
+          source: 'network',
+          settingsVersion: 1,
+          loadedAtMs: 1,
+          savedSecretResources,
+          whenRefreshed: null,
+        }),
         resolveCustomHappierToolsContext,
         listBuiltInHappierTools: async () => [
           { name: 'change_title', title: 'Change title', description: 'Rename', inputSchema: { title: 'string' } },
@@ -52,6 +86,9 @@ describe('happier tools --json', () => {
         suppressMachineRegistrationRecoveryLogs: true,
       }));
       expect(resolveCustomHappierToolsContext).toHaveBeenCalledOnce();
+      expect(resolveCustomHappierToolsContext).toHaveBeenCalledWith(expect.objectContaining({
+        savedSecretResources,
+      }));
       expect(process.exitCode).toBe(0);
     } finally {
       output.restore();
@@ -301,6 +338,190 @@ describe('happier tools --json', () => {
         surface: 'agent',
         toolCallId: 'pi-call-1',
       }));
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('dispatches the generated shell-bridge call as Agent automation even with stored human credentials', async () => {
+    const { buildHappierToolsShellBridgeCommand } = await import(
+      '@/agent/tools/happierTools/runtime/buildHappierToolsShellBridgeCommand'
+    );
+    const { parseHappierToolsShellBridgeCommand } = await import('@happier-dev/protocol');
+    const generated = buildHappierToolsShellBridgeCommand([
+      'call',
+      '--session-id',
+      'sess-1',
+      '--directory',
+      '/tmp/workspace',
+      '--source',
+      'happier',
+      '--tool',
+      'change_title',
+      '--args-json',
+      '{"title":"Renamed"}',
+      '--json',
+    ]);
+    const parsed = parseHappierToolsShellBridgeCommand(generated);
+    expect(parsed).toMatchObject({ kind: 'call', agentBridge: true });
+
+    const output = captureStdoutJsonOutput();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const callBuiltInHappierTool = vi.fn(async () => ({ ok: true as const, result: { done: true } }));
+
+    try {
+      // The exact argv the generated command runs, taken from the producer
+      // rather than restated by hand.
+      await handleToolsCommand([
+        'call',
+        '--agent-bridge',
+        '--session-id', 'sess-1',
+        '--directory', '/tmp/workspace',
+        '--source', 'happier',
+        '--tool', 'change_title',
+        '--args-json', '{"title":"Renamed"}',
+        '--json',
+      ], {
+        ...createBaseDeps(),
+        callBuiltInHappierTool,
+      } as any);
+
+      expect(callBuiltInHappierTool).toHaveBeenCalledWith(expect.objectContaining({
+        surface: 'agent',
+      }));
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('lists tools on the Agent surface for the generated shell bridge', async () => {
+    const output = captureStdoutJsonOutput();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const listBuiltInHappierTools = vi.fn(async () => []);
+
+    try {
+      await handleToolsCommand(['list', '--agent-bridge', '--session-id', 'sess-1', '--json'], {
+        ...createBaseDeps(),
+        listBuiltInHappierTools,
+        listResolvedCustomHappierTools: async () => ({ tools: [], warnings: [] }),
+      } as any);
+
+      expect(listBuiltInHappierTools).toHaveBeenCalledWith(expect.objectContaining({
+        surface: 'agent',
+      }));
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it.each([
+    ['missing exact Session target', serverFeaturesSnapshot(true), false],
+    ['missing snapshot', undefined, true],
+    ['malformed snapshot', serverFeaturesSnapshot('yes'), true],
+    ['disabled snapshot', serverFeaturesSnapshot(false), true],
+  ])('fails closed for server-backed Board tools on the shell Agent bridge with a %s', async (_label, snapshot, withSession) => {
+    const output = captureStdoutJsonOutput();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+
+    try {
+      await handleToolsCommand([
+        'list',
+        '--agent-bridge',
+        ...(withSession ? ['--session-id', 'sess-1'] : []),
+        '--json',
+      ], {
+        ...createBaseDeps(),
+        initializeBackendApiContext: async () => ({
+          api: { getServerFeaturesSnapshot: async () => snapshot } as any,
+          machineId: 'machine-1',
+        }),
+        listBuiltInHappierTools: async (params: any) => projectBuiltInHappierTools(params),
+        listResolvedCustomHappierTools: async () => ({ tools: [], warnings: [] }),
+      } as any);
+
+      const names = output.json<any>().data.sources.happier.map((tool: { name: string }) => tool.name);
+      for (const boardToolName of BOARD_TOOL_NAMES) {
+        expect(names).not.toContain(boardToolName);
+      }
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('advertises all Board tools only from the shell Agent bridge target Home enabled snapshot', async () => {
+    const seenByToken = new Map<string, readonly string[]>();
+
+    for (const [token, enabled] of [['home-a-token', false], ['home-b-token', true]] as const) {
+      const output = captureStdoutJsonOutput();
+      const previousExitCode = process.exitCode;
+      process.exitCode = undefined;
+      try {
+        await handleToolsCommand(['list', '--agent-bridge', '--session-id', 'same-session-id', '--json'], {
+          ...createBaseDeps(),
+          readCredentials: async () => ({ token, encryption: null }),
+          initializeBackendApiContext: async ({ credentials }: any) => ({
+            api: {
+              getServerFeaturesSnapshot: async () => serverFeaturesSnapshot(
+                credentials.token === 'home-b-token',
+              ),
+            } as any,
+            machineId: 'machine-1',
+          }),
+          listBuiltInHappierTools: async (params: any) => projectBuiltInHappierTools(params),
+          listResolvedCustomHappierTools: async () => ({ tools: [], warnings: [] }),
+        } as any);
+        seenByToken.set(
+          token,
+          output.json<any>().data.sources.happier.map((tool: { name: string }) => tool.name),
+        );
+      } finally {
+        output.restore();
+        process.exitCode = previousExitCode;
+      }
+    }
+
+    for (const boardToolName of BOARD_TOOL_NAMES) {
+      expect(seenByToken.get('home-a-token')).not.toContain(boardToolName);
+    }
+    expect(seenByToken.get('home-b-token')).toEqual(expect.arrayContaining([...BOARD_TOOL_NAMES]));
+  });
+
+  it('lists built-in tools with the bootstrapped Account Action policy', async () => {
+    const output = captureStdoutJsonOutput();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const listBuiltInHappierTools = vi.fn(async ({ isActionEnabled }: any) => {
+      expect(isActionEnabled('subagents.plan.start')).toBe(false);
+      return [];
+    });
+
+    try {
+      await handleToolsCommand(['list', '--session-id', 'sess-1', '--json'], {
+        ...createBaseDeps(),
+        bootstrapAccountSettingsContext: async () => ({
+          settings: {
+            actionsSettingsV1: {
+              v: 1,
+              actions: { 'subagents.plan.start': { disabledSurfaces: ['cli'] } },
+            },
+          },
+          source: 'network',
+          settingsVersion: 1,
+          loadedAtMs: 1,
+          whenRefreshed: null,
+        }),
+        listBuiltInHappierTools,
+        listResolvedCustomHappierTools: async () => ({ tools: [], warnings: [] }),
+      } as any);
+
+      expect(listBuiltInHappierTools).toHaveBeenCalledOnce();
     } finally {
       output.restore();
       process.exitCode = previousExitCode;

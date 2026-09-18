@@ -28,10 +28,16 @@ vi.mock('@/daemon/controlClient', () => ({
 import { createHappierMcpServer } from './createHappierMcpServer';
 import { filterPluginToolsForActiveAgentComposition } from './startHappyServer';
 
+const getTestServerBinding = () => ({
+  serverId: 'test-home',
+  serverUrl: 'https://test-home.example.test',
+} as const);
+
 describe('createHappierMcpServer plugin tools', () => {
   it('dispatches a daemon-projected tool from the session-agent MCP source', async () => {
     const { toolNames } = createHappierMcpServer({
       sessionId: 'sess_agent_plugin_tool_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any, {
@@ -61,6 +67,7 @@ describe('createHappierMcpServer plugin tools', () => {
       actionId: 'acme.review.plugin/review-start',
       input: { scope: 'diff' },
       surface: 'agent',
+      authority: 'account_automation',
       defaultSessionId: 'sess_agent_plugin_tool_1',
     });
   });
@@ -96,6 +103,7 @@ describe('createHappierMcpServer plugin tools', () => {
     }] as const;
     const client = {
       sessionId: 'sess_agent_composition_tool_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: { invokeLocal: async () => ({}) },
       updateMetadata: () => {},
     } as any;

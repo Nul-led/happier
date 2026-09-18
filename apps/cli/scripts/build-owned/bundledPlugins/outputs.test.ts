@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,13 +42,35 @@ describe('bundled Plugin output ownership', () => {
     publishCoherentProjectionOutputs(root, [
       { outPath: first, out: 'one\n' },
       { outPath: second, out: 'two\n' },
-    ]);
+    ], { assertOwned: () => {} });
 
     expect(readFileSync(first, 'utf8')).toBe('one\n');
     expect(readFileSync(second, 'utf8')).toBe('two\n');
     expect(() => publishCoherentProjectionOutputs(root, [
       { outPath: join(root, '..', 'escaped.ts'), out: 'no\n' },
-    ])).toThrow(/escapes its root/u);
+    ], { assertOwned: () => {} })).toThrow(/escapes its root/u);
+  });
+
+  it('preserves the live projection when the publication lease is lost after staging', () => {
+    const root = fixtureRoot();
+    const path = join(root, 'projection.ts');
+    writeFileSync(path, 'last-green\n', 'utf8');
+
+    expect(() => publishCoherentProjectionOutputs(
+      root,
+      [{ outPath: path, out: 'candidate\n' }],
+      {
+        assertOwned: () => {
+          expect(readdirSync(root).some(
+            (name) => name.startsWith('.bundled-plugin-projection-stage-'),
+          )).toBe(true);
+          throw Object.assign(new Error('lost workspace lock ownership'), {
+            code: 'EWORKSPACEBUNDLELOCKOWNERSHIPLOST',
+          });
+        },
+      },
+    )).toThrow(expect.objectContaining({ code: 'EWORKSPACEBUNDLELOCKOWNERSHIPLOST' }));
+    expect(readFileSync(path, 'utf8')).toBe('last-green\n');
   });
 
   it('shares check/write behavior for current and retired outputs', () => {

@@ -8,6 +8,7 @@ import {
 
 import {
   CURRENT_SESSION_INTERACTION_DEADLINE_MS,
+  createCurrentExecutionRunInteractionOwner,
   createCurrentSessionInteractionOwner,
 } from './currentSessionInteractionOwner';
 
@@ -37,6 +38,55 @@ type InteractionPresenterResult = (
 ) => InteractionTransientResultV1;
 
 describe('current Session transient interaction owner', () => {
+  it('stamps detached execution-run custody without manufacturing a Session identity', async () => {
+    let presented!: InteractionTransientRequestV1;
+    const executionRun = new AbortController();
+    const owner = createCurrentExecutionRunInteractionOwner({
+      executionRunId: 'run-1',
+      executionRunSignal: executionRun.signal,
+      isGenerationCurrent: () => true,
+      deadlineMs: 1_000,
+      now: () => 10,
+      createRequestId: () => 'request-run-1',
+      present: async (request) => {
+        presented = request;
+        return approvalResult(request);
+      },
+    });
+
+    await expect(owner.request({
+      kind: 'approval',
+      title: 'Run Bash?',
+      subject: { kind: 'tool', name: 'Bash', input: { command: 'pwd' } },
+    }, { requester })).resolves.toMatchObject({ status: 'approved' });
+    expect(presented.scope).toEqual({ kind: 'execution_run', executionRunId: 'run-1' });
+    expect(presented.scope).not.toHaveProperty('sessionId');
+  });
+
+  it('settles a detached interaction when its exact execution Run ends', async () => {
+    const executionRun = new AbortController();
+    const owner = createCurrentExecutionRunInteractionOwner({
+      executionRunId: 'run-1',
+      executionRunSignal: executionRun.signal,
+      isGenerationCurrent: () => true,
+      deadlineMs: null,
+      createRequestId: () => 'request-run-ended',
+      present: async (_request, options) => await new Promise((_, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('presenter aborted')), { once: true });
+      }),
+    });
+    const pending = owner.request({
+      kind: 'confirmation',
+      message: 'Continue?',
+    }, { requester });
+    await vi.waitFor(() => expect(owner.current()).toHaveLength(1));
+
+    executionRun.abort();
+
+    await expect(pending).resolves.toMatchObject({ status: 'sessionEnded' });
+    expect(owner.current()).toEqual([]);
+  });
+
   it('stamps custody facts and settles the first valid presenter result', async () => {
     let presented!: InteractionTransientRequestV1;
     const owner = createCurrentSessionInteractionOwner({

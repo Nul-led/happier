@@ -21,6 +21,8 @@ export function createSessionSocketTransport(params: Readonly<{
     serverUrl?: string;
     transports?: string[];
     env?: NodeJS.ProcessEnv;
+    /** The atomic materializer already created this exact Machine/Session AccessKey. */
+    accessKeyBinding?: 'ensure' | 'preestablished';
 }>): Readonly<{
     socket: Socket<ServerToClientEvents, ClientToServerEvents>;
     transport: ManagedConnectionTransport;
@@ -53,12 +55,16 @@ export function createSessionSocketTransport(params: Readonly<{
     const transport: ManagedConnectionTransport = {
         ...socketTransport,
         async connect(): Promise<void> {
-            await ensureSessionMachineAccessKeyBinding({
-                serverUrl,
-                token: params.token,
-                sessionId: params.sessionId,
-                machineId: params.machineId,
-            });
+            if (params.accessKeyBinding !== 'preestablished') {
+                await ensureSessionMachineAccessKeyBinding({
+                    serverUrl,
+                    token: params.token,
+                    sessionId: params.sessionId,
+                    machineId: params.machineId,
+                });
+            } else if (!params.machineId) {
+                throw new Error('preestablished_session_access_key_requires_machine');
+            }
             await socketTransport.connect();
         },
     };

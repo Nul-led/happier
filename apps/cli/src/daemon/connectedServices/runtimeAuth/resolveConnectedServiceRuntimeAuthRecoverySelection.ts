@@ -4,7 +4,10 @@ import {
 } from '@happier-dev/protocol';
 
 import { readConnectedServiceChildSelectionsFromEnv } from '../connectedServiceChildEnvironment';
-import { parseConnectedServiceBindingSelections } from '../parseConnectedServicesBindings';
+import {
+    parseConnectedServiceBindingSelections,
+    type ConnectedServiceBindingSelection,
+} from '../parseConnectedServicesBindings';
 import type { ConnectedServiceRuntimeFailureClassification } from './types';
 
 export type RuntimeRecoverySelection =
@@ -43,9 +46,10 @@ function parseConnectedServiceId(value: unknown): ConnectedAccountServiceKey | n
 }
 
 function mapParsedBindingSelectionToRuntimeRecoverySelection(
-    selection: RuntimeRecoverySelection | null,
+    selection: ConnectedServiceBindingSelection | null,
     failedProfileId?: string,
 ): RuntimeRecoverySelection | null {
+    if (selection?.kind === 'team_resource') return null;
     if (selection?.kind === 'group' && failedProfileId) {
         return {
             ...selection,
@@ -129,9 +133,14 @@ export function resolveConnectedServiceRuntimeAuthRecoverySelection(input: Reado
             )
         )
     ) {
+        const selection = mapParsedBindingSelectionToRuntimeRecoverySelection(
+            trackedSelection,
+            reportedProfileId,
+        );
+        if (!selection) return { selection: null, source: null };
         return {
             source: 'tracked_spawn_options',
-            selection: mapParsedBindingSelectionToRuntimeRecoverySelection(trackedSelection, reportedProfileId),
+            selection,
         };
     }
 
@@ -148,9 +157,14 @@ export function resolveConnectedServiceRuntimeAuthRecoverySelection(input: Reado
             )
         )
     ) {
+        const selection = mapParsedBindingSelectionToRuntimeRecoverySelection(
+            metadataSelection,
+            reportedProfileId,
+        );
+        if (!selection) return { selection: null, source: null };
         return {
             source: 'session_metadata',
-            selection: mapParsedBindingSelectionToRuntimeRecoverySelection(metadataSelection, reportedProfileId),
+            selection,
         };
     }
 

@@ -1,5 +1,5 @@
 import {
-  fetchServerFeaturesSnapshot,
+  refreshServerFeaturesSnapshot,
   type CliServerFeaturesSnapshot,
 } from './serverFeaturesClient';
 
@@ -33,7 +33,10 @@ export function createServerFeaturesSnapshotStore(params: {
   // The fetch source. Defaults to the canonical `/v1/features` client so the daemon does not
   // introduce a second fetch path.
   fetchSnapshot: () => Promise<CliServerFeaturesSnapshot>;
-  onReady?: (features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features']) => Promise<void> | void;
+  /** Exact-projection side effects; public predecessor fallback never reaches this callback. */
+  onAuthenticatedReady?: (
+    features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features'],
+  ) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }): ServerFeaturesSnapshotStore {
   let cached: CliServerFeaturesSnapshot | undefined;
@@ -44,7 +47,9 @@ export function createServerFeaturesSnapshotStore(params: {
     inFlight = (async () => {
       try {
         const next = await params.fetchSnapshot();
-        if (next.status === 'ready') await params.onReady?.(next.features);
+        if (next.status === 'ready' && next.provenance === 'authenticated') {
+          await params.onAuthenticatedReady?.(next.features);
+        }
         if (next.status === 'ready' || cached === undefined) {
           cached = next;
         }
@@ -76,17 +81,19 @@ export function createServerUrlServerFeaturesSnapshotStore(params: {
   serverUrl: string | (() => string);
   token?: string;
   timeoutMs?: number;
-  onReady?: (features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features']) => Promise<void> | void;
+  onAuthenticatedReady?: (
+    features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features'],
+  ) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }): ServerFeaturesSnapshotStore {
   return createServerFeaturesSnapshotStore({
     fetchSnapshot: () =>
-      fetchServerFeaturesSnapshot({
+      refreshServerFeaturesSnapshot({
         serverUrl: typeof params.serverUrl === 'function' ? params.serverUrl() : params.serverUrl,
         ...(params.token ? { token: params.token } : {}),
         ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
       }),
     ...(params.onError ? { onError: params.onError } : {}),
-    ...(params.onReady ? { onReady: params.onReady } : {}),
+    ...(params.onAuthenticatedReady ? { onAuthenticatedReady: params.onAuthenticatedReady } : {}),
   });
 }

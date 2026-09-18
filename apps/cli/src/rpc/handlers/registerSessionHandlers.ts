@@ -1,5 +1,6 @@
-import type { RpcHandlerRegistrar } from '@/api/rpc/types';
+import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { Metadata } from '@/api/types';
+import { resolveSocketRpcSessionAuthorization } from '@happier-dev/protocol/rpc';
 export { SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 export type { SpawnSessionErrorCode, SpawnSessionErrorDetail } from '@happier-dev/protocol';
 export type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -47,6 +48,20 @@ type RpcRegistrar = Readonly<{
     registerHandler(method: string, handler: (input: unknown) => Promise<unknown>): void;
 }>;
 
+function createAuthorizedSessionRpcRegistrar(delegate: RpcHandlerRegistrar): RpcHandlerRegistrar {
+    return {
+        registerHandler: <TRequest, TResponse>(
+            method: string,
+            handler: RpcHandler<TRequest, TResponse>,
+        ): void => {
+            if (!resolveSocketRpcSessionAuthorization(method)) {
+                throw new Error(`unclassified_session_rpc_method:${method}`);
+            }
+            delegate.registerHandler(method, handler);
+        },
+    };
+}
+
 export function registerSessionTranscriptRpcHandlers(params: Readonly<{
     rpcHandlerManager: RpcRegistrar;
     actionExecutor?: RpcActionExecutor;
@@ -79,6 +94,7 @@ async function resolveProductionTranscriptActionExecutor(params: Readonly<{
     }
     return createCliActionExecutorFromCredentials({
         credentials,
+        readCredentials: async () => await readStoredCredentials().catch(() => null),
         sessionLogAccess: {
             workingDirectory: params.workingDirectory,
             accessPolicy: params.accessPolicy,
@@ -135,6 +151,7 @@ export function registerSessionHandlers(
     }>,
 ) {
     const accessPolicy = opts?.accessPolicy ?? { kind: 'osUser' };
+    const authorizedSessionRpcHandlerManager = createAuthorizedSessionRpcRegistrar(rpcHandlerManager);
 
     registerBashHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
     // Checklist-based machine capability registry (replaces legacy detect-cli / detect-capabilities / dep-status).
@@ -177,21 +194,21 @@ export function registerSessionHandlers(
     registerPreviewEnvHandler(rpcHandlerManager);
     registerWorkspaceFileListHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
     registerDifftasticHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
-    registerSessionUserMessageSendHandler(rpcHandlerManager, {
+    registerSessionUserMessageSendHandler(authorizedSessionRpcHandlerManager, {
         workingDirectory,
         sessionId: opts?.sessionId ?? null,
         getSessionMetadata: opts?.getSessionMetadata ?? null,
         enqueueSessionUserMessage: opts?.enqueueSessionUserMessage ?? null,
         sessionRuntimeControls: opts?.sessionRuntimeControls ?? null,
     });
-    registerSessionControlHandlers(rpcHandlerManager, {
+    registerSessionControlHandlers(authorizedSessionRpcHandlerManager, {
         getSessionMetadata: opts?.getSessionMetadata ?? null,
         isUsageLimitRecoveryEnabled: opts?.isUsageLimitRecoveryEnabled ?? null,
         sessionRuntimeControls: opts?.sessionRuntimeControls ?? null,
         notifyUsageLimitWaitResumeCancelled: opts?.notifyUsageLimitWaitResumeCancelled ?? null,
     });
     registerSessionTranscriptRpcHandlers({
-        rpcHandlerManager,
+        rpcHandlerManager: authorizedSessionRpcHandlerManager,
         ...(opts?.transcriptActionExecutor ? { actionExecutor: opts.transcriptActionExecutor } : {}),
         resolveActionExecutor: () => resolveProductionTranscriptActionExecutor({
             workingDirectory,

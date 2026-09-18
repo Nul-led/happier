@@ -208,19 +208,62 @@ export async function startProcessCustodySecurePipeRelay(input: Readonly<{
         await closeServer(server);
         throw new Error('secure pipe relay stdio unavailable');
     }
+    let startupFinished = false;
+    let secretDelivered = false;
+    let rejectStartupFailure!: (error: Error) => void;
+    const startupFailure = new Promise<never>((_resolve, reject) => {
+        rejectStartupFailure = reject;
+    });
+    const failStartup = (error: Error) => {
+        if (!startupFinished) rejectStartupFailure(error);
+    };
+    const secretDeliveryError = (error?: Error) => {
+        const detail = error?.message ? `: ${error.message}` : '';
+        return new Error(`secure pipe relay secret delivery failed${detail}`);
+    };
+    const onChildError = (error: Error) => failStartup(
+        secretDelivered ? error : secretDeliveryError(error),
+    );
+    const onChildClose = (code: number | null, signal: NodeJS.Signals | null) => failStartup(
+        secretDelivered
+            ? new Error(`secure pipe relay exited before readiness (${code ?? signal ?? 'unknown'})`)
+            : secretDeliveryError(),
+    );
+    const onStdinError = (error: Error) => failStartup(secretDeliveryError(error));
+    child.once('error', onChildError);
+    child.once('close', onChildClose);
+    // This listener intentionally remains for the child's lifetime. stdin stays
+    // open as the native helper's parent-lifetime signal, so an exit after
+    // readiness can still surface EPIPE and must never become an unhandled
+    // EventEmitter error.
+    child.stdin.on('error', onStdinError);
+
     // Keep stdin open after delivering the fixed secret. Its EOF is the
     // native listener's parent-lifetime signal, so a daemon crash cannot leave
     // an orphan named-pipe listener behind.
-    child.stdin.write(secret);
     try {
+        const delivery = new Promise<void>((resolve, reject) => {
+            try {
+                child.stdin!.write(secret, (error) => {
+                    if (error) {
+                        reject(secretDeliveryError(error));
+                        return;
+                    }
+                    resolve();
+                });
+            } catch (error) {
+                reject(secretDeliveryError(error instanceof Error ? error : undefined));
+            }
+        });
+        await Promise.race([delivery, startupFailure]);
+        secretDelivered = true;
         await Promise.race([
             waitForReadyLine(child.stdout, input.pipeName),
-            new Promise<never>((_resolve, reject) => child.once('error', reject)),
-            new Promise<never>((_resolve, reject) => child.once('close', (code, signal) => {
-                reject(new Error(`secure pipe relay exited before readiness (${code ?? signal ?? 'unknown'})`));
-            })),
+            startupFailure,
         ]);
+        startupFinished = true;
     } catch (error) {
+        startupFinished = true;
         secret.fill(0);
         await stopRelayChild(child);
         for (const socket of sockets) socket.destroy();

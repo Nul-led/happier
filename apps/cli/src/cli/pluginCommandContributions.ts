@@ -4,7 +4,7 @@ import { configuration } from '@/configuration';
 import { requestDaemonPluginActionExecution } from '@/daemon/controlClient';
 import { ensureDaemonRunningForSessionCommand } from '@/daemon/ensureDaemon';
 import type { CommandContext } from './commandRegistry';
-import { printJsonEnvelope, wantsJson } from './output/jsonEnvelope';
+import { printJsonEnvelope } from './output/jsonEnvelope';
 import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type {
   ResolvedCommandContribution,
@@ -18,6 +18,12 @@ import {
   resolvePluginCommandProjection,
   type PluginCommandProjection,
 } from './pluginCommandProjection';
+import {
+  normalizePluginCommandActionInputTokens,
+  resolvePluginCommandActionInputContract,
+} from './pluginCommandFields';
+import type { ActionCliField } from '@/cli/actions/compiledCommands';
+import { listActionCliCommandFlags, parseActionCliInput } from '@/cli/actions/parseCommandInput';
 
 export type PluginCommandExecutionResult = Readonly<
   | {
@@ -34,6 +40,34 @@ export type PluginCommandExecutionResult = Readonly<
     qualifiedActionId?: string;
   }
 >;
+
+/** The command path words, which always precede any option token. */
+function readPluginCommandPath(args: readonly string[]): readonly string[] {
+  const path: string[] = [];
+  for (const token of args) {
+    if (token.startsWith('-')) break;
+    path.push(token);
+  }
+  return Object.freeze(path);
+}
+
+/**
+ * Ordinary field flags for a plugin command whose canonical contributed Action
+ * definition is discoverable, parsed by the same compiler a first-party
+ * command uses. `--input` remains an accepted spelling of `--input-json` for
+ * installed callers.
+ */
+function parseCompiledPluginCommandInput(params: Readonly<{
+  fields: readonly ActionCliField[];
+  args: readonly string[];
+  pathLength: number;
+}>): Readonly<{ ok: true; input: unknown } | { ok: false; message: string }> {
+  const tokens = normalizePluginCommandActionInputTokens(params.args.slice(params.pathLength));
+  const parsed = parseActionCliInput({ fields: params.fields, positionals: [] }, tokens);
+  return parsed.ok
+    ? { ok: true, input: Object.freeze({ ...(parsed.canonicalBase ?? {}), ...parsed.callerOverlay }) }
+    : { ok: false, message: parsed.message };
+}
 
 function parseInvocationArgs(args: readonly string[]): Readonly<
   | { ok: true; path: readonly string[]; input: unknown }
@@ -91,11 +125,31 @@ function findCommandContribution(
 function validateCommandArguments(command: ResolvedCommandContribution, input: unknown): boolean {
   const schema = command.definition.arguments;
   if (!schema) return true;
+  return validatePluginCommandInput(schema, input);
+}
+
+function validatePluginCommandInput(
+  schema: Parameters<typeof compilePluginJsonSchema>[0],
+  input: unknown,
+): boolean {
   try {
     return isValidPluginJsonSchemaValue(compilePluginJsonSchema(schema), input);
   } catch {
     return false;
   }
+}
+
+function hasPluginCliFlagBeforeTerminator(args: readonly string[], flags: ReadonlySet<string>): boolean {
+  for (const token of args) {
+    if (token === '--') return false;
+    const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+    if (flags.has(name)) return true;
+  }
+  return false;
+}
+
+function wantsPluginCommandJson(args: readonly string[]): boolean {
+  return hasPluginCliFlagBeforeTerminator(args, new Set(['--json']));
 }
 
 type ResolvedPluginCommandInvocation = Readonly<{
@@ -110,12 +164,11 @@ function resolvePluginCommandInvocation(params: Readonly<{
   args: readonly string[];
   reservedRoots?: ReadonlySet<string>;
 }>): ResolvedPluginCommandInvocation | Extract<PluginCommandExecutionResult, { ok: false }> {
-  const parsed = parseInvocationArgs(params.args);
-  if (!parsed.ok) {
-    return { ok: false, code: 'plugin_command_arguments_invalid', message: parsed.message };
-  }
-  if (parsed.path[0] !== params.root) {
-    return { ok: false, code: 'plugin_command_unknown', message: `Unknown plugin command: ${parsed.path.join(' ')}` };
+  // The path is resolved first, because which command was named decides which
+  // canonical Action definition owns the remaining tokens.
+  const path = readPluginCommandPath(params.args);
+  if (path[0] !== params.root) {
+    return { ok: false, code: 'plugin_command_unknown', message: `Unknown plugin command: ${path.join(' ')}` };
   }
 
   const projection = resolvePluginCommandProjection({
@@ -123,14 +176,14 @@ function resolvePluginCommandInvocation(params: Readonly<{
     reservedRoots: params.reservedRoots ?? new Set(),
   });
   const matches = projection.commands.filter((command) => (
-    command.path.length === parsed.path.length
-    && command.path.every((segment, index) => segment === parsed.path[index])
+    command.path.length === path.length
+    && command.path.every((segment, index) => segment === path[index])
   ));
   if (matches.length === 0) {
-    return { ok: false, code: 'plugin_command_unknown', message: `Unknown plugin command: ${parsed.path.join(' ')}` };
+    return { ok: false, code: 'plugin_command_unknown', message: `Unknown plugin command: ${path.join(' ')}` };
   }
   if (matches.length !== 1 || matches[0]!.status === 'ambiguous') {
-    return { ok: false, code: 'plugin_command_path_ambiguous', message: `Ambiguous plugin command: ${parsed.path.join(' ')}` };
+    return { ok: false, code: 'plugin_command_path_ambiguous', message: `Ambiguous plugin command: ${path.join(' ')}` };
   }
 
   const matched = matches[0]!;
@@ -147,11 +200,38 @@ function resolvePluginCommandInvocation(params: Readonly<{
   if (!contribution) {
     return { ok: false, code: 'plugin_command_generation_retired', message: 'Plugin command generation is no longer current' };
   }
-  if (!validateCommandArguments(contribution, parsed.input)) {
+  // A contribution whose canonical Action definition is discoverable uses the
+  // one shared field parser; a predecessor shape without one keeps the bounded
+  // JSON-only adapter rather than weakening every command to its limits.
+  const actionInput = resolvePluginCommandActionInputContract({
+    registry: params.registry,
+    qualifiedActionId: matched.qualifiedActionId,
+  });
+  if (actionInput?.flagCollision) {
+    return {
+      ok: false,
+      code: actionInput.flagCollision.code,
+      message: `Plugin Action input field ${actionInput.flagCollision.fieldPath} collides with CLI flag ${actionInput.flagCollision.flag}`,
+      qualifiedCommandId: matched.qualifiedId,
+      qualifiedActionId: matched.qualifiedActionId,
+    };
+  }
+  const parsed = actionInput
+    ? parseCompiledPluginCommandInput({ fields: actionInput.fields, args: params.args, pathLength: path.length })
+    : parseInvocationArgs(params.args);
+  if (!parsed.ok) {
+    return { ok: false, code: 'plugin_command_arguments_invalid', message: parsed.message };
+  }
+  const inputIsValid = actionInput
+    ? validatePluginCommandInput(actionInput.inputSchema, parsed.input)
+    : validateCommandArguments(contribution, parsed.input);
+  if (!inputIsValid) {
     return {
       ok: false,
       code: 'plugin_command_arguments_invalid',
-      message: 'Plugin command input does not match its manifest arguments schema',
+      message: actionInput
+        ? 'Plugin command input does not match its canonical Action schema'
+        : 'Plugin command input does not match its manifest arguments schema',
       qualifiedCommandId: matched.qualifiedId,
       qualifiedActionId: matched.qualifiedActionId,
     };
@@ -167,7 +247,7 @@ async function printPluginCommandFailure(
   args: readonly string[],
   failure: Extract<PluginCommandExecutionResult, { ok: false }>,
 ): Promise<void> {
-  if (wantsJson(args)) {
+  if (wantsPluginCommandJson(args)) {
     await printJsonEnvelope({
       ok: false,
       kind: 'plugin_command',
@@ -188,22 +268,35 @@ function renderPluginCommandHelp(params: Readonly<{
   projection: PluginCommandProjection;
   root: string;
   args: readonly string[];
+  registry: ResolvedContributionRegistry;
 }>): string {
-  const requestedPath = params.args.filter((token) => !token.startsWith('-'));
+  const requestedPath = readPluginCommandPath(params.args);
   const exact = params.projection.commands.find((command) => (
     command.path.length === requestedPath.length
     && command.path.every((segment, index) => segment === requestedPath[index])
   ));
   if (exact) {
+    // Help reads the same derivation the parser does, so a documented flag is
+    // always an accepted one.
+    const actionInput = resolvePluginCommandActionInputContract({
+      registry: params.registry,
+      qualifiedActionId: exact.qualifiedActionId,
+    });
+    const fieldUsage = actionInput && !actionInput.flagCollision
+      ? `${listActionCliCommandFlags({ fields: actionInput.fields, positionals: [] }).map((flag) => `[${flag}]`).join(' ')} `
+      : '';
     return [
       `${exact.title}`,
       exact.description ?? '',
       '',
-      `Usage: happier ${exact.path.join(' ')} [--input <json>] [--json]`,
+      `Usage: happier ${exact.path.join(' ')} ${fieldUsage}[--input-json <json>] [--json]`,
+      'Alias: --input <json>',
       `Command: ${exact.qualifiedId}`,
       `Action: ${exact.qualifiedActionId}`,
       ...(exact.status === 'available'
-        ? []
+        ? actionInput?.flagCollision
+          ? [`Unavailable: ${actionInput.flagCollision.code}`]
+          : []
         : [`Unavailable: ${exact.unavailableCode ?? 'plugin_command_unavailable'}`]),
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1] !== '')).join('\n');
   }
@@ -214,7 +307,8 @@ function renderPluginCommandHelp(params: Readonly<{
     && command.visibility === 'default'
   ));
   return [
-    `Usage: happier ${params.root} <command> [--input <json>] [--json]`,
+    `Usage: happier ${params.root} <command> [--input-json <json>] [--json]`,
+    'Alias: --input <json>',
     '',
     ...commands.map((command) => `  ${command.path.slice(1).join(' ')}  ${command.description ?? command.title}`),
   ].join('\n');
@@ -244,11 +338,10 @@ export async function handlePluginCommandCliCommand(
     command.path.length === 1 && command.path[0] === root
   ));
   const asksForHelp = (context.args.length === 1 && !hasRootCommand)
-    || context.args.includes('--help')
-    || context.args.includes('-h');
+    || hasPluginCliFlagBeforeTerminator(context.args, new Set(['--help', '-h']));
   if (asksForHelp) {
-    const text = renderPluginCommandHelp({ projection, root, args: context.args });
-    if (wantsJson(context.args)) {
+    const text = renderPluginCommandHelp({ projection, root, args: context.args, registry });
+    if (wantsPluginCommandJson(context.args)) {
       await printJsonEnvelope({
         ok: true,
         kind: 'plugin_command_help',
@@ -302,7 +395,7 @@ export async function handlePluginCommandCliCommand(
     await printPluginCommandFailure(context.args, result);
     return;
   }
-  if (wantsJson(context.args)) {
+  if (wantsPluginCommandJson(context.args)) {
     await printJsonEnvelope({
       ok: true,
       kind: 'plugin_command',

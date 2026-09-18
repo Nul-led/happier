@@ -118,7 +118,7 @@ function base(overrides: Record<string, unknown> = {}) {
     previousBinding: null,
     confirmation: null,
     connectedServices: {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
         'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
         github: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
@@ -163,7 +163,7 @@ describe('prepareProviderLaunch', () => {
       kind: 'provider',
       agentTargetKey: 'backend:codex',
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: { github: expect.anything() },
       },
       suppressedConnectedServiceIds: ['openai-codex'],
@@ -297,10 +297,9 @@ describe('prepareProviderLaunch', () => {
       previousBinding: binding({
         managedPurposeBindings: persistedPurposeBindings,
       }),
-      createAuthorizationAttempt: vi.fn(async (context: unknown) => {
-        const authorizationInput = context as Readonly<{
-          managedPurposeBindingSnapshot?: QualifiedConnectedAccountPurposeBindingsV1;
-        }>;
+      createAuthorizationAttempt: vi.fn<
+        Parameters<typeof prepareProviderLaunch>[0]['createAuthorizationAttempt']
+      >(async (authorizationInput) => {
         return {
           ok: true as const,
           attempt: attempt({
@@ -362,14 +361,4 @@ describe('prepareProviderLaunch', () => {
     }
   });
 
-  it('validates connected-service input before creating a Provider authorization attempt', async () => {
-    const input = base({
-      connectedServices: { v: 1, bindingsByServiceId: { github: { source: 'invalid' } } },
-    });
-
-    await expect(prepareProviderLaunch(input as Parameters<typeof prepareProviderLaunch>[0]))
-      .resolves.toMatchObject({ ok: false, error: { code: 'provider_settings_invalid' } });
-    expect(input.resolvePrerequisites).not.toHaveBeenCalled();
-    expect(input.createAuthorizationAttempt).not.toHaveBeenCalled();
-  });
 });

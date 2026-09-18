@@ -19,7 +19,7 @@ import {
 } from '@/agent/permissions/BasePermissionHandler';
 import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permissions/modeFromMetadata';
 import type { ToolTraceProtocol } from '@/agent/tools/trace/toolTrace';
-import { shouldSuppressProviderPermissionForHappierApproval } from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
+import { resolveProviderPermissionForHappierAction } from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
 import {
   extractShellCommand,
   type AccountSettings,
@@ -196,16 +196,24 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
       return { decision: 'denied' };
     }
 
+    const happierActionPermission = resolveProviderPermissionForHappierAction({
+      toolName,
+      input,
+      permissionMode,
+    });
+    if (happierActionPermission.decision) {
+      // Happier Actions enforce their own enablement, authorization, and
+      // configurable confirmation. The provider layer only applies the
+      // effective permission-mode ceiling before delegating to that owner.
+      return { decision: happierActionPermission.decision };
+    }
+
     const isAlwaysAutoApprove =
       this.isAlwaysAutoApproveTool(toolName) || this.isHappierToolsShellBridgeToolCall(toolName, input);
 
     if ((permissionMode === 'read-only' || permissionMode === 'plan') && !isAlwaysAutoApprove && this.isWriteLikeToolName(toolName)) {
       logger.debug(`${this.getLogPrefix()} Denying tool ${toolName} (${toolCallId}) in ${permissionMode} mode`);
       return { decision: 'denied' };
-    }
-
-    if (this.shouldSuppressForHappierActionApproval(toolName, input)) {
-      return { decision: 'approved' };
     }
 
     if (!effective.sourceAuthority && this.isAllowedForSession(toolName, input)) {
@@ -262,15 +270,6 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
 
   private isFullAutoApproveMode(permissionMode: PermissionMode): boolean {
     return permissionMode === 'yolo' || permissionMode === 'bypassPermissions';
-  }
-
-  private shouldSuppressForHappierActionApproval(toolName: string, input: unknown): boolean {
-    return shouldSuppressProviderPermissionForHappierApproval({
-      toolName,
-      input,
-      accountSettings: this.getAccountSettingsSnapshot(),
-      surface: 'agent',
-    }).suppress;
   }
 
   private shouldAutoApprove(

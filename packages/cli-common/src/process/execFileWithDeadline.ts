@@ -6,8 +6,8 @@ export type ExecFileWithDeadlineOptions =
   & Readonly<Omit<ExecFileOptions, 'timeout' | 'killSignal'>>
   & Readonly<{
     encoding?: BufferEncoding | null;
-    /** Wall-clock budget. This boundary owns it; `child_process` is never told about it. */
-    timeout: number;
+    /** Optional wall-clock budget. Omit when caller cancellation owns the lifetime. This boundary owns it; `child_process` is never told about it. */
+    timeout?: number;
   }>;
 
 export type ExecFileWithDeadlineResult = Readonly<{
@@ -67,7 +67,7 @@ export function execFileWithDeadline(
       resolve({ stdout, stderr });
     });
     closeStdioWhenCommandExits(child);
-    if (!settled) {
+    if (!settled && timeout !== undefined) {
       deadline = setTimeout(() => {
         child.kill();
       }, timeout);

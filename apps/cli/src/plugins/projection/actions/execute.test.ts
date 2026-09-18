@@ -55,11 +55,13 @@ function createTargetActionInvocationRegistry(
 function createTargetActionRegistration(params: Readonly<{
   action: ResolvedActionContribution;
   handler: TargetActionInvocationRegistration['handler'];
+  immutableGenerationId?: string;
 }>): TargetActionInvocationRegistration {
   return {
     pluginId: params.action.pluginId ?? '',
     pluginVersion: '1.0.0',
     generation: '7',
+    ...(params.immutableGenerationId ? { immutableGenerationId: params.immutableGenerationId } : {}),
     localId: params.action.definition.id,
     definition: {
       id: params.action.definition.id,
@@ -315,9 +317,9 @@ describe('executePluginActionIfAvailable', () => {
     }
   });
 
-  it('enforces live API settings for a qualified contributed Action ahead of inherited environment settings', async () => {
+  it('enforces live API settings for a qualified contributed Action', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
-    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({ v: 1, actions: {} });
+    delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     setActiveAccountSettingsSnapshot({
       source: 'network',
       settings: accountSettingsParse({
@@ -420,6 +422,7 @@ describe('executePluginActionIfAvailable', () => {
               id: 'dashboard',
               qualifiedId: 'acme.mounted/dashboard',
             },
+            immutableGenerationId: 'acme-mounted-generation-1',
             materialization: {
               machineId: 'machine-1',
               materializationId: 'materialization-mounted-current',
@@ -447,8 +450,9 @@ describe('executePluginActionIfAvailable', () => {
 
   it('applies Off, Ask first, and Allowed settings to one running contributed Action', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
-    // A stale startup env projection must not win over later Account revisions.
-    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({ v: 1, actions: {} });
+    // With no explicit environment override, each later Account revision is
+    // consumed through the one active Account settings owner.
+    delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     const publishActionsSettings = (actionsSettingsV1: unknown, settingsVersion: number): void => {
       setActiveAccountSettingsSnapshot({
         source: 'network',
@@ -498,6 +502,7 @@ describe('executePluginActionIfAvailable', () => {
             kind: 'plugin',
             pluginId: 'acme.caller',
             contribution: { id: 'dispatcher', qualifiedId: 'acme.caller/actions/dispatcher' },
+            immutableGenerationId: 'acme-caller-generation-1',
             materialization: {
               pluginId: 'acme.caller',
               machineId: 'machine-1',
@@ -776,7 +781,11 @@ describe('executePluginActionIfAvailable', () => {
       return { finished: true };
     });
     const registrations: TargetActionInvocationRegistration[] = [
-      createTargetActionRegistration({ action: alpha, handler: alphaHandler }),
+      createTargetActionRegistration({
+        action: alpha,
+        handler: alphaHandler,
+        immutableGenerationId: 'acme.alpha-immutable-generation',
+      }),
     ];
     const targetActionInvocations = createTargetActionInvocationRegistryBase({
       actions: registrations,
@@ -804,11 +813,19 @@ describe('executePluginActionIfAvailable', () => {
       for (const request of requests) {
         if (request.pluginId === 'acme.beta' && request.localId === 'continue'
           && !registrations.some((registration) => registration.pluginId === request.pluginId && registration.localId === request.localId)) {
-          registrations.push(createTargetActionRegistration({ action: beta, handler: betaHandler }));
+          registrations.push(createTargetActionRegistration({
+            action: beta,
+            handler: betaHandler,
+            immutableGenerationId: 'acme.beta-immutable-generation',
+          }));
         }
         if (request.pluginId === 'acme.gamma' && request.localId === 'finish'
           && !registrations.some((registration) => registration.pluginId === request.pluginId && registration.localId === request.localId)) {
-          registrations.push(createTargetActionRegistration({ action: gamma, handler: gammaHandler }));
+          registrations.push(createTargetActionRegistration({
+            action: gamma,
+            handler: gammaHandler,
+            immutableGenerationId: 'acme.gamma-immutable-generation',
+          }));
         }
       }
       targetActionInvocations.refresh();
@@ -849,6 +866,7 @@ describe('executePluginActionIfAvailable', () => {
         kind: 'plugin',
         pluginId: 'acme.alpha',
         contribution: { id: 'start', qualifiedId: 'acme.alpha/actions/start' },
+        immutableGenerationId: 'acme.alpha-immutable-generation',
         materialization: alphaMaterialization,
         originSurface: 'cli',
       },
@@ -859,6 +877,7 @@ describe('executePluginActionIfAvailable', () => {
         kind: 'plugin',
         pluginId: 'acme.beta',
         contribution: { id: 'continue', qualifiedId: 'acme.beta/actions/continue' },
+        immutableGenerationId: 'acme.beta-immutable-generation',
         materialization: betaMaterialization,
         originSurface: 'cli',
       },
@@ -922,6 +941,7 @@ describe('executePluginActionIfAvailable', () => {
             id: 'dashboard',
             qualifiedId: 'acme.mounted/dashboard',
           },
+          immutableGenerationId: 'acme-mounted-generation-1',
           materialization: {
             machineId: 'machine-1',
             materializationId: 'materialization-mounted-current',
@@ -991,6 +1011,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1074,6 +1095,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1132,6 +1154,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1210,6 +1233,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1286,6 +1310,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1358,6 +1383,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin',
           pluginId: 'acme.caller',
           contribution: { id: 'sender', qualifiedId: 'acme.caller/actions/sender' },
+          immutableGenerationId: 'acme-caller-generation-1',
           materialization: {
             pluginId: 'acme.caller',
             machineId: 'machine-caller',
@@ -1416,6 +1442,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
+          immutableGenerationId: 'acme-target-generation-1',
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1448,6 +1475,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
+          immutableGenerationId: 'acme-target-generation-1',
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1505,6 +1533,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
+          immutableGenerationId: 'acme-target-generation-1',
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',
@@ -1577,6 +1606,7 @@ describe('executePluginActionIfAvailable', () => {
           kind: 'plugin' as const,
           pluginId: 'acme.target',
           contribution: { id: 'providers', qualifiedId: 'acme.target/points/providers' },
+          immutableGenerationId: 'acme-target-generation-1',
           materialization: {
             pluginId: 'acme.target',
             machineId: 'machine-target',

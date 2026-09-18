@@ -15,6 +15,52 @@ import {
 } from './spawnSessionOptionsContract';
 
 describe('SpawnDaemonSessionRequestSchema', () => {
+  it.each([
+    null,
+    {},
+    { v: 2, bindingsByServiceId: {} },
+    { v: 1, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected' } } },
+    { v: 1, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected', selection: 'group', groupId: '../invalid', profileId: 'work' } } },
+  ])('rejects malformed present connected-account intent: %j', (connectedServices) => {
+    const result = SpawnDaemonSessionRequestSchema.safeParse({ directory: '/workspace', connectedServices });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path[0]).toBe('connectedServices');
+  });
+
+  it('normalizes supported scalar profile and group selections at spawn ingress', () => {
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
+      directory: '/workspace',
+      connectedServices: { v: 1, bindingsByServiceId: {
+        'openai-codex': { source: 'connected', profileId: 'work' },
+        anthropic: { source: 'connected', selection: 'group', groupId: 'team' },
+      } },
+    });
+    expect(parsed.connectedServices).toEqual({ v: 1, bindingsByServiceId: {
+      'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
+      'happier.agent.claude/anthropic': { source: 'connected', selection: 'group', groupId: 'team' },
+    } });
+  });
+
+  it('accepts only the strict Machine Pool placement origin', () => {
+    const request = {
+      directory: '/workspace/project',
+      placementOrigin: {
+        kind: 'machine_pool' as const,
+        poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+      },
+    };
+
+    expect(SpawnDaemonSessionRequestSchema.parse(request)).toMatchObject(request);
+    expect(SpawnDaemonSessionRequestSchema.safeParse({
+      ...request,
+      placementOrigin: { ...request.placementOrigin, name: 'Private pool' },
+    }).success).toBe(false);
+    expect(SpawnDaemonSessionRequestSchema.safeParse({
+      ...request,
+      existingSessionId: 'existing-session',
+    }).success).toBe(false);
+  });
+
   beforeEach(() => {
     readAgentCatalogSnapshot.mockReturnValue({
       agentDefinitionsById: new Map(),
@@ -173,6 +219,40 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     })).toEqual({
       directory: '/tmp/repo',
       pendingFirstInput,
+    });
+  });
+
+  it('accepts Workflow V2 pending first input without requiring an Automation id', () => {
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
+      directory: '/tmp/repo',
+      pendingFirstInput: {
+        text: 'workflow first turn',
+        localId: 'workflow-input-v2:stable',
+        inputAdmission: {
+          provenance: {
+            v: 2,
+            kind: 'workflow_invocation',
+            runId: 'run-1',
+            invocationRecordId: 'invocation-1',
+          },
+          request: {
+            v: 2,
+            producer: 'workflow',
+            caller: { kind: 'host' },
+            workflow: {
+              purpose: 'invocation',
+              runId: 'run-1',
+              invocationRecordId: 'invocation-1',
+            },
+            permission: { requestedPermissionCeiling: 'read-only' },
+          },
+        },
+      },
+    });
+
+    expect(parsed.pendingFirstInput?.inputAdmission).toMatchObject({
+      provenance: { v: 2, kind: 'workflow_invocation' },
+      request: { v: 2, producer: 'workflow' },
     });
   });
 

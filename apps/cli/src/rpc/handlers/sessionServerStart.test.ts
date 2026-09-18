@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 import type { SessionLifecycleActionHandler } from '@/session/actions/lifecycle/sessionLifecycleTypes';
 
 import {
@@ -18,13 +19,11 @@ import {
 } from "./sessionServerStart";
 import { createMachineSessionServerStartSpawnLifecycleTransport } from './sessionServerStartLifecycleAdapter';
 
-const plainCurrentness: AccountEncryptionCurrentnessResponse = {
+const plainCurrentness: AccountEncryptionCurrentnessResponse = createAccountEncryptionCurrentnessFixture({
     mode: "plain",
     version: 7,
-    signingKeyFingerprint: null,
-    contentKeyFingerprint: null,
     updatedAt: 7,
-};
+});
 
 const plainSpawnInput = {
     creationKey: "automation-run:run-1",
@@ -165,7 +164,7 @@ describe("registerSessionServerStartRpcHandler", () => {
             accountEncryptionMode: 'e2ee',
             material: { type: 'legacy', secret: new Uint8Array(32).fill(33) },
         });
-        const currentness: AccountEncryptionCurrentnessResponse = {
+        const currentness: AccountEncryptionCurrentnessResponse = createAccountEncryptionCurrentnessFixture({
             mode: 'e2ee',
             version: 7,
             signingKeyFingerprint: null,
@@ -174,7 +173,7 @@ describe("registerSessionServerStartRpcHandler", () => {
                     material.contentPublicKeyFingerprint,
                 ),
             updatedAt: 7,
-        };
+        });
         const plainEnvelope = request.start.requestEnvelope;
         if (plainEnvelope.t !== 'plain') throw new Error('expected plain V2 fixture');
         const encryptedRequest: SessionServerStartDispatchRequestV1 = {
@@ -216,7 +215,7 @@ describe("registerSessionServerStartRpcHandler", () => {
             accountEncryptionMode: 'e2ee',
             material: { type: 'legacy', secret: new Uint8Array(32).fill(35) },
         });
-        const currentness: AccountEncryptionCurrentnessResponse = {
+        const currentness: AccountEncryptionCurrentnessResponse = createAccountEncryptionCurrentnessFixture({
             mode: 'e2ee',
             version: 7,
             signingKeyFingerprint: null,
@@ -225,7 +224,7 @@ describe("registerSessionServerStartRpcHandler", () => {
                     material.contentPublicKeyFingerprint,
                 ),
             updatedAt: 7,
-        };
+        });
         const plainEnvelope = request.start.requestEnvelope;
         if (plainEnvelope.t !== 'plain') throw new Error('expected plain V2 fixture');
         const encryptedRequest: SessionServerStartDispatchRequestV1 = {

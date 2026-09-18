@@ -136,6 +136,7 @@ describe('createExternalMcpServer plugin tools', () => {
         actionId: 'acme.review.plugin/review-start',
         input: { scope: 'diff' },
         surface: 'mcp',
+        authority: 'account_automation',
         defaultSessionId: 'cli-global',
         expectedContributorImmutableGenerationId: 'generation-g',
       });

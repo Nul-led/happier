@@ -13,6 +13,13 @@ import {
   startPublicManagedProviderRuntime,
   type PublicManagedProviderRuntimeStartFailureCode,
 } from '@/providers/lifecycle/publicManagedProviderRuntimeStart';
+import type {
+  ManagedProviderEndpointAccessProjection,
+} from '@/plugins/runtime/invocation/services/managedServicesAdapter';
+import type {
+  ManagedProviderRuntimeOperationClaim,
+  ResolvedExecutablePluginRuntimeRegistry,
+} from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { createProviderLaunchResourceScope } from '@/providers/lifecycle/resourceScope';
 
 import type { ProviderConnectionServiceDeps } from './service/types';
@@ -20,6 +27,32 @@ import type { ProviderConnectionServiceDeps } from './service/types';
 export type PublicManagedProviderRuntimeStartOperation = NonNullable<
   ProviderConnectionServiceDeps['startManagedProviderRuntime']
 >;
+
+export type ManagedProviderExplicitStartCustodyRequest =
+  Parameters<PublicManagedProviderRuntimeStartOperation>[0] & Readonly<{
+    operationClaim: Extract<
+      ManagedProviderRuntimeOperationClaim,
+      { kind: 'providerBroker' }
+    >;
+    revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
+    signal: AbortSignal;
+  }>;
+
+export type ManagedProviderExplicitStartCustody = Readonly<{
+  acquire(
+    request: ManagedProviderExplicitStartCustodyRequest,
+  ): Promise<ManagedProviderEndpointAccessProjection | null>;
+  retire(input: Readonly<{
+    identity: ManagedProviderExplicitStartCustodyRequest['identity'];
+    operationClaim: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
+  }>): Promise<boolean>;
+  retireExternalApiKey(input: Readonly<{
+    identity: ManagedProviderExplicitStartCustodyRequest['identity'];
+    externalApiKeyId: string;
+  }>): Promise<boolean>;
+  revalidateRetainedClaims(signal?: AbortSignal): Promise<number>;
+  retireAll(): Promise<number>;
+}>;
 
 function failForCoordinatorCode(
   code: PublicManagedProviderRuntimeStartFailureCode,
@@ -42,11 +75,15 @@ function failForCoordinatorCode(
  * runtime. The active executable registry supplies both the exact runtime and
  * its canonical SVC09 invocation services; no private start dispatcher exists.
  */
-export function createPublicManagedProviderRuntimeStartOperation(input: Readonly<{
+function createManagedProviderExplicitStartOperation(input: Readonly<{
   machineId: string;
   happyHomeDir: string;
   controller?: PluginReloadController;
-}>): PublicManagedProviderRuntimeStartOperation {
+  operationClaim?: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
+  revalidateRetainedCurrentness?: (signal?: AbortSignal) => Promise<boolean>;
+  signal?: AbortSignal;
+}>): (request: Parameters<PublicManagedProviderRuntimeStartOperation>[0]) =>
+  Promise<ManagedProviderEndpointAccessProjection> {
   return async (request) => {
     const parsed = parseProviderContributionIdentityV1(request.contributionKey);
     if (
@@ -71,7 +108,7 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
 
     let lease: PluginRuntimeRegistryLease | null = request.runtimeRegistryLease ?? null;
     const ownsLease = lease === null;
-    let result: Readonly<{ status: 'running' }> | null = null;
+    let result: ManagedProviderEndpointAccessProjection | null = null;
     let failure: unknown = null;
     try {
       if (!lease) {
@@ -107,6 +144,14 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
         identity: request.identity,
         purposeBindings: request.purposeBindings,
         machineId: input.machineId,
+        ...(input.operationClaim ? { operationClaim: input.operationClaim } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.revalidateRetainedCurrentness
+          ? {
+              revalidateRetainedCurrentness:
+                input.revalidateRetainedCurrentness,
+            }
+          : {}),
         isCurrent: request.isAuthorizationCurrent,
         establish: async ({ signal, release }) => {
           const launchResourceScope = createProviderLaunchResourceScope();
@@ -118,7 +163,7 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
             const invocationServices = await createInvocationServices({
               identity: request.identity,
               purposeBindings: request.purposeBindings,
-              operationClaim: {
+              operationClaim: input.operationClaim ?? {
                 kind: 'explicitStart',
                 machineId: input.machineId,
               },
@@ -161,7 +206,14 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
               await Promise.resolve(cleanup()).catch(() => undefined);
               throw error;
             }
-            return Object.freeze({ status: 'running' as const });
+            return Object.freeze({
+              status: 'running' as const,
+              projection: Object.freeze({
+                access: started.access,
+                isCurrent: started.isCurrent,
+                cleanup,
+              }),
+            });
           } catch (error) {
             await launchResourceScope.release().catch(() => undefined);
             throw error;
@@ -178,14 +230,10 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
           machineId: input.machineId,
         });
       }
-      // No further authorization recheck belongs here. The coordinator owns the
-      // last async revalidation and performs it while the launch resources are
-      // still the caller's, releasing them itself when authority changed; the
-      // join outcome above carries the operation owner's own currentness. A
-      // recheck after ownership transferred could only report an error over a
-      // live service it can no longer retire, latching this request's
-      // authorization closure and blocking every later exact start.
-      result = joined.value;
+      // The generic public-start path needs no further authorization recheck.
+      // Broker custody performs its retained-authority recheck below, where it
+      // can retire the exact semantic claim after ownership has transferred.
+      result = joined.value.projection;
     } catch (error) {
       failure = error;
     }
@@ -209,4 +257,115 @@ export function createPublicManagedProviderRuntimeStartOperation(input: Readonly
     }
     return result;
   };
+}
+
+export function createPublicManagedProviderRuntimeStartOperation(input: Readonly<{
+  machineId: string;
+  happyHomeDir: string;
+  controller?: PluginReloadController;
+}>): PublicManagedProviderRuntimeStartOperation {
+  const start = createManagedProviderExplicitStartOperation(input);
+  return async (request) => {
+    await start(request);
+    return Object.freeze({ status: 'running' as const });
+  };
+}
+
+export function createManagedProviderExplicitStartCustody(input: Readonly<{
+  machineId: string;
+  happyHomeDir: string;
+  controller?: PluginReloadController;
+}>): ManagedProviderExplicitStartCustody {
+  const withRegistry = async <T>(
+    read: (registry: ResolvedExecutablePluginRuntimeRegistry) => Promise<T>,
+    fallback: T,
+  ): Promise<T> => {
+    let lease: PluginRuntimeRegistryLease | null = null;
+    try {
+      lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+        happyHomeDir: input.happyHomeDir,
+        ...(input.controller ? { controller: input.controller } : {}),
+      });
+      return await read(lease.registry);
+    } catch {
+      return fallback;
+    } finally {
+      await lease?.release().catch(() => undefined);
+    }
+  };
+  const withRegistryRequired = async <T>(
+    read: (registry: ResolvedExecutablePluginRuntimeRegistry) => Promise<T>,
+  ): Promise<T> => {
+    const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+      happyHomeDir: input.happyHomeDir,
+      ...(input.controller ? { controller: input.controller } : {}),
+    });
+    try {
+      return await read(lease.registry);
+    } finally {
+      await lease.release();
+    }
+  };
+  const retire = async ({ identity, operationClaim }: Readonly<{
+    identity: ManagedProviderExplicitStartCustodyRequest['identity'];
+    operationClaim: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
+  }>): Promise<boolean> => await withRegistry(
+    async (registry) => await registry.retireManagedProviderExplicitStart?.({
+      identity,
+      machineId: input.machineId,
+      operationClaim,
+    }) ?? false,
+    false,
+  );
+  return Object.freeze({
+    async acquire(request) {
+      const start = createManagedProviderExplicitStartOperation({
+        ...input,
+        operationClaim: request.operationClaim,
+        ...(request.revalidateRetainedCurrentness
+          ? {
+              revalidateRetainedCurrentness:
+                request.revalidateRetainedCurrentness,
+            }
+          : {}),
+        signal: request.signal,
+      });
+      try {
+        const projection = await start(request);
+        const retainedCurrent = request.revalidateRetainedCurrentness
+          ? await request.revalidateRetainedCurrentness(request.signal).catch(() => false)
+          : true;
+        if (!request.signal.aborted && !retainedCurrent) {
+          if (!await retire(request)) {
+            await Promise.resolve(projection.cleanup()).catch(() => undefined);
+          }
+          return null;
+        }
+        return projection;
+      } catch {
+        return null;
+      }
+    },
+    retire,
+    async retireExternalApiKey({ identity, externalApiKeyId }) {
+      return await withRegistry(
+        async (registry) => await registry.retireManagedProviderExternalApiKey?.({
+          identity,
+          externalApiKeyId,
+        }) ?? false,
+        false,
+      );
+    },
+    async revalidateRetainedClaims(signal) {
+      return await withRegistryRequired(
+        async (registry) => await registry.revalidateManagedProviderExplicitStarts?.(signal) ?? 0,
+      );
+    },
+    async retireAll() {
+      return await withRegistry(
+        async (registry) => await registry.retireManagedProviderExplicitStarts?.('providerBroker') ?? 0,
+        0,
+      );
+    },
+  });
 }

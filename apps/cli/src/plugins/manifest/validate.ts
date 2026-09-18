@@ -17,10 +17,17 @@ import type { CanonicalPluginManifest } from './types';
 
 const SUPPORTED_PLUGIN_DAEMON_ENTRY_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const INCOMPATIBLE_HAPPIER_ENGINE_DIAGNOSTIC = 'Plugin manifest requires a compatible Happier CLI version';
+const UNSUPPORTED_DAEMON_ENTRY_DIAGNOSTIC = 'Plugin daemon entry uses an unsupported extension';
+
+export type PluginManifestValidationDiagnostic = PluginCompatibilityDiagnostic & Readonly<{
+  /** Host-authored constant only; never derived from manifest values. */
+  safeCompatibilityMessage?: typeof INCOMPATIBLE_HAPPIER_ENGINE_DIAGNOSTIC
+    | typeof UNSUPPORTED_DAEMON_ENTRY_DIAGNOSTIC;
+}>;
 
 export type PluginManifestValidationResult =
   | Readonly<{ ok: true; manifest: CanonicalPluginManifest }>
-  | Readonly<{ ok: false; diagnostics: readonly PluginCompatibilityDiagnostic[] }>;
+  | Readonly<{ ok: false; diagnostics: readonly PluginManifestValidationDiagnostic[] }>;
 export type PluginManifestValidationOptions = Readonly<{
   manifestAuthority?: 'external' | 'bundled_first_party';
   /**
@@ -52,7 +59,7 @@ export function validatePluginManifest(input: unknown, options: PluginManifestVa
   }
 
   const manifest = normalizeParsedPluginManifestV2(parsed.data);
-  const diagnostics: PluginCompatibilityDiagnostic[] = [];
+  const diagnostics: PluginManifestValidationDiagnostic[] = [];
   const manifestAuthority = options.manifestAuthority ?? 'external';
   // Bundled first-party manifests are internal Protocol consumers and retain
   // the broad HostAccess union. Public authoring and installed/packed plugin
@@ -90,14 +97,22 @@ export function validatePluginManifest(input: unknown, options: PluginManifestVa
     && options.enforceEngineCompatibility !== false
     && enforcesRegistryLifecycleRules
     && (!currentVersion || !semver.satisfies(currentVersion, declaredHappierEngine, { includePrerelease: true }))) {
-    diagnostics.push({ code: 'plugin_manifest_semantic_invalid', message: INCOMPATIBLE_HAPPIER_ENGINE_DIAGNOSTIC });
+    diagnostics.push({
+      code: 'plugin_manifest_semantic_invalid',
+      message: INCOMPATIBLE_HAPPIER_ENGINE_DIAGNOSTIC,
+      safeCompatibilityMessage: INCOMPATIBLE_HAPPIER_ENGINE_DIAGNOSTIC,
+    });
   }
   for (const diagnostic of collectAgentCliSystemToolDiagnostics(manifest)) {
     diagnostics.push(diagnostic);
   }
   const daemonEntry = manifest.entrypoints?.daemon;
   if (daemonEntry && !SUPPORTED_PLUGIN_DAEMON_ENTRY_EXTENSIONS.has(extname(daemonEntry).toLowerCase())) {
-    diagnostics.push({ code: 'plugin_manifest_semantic_invalid', message: 'Plugin daemon entry uses an unsupported extension' });
+    diagnostics.push({
+      code: 'plugin_manifest_semantic_invalid',
+      message: UNSUPPORTED_DAEMON_ENTRY_DIAGNOSTIC,
+      safeCompatibilityMessage: UNSUPPORTED_DAEMON_ENTRY_DIAGNOSTIC,
+    });
   }
   return diagnostics.length > 0 ? { ok: false, diagnostics } : { ok: true, manifest };
 }

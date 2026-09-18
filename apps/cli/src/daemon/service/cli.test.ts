@@ -123,6 +123,7 @@ describe('runDaemonServiceCliCommand', () => {
     stopDaemonMock.mockReset();
     restartDaemonAndWaitMock.mockReset();
     vi.restoreAllMocks();
+    process.exitCode = undefined;
     vi.doUnmock('node:child_process');
     vi.doUnmock('./commandExistsInPath');
     vi.doUnmock('@/daemon/controlClient');
@@ -1097,8 +1098,8 @@ describe('runDaemonServiceCliCommand', () => {
     expect(runtime.happierHomeDir).toBe('/scoped/home/service-happier');
   });
 
-  it('fails closed when starting a background service while a manually started daemon is already running', async () => {
-    await withTempDir('happier-service-start-owner-conflict-', async (homeDir) => {
+  it.each(['start', 'restart'] as const)('fails closed when running service %s while a manually started daemon is already running', async (action) => {
+    await withTempDir(`happier-service-${action}-owner-conflict-`, async (homeDir) => {
       const happierHomeDir = `${homeDir}/.happier`;
       envScope.patch({
         HAPPIER_HOME_DIR: happierHomeDir,
@@ -1112,6 +1113,7 @@ describe('runDaemonServiceCliCommand', () => {
         HAPPIER_DAEMON_SERVICE_OWNERSHIP_STABLE_MS: '40',
       });
       vi.resetModules();
+      const controlClient = await import('@/daemon/controlClient');
 
       const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }, { writeDaemonState }, { configuration }] = await Promise.all([
         loadCliModule(),
@@ -1138,12 +1140,17 @@ describe('runDaemonServiceCliCommand', () => {
         'utf-8',
       );
 
-      writeDaemonState({
+      const manualOwnerState = {
         pid: process.pid,
         httpPort: 43116,
         startedAt: Date.now(),
         startedWithCliVersion: '0.0.0-manual',
-        startupSource: 'manual',
+        startupSource: 'manual' as const,
+      };
+      writeDaemonState(manualOwnerState);
+      vi.spyOn(controlClient, 'inspectDaemonRunningStateAndCleanupStaleState').mockResolvedValue({
+        status: 'running',
+        state: manualOwnerState,
       });
 
       const output = captureStdoutJsonOutput<{
@@ -1152,12 +1159,13 @@ describe('runDaemonServiceCliCommand', () => {
         message: string;
       }>();
       try {
-        await runDaemonServiceCliCommand({ argv: ['start', '--json'] });
+        await runDaemonServiceCliCommand({ argv: [action, '--json'] });
         const payload = output.json();
         expect(payload.ok).toBe(false);
         expect(payload.error).toBe('owner_conflict');
         expect(payload.message).toContain('happier daemon stop');
         expect(payload.message).toContain('--takeover');
+        expect(process.exitCode).toBe(1);
       } finally {
         output.restore();
       }
@@ -1369,7 +1377,7 @@ describe('runDaemonServiceCliCommand', () => {
     });
   });
 
-  it('restarts a running default-following service on start when it is not active for the selected relay', async () => {
+  it('restarts a running default-following service on start when it is not active for the selected Home', async () => {
     await withTempDir('happier-service-start-running-default-following-wrong-relay-', async (homeDir) => {
       const spawnedCommands: Array<{ command: string; args: readonly string[] }> = [];
       const happierHomeDir = `${homeDir}/.happier`;
@@ -3239,19 +3247,25 @@ describe('runDaemonServiceCliCommand', () => {
       });
       vi.resetModules();
 
-      const [{ runDaemonServiceCliCommand }, { writeDaemonState }] = await Promise.all([
+      const [{ runDaemonServiceCliCommand }, { writeDaemonState }, controlClient] = await Promise.all([
         loadCliModule(),
         import('@/persistence'),
+        import('@/daemon/controlClient'),
       ]);
 
-      await writeDaemonState({
+      const manualOwnerState = {
         pid: process.pid,
         httpPort: 3005,
         startedAt: Date.now(),
         startedWithCliVersion: '0.0.0',
-        startedWithPublicReleaseChannel: 'stable',
+        startedWithPublicReleaseChannel: 'stable' as const,
         runtimeId: 'runtime-1',
-        startupSource: 'manual',
+        startupSource: 'manual' as const,
+      };
+      await writeDaemonState(manualOwnerState);
+      vi.spyOn(controlClient, 'inspectDaemonRunningStateAndCleanupStaleState').mockResolvedValue({
+        status: 'running',
+        state: manualOwnerState,
       });
 
       const output = captureStdoutJsonOutput<{
@@ -3266,6 +3280,7 @@ describe('runDaemonServiceCliCommand', () => {
         expect(payload.ok).toBe(false);
         expect(payload.error).toBe('owner_conflict');
         expect(payload.message).toContain('manually started daemon');
+        expect(process.exitCode).toBe(1);
       } finally {
         output.restore();
       }
@@ -3423,8 +3438,88 @@ describe('runDaemonServiceCliCommand', () => {
       expect(payload.ok).toBe(false);
       expect(payload.error).toBe('not_installed');
       expect(payload.message).toContain('Background service is not installed');
+      expect(process.exitCode).toBe(1);
     } finally {
       output.restore();
+    }
+  });
+
+  it('returns one structured nonzero failure for JSON tail and unknown subcommands', async () => {
+    envScope.patch({
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: '/tmp',
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: '/tmp/happier',
+    });
+    const { runDaemonServiceCliCommand } = await loadCliModule();
+
+    for (const [argv, expectedError] of [
+      [['tail', '--json'], 'not_supported'],
+      [['not-a-command', '--json'], 'invalid_subcommand'],
+    ] as const) {
+      process.exitCode = undefined;
+      const output = captureStdoutJsonOutput<{ ok: boolean; error: string }>();
+      try {
+        await runDaemonServiceCliCommand({ argv });
+        expect(output.json()).toMatchObject({ ok: false, error: expectedError });
+        expect(process.exitCode).toBe(1);
+      } finally {
+        output.restore();
+      }
+    }
+  });
+
+  it('returns a nonzero human failure when tail is unavailable on Windows', async () => {
+    envScope.patch({
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'win32',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: 'C:\\Users\\tester',
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: 'C:\\Users\\tester\\.happier',
+    });
+    const { runDaemonServiceCliCommand } = await loadCliModule();
+    const stderr = captureStderr();
+    try {
+      await runDaemonServiceCliCommand({ argv: ['tail'] });
+      expect(stderr.text()).toContain('tail is not supported on Windows');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stderr.restore();
+    }
+  });
+
+  it('returns a nonzero human failure when tail is absent from PATH', async () => {
+    envScope.patch({
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: '/tmp',
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: '/tmp/happier',
+      PATH: '',
+    });
+    const { runDaemonServiceCliCommand } = await loadCliModule();
+    const stderr = captureStderr();
+    try {
+      await runDaemonServiceCliCommand({ argv: ['tail'] });
+      expect(stderr.text()).toContain('tail not found on PATH');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stderr.restore();
+    }
+  });
+
+  it('propagates a nonzero installed tail result through the same command failure path', async () => {
+    envScope.patch({
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: '/tmp',
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: '/tmp/happier',
+    });
+    vi.resetModules();
+    doMockChildProcessSpawnSync(() => ({ status: 7, signal: null, error: undefined }));
+    vi.doMock('./commandExistsInPath', () => ({ commandExistsInPath: vi.fn(() => true) }));
+    const { runDaemonServiceCliCommand } = await loadCliModule();
+    const stderr = captureStderr();
+    try {
+      await runDaemonServiceCliCommand({ argv: ['tail'] });
+      expect(stderr.text()).toContain('tail exited with status 7');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stderr.restore();
     }
   });
 

@@ -159,4 +159,31 @@ describe('callMcpToolWithResolvedTimeout', () => {
       }),
     );
   });
+
+  it('forwards request metadata and progress handling alongside the resolved timeout', async () => {
+    const callTool = vi.fn().mockResolvedValue({ content: [] });
+    const client = { callTool } as unknown as Pick<Client, 'callTool'>;
+    const onprogress = vi.fn();
+
+    await callMcpToolWithResolvedTimeout({
+      client,
+      toolName: 'get_status',
+      args: {},
+      requestMetadata: { progressToken: 'downstream-progress' },
+      onprogress,
+    });
+
+    expect(callTool).toHaveBeenCalledWith(
+      {
+        name: 'get_status',
+        arguments: {},
+        _meta: { progressToken: 'downstream-progress' },
+      },
+      undefined,
+      expect.objectContaining({
+        onprogress,
+        resetTimeoutOnProgress: true,
+      }),
+    );
+  });
 });

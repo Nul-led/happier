@@ -5,10 +5,16 @@ import {
   ProviderConnectionIdSchema,
   SessionModelSelectionResolutionError,
   SessionModelTransitionResultV1Schema,
+  SessionModelSelectionV2Schema,
   type ProviderConnectionId,
   type ProviderBoundModelRef,
+  type SessionModelSelectionV2,
   type SessionModelTransitionResultV1,
 } from '@happier-dev/protocol';
+import {
+  TeamCredentialProviderModelSelectionV1Schema,
+  type TeamCredentialProviderModelSelectionV1,
+} from '@happier-dev/protocol/teams';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   resolveAmbientProviderConnectionForModelIntent,
@@ -16,6 +22,8 @@ import {
 } from '@happier-dev/agents';
 import {
   createModelIntentMetadataCasCandidate,
+  createModelIntentV2MetadataCasCandidate,
+  isInactiveModelIntentSessionActiveError,
   runModelIntentAtAuthoritativeDisposition,
 } from '@happier-dev/agents/session/state/metadataWriters';
 
@@ -32,6 +40,7 @@ import {
   resolveSessionTransportContext,
   type ResolveSessionTransportContextResult,
 } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type SetSessionModelLookupFailure = Readonly<Extract<
   ResolveSessionTransportContextResult,
@@ -52,10 +61,30 @@ type SetSessionModelInactiveResult = Readonly<{
   version: number;
 }>;
 
+type SetSessionTeamModelInactiveResult = Readonly<{
+  ok: true;
+  status: 'intent_updated';
+  sessionId: string;
+  selection: SessionModelSelectionV2;
+  updatedAt: number;
+  metadata: Record<string, unknown>;
+  version: number;
+}>;
+
+type SetSessionTeamModelFailure = Readonly<{
+  ok: false;
+  status: 'restart_required' | 'team_resource_active_transition_unsupported';
+  sessionId: string;
+  reason: 'session_activated_before_team_resource_commit' | 'team_resource_binding_changed';
+  requestedTeamSelection?: TeamCredentialProviderModelSelectionV1;
+}>;
+
 export type SetSessionModelResult =
   | SetSessionModelLookupFailure
   | SetSessionModelActiveResult
-  | SetSessionModelInactiveResult;
+  | SetSessionModelInactiveResult
+  | SetSessionTeamModelInactiveResult
+  | SetSessionTeamModelFailure;
 
 type ResolvedSessionTransportContext = Extract<
   ResolveSessionTransportContextResult,
@@ -153,14 +182,18 @@ async function invokeActiveModelTransition(params: Readonly<{
 export async function setSessionModel(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
-  modelId: string;
+  modelId?: string;
   providerConnectionId?: ProviderConnectionId | string | null;
+  teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
+  teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
   /** Retained for caller compatibility; ordering is assigned by the owning CAS/RPC. */
   updatedAt?: number;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<SetSessionModelResult> {
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
     return {
@@ -168,6 +201,105 @@ export async function setSessionModel(params: Readonly<{
       code: sessionTarget.code,
       ...(sessionTarget.candidates ? { candidates: sessionTarget.candidates } : {}),
     };
+  }
+
+  if (params.teamCredentialModel !== undefined) {
+    const requested = TeamCredentialProviderModelSelectionV1Schema.parse(params.teamCredentialModel);
+    const metadata = tryDecryptSessionOwnerMetadataView({
+      credentials: params.credentials,
+      rawSession: sessionTarget.rawSession,
+      accountEncryptionMode: sessionTarget.accountEncryptionCurrentness.mode,
+    });
+    if (!metadata) return { ok: false, code: 'unsupported' };
+    const backendTarget = resolveBackendTargetFromSessionMetadata(metadata);
+    if (!backendTarget || buildBackendTargetKeyV2(backendTarget) !== requested.agentTargetKey) {
+      throw new SessionModelSelectionResolutionError('model_selection_agent_target_unknown');
+    }
+    const observedActive = sessionTarget.rawSession.active === true;
+    const candidate = createModelIntentV2MetadataCasCandidate({
+      selection: SessionModelSelectionV2Schema.parse({
+        v: 2,
+        updatedAt: 0,
+        ref: {
+          source: 'team_resource',
+          resourceId: requested.resourceId,
+          teamId: requested.teamId,
+          expectedResourceRevision: requested.expectedResourceRevision,
+          deliveryMode: requested.deliveryMode,
+          agentTargetKey: requested.agentTargetKey,
+          modelId: requested.modelId,
+        },
+      }),
+    });
+    try {
+      const result = await updateSessionMetadataWithRetry({
+        token: params.credentials.token,
+        credentials: params.credentials,
+        sessionId: sessionTarget.sessionId,
+        rawSession: sessionTarget.rawSession,
+        accountEncryptionCurrentness: sessionTarget.accountEncryptionCurrentness,
+        updater: candidate.update,
+        sessionExpectation: observedActive ? undefined : { kind: 'inactive_model_intent' },
+        teamCredentialBindings: [{
+          v: 1,
+          slot: { kind: 'provider_model' },
+          resourceId: requested.resourceId,
+          expectedResourceRevision: requested.expectedResourceRevision,
+          deliveryMode: requested.deliveryMode,
+          teamId: requested.teamId,
+        }],
+        teamVisibilityGrantConsent: params.teamVisibilityGrantConsent,
+      });
+      const state = candidate.readState();
+      if (!state.accepted || state.updatedAt === null) {
+        return {
+          ok: false,
+          status: 'team_resource_active_transition_unsupported',
+          sessionId: sessionTarget.sessionId,
+          reason: 'session_activated_before_team_resource_commit',
+        };
+      }
+      if (observedActive) {
+        return {
+          ok: false,
+          status: 'restart_required',
+          sessionId: sessionTarget.sessionId,
+          reason: 'team_resource_binding_changed',
+          requestedTeamSelection: requested,
+        };
+      }
+      return {
+        ok: true,
+        status: 'intent_updated',
+        sessionId: sessionTarget.sessionId,
+        selection: SessionModelSelectionV2Schema.parse({
+          v: 2,
+          updatedAt: state.updatedAt,
+          ref: {
+            source: 'team_resource', resourceId: requested.resourceId, teamId: requested.teamId,
+            expectedResourceRevision: requested.expectedResourceRevision,
+            deliveryMode: requested.deliveryMode,
+            agentTargetKey: requested.agentTargetKey, modelId: requested.modelId,
+          },
+        }),
+        updatedAt: state.updatedAt,
+        metadata: result.metadata,
+        version: result.version,
+      };
+    } catch (error) {
+      if (!isInactiveModelIntentSessionActiveError(error)) throw error;
+      return {
+        ok: false,
+        status: 'team_resource_active_transition_unsupported',
+        sessionId: sessionTarget.sessionId,
+        reason: 'session_activated_before_team_resource_commit',
+      };
+    }
+  }
+
+  const modelId = params.modelId;
+  if (modelId === undefined) {
+    throw new SessionModelSelectionResolutionError('model_selection_agent_target_unknown');
   }
 
   const hasExplicitProviderConnectionId = Object.prototype.hasOwnProperty.call(
@@ -180,7 +312,7 @@ export async function setSessionModel(params: Readonly<{
   const request = resolveRequestedSelection({
     sessionTarget,
     credentials: params.credentials,
-    modelId: params.modelId.trim(),
+    modelId: modelId.trim(),
     hasExplicitProviderConnectionId,
     explicitProviderConnectionId,
   });
@@ -234,6 +366,7 @@ export async function setSessionModel(params: Readonly<{
       const refreshedTarget = await resolveSessionTransportContext({
         credentials: params.credentials,
         idOrPrefix: sessionTarget.sessionId,
+        ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
       });
       if (!refreshedTarget.ok || refreshedTarget.rawSession.active !== true) {
         return {
@@ -248,7 +381,7 @@ export async function setSessionModel(params: Readonly<{
       const refreshedRequest = resolveRequestedSelection({
         sessionTarget: refreshedTarget,
         credentials: params.credentials,
-        modelId: params.modelId.trim(),
+        modelId: modelId.trim(),
         hasExplicitProviderConnectionId,
         explicitProviderConnectionId,
       });

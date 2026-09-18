@@ -5,6 +5,7 @@ import {
     RepositoryCheckpointTurnMetadataSchema,
 } from '@happier-dev/protocol';
 import type { TurnChangeSet } from '@happier-dev/protocol';
+import { deriveCanonicalPatchFileDiffs } from '@happier-dev/protocol/tools/v2';
 
 import type { PendingNormalizedToolChange } from './normalizedToolChangeTypes';
 
@@ -34,6 +35,7 @@ function normalizeChangeToolName(toolName: string): string {
     if (lower === 'write') return 'Write';
     if (lower === 'multiedit') return 'MultiEdit';
     if (lower === 'notebookedit') return 'NotebookEdit';
+    if (lower === 'patch' || lower === 'apply_patch') return 'Patch';
     return trimmed;
 }
 
@@ -150,6 +152,15 @@ export function derivePendingNormalizedToolChange(
             kind: 'canonical-diff',
             files,
             ...(turnMetadata ? { turnMetadata } : {}),
+        };
+    }
+
+    if (normalizedToolName === 'Patch') {
+        const files = deriveCanonicalPatchFileDiffs(input);
+        if (files.length === 0) return null;
+        return {
+            kind: 'canonical-diff',
+            files,
         };
     }
 

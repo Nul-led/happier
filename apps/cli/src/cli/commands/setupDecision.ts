@@ -50,14 +50,17 @@ export function buildSetupPlan(params: Readonly<{
   includeAuth: boolean;
   forceWebAuthentication: boolean;
   includeDaemon: boolean;
-  includeProviders: boolean;
+  skipProviders: boolean;
+  installedAgentIds: readonly string[];
   providers: readonly string[];
   assumeYes: boolean;
+  recoverAccountMaterial?: boolean;
 }>): SetupPlan {
   const serverUrl = params.serverUrl.trim().replace(/\/+$/u, '');
   const steps: SetupStep[] = [];
   if (params.includeAuth) {
     const methodArgs = params.forceWebAuthentication ? ['--method', 'web'] : [];
+    const materialArgs = params.recoverAccountMaterial ? ['--recover-account-material'] : [];
     steps.push({
       id: 'auth_login',
       argv: [
@@ -66,16 +69,19 @@ export function buildSetupPlan(params: Readonly<{
         '--wait-timeout',
         String(SETUP_AUTH_WAIT_TIMEOUT_SECONDS),
         ...methodArgs,
+        ...materialArgs,
         '--no-daemon-start',
       ],
-      display: `happier auth login --wait-timeout ${SETUP_AUTH_WAIT_TIMEOUT_SECONDS}${methodArgs.length > 0 ? ' --method web' : ''}`,
+      display: `happier auth login --wait-timeout ${SETUP_AUTH_WAIT_TIMEOUT_SECONDS}${methodArgs.length > 0 ? ' --method web' : ''}${materialArgs.length > 0 ? ' --recover-account-material' : ''}`,
     });
   }
   if (params.includeDaemon) {
     steps.push({ id: 'daemon_install', argv: ['service', 'install'], display: 'happier service install' });
     steps.push({ id: 'daemon_start', argv: ['service', 'start'], display: 'happier service start' });
   }
-  if (params.includeProviders) {
+  const includeProviders = !params.skipProviders
+    && (params.installedAgentIds.length === 0 || params.providers.length > 0);
+  if (includeProviders) {
     const yesArgv = params.assumeYes ? ['--yes'] : [];
     const providerArgv = params.providers.flatMap((id) => ['--provider', id]);
     steps.push({

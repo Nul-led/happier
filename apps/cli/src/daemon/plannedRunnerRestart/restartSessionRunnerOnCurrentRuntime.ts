@@ -8,7 +8,10 @@ import type { SessionRunnerEntrypointIdentity } from '../sessionRunnerRuntime/ty
 import type { SessionRunnerAgentRuntimeCurrentness } from '../sessionRunnerRuntime/resolveAgentRuntimeCurrentness';
 import { resolveSessionRunnerRuntimeState } from '../sessionRunnerRuntime/resolveRuntimeState';
 import { resolveSessionRunnerEntrypointIdentityFromProcessCommand } from '../sessionRunnerRuntime/resolveRunnerEntrypointIdentity';
-import { resolveSessionRunnerRestartEligibility } from '../sessionRunnerRuntime/resolveRestartEligibility';
+import {
+  resolveSessionRunnerRestartEligibility,
+  shouldRefreshSessionRunnerResumeIdentity,
+} from '../sessionRunnerRuntime/resolveRestartEligibility';
 import type {
   PlannedRunnerRestartMode,
   PlannedRunnerRestartRequestReason,
@@ -45,6 +48,10 @@ type ResolveAgentRuntimeCurrentness = (
   tracked: TrackedSession,
 ) => Promise<SessionRunnerAgentRuntimeCurrentness>;
 type ResolveCurrentIdentity = () => SessionRunnerEntrypointIdentity;
+type RefreshTrackedSessionRuntimeSnapshot = (input: Readonly<{
+  sessionId: string;
+  tracked: TrackedSession;
+}>) => Promise<void>;
 export type RunnerRestartIdentityWitness = Readonly<{
   pid: number;
   processStartTimeMs: number | undefined;
@@ -66,6 +73,7 @@ type RestartSessionRunnerOnCurrentRuntimeInput = Readonly<{
   requestRestart: RequestRestart;
   resolveActivityDisabledReason?: ResolveActivityDisabledReason;
   resolveAgentRuntimeCurrentness?: ResolveAgentRuntimeCurrentness;
+  refreshTrackedSessionRuntimeSnapshot?: RefreshTrackedSessionRuntimeSnapshot;
 }>;
 
 export type RestartSessionRunnerCompletion =
@@ -341,11 +349,23 @@ async function restartSessionRunnerOnCurrentRuntimeImpl(
   const tracked = input.tracked ?? null;
   const expectedRunnerProcessIdentity =
     resolveExpectedRunnerProcessIdentity(input);
-  const contextFailure = validateRestartContext({
+  let contextFailure = validateRestartContext({
     request: input.request,
     expectedRunnerProcessIdentity,
     tracked,
   });
+  if (
+    contextFailure?.reasonCode === 'missing_resume_identity'
+    && shouldRefreshSessionRunnerResumeIdentity(tracked)
+    && input.refreshTrackedSessionRuntimeSnapshot
+  ) {
+    await input.refreshTrackedSessionRuntimeSnapshot({ sessionId, tracked });
+    contextFailure = validateRestartContext({
+      request: input.request,
+      expectedRunnerProcessIdentity,
+      tracked,
+    });
+  }
   if (contextFailure) return contextFailure;
   if (!tracked) return skipped('not_found', sessionId);
   if (
@@ -596,6 +616,7 @@ export async function restartAllSessionRunnersOnCurrentRuntime(input: Readonly<{
   resolveAgentRuntimeCurrentness?: (
     tracked: TrackedSession,
   ) => Promise<SessionRunnerAgentRuntimeCurrentness>;
+  refreshTrackedSessionRuntimeSnapshot?: RefreshTrackedSessionRuntimeSnapshot;
 }>): Promise<RestartAllSessionRunnersResult> {
   const results: RestartSessionRunnerResult[] = [];
   const restartTargets = input.trackedSessions.map((tracked) => ({
@@ -637,6 +658,9 @@ export async function restartAllSessionRunnersOnCurrentRuntime(input: Readonly<{
         }
         : {}),
       ...(input.resolveActivityDisabledReason ? { resolveActivityDisabledReason: input.resolveActivityDisabledReason } : {}),
+      ...(input.refreshTrackedSessionRuntimeSnapshot
+        ? { refreshTrackedSessionRuntimeSnapshot: input.refreshTrackedSessionRuntimeSnapshot }
+        : {}),
     }));
   }
 

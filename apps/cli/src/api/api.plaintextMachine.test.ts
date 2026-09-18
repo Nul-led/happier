@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   StoredJsonContentEnvelopeSchema,
+  sealEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
 
 import { ApiClient } from './api';
-import { decodeBase64 } from './encryption';
+import { decodeBase64, encodeBase64, encrypt, getRandomBytes } from './encryption';
+import tweetnacl from 'tweetnacl';
 
 const mockPost = vi.fn();
 const mockGet = vi.fn();
@@ -161,5 +163,26 @@ describe('ApiClient.getOrCreateMachine plaintext account storage', () => {
     });
 
     expect(mockPost).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('ApiClient.getMachine published content key', () => {
+  it('opens metadata and returns the selected scoped transport key instead of the Account key', async () => {
+    const machineKey = new Uint8Array(32).fill(11);
+    const scopedKey = new Uint8Array(32).fill(29);
+    const publicKey = tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey;
+    const metadata = { host: 'scoped-host', homeDir: '/tmp/scoped' };
+    mockGet.mockImplementation(async (url: string) => url.endsWith('/v1/machines/scoped')
+      ? { data: { machine: {
+        id: 'scoped',
+        dataEncryptionKey: encodeBase64(sealEncryptedDataKeyEnvelopeV1({ dataKey: scopedKey, recipientPublicKey: publicKey, randomBytes: getRandomBytes })),
+        metadata: encodeBase64(encrypt(scopedKey, 'dataKey', metadata)), metadataVersion: 1,
+      } } }
+      : { status: 200, data: { mode: 'e2ee', updatedAt: 1 } });
+    const api = await ApiClient.create({ token: 'token-test', encryption: { type: 'dataKey', machineKey, publicKey } });
+    await expect(api.getMachine('scoped')).resolves.toMatchObject({
+      id: 'scoped', metadata, encryptionMode: 'e2ee', encryptionKey: scopedKey, encryptionVariant: 'dataKey',
+    });
   });
 });

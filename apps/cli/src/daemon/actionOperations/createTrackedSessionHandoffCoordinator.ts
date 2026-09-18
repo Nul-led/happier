@@ -12,6 +12,7 @@ import {
   type WorkspaceSyncRelationshipV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError } from '@happier-dev/protocol/rpcErrors';
 
 import type { StoredCredentials } from '@/persistence';
 import { resolveSessionHandoffSourceAuthority } from '@/session/handoff/resolveSessionHandoffSourceAuthority';
@@ -84,7 +85,7 @@ type CoordinatorDeps = Readonly<{
 type HostCoordinatorInput = Readonly<{
   operationId: string;
   actionInput: unknown;
-  start: () => Promise<ActionExecuteResult>;
+  start: (privateActionInput: unknown) => Promise<ActionExecuteResult>;
   signal: AbortSignal;
   publishOwnerUpdate: (update: ActionOperationOwnerUpdate) => void;
 }>;
@@ -136,12 +137,13 @@ async function waitForTargetCustody(input: Readonly<{
   spawnNonce: string;
   spawnResult: unknown;
   signal: AbortSignal;
+  callMachine: MachineCall;
 }>): Promise<Readonly<{ type: 'success'; sessionId: string } | { type: 'error'; errorCode: string; errorMessage: string }>> {
   return await awaitSpawnedSessionId({
     result: input.spawnResult,
     spawnNonce: input.spawnNonce,
     resolveSpawnSessionByNonce: async (spawnNonce, timeoutMs) => normalizeSpawnSessionNonceResolution(
-      await callMachineRpc({
+      await input.callMachine({
         credentials: input.credentials,
         machineId: input.machineId,
         method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE,
@@ -185,7 +187,10 @@ export function buildTrackedSessionHandoffSpawnOptions(params: Readonly<{
 export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
   const resolveSource = deps.resolveSource ?? resolveSourceContext;
   const callMachine: MachineCall = deps.callMachine ?? (async (input) => await callMachineRpc(input));
-  const awaitTargetCustody = deps.awaitTargetCustody ?? waitForTargetCustody;
+  const awaitTargetCustody = deps.awaitTargetCustody ?? (async (input) => await waitForTargetCustody({
+    ...input,
+    callMachine,
+  }));
   const refreshWorkspaceSettings = deps.refreshWorkspaceSettings ?? (async (input) => {
     const context = await refreshAccountSettingsForMinimumVersion(input);
     return {
@@ -206,8 +211,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     const sessionId = readNonEmptyString(rawInput.sessionId);
     const targetMachineId = readNonEmptyString(rawInput.targetMachineId);
     const targetPath = readNonEmptyString(rawInput.targetPath);
-    const operationId = readNonEmptyString(rawInput.actionRequestId)
-      ?? readNonEmptyString(hostInput.operationId);
+    const operationId = readNonEmptyString(hostInput.operationId);
     if (!operationId || !sessionId || !targetMachineId) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
@@ -217,6 +221,24 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     }
     const source = await resolveSource(credentials, sessionId, hostInput.signal);
     if (!source.ok) return source;
+    const {
+      sessionId: _untrustedSessionId,
+      sourceMachineId: _untrustedSourceMachineId,
+      targetMachineId: _untrustedTargetMachineId,
+      sessionStorageMode: _untrustedSessionStorageMode,
+      preferredTransportStrategies: _untrustedPreferredTransportStrategies,
+      targetPath: _untrustedTargetPath,
+      ...forwardedActionInput
+    } = rawInput;
+    const privateStartInput = {
+      ...forwardedActionInput,
+      sessionId,
+      sourceMachineId: source.sourceMachineId,
+      targetMachineId,
+      sessionStorageMode: source.sessionStorageMode,
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'] as const,
+      ...(targetPath ? { targetPath } : {}),
+    };
 
     const parsedWorkspaceAction = rawInput.workspaceAction === undefined
       ? null
@@ -232,6 +254,12 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
     const targetReplacementApproval = parsedTargetReplacementApproval?.data;
+    const targetReplacementApprovalReceiptId = readNonEmptyString(rawInput.handoffTargetReplacementApprovalReceiptId) ?? undefined;
+    const targetReplacementApprovalActionInput = rawInput.handoffTargetReplacementApprovalActionInput;
+    if ((targetReplacementApproval !== undefined) !== (targetReplacementApprovalReceiptId !== undefined)
+      || (targetReplacementApproval !== undefined) !== (targetReplacementApprovalActionInput !== undefined)) {
+      return { ok: false, errorCode: 'approval_stale', error: 'approval_stale' };
+    }
     const daemonMaterializesEndpoints = workspaceAction?.kind === 'create_relationship' || workspaceAction?.kind === 'copy_once';
     const accountServerId = readNonEmptyString(rawInput.accountServerId);
     if (daemonMaterializesEndpoints && accountServerId !== deps.expectedAccountServerId.trim()) {
@@ -305,15 +333,35 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
 
     let spawnResult: unknown;
     let spawnNonce: string | null = null;
-    const rpc = async (machineId: string, method: string, request: unknown, signal?: AbortSignal) => (
-      await callMachine(buildTrackedSessionHandoffMachineCall({
-        credentials,
-        machineId,
-        method,
-        request,
-        ...(signal ? { signal } : {}),
-      }))
-    );
+    const workspaceHandoffMethods = new Set<string>([
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3,
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V3,
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3,
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3,
+      RPC_METHODS.DAEMON_SESSION_HANDOFF_ABORT_V3,
+    ]);
+    const rpc = async (machineId: string, method: string, request: unknown, signal?: AbortSignal) => {
+      try {
+        return await callMachine(buildTrackedSessionHandoffMachineCall({
+          credentials,
+          machineId,
+          method,
+          request,
+          ...(signal ? { signal } : {}),
+        }));
+      } catch (error) {
+        if (workspaceAction?.kind !== undefined && workspaceAction.kind !== 'none'
+          && workspaceHandoffMethods.has(method)
+          && (isRpcMethodNotAvailableError(error) || isRpcMethodNotFoundError(error))) {
+          return {
+            ok: false,
+            errorCode: 'workspace_sync_update_required',
+            error: 'Workspace sync requires a newer daemon',
+          };
+        }
+        throw error;
+      }
+    };
 
     return await coordinateTrackedSessionHandoff({
       input: {
@@ -330,6 +378,10 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         ...(workspaceAction ? { workspaceAction } : {}),
         ...(daemonMaterializesEndpoints ? { accountServerId: deps.expectedAccountServerId.trim() } : {}),
         ...(targetReplacementApproval ? { targetReplacementApproval } : {}),
+        ...(targetReplacementApprovalReceiptId ? {
+          targetReplacementApprovalReceiptId,
+          targetReplacementApprovalActionInput,
+        } : {}),
         ...(workspaceContext ? {
           workspaceSyncSourceRootPath: workspaceContext.sourceRootPath,
           workspaceSyncTargetRootPath: workspaceContext.targetRootPath,
@@ -341,7 +393,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         } : {}),
       },
       signal: hostInput.signal,
-      start: hostInput.start,
+      start: async () => await hostInput.start(privateStartInput),
       resolveSource: async () => source,
       prepareTarget: async (request, signal) => await rpc(
         targetMachineId,

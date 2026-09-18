@@ -2,6 +2,10 @@ import type { Dirent } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { mapWithConcurrency } from '@/utils/async/mapWithConcurrency'
+import { runWithScmBackendRegistryLease } from '@/scm/scmBackendCatalog'
+import type { ScmBackendRegistry } from '@/scm/registry'
+
 import type { DirectoryListingEntry, DirectoryListingEntryType, DirectoryListingResult } from './directoryListingTypes'
 import { sortDirectoryEntries } from './sortDirectoryEntries'
 
@@ -10,34 +14,14 @@ type ListDirectoryEntriesInput = Readonly<{
   includeFiles: boolean
   maxEntries: number | null
   statConcurrency: number
+  includeGitIgnore?: boolean
+  scmRegistry?: ScmBackendRegistry
 }>
 
 function resolveEntryType(entry: Pick<Dirent, 'isDirectory' | 'isFile'>): DirectoryListingEntryType {
   if (entry.isDirectory()) return 'directory'
   if (entry.isFile()) return 'file'
   return 'other'
-}
-
-async function mapWithConcurrency<TInput, TOutput>(
-  entries: readonly TInput[],
-  concurrency: number,
-  mapper: (entry: TInput) => Promise<TOutput>,
-): Promise<TOutput[]> {
-  const limit = Math.max(1, Math.floor(concurrency))
-  const output = new Array<TOutput>(entries.length)
-  let cursor = 0
-
-  async function worker(): Promise<void> {
-    while (true) {
-      const index = cursor
-      cursor += 1
-      if (index >= entries.length) return
-      output[index] = await mapper(entries[index] as TInput)
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(limit, entries.length) }, () => worker()))
-  return output
 }
 
 export async function listDirectoryEntries(input: ListDirectoryEntriesInput): Promise<DirectoryListingResult> {
@@ -78,5 +62,24 @@ export async function listDirectoryEntries(input: ListDirectoryEntriesInput): Pr
     }
   })
 
+  if (input.includeGitIgnore === true) {
+    try {
+      const ignored = await runWithScmBackendRegistryLease(input.scmRegistry, async (registry) => {
+        const selected = await registry.selectBackend({ cwd: input.directoryPath, workingDirectory: input.directoryPath })
+        const classify = selected?.backend.workspaceIntegration?.classifyDirectoryIgnores
+        return classify ? await classify({ cwd: input.directoryPath, entries }) : null
+      })
+      if (ignored !== null) {
+        return {
+          entries: entries.map((entry) => ({ ...entry, gitIgnored: ignored.has(entry.name) })),
+          truncated,
+          gitIgnoreAvailable: true,
+        }
+      }
+    } catch {
+      // Availability is observable in the response; callers retain the complete raw listing.
+    }
+    return { entries, truncated, gitIgnoreAvailable: false }
+  }
   return { entries, truncated }
 }

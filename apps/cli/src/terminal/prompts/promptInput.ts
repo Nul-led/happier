@@ -10,9 +10,19 @@ import { createInterface } from 'node:readline';
 import type { Interface } from 'node:readline';
 import { ReadStream, WriteStream } from 'node:tty';
 
+export type PromptAnimation = Readonly<{
+  animate?: boolean;
+  intervalMs?: number;
+  render: (elapsedSeconds: number) => string;
+  onMove?: (delta: -1 | 1) => void;
+  onToggle?: () => void;
+  answerOnEmpty?: () => string;
+}>;
+
 type PromptOptions = Readonly<{
   secret?: boolean;
   signal?: AbortSignal;
+  animation?: PromptAnimation;
 }>;
 type ReadlineWithOutputInterceptor = Interface & {
   _writeToOutput?: (value: string) => void;
@@ -94,10 +104,12 @@ export function isInteractiveTerminal(): boolean {
 
 function askQuestion(params: Readonly<{
   rl: Interface;
+  input: NodeJS.ReadableStream;
   output: NodeJS.WritableStream;
   prompt: string;
   secret: boolean;
   signal?: AbortSignal;
+  animation?: PromptOptions['animation'];
 }>): Promise<string> {
   const rl = params.rl as ReadlineWithOutputInterceptor;
   const originalWriteToOutput = rl._writeToOutput;
@@ -114,11 +126,16 @@ function askQuestion(params: Readonly<{
   }
   return new Promise<string>((resolve, reject) => {
     let settled = false;
+    let animationTimer: ReturnType<typeof setInterval> | null = null;
+    let onKeypress: ((value: string, key: Readonly<{ name?: string }>) => void) | null = null;
     const finish = (settle: () => void): void => {
       if (settled) return;
       settled = true;
+      if (animationTimer) clearInterval(animationTimer);
       params.signal?.removeEventListener('abort', onAbort);
       params.rl.removeListener('SIGINT', onAbort);
+      params.rl.removeListener('close', onClose);
+      if (onKeypress) params.input.removeListener('keypress', onKeypress);
       restoreOutput();
       if (params.secret) {
         params.output.write('\n');
@@ -130,15 +147,75 @@ function askQuestion(params: Readonly<{
       error.name = 'AbortError';
       finish(() => reject(error));
     };
+    const onClose = (): void => {
+      const error = new Error('Terminal prompt closed');
+      error.name = 'AbortError';
+      finish(() => reject(error));
+    };
     if (params.signal?.aborted) {
       onAbort();
       return;
     }
     params.rl.once('SIGINT', onAbort);
+    params.rl.once('close', onClose);
     params.signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      if (params.animation) {
+        const startedAt = Date.now();
+        const initialColumns = process.stdout.columns;
+        const initialRows = process.stdout.rows;
+        let redrawEnabled = true;
+        const canRedraw = (): boolean => {
+          const cursor = params.rl.getCursorPos();
+          return process.stdout.columns === initialColumns
+            && process.stdout.rows === initialRows
+            && !(typeof initialRows === 'number' && cursor.rows >= initialRows - 1);
+        };
+        const stopRedraw = (): void => {
+            if (animationTimer) clearInterval(animationTimer);
+            animationTimer = null;
+            redrawEnabled = false;
+        };
+        const redraw = (): void => {
+          if (!canRedraw()) {
+            stopRedraw();
+            return;
+          }
+          const elapsedSeconds = params.animation!.animate === false ? 0 : (Date.now() - startedAt) / 1000;
+          params.rl.setPrompt(params.animation!.render(elapsedSeconds));
+          // Readline redraws its owned prompt and current input together. This
+          // preserves partial and wrapped input instead of racing terminal writes.
+          params.rl.prompt(true);
+        };
+        onKeypress = (_value, key) => {
+          if (key.name === 'escape') {
+            onAbort();
+            return;
+          }
+          const isToggle = key.name === 'space' || _value === ' ';
+          if (!redrawEnabled || (key.name !== 'up' && key.name !== 'down' && !isToggle)) return;
+          if (!canRedraw()) {
+            stopRedraw();
+            return;
+          }
+          if (isToggle) {
+            params.animation!.onToggle?.();
+            // Space is an action in a multi-select prompt, not readline input.
+            params.rl.write(null, { ctrl: true, name: 'u' });
+          } else {
+            params.animation!.onMove?.(key.name === 'up' ? -1 : 1);
+          }
+          redraw();
+        };
+        params.input.on('keypress', onKeypress);
+        if (params.animation.animate !== false) {
+          animationTimer = setInterval(redraw, Math.max(40, params.animation.intervalMs ?? 120));
+          animationTimer.unref?.();
+        }
+      }
       params.rl.question(params.secret ? '' : params.prompt, (value) => {
-        finish(() => resolve(value));
+        const answer = value === '' ? params.animation?.answerOnEmpty?.() ?? value : value;
+        finish(() => resolve(answer));
       });
     } catch (error) {
       finish(() => reject(error));
@@ -176,10 +253,12 @@ async function promptViaDevTty(prompt: string, options: PromptOptions): Promise<
     rl = createInterface({ input, output, terminal: true });
     return await askQuestion({
       rl,
+      input,
       output,
       prompt,
       secret: options.secret === true,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.animation ? { animation: options.animation } : {}),
     });
   } finally {
     rl?.close();
@@ -197,10 +276,12 @@ async function promptViaProcessStdio(prompt: string, options: PromptOptions): Pr
   try {
     return await askQuestion({
       rl,
+      input: process.stdin,
       output: process.stdout,
       prompt,
       secret: options.secret === true,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.animation ? { animation: options.animation } : {}),
     });
   } finally {
     rl.close();
@@ -209,18 +290,28 @@ async function promptViaProcessStdio(prompt: string, options: PromptOptions): Pr
 
 export async function promptInput(
   prompt: string,
-  options: Readonly<{ signal?: AbortSignal }> = {},
+  options: Readonly<{
+    signal?: AbortSignal;
+    animation?: PromptAnimation;
+  }> = {},
 ): Promise<string> {
+  const staticOptions = options.signal ? { signal: options.signal } : {};
   if (!isInteractiveTerminal()) {
+    return promptViaProcessStdio(prompt, staticOptions);
+  }
+
+  // Animation uses readline's direct terminal-mode prompt redraw. A controlling
+  // /dev/tty reached through redirected stdio remains a correct static prompt.
+  if (options.animation && process.stdin.isTTY && process.stdout.isTTY) {
     return promptViaProcessStdio(prompt, options);
   }
 
-  const ttyAnswer = await promptViaDevTty(prompt, options);
+  const ttyAnswer = await promptViaDevTty(prompt, staticOptions);
   if (ttyAnswer !== null) {
     return ttyAnswer;
   }
 
-  return promptViaProcessStdio(prompt, options);
+  return promptViaProcessStdio(prompt, staticOptions);
 }
 
 export async function promptSecretInput(prompt: string): Promise<string> {

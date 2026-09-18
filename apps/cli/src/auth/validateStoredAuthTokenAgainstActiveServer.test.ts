@@ -22,8 +22,6 @@ vi.mock('@/server/homeTarget', () => ({
 
 describe('validateStoredAuthTokenAgainstActiveServer', () => {
   const originalFetch = global.fetch;
-  const originalAbortSignalTimeout = AbortSignal.timeout;
-  const timeoutMock = vi.fn(() => new AbortController().signal);
 
   beforeEach(() => {
     vi.resetModules();
@@ -36,7 +34,6 @@ describe('validateStoredAuthTokenAgainstActiveServer', () => {
       applicationUrl: 'https://active.example.test',
     });
     descriptorRuntimeMock.verify.mockReset();
-    AbortSignal.timeout = timeoutMock;
   });
 
   afterEach(() => {
@@ -45,7 +42,6 @@ describe('validateStoredAuthTokenAgainstActiveServer', () => {
     } else {
       global.fetch = originalFetch;
     }
-    AbortSignal.timeout = originalAbortSignalTimeout;
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -77,6 +73,26 @@ describe('validateStoredAuthTokenAgainstActiveServer', () => {
       httpStatus: null,
       reasonCode: 'TypeError',
     });
+  });
+
+  it('propagates caller cancellation through the active Home profile request', async () => {
+    const caller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    global.fetch = vi.fn(async (_url, init) => {
+      requestSignal = init?.signal ?? undefined;
+      return await new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const { validateStoredAuthTokenAgainstActiveServer } = await import('./validateStoredAuthTokenAgainstActiveServer');
+    const pending = validateStoredAuthTokenAgainstActiveServer('token-123', caller.signal);
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
+
+    caller.abort(new DOMException('cancelled', 'AbortError'));
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   it('fails fast for missing tokens without calling fetch', async () => {

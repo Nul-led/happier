@@ -19,7 +19,7 @@ import { runWithHostingProviderRuntimeServices as runWithHostSuppliedScmHostingP
 import { runWithBackendRuntimeServices as runWithScmBackendRuntimeServices } from '@happier-dev/plugin-sdk/scm/backend';
 
 import type { ScmBackend } from '../types';
-import { resolveScmBackendCapabilities } from '../capabilities/resolveScmBackendCapabilities';
+import { resolveScmBackendCapabilities } from '@happier-dev/protocol/scm';
 import type { ScmWorkspaceIntegrationPortableWorkspacePathClassification as HostPortableWorkspacePathClassification } from '../workspace/portableWorkspacePath';
 import { runScmCommand as runHostScmCommand } from '../runtime';
 import {
@@ -157,6 +157,12 @@ function createWorkspaceIntegrationAdapter(
     if (!handlers) return undefined;
 
     return {
+        ...(handlers.classifyDirectoryIgnores ? {
+            classifyDirectoryIgnores: async (input) => await runWithScmBackendRuntimeServices(
+                services,
+                async () => await handlers.classifyDirectoryIgnores!(input),
+            ),
+        } : {}),
         ...(handlers.inspectWorkspaceLocation ? { inspectWorkspaceLocation: async (input) => await runWithScmBackendRuntimeServices(
             services,
             async () => await runWithScmHostingProviderRuntimeServices(

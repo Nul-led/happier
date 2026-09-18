@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
 
 import {
+  createActionExecutor,
   EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
+  computeExternalActionRequestEnvelopeDigestV1,
   measureExternalActionResponseEnvelopeUtf8BytesV1,
+  openExternalActionResponseV2,
+  sealExternalActionRequestV2,
+  verifyExternalActionApprovalInputV1,
+  type ActionExecutorDeps,
 } from '@happier-dev/protocol/actions';
 
 import {
@@ -18,10 +25,56 @@ const principal = {
   authority: 'account_automation',
 } as const;
 
+const SESSION_SPAWN_PENDING_RESULT = {
+  type: 'pending',
+  retryWithSameCreationKey: true,
+  outcome: 'accepted',
+} as const;
+
+/**
+ * The real host executor requires its complete dependency surface. Every
+ * dependency a case does not deliberately provide throws, so an unexpected
+ * Action dispatch fails loudly instead of resolving `undefined`.
+ */
+function createUnavailableHostActionDeps(): ActionExecutorDeps {
+  const unavailable = (name: string) => async (): Promise<never> => {
+    throw new Error(`Unexpected host Action dependency call: ${name}`);
+  };
+  return {
+    executionRunStart: unavailable('executionRunStart'),
+    executionRunList: unavailable('executionRunList'),
+    executionRunGet: unavailable('executionRunGet'),
+    executionRunStop: unavailable('executionRunStop'),
+    executionRunAction: unavailable('executionRunAction'),
+    executionRunWait: unavailable('executionRunWait'),
+    detachedExecutionRunSend: unavailable('detachedExecutionRunSend'),
+    sessionOpen: unavailable('sessionOpen'),
+    sessionFork: unavailable('sessionFork'),
+    sessionRollback: unavailable('sessionRollback'),
+    sessionSpawnNew: unavailable('sessionSpawnNew'),
+    sessionSendMessage: unavailable('sessionSendMessage'),
+    sessionList: unavailable('sessionList'),
+    sessionModeSet: unavailable('sessionModeSet'),
+    sessionModesList: unavailable('sessionModesList'),
+    sessionActivityGet: unavailable('sessionActivityGet'),
+    sessionRecentMessagesGet: unavailable('sessionRecentMessagesGet'),
+    pathsListRecent: unavailable('pathsListRecent'),
+    machinesList: unavailable('machinesList'),
+    serversList: unavailable('serversList'),
+    reviewEnginesList: unavailable('reviewEnginesList'),
+    agentsBackendsList: unavailable('agentsBackendsList'),
+    agentsModelsList: unavailable('agentsModelsList'),
+    daemonMemorySearch: unavailable('daemonMemorySearch'),
+    daemonMemoryGetWindow: unavailable('daemonMemoryGetWindow'),
+    daemonMemoryEnsureUpToDate: unavailable('daemonMemoryEnsureUpToDate'),
+    resetGlobalVoiceAgent: unavailable('resetGlobalVoiceAgent'),
+  };
+}
+
 function createExactLimitMultibyteResult(): string {
   const emptyResponse = {
     v: 1,
-    actionId: 'session.spawn_new',
+    actionId: 'session.status.get',
     requestId: 'request-limit',
     execution: { ok: true, result: '' },
   } as const;
@@ -34,6 +87,329 @@ function createExactLimitMultibyteResult(): string {
 }
 
 describe('executeExternalAction', () => {
+  it('admits a present-user signed-root handoff on its UI surface', async () => {
+    const sessionHandoffStart = vi.fn(async () => ({
+      handoffId: 'handoff-1',
+      status: {
+        handoffId: 'handoff-1',
+        status: 'pending' as const,
+        phase: 'preparing' as const,
+        recoveryActions: [],
+      },
+      workspace: { kind: 'none' as const },
+    }));
+    const executor = createActionExecutor({
+      ...createUnavailableHostActionDeps(),
+      sessionHandoffStart,
+      sessionHandoffTargetReplacementApprovalPreflight: vi.fn(async () => ({ type: 'not_required' as const })),
+      resolveServerIdForSessionId: vi.fn(() => 'server-1'),
+    });
+
+    await expect(executeExternalAction({
+      actionId: 'session.handoff',
+      envelope: {
+        v: 1,
+        target: { kind: 'session', sessionId: 'session-1' },
+        input: { sessionId: 'session-1', targetMachineId: 'machine-2' },
+      },
+      principal: { authority: 'present_user' },
+      currentMachineId: 'machine-1',
+      currentServerId: 'server-1',
+      resolveTarget: async ({ target }) => target ?? null,
+      executor,
+    })).resolves.toMatchObject({
+      kind: 'response',
+      response: { execution: { ok: true } },
+    });
+    expect(sessionHandoffStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('admits present-user signed-root Actions while keeping them outside PAT admission', async () => {
+    const execute = vi.fn<ExternalActionExecutor['execute']>(async () => ({
+      ok: true,
+      result: { decided: true },
+    }));
+    const request = {
+      actionId: 'approval.request.decide',
+      envelope: {
+        v: 1 as const,
+        input: { artifactId: 'approval-1', decision: 'approve' },
+      },
+      currentMachineId: 'machine-1',
+      resolveTarget: async () => ({ kind: 'machine' as const, machineId: 'machine-1' }),
+      executor: { execute },
+    };
+
+    await expect(executeExternalAction({
+      ...request,
+      principal: { authority: 'present_user' },
+    })).resolves.toMatchObject({
+      kind: 'response',
+      response: { execution: { ok: true, result: { decided: true } } },
+    });
+    expect(execute).toHaveBeenCalledWith(
+      'approval.request.decide',
+      request.envelope.input,
+      expect.objectContaining({ surface: 'ui', authority: 'present_user' }),
+    );
+
+    execute.mockClear();
+    await expect(executeExternalAction({ ...request, principal })).resolves.toEqual({
+      kind: 'invalid_request',
+      errorCode: 'invalid_action',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicitly trusted CLI surface on signed-root ingress', async () => {
+    const execute = vi.fn<ExternalActionExecutor['execute']>(async () => ({
+      ok: true,
+      result: { installed: true },
+    }));
+
+    await executeExternalAction({
+      actionId: 'plugins.install',
+      envelope: { v: 1, input: { source: '/workspace/plugin' } },
+      principal: { authority: 'present_user' },
+      surface: 'cli',
+      currentMachineId: 'machine-1',
+      resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
+      executor: { execute },
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      'plugins.install',
+      { source: '/workspace/plugin' },
+      expect.objectContaining({ surface: 'cli', authority: 'present_user' }),
+    );
+  });
+
+  it('stamps a signed workflow project target into host context only on its exact daemon', async () => {
+    const target = {
+      kind: 'machine' as const,
+      machineId: 'machine-1',
+      project: { machineId: 'machine-1', directory: '~/projects/app', workspaceRefId: 'workspace-1' },
+    };
+    const execute = vi.fn<ExternalActionExecutor['execute']>(async () => ({ ok: true, result: {} }));
+    await executeExternalAction({
+      actionId: 'workflow.run.start',
+      envelope: { v: 1, input: { runId: '11111111-1111-4111-8111-111111111111', source: { kind: 'inline', definition: { version: 1, inputs: [], defaults: {}, blocks: [] } } }, target },
+      principal,
+      currentMachineId: 'machine-1',
+      resolveTarget: async ({ target: resolved }) => resolved ?? null,
+      executor: { execute },
+    });
+    expect(execute).toHaveBeenCalledWith('workflow.run.start', expect.anything(), expect.objectContaining({
+      externalActionTarget: target,
+    }));
+  });
+
+  it('binds a V1 request without correlation to its outer Machine and signs its resolved Session approval input', async () => {
+    const keyPair = tweetnacl.sign.keyPair();
+    const envelope = {
+      v: 1 as const,
+      input: { sessionId: 'session-1', title: 'Exact title' },
+    };
+    const authorization = {
+      v: 1 as const,
+      token: 'opaque-home-authorization',
+      binding: {
+        serverIdentityId: 'srv-cryptographic-home',
+        accountId: principal.accountId,
+        principalId: principal.principalId,
+        credentialId: principal.credentialId,
+        machineId: 'machine-implied',
+        actionId: 'session.title.set',
+        requestId: 'home-generated-request',
+        requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(envelope),
+        target: { kind: 'machine' as const, machineId: 'machine-implied' },
+      },
+    };
+    const execute = vi.fn<ExternalActionExecutor['execute']>(async (_actionId, actionInput, context) => {
+      const signature = context?.signExternalActionApprovalInput?.({
+        actionId: 'session.title.set',
+        input: actionInput,
+        target: context.externalActionTarget!,
+        authorization,
+      });
+      expect(verifyExternalActionApprovalInputV1({
+        authorizationToken: authorization.token,
+        actionId: 'session.title.set',
+        target: { kind: 'session', sessionId: 'session-1' },
+        input: envelope.input,
+        publicKey: keyPair.publicKey,
+        signature: signature ?? '',
+      })).toBe(true);
+      return { ok: false, errorCode: 'expected_test_stop', error: 'expected_test_stop' };
+    });
+
+    await executeExternalAction({
+      actionId: 'session.title.set',
+      envelope,
+      principal,
+      currentMachineId: 'machine-implied',
+      currentServerId: 'local-profile-id',
+      executionAuthorization: authorization,
+      externalActionMachineRequestPrivateKey: keyPair.secretKey,
+      resolveTarget: async () => ({ kind: 'session', sessionId: 'session-1' }),
+      executor: { execute },
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      'session.title.set',
+      envelope.input,
+      expect.objectContaining({
+        actionRequestId: 'home-generated-request',
+        serverId: 'local-profile-id',
+        externalActionTarget: { kind: 'session', sessionId: 'session-1' },
+        externalActionExecutionAuthorization: authorization,
+      }),
+    );
+  });
+
+  it('rejects a protected Machine binding before Session reconciliation can select this daemon', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.message.send',
+      requestId: 'wrong-receiver', target: { kind: 'machine' as const, machineId: 'other-machine' } };
+    const envelope = sealExternalActionRequestV2({ binding, material,
+      input: { sessionId: 'session-1', message: 'private-input' }, randomBytes: (length) => new Uint8Array(length).fill(2) });
+    const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+      principal: { ...principal, credentialId: binding.credentialId }, currentMachineId: 'machine-1',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget: async () => { throw new Error('Wrong receiving Machine must reject before target resolution'); },
+      executor: { execute: async () => { throw new Error('Wrong receiving Machine cannot execute'); } },
+    });
+    expect(result).toEqual({
+      kind: 'invalid_request',
+      errorCode: 'invalid_encrypted_envelope',
+      requestId: 'wrong-receiver',
+    });
+  });
+
+  it('rejects a present authorization whose immutable envelope binding does not match', async () => {
+    const execute = vi.fn<ExternalActionExecutor['execute']>();
+    const resolveTarget = vi.fn<ResolveExternalActionTarget>();
+    const envelope = { v: 1 as const, requestId: 'request-1', input: {} };
+    await expect(executeExternalAction({
+      actionId: 'action.spec.get',
+      envelope,
+      principal,
+      currentMachineId: 'machine-1',
+      currentServerId: 'server-1',
+      externalActionMachineRequestPrivateKey: tweetnacl.sign.keyPair().secretKey,
+      executionAuthorization: {
+        v: 1,
+        token: 'opaque-home-authorization',
+        binding: {
+          serverIdentityId: 'server-1',
+          accountId: principal.accountId,
+          principalId: principal.principalId,
+          credentialId: principal.credentialId,
+          machineId: 'machine-1',
+          actionId: 'action.spec.get',
+          requestId: envelope.requestId,
+          requestEnvelopeDigest: 'A'.repeat(43),
+          target: { kind: 'machine', machineId: 'machine-1' },
+        },
+      },
+      resolveTarget,
+      executor: { execute },
+    })).resolves.toEqual({
+      kind: 'invalid_request',
+      errorCode: 'invalid_envelope',
+      requestId: 'request-1',
+    });
+    expect(resolveTarget).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('returns a correlated protected transport failure when V2 omits its target', async () => {
+    const resolveTarget = vi.fn<ResolveExternalActionTarget>();
+    const execute = vi.fn<ExternalActionExecutor['execute']>();
+
+    await expect(executeExternalAction({
+      actionId: 'session.message.send',
+      envelope: {
+        v: 2,
+        requestId: 'protected-missing-target',
+        payload: { t: 'encrypted', c: 'opaque' },
+      },
+      principal,
+      currentMachineId: 'machine-1',
+      resolveTarget,
+      executor: { execute },
+    })).resolves.toEqual({
+      kind: 'invalid_request',
+      errorCode: 'target_required',
+      requestId: 'protected-missing-target',
+    });
+    expect(resolveTarget).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('opens V2 before canonical target reconciliation and seals its complete rejection', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = {
+      serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001',
+      actionId: 'session.message.send', requestId: 'protected-reconciliation',
+      target: { kind: 'session' as const, sessionId: 'session-1' },
+    };
+    const request = sealExternalActionRequestV2({
+      binding, material, randomBytes: (length) => new Uint8Array(length).fill(2),
+      input: { sessionId: 'different-session', message: 'private-input-sentinel' },
+    });
+    const result = await executeExternalAction({
+      actionId: binding.actionId, envelope: request,
+      principal: { ...principal, credentialId: binding.credentialId },
+      currentMachineId: 'machine-1',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      // These are unreachable after the real reconciliation rejects conflicting targets.
+      resolveTarget: async () => { throw new Error('Target lookup must not run'); },
+      executor: { execute: async () => { throw new Error('Action must not execute'); } },
+    });
+    expect(result.kind).toBe('response');
+    if (result.kind !== 'response') throw new Error('Expected encrypted rejection');
+    expect(result.response.v).toBe(2);
+    expect(result.prepared.body).not.toContain('private-input-sentinel');
+    expect(openExternalActionResponseV2({ envelope: result.response, binding, request, material }))
+      .toMatchObject({ ok: false, errorCode: 'target_not_local' });
+  });
+
+  it('seals an executor exception after opening V2 instead of exposing a plaintext transport failure', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(7) };
+    const binding = {
+      serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001',
+      actionId: 'session.activity.get', requestId: 'protected-executor-failure',
+      target: { kind: 'machine' as const, machineId: 'machine-1' },
+    };
+    const request = sealExternalActionRequestV2({
+      binding,
+      material,
+      input: { sessionId: 'session-1' },
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
+
+    const result = await executeExternalAction({
+      actionId: binding.actionId,
+      envelope: request,
+      principal: { ...principal, credentialId: binding.credentialId },
+      currentMachineId: 'machine-1',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget: async () => binding.target,
+      executor: { execute: async () => { throw new Error('private executor failure'); } },
+    });
+
+    expect(result.kind).toBe('response');
+    if (result.kind !== 'response') throw new Error('Expected encrypted failure');
+    expect(result.response.v).toBe(2);
+    expect(result.prepared.body).not.toContain('private executor failure');
+    expect(openExternalActionResponseV2({ envelope: result.response, binding, request, material }))
+      .toEqual({ ok: false, errorCode: 'internal_error', error: 'internal_error' });
+  });
+
   it('keeps a client-placed public Action discoverable but refuses daemon relocation', async () => {
     const resolveTarget = vi.fn<ResolveExternalActionTarget>();
     const execute = vi.fn<ExternalActionExecutor['execute']>();
@@ -62,6 +438,52 @@ describe('executeExternalAction', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('projects the exact public Session admission result before returning it', async () => {
+    const base = {
+      actionId: 'session.message.send',
+      principal,
+      currentMachineId: 'machine-1',
+      resolveTarget: async () => ({ kind: 'machine' as const, machineId: 'machine-1' }),
+    };
+    const envelope = {
+      v: 1 as const,
+      target: { kind: 'machine' as const, machineId: 'machine-1' },
+      input: { sessionId: 'session-1', message: 'continue', localId: 'caller-local-id' },
+    };
+
+    await expect(executeExternalAction({
+      ...base,
+      envelope,
+      executor: { execute: async () => ({
+        ok: true,
+        result: { status: 'accepted', localId: 'caller-local-id' },
+      }) },
+    })).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        execution: { ok: true, result: { status: 'accepted', localId: 'caller-local-id' } },
+      },
+    });
+
+    await expect(executeExternalAction({
+      ...base,
+      envelope,
+      executor: { execute: async () => ({
+        ok: true,
+        result: { status: 'accepted', localId: 'caller-local-id', privateDiagnostic: true },
+      }) },
+    })).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        execution: {
+          ok: false,
+          errorCode: 'invalid_action_output',
+          error: 'invalid_action_output',
+        },
+      },
+    });
+  });
+
   it('returns the one prepared direct-HTTP response projection from the ingress owner', async () => {
     const result = await executeExternalAction({
       actionId: 'session.spawn_new',
@@ -70,7 +492,7 @@ describe('executeExternalAction', () => {
       currentMachineId: 'machine-1',
       resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
       executor: {
-        execute: async () => ({ ok: true, result: { sessionId: 'session-1' } }),
+        execute: async () => ({ ok: true, result: SESSION_SPAWN_PENDING_RESULT }),
       },
     });
 
@@ -81,7 +503,7 @@ describe('executeExternalAction', () => {
           v: 1,
           actionId: 'session.spawn_new',
           requestId: 'request-prepared',
-          execution: { ok: true, result: { sessionId: 'session-1' } },
+          execution: { ok: true, result: SESSION_SPAWN_PENDING_RESULT },
         },
       },
     });
@@ -134,14 +556,16 @@ describe('executeExternalAction', () => {
       .mockResolvedValueOnce({ ok: true, result: `${exactLimitResult}a` })
       .mockResolvedValueOnce({ ok: true, result: { carrier: 'usable' } });
     const request = {
-      actionId: 'session.spawn_new',
-      envelope: { v: 1, requestId: 'request-limit', input: {} },
+      actionId: 'session.status.get',
+      envelope: {
+        v: 1,
+        requestId: 'request-limit',
+        target: { kind: 'session' as const, sessionId: 'session-1' },
+        input: { sessionId: 'session-1' },
+      },
       principal,
       currentMachineId: 'machine-1',
-      resolveTarget: vi.fn<ResolveExternalActionTarget>(async () => ({
-        kind: 'machine',
-        machineId: 'machine-1',
-      })),
+      resolveTarget: vi.fn<ResolveExternalActionTarget>(async ({ target }) => target ?? null),
       executor: { execute },
     } as const;
 
@@ -150,13 +574,14 @@ describe('executeExternalAction', () => {
     if (exact.kind !== 'response') throw new Error('expected admitted response');
     expect(measureExternalActionResponseEnvelopeUtf8BytesV1(exact.response))
       .toBe(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES);
+    if (exact.response.v !== 1) throw new Error('expected an unsealed V1 response envelope');
     expect(exact.response.execution).toEqual({ ok: true, result: exactLimitResult });
 
     await expect(executeExternalAction(request)).resolves.toMatchObject({
       kind: 'response',
       response: {
         v: 1,
-        actionId: 'session.spawn_new',
+        actionId: 'session.status.get',
         requestId: 'request-limit',
         execution: {
           ok: false,
@@ -174,7 +599,7 @@ describe('executeExternalAction', () => {
       kind: 'response',
       response: {
         v: 1,
-        actionId: 'session.spawn_new',
+        actionId: 'session.status.get',
         requestId: 'request-limit',
         execution: { ok: true, result: { carrier: 'usable' } },
       },
@@ -186,7 +611,7 @@ describe('executeExternalAction', () => {
     const signal = new AbortController().signal;
     const execute = vi.fn(async () => ({
       ok: true as const,
-      result: { sessionId: 'session-1' },
+      result: SESSION_SPAWN_PENDING_RESULT,
     }));
     const resolveTarget = vi.fn(async () => ({ kind: 'machine' as const, machineId: 'machine-1' }));
 
@@ -213,7 +638,7 @@ describe('executeExternalAction', () => {
         v: 1,
         actionId: 'session.spawn_new',
         requestId: 'request-1',
-        execution: { ok: true, result: { sessionId: 'session-1' } },
+        execution: { ok: true, result: SESSION_SPAWN_PENDING_RESULT },
       },
     });
 
@@ -414,6 +839,7 @@ describe('executeExternalAction', () => {
       expect.objectContaining({
         externalActionTarget: { kind: 'session', sessionId: 'session-1' },
         defaultSessionId: 'session-1',
+        defaultSessionMachineId: 'machine-1',
       }),
     );
   });
@@ -493,7 +919,7 @@ describe('executeExternalAction', () => {
   });
 
   it('stamps the admitted machine only for a detached execution run', async () => {
-    const execute = vi.fn(async () => ({ ok: true as const, result: { items: [] } }));
+    const execute = vi.fn(async () => ({ ok: true as const, result: { runs: [] } }));
     const resolveTarget = vi.fn<ResolveExternalActionTarget>(async ({ target }) => target ?? null);
 
     await expect(executeExternalAction({
@@ -558,7 +984,23 @@ describe('executeExternalAction', () => {
   });
 
   it('does not mistake a Session handoff destination for an ingress target selector', async () => {
-    const execute = vi.fn(async () => ({ ok: true as const, result: { handoffId: 'handoff-1' } }));
+    const execute = vi.fn(async () => ({
+      ok: true as const,
+      result: {
+        handoffId: 'handoff-1',
+        status: {
+          handoffId: 'handoff-1',
+          status: 'completed' as const,
+          phase: 'finalizing' as const,
+          recoveryActions: [],
+        },
+        workspace: {
+          kind: 'relationship' as const,
+          relationshipId: 'relationship-1',
+          created: true,
+        },
+      },
+    }));
     const resolveTarget = vi.fn<ResolveExternalActionTarget>(async ({ target }) => target ?? null);
 
     await expect(executeExternalAction({

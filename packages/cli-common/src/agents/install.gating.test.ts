@@ -5,7 +5,22 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from '
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { installAgentCli, planAgentCliInstallForRuntime, resolvePlatformFromNodePlatform } from './install.js';
+import {
+  installAgentCli,
+  installAgentCliForRuntime,
+  planAgentCliInstallForRuntime,
+  resolvePlatformFromNodePlatform,
+} from './install.js';
+
+// Existing install fixtures model process results; adapt that OS boundary to async execution.
+function asyncInstallCommand(spawn: typeof spawnSyncProcess) {
+  return async (command: string, args: readonly string[], options: import('../process/execFileWithDeadline.js').ExecFileWithDeadlineOptions) => {
+    const result = spawn(command, [...args], { ...options, encoding: 'utf8' });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw Object.assign(new Error(String(result.stderr)), result);
+    return { stdout: result.stdout, stderr: result.stderr };
+  };
+}
 
 function expectedOhMyPiReleaseAssetName(): string | null {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'omp-darwin-arm64';
@@ -134,7 +149,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
     expect(res.plan?.installMode).toBe('vendor_recipe');
   });
 
-  it('uses injected spawnSync for managed_package installs (no real processes in tests)', async () => {
+  it('uses the injected process boundary for managed_package installs (no real processes in tests)', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-gating-home-'));
     const logDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-gating-log-'));
     try {
@@ -174,6 +189,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
           // Intentionally inject a spawnSync implementation so tests never spawn real processes.
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -206,7 +222,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         options?: import('node:child_process').SpawnSyncOptions,
       ) => import('node:child_process').SpawnSyncReturns<Buffer>;
       const spawnSyncMock = vi.fn<SpawnSyncMockFn>((_command, args, options) => {
-        if (args?.includes('opencode-ai') && typeof options?.cwd === 'string') {
+        if (args?.some(arg => arg.includes('opencode-ai')) && typeof options?.cwd === 'string') {
           const workspaceDir = options.cwd;
           const opencodePackageDir = join(workspaceDir, 'node_modules', 'opencode-ai');
           const opencodeBinDir = join(opencodePackageDir, 'bin');
@@ -264,6 +280,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedPnpmCommand: async () => 'C:\\happier\\managed\\pnpm.cmd',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -278,8 +295,9 @@ describe('installAgentCli vendor_recipe execution gating', () => {
       });
       const firstCall = spawnSyncMock.mock.calls[0];
       expect(firstCall).toBeDefined();
-      expect(firstCall?.[0]).toBe('C:\\happier\\managed\\pnpm.cmd');
-      expect(firstCall?.[1]).toContain('opencode-ai');
+      expect(firstCall?.[0]).toBe('C:\\WINDOWS\\system32\\cmd.exe');
+      expect(firstCall?.[1]?.join(' ')).toContain('pnpm.cmd');
+      expect(firstCall?.[1]?.join(' ')).toContain('opencode-ai');
       expect(firstCall?.[1]).not.toEqual(['/c', 'npm install -g opencode-ai']);
       expect(String(firstCall?.[2]?.env?.PATH ?? '')).toContain(runtimeDir);
       const systemNpmCalls = spawnSyncMock.mock.calls.filter(([command]) => /(?:^|[\\/])npm(?:\.(?:cmd|exe))?$/i.test(command));
@@ -317,7 +335,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         options?: import('node:child_process').SpawnSyncOptions,
       ) => import('node:child_process').SpawnSyncReturns<Buffer>;
       const spawnSyncMock = vi.fn<SpawnSyncMockFn>((_command, args, options) => {
-        if (args?.includes('opencode-ai') && typeof options?.cwd === 'string') {
+        if (args?.some(arg => arg.includes('opencode-ai')) && typeof options?.cwd === 'string') {
           const workspaceDir = options.cwd;
           const opencodePackageDir = join(workspaceDir, 'node_modules', 'opencode-ai');
           const opencodeBinDir = join(opencodePackageDir, 'bin');
@@ -373,6 +391,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedPnpmCommand: async () => '/happier/managed/pnpm',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -442,6 +461,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -536,6 +556,107 @@ describe('installAgentCli vendor_recipe execution gating', () => {
       expect(res.alreadyInstalled).toBe(true);
     } finally {
       await rm(homeDir, { recursive: true, force: true });
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat a system install as already installed under the managed_only source policy', async () => {
+    if (process.platform === 'win32') return;
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-managed-only-home-'));
+    const binDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-managed-only-bin-'));
+    try {
+      const platform = resolvePlatformFromNodePlatform(process.platform);
+      expect(platform).not.toBeNull();
+      if (!platform) return;
+
+      const ompPath = join(binDir, 'omp');
+      await writeFile(ompPath, '#!/bin/sh\nexit 0\n', 'utf8');
+      await chmod(ompPath, 0o755);
+
+      const res = await installAgentCli({
+        agentId: 'ohMyPi',
+        platform,
+        dryRun: true,
+        sourcePolicy: 'managed_only',
+        env: {
+          ...process.env,
+          HAPPIER_HOME_DIR: homeDir,
+          PATH: binDir,
+          HAPPIER_OHMYPI_PATH: ompPath,
+        },
+      });
+
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.alreadyInstalled).toBe(false);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses vendor-recipe execution under the managed_only source policy even when explicitly allowed', async () => {
+    const logDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-managed-only-vendor-log-'));
+    try {
+      const platform = resolvePlatformFromNodePlatform(process.platform);
+      expect(platform).not.toBeNull();
+      if (!platform) return;
+
+      const res = await installAgentCli({
+        agentId: 'claude',
+        platform,
+        logDir,
+        env: { ...process.env, PATH: '' },
+        skipIfInstalled: false,
+        sourcePolicy: 'managed_only',
+        allowVendorRecipeExecution: true,
+      });
+
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.errorCode).toBe('vendor-recipe-disallowed');
+      expect(res.plan?.installMode).toBe('vendor_recipe');
+    } finally {
+      await rm(logDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat a vendor-recipe system install as already installed under the managed_only source policy', async () => {
+    if (process.platform === 'win32') return;
+    const binDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-install-managed-only-vendor-bin-'));
+    try {
+      const platform = resolvePlatformFromNodePlatform(process.platform);
+      expect(platform).not.toBeNull();
+      if (!platform) return;
+
+      const claudePath = join(binDir, 'claude');
+      await writeFile(claudePath, '#!/bin/sh\nexit 0\n', 'utf8');
+      await chmod(claudePath, 0o755);
+
+      const res = await installAgentCliForRuntime({
+        runtimeSpec: {
+          id: 'claude',
+          title: 'Claude Code',
+          binaryName: 'claude',
+          sourcePreferenceDefault: 'system-first',
+          managedInstall: null,
+          manualInstallKind: 'vendor_recipe',
+          manualInstallRecipes: {
+            darwin: [{ cmd: 'sh', args: ['-c', 'exit 0'] }],
+            linux: [{ cmd: 'sh', args: ['-c', 'exit 0'] }],
+            win32: [{ cmd: 'sh', args: ['-c', 'exit 0'] }],
+          },
+          acceptsJavaScriptFileOverride: false,
+        },
+        platform,
+        sourcePolicy: 'managed_only',
+        env: { ...process.env, PATH: binDir },
+      });
+
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.errorCode).toBe('vendor-recipe-disallowed');
+    } finally {
       await rm(binDir, { recursive: true, force: true });
     }
   });
@@ -901,6 +1022,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => '/nonexistent/node',
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -959,6 +1081,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
           ensureManagedPnpmCommand: async () => 'pnpm-does-not-exist',
           ensureManagedJavaScriptRuntimeCommand: async () => runtimeCommand,
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 
@@ -1020,6 +1143,7 @@ describe('installAgentCli vendor_recipe execution gating', () => {
         allowVendorRecipeExecution: true,
         deps: {
           spawnSync: spawnSyncMock as unknown as SpawnSyncFn,
+          execFileWithDeadline: asyncInstallCommand(spawnSyncMock as unknown as SpawnSyncFn),
         },
       });
 

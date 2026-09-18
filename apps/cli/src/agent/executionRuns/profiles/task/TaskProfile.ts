@@ -1,15 +1,16 @@
 import {
-  compilePluginJsonSchema,
   ExecutionRunTaskIntentInputV1Schema,
-  isValidPluginJsonSchemaValue,
   normalizePluginJsonSchema,
-  StrictJsonValueSchema,
 } from '@happier-dev/protocol';
 
 import type {
   ExecutionRunIntentProfile,
   ExecutionRunProfileBoundedCompleteResult,
 } from '../ExecutionRunIntentProfile';
+import {
+  buildExecutionRunResultContractPrompt,
+  decodeExecutionRunProfileResult,
+} from '../resultContract';
 
 function readTaskIntentInput(value: unknown) {
   return ExecutionRunTaskIntentInputV1Schema.parse(value ?? {});
@@ -22,10 +23,7 @@ function buildTaskPrompt(params: Parameters<ExecutionRunIntentProfile['buildProm
     blocks.push(`Task input (strict JSON):\n${JSON.stringify(input.input)}`);
   }
   if (input.resultSchema) {
-    blocks.push([
-      'Return only one strict JSON value that satisfies this required result schema:',
-      JSON.stringify(input.resultSchema),
-    ].join('\n'));
+    blocks.push(buildExecutionRunResultContractPrompt({ kind: 'json', schema: input.resultSchema })!);
   }
   return blocks.filter(Boolean).join('\n\n');
 }
@@ -62,28 +60,13 @@ export const TaskProfile: ExecutionRunIntentProfile = {
       };
     }
 
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(rawText.trim());
-    } catch {
-      return invalidStructuredTaskOutput();
-    }
-    const strictJson = StrictJsonValueSchema.safeParse(parsedJson);
-    if (!strictJson.success) return invalidStructuredTaskOutput();
-
-    try {
-      const validates = compilePluginJsonSchema(input.resultSchema);
-      if (!isValidPluginJsonSchemaValue(validates, strictJson.data)) {
-        return invalidStructuredTaskOutput();
-      }
-    } catch {
-      return invalidStructuredTaskOutput();
-    }
+    const decoded = decodeExecutionRunProfileResult(rawText, { kind: 'json', schema: input.resultSchema });
+    if (!decoded.ok) return invalidStructuredTaskOutput();
 
     return {
       status: 'succeeded',
       summary: 'Task completed.',
-      toolResultOutput: strictJson.data,
+      toolResultOutput: decoded.value,
     };
   },
 };

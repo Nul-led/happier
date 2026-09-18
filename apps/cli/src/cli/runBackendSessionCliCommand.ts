@@ -1,5 +1,6 @@
 import type { AgentId } from '@happier-dev/agents';
 import { randomUUID } from 'node:crypto';
+import { consumeSessionInitialAccessFile } from '@/daemon/spawn/sessionInitialAccessFile';
 import { errorFrame, warn } from '@happier-dev/cli-common/output';
 import {
   isLaunchProfileV2,
@@ -221,6 +222,9 @@ export async function runBackendSessionCliCommand<Extra extends Record<string, u
       yoloProviderArgs: params.yoloProviderArgs,
       versionFlags: params.versionFlags,
     });
+    const initialAccess = parsed.initialAccessFilePath === undefined
+      ? undefined
+      : await consumeSessionInitialAccessFile(parsed.initialAccessFilePath);
     if (cliArgumentAgentId && parsed.helpRequested) {
       console.log(`${buildRootHelpText()}
 
@@ -430,6 +434,9 @@ Provider CLI Options:
           nativeHomeSourceEnvironmentKey?: string;
         }>>)
       | null = null;
+    if (parsed.secretReferenceOverlay && !selectedProfile) {
+      throw new Error('--secret-ref requires a selected launch Profile');
+    }
     if (
       startedBy !== 'daemon'
       && runtimeAuthorityAgentId
@@ -472,6 +479,12 @@ Provider CLI Options:
             : {}),
           ...(hasForegroundProviderSelection && modelSelection
             ? { selection: modelSelection }
+            : {}),
+          // Captured in this closure, so an admission retry re-sends the SAME
+          // admitted references and revisions instead of losing the caller's
+          // one-shot selection or falling back to the Profile binding.
+          ...(selectedProfile && parsed.secretReferenceOverlay
+            ? { secretReferenceOverlay: parsed.secretReferenceOverlay }
             : {}),
           previousBinding:
             params.context.directSessionLaunch?.providerBinding ?? null,
@@ -902,7 +915,11 @@ Provider CLI Options:
       ...(parsed.sessionCreationCorrespondence
         ? { sessionCreationCorrespondence: parsed.sessionCreationCorrespondence }
         : {}),
+      ...(parsed.placementOrigin ? { placementOrigin: parsed.placementOrigin } : {}),
       ...(parsed.initialTitle ? { initialTitle: parsed.initialTitle } : {}),
+      ...(initialAccess !== undefined ? { initialAccess } : {}),
+      ...(parsed.primaryTeamId !== undefined ? { primaryTeamId: parsed.primaryTeamId } : {}),
+      ...(parsed.teamCredentialBindings !== undefined ? { teamCredentialBindings: parsed.teamCredentialBindings } : {}),
       backendTarget: modelSelectionBackendTargetInput,
       ...(modelSelection ? { modelSelection } : {}),
       environmentVariables:

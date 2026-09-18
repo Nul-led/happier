@@ -67,7 +67,7 @@ describe('session.spawn_new Action RPC deferred approval transport', () => {
         expect(execute).toHaveBeenCalledWith(
             'session.spawn_new',
             sessionSpawnInput,
-            { surface: 'rpc' },
+            { surface: 'rpc', authority: 'account_automation' },
         );
     });
 

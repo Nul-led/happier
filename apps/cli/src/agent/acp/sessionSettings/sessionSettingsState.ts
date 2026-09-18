@@ -244,3 +244,25 @@ export function readSessionConfigOptionsFromSessionResponse(
 
   return normalizeSessionConfigOptions(configOptionsRaw);
 }
+
+export function readSessionModelStateFromConfigOptions(
+  sessionResponse: unknown,
+  modelConfigOptionId: string,
+): SessionModelState | null {
+  const normalizedConfigId = modelConfigOptionId.trim();
+  if (!normalizedConfigId) return null;
+  const configOptions = readSessionConfigOptionsFromSessionResponse(sessionResponse);
+  const modelOption = configOptions?.find((option) => option.id === normalizedConfigId) ?? null;
+  if (!modelOption?.options || modelOption.options.length === 0) return null;
+
+  const availableModels = modelOption.options.map((option) => ({
+    id: option.value,
+    name: option.name,
+    ...(option.description ? { description: option.description } : {}),
+  }));
+  if (!availableModels.some((model) => model.id === modelOption.currentValue)) return null;
+  return {
+    currentModelId: modelOption.currentValue,
+    availableModels,
+  };
+}

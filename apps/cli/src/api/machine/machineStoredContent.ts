@@ -26,7 +26,7 @@ export type MachineContentCodec =
       decodeRpc: (value: unknown) => unknown;
     }>;
 
-export function createMachineContentCodec(machine: Readonly<
+export type MachineContentEncryptionContext = Readonly<
   | {
       encryptionMode: 'plain';
       encryptionKey?: never;
@@ -37,7 +37,9 @@ export function createMachineContentCodec(machine: Readonly<
       encryptionKey: Uint8Array;
       encryptionVariant: 'legacy' | 'dataKey';
     }
->): MachineContentCodec {
+>;
+
+export function createMachineContentCodec(machine: MachineContentEncryptionContext): MachineContentCodec {
   if (machine.encryptionMode === 'plain') {
     return {
       mode: 'plain',

@@ -405,7 +405,10 @@ async function cmdStartDaemon(args: string[]): Promise<void> {
 export async function runRelaySubcommand(
   subcommand: string,
   args: string[],
-  options: Readonly<{ selectionMutationMode?: ServerSelectionMutationMode }> = {},
+  options: Readonly<{
+    selectionMutationMode?: ServerSelectionMutationMode;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<boolean> {
   switch (subcommand) {
     case 'inspect-target':

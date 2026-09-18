@@ -2,7 +2,7 @@ import type { ManagedConnectionSupervisor } from '@happier-dev/connection-superv
 import { fetchChanges } from '../changes';
 import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
 import { handleRequestAuthenticationFailure } from '@/api/connection/requestSupervision/reportRequestOutcomeToSupervisor';
-import { readKnownPendingQueueState, type KnownPendingQueueState } from './pendingQueueState';
+import { readKnownPendingQueueState, readPendingExecutionRunIds, type KnownPendingQueueState } from './pendingQueueState';
 import type { SessionSnapshotRefreshReason } from './sessionSnapshotRefreshReason';
 import { readAccountSettingsVersionFromHint } from '@/settings/accountSettings/accountSettingsVersion';
 import {
@@ -53,10 +53,12 @@ export async function runSessionChangesSyncOnConnect(params: {
     catchUpSessionMessages: (request: SessionCatchUpRequest) => Promise<void>;
     syncSessionSnapshotFromServer: (opts: { reason: SessionSnapshotRefreshReason }) => Promise<boolean>;
     applyPendingQueueState?: ((state: KnownPendingQueueState) => void) | null;
+    reconcilePendingExecutionRunTarget?: ((runId: string) => Promise<void>) | null;
     refreshAccountSettingsForMinimumVersion?: (settingsVersion: number | null) => Promise<void>;
     connectionSupervisor?: ManagedConnectionSupervisor | null;
     onDebug: (message: string, data?: unknown) => void;
 }): Promise<void> {
+    const requestSupervisionScope = params.connectionSupervisor?.captureProbeReportScope?.();
     const accountId = await params.getAccountId();
     if (!accountId) return;
 
@@ -90,6 +92,7 @@ export async function runSessionChangesSyncOnConnect(params: {
             supervisor: params.connectionSupervisor,
             error: result.error,
             hadAuth: true,
+            scope: requestSupervisionScope,
         })) {
             return;
         }
@@ -149,10 +152,16 @@ export async function runSessionChangesSyncOnConnect(params: {
     let hasRelevantSessionChange = false;
     let shouldCatchUpSessionMessages = false;
     let shouldSyncSnapshotFallback = false;
+    const pendingExecutionRunIds = new Set<string>();
     for (const change of changes) {
         const isRelevant = (change.kind === 'session' || change.kind === 'share') && change.entityId === params.sessionId;
         if (!isRelevant) continue;
         hasRelevantSessionChange = true;
+        if (change.kind === 'session') {
+            for (const runId of readPendingExecutionRunIds(change.hint) ?? []) {
+                pendingExecutionRunIds.add(runId);
+            }
+        }
         if (change.kind === 'share') {
             shouldSyncSnapshotFallback = params.reason !== 'connect';
             continue;
@@ -171,6 +180,9 @@ export async function runSessionChangesSyncOnConnect(params: {
         }
         shouldSyncSnapshotFallback = params.reason !== 'connect';
     }
+    await Promise.all([...pendingExecutionRunIds].map(async (runId) => {
+        await params.reconcilePendingExecutionRunTarget?.(runId);
+    }));
     if (changes.length >= CHANGES_PAGE_LIMIT) {
         // Slow-path: too many coalesced changes. Snapshot sync gets us back to a known-good state;
         // session transcript catch-up is only needed after reconnect.

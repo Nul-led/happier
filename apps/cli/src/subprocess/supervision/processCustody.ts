@@ -13,9 +13,10 @@ import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliR
 /**
  * The one native-custody owner behind SVC09's exact process-tree custody.
  *
- * This module is the single consumer of the `happier-process-custody` runtime
- * support binary (`tools/unpacked/happier-process-custody`, staged by the
- * daemon-support payload builder):
+ * This module is the single staged-path owner for the
+ * `happier-process-custody` runtime support binary
+ * (`tools/unpacked/happier-process-custody`, staged by the daemon-support
+ * payload builder):
  * - Windows: generation-unique named Job Objects. The helper creates the job,
  *   starts the target suspended, assigns it before its first instruction, and
  *   resumes it; this module owns the tagged job identity, the post-assignment
@@ -31,6 +32,10 @@ import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliR
  * dedicated process-group owner — but Linux does consume the same helper for
  * the peer-identity question. Every unsupported question here still answers
  * "unavailable" without touching the filesystem.
+ *
+ * The native workspace-sync filesystem boundary reuses the same packaged
+ * helper through `resolveProcessCustodySupportExecutable`; workspace policy,
+ * authority, and result projection remain in the workspace-sync owner.
  */
 
 export const PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME = 'happier-process-custody';
@@ -53,6 +58,18 @@ function resolveStagedCustodyBinaryPath(platform: NodeJS.Platform, executableNam
     const sourceCheckoutPath = resolveCliRuntimeAssetPath('apps', 'cli', 'tools', 'unpacked', executableName);
     if (existsSync(sourceCheckoutPath)) return sourceCheckoutPath;
     return null;
+}
+
+/**
+ * Resolve the staged native support helper for a purpose-specific command.
+ * Command owners keep their own policy and parsing; this remains the single
+ * packaged-path authority for the shared helper binary.
+ */
+export function resolveProcessCustodySupportExecutable(
+    platform: NodeJS.Platform = process.platform,
+): string | null {
+    if (platform !== 'linux' && platform !== 'darwin' && platform !== 'win32') return null;
+    return resolveStagedCustodyBinaryPath(platform, stagedCustodyExecutableName(platform));
 }
 
 export type ProcessCustodySpawnSpec = Readonly<{
@@ -381,8 +398,7 @@ export const PROCESS_CUSTODY_PEER_IDENTITY_PLATFORMS = ['linux', 'darwin', 'win3
 export function resolveProcessCustodyPeerIdentityExecutable(
     platform: NodeJS.Platform = process.platform,
 ): string | null {
-    if (!PROCESS_CUSTODY_PEER_IDENTITY_PLATFORMS.some((supported) => supported === platform)) return null;
-    return resolveStagedCustodyBinaryPath(platform, stagedCustodyExecutableName(platform));
+    return resolveProcessCustodySupportExecutable(platform);
 }
 
 /**

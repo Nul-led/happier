@@ -2,6 +2,7 @@ import { buildBackendTargetKeyV2, createActionExecutor, readBackendTargetRefV2 }
 import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import type {
+  ActionApprovalRequestCreatedResult,
   ActionsService,
   PluginActionInputById,
   PluginActionResultById,
@@ -52,7 +53,7 @@ function createExecutionRunAction<K extends ExecutionRunActionId>(
   input: PluginActionInputById[K],
 ): Readonly<{
   actionId: K;
-  invoke(service: ActionsService): Promise<PluginActionResultById[K]>;
+  invoke(service: ActionsService): Promise<PluginActionResultById[K] | ActionApprovalRequestCreatedResult>;
 }> {
   return {
     actionId,
@@ -109,6 +110,16 @@ function createExecutionRunActionsService() {
       generation: 'generation-1',
       surface: 'agent',
       session: { id: 'session-1' },
+      readActiveTurnAdmissionWitness: () => ({
+        inputId: 'execution-run-test-input',
+        turnId: 'execution-run-test-turn',
+        userMessageSeq: 1,
+        userMessageSeqs: [1],
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1' as const,
+          admittedPermissionCeiling: 'default' as const,
+        },
+      }),
       signal: retirement.signal,
       isGenerationCurrent: () => !retirement.signal.aborted,
     },
@@ -119,6 +130,66 @@ function createExecutionRunActionsService() {
 }
 
 describe('createCliActionDeps execution-run plugin bindings', () => {
+  it('carries exact Workflow invocation services only through the local detached start', async () => {
+    const permissionStore = {
+      publishRequest: vi.fn(),
+      publishRequestAndWait: vi.fn(async () => undefined),
+      registerResponseTargetHandler: vi.fn(() => () => undefined),
+    };
+    const workflowObservationSink = { commit: vi.fn(async () => undefined) };
+    const invoke = vi.fn(async (method: string) => {
+      if (method === RPC_METHODS.CAPABILITIES_DETECT) return {
+        protocolVersion: 2,
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true, startAndWait: true, exactInputResults: true, runScopedAgentBindings: true },
+            },
+          },
+        },
+      };
+      if (method === SESSION_RPC_METHODS.EXECUTION_RUN_START) return {
+        runId: 'run-1', callId: 'call-1', sidechainId: 'call-1',
+      };
+      throw new Error(`unexpected:${method}`);
+    });
+    const credentials = { token: 'token', encryption: null };
+    const deps = createCliActionDeps({
+      token: credentials.token, credentials, sessionId: 'cli-global', mode: 'plain', ctx: null,
+      machineActionDirectTargetTransport: { machineId: 'machine-1', invoke },
+    });
+    const executor = createActionExecutor({ ...deps, isActionEnabled: () => true, isActionApprovalRequired: () => false });
+
+    await expect(executor.execute('execution.run.start', {
+      sessionId: null,
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Write the file.',
+      permissionMode: 'default',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      executionRunTargetMachineId: 'machine-1',
+      executionRunPermissionRequestStore: permissionStore,
+      executionRunWorkflowObservationSink: workflowObservationSink,
+    })).resolves.toEqual(expect.objectContaining({ ok: true }));
+
+    expect(invoke).toHaveBeenCalledWith(
+      SESSION_RPC_METHODS.EXECUTION_RUN_START,
+      expect.any(Object),
+      expect.objectContaining({
+        executionRunPermissionRequestStore: permissionStore,
+        executionRunWorkflowObservationSink: workflowObservationSink,
+      }),
+    );
+    expect(callMachineRpc).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     callMachineRpc.mockReset();
     callSessionRpc.mockReset();
@@ -200,6 +271,13 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
         request: { runId: 'run-1', streamId: 'stream-1' },
       },
     ]);
+    expect(callSessionRpc.mock.calls.map(([request]) => request.timeoutMs)).toEqual([
+      null,
+      null,
+      null,
+      undefined,
+      null,
+    ]);
   });
 
   it('routes SCM diff-summary through the supplied canonical Action boundary without a direct run transport', async () => {
@@ -235,7 +313,22 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
             wait: {
               ok: true as const,
               status: 'succeeded' as const,
-              result: { run: { runId: 'run-1', status: 'succeeded' as const } },
+              result: {
+                run: {
+                  runId: 'run-1',
+                  callId: 'call-1',
+                  sidechainId: 'sidechain-1',
+                  intent: 'scm_diff_summary' as const,
+                  backendTarget: { kind: 'builtInAgent' as const, agentId: 'codex' },
+                  permissionMode: 'read_only',
+                  retentionPolicy: 'ephemeral' as const,
+                  runClass: 'bounded' as const,
+                  ioMode: 'request_response' as const,
+                  status: 'succeeded' as const,
+                  startedAtMs: 1,
+                  finishedAtMs: 2,
+                },
+              },
             },
           },
         };
@@ -304,7 +397,6 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
   const executionRunSuccessCases = [
     createExecutionRunSuccessCase('execution.run.list', { backendTarget: executionRunBackendTarget }, { runs: [] }, { runs: [] }),
     createExecutionRunSuccessCase('execution.run.get', { runId: 'run-1' }, { run: sessionRun }, { run: sessionRun }),
-    createExecutionRunSuccessCase('execution.run.send', { runId: 'run-1', message: 'Continue' }, { ok: true }, { ok: true }),
     createExecutionRunSuccessCase('execution.run.stop', { runId: 'run-1' }, { ok: true }, { ok: true }),
     createExecutionRunSuccessCase(
       'execution.run.action',
@@ -328,7 +420,6 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
   const executionRunFailureCases = [
     createExecutionRunAction('execution.run.list', { backendTarget: executionRunBackendTarget }),
     createExecutionRunAction('execution.run.get', { runId: 'run-1' }),
-    createExecutionRunAction('execution.run.send', { runId: 'run-1', message: 'Continue' }),
     createExecutionRunAction('execution.run.stop', { runId: 'run-1' }),
     createExecutionRunAction('execution.run.action', { runId: 'run-1', actionId: 'task.commit', input: {} }),
   ];
@@ -345,6 +436,219 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       code: 'execution_run_not_allowed',
       message: 'Execution runs disabled',
     });
+  });
+
+  it('routes detached execution.run.send through V2 preflight to the exact Session-origin machine', async () => {
+    const { service } = createExecutionRunActionsService();
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc
+      .mockResolvedValueOnce({
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true },
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    await expect(service.execute('execution.run.send', {
+      sessionId: null,
+      runId: 'run-1',
+      message: 'Continue',
+    })).resolves.toEqual({ ok: true });
+
+    expect(callMachineRpc.mock.calls.map(([request]) => ({
+      machineId: request.machineId,
+      method: request.method,
+      request: request.request,
+    }))).toEqual([
+      {
+        machineId: 'machine-1',
+        method: RPC_METHODS.CAPABILITIES_DETECT,
+        request: { requests: [{ id: 'tool.executionRuns' }] },
+      },
+      {
+        machineId: 'machine-1',
+        method: SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
+        request: {
+          runId: 'run-1',
+          message: 'Continue',
+          delivery: 'steer_if_supported',
+        },
+      },
+    ]);
+    expect(callMachineRpc.mock.calls[1]?.[0]).toMatchObject({ timeoutMs: null });
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps detached stream cancellation under execution-run lifecycle ownership', async () => {
+    const { service } = createExecutionRunActionsService();
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc
+      .mockResolvedValueOnce({
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true },
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    await expect(service.execute('execution.run.stream.cancel', {
+      sessionId: null,
+      runId: 'run-1',
+      streamId: 'stream-1',
+    })).resolves.toEqual({ ok: true });
+
+    expect(callMachineRpc.mock.calls[1]?.[0]).toMatchObject({
+      machineId: 'machine-1',
+      method: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
+      request: { runId: 'run-1', streamId: 'stream-1' },
+      timeoutMs: null,
+    });
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps detached stop under execution-run lifecycle ownership', async () => {
+    const { service } = createExecutionRunActionsService();
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc
+      .mockResolvedValueOnce({
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true },
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    await expect(service.execute('execution.run.stop', {
+      sessionId: null,
+      runId: 'run-1',
+    })).resolves.toEqual({ ok: true });
+
+    expect(callMachineRpc.mock.calls[1]?.[0]).toMatchObject({
+      machineId: 'machine-1',
+      method: SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
+      request: { runId: 'run-1' },
+      timeoutMs: null,
+    });
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('projects a detached execution.run.send failure returned by the exact machine', async () => {
+    const { service } = createExecutionRunActionsService();
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc
+      .mockResolvedValueOnce({
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true },
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'execution_run_not_allowed',
+        error: 'Execution runs disabled',
+      });
+
+    await expect(service.execute('execution.run.send', {
+      sessionId: null,
+      runId: 'run-1',
+      message: 'Continue',
+    })).rejects.toMatchObject({
+      code: 'execution_run_not_allowed',
+      message: 'Execution runs disabled',
+    });
+
+    expect(callMachineRpc.mock.calls.map(([request]) => request.method)).toEqual([
+      RPC_METHODS.CAPABILITIES_DETECT,
+      SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
+    ]);
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['notSent', 'execution_run_target_unavailable'],
+    ['outcomeUnknown', 'execution_run_send_outcome_unknown'],
+  ] as const)('classifies a detached send transport failure with %s disposition', async (disposition, errorCode) => {
+    const sendError = new Error(`send ${disposition}`);
+    const { service } = createExecutionRunActionsService();
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc
+      .mockResolvedValueOnce({
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: { detachedScope: true },
+            },
+          },
+        },
+      })
+      .mockRejectedValueOnce(sendError);
+    readMachineRpcRequestDisposition.mockImplementation((error) => (
+      error === sendError ? disposition : null
+    ));
+
+    await expect(service.execute('execution.run.send', {
+      sessionId: null,
+      runId: 'run-1',
+      message: 'Continue',
+    })).rejects.toMatchObject({ code: errorCode });
   });
 
   it('forwards plugin cancellation to the pending execution-run dependency and rejects late settlement', async () => {
@@ -413,6 +717,16 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
         generation: 'generation-1',
         surface: 'agent',
         session: { id: 'session-1' },
+        readActiveTurnAdmissionWitness: () => ({
+          inputId: 'execution-run-test-input',
+          turnId: 'execution-run-test-turn',
+          userMessageSeq: 1,
+          userMessageSeqs: [1],
+          causalPermissionAuthority: {
+            kind: 'admittedSessionInputV1' as const,
+            admittedPermissionCeiling: 'default' as const,
+          },
+        }),
         signal: new AbortController().signal,
         isGenerationCurrent: () => true,
       },
@@ -428,6 +742,185 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       runId: 'run-1',
     })).rejects.toMatchObject({ code: 'not_authenticated' });
     expect(resolveSessionTransportContext).not.toHaveBeenCalled();
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('preflights an attached immediate secret overlay against the exact Session machine before start dispatch', async () => {
+    const credentials = {
+      token: 'token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession: { id: 'session-1', active: true, machineId: 'machine-1' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc.mockResolvedValueOnce({
+      protocolVersion: 2,
+      results: {
+        'tool.executionRuns': {
+          ok: true,
+          data: {
+            protocolVersion: 2,
+            features: {
+              detachedScope: true,
+              startAndWait: true,
+              secretReferenceOverlay: false,
+            },
+          },
+        },
+      },
+    });
+    const deps = createCliActionDeps({
+      token: credentials.token,
+      credentials,
+      sessionId: 'cli-global',
+      mode: 'plain',
+      ctx: null,
+    });
+    const executionRunStart = vi.fn(async () => ({
+      runId: 'run-1',
+      callId: 'call-1',
+      sidechainId: 'call-1',
+    }));
+    const executor = createActionExecutor({
+      ...deps,
+      executionRunStart,
+      isActionEnabled: () => true,
+      isActionApprovalRequired: () => false,
+    });
+
+    await expect(executor.execute('execution.run.start', {
+      sessionId: 'session-1',
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      instructions: 'Summarize the change.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          API_KEY: { ref: 'happier:shared-secret:v1:resource-1', revision: 2 },
+        },
+      },
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'execution_run_protocol_unsupported',
+      error: 'execution_run_protocol_unsupported',
+      details: {
+        executionRunStart: { v: 1, runCreation: 'noRunCreated' },
+        updateRequired: {
+          kind: 'update_required',
+          operation: 'execution.run.start',
+          component: 'daemon',
+          reason: 'execution_run_secret_reference_overlay_update_required',
+        },
+      },
+    });
+
+    expect(callMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: expect.objectContaining({ token: 'token' }),
+      machineId: 'machine-1',
+      method: RPC_METHODS.CAPABILITIES_DETECT,
+      request: { requests: [{ id: 'tool.executionRuns' }] },
+    }));
+    expect(executionRunStart).not.toHaveBeenCalled();
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('starts no attached Team-bound run when the Session moves after exact-machine capability admission', async () => {
+    const credentials = {
+      token: 'token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const rawSession = { id: 'session-1', active: true, machineId: 'machine-capable' };
+    resolveSessionTransportContext.mockResolvedValue({
+      ok: true,
+      sessionId: 'session-1',
+      rawSession,
+      accountEncryptionCurrentness: { mode: 'plain' },
+      mode: 'plain',
+      ctx: null,
+    });
+    callMachineRpc.mockImplementationOnce(async () => {
+      rawSession.machineId = 'machine-replaced';
+      return {
+        protocolVersion: 2,
+        results: {
+          'tool.executionRuns': {
+            ok: true,
+            data: {
+              protocolVersion: 2,
+              features: {
+                detachedScope: true,
+                startAndWait: true,
+                exactInputResults: true,
+                runScopedAgentBindings: true,
+                secretReferenceOverlay: true,
+              },
+            },
+          },
+        },
+      };
+    });
+    const deps = createCliActionDeps({
+      token: credentials.token,
+      credentials,
+      sessionId: 'cli-global',
+      mode: 'plain',
+      ctx: null,
+    });
+    const executor = createActionExecutor({
+      ...deps,
+      isActionEnabled: () => true,
+      isActionApprovalRequired: () => false,
+    });
+    const agentTargetKey = buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' });
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 4,
+      deliveryMode: 'brokered' as const,
+      agentTargetKey,
+      modelId: 'team-model',
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      sessionId: 'session-1',
+      intent: 'delegate',
+      backendTarget: readBackendTargetRefV2(agentTargetKey),
+      instructions: 'Summarize the change.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      modelId: teamCredentialModel.modelId,
+      teamCredentialModel,
+      teamCredentialSessionBindingConsent: {
+        v: 1,
+        sessionId: 'session-1',
+        teamId: teamCredentialModel.teamId,
+        resourceId: teamCredentialModel.resourceId,
+        expectedResourceRevision: teamCredentialModel.expectedResourceRevision,
+      },
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'execution_run_target_unavailable',
+      error: 'execution_run_target_unavailable',
+      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+    });
+
+    expect(callMachineRpc).toHaveBeenCalledTimes(1);
+    expect(callMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      machineId: 'machine-capable',
+      method: RPC_METHODS.CAPABILITIES_DETECT,
+    }));
     expect(callSessionRpc).not.toHaveBeenCalled();
   });
 
@@ -476,7 +969,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
       ioMode: 'request_response',
-    }, { defaultSessionId: 'session-1' })).resolves.toEqual({
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
       ok: false,
       errorCode: 'execution_run_protocol_unsupported',
       error: 'execution_run_protocol_unsupported',
@@ -532,7 +1025,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
       ioMode: 'request_response',
-    }, { defaultSessionId: 'session-1' })).resolves.toEqual({
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
       ok: false,
       errorCode: 'execution_run_protocol_unsupported',
       error: 'execution_run_protocol_unsupported',
@@ -562,7 +1055,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
         'tool.executionRuns': {
           ok: true,
           data: {
-            protocolVersion: 2,
+            protocolVersion: 1,
             features: { detachedScope: true },
           },
         },
@@ -590,7 +1083,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
       ioMode: 'request_response',
-    }, { defaultSessionId: 'session-1' })).resolves.toEqual({
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
       ok: false,
       errorCode: 'execution_run_protocol_unsupported',
       error: 'execution_run_protocol_unsupported',
@@ -637,7 +1130,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
       ioMode: 'request_response',
-    }, { defaultSessionId: 'session-1' })).resolves.toEqual({
+    }, { surface: 'rpc', defaultSessionId: 'session-1' })).resolves.toEqual({
       ok: false,
       errorCode: 'execution_run_target_unavailable',
       error: 'execution_run_target_unavailable',
@@ -715,7 +1208,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       if (method === SESSION_RPC_METHODS.EXECUTION_RUN_START) {
         return { runId: 'run-detached', callId: 'call-detached', sidechainId: 'call-detached' };
       }
-      if (method === SESSION_RPC_METHODS.EXECUTION_RUN_GET) {
+      if (method === SESSION_RPC_METHODS.EXECUTION_RUN_WAIT) {
         caller.abort();
         const error = new Error('wait aborted');
         error.name = 'AbortError';
@@ -747,6 +1240,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       ioMode: 'request_response',
       waitForCompletion: true,
     }, {
+      surface: 'rpc',
       defaultSessionId: 'origin-session',
       executionRunTargetMachineId: 'machine-admitted',
       signal: caller.signal,
@@ -763,7 +1257,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
     expect(callMachineRpc.mock.calls.map(([request]) => request.method)).toEqual([
       RPC_METHODS.CAPABILITIES_DETECT,
       SESSION_RPC_METHODS.EXECUTION_RUN_START,
-      SESSION_RPC_METHODS.EXECUTION_RUN_GET,
+      SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
     ]);
     expect(callSessionRpc).not.toHaveBeenCalled();
   });
@@ -823,6 +1317,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       runClass: 'bounded',
       ioMode: 'request_response',
     }, {
+      surface: 'rpc',
       defaultSessionId: 'origin-session',
       executionRunTargetMachineId: 'machine-admitted',
     })).resolves.toEqual(expect.objectContaining({ ok: true }));
@@ -886,6 +1381,7 @@ describe('createCliActionDeps execution-run plugin bindings', () => {
       runClass: 'bounded',
       ioMode: 'request_response',
     }, {
+      surface: 'rpc',
       defaultSessionId: 'origin-session',
       executionRunTargetMachineId: 'machine-admitted',
     })).resolves.toEqual({

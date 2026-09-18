@@ -7,7 +7,7 @@ import { dispatchProviderNativeFork } from '@/session/fork/providerNativeForkDis
 import { createConnectedServiceForkLaunchContext } from '@/session/fork/connectedServiceForkLaunchContext';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { isAmbiguousSpawnSessionFailure } from '@/session/shared/spawnNonce';
-import { readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
 import { applyAgentAuthoredSessionStateUpdatesToMetadata } from '@/agent/runtime/state/agentAuthoredSessionStateUpdates';
 
 import {
@@ -15,7 +15,6 @@ import {
     cleanupForkChildBestEffort,
     fetchForkChildSessionOrThrow,
 } from './forkChildSessionRecovery';
-import { normalizeForkProviderSessionId } from './forkProviderSessionId';
 import { resolveEstablishedForkLineageCutoff } from './resolveEstablishedForkLineageCutoff';
 import type {
     ForkBackendResolution,
@@ -81,7 +80,7 @@ export async function attemptProviderNativeFork(params: Readonly<{
         });
 
         if (!nativeFork) return null;
-        const nativeForkProviderSessionId = normalizeForkProviderSessionId(nativeFork.providerSessionId);
+        const nativeForkProviderSessionId = readNonBlankOpaqueIdentifier(nativeFork.providerSessionId);
         if (!nativeForkProviderSessionId) {
             return {
                 ok: false,
@@ -95,9 +94,13 @@ export async function attemptProviderNativeFork(params: Readonly<{
             'fork.launch.sessionStateUpdates',
         );
         const runtimeDescriptorV1 = readRuntimeDescriptorV1FromMetadata(launchMetadata) ?? undefined;
+        const backendMode = typeof runtimeDescriptorV1?.agent.backendMode === 'string'
+            ? runtimeDescriptorV1.agent.backendMode.trim()
+            : '';
         const agentHint = {
             agentId: params.forkBackendResolution.agentHintAgentId,
-            providerSessionId: nativeForkProviderSessionId,
+            ...(backendMode ? { backendMode } : {}),
+            agentSessionId: nativeForkProviderSessionId,
         };
         const inheritedForkOverrides = createConnectedServiceForkLaunchContext({
             inherited: params.inheritedForkOverrides,

@@ -103,6 +103,7 @@ function currentnessFor(credentials: StoredCredentials) {
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
         };
     }
     const material = credentials.encryption.type === 'legacy'
@@ -123,6 +124,7 @@ function currentnessFor(credentials: StoredCredentials) {
             snapshot.contentPublicKeyFingerprint,
         ),
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'available' as const },
     };
 }
 
@@ -180,6 +182,7 @@ function bindHost(params: Readonly<{
     randomBytes?: (length: number) => Uint8Array;
     resolveServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
     signal?: AbortSignal;
+    isGenerationCurrent?: () => boolean;
 }>) {
     // Keep the test boundary forward-compatible while the host consumes this
     // optional daemon-cached capability. The production dependency remains
@@ -217,13 +220,61 @@ function bindHost(params: Readonly<{
         pluginId: PLUGIN_ID,
         generation: '1',
         signal: params.signal ?? controller.signal,
-        isGenerationCurrent: () => true,
+        isGenerationCurrent: params.isGenerationCurrent ?? (() => true),
     });
     if (!account) throw new Error('Expected Account Data host binding');
     return account;
 }
 
 describe('Account plugin Data storage host', () => {
+    it.each([plainCredentials, encryptedCredentials])('settles issued Account KV writes without replay for $token', async (credentials) => {
+        for (const settlement of ['cancelled', 'retired', 'accountChanged', 'lost', 'malformed', 'conflict'] as const) {
+            const wire = createAccountKvWireStore();
+            const controller = new AbortController();
+            let generationCurrent = true;
+            let accountCurrent = true;
+            let callbackCount = 0;
+            let writeCount = 0;
+            const account = bindHost({
+                credentials,
+                signal: controller.signal,
+                isGenerationCurrent: () => generationCurrent,
+                isCurrentAccount: () => accountCurrent,
+                get: wire.get,
+                post: async (url, body) => {
+                    writeCount += 1;
+                    const response = settlement === 'conflict'
+                        ? { status: 200, data: { status: 'conflict', revision: 3 } }
+                        : await wire.post(url, body);
+                    if (settlement === 'cancelled' || settlement === 'conflict') controller.abort();
+                    if (settlement === 'retired') generationCurrent = false;
+                    if (settlement === 'accountChanged') accountCurrent = false;
+                    if (settlement === 'lost') throw new Error('Acknowledgement lost after commit');
+                    if (settlement === 'malformed') return { status: 200, data: {} };
+                    return response;
+                },
+            });
+            const result = account.kv.transaction(async (transaction) => {
+                callbackCount += 1;
+                await transaction.set('endpoint', 'changed', { expectedVersion: 'absent' });
+                return 'callback-result';
+            });
+            if (settlement === 'lost' || settlement === 'malformed') {
+                await expect(result).rejects.toMatchObject({ code: 'plugin_account_storage_outcome_unknown', retryable: false });
+            } else if (settlement === 'conflict') {
+                await expect(result).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
+            } else {
+                await expect(result).resolves.toBe('callback-result');
+            }
+            expect(callbackCount).toBe(1);
+            expect(writeCount).toBe(1);
+            const retained = await wire.get();
+            expect(retained.data).toMatchObject(settlement === 'conflict'
+                ? { status: 'absent' }
+                : { status: 'present', revision: 0 });
+        }
+    });
+
     it('omits Account Data before Account-lifetime admission while retaining typed errors after a bound scope moves', async () => {
         let accountScopeKey: string | null = null;
         const host = createAccountPluginDataStorageHost({
@@ -695,8 +746,8 @@ describe('Account plugin Data storage host', () => {
         const collection = account.collection(collectionDefinition);
 
         await expect(collection.forget('task-retained', { expectedRevision: 4 })).rejects.toMatchObject({
-            code: 'plugin_account_storage_unavailable',
-            retryable: true,
+            code: 'plugin_collection_outcome_unknown',
+            retryable: false,
         } satisfies Partial<PluginError>);
         await expect(collection.forget('task-retained', { expectedRevision: 4 })).resolves.toEqual({
             rowId: 'task-retained',
@@ -1479,7 +1530,7 @@ describe('Account plugin Data storage host', () => {
         expect(post).not.toHaveBeenCalled();
     });
 
-    it('reports cancellation after the single daemon CAS settles', async () => {
+    it('preserves the exact conflict after the single daemon CAS settles despite cancellation', async () => {
         const cancellation = new AbortController();
         const get = vi.fn(async () => ({
             status: 200,
@@ -1496,7 +1547,7 @@ describe('Account plugin Data storage host', () => {
 
         await expect(account.kv.set('target', 'mine', {
             expectedVersion: 'absent',
-        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
         expect(post).toHaveBeenCalledOnce();
         expect(get).toHaveBeenCalledOnce();
@@ -1710,7 +1761,7 @@ describe('Account plugin Data storage host', () => {
      * off the whole request tells a caller its data is permanently bad and takes
      * a recoverable outage off the retry path.
      */
-    it('keeps a transport RangeError on the retryable availability path for a Collection mutation', async () => {
+    it('classifies a transport RangeError after an issued Collection mutation as an unknown outcome', async () => {
         const bodies: unknown[] = [];
         const account = bindHost({
             post: async (_url, body) => {
@@ -1724,8 +1775,8 @@ describe('Account plugin Data storage host', () => {
             status: 'open',
             privateNote: 'keep private',
         }, { expectedRevision: 'absent' })).rejects.toMatchObject({
-            code: 'plugin_account_storage_unavailable',
-            retryable: true,
+            code: 'plugin_collection_outcome_unknown',
+            retryable: false,
         } satisfies Partial<PluginError>);
         // The host, not the transport, encoded the body — which is what makes a
         // serializer refusal identifiable without capturing transport failures.
@@ -1737,7 +1788,7 @@ describe('Account plugin Data storage host', () => {
         });
     });
 
-    it('keeps a transport RangeError on the retryable availability path for an Account KV write', async () => {
+    it('classifies a transport RangeError after an issued Account KV write as an unknown outcome', async () => {
         const account = bindHost({
             get: async () => ({ status: 200, data: { status: 'absent' } }),
             post: async () => {
@@ -1747,8 +1798,8 @@ describe('Account plugin Data storage host', () => {
 
         await expect(account.kv.set('deep', { nested: true }, { expectedVersion: 'absent' }))
             .rejects.toMatchObject({
-                code: 'plugin_account_storage_unavailable',
-                retryable: true,
+                code: 'plugin_account_storage_outcome_unknown',
+                retryable: false,
             } satisfies Partial<PluginError>);
     });
 });

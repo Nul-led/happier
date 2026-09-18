@@ -370,7 +370,12 @@ async function writeActivatedPluginActionFixture(rootDir: string): Promise<void>
   );
 }
 
-function createPlainExecutor(extra: Partial<Parameters<typeof createCliActionExecutor>[0]> = {}) {
+type CliActionExecutorTestOverrides = Pick<
+  Parameters<typeof createCliActionExecutor>[0],
+  'happyHomeDir' | 'listContributedActionDefinitions' | 'pluginActionExecutionOwner' | 'rawSession'
+>;
+
+function createPlainExecutor(extra: CliActionExecutorTestOverrides = {}) {
   return createCliActionExecutor({
     token: 'token',
     credentials: {
@@ -388,7 +393,7 @@ function createPlainExecutor(extra: Partial<Parameters<typeof createCliActionExe
   });
 }
 
-function createDataKeyExecutor(extra: Partial<Parameters<typeof createCliActionExecutor>[0]> = {}) {
+function createDataKeyExecutor(extra: CliActionExecutorTestOverrides = {}) {
   const machineKey = new Uint8Array(32).fill(7);
   const publicKey = deriveBoxPublicKeyFromSeed(machineKey);
   return createCliActionExecutor({
@@ -1559,7 +1564,7 @@ describe('createCliActionExecutor', () => {
     });
     callSessionRpc.mockResolvedValue({ ok: true });
 
-    await executor.execute(
+    const result = await executor.execute(
       'session.user_action.answer',
       {
         sessionId: 'sess-1',
@@ -1623,6 +1628,10 @@ describe('createCliActionExecutor', () => {
       { surface: 'cli', defaultSessionId: 'sess-1' },
     );
 
+    expect(result).toMatchObject({
+      ok: true,
+      result: { type: 'success', sessionId: 'sess-team-default' },
+    });
     expect(result).toEqual({ ok: true, result: { ok: true, runId: 'run-1' } });
     expect(getExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess-2-aaaaaaaaaaaa',
@@ -1920,9 +1929,9 @@ describe('createCliActionExecutor', () => {
       forceExcludeServerIds: ['server-b'],
     } satisfies NonNullable<SessionSpawnNewInputV2['mcpSelection']>;
     const connectedServices = {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        'openai-codex': {
+        'happier.agent.codex/openai-codex': {
           source: 'connected',
           selection: 'profile',
           profileId: 'codex-profile',
@@ -2137,6 +2146,73 @@ describe('createCliActionExecutor', () => {
         disposition: 'created',
       },
     });
+  });
+
+  it('resolves a fresh Team resource default through the bound Home catalog before Session dispatch', async () => {
+    const serverId = configuration.activeServerId;
+    const token = `e30.${Buffer.from(JSON.stringify({ sub: 'recipient-account' })).toString('base64url')}.signature`;
+    const homeDomainAction = vi.fn(async () => ({
+      resources: [{
+        id: 'resource-a', teamId: 'team-a', displayName: 'Shared Codex account',
+        resourceRevision: 7, readiness: { kind: 'available' }, recoveryAction: null,
+        mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered',
+        sessionUsePolicy: 'personal_allowed', providerModels: [],
+        connectedServiceSelections: [{
+          source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'brokered',
+        }],
+        sourcePresentation: {
+          kind: 'connected_service',
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+        },
+      }],
+    }));
+    const executor = createCliActionExecutor({
+      token,
+      credentials: { token, credentialProvenance: 'stored_session', encryption: null },
+      sessionId: 'sess-1',
+      accountServerActionDeps: { homeDomainAction }, mode: 'plain', ctx: null,
+    });
+    bootstrapAccountSettingsContext.mockResolvedValueOnce({
+      source: 'network',
+      settings: accountSettingsParse({
+        connectedServicesDefaultAuthByAgentIdV1: {
+          v: 1,
+          bindingsByAgentId: { codex: { v: 2, bindingsByServiceId: {
+            'happier.agent.codex/openai-codex': {
+              source: 'team_resource', serverId, accountId: 'recipient-account', teamId: 'team-a',
+              resourceId: 'resource-a', expectedResourceRevision: 7, deliveryMode: 'brokered',
+            },
+          } } },
+        },
+      }),
+      settingsVersion: 8, loadedAtMs: 1234, settingsSecretsReadKeys: [], whenRefreshed: null,
+    });
+    readMachineOperationProtocolCapabilitiesV1.mockResolvedValue({
+      capabilities: { sessionSpawn: { protocolVersions: [1] } }, revision: 2,
+    });
+    lookupSessionsByTags.mockResolvedValue({ state: 'available', sessions: [] });
+    mockMachineSpawnSuccess('sess-team-default');
+
+    const result = await executor.execute(
+      'session.spawn_new',
+      createSessionSpawnInput({ agentTarget: SESSION_SPAWN_AGENT_TARGETS.codex }),
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    );
+
+    expect(result).toMatchObject({
+      ok: true, result: { type: 'success', sessionId: 'sess-team-default' },
+    });
+    expect(homeDomainAction).toHaveBeenCalledWith({
+      actionId: 'teams.credentials.entitled.list', input: { teamId: 'team-a' },
+      context: { surface: 'cli', serverId },
+    });
+    expect(spawnMachineSession).toHaveBeenCalledWith(expect.objectContaining({
+      connectedServices: { v: 2, bindingsByServiceId: {
+        'happier.agent.codex/openai-codex': {
+          source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'brokered',
+        },
+      } },
+    }));
   });
 
   it('fails closed for a strict V2 session.spawn_new when nonce recovery is unsupported', async () => {
@@ -2398,7 +2474,7 @@ describe('createCliActionExecutor', () => {
 
     expect(result).toEqual({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
     expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
       credentials: expect.objectContaining({ token: 'token' }),
@@ -2477,8 +2553,8 @@ describe('createCliActionExecutor', () => {
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),
-      createInvocationContext: (input) => ({
-        context: {
+      createInvocationContext: (input) => {
+        const base = {
           plugin: { id: attachment.pluginId, version: '1.0.0' },
           contribution: {
             id: attachment.localId,
@@ -2487,9 +2563,16 @@ describe('createCliActionExecutor', () => {
           surface: 'cli',
           signal: input.signal,
           services: { logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), diagnostic: vi.fn() } },
-        } as unknown as PluginInvocationContext,
-        complete: vi.fn(),
-      }),
+        } as unknown as PluginInvocationContext;
+        const { session: _session, ...scopeNeutralBase } = base;
+        const scope = input.scope;
+        return {
+          context: scope.kind === 'session'
+            ? { ...base, scope, session: { id: scope.sessionId } }
+            : { ...scopeNeutralBase, scope },
+          complete: vi.fn(),
+        };
+      },
     });
     lookupSessionsByTags.mockResolvedValue({
       state: 'available',

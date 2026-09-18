@@ -1,5 +1,5 @@
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   readBuiltInLegacyConnectedAccountServiceKeyIngress,
   type ConnectedAccountServiceKey,
   type ConnectedServiceBindingSelectionV1,
@@ -188,6 +188,31 @@ export function readConnectedServiceMaterializedEnvKeysFromEnv(
     .filter(Boolean)));
 }
 
+/**
+ * Removes connected-service authority inherited from a parent runtime before
+ * composing a distinct child runtime. The materialized-key marker is the
+ * canonical provider-agnostic inventory of credential/config environment
+ * owned by that parent selection; the three control values are removed with
+ * it so a child cannot reinterpret the parent's selection as its own.
+ *
+ * A child that explicitly selects a Connected Service receives its freshly
+ * materialized environment later in the launch pipeline. Native children keep
+ * every unrelated ambient value, including their genuine native credentials.
+ */
+export function stripInheritedConnectedServiceEnvironment(
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const inheritedKeys = new Set<string>([
+    ...readConnectedServiceMaterializedEnvKeysFromEnv(env),
+    HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY,
+    HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY,
+    HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY,
+  ]);
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !inheritedKeys.has(key)),
+  );
+}
+
 export function findConnectedServiceChildSelection(
   env: Readonly<Record<string, string | undefined>>,
   serviceId: ConnectedAccountServiceKey,
@@ -245,10 +270,11 @@ export function findConnectedServiceBindingSelectionFromSessionMetadata(
   const metadata = typeof session.getMetadataSnapshot === 'function' ? session.getMetadataSnapshot() : null;
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
 
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse((metadata as Record<string, unknown>).connectedServices);
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse((metadata as Record<string, unknown>).connectedServices);
   if (!parsed.success) return null;
 
-  return parsed.data.bindingsByServiceId[serviceId] ?? null;
+  const binding = parsed.data.bindingsByServiceId[serviceId];
+  return binding?.source === 'team_resource' ? null : binding ?? null;
 }
 
 export function resolveConnectedServiceRuntimeAuthContextFromSessionMetadata(

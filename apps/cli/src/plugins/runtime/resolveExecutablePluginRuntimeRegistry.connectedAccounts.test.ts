@@ -106,6 +106,7 @@ function createBundledAccountDataDependencies(): AccountPluginDataStorageHostDep
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
         }),
         http: {
             async get(url: string) {
@@ -558,6 +559,9 @@ describe('executable plugin runtime Connected Accounts integration', () => {
                 getBinding: purposeOwner.getBinding,
                 materialize: purposeOwner.materialize,
                 watch: purposeOwner.watch,
+                // Credential-free bounded metadata, consumed by SCM hosting routing to recognize
+                // a configured self-managed deployment.
+                listAccounts: purposeOwner.listAccounts,
             });
             runtime.retireConsumers();
             expect(

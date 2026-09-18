@@ -255,6 +255,7 @@ describe('stateUpdates (plaintext sessions)', () => {
   it('sends projected request counts with update-state payloads', async () => {
     const emitWithAck = vi.fn(async (_event: string, payload: any) => {
       expect(payload.activitySummaryV1).toEqual({
+        ownerActivityDelivery: 'rich_sender',
         pendingPermissionRequestCount: 1,
         pendingUserActionRequestCount: 1,
         pendingRequestNewestCreatedAt: 2,
@@ -288,6 +289,7 @@ describe('stateUpdates (plaintext sessions)', () => {
     await updateSessionAgentStateWithAck({
       socket,
       sessionId: 's1',
+      ownerActivityDelivery: 'rich_sender',
       sessionEncryptionMode: 'plain',
       getAgentState: () => agentState,
       setAgentState: (next) => {

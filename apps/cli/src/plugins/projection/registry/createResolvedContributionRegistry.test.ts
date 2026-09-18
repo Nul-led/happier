@@ -218,9 +218,9 @@ describe('getResolvedContributionRegistry', () => {
       expect(registry.catalogEntriesById[agentId]?.id).toBe(agentId);
     }
 
-    // Bundled compatibility definitions own released command spellings even
-    // when the manifest-local contribution id is normalized differently.
-    expect(registry.catalogEntriesById.ohMyPi?.cliSubcommand).toBe('ohMyPi');
+    // Runtime compatibility keeps the released camel-case Agent id, while the
+    // manifest remains the owner of the lowercase CLI command spelling.
+    expect(registry.catalogEntriesById.ohMyPi?.cliSubcommand).toBe('ohmypi');
 
     expect(registry).not.toHaveProperty('agentRuntimes');
     expect(registry).not.toHaveProperty('agentRuntimeDefinitionsById');

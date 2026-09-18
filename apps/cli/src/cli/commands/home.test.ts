@@ -1,11 +1,22 @@
+import { createHash } from 'node:crypto';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskJsonObject, type SystemTaskResult, type SystemTaskSpec } from '@happier-dev/protocol';
-import { PERSONAL_HOME_SYSTEM_TASK_KINDS } from '@happier-dev/cli-common/systemTasks';
-import { PersonalHomeRelocationTransferCleanupError } from '@happier-dev/cli-common/firstPartyRuntime';
-import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
+import {
+  createRemoteSshPersonalHomeRelocationDestination,
+  PERSONAL_HOME_SYSTEM_TASK_KINDS,
+} from '@happier-dev/cli-common/systemTasks';
+import {
+  cleanupPersonalHomeRelocationUpload,
+  PersonalHomeRelocationTransferCleanupError,
+} from '@happier-dev/cli-common/firstPartyRuntime';
+import { captureConsoleText, captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 
-import { handleHomeCommand, type HomeCommandDeps } from './home';
+import { handleHomeCliCommand, handleHomeCommand, type HomeCommandDeps } from './home';
 
 function success(taskId: string, data: SystemTaskJsonObject): SystemTaskResult {
   return { protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId, ok: true, data };
@@ -33,8 +44,9 @@ function createDeps(results: readonly ScriptedTaskResult[], overrides: Partial<H
     return { events: [], nextCursor: 0, result, pendingPrompt: null };
   });
   const respond = vi.fn(async () => {});
+  const cancel = vi.fn(async () => {});
   const deps: HomeCommandDeps = {
-    createRunner: () => ({ start, poll, respond }),
+    createRunner: () => ({ start, poll, respond, cancel }),
     resolvePath: (value) => value.startsWith('/') ? value : `/work/${value.replace(/^\.\//, '')}`,
     isInteractiveTerminal: () => false,
     promptInput: async () => 'no',
@@ -42,8 +54,14 @@ function createDeps(results: readonly ScriptedTaskResult[], overrides: Partial<H
     resolveDefaultChannel: () => 'stable',
     ...overrides,
   };
-  return { deps, start, poll, respond };
+  return { deps, start, poll, respond, cancel };
 }
+
+const selectedAccountServicePresentation = {
+  displayName: 'Work Accounts',
+  endpoint: 'https://accounts.example.test',
+  serverIdentityId: 'srv_accounts',
+} as const;
 
 function erasePrompt(result: SystemTaskResult): ScriptedTaskResult {
   return {
@@ -54,6 +72,95 @@ function erasePrompt(result: SystemTaskResult): ScriptedTaskResult {
         homeServerIdentityId: 'home-1',
         paths: ['/data/home/database/home.sqlite', '/data/home/files/public'],
         estimatedBytes: 4096,
+        previewComplete: true,
+        previewReason: null,
+      },
+    },
+    result,
+  };
+}
+
+function erasePromptWithIdentity(homeServerIdentityId: string, result: SystemTaskResult): ScriptedTaskResult {
+  return {
+    prompt: {
+      kind: 'personal_home.confirm_erase.v1',
+      data: {
+        canonicalServerUrl: 'http://127.0.0.1:53288',
+        homeServerIdentityId,
+        paths: ['/data/home/database/home.sqlite', '/data/home/files/public'],
+        estimatedBytes: 4096,
+        previewComplete: true,
+        previewReason: null,
+      },
+    },
+    result,
+  };
+}
+
+const preEraseBackup = success('backup', {
+  path: '/safe/pre-erase.tar',
+  sha256: 'a'.repeat(64),
+  manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+});
+
+const preEraseVerification = success('verify', {
+  manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+  archiveBytes: 2048,
+  identityMatchesCurrentHome: 'match',
+});
+
+function remoteResult(taskId: string, action: string, personalHome: SystemTaskJsonObject): SystemTaskResult {
+  return success(taskId, { action, personalHome });
+}
+
+function remoteErasePrompt(homeServerIdentityId: string, result: SystemTaskResult): ScriptedTaskResult {
+  return {
+    prompt: {
+      kind: 'personal_home.confirm_remote_erase.v1',
+      data: {
+        sshHost: 'dev@example.test',
+        canonicalServerUrl: 'http://127.0.0.1:53288',
+        homeServerIdentityId,
+        paths: ['/srv/home/db.sqlite', '/srv/home/files'],
+        estimatedBytes: 4096,
+      },
+    },
+    result,
+  };
+}
+
+const remoteEraseInspection = remoteResult('remote-status', 'personalHome.status', {
+  purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
+  running: true,
+  identity: { homeServerIdentityId: 'home-1' },
+  layout: { dataDir: '/srv/home' },
+  storage: {
+    ownedErasePaths: ['/srv/home/db.sqlite', '/srv/home/files'],
+    estimatedOwnedBytes: 4096,
+    destinationEmpty: false,
+  },
+  restoreRecovery: { status: 'none', affectedTargets: [] },
+});
+
+function remoteErasePromptWithFacts(
+  facts: Readonly<{
+    sshHost?: string;
+    canonicalServerUrl?: string;
+    homeServerIdentityId?: string;
+    paths?: readonly string[];
+    estimatedBytes?: number | null;
+  }>,
+  result: SystemTaskResult,
+): ScriptedTaskResult {
+  return {
+    prompt: {
+      kind: 'personal_home.confirm_remote_erase.v1',
+      data: {
+        sshHost: facts.sshHost ?? 'dev@example.test',
+        canonicalServerUrl: facts.canonicalServerUrl ?? 'http://127.0.0.1:53288',
+        homeServerIdentityId: facts.homeServerIdentityId ?? 'home-1',
+        paths: [...(facts.paths ?? ['/srv/home/db.sqlite', '/srv/home/files'])],
+        estimatedBytes: facts.estimatedBytes === undefined ? 4096 : facts.estimatedBytes,
       },
     },
     result,
@@ -94,8 +201,34 @@ const nonEmptyInspection = success('inspect', {
     destinationEmpty: false,
   },
   restoreRecovery: { status: 'none', affectedTargets: [] },
+  relocationRecovery: { status: 'none' },
 });
 const nonEmptyInspectionData = (nonEmptyInspection as Extract<SystemTaskResult, { ok: true }>).data as SystemTaskJsonObject;
+const relocationInspectionNone = success('inspect', {
+  ...nonEmptyInspectionData,
+  identity: { homeServerIdentityId: 'srv_home1' },
+  relocationRecovery: { status: 'none' },
+});
+
+function createRelocationOutcomeDeps(personalHome: SystemTaskJsonObject): HomeCommandDeps {
+  const descriptor = {
+    v: 1 as const,
+    homeServerIdentityId: 'srv_home1',
+    canonicalServerUrl: 'http://127.0.0.1:53288',
+    revision: 4,
+    endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+  };
+  return createDeps([
+    homeStatus,
+    relocationInspectionNone,
+    success('relocation-task', { action: 'personalHome.relocate', personalHome }),
+  ], {
+    createRelocationOperationId: () => 'relocation-fixed',
+    readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor }),
+    publishRelocationDescriptor: async ({ descriptor: next }) => next,
+    readRelocationDescriptor: async () => descriptor,
+  }).deps;
+}
 
 const emptyInspection = success('inspect', {
   running: false,
@@ -113,6 +246,7 @@ const emptyInspection = success('inspect', {
     destinationEmpty: true,
   },
   restoreRecovery: { status: 'none', affectedTargets: [] },
+  relocationRecovery: { status: 'none' },
 });
 
 afterEach(() => {
@@ -121,6 +255,46 @@ afterEach(() => {
 });
 
 describe('handleHomeCommand', () => {
+  it('discloses the verified selected Account Service in the single create confirmation', async () => {
+    let prompt = '';
+    const { deps } = createDeps([], {
+      isInteractiveTerminal: () => true,
+      promptInput: async (value) => {
+        prompt = value;
+        return 'no';
+      },
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
+    });
+
+    await expect(handleHomeCommand(['create'], deps)).rejects.toMatchObject({ code: 'confirmation_declined' });
+    expect(prompt).toContain('Account Service publication: Work Accounts (https://accounts.example.test).');
+  });
+
+  it('creates the Home without automatic publication when no Account Service can be verified before confirmation', async () => {
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home',
+      homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123',
+      accountCreated: true,
+    }));
+    const reconcileCreatedHome = vi.fn(async () => undefined);
+    const linkAccount = vi.fn(async () => ({ kind: 'linked' as const, homeServerIdentityId: 'srv_personal_home' }));
+    const { deps } = createDeps([], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      resolveSelectedAccountServicePresentation: async () => null,
+      createPersonalHome,
+      reconcileCreatedHome,
+      linkAccount,
+    });
+
+    await handleHomeCommand(['create', '--link-account', 'auto'], deps);
+
+    expect(createPersonalHome).toHaveBeenCalledOnce();
+    expect(reconcileCreatedHome).toHaveBeenCalledOnce();
+    expect(linkAccount).not.toHaveBeenCalled();
+  });
+
   it('runs forward direct QR only after trusted Home creation and keeps automatic Account Service linking optional', async () => {
     const order: string[] = [];
     const pairDevice = vi.fn(async () => {
@@ -146,13 +320,22 @@ describe('handleHomeCommand', () => {
       reconcileCreatedHome: async () => { order.push('reconcile'); },
       pairDevice,
       linkAccount,
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
     });
 
     await handleHomeCommand(['create', '--link-account', 'auto'], deps);
 
     expect(order).toEqual(['create', 'reconcile', 'pair', 'link']);
     expect(pairDevice).toHaveBeenCalledWith({ profileRef: 'personal-home', copyLink: false, signal: undefined });
-    expect(linkAccount).toHaveBeenCalledWith({ homeServerIdentityId: 'srv_personal_home', relink: false, signal: undefined });
+    expect(linkAccount).toHaveBeenCalledWith({
+      homeServerIdentityId: 'srv_personal_home',
+      relink: false,
+      signal: undefined,
+      expectedAccountServiceSelection: {
+        endpoint: selectedAccountServicePresentation.endpoint,
+        serverIdentityId: selectedAccountServicePresentation.serverIdentityId,
+      },
+    });
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -223,6 +406,7 @@ describe('handleHomeCommand', () => {
       }),
       reconcileCreatedHome: async () => undefined,
       linkAccount: async () => ({ kind: 'failed' }),
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
     });
     const output = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -293,6 +477,35 @@ describe('handleHomeCommand', () => {
     await handleHomeCommand(['link-account', '--home', 'srv_home', '--relink'], deps);
 
     expect(linkAccount).toHaveBeenLastCalledWith({ homeServerIdentityId: 'srv_home', relink: true, signal: undefined });
+  });
+
+  it('stops Account Service sign-in for one Home and says exactly what unlinking does not revoke', async () => {
+    const unlinkAccount = vi.fn(async () => ({
+      kind: 'unlinked' as const,
+      homeServerIdentityId: 'srv_home',
+      issuerServerIdentityId: 'srv_service',
+    }));
+    const { deps } = createDeps([], { unlinkAccount });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await handleHomeCommand(['unlink-account', '--home', 'srv_home'], deps);
+
+    expect(unlinkAccount).toHaveBeenCalledWith({ homeServerIdentityId: 'srv_home', signal: undefined });
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('Stopped Account Service sign-in for this Home.');
+    expect(text).toContain('Devices already signed in keep their access until signed out on the Home.');
+  });
+
+  it('reports an unlink this Home cannot answer with its own typed reason', async () => {
+    const unlinkAccount = vi.fn(async () => ({
+      kind: 'unavailable' as const,
+      reason: 'home_credentials_unavailable' as const,
+    }));
+    const { deps } = createDeps([], { unlinkAccount });
+
+    await expect(handleHomeCommand(['unlink-account'], deps))
+      .rejects.toMatchObject({ code: 'home_credentials_unavailable' });
+    expect(unlinkAccount).toHaveBeenCalledWith({ signal: undefined });
   });
 
   it('admits the selected artifact before starting local Personal Home bootstrap, then reconciles the adopted Home', async () => {
@@ -526,6 +739,7 @@ describe('handleHomeCommand', () => {
       isInteractiveTerminal: () => true,
       promptInput: async () => 'yes',
       linkAccount,
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
     });
 
     await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'auto'], deps);
@@ -534,6 +748,10 @@ describe('handleHomeCommand', () => {
       homeServerIdentityId: descriptor.homeServerIdentityId,
       relink: false,
       signal: undefined,
+      expectedAccountServiceSelection: {
+        endpoint: selectedAccountServicePresentation.endpoint,
+        serverIdentityId: selectedAccountServicePresentation.serverIdentityId,
+      },
     });
   });
 
@@ -617,7 +835,7 @@ describe('handleHomeCommand', () => {
     expect(linkAccount).not.toHaveBeenCalled();
   });
 
-  it('makes remote --link-account never skip invoking-client enrollment and Account Service publication', async () => {
+  it('keeps creator enrollment enabled while --link-account never skips Account Service publication', async () => {
     const remoteCreated = success('remote-create-never-link', {
       action: 'personalHome.create',
       personalHome: {
@@ -629,7 +847,7 @@ describe('handleHomeCommand', () => {
         mode: 'user',
         descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
         pairing: { kind: 'completed', requestedDeviceLabel: null },
-        invokingClientEnrollment: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'enrolled' },
       },
     });
     const linkAccount = vi.fn();
@@ -643,7 +861,7 @@ describe('handleHomeCommand', () => {
 
     expect(linkAccount).not.toHaveBeenCalled();
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({
-      params: expect.objectContaining({ enrollInvokingClient: false }),
+      params: expect.objectContaining({ enrollInvokingClient: true }),
     }) }));
   });
 
@@ -666,6 +884,7 @@ describe('handleHomeCommand', () => {
       isInteractiveTerminal: () => true,
       promptInput: async () => 'yes',
       linkAccount: async () => ({ kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const }),
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
     });
     const output = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -696,6 +915,7 @@ describe('handleHomeCommand', () => {
       linkAccount: async () => {
         throw new Error('Account Service unavailable');
       },
+      resolveSelectedAccountServicePresentation: async () => selectedAccountServicePresentation,
     });
     const output = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -748,6 +968,8 @@ describe('handleHomeCommand', () => {
       .rejects.toMatchObject({ code: 'invalid_params' });
     await expect(handleHomeCommand(['create', '--ssh', 'dev@example.test', '--link-account', 'sometimes', '--yes'], deps))
       .rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(handleHomeCommand(['create', '--target', 'dev@example.test', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
     expect(start).not.toHaveBeenCalled();
   });
 
@@ -776,6 +998,438 @@ describe('handleHomeCommand', () => {
     } });
   });
 
+  it('relocates the local Personal Home to the explicit SSH target through the shared coordinator contract', async () => {
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const destinationDescriptor = {
+      ...sourceDescriptor,
+      canonicalServerUrl: 'https://destination.example.test',
+      revision: 5,
+      endpoints: [{ kind: 'https' as const, url: 'https://destination.example.test' }],
+    };
+    const start = vi.fn(async ({ spec }: Readonly<{ spec: SystemTaskSpec }>) => ({
+      taskId: spec.kind === 'relay.runtime.status.v1'
+        ? 'status-task'
+        : spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect
+          ? 'inspect-task'
+          : 'relocation-task',
+    }));
+    let relocationPoll = 0;
+    const poll = vi.fn(async ({ taskId }: Readonly<{ taskId: string; cursor: number }>) => {
+      if (taskId === 'status-task') {
+        return { events: [], nextCursor: 0, result: homeStatus, pendingPrompt: null };
+      }
+      if (taskId === 'inspect-task') {
+        return { events: [], nextCursor: 0, result: relocationInspectionNone, pendingPrompt: null };
+      }
+      relocationPoll += 1;
+      if (relocationPoll === 1) {
+        return {
+          events: [], nextCursor: 0, result: null,
+          pendingPrompt: {
+            kind: 'personal_home.publish_relocation_descriptor.v1',
+            data: { operationId: 'relocation-fixed', homeServerIdentityId: 'srv_home1', connectionDescriptor: destinationDescriptor },
+          },
+        };
+      }
+      if (relocationPoll === 2) {
+        return {
+          events: [], nextCursor: 0, result: null,
+          pendingPrompt: {
+            kind: 'personal_home.read_relocation_descriptor.v1',
+            data: { operationId: 'relocation-fixed', homeServerIdentityId: 'srv_home1' },
+          },
+        };
+      }
+      return {
+        events: [], nextCursor: 0,
+        result: success('relocation-task', {
+          action: 'personalHome.relocate',
+          personalHome: {
+            operationId: 'relocation-fixed', status: 'committed', destinationMachineId: 'dev@example.test',
+            sourceDescriptorRevision: 4, publishedDescriptor: destinationDescriptor,
+          },
+        }),
+        pendingPrompt: null,
+      };
+    });
+    const respond = vi.fn(async () => undefined);
+    const publishRelocationDescriptor = vi.fn(async () => destinationDescriptor);
+    const readRelocationDescriptor = vi.fn(async () => destinationDescriptor);
+    const { deps } = createDeps([], {
+      createRunner: () => ({ start, poll, respond, cancel: vi.fn(async () => undefined) }) as ReturnType<HomeCommandDeps['createRunner']>,
+      createRelocationOperationId: () => 'relocation-fixed',
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor,
+      readRelocationDescriptor,
+    });
+
+    await handleHomeCommand(['relocate', '--target', 'dev@example.test', '--yes'], deps);
+
+    expect(start).toHaveBeenLastCalledWith({ spec: {
+      protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+      kind: 'remote.ssh.manageHost.v1',
+      params: {
+        action: 'personalHome.relocate',
+        channel: 'stable',
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        personalHomeRelocation: {
+          operationId: 'relocation-fixed',
+          destinationMachineId: 'dev@example.test',
+          sourceDescriptorRevision: 4,
+        },
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+    } });
+    expect(publishRelocationDescriptor).toHaveBeenCalledWith({ profileId: 'home-profile', descriptor: destinationDescriptor });
+    expect(readRelocationDescriptor).toHaveBeenCalledWith({ profileId: 'home-profile', homeServerIdentityId: 'srv_home1' });
+    expect(respond).toHaveBeenNthCalledWith(1, { taskId: 'relocation-task', answer: { descriptor: destinationDescriptor } });
+    expect(respond).toHaveBeenNthCalledWith(2, { taskId: 'relocation-task', answer: { descriptor: destinationDescriptor } });
+  });
+
+  it.each(['committed', 'returned'] as const)('reports a %s relocation as successful JSON', async (status) => {
+    const output = captureStdoutJsonOutput<{
+      ok: boolean;
+      kind: string;
+      data?: { status?: string };
+    }>();
+    try {
+      await handleHomeCliCommand({
+        args: ['home', 'relocate', '--target', 'dev@example.test', '--yes', '--json'],
+        rawArgv: [],
+        terminalRuntime: null,
+      }, createRelocationOutcomeDeps({
+        operationId: 'relocation-fixed',
+        status,
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4,
+      }));
+
+      expect(output.json()).toMatchObject({
+        v: 1,
+        ok: true,
+        kind: 'personal_home_relocation',
+        data: { status },
+      });
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('reports a pending relocation as structured JSON failure with its exact recovery action', async () => {
+    const output = captureStdoutJsonOutput<{
+      ok: boolean;
+      kind: string;
+      error?: { code?: string; status?: string; recoveryAction?: string; message?: string };
+    }>();
+    try {
+      await handleHomeCliCommand({
+        args: ['home', 'relocate', '--target', 'dev@example.test', '--yes', '--json'],
+        rawArgv: [],
+        terminalRuntime: null,
+      }, createRelocationOutcomeDeps({
+        operationId: 'relocation-fixed',
+        status: 'pending',
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4,
+        recoveryAction: 'finish_move',
+      }));
+
+      expect(output.json()).toMatchObject({
+        v: 1,
+        ok: false,
+        kind: 'personal_home_operation',
+        error: {
+          code: 'personal_home_relocation_incomplete',
+          status: 'pending',
+          recoveryAction: 'finish_move',
+        },
+      });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('reports a pending relocation truthfully to a human with the exact recovery command', async () => {
+    const output = captureConsoleText();
+    try {
+      await handleHomeCliCommand({
+        args: ['home', 'relocate', '--target', 'dev@example.test', '--yes'],
+        rawArgv: [],
+        terminalRuntime: null,
+      }, createRelocationOutcomeDeps({
+        operationId: 'relocation-fixed',
+        status: 'pending',
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4,
+        recoveryAction: 'return_to_source',
+      }));
+
+      expect(output.text()).not.toContain('relocation complete');
+      expect(output.text()).toContain('Personal Home relocation is pending');
+      expect(output.text()).toContain('--recovery-action return_to_source');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('discloses retained destination cleanup attention and its exact retry command', async () => {
+    const output = captureConsoleText();
+    try {
+      await handleHomeCliCommand({
+        args: ['home', 'relocate', '--target', 'dev@example.test', '--yes'],
+        rawArgv: [],
+        terminalRuntime: null,
+      }, createRelocationOutcomeDeps({
+        operationId: 'relocation-fixed',
+        status: 'committed',
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4,
+        destinationCleanupNeedsAttention: true,
+      }));
+
+      expect(output.text()).toContain('Personal Home relocation committed.');
+      expect(output.text()).toContain('Destination cleanup needs attention.');
+      expect(output.text()).toContain('--recovery-action finish_move');
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('preserves relocation destination cleanup attention in successful JSON output', async () => {
+    const output = captureStdoutJsonOutput<{
+      ok: boolean;
+      data?: { status?: string; destinationCleanupNeedsAttention?: boolean };
+    }>();
+    try {
+      await handleHomeCliCommand({
+        args: ['home', 'relocate', '--target', 'dev@example.test', '--yes', '--json'],
+        rawArgv: [],
+        terminalRuntime: null,
+      }, createRelocationOutcomeDeps({
+        operationId: 'relocation-fixed',
+        status: 'committed',
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4,
+        destinationCleanupNeedsAttention: true,
+      }));
+
+      expect(output.json()).toMatchObject({
+        ok: true,
+        data: { status: 'committed', destinationCleanupNeedsAttention: true },
+      });
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it.each([
+    ['finish_move', undefined],
+    ['return_to_source', 'return_to_source'],
+  ] as const)('resumes an interrupted relocation with the stored operation facts using %s', async (recoveryAction, expectedRecoveryAction) => {
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const inspection = success('inspect', {
+      ...nonEmptyInspectionData,
+      identity: { homeServerIdentityId: 'srv_home1' },
+      relocationRecovery: {
+        status: 'recovery_available',
+        operationId: 'relocation-retained',
+        destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 3,
+        primaryAction: 'finish_move',
+        secondaryAction: 'return_to_source',
+      },
+    });
+    const relocated = success('relocate', {
+      action: 'personalHome.relocate',
+      personalHome: {
+        operationId: 'relocation-retained', status: expectedRecoveryAction ? 'returned' : 'committed',
+        destinationMachineId: 'dev@example.test', sourceDescriptorRevision: 3,
+      },
+    });
+    const { deps, start } = createDeps([homeStatus, inspection, relocated], {
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+
+    await handleHomeCommand(['relocate', '--target', 'dev@example.test', '--recovery-action', recoveryAction], deps);
+
+    expect(start).toHaveBeenLastCalledWith({ spec: expect.objectContaining({
+      kind: 'remote.ssh.manageHost.v1',
+      params: expect.objectContaining({
+        personalHomeRelocation: {
+          operationId: 'relocation-retained',
+          destinationMachineId: 'dev@example.test',
+          sourceDescriptorRevision: 3,
+          ...(expectedRecoveryAction ? { recoveryAction: expectedRecoveryAction } : { recoveryAction: 'finish_move' }),
+        },
+      }),
+    }) });
+  });
+
+  it('offers only authority-safe recovery choices and refuses return after publication advanced', async () => {
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'https://destination.example.test',
+      revision: 5,
+      endpoints: [{ kind: 'https' as const, url: 'https://destination.example.test' }],
+    };
+    const inspection = success('inspect', {
+      ...nonEmptyInspectionData,
+      identity: { homeServerIdentityId: 'srv_home1' },
+      relocationRecovery: {
+        status: 'recovery_available', operationId: 'relocation-retained', destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4, primaryAction: 'finish_move',
+      },
+    });
+    const { deps, start } = createDeps([homeStatus, inspection], {
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+
+    await expect(handleHomeCommand([
+      'relocate', '--target', 'dev@example.test', '--recovery-action', 'return_to_source',
+    ], deps)).rejects.toMatchObject({ code: 'relocation_recovery_action_unavailable' });
+    expect(start).toHaveBeenCalledTimes(2);
+
+    const finished = success('relocate', {
+      action: 'personalHome.relocate',
+      personalHome: {
+        operationId: 'relocation-retained', status: 'committed',
+        destinationMachineId: 'dev@example.test', sourceDescriptorRevision: 4,
+      },
+    });
+    const finishHarness = createDeps([homeStatus, inspection, finished], {
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+
+    await handleHomeCommand([
+      'relocate', '--target', 'dev@example.test', '--recovery-action', 'finish_move',
+    ], finishHarness.deps);
+    expect(finishHarness.start).toHaveBeenLastCalledWith({ spec: expect.objectContaining({ params: expect.objectContaining({
+      personalHomeRelocation: {
+        operationId: 'relocation-retained', destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4, recoveryAction: 'finish_move',
+      },
+    }) }) });
+  });
+
+  it('refuses a relocation target that does not match the retained recovery destination', async () => {
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const inspection = success('inspect', {
+      ...nonEmptyInspectionData,
+      identity: { homeServerIdentityId: 'srv_home1' },
+      relocationRecovery: {
+        status: 'recovery_available', operationId: 'relocation-retained', destinationMachineId: 'saved@example.test',
+        sourceDescriptorRevision: 4, primaryAction: 'finish_move', secondaryAction: 'return_to_source',
+      },
+    });
+    const { deps, start } = createDeps([homeStatus, inspection], {
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+
+    await expect(handleHomeCommand([
+      'relocate', '--target', 'other@example.test', '--recovery-action', 'finish_move',
+    ], deps)).rejects.toMatchObject({ code: 'relocation_destination_mismatch' });
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers both retained recovery choices interactively before resuming', async () => {
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1', canonicalServerUrl: 'http://127.0.0.1:53288', revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const inspection = success('inspect', {
+      ...nonEmptyInspectionData,
+      identity: { homeServerIdentityId: 'srv_home1' },
+      relocationRecovery: {
+        status: 'recovery_available', operationId: 'relocation-retained', destinationMachineId: 'dev@example.test',
+        sourceDescriptorRevision: 4, primaryAction: 'finish_move', secondaryAction: 'return_to_source',
+      },
+    });
+    const relocated = success('relocate', {
+      action: 'personalHome.relocate', personalHome: {
+        operationId: 'relocation-retained', status: 'returned',
+        destinationMachineId: 'dev@example.test', sourceDescriptorRevision: 4,
+      },
+    });
+    const promptInput = vi.fn(async (_message: string) => 'return_to_source');
+    const { deps, start } = createDeps([homeStatus, inspection, relocated], {
+      isInteractiveTerminal: () => true,
+      promptInput,
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+
+    await handleHomeCommand(['relocate', '--target', 'dev@example.test'], deps);
+
+    expect(promptInput.mock.calls[0]?.[0]).toContain('finish_move');
+    expect(promptInput.mock.calls[0]?.[0]).toContain('return_to_source');
+    expect(start).toHaveBeenLastCalledWith({ spec: expect.objectContaining({ params: expect.objectContaining({
+      personalHomeRelocation: expect.objectContaining({ recoveryAction: 'return_to_source' }),
+    }) }) });
+  });
+
+  it('requires an explicit relocation target before starting any task', async () => {
+    const { deps, start } = createDeps([]);
+
+    await expect(handleHomeCommand(['relocate', '--yes'], deps)).rejects.toMatchObject({ code: 'invalid_params' });
+
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('requires confirmation before starting the relocation mutation', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const { deps, start } = createDeps([homeStatus, relocationInspectionNone], {
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor }),
+      publishRelocationDescriptor: async ({ descriptor: next }) => next,
+      readRelocationDescriptor: async () => descriptor,
+    });
+
+    await expect(handleHomeCommand(['relocate', '--target', 'dev@example.test'], deps))
+      .rejects.toMatchObject({ code: 'confirmation_required' });
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledWith({ spec: expect.objectContaining({ kind: 'relay.runtime.status.v1' }) });
+  });
+
   it('renders exact remote erase facts and keeps approval in the in-memory prompt response', async () => {
     const remoteErase: ScriptedTaskResult = {
       prompt: {
@@ -787,17 +1441,54 @@ describe('handleHomeCommand', () => {
       },
       result: success('remote-erase', { action: 'personalHome.erase', personalHome: { outcome: 'completed', removedPaths: ['/srv/home/db.sqlite', '/srv/home/files'] } }),
     };
-    const promptInput = vi.fn(async (_prompt: string) => 'yes');
+    const answers = ['no', 'yes'];
+    const promptInput = vi.fn(async (_prompt: string) => answers.shift() ?? 'no');
     const { deps, start, respond } = createDeps([remoteErase], { promptInput, isInteractiveTerminal: () => true });
 
     await handleHomeCommand(['erase', '--ssh', 'dev@example.test'], deps);
 
-    expect(promptInput.mock.calls[0]?.[0]).toContain('dev@example.test');
-    expect(promptInput.mock.calls[0]?.[0]).toContain('home-1');
-    expect(promptInput.mock.calls[0]?.[0]).toContain('/srv/home/db.sqlite');
-    expect(promptInput.mock.calls[0]?.[0]).toContain('4096');
+    expect(promptInput.mock.calls[0]?.[0]).toMatch(/backup/iu);
+    expect(promptInput.mock.calls[1]?.[0]).toContain('dev@example.test');
+    expect(promptInput.mock.calls[1]?.[0]).toContain('home-1');
+    expect(promptInput.mock.calls[1]?.[0]).toContain('/srv/home/db.sqlite');
+    expect(promptInput.mock.calls[1]?.[0]).toContain('4096');
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: { confirmed: true } });
     expect(JSON.stringify(start.mock.calls)).not.toMatch(/confirmation-token|approval-stdin/u);
+  });
+
+  it('releases a cancellable remote-operation prompt through the command abort signal', async () => {
+    const remoteErase: ScriptedTaskResult = {
+      prompt: {
+        kind: 'personal_home.confirm_remote_erase.v1',
+        data: {
+          sshHost: 'dev@example.test', canonicalServerUrl: 'http://127.0.0.1:53288', homeServerIdentityId: 'home-1',
+          paths: ['/srv/home/db.sqlite'], estimatedBytes: 4096,
+        },
+      },
+      result: failure('remote-erase', 'cancelled', 'cancelled'),
+    };
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let declinedBackupOffer = false;
+    const promptInput: HomeCommandDeps['promptInput'] = async (_prompt, options) => {
+      if (!declinedBackupOffer) {
+        declinedBackupOffer = true;
+        return 'no';
+      }
+      observedSignal = options?.signal;
+      controller.abort();
+      options?.signal?.throwIfAborted();
+      return 'yes';
+    };
+    const { deps, cancel, poll, respond } = createDeps([remoteErase], { promptInput, isInteractiveTerminal: () => true });
+
+    await expect(handleHomeCommand(['erase', '--ssh', 'dev@example.test'], deps, controller.signal))
+      .rejects.toMatchObject({ code: 'cancelled', personalHomeTaskFailure: true });
+
+    expect(observedSignal).toBe(controller.signal);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect(respond).not.toHaveBeenCalled();
   });
 
   it.each([[[]], [['--json']]])('keeps no-TTY creation without --yes mutation-free (%j)', async (flags: string[]) => {
@@ -904,7 +1595,6 @@ describe('handleHomeCommand', () => {
     const prepareRelocationUpload = vi.fn(async () => ({
       operationId: 'remote-verify-1',
       uploadLocator: '/tmp/happier-transfer/bundle.tar',
-      uploadReceipt: '11111111-1111-4111-8111-111111111111',
     }));
     const { deps } = createDeps([homeStatus], { prepareRelocationUpload });
     const output = captureStdoutJsonOutput<Record<string, unknown>>();
@@ -923,6 +1613,75 @@ describe('handleHomeCommand', () => {
     }
   });
 
+  it('composes the real secret-free CLI upload reservation with the SSH relocation destination', async () => {
+    const operationId = 'remote-relocation-secret-free';
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'happier-relocation-ssh-composed-'));
+    const archivePath = join(temporaryDirectory, 'source.tar');
+    const destinationArgs: string[][] = [];
+    const archiveBytes = 'relocation bundle bytes';
+    const bundleSha256 = createHash('sha256').update(archiveBytes).digest('hex');
+    await writeFile(archivePath, archiveBytes);
+    const stagedFacts = {
+      operationId,
+      status: 'quarantined',
+      bundleSha256,
+      expectedHomeServerIdentityId: 'srv_home1',
+      expectedCanonicalServerUrl: 'https://source.example.test',
+      sourceDescriptorRevision: 7,
+      homeServerIdentityId: 'srv_home1',
+      authenticated: true,
+      accountCount: 1,
+      sessionCount: 0,
+      connectionDescriptor: {
+        v: 1,
+        homeServerIdentityId: 'srv_home1',
+        canonicalServerUrl: 'https://destination.example.test',
+        revision: 8,
+        endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+      },
+    } as const;
+    const runPersonalHomeCommand = async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      destinationArgs.push([...args]);
+      if (!args.includes('--prepare-upload')) return stagedFacts;
+      const output = captureStdoutJsonOutput<{
+        result: { data: SystemTaskJsonObject };
+      }>();
+      try {
+        await handleHomeCommand(args.slice(1), createDeps([homeStatus]).deps);
+        return output.json().result.data;
+      } finally {
+        output.restore();
+      }
+    };
+    const destination = createRemoteSshPersonalHomeRelocationDestination({
+      ssh: { target: 'destination.example.test', auth: 'agent' },
+      auth: { mode: 'agent' },
+      knownHostsMode: 'app',
+      channel: 'stable',
+      mode: 'user',
+      runPersonalHomeCommand,
+      transferPersonalHomeArchive: async ({ localPath, remotePath }) => {
+        await copyFile(localPath, remotePath);
+      },
+      ensureRuntime: async () => undefined,
+    });
+
+    try {
+      await expect(destination.stage({
+        operationId,
+        archivePath,
+        bundleSha256,
+        expectedHomeServerIdentityId: 'srv_home1',
+        expectedCanonicalServerUrl: 'https://source.example.test',
+        sourceDescriptorRevision: 7,
+      })).resolves.toEqual(stagedFacts);
+      expect(destinationArgs.flat()).not.toContain('--upload-receipt');
+    } finally {
+      await cleanupPersonalHomeRelocationUpload({ operationId }).catch(() => undefined);
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('cleans the exact destination-owned transfer reservation after a successful stage', async () => {
     const consumeRelocationUpload = vi.fn(async () => ({ archivePath: '/tmp/relocation-operation/bundle.tar' }));
     const cleanupRelocationUpload = vi.fn(async () => undefined);
@@ -932,7 +1691,6 @@ describe('handleHomeCommand', () => {
     await handleHomeCommand([
       'relocation-destination', 'stage',
       '--operation-id', 'operation-1',
-      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
       '--bundle-sha256', 'a'.repeat(64),
       '--expected-home-id', 'home-1',
       '--expected-canonical-server-url', 'https://source.example.test',
@@ -940,7 +1698,7 @@ describe('handleHomeCommand', () => {
       '--json',
     ], deps);
 
-    expect(consumeRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1', uploadReceipt: '11111111-1111-4111-8111-111111111111' });
+    expect(consumeRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1' });
     expect(cleanupRelocationUpload).toHaveBeenCalledTimes(1);
     expect(cleanupRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1' });
     const params = (start.mock.calls[1]?.[0] as { spec: SystemTaskSpec }).spec.params as Record<string, unknown>;
@@ -958,7 +1716,6 @@ describe('handleHomeCommand', () => {
     await expect(handleHomeCommand([
       'relocation-destination', 'stage',
       '--operation-id', 'operation-1',
-      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
       '--bundle-sha256', 'a'.repeat(64),
       '--expected-home-id', 'home-1',
       '--expected-canonical-server-url', 'https://source.example.test',
@@ -980,7 +1737,6 @@ describe('handleHomeCommand', () => {
     const error = await handleHomeCommand([
       'relocation-destination', 'stage',
       '--operation-id', 'operation-1',
-      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
       '--bundle-sha256', 'a'.repeat(64),
       '--expected-home-id', 'home-1',
       '--expected-canonical-server-url', 'https://source.example.test',
@@ -1003,7 +1759,6 @@ describe('handleHomeCommand', () => {
     await expect(handleHomeCommand([
       'relocation-destination', 'stage',
       '--operation-id', 'operation-1',
-      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
       '--bundle-sha256', 'a'.repeat(64),
       '--expected-home-id', 'home-1',
       '--expected-canonical-server-url', 'https://source.example.test',
@@ -1080,6 +1835,30 @@ describe('handleHomeCommand', () => {
     };
     const readApprovalInput = vi.fn(async () => '{}');
     const { deps, respond } = createDeps([homeStatus, malformedPrompt], { readApprovalInput });
+
+    await expect(handleHomeCommand(['erase', '--approval-stdin'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ answer: { confirmed: false } }));
+    expect(readApprovalInput).not.toHaveBeenCalled();
+  });
+
+  it('fails an incomplete erase preview closed without consuming stdin approval', async () => {
+    const declined = failure('erase', 'confirmation_required', 'not confirmed');
+    const incompletePrompt: ScriptedTaskResult = {
+      prompt: {
+        kind: 'personal_home.confirm_erase.v1',
+        data: {
+          canonicalServerUrl: 'http://127.0.0.1:53288',
+          homeServerIdentityId: 'home-1',
+          paths: ['/data/home/database/home.sqlite'],
+          estimatedBytes: 1,
+          previewComplete: false,
+          previewReason: 'inspection cancelled',
+        },
+      },
+      result: declined,
+    };
+    const readApprovalInput = vi.fn(async () => '{}');
+    const { deps, respond } = createDeps([homeStatus, incompletePrompt], { readApprovalInput });
 
     await expect(handleHomeCommand(['erase', '--approval-stdin'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ answer: { confirmed: false } }));
@@ -1385,19 +2164,23 @@ describe('handleHomeCommand', () => {
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-2', answer: { confirmed: true } });
   });
 
-  it('rejects retired embedded backup flags and keeps backup as a separate command', async () => {
+  it('requires --backup-first before --backup-output and keeps both flags on erase only', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const { deps, start } = createDeps([homeStatus]);
 
-    await expect(handleHomeCommand(['erase', '--backup-first', '--backup-output', '/safe/verified.tar', '--yes'], deps))
+    await expect(handleHomeCommand(['erase', '--backup-output', '/safe/verified.tar', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(handleHomeCommand(['backup', '--backup-first', '--backup-output', '/safe/verified.tar'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(handleHomeCommand(['erase', '--backup-first', '--backup-output', '/safe/verified.tar', '--approval-stdin'], deps))
       .rejects.toMatchObject({ code: 'invalid_params' });
 
-    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual(['relay.runtime.status.v1']);
+    expect(start).not.toHaveBeenCalled();
   });
 
-  it('interactive erase declines at the single exact owner-held path prompt', async () => {
+  it('interactive erase declines at the single exact owner-held path prompt after declining the backup offer', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const answers = ['no'];
+    const answers = ['no', 'no'];
     const prompt = vi.fn(async (_message: string) => answers.shift() ?? 'no');
     const declined = failure('erase', 'confirmation_required', 'Personal Home data deletion was not explicitly confirmed.');
     const { deps, start } = createDeps([homeStatus, erasePrompt(declined)], {
@@ -1406,13 +2189,401 @@ describe('handleHomeCommand', () => {
     });
 
     await expect(handleHomeCommand(['erase'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
-    expect(prompt.mock.calls[0]?.[0]).toContain('http://127.0.0.1:53288');
-    expect(prompt.mock.calls[0]?.[0]).toContain('home-1');
-    expect(prompt.mock.calls[0]?.[0]).toContain('/data/home/database/home.sqlite');
-    expect(prompt.mock.calls[0]?.[0]).toContain('4096');
-    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]?.[0]).toMatch(/backup/iu);
+    expect(prompt.mock.calls[1]?.[0]).toContain('http://127.0.0.1:53288');
+    expect(prompt.mock.calls[1]?.[0]).toContain('home-1');
+    expect(prompt.mock.calls[1]?.[0]).toContain('/data/home/database/home.sqlite');
+    expect(prompt.mock.calls[1]?.[0]).toContain('4096');
+    expect(prompt).toHaveBeenCalledTimes(2);
     expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.backup)).toBe(false);
     expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.erase)).toBe(true);
   });
 
+  it('offers a verified backup before the interactive erase confirmation and runs each owner exactly once', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const answers = ['yes', '/safe/pre-erase.tar', 'yes'];
+    const prompt = vi.fn(async (_message: string) => answers.shift() ?? 'no');
+    const erased = success('erase', { outcome: 'completed', removedPaths: ['/data/home'] });
+    const { deps, start, respond } = createDeps(
+      [homeStatus, nonEmptyInspection, preEraseBackup, preEraseVerification, homeStatus, erasePrompt(erased)],
+      { isInteractiveTerminal: () => true, promptInput: prompt },
+    );
+
+    await handleHomeCommand(['erase'], deps);
+
+    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
+      'relay.runtime.status.v1',
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect,
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup,
+      'relay.runtime.status.v1',
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
+    ]);
+    expect(start).toHaveBeenNthCalledWith(3, { spec: expect.objectContaining({
+      kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
+      params: expect.objectContaining({ outputPath: '/safe/pre-erase.tar' }),
+    }) });
+    expect(start).toHaveBeenNthCalledWith(4, { spec: expect.objectContaining({
+      kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup,
+      params: expect.objectContaining({ archivePath: '/safe/pre-erase.tar' }),
+    }) });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-6', answer: { confirmed: true } });
+  });
+
+  it('takes the verified pre-erase backup non-interactively through --backup-first', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const erased = success('erase', { outcome: 'completed', removedPaths: ['/data/home'] });
+    const { deps, start, respond } = createDeps(
+      [homeStatus, nonEmptyInspection, preEraseBackup, preEraseVerification, homeStatus, erasePrompt(erased)],
+    );
+
+    await handleHomeCommand(['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'], deps);
+
+    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
+      'relay.runtime.status.v1',
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect,
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup,
+      'relay.runtime.status.v1',
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
+    ]);
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-6', answer: { confirmed: true } });
+  });
+
+  it('refuses a pre-erase backup destination inside the data this erase deletes before writing anything', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { deps, start } = createDeps([homeStatus, nonEmptyInspection]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/data/home/files/private/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'backup_output_required' });
+
+    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
+      'relay.runtime.status.v1',
+      PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect,
+    ]);
+  });
+
+  it('never erases when the pre-erase backup fails', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { deps, start } = createDeps([
+      homeStatus,
+      nonEmptyInspection,
+      failure('backup', 'backup_failed', 'archive write failed'),
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'backup_failed' });
+
+    expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.erase)).toBe(false);
+  });
+
+  it('never erases while the verified backup still has an exact protected staging cleanup obligation', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const stagedBackup = success('backup', {
+      path: '/safe/pre-erase.tar',
+      sha256: 'a'.repeat(64),
+      manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      cleanupRequired: {
+        kind: 'backup_staging',
+        path: '/data/.personal-home-backup-stage-owned',
+        error: 'injected cleanup failure',
+      },
+    });
+    const { deps, start } = createDeps([
+      homeStatus,
+      nonEmptyInspection,
+      stagedBackup,
+      preEraseVerification,
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({
+      code: 'personal_home_backup_cleanup_required',
+      cleanupPath: '/data/.personal-home-backup-stage-owned',
+    });
+
+    expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.erase)).toBe(false);
+  });
+
+  it('never erases when the pre-erase backup does not verify against this Home', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const mismatched = success('verify', {
+      manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      archiveBytes: 2048,
+      identityMatchesCurrentHome: 'mismatch',
+    });
+    const { deps, start } = createDeps([homeStatus, nonEmptyInspection, preEraseBackup, mismatched]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.erase)).toBe(false);
+  });
+
+  it('aborts without deleting when the Home identity drifts after the verified backup', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const declined = failure('erase', 'confirmation_required', 'Personal Home data deletion was not explicitly confirmed.');
+    const { deps, respond } = createDeps([
+      homeStatus,
+      nonEmptyInspection,
+      preEraseBackup,
+      preEraseVerification,
+      homeStatus,
+      erasePromptWithIdentity('home-2', declined),
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-6', answer: { confirmed: false } });
+  });
+
+  it('aborts when the verified local backup destination enters the fresh erase set', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const declined = failure('erase', 'confirmation_required', 'Personal Home data deletion was not explicitly confirmed.');
+    const { deps, respond } = createDeps([
+      homeStatus,
+      nonEmptyInspection,
+      preEraseBackup,
+      preEraseVerification,
+      homeStatus,
+      {
+        prompt: {
+          kind: 'personal_home.confirm_erase.v1',
+          data: {
+            canonicalServerUrl: 'http://127.0.0.1:53288',
+            homeServerIdentityId: 'home-1',
+            paths: ['/safe', '/data/home/database/home.sqlite'],
+            estimatedBytes: 4096,
+            // Complete bounded preview: the shape guard must pass so this prompt
+            // reaches the intended backup-overlap drift branch (the verified
+            // pre-erase backup at /safe/pre-erase.tar falls inside /safe).
+            previewComplete: true,
+            previewReason: null,
+          },
+        },
+        result: declined,
+      },
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-6', answer: { confirmed: false } });
+  });
+
+  it('offers the same verified backup before remote SSH erase and confirms the remote target once', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const erased = remoteResult('remote-erase', 'personalHome.erase', { outcome: 'completed', removedPaths: ['/srv/home/db.sqlite'] });
+    const { deps, start, respond } = createDeps([
+      remoteEraseInspection,
+      remoteResult('remote-backup', 'personalHome.backup', {
+        path: '/safe/pre-erase.tar',
+        sha256: 'a'.repeat(64),
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      }),
+      remoteResult('remote-verify', 'personalHome.verifyBackup', {
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+        archiveBytes: 2048,
+        identityMatchesCurrentHome: 'match',
+      }),
+      // Creating the remote backup can legitimately grow the owned backup directory;
+      // the final owner prompt must show the fresh bounded preview rather than being
+      // rejected as target drift.
+      remoteErasePromptWithFacts({ estimatedBytes: 8192 }, erased),
+    ]);
+
+    await handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    );
+
+    expect(start.mock.calls.map(([input]) => (input.spec.params as Record<string, unknown>).action)).toEqual([
+      'personalHome.status',
+      'personalHome.backup',
+      'personalHome.verifyBackup',
+      'personalHome.erase',
+    ]);
+    expect(start).toHaveBeenNthCalledWith(2, { spec: expect.objectContaining({
+      params: expect.objectContaining({ personalHomeOperation: { outputPath: '/safe/pre-erase.tar' } }),
+    }) });
+    expect(start).toHaveBeenNthCalledWith(3, { spec: expect.objectContaining({
+      params: expect.objectContaining({ personalHomeOperation: { archivePath: '/safe/pre-erase.tar' } }),
+    }) });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-4', answer: { confirmed: true } });
+  });
+
+  it('does not compare the local remote-backup destination with remote erase paths', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const erased = remoteResult('remote-erase', 'personalHome.erase', { outcome: 'completed', removedPaths: ['/srv/home/db.sqlite'] });
+    const { deps, start, respond } = createDeps([
+      remoteEraseInspection,
+      remoteResult('remote-backup', 'personalHome.backup', {
+        path: '/srv/home/files/pre-erase.tar',
+        sha256: 'a'.repeat(64),
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      }),
+      remoteResult('remote-verify', 'personalHome.verifyBackup', {
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+        archiveBytes: 2048,
+        identityMatchesCurrentHome: 'match',
+      }),
+      remoteErasePromptWithFacts({}, erased),
+    ]);
+
+    await handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/srv/home/files/pre-erase.tar', '--yes'],
+      deps,
+    );
+
+    expect(start.mock.calls.map(([input]) => (input.spec.params as Record<string, unknown>).action)).toEqual([
+      'personalHome.status',
+      'personalHome.backup',
+      'personalHome.verifyBackup',
+      'personalHome.erase',
+    ]);
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-4', answer: { confirmed: true } });
+  });
+
+  it('rejects a replacement SSH host key after binding the remote pre-erase target even with --yes', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { deps, start, respond } = createDeps([
+      remoteEraseInspection,
+      {
+        prompt: { kind: 'ssh.replaceHostKey', data: { sshHost: 'dev@example.test' } },
+        result: failure('remote-backup', 'backup_failed', 'replacement host key was rejected'),
+      },
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'backup_failed' });
+
+    expect(start.mock.calls.map(([input]) => (input.spec.params as Record<string, unknown>).action)).toEqual([
+      'personalHome.status',
+      'personalHome.backup',
+    ]);
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-2', answer: { trusted: false } });
+  });
+
+  it('never starts remote erase when the remote pre-erase backup fails', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { deps, start } = createDeps([
+      remoteEraseInspection,
+      failure('remote-backup', 'backup_failed', 'archive write failed'),
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'backup_failed' });
+
+    expect(start.mock.calls.map(([input]) => (input.spec.params as Record<string, unknown>).action)).toEqual([
+      'personalHome.status',
+      'personalHome.backup',
+    ]);
+  });
+
+  it('never starts remote erase when the remote pre-erase backup does not verify', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { deps, start } = createDeps([
+      remoteEraseInspection,
+      remoteResult('remote-backup', 'personalHome.backup', {
+        path: '/safe/pre-erase.tar',
+        sha256: 'a'.repeat(64),
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      }),
+      remoteResult('remote-verify', 'personalHome.verifyBackup', {
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+        archiveBytes: 2048,
+        identityMatchesCurrentHome: 'mismatch',
+      }),
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    expect(start.mock.calls.map(([input]) => (input.spec.params as Record<string, unknown>).action)).toEqual([
+      'personalHome.status',
+      'personalHome.backup',
+      'personalHome.verifyBackup',
+    ]);
+  });
+
+  it.each([
+    ['SSH host', { sshHost: 'other@example.test' }],
+    ['canonical URL', { canonicalServerUrl: 'http://127.0.0.1:59999' }],
+    ['Home identity', { homeServerIdentityId: 'home-2' }],
+    ['erase paths', { paths: ['/srv/home/db.sqlite', '/srv/home/other-files'] }],
+  ])('aborts remote SSH erase without deleting when the remote %s drifts after the verified backup', async (_label, changedFacts) => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const declined = failure('remote-erase', 'confirmation_declined', 'Remote Personal Home erase was not confirmed.');
+    const { deps, respond } = createDeps([
+      remoteEraseInspection,
+      remoteResult('remote-backup', 'personalHome.backup', {
+        path: '/safe/pre-erase.tar',
+        sha256: 'a'.repeat(64),
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+      }),
+      remoteResult('remote-verify', 'personalHome.verifyBackup', {
+        manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+        archiveBytes: 2048,
+        identityMatchesCurrentHome: 'match',
+      }),
+      remoteErasePromptWithFacts(changedFacts, declined),
+    ]);
+
+    await expect(handleHomeCommand(
+      ['erase', '--ssh', 'dev@example.test', '--backup-first', '--backup-output', '/safe/pre-erase.tar', '--yes'],
+      deps,
+    )).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-4', answer: { confirmed: false } });
+  });
+
+});
+
+describe('happier home help', () => {
+  it('lists the compiled Home administration leaves beside the lifecycle commands', async () => {
+    const output = captureConsoleText();
+    try {
+      await handleHomeCommand(['--help'], createDeps([]).deps);
+    } finally {
+      output.restore();
+    }
+    expect(output.text()).toContain('happier home create');
+    // Home governance and Account administration are compiled Action leaves
+    // under this root; help must not hide commands dispatch already accepts.
+    for (const leaf of [
+      'governance get',
+      'governance eligibility get',
+      'accounts list',
+      'accounts search',
+      'accounts role set',
+      'accounts disable',
+      'accounts enable',
+      'accounts delete',
+      'policy set',
+    ]) {
+      expect(output.text()).toContain(`happier home ${leaf}`);
+    }
+  });
 });

@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -92,7 +93,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeral(
       'codex',
       { type: 'message', message: 'Hello', sidechainId: 'sc-1' } as any,
@@ -146,7 +147,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeral(
       'codex',
       { type: 'message', message: 'Hello' },
@@ -172,7 +173,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     expect((client as any).sendAgentMessageEphemeralDelta).toBeTypeOf('function');
     (client as any).sendAgentMessageEphemeralDelta(
       'codex',
@@ -232,7 +233,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeralDelta(
       'codex',
       { type: 'message', message: 'delta' },
@@ -252,7 +253,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -271,7 +272,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
 
     expect('sendAgentMessageCommitted' in client).toBe(false);
     expect('sendUserTextMessageCommitted' in client).toBe(false);
@@ -292,7 +293,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
       const { ApiSessionClient } = await import('./sessionClient');
 
-      const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({
+      const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
         metadata: createTestMetadata({ path: workingDirectory }),
       })));
@@ -363,7 +364,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
       const { ApiSessionClient } = await import('./sessionClient');
 
-      const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({
+      const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
         metadata: createTestMetadata({ path: workingDirectory }),
       })));
@@ -469,7 +470,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
       const { ApiSessionClient } = await import('./sessionClient');
 
-      const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({
+      const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
         metadata: createTestMetadata({ path: workingDirectory }),
       })));
@@ -544,7 +545,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
       id: 's1',
       metadata: createTestMetadata({ path: '' }),
     })));
@@ -596,7 +597,7 @@ describe('ApiSessionClient transcript vNext transport', () => {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
       const { ApiSessionClient } = await import('./sessionClient');
 
-      const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({
+      const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
         seq: 5,
         metadata: createTestMetadata({ path: workingDirectory }),

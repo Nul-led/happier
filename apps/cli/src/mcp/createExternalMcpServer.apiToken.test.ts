@@ -86,6 +86,7 @@ describe('createExternalMcpServer with an API token', () => {
 
     expect(boundary.createCliActionExecutorFromCredentials).toHaveBeenCalledWith({
       credentials,
+      serverId: expect.any(String),
       serverApiUrl: expect.any(String),
     });
     expect(boundary.createCliActionExecutorHarness).not.toHaveBeenCalled();

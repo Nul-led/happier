@@ -76,6 +76,8 @@ describe('ApiSessionClient startup transcript catch-up retries', () => {
         };
         client.handleUpdate = vi.fn();
         client.recoveryRuntime = createSessionClientRecoveryRuntime({
+            mode: 'plain',
+            ctx: null,
             startupMessageCatchUpRetryDelaysMs: [],
             token: client.token,
             sessionId: client.sessionId,

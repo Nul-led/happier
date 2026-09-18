@@ -22,7 +22,7 @@ import {
   loadLinkedExternalSession,
   type LoadedLinkedExternalSession,
 } from '@/api/session/external/takeover/loadLinkedExternalSession';
-import { readStoredCredentials } from '@/persistence';
+import { readStoredCredentials, sameStoredCredentials } from '@/persistence';
 import type { ExternalSessionOperationExclusion } from '@/session/external/operationExclusion';
 import type {
   ExternalSessionTranscriptReadAfter,
@@ -112,29 +112,6 @@ async function resolveMaterializeSourceReadRoots(input: Readonly<{
   return validated.transcriptMediaReadRoots ?? [];
 }
 
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  return left.every((value, index) => value === right[index]);
-}
-
-function credentialsMatch(
-  left: MaterializeCredentials,
-  right: MaterializeCredentials,
-): boolean {
-  if (left.token !== right.token) return false;
-  if (left.encryption === null || right.encryption === null) {
-    return left.encryption === right.encryption;
-  }
-  if (left.encryption.type !== right.encryption.type) return false;
-  if (left.encryption.type === 'legacy' && right.encryption.type === 'legacy') {
-    return bytesEqual(left.encryption.secret, right.encryption.secret);
-  }
-  if (left.encryption.type === 'dataKey' && right.encryption.type === 'dataKey') {
-    return bytesEqual(left.encryption.publicKey, right.encryption.publicKey)
-      && bytesEqual(left.encryption.machineKey, right.encryption.machineKey);
-  }
-  return false;
-}
 
 function preparationAuthorityMatches(
   snapshot: Readonly<{
@@ -154,7 +131,7 @@ function preparationAuthorityMatches(
     typeof current.linked.rawSession.dataEncryptionKey === 'string'
       ? current.linked.rawSession.dataEncryptionKey.trim() || null
       : null;
-  return credentialsMatch(snapshot.credentials, current.credentials)
+  return sameStoredCredentials(snapshot.credentials, current.credentials)
     && sourceIdentity(snapshot.linked) === sourceIdentity(current.linked)
     && snapshot.linked.sessionPath === current.linked.sessionPath
     && resolveSessionStoredContentEncryptionMode(snapshot.linked.rawSession)

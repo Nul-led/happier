@@ -495,6 +495,46 @@ describe('Api server error handling', () => {
         });
     });
 
+    describe('getOrCreateSession encryption-currentness preflight', () => {
+        it('returns null and enters offline mode when the Account currentness read is unreachable', async () => {
+            connectionState.reset();
+            const output = captureConsoleText();
+            try {
+                // The preflight read fails at the transport before the sessions
+                // request is ever attempted; it must classify like that request.
+                mockGet.mockRejectedValue({ code: 'ECONNREFUSED' });
+
+                const result = await api.getOrCreateSession({
+                    tag: 'test-tag',
+                    metadata: testMetadata,
+                    state: null,
+                });
+
+                expect(result).toBeNull();
+                expect(connectionState.isOffline()).toBe(true);
+                expect(mockPost).not.toHaveBeenCalled();
+            } finally {
+                output.restore();
+            }
+        });
+
+        it('throws the stable auth status error when the Account currentness read is refused', async () => {
+            connectionState.reset();
+            mockGet.mockResolvedValue({ status: 401, data: { error: 'unauthorized' } });
+
+            await expect(api.getOrCreateSession({
+                tag: 'test-tag',
+                metadata: testMetadata,
+                state: null,
+            })).rejects.toMatchObject({
+                name: 'HttpStatusError',
+                response: { status: 401 },
+            });
+            expect(connectionState.isOffline()).toBe(false);
+            expect(mockPost).not.toHaveBeenCalled();
+        });
+    });
+
     describe('getOrCreateMachine', () => {
         it('retains only the server-validated exact-target operation capability snapshot', async () => {
             mockPost.mockResolvedValue({

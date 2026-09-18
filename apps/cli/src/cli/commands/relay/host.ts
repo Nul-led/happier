@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -28,12 +27,17 @@ import {
   type RelayRuntimeTaskParams,
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
-import { readKnownHostsTextSync, runOpenSshRemoteCommand, writeKnownHostsTextSync } from '@happier-dev/cli-common/ssh';
+import {
+  readKnownHostsTextSync,
+  runOpenSshRemoteCommand,
+  transferOpenSshFile,
+  writeKnownHostsTextSync,
+} from '@happier-dev/cli-common/ssh';
 import { renderHelpPage } from '@happier-dev/cli-common/output';
 import { getReleaseRingPublicLabel, normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { defaultNameFromUrl, defaultWebappUrlFromServerUrl } from '../server/commandUtilities';
 import { resolveRelayHostReachableServerUrl } from './hostReachability';
-import { buildScpCommand, buildSshCommand, type SshAuth } from '@/capabilities/systemTasks/ssh/sshTransport';
+import { buildSshCommand, type SshAuth } from '@/capabilities/systemTasks/ssh/sshTransport';
 
 type RelayHostStatusJson = Readonly<{
   installed: boolean;
@@ -378,15 +382,6 @@ function resolveKnownHostsMode(ssh: SystemTaskSshConnectionConfig): 'app' | 'sys
   return ssh.knownHostsPath ? 'app' : 'system';
 }
 
-function runCommandCapture(command: string, args: readonly string[]): Readonly<{ status: number; stdout: string; stderr: string }> {
-  const out = spawnSync(command, [...args], { encoding: 'utf8' });
-  return {
-    status: typeof out.status === 'number' ? out.status : 1,
-    stdout: String(out.stdout ?? ''),
-    stderr: String(out.stderr ?? out.error?.message ?? ''),
-  };
-}
-
 function ensureTrustedHostKeySeeded(ssh: SystemTaskSshConnectionConfig, knownHostsMode: 'app' | 'system'): void {
   if (knownHostsMode !== 'app') return;
   const knownHostsPath = String(ssh.knownHostsPath ?? '').trim();
@@ -404,7 +399,7 @@ function createInvalidArgumentsError(message: string): Error & { code: 'invalid_
   return error;
 }
 
-function buildSshRunner(ssh: SystemTaskSshConnectionConfig) {
+function buildSshRunner(ssh: SystemTaskSshConnectionConfig, signal?: AbortSignal) {
   const knownHostsMode = resolveKnownHostsMode(ssh);
   const auth = resolveOpenSshAuth(ssh);
   return {
@@ -423,14 +418,17 @@ function buildSshRunner(ssh: SystemTaskSshConnectionConfig) {
         connectTimeoutSec: 10,
         serverAliveIntervalSec: 15,
         serverAliveCountMax: 3,
+        ...(signal ? { signal } : {}),
         rejectOnNonZero: false,
         errorPrefix: `Relay host SSH command failed for ${ssh.target}`,
       });
     },
     copyLocalDirectoryToRemote: async (localPath: string, remotePath: string) => {
       ensureTrustedHostKeySeeded(ssh, knownHostsMode);
-      const invocation = buildScpCommand({
+      await transferOpenSshFile({
         scpBin: 'scp',
+        direction: 'upload',
+        recursive: true,
         target: ssh.target,
         localPath,
         remotePath,
@@ -442,11 +440,8 @@ function buildSshRunner(ssh: SystemTaskSshConnectionConfig) {
         connectTimeoutSec: 10,
         serverAliveIntervalSec: 15,
         serverAliveCountMax: 3,
+        ...(signal ? { signal } : {}),
       });
-      const result = runCommandCapture(invocation.command, invocation.args);
-      if (result.status !== 0) {
-        throw new Error(result.stderr.trim() || 'SCP failed');
-      }
     },
   };
 }
@@ -517,7 +512,10 @@ function resolveRelayRuntimeTaskParams(params: Readonly<{
 
 export async function runRelayHostSubcommand(
   args: string[],
-  options: Readonly<{ selectionMutationMode?: ServerSelectionMutationMode }> = {},
+  options: Readonly<{
+    selectionMutationMode?: ServerSelectionMutationMode;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<void> {
   const op = String(args[0] ?? '').trim();
   if (op === '--help' || op === '-h' || args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
@@ -624,7 +622,7 @@ export async function runRelayHostSubcommand(
   if (op === 'status') {
     const engine = ssh
       ? (() => {
-          const runner = buildSshRunner(ssh);
+          const runner = buildSshRunner(ssh, options.signal);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           return createRelayHostEngine({
             resolveRemoteReleaseTarget: async () => await resolveRemoteReleaseTarget(),
@@ -716,7 +714,7 @@ export async function runRelayHostSubcommand(
     };
     const result = ssh
       ? (() => {
-          const runner = buildSshRunner(ssh);
+          const runner = buildSshRunner(ssh, options.signal);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           const override = resolveTestFirstPartyPayloadOverride();
           const engine = createRelayHostEngine({
@@ -733,6 +731,7 @@ export async function runRelayHostSubcommand(
                 knownHostsMode,
                 installerBinaryPath,
                 remoteHomeDir,
+                ...(options.signal ? { signal: options.signal } : {}),
               }, {
                 resolveRemoteReleaseTarget: async () => await resolveRemoteReleaseTarget(),
                 runRemoteText: async ({ remoteCommand }) => await runner.runRemoteText(remoteCommand),
@@ -902,7 +901,7 @@ export async function runRelayHostSubcommand(
   if (op === 'start' || op === 'stop' || op === 'restart' || op === 'uninstall') {
     const engine = ssh
       ? (() => {
-          const runner = buildSshRunner(ssh);
+          const runner = buildSshRunner(ssh, options.signal);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           return createRelayHostEngine({
             resolveRemoteReleaseTarget: async () => await resolveRemoteReleaseTarget(),

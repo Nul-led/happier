@@ -4,7 +4,6 @@ import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
-import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 
 import {
   deriveBoxPublicKeyFromSeed,
@@ -326,7 +325,6 @@ describe('happier session run list (integration)', () => {
       expect(parsed.ok).toBe(false);
       expect(parsed.kind).toBe('session_run_list');
       expect(parsed.error?.code).toBe('invalid_arguments');
-      expect(parsed.error?.message).toBe(`Usage: ${SESSION_HELP_LINES.runList}`);
     } finally {
       output.restore();
     }

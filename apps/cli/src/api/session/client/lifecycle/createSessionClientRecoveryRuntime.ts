@@ -12,8 +12,10 @@ import {
 } from '../../sessionChangesSyncOnConnect';
 import { fetchChangesAccountId } from '../../../changes';
 import { readAccountChangesCursor } from '@/persistence';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { KnownPendingQueueState } from '../../pendingQueueState';
 import type { SessionSnapshotRefreshReason } from '../../sessionSnapshotRefreshReason';
+import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 export type SessionClientRecoveryRuntime = Readonly<{
     catchUpSessionMessages: (request: SessionCatchUpRequest) => Promise<void>;
@@ -27,6 +29,8 @@ export function createSessionClientRecoveryRuntime(
     params: Readonly<{
         startupMessageCatchUpRetryDelaysMs: readonly number[];
         token: string;
+        serverUrl?: string;
+        accountChangesEnabled?: boolean;
         sessionId: string;
         getClosed: () => boolean;
         getSessionConnectionSupervisor: () => ManagedConnectionSupervisor | null;
@@ -42,22 +46,25 @@ export function createSessionClientRecoveryRuntime(
         handleUpdate: (update: Update, opts: { source: 'session-scoped' | 'user-scoped' }) => void;
         syncSessionSnapshotFromServer: (opts: { reason: SessionSnapshotRefreshReason }) => Promise<boolean>;
         applyPendingQueueState: (state: KnownPendingQueueState) => void;
+        reconcilePendingExecutionRunTarget?: (runId: string) => Promise<void>;
         refreshAccountSettingsForMinimumVersion?: (settingsVersion: number | null) => Promise<void>;
-    }>,
+    }> & SessionStoredContentCryptoContext,
 ): SessionClientRecoveryRuntime {
+    const serverUrl = params.serverUrl ?? resolveServerHttpBaseUrl();
     let accountIdPromise: Promise<string> | null = null;
     let changesSyncInFlight: Promise<void> | null = null;
     const sessionChangesCursorByAccountId = new Map<string, number>();
     let startupMessageCatchUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
     const catchUpSessionMessages = async (catchUpRequest: SessionCatchUpRequest): Promise<void> => {
-        const request = () => catchUpSessionMessagesAfterSeq({
+        const request = () => runWithServerHttpBaseUrl(serverUrl, () => catchUpSessionMessagesAfterSeq({
+            ...(params.mode === 'plain' ? { mode: 'plain' as const, ctx: null } : { mode: 'e2ee' as const, ctx: params.ctx }),
             token: params.token,
             sessionId: params.sessionId,
             afterSeq: catchUpRequest.afterSeq,
             onUpdate: (update) => params.handleUpdate(update, {
                 source: 'session-scoped',
             }),
-        });
+        }));
         const supervisor = params.getSessionConnectionSupervisor();
         if (!supervisor) {
             await request();
@@ -134,6 +141,7 @@ export function createSessionClientRecoveryRuntime(
     };
 
     const getAccountId = async (): Promise<string | null> => {
+        if (params.accountChangesEnabled === false) return null;
         if (accountIdPromise) {
             try {
                 return await accountIdPromise;
@@ -149,7 +157,7 @@ export function createSessionClientRecoveryRuntime(
             }
         }
 
-        const request = () => fetchChangesAccountId({ token: params.token });
+        const request = () => runWithServerHttpBaseUrl(serverUrl, () => fetchChangesAccountId({ token: params.token }));
         const supervisor = params.getSessionConnectionSupervisor();
         const pending = supervisor
             ? runSupervisedRequest({
@@ -201,7 +209,7 @@ export function createSessionClientRecoveryRuntime(
     };
 
     const syncChangesOnConnect = async (opts: { reason: 'connect' | 'reconnect' }): Promise<void> => {
-        if (!isV2ChangesSyncEnabled(process.env.HAPPY_ENABLE_V2_CHANGES)) {
+        if (params.accountChangesEnabled !== false && !isV2ChangesSyncEnabled(process.env.HAPPY_ENABLE_V2_CHANGES)) {
             return;
         }
 
@@ -210,7 +218,16 @@ export function createSessionClientRecoveryRuntime(
             await changesSyncInFlight.catch(() => {});
         }
 
-        const pending = runSessionChangesSyncOnConnect({
+        // A scoped Session has no Account change cursor. The existing exact
+        // transcript/snapshot recovery owners reconstruct its projection.
+        const pending = params.accountChangesEnabled === false
+            ? (async () => {
+                if (opts.reason === 'reconnect') {
+                    await catchUpSessionMessages({ afterSeq: params.getLastObservedMessageSeq() });
+                }
+                await params.syncSessionSnapshotFromServer({ reason: opts.reason });
+            })()
+            : runWithServerHttpBaseUrl(serverUrl, () => runSessionChangesSyncOnConnect({
             reason: opts.reason,
             token: params.token,
             sessionId: params.sessionId,
@@ -221,10 +238,11 @@ export function createSessionClientRecoveryRuntime(
             catchUpSessionMessages: (request) => catchUpSessionMessages(request),
             syncSessionSnapshotFromServer: (syncOpts) => params.syncSessionSnapshotFromServer(syncOpts),
             applyPendingQueueState: (state) => params.applyPendingQueueState(state),
+            reconcilePendingExecutionRunTarget: params.reconcilePendingExecutionRunTarget,
             refreshAccountSettingsForMinimumVersion: params.refreshAccountSettingsForMinimumVersion,
             connectionSupervisor: params.getSessionConnectionSupervisor(),
             onDebug: (message, data) => logger.debug(message, data),
-        });
+        }));
 
         changesSyncInFlight = pending;
         try {

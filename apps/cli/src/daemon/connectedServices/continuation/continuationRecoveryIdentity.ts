@@ -1,6 +1,6 @@
 import type {
-  ConnectedServiceBindingSelectionV1,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingSelectionV2,
+  ConnectedServiceBindingsV2,
   SessionContinuationRecoveryIdentityV1,
 } from '@happier-dev/protocol';
 
@@ -12,7 +12,7 @@ function normalizeNonEmpty(value: unknown): string | null {
 
 function readConnectedBindingIdentity(input: Readonly<{
   serviceId: string;
-  binding: ConnectedServiceBindingSelectionV1 | undefined;
+  binding: ConnectedServiceBindingSelectionV2 | undefined;
   failureFingerprint?: string | null;
   targetGeneration?: number | null;
 }>): SessionContinuationRecoveryIdentityV1 | null {
@@ -52,7 +52,7 @@ function readConnectedBindingIdentity(input: Readonly<{
 
 export function buildContinuationRecoveryIdentityFromBindings(input: Readonly<{
   serviceIds: ReadonlySet<string>;
-  bindings: ConnectedServiceBindingsV1;
+  bindings: ConnectedServiceBindingsV2;
   failureFingerprint?: string | null;
   targetGenerationByServiceId?: Readonly<Record<string, number | null | undefined>> | null;
 }>): SessionContinuationRecoveryIdentityV1 | null {
@@ -68,7 +68,7 @@ export function buildContinuationRecoveryIdentityFromBindings(input: Readonly<{
 }
 
 export function listContinuationRecoveryIdentitiesFromBindings(
-  bindings: ConnectedServiceBindingsV1,
+  bindings: ConnectedServiceBindingsV2,
 ): SessionContinuationRecoveryIdentityV1[] {
   const identities: SessionContinuationRecoveryIdentityV1[] = [];
   for (const [serviceId, binding] of Object.entries(bindings.bindingsByServiceId)) {

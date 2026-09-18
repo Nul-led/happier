@@ -20,6 +20,52 @@ function readShare(value: unknown): { accessLevel: string; canApprovePermissions
   return { accessLevel, canApprovePermissions };
 }
 
+function readTimestamp(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function readNullableTimestamp(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return readTimestamp(value);
+}
+
+/**
+ * Every operational fact the public `SessionSummary` schema can already carry.
+ *
+ * `summarizeSessionRow` used to drop these, so a CLI/daemon/Action caller saw a Session with no
+ * turn, runtime, rollback or pending-activation state at all and had no way to tell "idle" from
+ * "this mapper did not look". They are copied verbatim: interpretation belongs to the awareness
+ * projector, not to a mapper.
+ */
+function readOperationalRowFacts(row: RawSessionListRow): Partial<SessionSummary> {
+  const latestTurnId = typeof row.latestTurnId === 'string' ? row.latestTurnId : row.latestTurnId === null ? null : undefined;
+  const latestTurnStatus = row.latestTurnStatus ?? undefined;
+  const latestTurnStatusObservedAt = readNullableTimestamp(row.latestTurnStatusObservedAt);
+  const lastRuntimeIssue = row.lastRuntimeIssue ?? undefined;
+  const runtimeActivityObservedAt = readNullableTimestamp(row.runtimeActivityObservedAt);
+  const rollbackEligibleTurnStarts = Array.isArray(row.rollbackEligibleTurnStarts)
+    ? row.rollbackEligibleTurnStarts
+    : undefined;
+  return {
+    ...(latestTurnId !== undefined ? { latestTurnId } : {}),
+    ...(latestTurnStatus !== undefined ? { latestTurnStatus } : {}),
+    ...(latestTurnStatusObservedAt !== undefined ? { latestTurnStatusObservedAt } : {}),
+    ...(lastRuntimeIssue !== undefined ? { lastRuntimeIssue } : {}),
+    ...(row.runtimeActivityState !== undefined ? { runtimeActivityState: row.runtimeActivityState } : {}),
+    ...(readTimestamp(row.runtimeActivityActiveCount) !== undefined
+      ? { runtimeActivityActiveCount: row.runtimeActivityActiveCount }
+      : {}),
+    ...(runtimeActivityObservedAt !== undefined ? { runtimeActivityObservedAt } : {}),
+    ...(readTimestamp(row.runtimeActivityRevision) !== undefined
+      ? { runtimeActivityRevision: row.runtimeActivityRevision }
+      : {}),
+    ...(rollbackEligibleTurnStarts !== undefined ? { rollbackEligibleTurnStarts } : {}),
+    ...(row.pendingActivationAuthorization !== undefined
+      ? { pendingActivationAuthorization: row.pendingActivationAuthorization }
+      : {}),
+  };
+}
+
 export function summarizeSessionRow(params: Readonly<{
   credentials: StoredCredentials;
   accountEncryptionMode: AccountEncryptionCurrentnessResponse['mode'];
@@ -57,11 +103,15 @@ export function summarizeSessionRow(params: Readonly<{
     ...(path ? { path } : {}),
     ...(host ? { host } : {}),
     ...(isSystem ? { isSystem, systemPurpose: systemMetadata?.key ?? null } : {}),
+    ...(params.row.effectiveAccess !== undefined
+      ? { effectiveAccess: params.row.effectiveAccess }
+      : {}),
     ...(readShare(params.row.share) !== undefined ? { share: readShare(params.row.share) } : {}),
     ...(params.row.encryptionMode ? { encryptionMode: params.row.encryptionMode } : {}),
     encryption: params.credentials.encryption
       ? { type: params.credentials.encryption.type }
       : null,
+    ...readOperationalRowFacts(params.row),
   };
 }
 

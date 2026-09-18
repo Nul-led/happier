@@ -13,6 +13,18 @@ function readNonNegativeNumber(value: unknown): number | null {
     return Math.trunc(value);
 }
 
+function readModelCooldowns(value: unknown): Record<string, number> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const cooldowns: Record<string, number> = {};
+    for (const [modelId, candidate] of Object.entries(value)) {
+        const cooldownUntilMs = readNonNegativeNumber(candidate);
+        if (modelId.trim().length > 0 && cooldownUntilMs !== null) {
+            cooldowns[modelId] = cooldownUntilMs;
+        }
+    }
+    return cooldowns;
+}
+
 function resolveUsageLimitRetryAtMs(input: Readonly<{
     retryAtMs: number | null;
     cooldownMs: number;
@@ -23,6 +35,19 @@ function resolveUsageLimitRetryAtMs(input: Readonly<{
     return cooldownMs === null
         ? null
         : input.observedAtMs + cooldownMs;
+}
+
+export const CONNECTED_SERVICE_MODEL_ENTITLEMENT_COOLDOWN_MS =
+    24 * 60 * 60 * 1000;
+
+function resolvePlanInvalidRetryAtMs(
+    retryAtMs: number | null,
+    observedAtMs: number,
+): number {
+    return Math.max(
+        retryAtMs ?? 0,
+        observedAtMs + CONNECTED_SERVICE_MODEL_ENTITLEMENT_COOLDOWN_MS,
+    );
 }
 
 export function resolveConnectedServiceAuthGroupFailureRetryAtMs(
@@ -44,8 +69,12 @@ export function buildConnectedServiceAuthGroupObservedFailureMemberState(
     input: Readonly<{
         existing: ConnectedServiceAuthGroupMemberStateV1;
         reason: string;
+        limitCategory?: string | null;
+        quotaScope?: string | null;
+        providerLimitId?: string | null;
         retryAtMs: number | null;
         cooldownMs: number;
+        autoDisablePlanInvalidAccounts?: boolean;
         planType: string | null | undefined;
         observedAtMs: number;
     }>,
@@ -58,6 +87,41 @@ export function buildConnectedServiceAuthGroupObservedFailureMemberState(
             ? { lastObservedPlanType: input.planType }
             : {}),
     };
+    const providerLimitId = input.providerLimitId?.trim();
+    if (
+        input.limitCategory === 'plan_invalid'
+        && input.quotaScope === 'model'
+        && providerLimitId
+    ) {
+        return {
+            ...state,
+            lastFailureCode: 'model_not_entitled',
+            modelUnavailableUntilMsByModelId: {
+                ...readModelCooldowns(
+                    input.existing.modelUnavailableUntilMsByModelId,
+                ),
+                [providerLimitId]: resolvePlanInvalidRetryAtMs(
+                    input.retryAtMs,
+                    input.observedAtMs,
+                ),
+            },
+            ...(input.autoDisablePlanInvalidAccounts === true
+                ? { autoDisabledReason: 'model_not_entitled' as const }
+                : {}),
+        };
+    }
+    if (
+        input.reason === 'permission_denied'
+        && input.limitCategory === 'plan_invalid'
+    ) {
+        return {
+            ...state,
+            planUnavailableUntilMs: resolvePlanInvalidRetryAtMs(
+                input.retryAtMs,
+                input.observedAtMs,
+            ),
+        };
+    }
     switch (input.reason) {
         case 'usage_limit':
             return {
@@ -87,7 +151,10 @@ export function buildConnectedServiceAuthGroupObservedFailureMemberState(
         case 'plan':
             return {
                 ...state,
-                planUnavailableUntilMs: input.retryAtMs,
+                planUnavailableUntilMs: resolvePlanInvalidRetryAtMs(
+                    input.retryAtMs,
+                    input.observedAtMs,
+                ),
             };
         case 'validation':
             return {

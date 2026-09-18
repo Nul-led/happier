@@ -3,9 +3,136 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
+
+func TestCustodyRunSubprocess(t *testing.T) {
+	separator := -1
+	for index, argument := range os.Args {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 || separator+1 >= len(os.Args) {
+		return
+	}
+
+	switch os.Args[separator+1] {
+	case "custody-helper":
+		if err := runCustodyCommand(os.Args[separator+2:]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(exitOSError)
+		}
+		os.Exit(exitOK)
+	case "custody-target":
+		_, _ = fmt.Fprintln(os.Stdout, "target-ready")
+		_, _ = fmt.Fprintln(os.Stderr, "target-error-ready")
+		_ = os.Stdin.Close()
+		_ = os.Stdout.Close()
+		_ = os.Stderr.Close()
+		// Stay alive long enough to distinguish target half-close from custody
+		// exit. The parent kills the custody helper after observing both facts.
+		time.Sleep(10 * time.Second)
+		os.Exit(exitOK)
+	}
+}
+
+func TestCustodyRunReleasesHelperStdioAfterTargetStarts(t *testing.T) {
+	jobName := fmt.Sprintf(`Local\happier-processcustody-test-%d`, os.Getpid())
+	handshakePath := filepath.Join(t.TempDir(), "custody.json")
+	command := exec.Command(
+		os.Args[0],
+		"-test.run=^TestCustodyRunSubprocess$",
+		"--",
+		"custody-helper",
+		"--job="+jobName,
+		"--handshake="+handshakePath,
+		"--",
+		os.Args[0],
+		"-test.run=^TestCustodyRunSubprocess$",
+		"--",
+		"custody-target",
+	)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("create custody stdin pipe: %v", err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("create custody stdout pipe: %v", err)
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		t.Fatalf("create custody stderr pipe: %v", err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatalf("start custody helper: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+
+	reader := bufio.NewReader(stdout)
+	ready, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read target readiness: %v", err)
+	}
+	if strings.TrimSpace(ready) != "target-ready" {
+		t.Fatalf("unexpected target readiness: %q", ready)
+	}
+	stderrReader := bufio.NewReader(stderr)
+	errorReady, err := stderrReader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read target stderr readiness: %v", err)
+	}
+	if strings.TrimSpace(errorReady) != "target-error-ready" {
+		t.Fatalf("unexpected target stderr readiness: %q", errorReady)
+	}
+
+	for name, stream := range map[string]io.Reader{
+		"stdout": reader,
+		"stderr": stderrReader,
+	} {
+		result := make(chan error, 1)
+		go func() {
+			_, readErr := io.ReadAll(stream)
+			result <- readErr
+		}()
+		select {
+		case readErr := <-result:
+			if readErr != nil {
+				t.Fatalf("read target %s to EOF: %v", name, readErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("custody helper retained %s after the target closed it", name)
+		}
+	}
+
+	writeResult := make(chan error, 1)
+	go func() {
+		_, writeErr := stdin.Write([]byte("must-observe-no-reader"))
+		writeResult <- writeErr
+	}()
+	select {
+	case writeErr := <-writeResult:
+		if writeErr == nil {
+			t.Fatal("custody helper retained stdin after the target closed it")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stdin write blocked because the custody helper retained the read handle")
+	}
+}
 
 func TestQuoteWindowsArgumentRoundTripsThroughArgvDecoding(t *testing.T) {
 	cases := []string{

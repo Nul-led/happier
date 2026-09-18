@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import { encodeBase64, encrypt } from './encryption';
@@ -86,7 +87,7 @@ describe('ApiSessionClient reconnect transcript catch-up (afterSeq)', () => {
             throw new Error(`Unexpected axios.get: ${url}`);
         });
 
-        const client = new ApiSessionClient(
+        const client = createTestApiSessionClient(ApiSessionClient,
             'fake-token',
             createMockSession({
                 id: sessionId,

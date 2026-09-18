@@ -173,7 +173,7 @@ describe('workspace root ownership', () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-locks-race-'));
     const lockDirectory = join(fixture, 'locks');
     const root = join(fixture, 'workspace');
-    await mkdir(root);
+    await mkdir(join(root, 'child'), { recursive: true });
     const releasePath = join(fixture, 'release');
     const firstResultPath = join(fixture, 'first.json');
     const secondResultPath = join(fixture, 'second.json');
@@ -208,6 +208,46 @@ describe('workspace root ownership', () => {
 
     await rename(root, `${root}-replaced`);
     await mkdir(root);
+    await expect(acquired.bindCurrentRootIdentity()).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+    await acquired.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('loses ownership when its persisted owner record disappears after binding', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-record-missing-'));
+    const lockDirectory = join(fixture, 'locks');
+    const root = join(fixture, 'workspace');
+    await mkdir(root);
+    const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
+    const acquired = await manager.tryAcquire({ ownerId: 'relationship-1', canonicalRoot: root, operation: 'sync' });
+    if ('kind' in acquired) throw new Error('fixture did not acquire root');
+    await acquired.bindCurrentRootIdentity();
+
+    const [recordName] = (await readdir(lockDirectory)).filter((name) => name.endsWith('.json'));
+    if (!recordName) throw new Error('fixture did not persist ownership');
+    await rm(join(lockDirectory, recordName));
+
+    await expect(acquired.bindCurrentRootIdentity()).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+    await acquired.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('loses ownership when its persisted owner record is replaced after binding', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-record-replaced-'));
+    const lockDirectory = join(fixture, 'locks');
+    const root = join(fixture, 'workspace');
+    await mkdir(root);
+    const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
+    const acquired = await manager.tryAcquire({ ownerId: 'relationship-1', canonicalRoot: root, operation: 'sync' });
+    if ('kind' in acquired) throw new Error('fixture did not acquire root');
+    await acquired.bindCurrentRootIdentity();
+
+    const [recordName] = (await readdir(lockDirectory)).filter((name) => name.endsWith('.json'));
+    if (!recordName) throw new Error('fixture did not persist ownership');
+    const recordPath = join(lockDirectory, recordName);
+    const replacement = JSON.parse(await readFile(recordPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(recordPath, JSON.stringify({ ...replacement, ownerId: 'relationship-2' }), 'utf8');
+
     await expect(acquired.bindCurrentRootIdentity()).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
     await acquired.release();
     await rm(fixture, { recursive: true, force: true });

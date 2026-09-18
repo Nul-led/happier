@@ -17,9 +17,8 @@ import type { SubagentsService } from '@happier-dev/plugin-sdk/sessions/subagent
 import type { AgentSessionSubagentObservationPublisher } from '@happier-dev/plugin-sdk/agents/runtime';
 import { createHash, randomUUID } from 'node:crypto';
 
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { readAuthenticationStatus } from '@/api/client/httpStatusError';
-import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { StoredCredentials } from '@/persistence';
 import { tryDecryptSessionPresentationMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
@@ -125,7 +124,10 @@ export type PluginSessionsInventoryParams = Readonly<{
   fetchById?: (params: Readonly<{
     token: string;
     sessionId: string;
+    serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
   }>) => Promise<RawSessionRecord | null>;
+  /** The daemon's already-retained snapshot for this exact Home. */
+  resolveServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
   watchPollIntervalMs?: number;
   executeMessageAction: (params: Readonly<{
     sessionId: string;
@@ -336,9 +338,8 @@ function projectSessionMessageEvent(item: SemanticTranscriptItem): Extract<Sessi
   });
 }
 
-async function defaultReadStoragePolicy(): Promise<StoragePolicy> {
-  const snapshot = await fetchServerFeaturesSnapshot({ serverUrl: resolveServerHttpBaseUrl() });
-  return snapshot.status === 'ready'
+function readStoragePolicyFromSnapshot(snapshot: CliServerFeaturesSnapshot | undefined): StoragePolicy {
+  return snapshot?.status === 'ready'
     ? snapshot.features.capabilities.encryption.storagePolicy
     : 'required_e2ee';
 }
@@ -348,7 +349,8 @@ export function createPluginSessionsInventory(
 ): SessionsService {
   const fetchPage = params.fetchPage ?? (async (request) => await fetchSessionsPage(request));
   const fetchById = params.fetchById ?? (async (request) => await fetchSessionById(request));
-  const readStoragePolicy = params.readStoragePolicy ?? defaultReadStoragePolicy;
+  const readStoragePolicy = params.readStoragePolicy
+    ?? (async () => readStoragePolicyFromSnapshot(params.resolveServerFeaturesSnapshot?.()));
   const readAccountEncryptionCurrentness = params.readAccountEncryptionCurrentness
     ?? (async (credentials: StoredCredentials) =>
       await fetchAccountEncryptionCurrentness({ token: credentials.token }));
@@ -408,8 +410,13 @@ export function createPluginSessionsInventory(
     currentCredentials?: StoredCredentials,
   ): Promise<Readonly<{ credentials: StoredCredentials; summary: SessionSummary | null }>> => {
     const credentials = currentCredentials ?? await readCurrentCredentials(signal);
+    const serverFeaturesSnapshot = params.resolveServerFeaturesSnapshot?.();
     const [raw, storagePolicy, accountEncryptionCurrentness] = await Promise.all([
-      callInventoryBoundary(async () => await fetchById({ token: credentials.token, sessionId })),
+      callInventoryBoundary(async () => await fetchById({
+        token: credentials.token,
+        sessionId,
+        ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+      })),
       callInventoryBoundary(readStoragePolicy),
       callInventoryBoundary(async () => await readAccountEncryptionCurrentness(credentials)),
     ]);

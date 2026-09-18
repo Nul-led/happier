@@ -68,6 +68,9 @@ function resolveMetadataPortFailureCode(
 
 export async function updateSessionStateFieldForTarget<F extends SessionStateFieldId>(params: Readonly<{
   credentials: StoredCredentials;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   idOrPrefix: string;
   fieldId: F;
   value: SessionStateFieldWriteValue<F>;
@@ -91,6 +94,9 @@ export async function updateSessionStateFieldForTarget<F extends SessionStateFie
           assertSessionMetadataMutationCurrentness(params.currentness);
           const result = await updateSessionMetadataForTarget({
             credentials: params.credentials,
+            ...(params.resolveAuthorizationHeaders
+              ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+              : {}),
             idOrPrefix: sessionId,
             updater,
             currentness: params.currentness,

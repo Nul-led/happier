@@ -2,6 +2,7 @@ import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionTurnMutationV1 } from '@happier-dev/protocol';
 
+import { configuration } from '@/configuration';
 import { deliverSessionTurnMutation } from './deliverSessionTurnMutation';
 
 vi.mock('axios');
@@ -245,6 +246,11 @@ describe('deliverSessionTurnMutation exact end', () => {
             socket,
             mutation: ordinaryMutation,
         })).resolves.toEqual({ delivered: true, path: 'http' });
+        expect(axios.post).toHaveBeenCalledWith(
+            expect.any(String),
+            ordinaryMutation,
+            expect.objectContaining({ timeout: configuration.sessionControlHttpTimeoutMs }),
+        );
     });
 
     it('treats a matching ordinary rejection receipt as deterministic server settlement', async () => {

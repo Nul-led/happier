@@ -48,14 +48,20 @@ export async function removePathDurably(path: string): Promise<void> {
  * Flushes a restore candidate bottom-up before it is atomically promoted. Directory handles are
  * not syncable on every supported platform, so only the documented unsupported errors are ignored.
  */
-export async function syncPersonalHomeTree(path: string): Promise<void> {
+export async function syncPersonalHomeTree(
+  path: string,
+  options: Readonly<{ allowSymbolicLinks?: boolean }> = {},
+): Promise<void> {
   const info = await lstat(path);
-  if (info.isSymbolicLink()) throw new Error(`Personal Home restore candidate must not be a symbolic link: ${path}`);
+  if (info.isSymbolicLink()) {
+    if (options.allowSymbolicLinks === true) return;
+    throw new Error(`Personal Home restore candidate must not be a symbolic link: ${path}`);
+  }
   if (!info.isDirectory()) {
     await syncOpenPath(path);
     return;
   }
-  for (const name of await readdir(path)) await syncPersonalHomeTree(join(path, name));
+  for (const name of await readdir(path)) await syncPersonalHomeTree(join(path, name), options);
   await syncDirectoryIfSupported(path);
 }
 

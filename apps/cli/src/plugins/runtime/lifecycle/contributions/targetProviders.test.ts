@@ -67,6 +67,7 @@ function provider(input: Readonly<{
                 ? {
                     source: 'probe' as const,
                     manualModelPolicy: 'allowed' as const,
+                    ...(input.managed ? { sourceRegistryVersion: 'gateway-model-registry/v1' } : {}),
                     probes: [{
                         endpointTemplateId: 'api',
                         path: '/v1/catalog',

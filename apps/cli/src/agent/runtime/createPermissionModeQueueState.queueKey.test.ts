@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createPermissionModeQueueState } from '@/agent/runtime/createPermissionModeQueueState';
 
 describe('createPermissionModeQueueState (queue key)', () => {
-  it('partitions admitted inputs with different immutable permission ceilings', async () => {
+  it('partitions admitted inputs with different immutable authority or prompt context', async () => {
     type QueuedTestMessage = {
       role: 'user';
       content: { type: 'text'; text: string };
@@ -55,9 +55,34 @@ describe('createPermissionModeQueueState (queue key)', () => {
         },
       },
     });
+    emit({
+      role: 'user',
+      content: { type: 'text', text: 'legacy unattributed' },
+      localId: 'legacy-unattributed',
+      meta: {},
+    });
+    emit({
+      role: 'user',
+      content: { type: 'text', text: 'known cli' },
+      localId: 'known-cli',
+      meta: {
+        happierProvenanceV1: { v: 1, kind: 'cli' },
+      },
+    });
+    // Keep a distinct batch behind the two provenance cases so a regression
+    // merges them into a visible wrong result instead of leaving this test
+    // blocked waiting for a fourth queue entry.
+    emit({
+      role: 'user',
+      content: { type: 'text', text: 'sentinel' },
+      localId: 'sentinel',
+      meta: { permissionMode: 'safe-yolo' },
+    });
 
     const first = await state.messageQueue.waitForMessagesAndGetAsString();
     const second = await state.messageQueue.waitForMessagesAndGetAsString();
+    const legacyUnattributed = await state.messageQueue.waitForMessagesAndGetAsString();
+    const knownCli = await state.messageQueue.waitForMessagesAndGetAsString();
 
     expect(first?.message).toMatchObject({
       text: 'first',
@@ -73,6 +98,18 @@ describe('createPermissionModeQueueState (queue key)', () => {
         admittedPermissionCeiling: 'read-only',
       },
     });
+    expect(legacyUnattributed?.message).toMatchObject({
+      text: 'legacy unattributed',
+      inputContextBlock: [
+        '<happier_input_context v="1">',
+        'source_kind="legacyUnknown"',
+        '</happier_input_context>',
+      ].join('\n'),
+    });
+    expect(knownCli?.message).toMatchObject({
+      text: 'known cli',
+    });
+    expect(knownCli?.message).not.toHaveProperty('inputContextBlock');
   });
 
   it('rebinds user-message delivery when the session client swaps', async () => {

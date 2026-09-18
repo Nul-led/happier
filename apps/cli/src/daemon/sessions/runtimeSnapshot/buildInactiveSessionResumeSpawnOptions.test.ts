@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  deriveSessionCreationTagV1,
+  SessionCreationCorrespondenceV1Schema,
+} from '@happier-dev/protocol';
 
 const { readAgentCatalogSnapshot } = vi.hoisted(() => ({
   readAgentCatalogSnapshot: vi.fn(),
@@ -23,6 +27,63 @@ describe('buildInactiveSessionResumeSpawnOptions', () => {
           vendorResumeSupport: 'supported',
         },
       },
+    });
+  });
+
+  it('reconstructs exact launch profile and Saved Secret references from immutable correspondence', () => {
+    const sessionCreationTag = deriveSessionCreationTagV1({
+      callerCreationNamespace: 'user',
+      creationKey: 'creation-resume',
+    });
+    const correspondence = SessionCreationCorrespondenceV1Schema.parse({
+      v: 1,
+      sessionCreationTag,
+      recipe: {
+        execution: { machineId: 'machine-1', directory: '/home/coder/project' },
+        organization: { folderId: null, tagIds: [] },
+        agentTarget: {
+          kind: 'agent',
+          identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+        },
+        modelSelection: null,
+        profileId: 'profile-shared',
+        secretReferenceOverlay: {
+          v: 1,
+          bindings: {
+            OPENAI_API_KEY: {
+              ref: 'happier:shared-secret:v1:shared-openai',
+              revision: 9,
+            },
+          },
+        },
+        requestedPermissionMode: null,
+        agentModeId: null,
+        configuration: null,
+        connectedServices: null,
+        mcpSelection: null,
+        transcriptStorage: null,
+        terminal: null,
+        agentSessionStartupInstructionsMarkerV1: null,
+        checkout: null,
+      },
+    });
+
+    const result = buildInactiveSessionResumeSpawnOptions({
+      sessionId: 'session-1',
+      rawSession: { machineId: 'machine-1', path: '/home/coder/project' },
+      metadata: {
+        machineId: 'machine-1',
+        path: '/home/coder/project',
+        flavor: 'codex',
+        sessionCreationCorrespondenceV1: correspondence,
+      },
+    });
+
+    expect(result).toMatchObject({
+      sessionCreationTag,
+      sessionCreationCorrespondence: correspondence,
+      profileId: 'profile-shared',
+      secretReferenceOverlay: correspondence.recipe.secretReferenceOverlay,
     });
   });
 

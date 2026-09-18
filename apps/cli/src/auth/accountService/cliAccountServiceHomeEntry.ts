@@ -7,10 +7,16 @@
  */
 
 import { enrollmentPollingBackoffMs } from '@happier-dev/cli-common/homeEnrollment';
+import type { AccountServiceDirectoryAdoptionTarget } from '@happier-dev/cli-common/accountService';
 
 export type CliAccountServiceRequestedMethod =
-  | Readonly<{ kind: 'key' }>
-  | Readonly<{ kind: 'provider'; providerId: string }>;
+  | Readonly<{ kind: 'key'; action?: 'login' | 'provision'; mode?: 'keyed' }>
+  | Readonly<{
+      kind: 'provider';
+      providerId: string;
+      action: 'login' | 'provision';
+      mode: 'keyed' | 'keyless';
+    }>;
 
 export type CliAccountServiceSelection = Readonly<{
   endpoint: string;
@@ -28,12 +34,30 @@ export type CliAccountServiceRestrictedCredential = Readonly<{
 
 export type CliAccountServiceHomeEntryOutcome =
   | Readonly<{
-      kind: 'preferred_home_enrolled';
+      kind: 'home_entered';
       homeServerIdentityId: string;
       profileId: string;
+      selection: 'explicit' | 'preferred' | 'sole';
+      directoryAdoptionFailures?: readonly AccountServiceDirectoryAdoptionTarget[];
     }>
-  | Readonly<{ kind: 'no_linked_homes' }>
-  | Readonly<{ kind: 'no_preferred_home' }>
+  | Readonly<{
+      kind: 'choose_home';
+      homes: readonly AccountServiceDirectoryAdoptionTarget[];
+      directoryAdoptionFailures?: readonly AccountServiceDirectoryAdoptionTarget[];
+    }>
+  | Readonly<{ kind: 'account_connected_no_homes' }>
+  | Readonly<{ kind: 'explicit_target_not_linked'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'direct_home_selected' }>
+  | Readonly<{ kind: 'home_material_required'; homeServerIdentityId: string; profileId: string; reason: 'missing_material' | 'invalid_material' }>
+  | Readonly<{
+      kind: 'failure';
+      stage: 'refresh' | 'material' | 'enter';
+      homeServerIdentityId?: string;
+      profileId?: string;
+      homeCredentialCommitted: boolean;
+      recovery: 'retry_stage' | 'use_home_auth';
+      retry?: () => Promise<CliAccountServiceHomeEntryOutcome>;
+    }>
   | Readonly<{ kind: 'key_required' }>
   | Readonly<{ kind: 'update_required' }>
   | Readonly<{ kind: 'account_service_unavailable' }>
@@ -51,14 +75,18 @@ export type CliAccountServiceAuthenticationOutcome =
       target: CliAccountServiceTarget;
       credential: CliAccountServiceRestrictedCredential;
     }>
-  | Exclude<CliAccountServiceHomeEntryOutcome, { kind: 'preferred_home_enrolled' | 'no_linked_homes' | 'no_preferred_home' | 'home_unavailable' | 'awaiting_approval' }>;
+  | Exclude<CliAccountServiceHomeEntryOutcome, { kind: 'home_entered' | 'choose_home' | 'account_connected_no_homes' | 'explicit_target_not_linked' | 'direct_home_selected' | 'home_material_required' | 'failure' | 'home_unavailable' | 'awaiting_approval' }>;
 
 export type CliAccountServiceDirectoryJourneyOutcome =
   | Extract<CliAccountServiceHomeEntryOutcome, {
       kind:
-        | 'preferred_home_enrolled'
-        | 'no_linked_homes'
-        | 'no_preferred_home'
+        | 'home_entered'
+        | 'choose_home'
+        | 'account_connected_no_homes'
+        | 'explicit_target_not_linked'
+        | 'direct_home_selected'
+        | 'home_material_required'
+        | 'failure'
         | 'update_required'
         | 'account_service_unavailable'
         | 'home_unavailable'
@@ -95,7 +123,7 @@ export type CliAccountServiceHomeEntryPorts = Readonly<{
     signal?: AbortSignal;
     timeoutMs?: number;
   }>): Promise<CliAccountServiceDirectoryAttemptOutcome>;
-  openPreferredHome(input: Readonly<{
+  openSelectedHome(input: Readonly<{
     homeServerIdentityId: string;
     profileId: string;
   }>): Promise<
@@ -134,10 +162,6 @@ export type CliAccountServiceHomeEntryInput = CliAccountServiceHomeEntryInputBas
     }>
 );
 
-export type CliAccountServiceHomeEntryCoordinator = Readonly<{
-  run(input: CliAccountServiceHomeEntryInput): Promise<CliAccountServiceHomeEntryOutcome>;
-  cancel(): boolean;
-}>;
 
 async function waitForApprovalPoll(signal: AbortSignal, delayMs: number): Promise<boolean> {
   if (signal.aborted) return false;
@@ -154,6 +178,79 @@ async function waitForApprovalPoll(signal: AbortSignal, delayMs: number): Promis
   });
 }
 
+type CliAccountServiceHomeEnteredOutcome = Extract<CliAccountServiceHomeEntryOutcome, { kind: 'home_entered' }>;
+type CliAccountServiceFailureOutcome = Extract<CliAccountServiceHomeEntryOutcome, { kind: 'failure' }>;
+
+function committedEnterFailure(home: Readonly<{
+  homeServerIdentityId: string;
+  profileId: string;
+}>): CliAccountServiceFailureOutcome {
+  return {
+    kind: 'failure',
+    stage: 'enter',
+    ...home,
+    homeCredentialCommitted: true,
+    recovery: 'retry_stage',
+  };
+}
+
+async function finalizeHomeEntered(
+  entered: CliAccountServiceHomeEnteredOutcome,
+  ports: CliAccountServiceHomeEntryPorts,
+  signal: AbortSignal,
+): Promise<CliAccountServiceHomeEntryOutcome> {
+  if (signal.aborted) return { kind: 'cancelled' };
+  const home = {
+    homeServerIdentityId: entered.homeServerIdentityId,
+    profileId: entered.profileId,
+  };
+  const opened = await ports.openSelectedHome(home);
+  if (opened.kind !== 'opened') return opened;
+  let continued: Awaited<ReturnType<CliAccountServiceHomeEntryPorts['continueMachineAndService']>>;
+  try {
+    continued = await ports.continueMachineAndService(home);
+  } catch {
+    return committedEnterFailure(home);
+  }
+  if (continued.kind !== 'continued') {
+    return committedEnterFailure(home);
+  }
+  return entered;
+}
+
+async function finalizeDeferredOutcome(
+  outcome: CliAccountServiceHomeEntryOutcome,
+  ports: CliAccountServiceHomeEntryPorts,
+  callerSignal?: AbortSignal,
+): Promise<CliAccountServiceHomeEntryOutcome> {
+  if (outcome.kind === 'home_entered') {
+    const signal = callerSignal ?? new AbortController().signal;
+    return await finalizeHomeEntered(outcome, ports, signal);
+  }
+  if (outcome.kind === 'failure' && outcome.retry) {
+    return decorateFailureRetry(outcome, ports, callerSignal);
+  }
+  return outcome;
+}
+
+function decorateFailureRetry(
+  failure: CliAccountServiceFailureOutcome,
+  ports: CliAccountServiceHomeEntryPorts,
+  callerSignal?: AbortSignal,
+): CliAccountServiceFailureOutcome {
+  if (!failure.retry) return failure;
+  const originalRetry = failure.retry;
+  return {
+    ...failure,
+    retry: async (): Promise<CliAccountServiceHomeEntryOutcome> => {
+      if (callerSignal?.aborted) return { kind: 'cancelled' };
+      const retried = await originalRetry();
+      if (callerSignal?.aborted) return { kind: 'cancelled' };
+      return await finalizeDeferredOutcome(retried, ports, callerSignal);
+    },
+  };
+}
+
 async function runCliAccountServiceHomeEntryWithSignal(
   input: CliAccountServiceHomeEntryInput,
   ports: CliAccountServiceHomeEntryPorts,
@@ -163,7 +260,10 @@ async function runCliAccountServiceHomeEntryWithSignal(
     ? Number.POSITIVE_INFINITY
     : Date.now() + input.timeoutMs;
   if (signal.aborted) return { kind: 'cancelled' };
-  if (!input.existingAuthentication && input.method.kind === 'key' && input.key === undefined) {
+  if (!input.existingAuthentication
+    && input.method.kind === 'key'
+    && input.method.action !== 'provision'
+    && input.key === undefined) {
     return { kind: 'key_required' };
   }
 
@@ -201,21 +301,8 @@ async function runCliAccountServiceHomeEntryWithSignal(
     journey = await journey.resume({ signal });
     approvalPollCount += 1;
   }
-  if (journey.kind !== 'preferred_home_enrolled') return journey;
-  if (signal.aborted) return { kind: 'cancelled' };
-
-  const home = {
-    homeServerIdentityId: journey.homeServerIdentityId,
-    profileId: journey.profileId,
-  };
-  const opened = await ports.openPreferredHome(home);
-  if (opened.kind !== 'opened') return opened;
-  if (signal.aborted) return { kind: 'cancelled' };
-
-  const continued = await ports.continueMachineAndService(home);
-  if (continued.kind !== 'continued') return continued;
-
-  return journey;
+  if (journey.kind !== 'home_entered') return journey;
+  return await finalizeHomeEntered(journey, ports, signal);
 }
 
 export async function runCliAccountServiceHomeEntry(
@@ -241,51 +328,19 @@ export async function runCliAccountServiceHomeEntry(
     // Opening the Home and continuing machine/service setup are deliberately
     // non-cancellable. Once both report success, that completed terminal fact
     // must win over a timeout or caller abort that raced during continuation.
-    if (result.kind !== 'preferred_home_enrolled') {
+    if (result.kind !== 'home_entered') {
+      if (result.kind === 'failure' && result.homeCredentialCommitted) {
+        return result.retry ? decorateFailureRetry(result, ports, input.signal) : result;
+      }
       if (timedOut) return { kind: 'timed_out' };
       if (input.signal?.aborted) return { kind: 'cancelled' };
+      if (result.kind === 'failure' && result.retry) {
+        return decorateFailureRetry(result, ports, input.signal);
+      }
     }
     return result;
   } finally {
     if (timer) clearTimeout(timer);
     input.signal?.removeEventListener('abort', abortFromCaller);
   }
-}
-
-/**
- * Process-local CLI entry owner consumed by U10-06. It owns replacement and
- * cancellation of the current CLI journey while the injected ports retain
- * authentication, Directory, Home, focus, and service authority.
- */
-export function createCliAccountServiceHomeEntryCoordinator(
-  ports: CliAccountServiceHomeEntryPorts,
-): CliAccountServiceHomeEntryCoordinator {
-  let activeController: AbortController | null = null;
-
-  return {
-    async run(input) {
-      activeController?.abort();
-      const controller = new AbortController();
-      activeController = controller;
-      const abortFromCaller = () => controller.abort();
-      input.signal?.addEventListener('abort', abortFromCaller, { once: true });
-      if (input.signal?.aborted) controller.abort();
-      try {
-        return await runCliAccountServiceHomeEntry({
-          ...input,
-          signal: controller.signal,
-        }, ports);
-      } finally {
-        input.signal?.removeEventListener('abort', abortFromCaller);
-        if (activeController === controller) activeController = null;
-      }
-    },
-
-    cancel() {
-      const controller = activeController;
-      if (!controller) return false;
-      controller.abort();
-      return true;
-    },
-  };
 }

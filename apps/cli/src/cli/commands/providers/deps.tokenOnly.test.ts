@@ -21,8 +21,7 @@ vi.mock('@/features/featureDecisionService', () => ({
   resolveCliFeatureDecision: vi.fn(() => ({ state: 'enabled' })),
 }));
 
-import { indexSavedSecretsByIdFromAccountSettings } from '@/settings/secrets/indexSavedSecretsById';
-import { resolveMcpValueRefPlaintext } from '@/mcp/servers/resolveMcpValueRefPlaintext';
+import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
 import { resolveProviderCliDependencies } from './deps';
 
 describe('resolveProviderCliDependencies token-only settings secrets', () => {
@@ -43,19 +42,19 @@ describe('resolveProviderCliDependencies token-only settings secrets', () => {
       value: 'sk-token-only-provider',
     });
     const accountSettings = { secrets: [prepared.record] };
-    const savedSecretsById = indexSavedSecretsByIdFromAccountSettings(accountSettings);
+    const materializer = createSavedSecretMaterializerV1({
+      accountSettings,
+      settingsSecretsReadKeys: [],
+    });
 
     expect(prepared.record.encryptedValue).toEqual({
       _isSecretValue: true,
       value: 'sk-token-only-provider',
     });
-    expect(resolveMcpValueRefPlaintext({
-      valueRef: { t: 'savedSecret', secretId: prepared.id },
-      savedSecretsById,
-      settingsSecretsKey: null,
-      settingsSecretsReadKeys: [],
-      processEnv: {},
-    })).toBe('sk-token-only-provider');
+    expect(materializer.resolve(prepared.id)).toMatchObject({
+      status: 'ready',
+      value: 'sk-token-only-provider',
+    });
     expect(readStoredCredentialsMock).toHaveBeenCalledOnce();
     expect(readCredentialsMock).not.toHaveBeenCalled();
   });

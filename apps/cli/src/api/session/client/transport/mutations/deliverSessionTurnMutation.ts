@@ -3,6 +3,7 @@ import axios from 'axios';
 
 import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { configuration } from '@/configuration';
 import { resolveSessionControlSocketAckTimeoutMs } from '@/session/transport/shared/sessionTimeouts';
 import {
     ExactSessionTurnEndMutationV1Schema,
@@ -227,7 +228,7 @@ async function tryHttpSessionTurnMutation(params: Readonly<{
                     Authorization: `Bearer ${params.token}`,
                     'Content-Type': 'application/json',
                 },
-                timeout: 10_000,
+                timeout: configuration.sessionControlHttpTimeoutMs,
             },
         );
         const data = response?.data as Record<string, unknown> | undefined;

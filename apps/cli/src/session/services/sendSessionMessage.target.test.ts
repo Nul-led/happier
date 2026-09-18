@@ -1,0 +1,386 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createActionExecutor, deriveSessionCreationTagV1 } from '@happier-dev/protocol';
+import { executeExternalAction } from '@/daemon/externalActions/executeExternalAction';
+import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { sendSessionMessage } from './sendSessionMessage';
+import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
+
+// HTTP and fetch are the real process boundaries; authoring, crypto envelopes,
+// Session resolution, capability parsing and Pending transport stay real.
+const http = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+const sockets = vi.hoisted(() => ({ createUserScopedSocket: vi.fn() }));
+const rpc = vi.hoisted(() => ({ callSessionRpc: vi.fn() }));
+vi.mock('axios', () => ({ default: { ...http, isAxiosError: () => false } }));
+vi.mock('@/api/session/sockets', () => sockets);
+vi.mock('@/session/transport/rpc/sessionRpc', () => rpc);
+
+const sessionId = 'c123456789012345678901234';
+const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+const cliActionContext = { surface: 'cli' as const, authority: 'present_user' as const, defaultSessionId: null };
+const credentials = { token: 'target-send-test', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } };
+const correspondence = {
+  v: 1,
+  sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'target-send-test' }),
+  recipe: {
+    execution: { machineId: 'machine-a', directory: '/workspace' },
+    organization: { folderId: null, tagIds: [] },
+    agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
+    modelSelection: null, profileId: null, requestedPermissionMode: null,
+    agentModeId: null, configuration: null, connectedServices: null, mcpSelection: null,
+    transcriptStorage: null, terminal: null, agentSessionStartupInstructionsMarkerV1: null, checkout: null,
+  },
+};
+
+function mockRunReads(inputTurns: readonly unknown[]) {
+  let readIndex = 0;
+  rpc.callSessionRpc.mockImplementation(async () => ({ ok: true, data: { run: {
+        runId: 'run-a', callId: 'call-a', sidechainId: 'sidechain-a', intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read-only',
+        retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
+        inputTurns: inputTurns[Math.min(readIndex++, inputTurns.length - 1)],
+      } } }));
+}
+
+describe('target Session input authoring through HTTP', () => {
+  it.each([
+    { didWrite: true, status: 'accepted' },
+    { didWrite: false, status: 'alreadyAccepted' },
+    { didWrite: null, status: 'outcomeUnknown' },
+  ] as const)('retains ordinary Session admission evidence: $status', async ({ didWrite, status }) => {
+    if (didWrite === null) http.post.mockRejectedValueOnce(new Error('acknowledgement lost'));
+    else http.post.mockResolvedValueOnce({ status: 200, data: { didWrite, terminal: false } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, message: 'ordinary input',
+      localId: 'ordinary-retry', wait: false, timeoutMs: 1000,
+      resumeInactiveSession: false,
+    });
+    expect(result.admissionResult).toMatchObject({ status, localId: 'ordinary-retry' });
+  });
+
+  it.each([true, false])('returns a valid external Action result after durable ordinary enqueue (didWrite=%s)', async (didWrite) => {
+    http.post.mockResolvedValueOnce({ status: 200, data: { didWrite, terminal: true } });
+    const deps = createCliActionDeps({ token: credentials.token, credentials, sessionId,
+      mode: 'plain', ctx: null });
+    const result = await executeExternalAction({
+      actionId: 'session.message.send',
+      envelope: { v: 1, requestId: 'external-send', input: {
+        sessionId, message: 'ordinary input', localId: 'external-retry',
+      } },
+      principal: { authority: 'present_user' },
+      currentMachineId: 'machine-a',
+      resolveTarget: async () => ({ kind: 'session', sessionId }),
+      executor: createActionExecutor({ ...deps, isActionApprovalRequired: () => false }),
+    });
+    expect(result).toMatchObject({ kind: 'response', response: { execution: {
+      ok: true, result: { status: didWrite ? 'accepted' : 'alreadyAccepted', localId: 'external-retry' },
+    } } });
+  });
+
+  beforeEach(() => {
+    http.get.mockReset();
+    http.post.mockReset();
+    sockets.createUserScopedSocket.mockReset();
+    rpc.callSessionRpc.mockReset();
+    http.get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/v1/account/encryption/currentness')) return {
+        status: 200, data: { mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' } },
+      };
+      if (url.includes(`/v2/sessions/${sessionId}`)) return {
+        status: 200, data: { session: createSessionRecordFixture({
+          id: sessionId, active: false, encryptionMode: 'plain',
+          metadata: JSON.stringify({ sessionCreationCorrespondenceV1: correspondence }),
+        }) },
+      };
+      throw new Error(`Unexpected read: ${url}`);
+    });
+    http.post.mockResolvedValue({ status: 200, data: { didWrite: true, terminal: false } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      features: {}, capabilities: { session: { pendingInput: { protocolVersion: 3 } } },
+    }), { status: 200 })));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('authors recipient once and admits to the exact nested resource without resuming the parent', async () => {
+    const deps = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null });
+    const result = await deps.sessionSendMessage({
+      context: cliActionContext,
+      sessionId, localId: 'input-a', message: 'Continue the side conversation',
+      messageMeta: { attachmentMarker: 'authored-file' }, displayText: 'Continue with this file',
+      recipient, requestedAction: { v: 1, kind: 'enqueue' }, wait: false, timeoutSeconds: 1,
+    });
+    expect(result, JSON.stringify(result)).toEqual({ status: 'accepted', localId: 'input-a' });
+    expect(http.post).toHaveBeenCalledTimes(1);
+    expect(http.post).toHaveBeenCalledWith(
+      expect.stringContaining(`/v2/sessions/${sessionId}/execution-runs/run-a/pending`),
+      expect.objectContaining({
+        v: 1, targetMachineId: 'machine-a', localId: 'input-a',
+        content: { t: 'plain', v: expect.objectContaining({
+          meta: expect.objectContaining({ attachmentMarker: 'authored-file', displayText: 'Continue with this file', happier: { kind: 'participant_message.v1', payload: { recipient } } }),
+        }) },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('does not perform an uncached feature round trip before the authoritative strict target route', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      features: {}, capabilities: { session: { pendingInput: { protocolVersion: 2 } } },
+    }), { status: 200 })));
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Private run input',
+      recipient, wait: false, timeoutMs: 1000,
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: true, admissionResult: { status: 'accepted', localId: 'input-a' },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends protected run input through the strict Machine V2 contract', async () => {
+    const machineAdmissionTransport = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-a' }));
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Plugin run input',
+      recipient, wait: false, timeoutMs: 1000,
+      inputAdmission: {
+        provenance: { v: 1, kind: 'pluginSession', pluginId: 'example.plugin', contributionLocalId: 'send', surface: 'background' },
+        request: {
+          v: 1, producer: 'pluginSession',
+          caller: { kind: 'plugin', pluginId: 'example.plugin', contributionLocalId: 'send' },
+          permission: { requestedPermissionCeiling: 'read-only' },
+        },
+      },
+      machineAdmissionTransport,
+    });
+    expect(result).toMatchObject({ ok: true, admissionResult: { status: 'accepted', localId: 'input-a' } });
+    expect(machineAdmissionTransport).toHaveBeenCalledWith(expect.objectContaining({
+      v: 2, sessionId, recipient, targetMachineId: 'machine-a', localId: 'input-a',
+    }));
+    expect(http.post).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a missing strict target resource to update-required without a main retry', async () => {
+    http.post.mockRejectedValue({ response: { status: 404 } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Private run input',
+      recipient, wait: false, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({
+      ok: false, admissionResult: { status: 'rejected', code: 'session_input_target_update_required' },
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+    expect(http.post.mock.calls[0]?.[0]).toContain('/execution-runs/run-a/pending');
+  });
+
+  it.each([
+    { status: 400, code: 'session_input_target_update_required' },
+    { status: 404, code: 'session_input_target_unavailable' },
+  ] as const)('preserves a current server target rejection before legacy HTTP fallback ($code)', async ({ status, code }) => {
+    http.post.mockRejectedValue({ response: { status, data: { error: status === 404 ? 'session-not-found' : 'invalid-params', code } } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: `input-${status}`, message: 'Private run input',
+      recipient, wait: false, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({
+      ok: false, admissionResult: { status: 'rejected', code },
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+    expect(http.post.mock.calls[0]?.[0]).toContain('/execution-runs/run-a/pending');
+  });
+
+  it('returns outcome-unknown when exact target-turn evidence is unavailable', async () => {
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 1,
+    });
+    expect(result).toMatchObject({
+      ok: false, code: 'wait_failed',
+      admissionResult: { status: 'outcomeUnknown', localId: 'input-a' },
+    });
+    expect(http.get.mock.calls.some(([url]) => String(url).endsWith(`/sessions/${sessionId}/pending`))).toBe(false);
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels only exact-turn observation after admission and preserves the admitted local id', async () => {
+    const originalGet = http.get.getMockImplementation()!;
+    http.get.mockImplementation(async (url: string) => {
+      if (url.includes('/messages/by-local-id/')) return { status: 200, data: { message: {
+        id: 'message-a', seq: 1, localId: 'input-a', sidechainId: 'sidechain-a',
+        createdAt: 1, updatedAt: 1, content: { t: 'plain', v: {
+          role: 'user', content: { type: 'text', text: 'Wait for this run input' },
+        } },
+      } } };
+      return originalGet(url);
+    });
+    const abortController = new AbortController();
+    rpc.callSessionRpc.mockImplementation(async () => {
+      abortController.abort();
+      return { ok: true, data: { run: {
+        runId: 'run-a', callId: 'call-a', sidechainId: 'sidechain-a', intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read-only',
+        retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
+        inputTurns: { occurrenceId: 'occurrence-a', current: {
+          turnId: 'turn-a', inputIds: ['input-a'], state: 'active',
+        } },
+      } } };
+    });
+
+    const startedAt = Date.now();
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 5_000, signal: abortController.signal,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'cancelled',
+      message: 'Execution Run turn observation was cancelled after admission',
+      admissionResult: { status: 'accepted', localId: 'input-a' },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('interrupts the exact transcript-anchor read after admission without resending input', async () => {
+    const originalGet = http.get.getMockImplementation()!;
+    http.get.mockImplementation(async (url: string, config?: { signal?: AbortSignal }) => {
+      if (url.includes('/messages/by-local-id/')) {
+        await new Promise<never>((_resolve, reject) => {
+          const rejectCancelled = () => reject(new Error('lookup cancelled'));
+          if (config?.signal?.aborted) rejectCancelled();
+          else {
+            config?.signal?.addEventListener('abort', rejectCancelled, { once: true });
+            setTimeout(() => abortController.abort(), 0);
+          }
+        });
+      }
+      return originalGet(url);
+    });
+    const abortController = new AbortController();
+
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 5_000, signal: abortController.signal,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'cancelled',
+      admissionResult: { status: 'accepted', localId: 'input-a' },
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+    expect(rpc.callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)('settles the exact admitted Run turn as %s even while the parent is inactive', async (state) => {
+    const originalGet = http.get.getMockImplementation()!;
+    http.get.mockImplementation(async (url: string) => {
+      if (url.includes('/messages/by-local-id/')) return { status: 200, data: { message: {
+        id: 'message-a', seq: 1, localId: 'input-a', sidechainId: 'sidechain-a',
+        createdAt: 1, updatedAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Wait for this run input' } } },
+      } } };
+      return originalGet(url);
+    });
+    mockRunReads([
+      { occurrenceId: 'occurrence-a', current: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
+        last: { turnId: 'sibling-turn', inputIds: ['sibling-input'], state: 'completed' } },
+      { occurrenceId: 'occurrence-a', last: { turnId: 'turn-a', inputIds: ['input-a'], state } },
+    ]);
+    const deps = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null });
+    const result = await deps.sessionSendMessage({
+      context: cliActionContext,
+      sessionId, localId: 'input-a', message: 'Wait for this run input', recipient, wait: true, timeoutSeconds: 1,
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    });
+    if (state === 'completed') expect(result).toEqual({ status: 'accepted', localId: 'input-a' });
+    else expect(result).toEqual({
+      status: state,
+      localId: 'input-a',
+      code: state === 'failed'
+        ? 'session_input_turn_failed'
+        : 'session_input_turn_cancelled',
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['completed', 'task_complete', true],
+    ['failed', 'turn_failed', false],
+    ['cancelled', 'turn_cancelled', false],
+  ] as const)('preserves an exact %s Run-turn result after later turns replace the public projection', async (_state, terminalType, succeeds) => {
+    const originalGet = http.get.getMockImplementation()!;
+    http.get.mockImplementation(async (url: string) => {
+      if (url.includes('/messages/by-local-id/')) return { status: 200, data: { message: {
+        id: 'message-a', seq: 10, localId: 'input-a', sidechainId: 'sidechain-a',
+        createdAt: 10, updatedAt: 10, content: { t: 'plain', v: {
+          role: 'user', content: { type: 'text', text: 'Wait for this run input' },
+        } },
+      } } };
+      if (url.includes(`/v1/sessions/${sessionId}/messages?`)) return { status: 200, data: { messages: [
+        {
+          id: 'main-terminal', seq: 11, localId: null, createdAt: 11,
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'acp', data: { type: 'task_complete', id: 'main-turn' } } } },
+        },
+        {
+          id: 'sibling-terminal', seq: 12, localId: null, createdAt: 12,
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'acp', data: {
+            type: 'task_complete', id: 'sibling-turn', sidechainId: 'sidechain-b',
+          } } } },
+        },
+        {
+          id: 'later-same-turn-user', seq: 13, localId: 'input-b', createdAt: 13,
+          content: { t: 'plain', v: { role: 'user', content: {
+            type: 'text', text: 'Steered input in the same turn', sidechainId: 'sidechain-a',
+          } } },
+        },
+        {
+          id: 'wrong-turn-terminal', seq: 14, localId: null, createdAt: 14,
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'acp', data: {
+            type: 'task_complete', id: 'wrong-turn', sidechainId: 'sidechain-a',
+          } }, meta: { happierExecutionRunInputTurnV1: {
+            turnId: 'wrong-turn', inputIds: ['wrong-input'], state: 'completed',
+          } } } },
+        },
+        {
+          id: 'exact-terminal', seq: 15, localId: null, createdAt: 15,
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'acp', data: {
+            type: terminalType, id: 'turn-a', sidechainId: 'sidechain-a',
+          } }, meta: { happierExecutionRunInputTurnV1: {
+            turnId: 'turn-a', inputIds: ['input-a', 'input-b'], state: _state,
+          } } } },
+        },
+      ] } };
+      return originalGet(url);
+    });
+    mockRunReads([
+      { occurrenceId: 'occurrence-a', current: { turnId: 'turn-c', inputIds: ['input-c'], state: 'active' },
+        last: { turnId: 'turn-before-a', inputIds: ['input-before-a'], state: 'completed' } },
+    ]);
+
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 20,
+    });
+
+    if (succeeds) {
+      expect(result).toMatchObject({ ok: true, localId: 'input-a', waited: true });
+    } else {
+      expect(result).toEqual({
+        ok: false,
+        code: 'wait_failed',
+        message: terminalType === 'turn_failed'
+          ? 'Execution Run turn failed'
+          : 'Execution Run turn cancelled',
+        settlementResult: {
+          status: _state,
+          localId: 'input-a',
+          code: terminalType === 'turn_failed'
+            ? 'session_input_turn_failed'
+            : 'session_input_turn_cancelled',
+        },
+      });
+    }
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+});

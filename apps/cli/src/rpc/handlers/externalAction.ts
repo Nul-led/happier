@@ -1,10 +1,10 @@
 import {
-  createExternalActionDaemonDispatchResponseV1,
-  ExternalActionDaemonDispatchRequestV1Schema,
+  createExternalActionDaemonDispatchResponse,
+  ExternalActionDaemonDispatchRequestSchema,
   EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   prepareExternalActionResponseEnvelopeV1,
   type ActionExecuteResult,
-  type ExternalActionDaemonDispatchRequestV1,
+  type ExternalActionDaemonDispatchRequest,
   type ExternalActionDaemonDispatchResultV1,
 } from '@happier-dev/protocol';
 import {
@@ -17,6 +17,7 @@ import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import type {
   ExternalActionExecutor,
   ResolveExternalActionTarget,
+  ResolveExternalActionEncryption,
 } from '@/daemon/externalActions/executeExternalAction';
 import { executeExternalAction } from '@/daemon/externalActions/executeExternalAction';
 
@@ -26,12 +27,18 @@ export type ExternalActionRpcRegistrationOptions = Readonly<{
   resolveAccountId: (signal?: AbortSignal) => Promise<string | null>;
   resolveTarget: ResolveExternalActionTarget;
   executor: ExternalActionExecutor;
+  resolveEncryption?: ResolveExternalActionEncryption;
+  externalActionMachineRequestPrivateKey?: string | Uint8Array;
 }>;
 
 /** Shared Action-owner dependencies; transport adapters add only identity facts. */
 export type ExternalActionIngressOwner = Readonly<Pick<
   ExternalActionRpcRegistrationOptions,
-  'currentServerId' | 'resolveTarget' | 'executor'
+  | 'currentServerId'
+  | 'resolveTarget'
+  | 'executor'
+  | 'resolveEncryption'
+  | 'externalActionMachineRequestPrivateKey'
 >>;
 
 function forbidden() {
@@ -46,11 +53,17 @@ type ExternalActionDaemonRelayResponse = Extract<
   Readonly<{ kind: 'response' }>
 >;
 
+type ExternalActionDaemonRelayAdmissionResult = ExternalActionDaemonRelayResponse | Readonly<{
+  kind: 'invalid_request';
+  errorCode: 'target_not_local';
+  requestId: string;
+}>;
+
 function response(
-  request: ExternalActionDaemonDispatchRequestV1,
+  request: ExternalActionDaemonDispatchRequest,
   execution: ActionExecuteResult,
 ): ExternalActionDaemonRelayResponse {
-  return createExternalActionDaemonDispatchResponseV1(
+  return createExternalActionDaemonDispatchResponse(
     prepareExternalActionResponseEnvelopeV1({
       v: 1,
       actionId: request.actionId,
@@ -60,7 +73,14 @@ function response(
   );
 }
 
-function targetNotLocal(request: ExternalActionDaemonDispatchRequestV1): ExternalActionDaemonRelayResponse {
+function targetNotLocal(request: ExternalActionDaemonDispatchRequest): ExternalActionDaemonRelayAdmissionResult {
+  if (request.envelope.v === 2) {
+    return {
+      kind: 'invalid_request',
+      errorCode: 'target_not_local',
+      requestId: request.envelope.requestId,
+    };
+  }
   return response(request, {
     ok: false,
     errorCode: 'target_not_local',
@@ -79,7 +99,7 @@ export function registerExternalActionRpcHandler(
     if (!isSocketRpcActionApiServerOriginAuthorizationContext(context?.authorization)) {
       return forbidden();
     }
-    const parsed = ExternalActionDaemonDispatchRequestV1Schema.safeParse(raw);
+    const parsed = ExternalActionDaemonDispatchRequestSchema.safeParse(raw);
     if (!parsed.success) return forbidden();
     const request = parsed.data;
     if (
@@ -87,6 +107,9 @@ export function registerExternalActionRpcHandler(
       || request.placement.target.machineId !== options.machineId
     ) {
       return targetNotLocal(request);
+    }
+    if (!request.executionAuthorization || !options.externalActionMachineRequestPrivateKey) {
+      return forbidden();
     }
 
     const signal = context?.signal;
@@ -106,11 +129,14 @@ export function registerExternalActionRpcHandler(
       principal: request.principal,
       currentMachineId: options.machineId,
       currentServerId: options.currentServerId,
+      resolveEncryption: options.resolveEncryption,
       resolveTarget: options.resolveTarget,
       executor: options.executor,
+      executionAuthorization: request.executionAuthorization,
+      externalActionMachineRequestPrivateKey: options.externalActionMachineRequestPrivateKey,
       ...(signal ? { signal } : {}),
     });
     if (result.kind === 'invalid_request') return result;
-    return createExternalActionDaemonDispatchResponseV1(result.prepared);
+    return createExternalActionDaemonDispatchResponse(result.prepared);
   });
 }

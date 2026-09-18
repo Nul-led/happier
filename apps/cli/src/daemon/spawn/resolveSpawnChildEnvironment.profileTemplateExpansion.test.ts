@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { resolveSpawnChildEnvironment } from './resolveSpawnChildEnvironment';
 import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
@@ -30,6 +33,32 @@ function registryWithAgentAuthEnvironment(
 }
 
 describe('resolveSpawnChildEnvironment (profile template expansion)', () => {
+  it('binds prerequisite tools to the selected profile environment even when the hook omits env', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-profile-preflight-'));
+    try {
+      const script = join(root, 'claude.cjs');
+      await writeFile(script, '#!/usr/bin/env node\nprocess.stdout.write("profile-agent");\n');
+      await chmod(script, 0o755);
+      const result = await resolveSpawnChildEnvironment({
+        options: { directory: '.' },
+        profileEnvironmentVariables: { HAPPIER_CLAUDE_PATH: script, HAPPIER_JS_RUNTIME_PATH: process.execPath },
+        processEnv: { PATH: '' },
+        daemonSpawnHooks: {
+          resolveRuntimePrerequisites: async (selection) => {
+            const probe = await selection.tools!.runSystemTool({ toolId: 'claude', reason: 'Profile prerequisite', timeoutMs: 2_000 });
+            return probe.ok && probe.exitCode === 0 && probe.stdout === 'profile-agent'
+              ? { ok: true }
+              : { ok: false, errorMessage: 'Wrong Agent selected for prerequisite' };
+          },
+        },
+        logDebug: () => {}, logInfo: () => {}, logWarn: () => {},
+      });
+      expect(result).toMatchObject({ ok: true, extraEnvForChild: { HAPPIER_CLAUDE_PATH: script } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps environment keys and values out of spawn diagnostics while preserving the child environment', async () => {
     const privateEnvironmentKey = 'PRIVATE_CUSTOMER_WORKSPACE_TOKEN';
     const privateEnvironmentValue = 'private-environment-value';

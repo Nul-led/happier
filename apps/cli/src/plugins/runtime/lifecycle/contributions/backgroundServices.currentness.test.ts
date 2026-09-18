@@ -33,34 +33,35 @@ function inertBackgroundContext(input: Readonly<{
 }
 
 describe('background service runner host currentness', () => {
-    it('reports normal resolution as stopped while the generation remains current', async () => {
-        const settlements = vi.fn();
+    it('settles normal completion without a failure or same-generation restart', async () => {
+        const diagnostics = vi.fn();
+        const runner = vi.fn(async () => {});
+        const complete = vi.fn();
         const host = createBackgroundServiceRunnerHost({
-            registrations: [registration(async () => {})],
+            registrations: [registration(runner)],
             createContext(input) {
                 return Object.freeze({
                     context: inertBackgroundContext(input),
-                    complete() {},
+                    complete,
                 });
             },
-            onUnexpectedSettlement: settlements,
+            onDiagnostic: diagnostics,
         });
 
         host.start();
         await host.settle(['acme.indexer']);
 
-        expect(settlements).toHaveBeenCalledOnce();
-        expect(settlements).toHaveBeenCalledWith(expect.objectContaining({
-            pluginId: 'acme.indexer',
-            localId: 'retired-during-context-creation',
-            outcome: 'resolved',
-        }));
+        host.start();
+        await host.settle(['acme.indexer']);
+        expect(runner).toHaveBeenCalledOnce();
+        expect(complete).toHaveBeenCalledOnce();
+        expect(diagnostics).not.toHaveBeenCalled();
         await host.dispose();
     });
 
     it('reports rejection as stopped with its exact contribution identity', async () => {
         const failure = new Error('observer stopped');
-        const settlements = vi.fn();
+        const diagnostics = vi.fn();
         const host = createBackgroundServiceRunnerHost({
             registrations: [registration(async () => { throw failure; })],
             createContext(input) {
@@ -69,17 +70,17 @@ describe('background service runner host currentness', () => {
                     complete() {},
                 });
             },
-            onUnexpectedSettlement: settlements,
+            onDiagnostic: diagnostics,
         });
 
         host.start();
         await host.settle(['acme.indexer']);
 
-        expect(settlements).toHaveBeenCalledWith(expect.objectContaining({
+        expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'acme.indexer',
             generation: 'generation-one',
             localId: 'retired-during-context-creation',
-            outcome: 'rejected',
+            code: 'background_service_failed',
             error: failure,
         }));
         await host.dispose();
@@ -134,8 +135,8 @@ describe('background service runner host currentness', () => {
         expect(diagnostics).not.toHaveBeenCalled();
     });
 
-    it('does not report expected retirement as an unexpected settlement', async () => {
-        const settlements = vi.fn();
+    it('does not report expected retirement as a failure', async () => {
+        const diagnostics = vi.fn();
         const host = createBackgroundServiceRunnerHost({
             registrations: [registration(async (context) => {
                 await new Promise<void>((resolve) => {
@@ -148,7 +149,7 @@ describe('background service runner host currentness', () => {
                     complete() {},
                 });
             },
-            onUnexpectedSettlement: settlements,
+            onDiagnostic: diagnostics,
         });
 
         host.start();
@@ -156,7 +157,7 @@ describe('background service runner host currentness', () => {
         host.retire(['acme.indexer']);
         await host.settle(['acme.indexer']);
 
-        expect(settlements).not.toHaveBeenCalled();
+        expect(diagnostics).not.toHaveBeenCalled();
     });
 
     it('reports an unavailable context while its generation is current', async () => {

@@ -11,26 +11,26 @@ export type TestExecutionRunHostRuntime = ExecutionRunHostRuntime & Readonly<{
     emitMessage: (message: AgentMessage) => void;
 }>;
 
-type PromptMeta = Parameters<ExecutionRunHostRuntime['sendPrompt']>[2];
+type PromptMeta = Parameters<ExecutionRunHostRuntime['deliverInput']>[2];
 
 export type TestExecutionRunHostRuntimeOptions = Readonly<{
-    sessionId?: string;
-    resumeSessionId?: string;
+    runtimeId?: string;
+    resumeRuntimeId?: string;
     resumeSupported?: boolean;
     replayResumeSupported?: boolean;
     permissionCapability?: ExecutionRunPermissionCapability;
-    onProvisionSession?: (opts: Parameters<ExecutionRunHostRuntime['provisionSession']>[0]) => void | Promise<void>;
+    onProvisionRuntime?: (opts: Parameters<ExecutionRunHostRuntime['provisionRuntime']>[0]) => void | Promise<void>;
     onSendPrompt?: (
-        sessionId: string,
+        runtimeId: string,
         prompt: string,
         meta?: PromptMeta,
     ) => void | Promise<void>;
     onSendSteerPrompt?: (
-        sessionId: string,
+        runtimeId: string,
         prompt: string,
         meta?: PromptMeta,
     ) => void | Promise<void>;
-    onCancel?: (sessionId: string) => void | Promise<void>;
+    onCancel?: (runtimeId: string) => void | Promise<void>;
     onRespondToPermission?: (requestId: string, approved: boolean) => RuntimePermissionResponseOutcome | Promise<RuntimePermissionResponseOutcome>;
     onWaitForTurnCompletion?: (timeoutMs?: number | null) => void | Promise<void>;
     onDispose?: () => void | Promise<void>;
@@ -40,7 +40,8 @@ export function createTestExecutionRunHostRuntime(
     opts: TestExecutionRunHostRuntimeOptions = {},
 ): TestExecutionRunHostRuntime {
     const handlers = new Set<ExecutionRunHostRuntimeMessageHandler>();
-    const sessionId = opts.sessionId ?? 'child_session_1';
+    const runtimeId = opts.runtimeId ?? 'child_runtime_1';
+    const lifetime = new AbortController();
     const runtime = {
         permissionCapability: opts.permissionCapability ?? (opts.onRespondToPermission ? 'responds' : 'static'),
         async readResumeSupport(readOpts) {
@@ -49,26 +50,29 @@ export function createTestExecutionRunHostRuntime(
             }
             return opts.resumeSupported ?? opts.replayResumeSupported ?? false;
         },
-        async provisionSession(provisionOpts) {
-            await opts.onProvisionSession?.(provisionOpts);
-            return { sessionId: provisionOpts?.resumeSessionId ?? opts.resumeSessionId ?? sessionId };
+        async provisionRuntime(provisionOpts) {
+            await opts.onProvisionRuntime?.(provisionOpts);
+            return { runtimeId: provisionOpts?.resumeRuntimeId ?? opts.resumeRuntimeId ?? runtimeId };
         },
-        async sendPrompt(activeSessionId, prompt, meta) {
-            await opts.onSendPrompt?.(activeSessionId, prompt, meta);
+        getRuntimeLifetimeSignal: () => lifetime.signal,
+        async deliverInput(activeRuntimeId, input, meta) {
+            await opts.onSendPrompt?.(activeRuntimeId, input.text, meta);
+            return { status: 'admitted' as const };
         },
         ...(opts.onSendSteerPrompt
             ? {
-                async sendSteerPrompt(
-                    activeSessionId: string,
-                    prompt: string,
+                async steerInput(
+                    activeRuntimeId: string,
+                    input: Parameters<ExecutionRunHostRuntime['deliverInput']>[1],
                     meta?: PromptMeta,
                 ) {
-                    await opts.onSendSteerPrompt!(activeSessionId, prompt, meta);
+                    await opts.onSendSteerPrompt!(activeRuntimeId, input.text, meta);
+                    return { status: 'admitted' as const };
                 },
             }
             : {}),
-        async cancel(activeSessionId) {
-            await opts.onCancel?.(activeSessionId);
+        async cancel(activeRuntimeId) {
+            await opts.onCancel?.(activeRuntimeId);
         },
         subscribeMessages(handler) {
             handlers.add(handler);
@@ -91,6 +95,7 @@ export function createTestExecutionRunHostRuntime(
             }
             : {}),
         async dispose() {
+            lifetime.abort();
             handlers.clear();
             await opts.onDispose?.();
         },

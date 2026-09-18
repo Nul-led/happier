@@ -566,4 +566,5 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       await app.close().catch(() => {});
     }
   }, 20_000);
+
 });

@@ -6,6 +6,7 @@ import type {
     HostSessionConfirmationRequest,
     HostSessionQuestionsRequest,
 } from '@/agent/runtime/state/currentSessionUiTypes';
+import { createWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 
 import {
     createNativeAgentCurrentSessionUiServices,
@@ -442,5 +443,12 @@ describe('native Agent current-session interactions', () => {
             });
             expect(result).not.toHaveProperty('diagnostic');
         }
+    });
+
+    it('preserves the canonical durable interaction capacity failure', async () => {
+        const capacityError = createWorkflowInteractionCapacityError();
+        const fixture = createFixture(vi.fn(async () => { throw capacityError; }));
+
+        await expect(fixture.public.requestApproval(approvalRequest)).rejects.toBe(capacityError);
     });
 });

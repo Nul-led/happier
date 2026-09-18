@@ -104,10 +104,17 @@ function registry(overrides: Partial<ComposerAttachmentRuntime> = {}) {
       isCurrent: () => true,
       retirementSignal: new AbortController().signal,
     }),
-    createInvocationContext: (input) => Object.freeze({
-      context: invocationContext(input.signal),
-      complete: vi.fn(),
-    }),
+    createInvocationContext: (input) => {
+      const base = invocationContext(input.signal);
+      const { session: _session, ...scopeNeutralBase } = base;
+      const scope = input.scope;
+      return {
+        context: scope.kind === 'session'
+          ? Object.freeze({ ...base, scope, session: Object.freeze({ id: scope.sessionId }) })
+          : Object.freeze({ ...scopeNeutralBase, scope }),
+        complete: vi.fn(),
+      };
+    },
   });
 }
 

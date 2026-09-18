@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
-    ConnectedServiceBindingsV1,
+    ConnectedServiceBindingsV2,
     QualifiedConnectedAccountPurposeBindingV1,
 } from '@happier-dev/protocol';
 import {
@@ -30,8 +30,8 @@ vi.mock(
     }),
 );
 
-const bindings: ConnectedServiceBindingsV1 = {
-    v: 1,
+const bindings: ConnectedServiceBindingsV2 = {
+    v: 2,
     bindingsByServiceId: {
         'openai-codex': {
             source: 'connected',
@@ -52,7 +52,7 @@ describe('ordinary Agent request-auth spawn preparation', () => {
         expect(resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
             agentId: 'codex',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -327,7 +327,7 @@ describe('ordinary Agent request-auth spawn preparation', () => {
         const snapshotInput = {
             agentId: 'codex' as const,
             bindings: {
-                v: 1 as const,
+                v: 2 as const,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected' as const,
@@ -526,7 +526,7 @@ describe('ordinary Agent request-auth spawn preparation', () => {
         expect(resolveQualifiedPurposeBindingsForAgentSpawn({
             agentId: 'opencode',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'claude-subscription': {
                         source: 'connected',

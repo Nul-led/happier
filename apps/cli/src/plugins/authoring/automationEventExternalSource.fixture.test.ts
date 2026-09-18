@@ -75,6 +75,10 @@ const plainAccountEncryptionCurrentness = Object.freeze({
   ...plainAccountCurrentness,
   signingKeyFingerprint: null,
   updatedAt: 1_724_999_000_000,
+  recipientEnvelopeReadiness: {
+    status: 'unavailable' as const,
+    reason: 'plain_account' as const,
+  },
 });
 
 function readLoadedExternalPlugin(manifest: unknown): LoadedPlugin {
@@ -108,7 +112,7 @@ function createUnrelatedActionExecutorDeps(): ActionExecutorDeps {
     executionRunStart: empty,
     executionRunList: empty,
     executionRunGet: empty,
-    executionRunSend: empty,
+    detachedExecutionRunSend: empty,
     executionRunStop: empty,
     executionRunAction: empty,
     executionRunWait: empty,
@@ -128,7 +132,13 @@ function createUnrelatedActionExecutorDeps(): ActionExecutorDeps {
     sessionPermissionRespond: empty,
     sessionUserActionAnswer: empty,
     sessionTargetPrimarySet: empty,
-    sessionTargetTrackedSet: empty,
+    sessionTargetTrackedSet: async () => ({
+      ok: true,
+      status: 'ok',
+      sessionIds: [],
+      sessionAddresses: [],
+      sessions: [],
+    }),
     sessionList: async () => ({ sessions: [] }),
     sessionActivityGet: empty,
     sessionRecentMessagesGet: empty,
@@ -137,7 +147,7 @@ function createUnrelatedActionExecutorDeps(): ActionExecutorDeps {
     daemonMemoryEnsureUpToDate: empty,
     resetGlobalVoiceAgent: async () => {},
     isActionApprovalRequired: () => false,
-  } as unknown as ActionExecutorDeps;
+  } satisfies ActionExecutorDeps;
 }
 
 describe('External plugin as a first-class Automation Event source', () => {
@@ -484,9 +494,12 @@ describe('External plugin as a first-class Automation Event source', () => {
       transitionedAt: 1_725_000_000_500,
       claimedByMachineId: 'machine-2',
     } satisfies AutomationRunStateChangedHostEventV1);
-    const lifecycleUpdate = {
+    const lifecycleUpdate: Update = {
+      id: 'update-external-run-state',
+      seq: 1,
+      createdAt: 1_725_000_000_500,
       body: { t: 'automation-run-state-changed', ...lifecyclePayload },
-    } as unknown as Update;
+    };
     expect(getAutomationRunInvalidationAction({
       update: lifecycleUpdate,
       active: { runId: 'run-external-1', attempt: 1 },

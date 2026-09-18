@@ -54,7 +54,43 @@ function antigravityContribution(
     };
 }
 
-function sourceFrom(contribution: ResolvedInstallableContribution) {
+function antigravityPinnedContribution(
+    facts: Readonly<{ version: string; sha256: string }> = { version: '1.1.1', sha256: 'a'.repeat(64) },
+): ResolvedInstallableContribution {
+    const asset = Object.freeze({
+        archiveUrl: `https://dl.google.com/agy-acp-server-${facts.version}.zip`,
+        sha256: facts.sha256,
+        executableSubpath: 'agy_acp_server.par',
+    });
+    return {
+        ...antigravityContribution(),
+        definition: {
+            id: 'agy-acp-server',
+            title: 'Antigravity ACP server',
+            executable: 'agy_acp_server',
+            sources: [{
+                kind: 'pinnedArchive',
+                installId: 'dep.antigravity.agy-acp-server',
+                version: facts.version,
+                assetsByPlatform: {
+                    'darwin-arm64': asset,
+                    'linux-x64': asset,
+                    'linux-arm64': asset,
+                    'win32-x64': asset,
+                    'win32-arm64': asset,
+                },
+            }],
+        },
+    };
+}
+
+function sourceFrom(
+    contribution: ResolvedInstallableContribution,
+    identity: Readonly<{ localId: string; installId: string }> = {
+        localId: 'localharness',
+        installId: 'dep.antigravity.localharness',
+    },
+) {
     const model = createV2ManagedDependencySourceModel({
         platform: process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
         architecture: process.arch,
@@ -62,7 +98,7 @@ function sourceFrom(contribution: ResolvedInstallableContribution) {
     });
     const dependency = model.resolve({
         pluginId: 'happier.agent.antigravity',
-        localId: 'localharness',
+        localId: identity.localId,
     });
     const sourceInstallable = resolveExecutableManagedDependenciesRegistry(
         [contribution],
@@ -70,10 +106,15 @@ function sourceFrom(contribution: ResolvedInstallableContribution) {
             platform: process.platform,
             architecture: process.arch,
         },
-    ).descriptorsByKey['dep.antigravity.localharness']?.descriptor;
-    if (!sourceInstallable) throw new Error('Expected canonical managed PyPI source installable');
+    ).descriptorsByKey[identity.installId]?.descriptor;
+    if (!sourceInstallable) throw new Error('Expected canonical managed source installable');
     return { dependency, source: dependency.sources[0]!, sourceInstallable };
 }
+
+const PINNED_IDENTITY = Object.freeze({
+    localId: 'agy-acp-server',
+    installId: 'dep.antigravity.agy-acp-server',
+});
 
 describe('createProductionManagedDependencySourceAdapter', () => {
     it('refuses a managed PyPI source without its canonical source-acquisition installable', async () => {
@@ -120,6 +161,41 @@ describe('createProductionManagedDependencySourceAdapter', () => {
             architecture: 'x64',
         })).rejects.toMatchObject({
             code: 'plugin_managed_dependency_architecture_unsupported',
+        });
+    });
+
+    it('refuses a pinned archive source without its canonical source-acquisition installable', async () => {
+        const { sourceInstallable: _sourceInstallable, ...input } = sourceFrom(
+            antigravityPinnedContribution(),
+            PINNED_IDENTITY,
+        );
+
+        await expect(createProductionManagedDependencySourceAdapter(input))
+            .rejects.toMatchObject({ code: 'plugin_managed_dependency_source_invalid' });
+    });
+
+    it('refuses a pinned archive source whose canonical installable pins different immutable artifact facts', async () => {
+        const losing = sourceFrom(antigravityPinnedContribution({
+            version: '9.9.9',
+            sha256: 'b'.repeat(64),
+        }), PINNED_IDENTITY);
+        const { sourceInstallable } = sourceFrom(
+            antigravityPinnedContribution(),
+            PINNED_IDENTITY,
+        );
+
+        await expect(createProductionManagedDependencySourceAdapter({
+            ...losing,
+            sourceInstallable,
+        })).rejects.toMatchObject({ code: 'plugin_managed_dependency_source_invalid' });
+    });
+
+    it('adapts a pinned archive declaration through the canonical descriptor install owner', async () => {
+        await expect(createProductionManagedDependencySourceAdapter(
+            sourceFrom(antigravityPinnedContribution(), PINNED_IDENTITY),
+        )).resolves.toMatchObject({
+            key: 'dep.antigravity.agy-acp-server',
+            capabilityId: 'dep.antigravity.agy-acp-server',
         });
     });
 

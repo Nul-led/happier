@@ -88,18 +88,6 @@ describe('resolveSessionHandoffExportMetadata', () => {
             homeDir: '/Users/tester',
             flavor: 'claude',
             claudeSessionId: 'sess-handoff-direct',
-            directSessionV1: {
-                v: 1,
-                providerId: 'claude',
-                machineId: 'machine_target',
-                remoteSessionId: 'sess-handoff-direct',
-                source: {
-                    kind: 'claudeConfig',
-                    configDir: '/tmp/claude-config',
-                    projectId: 'proj-handoff-direct',
-                },
-                linkedAtMs: 1,
-            },
             externalSessionV1: {
                 v: 1,
                 agentId: 'claude',
@@ -186,18 +174,6 @@ describe('resolveSessionHandoffExportMetadata', () => {
             flavor: 'claude',
             portableMetadataVersion: 'v2',
             claudeSessionId: 'sess-handoff-direct',
-            directSessionV1: {
-                v: 1,
-                providerId: 'claude',
-                machineId: 'machine_target',
-                remoteSessionId: 'sess-handoff-direct',
-                source: {
-                    kind: 'claudeConfig',
-                    configDir: '/tmp/claude-config',
-                    projectId: 'proj-handoff-direct',
-                },
-                linkedAtMs: 1,
-            },
             externalSessionV1: {
                 v: 1,
                 agentId: 'claude',
@@ -213,7 +189,8 @@ describe('resolveSessionHandoffExportMetadata', () => {
         });
     });
 
-    it('writes a released linked row forward through the handoff metadata split', () => {
+    it('converts a released linked row to the canonical row through the handoff metadata split', () => {
+        // Released ingress shape: the immutable `directSessionV1` writers used `providerId`.
         const released = {
             v: 1,
             providerId: 'claude',
@@ -236,8 +213,11 @@ describe('resolveSessionHandoffExportMetadata', () => {
             localMetadata: null,
         });
 
-        expect(resolved).toMatchObject({
-            directSessionV1: released,
+        // The released row is accepted and normalized: the Protocol canonicalization owner emits
+        // only the canonical `externalSessionV1` envelope and drops the released duplicate.
+        expect(resolved).toEqual({
+            machineId: 'machine_target',
+            path: '/repo-target',
             externalSessionV1: {
                 v: 1,
                 agentId: 'claude',
@@ -245,12 +225,13 @@ describe('resolveSessionHandoffExportMetadata', () => {
                 remoteSessionId: 'sess-released',
                 source: released.source,
                 linkData: { projectId: 'proj-released' },
+                linkedAtMs: 1,
             },
         });
         expect(resolved?.externalSessionV1).not.toHaveProperty('qualifiedIdentity');
     });
 
-    it('preserves an unavailable plugin identity while deriving only the released rollback row', () => {
+    it('preserves an unavailable plugin identity on the canonical linked row', () => {
         const qualifiedIdentity = {
             v: 1 as const,
             agent: {
@@ -285,27 +266,26 @@ describe('resolveSessionHandoffExportMetadata', () => {
             localMetadata: null,
         });
 
-        expect(resolved).toMatchObject({
+        // The plugin-owned identity survives canonicalization verbatim, and no released
+        // duplicate row is written back alongside it.
+        expect(resolved).toEqual({
+            machineId: 'machine_target',
+            path: '/repo-target',
             externalSessionV1: {
-                agentId: 'assistant',
-                qualifiedIdentity,
-                linkData: {
-                    opaqueIdentity: 'plugin-owned',
-                },
-            },
-            directSessionV1: {
                 v: 1,
-                providerId: 'assistant',
+                agentId: 'assistant',
                 machineId: 'machine_target',
                 remoteSessionId: 'sess-qualified',
                 source: {
                     kind: 'exampleHistory',
                     location: 'opaque-source',
                 },
+                qualifiedIdentity,
+                linkData: {
+                    opaqueIdentity: 'plugin-owned',
+                },
             },
         });
-        expect(resolved?.directSessionV1).not.toHaveProperty('qualifiedIdentity');
-        expect(resolved?.directSessionV1).not.toHaveProperty('linkData');
     });
 
     it('does not use a released row when the current linked row is present but malformed', () => {

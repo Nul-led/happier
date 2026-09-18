@@ -1,12 +1,13 @@
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
 import type {
-  ConnectedServiceBindingsV1,
+  ActionDefinitionV1,
+  ConnectedServiceBindingsV2,
   SessionProviderBindingMetadataV1,
   SessionProviderBindingSecurityChangeConfirmationV1,
 } from '@happier-dev/protocol';
 
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
-import { resolvePluginCommandProjection } from '@/cli/pluginCommandProjection';
+import { resolvePluginCommandProjection, type PluginCommandProjection } from '@/cli/pluginCommandProjection';
 import {
   createCommandDispatchRegistry,
   type CommandDispatchPolicy,
@@ -16,7 +17,12 @@ import {
 } from '@/agent/runtime/registry/commandContracts';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 import { FIRST_CLASS_SESSION_COMMANDS } from '@/cli/firstClassSessionCommands';
+import type { CompiledActionCliCommand } from '@/cli/actions/compiledCommands';
 import type { EphemeralResolvedServerSelection } from '@/server/serverSelection';
+import {
+  findCliCommandPathConflicts,
+  type CliCommandPathClaim,
+} from '@/cli/commandPathClaims';
 
 export type CommandContext = Readonly<{
   args: string[];
@@ -36,7 +42,7 @@ export type CommandContext = Readonly<{
     confirmProviderSecurityChange?: (
       confirmation: SessionProviderBindingSecurityChangeConfirmationV1,
     ) => Promise<boolean>;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     sessionAttachFilePath?: string;
   }>;
 }>;
@@ -106,6 +112,30 @@ function lazyPluginCommandHandler(root: string): CommandHandler {
     };
   });
 }
+
+function lazyActionCliRootHandler(root: string): CommandHandler {
+  return lazyCommandHandler(async () => {
+    const { handleActionCliRootCommand } = await import('@/cli/actions/rootCommand');
+    return async (context) => {
+      await handleActionCliRootCommand(root, context);
+    };
+  });
+}
+
+/**
+ * Root help for a friendly path family the Action catalog owns end to end. The
+ * catalog declares the paths; a root line is a CLI presentation fact, so only a
+ * family named here appears in `happier --help`. Anything else stays dispatchable
+ * and self-documenting through its own `--help` without claiming a root line it
+ * has no description for.
+ */
+const ACTION_CLI_ROOT_HELP: Readonly<Record<string, Readonly<{ label: string; description: string }>>> = {
+  teams: { label: 'happier teams', description: 'Manage Teams, members, and Team policy' },
+  identity: { label: 'happier identity', description: 'Manage managed identity providers and GitHub Apps' },
+  credentials: { label: 'happier credentials', description: 'Manage Team credential resources and usage' },
+  secrets: { label: 'happier secrets', description: 'Manage shared Saved Secrets' },
+  workflow: { label: 'happier workflow', description: 'Run, inspect, and manage reusable workflows' },
+};
 
 const firstClassSessionCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry>> = Object.freeze(
   Object.fromEntries(
@@ -182,6 +212,82 @@ const staticCommandRegistry: Readonly<Record<string, CommandHandler>> = Object.f
   ) as Record<string, CommandHandler>,
 );
 
+/** First-class static entries that are only projections into these Actions. */
+const ACTION_OWNED_STATIC_PATHS = new Set(['list', 'ls', 'send', 'stop', 'wait']);
+
+/**
+ * Dedicated workflow leaves below multiplexed roots. They are intentionally
+ * not Action commands, so an Action may be their sibling but may not claim the
+ * same path or a descendant that the workflow would otherwise consume.
+ */
+const DEDICATED_STATIC_COMMAND_PATHS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze(['actions', 'invoke']),
+  Object.freeze(['session', 'actions', 'describe']),
+  Object.freeze(['session', 'actions', 'execute']),
+  Object.freeze(['session', 'actions', 'list']),
+  Object.freeze(['session', 'create']),
+  Object.freeze(['session', 'delegate', 'start']),
+  Object.freeze(['session', 'history']),
+  Object.freeze(['session', 'plan', 'start']),
+  Object.freeze(['session', 'review', 'start']),
+  Object.freeze(['session', 'run', 'action']),
+  Object.freeze(['session', 'voice-agent', 'start']),
+  Object.freeze(['session', 'voice_agent', 'start']),
+  Object.freeze(['workflow', 'definition', 'export']),
+  Object.freeze(['workflow', 'definition', 'import']),
+]);
+
+export function assertComposedCommandPathsAreUnambiguous(
+  claims: readonly CliCommandPathClaim[],
+): void {
+  const conflicts = findCliCommandPathConflicts(claims);
+  if (conflicts.length === 0) return;
+  throw new Error(`CLI command path collision: ${conflicts.map((conflict) => (
+    `${conflict.left.source} ${conflict.left.ownerId} owns "${conflict.left.path.join(' ')}" but ${conflict.right.source} ${conflict.right.ownerId} owns "${conflict.right.path.join(' ')}"`
+  )).join('; ')}.`);
+}
+
+function assertActionCommandPathsFitStaticRegistry(
+  commands: readonly CompiledActionCliCommand[],
+): void {
+  const staticClaims: CliCommandPathClaim[] = Object.keys(staticCommandRegistryEntries)
+    .filter((command) => (
+      !ACTION_OWNED_STATIC_PATHS.has(command)
+      && !isStaticCommandSurfaceProviderPlaceholder(command)
+    ))
+    .map((command) => ({
+      source: 'static',
+      ownerId: command,
+      path: [command],
+      // A static root is a dispatcher namespace. It keeps unknown/dedicated
+      // leaves while admitted Action leaves may migrate into the same family.
+      allowsDescendants: true,
+    }));
+  const dedicatedClaims: CliCommandPathClaim[] = DEDICATED_STATIC_COMMAND_PATHS.map((path) => ({
+    source: 'static',
+    ownerId: path.join(' '),
+    path,
+  }));
+  const actionClaims: CliCommandPathClaim[] = commands.map((command) => ({
+    source: 'action',
+    ownerId: command.actionId,
+    path: command.path,
+    // Preview/execute-style members of one canonical Action family may extend
+    // their family's path. Unrelated Action ids still cannot claim a subtree.
+    ...(commands.some((candidate) => (
+      candidate !== command
+      && candidate.actionId.startsWith(`${command.actionId}.`)
+      && command.path.length < candidate.path.length
+      && command.path.every((segment, index) => candidate.path[index] === segment)
+    )) ? { allowsDescendants: true } : {}),
+  }));
+  assertComposedCommandPathsAreUnambiguous([
+    ...staticClaims,
+    ...dedicatedClaims,
+    ...actionClaims,
+  ]);
+}
+
 const mutableCommandRegistry: Record<string, CommandHandler> = { ...staticCommandRegistry };
 const mutableCommandPolicies: Record<string, CommandDispatchPolicy | undefined> = Object.fromEntries(
   Object.entries(staticCommandRegistryEntries)
@@ -198,6 +304,43 @@ const mutableCommandSurfaceEntries: Record<string, CommandSurfaceDescriptorInput
 const dynamicAgentCommandKeys = new Set<string>();
 const dynamicPluginCommandKeys = new Set<string>();
 let dynamicPluginCompletionPaths: readonly (readonly string[])[] = Object.freeze([]);
+/**
+ * The last synchronized plugin command sources. Completion derives one command's
+ * invocation options from its canonical contributed Action definition on demand,
+ * so a cold dispatch never pays for compiling every plugin command's fields.
+ */
+let dynamicPluginCommandSources: Readonly<{
+  registry: ResolvedContributionRegistry;
+  projection: PluginCommandProjection;
+}> | null = null;
+
+const PLUGIN_COMMAND_COMPATIBILITY_OPTIONS: readonly string[] = Object.freeze(['--help', '--input', '--json']);
+
+async function readPluginCommandCompletionCandidates(
+  committed: readonly string[],
+  prefix: string,
+  resolveDynamicOptions?: import('@/cli/actions/commandCompletion').ActionCliDynamicOptionsResolver,
+): Promise<readonly string[]> {
+  const sources = dynamicPluginCommandSources;
+  if (!sources) return Object.freeze([]);
+  const completion = await import('@/cli/pluginCommandFields');
+  const params = {
+    registry: sources.registry,
+    projection: sources.projection,
+    committed,
+    prefix,
+    fallback: PLUGIN_COMMAND_COMPATIBILITY_OPTIONS,
+  };
+  if (!resolveDynamicOptions) return completion.resolvePluginCommandCompletionCandidates(params);
+  try {
+    return await completion.resolvePluginCommandCompletionCandidatesWithDynamicOptions({
+      ...params,
+      resolveDynamicOptions,
+    });
+  } catch {
+    return completion.resolvePluginCommandCompletionCandidates(params);
+  }
+}
 let dynamicPluginCommandTmuxEntries: readonly Readonly<{
   path: readonly string[];
   mode: 'inherit' | 'required' | 'forbidden';
@@ -236,10 +379,17 @@ function syncAgentCommandRegistryFromCatalogSnapshot(registry: ResolvedContribut
   }
   dynamicAgentCommandKeys.clear();
 
-  for (const entry of Object.values(registry.catalogEntriesById)) {
+  const agentEntries = Object.values(registry.catalogEntriesById)
+    .filter((entry) => Boolean(entry.getCliCommandHandler));
+  const collidingAgentRoots = new Set(listCollidingAgentCommandRoots(agentEntries));
+
+  for (const entry of agentEntries) {
     if (!entry.getCliCommandHandler) continue;
     if (
+      collidingAgentRoots.has(entry.cliSubcommand) ||
       Object.prototype.hasOwnProperty.call(staticCommandRegistry, entry.cliSubcommand) ||
+      // A root the Action catalog already owns is not a free Agent spelling.
+      dynamicActionCommandKeys.has(entry.cliSubcommand) ||
       (isStaticCommandSurfaceReserved(entry.cliSubcommand)
         && !isStaticCommandSurfaceProviderPlaceholder(entry.cliSubcommand))
     ) {
@@ -267,6 +417,19 @@ function syncAgentCommandRegistryFromCatalogSnapshot(registry: ResolvedContribut
   }
 }
 
+export function listCollidingAgentCommandRoots(
+  entries: readonly Readonly<{ cliSubcommand: string }>[],
+): readonly string[] {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    counts.set(entry.cliSubcommand, (counts.get(entry.cliSubcommand) ?? 0) + 1);
+  }
+  return Object.freeze([...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([root]) => root)
+    .sort());
+}
+
 export function synchronizePluginCommandContributions(registry: ResolvedContributionRegistry): void {
   for (const key of dynamicPluginCommandKeys) {
     delete mutableCommandRegistry[key];
@@ -278,6 +441,9 @@ export function synchronizePluginCommandContributions(registry: ResolvedContribu
   const reservedRoots = new Set<string>([
     ...Object.keys(staticCommandRegistry),
     ...dynamicAgentCommandKeys,
+    // A root the Action catalog owns is reserved for the same reason a static
+    // root is: one admitted owner per path, decided here rather than at dispatch.
+    ...dynamicActionCommandKeys,
   ]);
   for (const command of registry.commands ?? []) {
     const root = command.definition.path[0];
@@ -287,12 +453,24 @@ export function synchronizePluginCommandContributions(registry: ResolvedContribu
   dynamicPluginCompletionPaths = Object.freeze(projection.commands
     .filter((command) => command.status === 'available')
     .map((command) => Object.freeze([...command.path])));
-  dynamicPluginCommandTmuxEntries = Object.freeze(projection.commands
-    .map((command) => Object.freeze({
-      path: command.path,
-      mode: command.tmux,
-      available: command.status === 'available',
-    })));
+  dynamicPluginCommandTmuxEntries = Object.freeze((registry.commands ?? [])
+    .map((command) => {
+      const path = Object.freeze([...command.definition.path]);
+      const projected = projection.commands.find((candidate) => (
+        candidate.qualifiedId === `${command.pluginId}/${command.definition.id}`
+        && candidate.path.length === path.length
+        && candidate.path.every((segment, index) => segment === path[index])
+      ));
+      return Object.freeze({
+        path,
+        mode: command.definition.tmux ?? 'inherit',
+        available: projected?.status === 'available',
+      });
+    }));
+  dynamicPluginCommandSources = Object.freeze({ registry, projection });
+  // Plugin roots changed, so the admitted Action set has to be recomputed
+  // against the current reservations rather than reused.
+  admittedActionCliCommandsCache = null;
 
   for (const root of projection.roots) {
     mutableCommandRegistry[root] = lazyPluginCommandHandler(root);
@@ -303,10 +481,98 @@ export function synchronizePluginCommandContributions(registry: ResolvedContribu
   }
 }
 
-export function resolveCommandCompletionCandidates(words: readonly string[]): readonly string[] {
+const dynamicActionCommandKeys = new Set<string>();
+let admittedActionCliCommandsCache: readonly CompiledActionCliCommand[] | null = null;
+
+/**
+ * The compiled Action command paths this registry admits, plus the root entries
+ * they need.
+ *
+ * There is no second path map: Action paths, plugin paths and static roots are
+ * resolved by the same collision rules here. An Agent or plugin root owns its
+ * whole subtree, so a declared Action path underneath one is not admitted; every
+ * other declared path is admitted, and a leaf under an existing static root wins
+ * only for its exact spelling while the root handler keeps everything else.
+ */
+let actionCliRootsRegistered = false;
+
+/**
+ * Claims the roots the Action catalog owns. This runs before Agent and plugin
+ * synchronization so those sources see the Action roots as reserved, and it
+ * reads only the declared paths — compiling every command's fields is deferred
+ * to the first invocation or completion that actually needs them.
+ */
+async function ensureActionCliRootsRegistered(): Promise<void> {
+  if (actionCliRootsRegistered) return;
+  const { listActionCliCommandDeclarations } = await import('@happier-dev/protocol');
+  for (const { binding } of listActionCliCommandDeclarations()) {
+    const root = binding.path[0];
+    if (root === undefined) continue;
+    dynamicActionCommandKeys.add(root);
+    if (Object.prototype.hasOwnProperty.call(mutableCommandRegistry, root)) continue;
+    mutableCommandRegistry[root] = lazyActionCliRootHandler(root);
+    const rootHelp = ACTION_CLI_ROOT_HELP[root];
+    mutableCommandSurfaceEntries[root] = {
+      command: root,
+      ...(rootHelp ? { rootHelpLabel: rootHelp.label, rootHelpDescription: rootHelp.description } : {}),
+      allowTmux: false,
+    };
+  }
+  actionCliRootsRegistered = true;
+}
+
+async function loadAdmittedActionCliCommands(): Promise<readonly CompiledActionCliCommand[]> {
+  if (admittedActionCliCommandsCache) return admittedActionCliCommandsCache;
+  await ensureActionCliRootsRegistered();
+  const { listCompiledActionCliCommands } = await import('@/cli/actions/compiledCommands');
+  const compiledCommands = listCompiledActionCliCommands();
+  assertActionCommandPathsFitStaticRegistry(compiledCommands);
+  admittedActionCliCommandsCache = Object.freeze(compiledCommands.filter((command) => {
+    const root = command.path[0];
+    return !dynamicAgentCommandKeys.has(root) && !dynamicPluginCommandKeys.has(root);
+  }));
+  return admittedActionCliCommandsCache;
+}
+
+/** Command-path words, stopping at the first option token. */
+function readLeadingCommandWords(args: readonly string[]): readonly string[] {
+  const words: string[] = [];
+  for (const token of args) {
+    if (token.startsWith('-')) break;
+    words.push(token);
+  }
+  return words;
+}
+
+/**
+ * The compiled Action command this argv names, or `null` when a dedicated
+ * command owns the path. Dispatch consults this before the root handler so a
+ * migrated leaf reaches its canonical Action, while every unmigrated spelling
+ * still falls through to its existing owner.
+ */
+export async function resolveAdmittedActionCliCommand(
+  args: readonly string[],
+): Promise<CompiledActionCliCommand | null> {
+  const words = readLeadingCommandWords(args);
+  if (words.length === 0) return null;
+  const { findCompiledActionCliCommand } = await import('@/cli/actions/compiledCommands');
+  return findCompiledActionCliCommand(words, await loadAdmittedActionCliCommands());
+}
+
+export async function resolveCommandCompletionCandidates(
+  words: readonly string[],
+  options: Readonly<{
+    resolveDynamicOptions?: import('@/cli/actions/commandCompletion').ActionCliDynamicOptionsResolver;
+    resolveDynamicActionDefinition?: (
+      actionId: string,
+      argv: readonly string[],
+    ) => Promise<ActionDefinitionV1 | null>;
+  }> = {},
+): Promise<readonly string[]> {
   const prefix = words.at(-1) ?? '';
   const committed = words.length > 0 ? words.slice(0, -1) : [];
   const candidates = new Set<string>();
+  const actionCommands = await loadAdmittedActionCliCommands();
   const allPaths: readonly (readonly string[])[] = [
     ...Object.keys(mutableCommandRegistry).map((command) => [command] as const),
     ...dynamicPluginCompletionPaths,
@@ -316,27 +582,99 @@ export function resolveCommandCompletionCandidates(words: readonly string[]): re
     const next = path[committed.length];
     if (next?.startsWith(prefix)) candidates.add(next);
   }
-  const exactPluginCommand = dynamicPluginCompletionPaths.some((path) => (
-    path.length === committed.length
-    && path.every((segment, index) => committed[index] === segment)
-  ));
-  if (exactPluginCommand && (prefix === '' || prefix.startsWith('-'))) {
-    for (const option of ['--help', '--input', '--json']) {
-      if (option.startsWith(prefix)) candidates.add(option);
+  const completion = await import('@/cli/actions/commandCompletion');
+
+  // `actions invoke` is intentionally a dynamic generic workflow, not a
+  // friendly command path. Once its exact Action id is known, completion uses
+  // the same published definition and field compiler as execution rather than
+  // introducing a second command registry or a plugin-only flag grammar.
+  if (
+    options.resolveDynamicActionDefinition
+    && committed[0] === 'actions'
+    && committed[1] === 'invoke'
+    && typeof committed[2] === 'string'
+  ) {
+    try {
+      const definition = await options.resolveDynamicActionDefinition(committed[2], committed);
+      if (definition) {
+        const { compileActionCliFieldsFromJsonSchema } = await import('@/cli/actions/compiledCommands');
+        const target = {
+          fields: compileActionCliFieldsFromJsonSchema({
+            jsonSchema: definition.inputSchema,
+            hints: definition.inputHints ?? undefined,
+            reservedFlags: ['--machine-id', '--request-id', '--server-id'],
+          }),
+          positionals: Object.freeze([]),
+        };
+        const inputWords = committed.slice(3);
+        const invokeCandidates = options.resolveDynamicOptions
+          ? await completion.resolveActionCliInputCompletionCandidatesWithDynamicOptions({
+              target,
+              actionId: definition.id,
+              committed: inputWords,
+              prefix,
+              resolveDynamicOptions: options.resolveDynamicOptions,
+              cliOwnedFlags: {
+                valueFlags: ['--server-id', '--machine-id', '--request-id'],
+              },
+            })
+          : completion.resolveActionCliInputCompletionCandidates({
+              target,
+              committed: inputWords,
+              prefix,
+            });
+        for (const candidate of invokeCandidates) candidates.add(candidate);
+        if (!inputWords.includes('--')) {
+          for (const flag of ['--server-id', '--machine-id', '--request-id']) {
+            if (prefix === '' || flag.startsWith(prefix)) candidates.add(flag);
+          }
+        }
+      }
+    } catch {
+      // Completion is advisory. Discovery/authentication/connectivity failures
+      // retain static candidates and never reinterpret availability.
     }
+  }
+  const staticActionCandidates = completion.resolveCompiledActionCliCompletionCandidates({
+    committed,
+    prefix,
+    commands: actionCommands,
+  });
+  for (const candidate of staticActionCandidates) {
+    candidates.add(candidate);
+  }
+  if (options.resolveDynamicOptions) {
+    try {
+      for (const candidate of await completion.resolveCompiledActionCliCompletionCandidatesWithDynamicOptions({
+        committed,
+        prefix,
+        commands: actionCommands,
+        resolveDynamicOptions: options.resolveDynamicOptions,
+      })) {
+        candidates.add(candidate);
+      }
+    } catch {
+      // Completion is advisory. Authentication, connectivity, and option-source
+      // failures retain the compiler's static candidates rather than breaking
+      // the user's shell or inventing a local options registry.
+    }
+  }
+  for (const candidate of await readPluginCommandCompletionCandidates(
+    committed,
+    prefix,
+    options.resolveDynamicOptions,
+  )) {
+    candidates.add(candidate);
   }
   return Object.freeze([...candidates].sort());
 }
 
 export function resolvePluginCommandTmuxMode(args: readonly string[]): 'inherit' | 'required' | 'forbidden' | null {
   const path: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index]!;
-    if (token === '--input') {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('-')) continue;
+  for (const token of args) {
+    // Plugin command declarations own a fixed path and expose Action input as
+    // options. Once options begin, their values cannot become command words.
+    if (token.startsWith('-')) break;
     path.push(token);
   }
   const exact = dynamicPluginCommandTmuxEntries.filter((entry) => (
@@ -381,10 +719,15 @@ export async function ensureMergedAgentCommandRegistryLoaded(): Promise<void> {
     const registry = await resolveMergedContributionRegistry({ happyHomeDir: configuration.happyHomeDir });
     // Some command-registry harnesses intentionally replace only the Agent catalog boundary.
     // Production always resolves the merged snapshot; absent snapshots cannot admit plugin roots.
+    // Action-owned roots are claimed first so Agent and plugin synchronization
+    // both see one complete reservation set, then the compiled command list is
+    // resolved against the roots those sources actually took.
+    await ensureActionCliRootsRegistered();
     if (registry) {
       syncAgentCommandRegistryFromCatalogSnapshot(registry);
       synchronizePluginCommandContributions(registry);
     }
+    await loadAdmittedActionCliCommands();
   })();
   mergedAgentCommandRegistryPromise = pending;
   try {

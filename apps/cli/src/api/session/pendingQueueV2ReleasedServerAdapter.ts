@@ -1,7 +1,6 @@
 import type { Socket } from 'socket.io-client';
 
 import type { SessionSyncPendingInputServerContractResult } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
-import { decodeBase64, decrypt } from '../encryption';
 import type { ClientToServerEvents, ServerToClientEvents, UserMessage } from '../types';
 import { UserMessageSchema } from '../types';
 import type {
@@ -11,7 +10,7 @@ import type {
 import { materializeNextPendingQueueV2MessageViaReleasedServerSocket } from './pendingQueueV2Transport';
 import { findTranscriptEncryptedMessageByLocalIdV2 } from './transcriptMessageLookup';
 import { delayUnref } from '@/utils/time';
-import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 type SessionSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -117,19 +116,10 @@ export async function runPendingQueueV2ReleasedServerAdapter(params: Readonly<{
     }
 
     let body: unknown;
-    if (message.content.t === 'plain') {
-        body = message.content.v;
-    } else {
-        if (params.mode !== 'e2ee') return { type: 'no_pending' };
-        try {
-            body = decrypt(
-                params.ctx.encryptionKey,
-                params.ctx.encryptionVariant,
-                decodeBase64(message.content.c),
-            );
-        } catch {
-            return { type: 'no_pending' };
-        }
+    try {
+        body = openSessionMessageContent({ ...params, content: message.content });
+    } catch {
+        return { type: 'no_pending' };
     }
     const userMessage = readCanonicalUserTextMessage({
         body,

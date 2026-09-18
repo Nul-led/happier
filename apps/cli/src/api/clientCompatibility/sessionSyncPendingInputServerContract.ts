@@ -1,9 +1,13 @@
 import {
     FeaturesResponseSchema,
     PENDING_INPUT_PROTOCOL_VERSION_V1,
+    PENDING_INPUT_PROTOCOL_VERSION_V3,
     SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
 } from '@happier-dev/protocol';
-import { normalizeBaseUrl } from '@/diagnostics/httpClient';
+import {
+    observeServerFeaturesSnapshot,
+    type CliServerFeaturesSnapshot,
+} from '@/features/serverFeaturesClient';
 
 export type RuntimeActivityServerContract = 'v2' | 'legacy' | 'unsupported' | 'indeterminate';
 export type PendingInputServerContract = 'v1' | 'released_server_v0_2_1' | 'unsupported' | 'indeterminate';
@@ -27,6 +31,7 @@ export type SessionSyncPendingInputServerContractResult = Readonly<{
     mode: SessionSyncPendingInputServerContractMode;
     runtimeActivity: RuntimeActivityServerContract;
     pendingInput: PendingInputServerContract;
+    pendingInputProtocolVersion?: number;
     publisherAuthority: PublisherAuthorityServerContract;
     sessionConnectionEpoch: number;
     socket: ProbeSocket;
@@ -34,7 +39,7 @@ export type SessionSyncPendingInputServerContractResult = Readonly<{
 
 type CapabilitySelection = Pick<
     SessionSyncPendingInputServerContractResult,
-    'runtimeActivity' | 'pendingInput' | 'publisherAuthority'
+    'runtimeActivity' | 'pendingInput' | 'pendingInputProtocolVersion' | 'publisherAuthority'
 >;
 
 const INDETERMINATE: CapabilitySelection = Object.freeze({
@@ -42,6 +47,17 @@ const INDETERMINATE: CapabilitySelection = Object.freeze({
     pendingInput: 'indeterminate',
     publisherAuthority: 'indeterminate',
 });
+
+/** The truthful target-admission leaf from the daemon-wide cached server snapshot. */
+export function resolveMachineSessionInputAdmissionCapability(
+    snapshot: CliServerFeaturesSnapshot | undefined,
+): Readonly<{ protocolVersions: readonly [1] | readonly [1, 2] }> {
+    return snapshot?.status === 'ready'
+        && (snapshot.features.capabilities.session?.pendingInput?.protocolVersion ?? 0)
+            >= PENDING_INPUT_PROTOCOL_VERSION_V3
+        ? { protocolVersions: [1, 2] }
+        : { protocolVersions: [1] };
+}
 
 function isReleasedServerV021(features: ReturnType<typeof FeaturesResponseSchema.parse>): boolean {
     return features.capabilities.session.runtimeActivity === undefined
@@ -63,6 +79,7 @@ export function resolveSessionServerCapabilities(raw: unknown): CapabilitySelect
     }
     const session = parsed.data.capabilities.session;
     return {
+        ...(session.pendingInput ? { pendingInputProtocolVersion: session.pendingInput.protocolVersion } : {}),
         runtimeActivity:
             (session.runtimeActivity?.protocolVersion ?? 0)
                 >= SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY
@@ -147,32 +164,31 @@ export function createSessionSyncPendingInputServerContractController(options: R
         if (!probe.machineId?.trim() || probe.socket.connected !== true) {
             return answer(probe, INDETERMINATE);
         }
-        const abort = new AbortController();
-        const timer = setTimeout(() => abort.abort(), timeoutMs);
-        timer.unref?.();
         try {
-            const response = await fetchImpl(`${normalizeBaseUrl(options.serverUrl)}/v1/features`, {
-                method: 'GET',
-                headers: { Authorization: `Bearer ${options.token}` },
-                redirect: 'manual',
-                signal: abort.signal,
+            const snapshot = await observeServerFeaturesSnapshot({
+                serverUrl: options.serverUrl,
+                token: options.token,
+                projection: 'public',
+                timeoutMs,
+                fetchImpl,
             });
             if (!isCurrent(attempt) || probe.socket.connected !== true) {
                 return answer(probe, INDETERMINATE);
             }
-            if (response.status === 401 || response.status === 403) {
+            if (
+                snapshot.status === 'error'
+                && (snapshot.httpStatus === 401 || snapshot.httpStatus === 403)
+            ) {
                 return answer(probe, INDETERMINATE, 'auth_failed');
             }
-            if (!response.ok) return answer(probe, INDETERMINATE);
-            const selection = resolveSessionServerCapabilities(await response.json());
+            if (snapshot.status !== 'ready') return answer(probe, INDETERMINATE);
+            const selection = resolveSessionServerCapabilities(snapshot.features);
             if (!isCurrent(attempt) || probe.socket.connected !== true) {
                 return answer(probe, INDETERMINATE);
             }
             return answer(probe, selection);
         } catch {
             return answer(probe, INDETERMINATE);
-        } finally {
-            clearTimeout(timer);
         }
     }
 

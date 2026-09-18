@@ -1,8 +1,6 @@
 import { logger } from '@/ui/logger';
 import { getAgentModelConfig, type AgentId } from '@happier-dev/agents';
 
-const DEFAULT_SESSION_CONTROL_TIMEOUT_MS = 15_000;
-
 type AcpRuntimeSessionControlBackend = Readonly<{
   setSessionMode?: (sessionId: string, modeId: string) => Promise<void>;
   setSessionModel?: (
@@ -22,14 +20,6 @@ type AcpRuntimeSessionControlContext = Readonly<{
   getSessionId: () => string | null;
   ensureBackend: () => Promise<AcpRuntimeSessionControlBackend>;
 }>;
-
-function resolveSessionControlTimeoutMs(): number {
-  const raw = (process.env.HAPPIER_ACP_SESSION_CONTROL_TIMEOUT_MS ?? '').toString().trim();
-  if (!raw) return DEFAULT_SESSION_CONTROL_TIMEOUT_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SESSION_CONTROL_TIMEOUT_MS;
-  return Math.trunc(parsed);
-}
 
 function resolveModelConfigOptionId(provider: string): string {
   // An Agent that contributes no bundled model facts uses the ACP default.
@@ -76,39 +66,23 @@ export async function applyAcpRuntimeSessionModel(
     throw new Error(`${context.provider} ACP session was not started`);
   }
 
-  const controlTimeoutMs = resolveSessionControlTimeoutMs();
   const modelConfigOptionId = resolveModelConfigOptionId(context.provider);
   const backend = await context.ensureBackend();
 
   if (backend.setSessionModel) {
-    const timeoutPromise = new Promise<{ ok: false; error: Error }>((resolve) => {
-      const timer = setTimeout(
-        () => resolve({ ok: false, error: new Error('ACP session/set_model timed out') }),
-        controlTimeoutMs,
-      );
-      timer.unref?.();
-    });
-
-    const outcome = await Promise.race([
-      backend
-        .setSessionModel(sessionId, normalizedModelId, requestMeta)
-        .then(() => ({ ok: true as const }))
-        .catch((error) => ({ ok: false as const, error })),
-      timeoutPromise,
-    ]);
-    if (outcome.ok) return;
-
-    const error = outcome.error;
-    // Some ACP agents may not support `session/set_model` but may expose an equivalent
-    // `model` config option. Fall back best-effort; callers already treat this as non-fatal.
-    if (requestMeta || !backend.setSessionConfigOption) throw error;
-
     try {
-      await backend.setSessionConfigOption(sessionId, modelConfigOptionId, normalizedModelId);
+      await backend.setSessionModel(sessionId, normalizedModelId, requestMeta);
       return;
-    } catch {
-      // If the fallback also fails, surface the original error so callers can retry.
-      throw error;
+    } catch (error) {
+      // Only a settled provider rejection may activate the compatibility path. A local timeout
+      // cannot establish whether the first effect occurred and must never launch a second write.
+      if (requestMeta || !backend.setSessionConfigOption) throw error;
+      try {
+        await backend.setSessionConfigOption(sessionId, modelConfigOptionId, normalizedModelId);
+        return;
+      } catch {
+        throw error;
+      }
     }
   }
 

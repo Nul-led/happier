@@ -6,6 +6,7 @@ import {
   isTransientInteractionDeadlineMs,
   type TransientInteractionOwner,
   type TransientInteractionPresenter,
+  type PluginExecutionScopeV1,
 } from '@happier-dev/protocol';
 
 /** Kept for existing Session adapters; the cross-realm core owns the validation and the bound. */
@@ -52,21 +53,76 @@ type OwnerParams = Readonly<{
   /** `null` selects the contract's no-deadline arm; see the policy above. */
   deadlineMs: number | null;
   present: TransientInteractionPresenter;
+  propagatePresentationError?: (error: unknown) => boolean;
   now?: () => number;
   createRequestId?: () => string;
 }>;
 
-export function createCurrentSessionInteractionOwner(params: OwnerParams): CurrentSessionInteractionOwner {
-  const sessionId = params.sessionId.trim();
-  if (!sessionId) throw new Error('Transient interaction Session id must be non-empty');
+type ExecutionRunOwnerParams = Omit<OwnerParams, 'sessionId' | 'sessionSignal'> & Readonly<{
+  executionRunId: string;
+  executionRunSignal: AbortSignal;
+}>;
+
+function createCurrentScopedInteractionOwner(params: Readonly<{
+  scope: PluginExecutionScopeV1;
+  scopeSignal: AbortSignal;
+  isGenerationCurrent(): boolean;
+  deadlineMs: number | null;
+  present: TransientInteractionPresenter;
+  propagatePresentationError?: (error: unknown) => boolean;
+  now?: () => number;
+  createRequestId?: () => string;
+}>): CurrentSessionInteractionOwner {
   return createTransientInteractionOwner({
-    scope: Object.freeze({ kind: 'session', sessionId }),
-    sessionSignal: params.sessionSignal,
+    scope: params.scope,
+    ...(params.scope.kind === 'session'
+      ? { sessionSignal: params.scopeSignal }
+      : { executionRunSignal: params.scopeSignal }),
     isGenerationCurrent: params.isGenerationCurrent,
     deadlineMs: params.deadlineMs,
     present: params.present,
+    ...(params.propagatePresentationError
+      ? { propagatePresentationError: params.propagatePresentationError }
+      : {}),
     ...(params.now ? { now: params.now } : {}),
     createRequestId: params.createRequestId ?? randomUUID,
+  });
+}
+
+export function createCurrentSessionInteractionOwner(params: OwnerParams): CurrentSessionInteractionOwner {
+  const sessionId = params.sessionId.trim();
+  if (!sessionId) throw new Error('Transient interaction Session id must be non-empty');
+  return createCurrentScopedInteractionOwner({
+    scope: Object.freeze({ kind: 'session', sessionId }),
+    scopeSignal: params.sessionSignal,
+    isGenerationCurrent: params.isGenerationCurrent,
+    deadlineMs: params.deadlineMs,
+    present: params.present,
+    ...(params.propagatePresentationError
+      ? { propagatePresentationError: params.propagatePresentationError }
+      : {}),
+    ...(params.now ? { now: params.now } : {}),
+    ...(params.createRequestId ? { createRequestId: params.createRequestId } : {}),
+  });
+}
+
+/** Detached-Run facade over the same host-private interaction owner and lifecycle map. */
+export function createCurrentExecutionRunInteractionOwner(
+  params: ExecutionRunOwnerParams,
+): CurrentSessionInteractionOwner {
+  const executionRunId = params.executionRunId.trim();
+  if (!executionRunId) throw new Error('Transient interaction Execution Run id must be non-empty');
+  return createCurrentScopedInteractionOwner({
+    scope: Object.freeze({ kind: 'execution_run', executionRunId }),
+    scopeSignal: params.executionRunSignal,
+    isGenerationCurrent: params.isGenerationCurrent,
+    deadlineMs: params.deadlineMs,
+    present: params.present,
+    ...(params.propagatePresentationError
+      ? { propagatePresentationError: params.propagatePresentationError }
+      : {}),
+    ...(params.now ? { now: params.now } : {}),
+    ...(params.createRequestId ? { createRequestId: params.createRequestId } : {}),
   });
 }
 

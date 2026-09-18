@@ -42,14 +42,14 @@ import {
     createRunnerManagedServiceInvocationOwner,
 } from '@/plugins/runtime/invocation/services/createRunnerManagedServiceInvocationOwner';
 import {
-    dispatchCurrentAgentRuntimeDaemonServiceRequest,
-    dispatchCurrentRunnerDaemonPluginService,
-    isCurrentRunnerAgentRuntimeDaemonServiceAuthorityTransition,
-} from './agentRuntimeDaemonServiceAuthorityClient';
-import {
     admitCurrentRunnerSessionInput,
     attestCurrentRunnerAgentSessionOpen,
     authorizeCurrentAgentRuntimeDaemonModelTransition,
+    closeCurrentRunnerTeamCredentialProviderBinding,
+    dispatchCurrentAgentRuntimeDaemonServiceRequest,
+    dispatchCurrentRunnerDaemonPluginService,
+    isCurrentRunnerAgentRuntimeDaemonServiceAuthorityTransition,
+    openCurrentRunnerTeamCredentialProviderBinding,
     resolveCurrentAgentRuntimeDaemonTurnContributions,
 } from './agentRuntimeDaemonServiceAuthorityClient';
 import { loadRetainedAgentRuntimeLeaf } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
@@ -619,6 +619,15 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
         async attestSessionOpen(params) {
             await requireClaimed()
                 .attestSessionOpen?.(params);
+        },
+        async prepareTeamCredentialProviderBinding(params) {
+            const source = requireClaimed();
+            if (!source.prepareTeamCredentialProviderBinding) {
+                throw createRunnerSourceUnavailableError(
+                    'Runner Team credential Provider binding authority is unavailable',
+                );
+            }
+            return await source.prepareTeamCredentialProviderBinding(params);
         },
         async retire() {
             await claimed?.retire?.();
@@ -1576,6 +1585,39 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                     params.providerSessionId,
                 signal: params.signal,
             });
+        },
+        async prepareTeamCredentialProviderBinding(params) {
+            const result = await openCurrentRunnerTeamCredentialProviderBinding({
+                authority: expectedAuthority,
+                operation: {
+                    kind: 'provider_broker.binding.open',
+                    resourceId: params.resourceId,
+                    expectedResourceRevision: params.expectedResourceRevision,
+                    agentTargetKey: params.agentTargetKey,
+                    modelId: params.modelId,
+                    ...(params.consumer ? { consumer: params.consumer } : {}),
+                },
+                signal: params.signal,
+            });
+            const bindingId = result.bindingId;
+            return {
+                providerBinding: result.providerBinding,
+                environmentOverlay: result.environmentOverlay,
+                additionalRedactionValues: result.additionalRedactionValues,
+                ...(bindingId
+                    ? {
+                        cleanup: async () => {
+                            await closeCurrentRunnerTeamCredentialProviderBinding({
+                                authority: expectedAuthority,
+                                operation: {
+                                    kind: 'provider_broker.binding.close',
+                                    bindingId,
+                                },
+                            });
+                        },
+                    }
+                    : {}),
+            };
         },
         prepareRuntimeFactory: prepareRuntimeLeaf,
         retire: retireSource,

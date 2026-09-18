@@ -19,6 +19,7 @@ const plainAccountEncryptionCurrentness = Object.freeze({
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
   updatedAt: 1,
+  recipientEnvelopeReadiness: Object.freeze({ status: 'unavailable' as const, reason: 'plain_account' as const }),
 }) satisfies AccountEncryptionCurrentnessResponse;
 
 describe('readRetainedConnectedServiceMaterializationKeys', () => {

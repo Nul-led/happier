@@ -151,6 +151,23 @@ describe('leased provider-binding adapter ABI', () => {
             agentId: 'codex',
             input: prepareInput,
         })).toEqual({ v: 1, materialization: 'engineConfig', adapterBindingKey: 'gateway' });
+        expect(prepareLeasedAgentProviderBinding({
+            lease,
+            agentId: 'codex',
+            input: {
+                v: 1,
+                agentTargetKey: 'codex',
+                bindingKey: 'team_resource:resource-1:revision:3',
+            },
+        })).toEqual({ v: 1, materialization: 'engineConfig', adapterBindingKey: 'gateway' });
+        expect(() => prepareLeasedAgentProviderBinding({
+            lease,
+            agentId: 'codex',
+            input: {
+                ...prepareInput,
+                bindingKey: 'team_resource:resource-1:revision:3',
+            } as never,
+        })).toThrow();
         expect(create).not.toHaveBeenCalled();
     });
 

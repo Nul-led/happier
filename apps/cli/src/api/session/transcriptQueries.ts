@@ -9,9 +9,9 @@ import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
 import { isAuthenticationError } from '../client/httpStatusError';
 import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
 
-import { decodeBase64, decrypt } from '../encryption';
 import { SessionMessageContentSchema, type PermissionMode, type SessionMessageContent } from '../types';
-import { extractSemanticTranscriptItem } from '@/session/services/transcript/extractSemanticTranscriptItem';
+import { extractSemanticTranscriptItemFromDecryptedPayload } from '@/session/services/transcript/extractSemanticTranscriptItem';
+import { openSessionMessageContent, SessionMessageContentError } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   createSessionTranscriptStoredContentUnavailableError,
   resolveSessionTranscriptStoredContentUnavailableError,
@@ -79,6 +79,9 @@ function requireAvailableTranscriptRows(raw: unknown): AvailableTranscriptRow[] 
 }
 
 function rethrowUnavailableTranscriptQueryError(error: unknown): void {
+  if (error instanceof SessionMessageContentError) {
+    throw createSessionTranscriptStoredContentUnavailableError();
+  }
   const unavailable = resolveSessionTranscriptStoredContentUnavailableError(error);
   if (unavailable) throw unavailable;
 }
@@ -110,15 +113,16 @@ export async function fetchRecentTranscriptTextItemsForAcpImportFromServer(
 
     for (let index = 0; index < rows.length && items.length < take; index += 1) {
       const msg = rows[index].row;
-      const extracted = extractSemanticTranscriptItem({
+      const decrypted = openSessionMessageContent({
+        content: rows[index].content,
+        ...(params.encryptionMode === 'plain'
+          ? { mode: 'plain', ctx: null } as const
+          : { mode: 'e2ee', ctx: { encryptionKey: params.encryptionKey, encryptionVariant: params.encryptionVariant } } as const),
+      });
+      const extracted = extractSemanticTranscriptItemFromDecryptedPayload({
+        decrypted,
         row: msg,
         index,
-        ctx: params.encryptionMode === 'plain'
-          ? null
-          : {
-              encryptionKey: params.encryptionKey,
-              encryptionVariant: params.encryptionVariant,
-            },
         options: {
           mode: 'transcript',
           transcriptRoles: ['user', 'assistant'],
@@ -175,21 +179,14 @@ export async function fetchLatestUserPermissionIntentFromEncryptedTranscript(
     const candidates: Array<{ rawMode: unknown; updatedAt: unknown }> = [];
 
     for (const { row: msg, content } of sliced) {
+      const decrypted = openSessionMessageContent({
+        content,
+        ...(params.encryptionMode === 'plain'
+          ? { mode: 'plain', ctx: null } as const
+          : { mode: 'e2ee', ctx: { encryptionKey: params.encryptionKey, encryptionVariant: params.encryptionVariant } } as const),
+      });
       const createdAt = typeof msg?.createdAt === 'number' ? msg.createdAt : null;
       if (createdAt === null) continue;
-
-      let decrypted: unknown;
-      if (content.t === 'plain') {
-        if (params.encryptionMode !== 'plain') continue;
-        decrypted = content.v;
-      } else {
-        if (params.encryptionMode === 'plain') continue;
-        decrypted = decrypt(
-          params.encryptionKey,
-          params.encryptionVariant,
-          decodeBase64(content.c),
-        );
-      }
       const decryptedObj = decrypted && typeof decrypted === 'object' ? (decrypted as Record<string, unknown>) : null;
       if (decryptedObj?.role !== 'user') continue;
       const body = decryptedObj.content;

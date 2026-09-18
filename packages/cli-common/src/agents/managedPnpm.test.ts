@@ -137,6 +137,22 @@ describe('managedPnpm bootstrap race protection', () => {
     }
   });
 
+  it('rejects cancellation after download without promoting or falling back', async () => {
+    const controller = new AbortController();
+    const reason = new Error('bootstrap canceled');
+    const deps = createManagedPnpmBoundaryDeps();
+    await expect(ensureManagedPnpmCommand(testEnv, {
+      ...deps,
+      downloadGitHubReleaseAsset: async ({ destinationPath }) => {
+        await writeCurrentPnpmReleaseAsset(destinationPath);
+        controller.abort(reason);
+      },
+    }, { signal: controller.signal })).rejects.toBe(reason);
+    expect(existsSync(managedPnpmBinPath(testEnv))).toBe(false);
+    expect(existsSync(join(managedPnpmInstallDir(testEnv), 'next'))).toBe(false);
+    expect(existsSync(join(managedPnpmInstallDir(testEnv), '.lock', 'bootstrap.lock'))).toBe(false);
+  });
+
   it('should handle concurrent first-run bootstrap without corruption', async () => {
     // This test verifies that concurrent calls to ensureManagedPnpmCommand
     // don't corrupt the shared pnpm installation state through proper locking

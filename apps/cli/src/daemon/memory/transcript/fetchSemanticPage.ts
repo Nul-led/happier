@@ -3,16 +3,12 @@ import {
   type FetchTranscriptRawPage,
 } from '@/session/services/transcript/fetchTranscriptSemanticPage';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
+import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import type { MemoryContentPolicy } from './contentPolicy';
 import { mapSemanticTranscriptItemToMemoryIndexable } from './extractIndexableItem';
 import type { MemoryIndexableTranscriptItem } from './indexableItem';
 import { isLegacyUnclassifiedTranscriptRow } from './legacyUnclassifiedTranscriptRows';
-
-type MemorySemanticTranscriptContext = Readonly<{
-  encryptionKey: Uint8Array;
-  encryptionVariant: 'legacy' | 'dataKey';
-}> | null;
 
 export type FetchMemorySemanticTranscriptPageResult = Readonly<{
   items: readonly MemoryIndexableTranscriptItem[];
@@ -30,7 +26,7 @@ export type FetchMemorySemanticTranscriptPageResult = Readonly<{
 export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
   token: string;
   sessionId: string;
-  ctx: MemorySemanticTranscriptContext;
+  contentContext: SessionStoredContentCryptoContext;
   limit: number;
   rawPageLimit: number;
   maxRawRowsToScan: number;
@@ -50,7 +46,7 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
   ) => await fetchTranscriptSemanticPage({
     token: params.token,
     sessionId: params.sessionId,
-    ctx: params.ctx,
+    contentContext: params.contentContext,
     limit: params.limit,
     rawPageLimit: params.rawPageLimit,
     maxRawRowsToScan: params.maxRawRowsToScan,

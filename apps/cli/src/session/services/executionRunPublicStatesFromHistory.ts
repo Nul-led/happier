@@ -1,6 +1,8 @@
 import { getBackendCatalogDefinition } from '@happier-dev/agents';
 import {
     ExecutionRunPublicStateSchema,
+    ExecutionRunRequestedConfigurationSchema,
+    type ExecutionRunRequestedConfiguration,
     type ExecutionRunPublicState,
 } from '@happier-dev/protocol';
 import { normalizeExecutionRunPublicStateBackendTarget } from './executionRunPublicStateBackendTarget';
@@ -18,6 +20,7 @@ type TranscriptExecutionRunState = Readonly<{
     intent: string | null;
     backendTarget: Record<string, unknown> | null;
     displayTitle: string | null;
+    requestedConfiguration: ExecutionRunRequestedConfiguration | null;
     permissionMode: string | null;
     retentionPolicy: string | null;
     runClass: string | null;
@@ -41,6 +44,11 @@ function readString(record: Record<string, unknown> | null, key: string): string
 function readNumber(record: Record<string, unknown> | null, key: string): number | null {
     const value = record?.[key];
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readRequestedConfiguration(record: Record<string, unknown> | null): ExecutionRunRequestedConfiguration | null {
+    const parsed = ExecutionRunRequestedConfigurationSchema.safeParse(record?.requestedConfiguration);
+    return parsed.success ? parsed.data : null;
 }
 
 function minNumber(values: ReadonlyArray<number | null | undefined>): number | null {
@@ -130,6 +138,7 @@ function toExecutionRunPublicState(state: TranscriptExecutionRunState): Executio
         intent: state.intent,
         backendTarget: state.backendTarget,
         ...(state.displayTitle ? { display: { title: state.displayTitle } } : {}),
+        ...(state.requestedConfiguration ? { requestedConfiguration: state.requestedConfiguration } : {}),
         permissionMode: state.permissionMode ?? 'unknown',
         retentionPolicy,
         runClass,
@@ -171,6 +180,11 @@ export function listExecutionRunPublicStatesFromHistoryRows(rows: readonly RawHi
             intent: readString(input, 'intent') ?? readString(output, 'intent') ?? current?.intent ?? null,
             backendTarget: readBackendTarget(input, output) ?? current?.backendTarget ?? null,
             displayTitle: readString(input, 'label') ?? readString(output, 'label') ?? current?.displayTitle ?? null,
+            requestedConfiguration:
+                readRequestedConfiguration(input)
+                ?? readRequestedConfiguration(output)
+                ?? current?.requestedConfiguration
+                ?? null,
             permissionMode: readString(input, 'permissionMode') ?? readString(output, 'permissionMode') ?? current?.permissionMode ?? null,
             retentionPolicy: readString(input, 'retentionPolicy') ?? readString(output, 'retentionPolicy') ?? current?.retentionPolicy ?? null,
             runClass: readString(input, 'runClass') ?? readString(output, 'runClass') ?? current?.runClass ?? null,

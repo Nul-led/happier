@@ -117,7 +117,7 @@ describe('happier session voice-agent start command', () => {
           sessionId: 'sess-voice-1',
           includeDisabled: true,
         },
-        { surface: 'cli', defaultSessionId: 'sess-voice-1' },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-voice-1' },
       );
       expect(execute).toHaveBeenNthCalledWith(
         2,
@@ -126,7 +126,7 @@ describe('happier session voice-agent start command', () => {
           backendTargetKeys: ['agent:com.acme.agent/acme'],
           instructions: 'Voice.',
         },
-        { defaultSessionId: 'sess-voice-1' },
+        { authority: 'present_user', defaultSessionId: 'sess-voice-1' },
       );
       expect(createCliActionExecutorFromCredentials).toHaveBeenCalledTimes(1);
       expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({

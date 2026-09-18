@@ -10,6 +10,7 @@ import type {
     PluginContributionIdentityV1,
     SessionInputAdmissionResultV1,
     SessionPendingEnqueueByMachineRequestV1,
+    SessionPendingExecutionRunEnqueueByMachineRequestV2,
 } from '@happier-dev/protocol';
 
 type DaemonAgentRuntimePromptContributions = Extract<
@@ -36,7 +37,7 @@ type DaemonAgentRuntimeAgentCompositionContributions = Extract<
 export type DaemonAgentRuntimeTurnContributionsBridge = Readonly<{
     admitSessionInput?(params: Readonly<{
         sessionId: string;
-        request: SessionPendingEnqueueByMachineRequestV1;
+        request: SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2;
         signal?: AbortSignal;
     }>): Promise<SessionInputAdmissionResultV1>;
     resolvePrompt(params: Readonly<{

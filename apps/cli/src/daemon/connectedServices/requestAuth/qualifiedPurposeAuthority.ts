@@ -27,11 +27,14 @@ export class ConnectedServiceQualifiedPurposeAuthorityError extends Error {
 export function assertQualifiedPurposeAuthorityForSelections(params: Readonly<{
   selections: readonly ConnectedServiceBindingSelection[];
   snapshot: AgentSpawnQualifiedPurposeBindingSnapshot | null;
-}>): asserts params is Readonly<{
-  selections: readonly ConnectedServiceBindingSelection[];
-  snapshot: AgentSpawnQualifiedPurposeBindingSnapshot;
-}> {
-  const missingServiceIds = params.selections.flatMap((selection) => {
+}>): void {
+  const purposeSelections = params.selections.flatMap((selection) => (
+    selection.kind === 'team_resource' && selection.deliveryMode === 'brokered'
+      ? []
+      : [selection]
+  ));
+  if (purposeSelections.length === 0) return;
+  const missingServiceIds = purposeSelections.flatMap((selection) => {
     const represented = params.snapshot?.bindings.some((binding) => {
       const service = binding.target.kind === 'account'
         ? binding.target.account.service
@@ -42,8 +45,11 @@ export function assertQualifiedPurposeAuthorityForSelections(params: Readonly<{
       return selection.kind === 'profile'
         ? binding.target.kind === 'account'
           && binding.target.account.accountId === selection.profileId
-        : binding.target.kind === 'group'
-          && binding.target.groupId === selection.groupId;
+        : selection.kind === 'group'
+          ? binding.target.kind === 'group'
+            && binding.target.groupId === selection.groupId
+          : binding.target.kind === 'account'
+            && binding.target.account.accountId === selection.disclosedMember.accountId;
     }) === true;
     return represented ? [] : [selection.serviceId];
   });

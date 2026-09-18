@@ -25,10 +25,10 @@ import {
 import { findAvailableLoopbackPort, isLoopbackPortAvailable } from '@/cloud/loopbackPort';
 import { configuration, reloadConfiguration } from '@/configuration';
 import { isLoopbackServerHost } from '@/server/serverUrlClassification';
+import { createLivePersonalHomeOperations } from '../relayRuntime/liveRelayRuntime';
 
 import { buildRemoteBootstrapCommand } from './remoteBootstrapCommandBuilder';
 import {
-  buildScpCommand,
   parseJsonLinesBestEffort,
   safeBashSingleQuote,
   type SshAuth,
@@ -334,7 +334,7 @@ async function runSshCommand(params: Readonly<{
   knownHostsMode?: 'app' | 'system';
   remoteCommand: readonly string[];
   signal?: AbortSignal;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   onStdoutChunk?: (text: string) => void;
   includeStdoutInError?: boolean;
   input?: string;
@@ -342,7 +342,7 @@ async function runSshCommand(params: Readonly<{
   if ((params.knownHostsMode ?? 'app') === 'app' && params.knownHostsPath) {
     mkdirSync(dirname(params.knownHostsPath), { recursive: true });
   }
-  const result = await runOpenSshRemoteCommand({
+  const invocation = {
     target: params.ssh.target,
     port: params.ssh.port,
     sshConfigFile: params.ssh.sshConfigFile,
@@ -358,7 +358,13 @@ async function runSshCommand(params: Readonly<{
     onStdoutChunk: params.onStdoutChunk,
     includeStdoutInError: params.includeStdoutInError,
     input: params.input,
-  });
+  };
+  // cli-common owns the nullable timeout contract. Its tracked declarations can
+  // lag the current source during a shared package/CLI edit, so keep this
+  // boundary assertion local while preserving `null` verbatim at runtime.
+  const result = await runOpenSshRemoteCommand(
+    invocation as Parameters<typeof runOpenSshRemoteCommand>[0],
+  );
   return result.stdout;
 }
 
@@ -467,7 +473,7 @@ async function runSshPosixText(params: Readonly<{
   knownHostsMode?: 'app' | 'system';
   shellCommand: string;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   onStdoutChunk?: (text: string) => void;
   includeStdoutInError?: boolean;
   input?: string;
@@ -514,36 +520,6 @@ async function runSshPosixCommandResult(params: Readonly<{
   });
 }
 
-function copyLocalDirectoryToRemote(params: Readonly<{
-  ssh: SystemTaskSshConnectionConfig;
-  auth: SshAuth;
-  knownHostsPath?: string;
-  knownHostsMode?: 'app' | 'system';
-  localPath: string;
-  remotePath: string;
-}>): void {
-  const invocation = buildScpCommand({
-    scpBin: 'scp',
-    target: params.ssh.target,
-    port: params.ssh.port,
-    sshConfigFile: params.ssh.sshConfigFile,
-    localPath: params.localPath,
-    remotePath: params.remotePath,
-    knownHostsPath: params.knownHostsPath,
-    knownHostsMode: params.knownHostsMode,
-    auth: params.auth,
-    connectTimeoutSec: 10,
-    serverAliveIntervalSec: 15,
-    serverAliveCountMax: 2,
-  });
-  runCommandSync({
-    command: invocation.command,
-    args: invocation.args,
-    errorPrefix: 'SCP command failed',
-    redactedLabel: invocation.redactedLabel,
-  });
-}
-
 function applyRelayRuntimeUrlOverrides(params: Readonly<{
   relayUrl: string;
   envOverrides?: Record<string, string>;
@@ -574,6 +550,7 @@ async function installRemoteRelayRuntimeUsingSharedEngine(params: Readonly<{
   mode?: 'user' | 'system';
   env?: Record<string, string>;
   selfHostRelayBinaryOverride?: string;
+  purpose?: Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>;
   signal?: AbortSignal;
 }>): Promise<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>> {
   const engineSsh = params.knownHostsMode === 'app' && params.knownHostsPath
@@ -613,13 +590,12 @@ async function installRemoteRelayRuntimeUsingSharedEngine(params: Readonly<{
     },
     copyLocalDirectoryToRemote: async ({ ssh, localPath, remotePath, knownHostsMode }) => {
       const transportKnownHostsPath = knownHostsMode === 'app' ? params.knownHostsPath : undefined;
-      copyLocalDirectoryToRemote({
-        ssh,
-        auth: params.auth,
-        knownHostsPath: transportKnownHostsPath,
-        knownHostsMode,
-        localPath,
-        remotePath,
+      await transferOpenSshFile({
+        direction: 'upload', target: ssh.target, localPath, remotePath, recursive: true,
+        sshConfigFile: ssh.sshConfigFile, knownHostsPath: transportKnownHostsPath, knownHostsMode,
+        auth: params.auth, port: ssh.port, connectTimeoutSec: 10,
+        serverAliveIntervalSec: 15, serverAliveCountMax: 2,
+        ...(params.signal ? { signal: params.signal } : {}), timeoutMs: 15 * 60_000,
       });
     },
     installRemoteComponent: async ({ componentId, channel, ssh, knownHostsMode, installerBinaryPath, remoteHomeDir }) => {
@@ -659,13 +635,12 @@ async function installRemoteRelayRuntimeUsingSharedEngine(params: Readonly<{
           signal: params.signal,
         }),
         copyLocalDirectoryToRemote: async ({ localPath, remotePath }) => {
-          copyLocalDirectoryToRemote({
-            ssh,
-            auth: params.auth,
-            knownHostsPath: transportKnownHostsPath,
-            knownHostsMode,
-            localPath,
-            remotePath,
+          await transferOpenSshFile({
+            direction: 'upload', target: ssh.target, localPath, remotePath, recursive: true,
+            sshConfigFile: ssh.sshConfigFile, knownHostsPath: transportKnownHostsPath, knownHostsMode,
+            auth: params.auth, port: ssh.port, connectTimeoutSec: 10,
+            serverAliveIntervalSec: 15, serverAliveCountMax: 2,
+            ...(params.signal ? { signal: params.signal } : {}), timeoutMs: 15 * 60_000,
           });
         },
       });
@@ -682,6 +657,7 @@ async function installRemoteRelayRuntimeUsingSharedEngine(params: Readonly<{
     mode: params.mode,
     env: params.env,
     selfHostRelayBinaryOverride: params.selfHostRelayBinaryOverride,
+    ...(params.purpose ? { purpose: params.purpose } : {}),
   });
 
   return {
@@ -701,7 +677,9 @@ function resolveLocalRemoteCliPayloadRootOverride(): string | null {
 async function resolveLiveRemoteHostTrust(params: Readonly<{
   ssh: SystemTaskSshConnectionConfig;
   knownHostsMode: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<RemoteHostTrustResolution> {
+  params.signal?.throwIfAborted();
   if (params.knownHostsMode === 'system') return { status: 'trusted' };
   const knownHostsPath = resolveKnownHostsPath(params.ssh, params.knownHostsMode);
   const existingKnownHostsText = readKnownHostsText(knownHostsPath);
@@ -710,6 +688,7 @@ async function resolveLiveRemoteHostTrust(params: Readonly<{
     ...buildSshKeyscanInvocation({ host: parsedTarget.host, port: parsedTarget.port, timeoutSec: 5, keyType: 'ed25519' }),
     errorPrefix: 'ssh-keyscan failed',
   });
+  params.signal?.throwIfAborted();
   const scanned = systemTasks.extractFirstScannedSshKnownHostLine(keyscanOutput);
   const normalizedHost = formatKnownHostsHostToken(parsedTarget);
   const scannedHostKeyLine = normalizedHost ? `${normalizedHost} ${scanned.keyType} ${scanned.key}` : scanned.line;
@@ -753,6 +732,7 @@ async function installLiveRemoteCli(params: Readonly<{
   const localPayloadRootOverride = resolveLocalRemoteCliPayloadRootOverride();
   await systemTasks.installRemoteFirstPartyComponent({
     componentId: 'happier-cli', channel: params.channel, ssh: params.ssh, knownHostsMode: params.knownHostsMode,
+    ...(params.signal ? { signal: params.signal } : {}),
   }, {
     ...(localPayloadRootOverride ? {
       preparePayload: async ({ componentId, channel }) => ({
@@ -760,35 +740,106 @@ async function installLiveRemoteCli(params: Readonly<{
         payloadRoot: localPayloadRootOverride, source: `local-payload:${localPayloadRootOverride}`, cleanup: async () => undefined,
       }),
     } : {}),
-    resolveRemoteReleaseTarget: async () => {
+    resolveRemoteReleaseTarget: async ({ signal }) => {
       const preflight = await runSshPosixJson<Readonly<{ platform?: unknown; arch?: unknown }>>({
         ssh: params.ssh, auth: params.auth, knownHostsPath, knownHostsMode: params.knownHostsMode,
         shellCommand: ["printf '{\"platform\":\"%s\",\"arch\":\"%s\"}\\n'", '"$(uname -s | tr \'[:upper:]\' \'[:lower:]\')"', '"$(uname -m | tr \'[:upper:]\' \'[:lower:]\')"'].join(' '),
-        signal: params.signal,
+        signal,
       });
       return { os: systemTasks.normalizeRemoteReleaseOs(preflight.platform), arch: systemTasks.normalizeRemoteReleaseArch(preflight.arch) };
     },
-    runRemoteText: async ({ remoteCommand }) => runSshPosixText({
+    runRemoteText: async ({ remoteCommand, signal }) => runSshPosixText({
       ssh: params.ssh, auth: params.auth, knownHostsPath, knownHostsMode: params.knownHostsMode,
-      shellCommand: remoteCommand, signal: params.signal,
+      shellCommand: remoteCommand, signal,
     }),
-    copyLocalDirectoryToRemote: async ({ localPath, remotePath }) => copyLocalDirectoryToRemote({
-      ssh: params.ssh, auth: params.auth, knownHostsPath, knownHostsMode: params.knownHostsMode, localPath, remotePath,
-    }),
+    copyLocalDirectoryToRemote: async ({ localPath, remotePath, signal }) => {
+      await transferOpenSshFile({
+        direction: 'upload', target: params.ssh.target, localPath, remotePath, recursive: true,
+        sshConfigFile: params.ssh.sshConfigFile, knownHostsPath, knownHostsMode: params.knownHostsMode,
+        auth: params.auth, port: params.ssh.port, connectTimeoutSec: 10,
+        serverAliveIntervalSec: 15, serverAliveCountMax: 2,
+        ...(signal ? { signal } : {}), timeoutMs: 15 * 60_000,
+      });
+    },
   });
 }
 
 export function createLiveRemoteSshManageHostTaskKind() {
+  const runPersonalHomeCommand: NonNullable<systemTasks.RemoteSshManageHostDeps['runPersonalHomeCommand']> = async (commandParams) => {
+    const { ssh, auth, knownHostsMode, channel, args, input, resultContract, signal } = commandParams;
+    const timeoutMs = ('timeoutMs' in commandParams ? commandParams.timeoutMs : undefined) as
+      Parameters<typeof runSshPosixText>[0]['timeoutMs'];
+    const executor = systemTasks.createOpenSshHappierJsonExecutor({
+      ssh,
+      auth,
+      knownHostsMode,
+      channel: resolvePublicReleaseRingIdForLabel(channel),
+      runRemoteText: async ({ remoteCommand, signal: commandSignal, timeoutMs, onStdoutChunk, includeStdoutInError, input: commandInput }) => await runSshPosixText({
+        ssh, auth: auth as SshAuth, knownHostsPath: resolveKnownHostsPath(ssh, knownHostsMode), knownHostsMode,
+        shellCommand: remoteCommand, signal: commandSignal, timeoutMs, onStdoutChunk, includeStdoutInError, input: commandInput,
+      }),
+    });
+    const executionOptions = {
+      signal,
+      timeoutMs: timeoutMs === undefined ? 15 * 60_000 : timeoutMs,
+      input,
+    };
+    const result = resultContract === 'task'
+      ? systemTasks.parseStrictPersonalHomeTaskFinalResult((await executor.runHappierText(args, {
+          ...executionOptions,
+          includeStdoutInError: false,
+        } as Parameters<typeof executor.runHappierText>[1])).stdout).data
+      : await executor.runHappierJson(
+          args,
+          executionOptions as Parameters<typeof executor.runHappierJson>[1],
+        );
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new systemTasks.SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command returned invalid JSON.');
+    }
+    return result as SystemTaskJsonObject;
+  };
+  const transferPersonalHomeArchive: NonNullable<systemTasks.RemoteSshManageHostDeps['transferPersonalHomeArchive']> = async ({
+    ssh, auth, knownHostsMode, direction, localPath, remotePath, signal,
+  }) => {
+    const transfer = async (transferLocalPath: string) => await transferOpenSshFile({
+      direction,
+      target: ssh.target,
+      localPath: transferLocalPath,
+      remotePath,
+      sshConfigFile: ssh.sshConfigFile,
+      knownHostsPath: resolveKnownHostsPath(ssh, knownHostsMode),
+      knownHostsMode,
+      auth: auth as SshAuth,
+      port: ssh.port,
+      connectTimeoutSec: 10,
+      serverAliveIntervalSec: 15,
+      serverAliveCountMax: 2,
+      signal,
+      timeoutMs: 15 * 60_000,
+    });
+    if (direction === 'upload') {
+      await transfer(localPath);
+      return;
+    }
+    const tempDirectory = await mkdtemp(join(dirname(localPath), '.happier-home-backup-'));
+    const tempArchive = join(tempDirectory, basename(localPath));
+    try {
+      await transfer(tempArchive);
+      await link(tempArchive, localPath);
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  };
   return systemTasks.createRemoteSshManageHostTaskKind({
     resolveHostTrust: resolveLiveRemoteHostTrust,
-    testConnection: async ({ ssh, auth, knownHostsMode }) => {
+    testConnection: async ({ ssh, auth, knownHostsMode, signal }) => {
       await runSshPosixText({
         ssh, auth: auth as SshAuth, knownHostsPath: resolveKnownHostsPath(ssh, knownHostsMode), knownHostsMode,
-        shellCommand: 'true', timeoutMs: 15_000,
+        shellCommand: 'true', timeoutMs: 15_000, signal,
       });
     },
-    installRemoteCli: async ({ ssh, auth, knownHostsMode, channel }) => await installLiveRemoteCli({
-      ssh, auth: auth as SshAuth, knownHostsMode, channel,
+    installRemoteCli: async ({ ssh, auth, knownHostsMode, channel, signal }) => await installLiveRemoteCli({
+      ssh, auth: auth as SshAuth, knownHostsMode, channel, ...(signal ? { signal } : {}),
     }),
     runDaemonServiceCommand: async () => {
       throw new systemTasks.SystemTaskExecutionError('unsupported', 'Remote daemon management is not available through this coordinator yet.');
@@ -796,59 +847,43 @@ export function createLiveRemoteSshManageHostTaskKind() {
     runRelayRuntimeCommand: async () => {
       throw new systemTasks.SystemTaskExecutionError('unsupported', 'Remote runtime management is not available through this coordinator yet.');
     },
-    runPersonalHomeCommand: async ({ ssh, auth, knownHostsMode, channel, args, input, resultContract, signal }) => {
-      const executor = systemTasks.createOpenSshHappierJsonExecutor({
-        ssh,
-        auth,
-        knownHostsMode,
-        channel: resolvePublicReleaseRingIdForLabel(channel),
-        runRemoteText: async ({ remoteCommand, signal: commandSignal, timeoutMs, onStdoutChunk, includeStdoutInError, input: commandInput }) => await runSshPosixText({
-          ssh, auth: auth as SshAuth, knownHostsPath: resolveKnownHostsPath(ssh, knownHostsMode), knownHostsMode,
-          shellCommand: remoteCommand, signal: commandSignal, timeoutMs, onStdoutChunk, includeStdoutInError, input: commandInput,
-        }),
+    runPersonalHomeCommand,
+    transferPersonalHomeArchive,
+    runPersonalHomeRelocation: async (params) => {
+      const source = await createLivePersonalHomeOperations({ channel: params.channel, mode: params.mode });
+      const destination = systemTasks.createRemoteSshPersonalHomeRelocationDestination({
+        ssh: params.ssh,
+        auth: params.auth,
+        knownHostsMode: params.knownHostsMode,
+        channel: params.channel,
+        mode: params.mode,
+        runPersonalHomeCommand,
+        transferPersonalHomeArchive,
+        ensureRuntime: async (purpose, signal) => {
+          await installRemoteRelayRuntimeUsingSharedEngine({
+            ssh: params.ssh,
+            auth: params.auth as SshAuth,
+            knownHostsPath: resolveKnownHostsPath(params.ssh, params.knownHostsMode),
+            knownHostsMode: params.knownHostsMode,
+            channel: params.channel,
+            mode: params.mode,
+            purpose,
+            ...(signal ? { signal } : {}),
+          });
+        },
       });
-      const result = resultContract === 'task'
-        ? systemTasks.parseStrictPersonalHomeTaskFinalResult((await executor.runHappierText(args, {
-            signal,
-            timeoutMs: 15 * 60_000,
-            includeStdoutInError: false,
-            input,
-          })).stdout).data
-        : await executor.runHappierJson(args, { signal, timeoutMs: 15 * 60_000, input });
-      if (!result || typeof result !== 'object' || Array.isArray(result)) {
-        throw new systemTasks.SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command returned invalid JSON.');
-      }
-      return result as SystemTaskJsonObject;
-    },
-    transferPersonalHomeArchive: async ({ ssh, auth, knownHostsMode, direction, localPath, remotePath, signal }) => {
-      const transfer = async (transferLocalPath: string) => await transferOpenSshFile({
-        direction,
-        target: ssh.target,
-        localPath: transferLocalPath,
-        remotePath,
-        sshConfigFile: ssh.sshConfigFile,
-        knownHostsPath: resolveKnownHostsPath(ssh, knownHostsMode),
-        knownHostsMode,
-        auth: auth as SshAuth,
-        port: ssh.port,
-        connectTimeoutSec: 10,
-        serverAliveIntervalSec: 15,
-        serverAliveCountMax: 2,
-        signal,
-        timeoutMs: 15 * 60_000,
+      const result = await source.relocate({
+        operationId: params.operationId,
+        sourceDescriptorRevision: params.sourceDescriptorRevision,
+        destinationMachineId: params.destinationMachineId,
+        ...(params.recoveryAction ? { recoveryAction: params.recoveryAction } : {}),
+        destination,
+        publishDestination: params.publishDestination,
+        readPublishedDescriptor: params.readPublishedDescriptor,
+        ...(params.signal ? { signal: params.signal } : {}),
+        progress: params.progress,
       });
-      if (direction === 'upload') {
-        await transfer(localPath);
-        return;
-      }
-      const tempDirectory = await mkdtemp(join(dirname(localPath), '.happier-home-backup-'));
-      const tempArchive = join(tempDirectory, basename(localPath));
-      try {
-        await transfer(tempArchive);
-        await link(tempArchive, localPath);
-      } finally {
-        await rm(tempDirectory, { recursive: true, force: true });
-      }
+      return { ...result };
     },
     runPersonalHomePairDevice: async ({ ssh, auth, knownHostsMode, channel, homeServerIdentityId, args, signal }) => {
       const executor = systemTasks.createOpenSshHappierJsonExecutor({
@@ -971,7 +1006,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
       channel: parsed.channel ?? 'stable',
       signal,
     }),
-    approveLocalAuthRequest: async ({ publicKey, pairing, supportsTokenOnly, parsed }) => {
+    approveLocalAuthRequest: async ({ publicKey, pairing, supportsTokenOnly, parsed, signal }) => {
       const knownHostsMode = parsed.knownHostsMode ?? 'app';
       const knownHostsPath = resolveKnownHostsPath(parsed.ssh, knownHostsMode);
       // Forward the remote request's v3 pairing context verbatim so the
@@ -986,6 +1021,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
           ? { pairing }
           : {}),
         ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+        ...(signal ? { signal } : {}),
       };
       if (parsed.homeTarget?.descriptor) {
         await approveTerminalAuthRequest({

@@ -20,6 +20,8 @@ import {
  * lifecycle modules do not each grow their own duplicate copy.
  */
 
+export const DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS = 30_000;
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object';
 }

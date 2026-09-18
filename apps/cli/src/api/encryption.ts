@@ -90,6 +90,18 @@ export function encryptLegacy(data: any, secret: Uint8Array): Uint8Array {
   return encryptLegacyWithNonce(data, secret, getRandomBytes(tweetnacl.secretbox.nonceLength));
 }
 
+export type DecryptionResult =
+  | Readonly<{ status: 'authenticated'; value: unknown }>
+  | Readonly<{ status: 'authentication_failed' | 'unsupported' | 'invalid_payload' }>;
+
+function parseAuthenticatedContent(decrypted: Uint8Array): DecryptionResult {
+  try {
+    return { status: 'authenticated', value: parseSerializedJsonValue(new TextDecoder().decode(decrypted)) };
+  } catch {
+    return { status: 'invalid_payload' };
+  }
+}
+
 /**
  * Decrypt data using the secret key
  * @param data - The data to decrypt
@@ -97,15 +109,22 @@ export function encryptLegacy(data: any, secret: Uint8Array): Uint8Array {
  * @returns The decrypted data
  */
 export function decryptLegacy(data: Uint8Array, secret: Uint8Array): any | null {
+  const result = decryptLegacyResult(data, secret);
+  return result.status === 'authenticated' ? result.value : null;
+}
+
+export function decryptLegacyResult(data: Uint8Array, secret: Uint8Array): DecryptionResult {
+  if (data.length < tweetnacl.secretbox.nonceLength + tweetnacl.secretbox.overheadLength
+    || secret.length !== tweetnacl.secretbox.keyLength) {
+    return { status: 'unsupported' };
+  }
   const nonce = data.slice(0, tweetnacl.secretbox.nonceLength);
   const encrypted = data.slice(tweetnacl.secretbox.nonceLength);
   const decrypted = tweetnacl.secretbox.open(encrypted, nonce, secret);
   if (!decrypted) {
-    // Decryption failed - returning null is sufficient for error handling
-    // Callers should handle the null case appropriately
-    return null;
+    return { status: 'authentication_failed' };
   }
-  return parseSerializedJsonValue(new TextDecoder().decode(decrypted));
+  return parseAuthenticatedContent(decrypted);
 }
 
 /**
@@ -164,35 +183,33 @@ export function encryptWithDerivedNonce(
  * @returns The decrypted data or null if decryption fails
  */
 export function decryptWithDataKey(bundle: Uint8Array, dataKey: Uint8Array): any | null {
-  if (bundle.length < 1) {
-    return null;
-  }
-  if (bundle[0] !== 0) { // Only verision 0
-    return null;
-  }
-  if (bundle.length < 12 + 16 + 1) { // Minimum: version nonce + auth tag
-    return null;
-  }
+  const result = decryptWithDataKeyResult(bundle, dataKey);
+  return result.status === 'authenticated' ? result.value : null;
+}
 
-
+export function decryptWithDataKeyResult(bundle: Uint8Array, dataKey: Uint8Array): DecryptionResult {
+  // Version 0: version byte, 12-byte nonce, ciphertext, 16-byte tag.
+  if (bundle.length < 12 + 16 + 1 || bundle[0] !== 0 || dataKey.length !== 32) {
+    return { status: 'unsupported' };
+  }
   const nonce = bundle.slice(1, 13);
   const authTag = bundle.slice(bundle.length - 16);
   const ciphertext = bundle.slice(13, bundle.length - 16);
 
+  let decrypted: Uint8Array;
   try {
     const decipher = createDecipheriv('aes-256-gcm', dataKey, nonce);
     decipher.setAuthTag(authTag);
 
-    const decrypted = Buffer.concat([
+    decrypted = Buffer.concat([
       decipher.update(ciphertext),
       decipher.final()
     ]);
 
-    return parseSerializedJsonValue(new TextDecoder().decode(decrypted));
-  } catch (error) {
-    // Decryption failed
-    return null;
+  } catch {
+    return { status: 'authentication_failed' };
   }
+  return parseAuthenticatedContent(decrypted);
 }
 
 export function encrypt(
@@ -208,11 +225,12 @@ export function encrypt(
 }
 
 export function decrypt(key: Uint8Array, variant: 'legacy' | 'dataKey', data: Uint8Array): any | null {
-  if (variant === 'legacy') {
-    return decryptLegacy(data, key);
-  } else {
-    return decryptWithDataKey(data, key);
-  }
+  const result = decryptResult(key, variant, data);
+  return result.status === 'authenticated' ? result.value : null;
+}
+
+export function decryptResult(key: Uint8Array, variant: 'legacy' | 'dataKey', data: Uint8Array): DecryptionResult {
+  return variant === 'legacy' ? decryptLegacyResult(data, key) : decryptWithDataKeyResult(data, key);
 }
 
 /**

@@ -43,6 +43,8 @@ export {
   resolveExplicitOrInstalledLocalFirstPartyCommand,
   createLocalHappierJsonExecutor,
   type HappierJsonExecutor,
+  type LocalFirstPartyCommandProvenance,
+  type ResolvedLocalFirstPartyCommand,
   type HappierTextResult,
   type RunHappierOptions,
 } from './executors/happierJsonExecutor.js';
@@ -77,12 +79,16 @@ export {
 } from './recipes/remoteHomeEnrollmentRecipe.js';
 export {
   applyBackgroundServiceSetupGuidance,
+  resolveBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceCancellationReason,
+  type BackgroundServiceSetupGuidanceDecision,
   type BackgroundServiceSetupGuidanceFlowResult,
 } from './setupServiceGuidance/applyBackgroundServiceSetupGuidance.js';
 export {
   buildBackgroundServiceSetupGuidance,
+  resolveBackgroundServiceSetupReconciliationDisposition,
   resolveBackgroundServiceSetupServicesRequiringReplacement,
+  type BackgroundServiceSetupReconciliationAction,
   type BackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceService,
 } from './setupServiceGuidance/buildBackgroundServiceSetupGuidance.js';

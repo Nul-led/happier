@@ -10,7 +10,12 @@ import { FIRST_CLASS_SESSION_COMMANDS } from './firstClassSessionCommands';
 
 describe('first-class CLI session commands', () => {
   it('delegates each command to the canonical nested session command', async () => {
-    for (const sessionCommand of FIRST_CLASS_SESSION_COMMANDS) {
+    for (const sessionCommand of FIRST_CLASS_SESSION_COMMANDS.filter((entry) => (
+      ['spawn', 'history', 'delegate'].includes(entry.command)
+    ))) {
+      // Compiled Action roots are exercised by the compiled-dispatch suite.
+      // This test intentionally covers only the remaining multi-step/local
+      // workflows that delegate to the nested Session command owner.
       handleSessionCliCommand.mockClear();
       await sessionCommand.handler({
         args: [sessionCommand.command, 'argument'],

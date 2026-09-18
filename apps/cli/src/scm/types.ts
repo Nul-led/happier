@@ -1,3 +1,4 @@
+import type { WorkspaceIntegrationHandlers } from '@happier-dev/plugin-sdk/scm/backend';
 import type {
     ScmBackendDescribeRequest,
     ScmBackendDescribeResponse,
@@ -129,6 +130,8 @@ export type ScmBackendSelection = {
 export type ScmWorkspaceIntegrationWorkspaceLocationInspection = Readonly<{
     rootPath: string;
     scmProvider?: WorkspaceLocationScm['provider'];
+    /** Exact committed revision at inspection time, when supplied by the selected SCM contribution. */
+    committedRevision?: string;
     checkoutDiscovery?: readonly ScmWorkspaceIntegrationCheckoutDiscovery[];
     checkoutProviderKinds?: readonly Exclude<WorkspaceCheckoutKind, 'primary'>[];
 }>;
@@ -136,6 +139,7 @@ export type ScmWorkspaceIntegrationWorkspaceLocationInspection = Readonly<{
 export type ScmWorkspaceIntegrationCheckoutDiscovery = Readonly<{
     kind: Exclude<WorkspaceCheckoutKind, 'primary'>;
     path?: string;
+    repositoryIdentityPath?: string;
 }>;
 
 export type ScmWorkspaceIntegrationPostMaterializationInput = Readonly<{
@@ -198,6 +202,7 @@ export type ScmWorkspaceIntegrationAdministrativePathInput = Readonly<{
 export type ScmWorkspaceIntegrationPortableWorkspacePathInput = ScmWorkspaceIntegrationPortableWorkspacePathRequest;
 
 export type ScmWorkspaceIntegration = Readonly<{
+    classifyDirectoryIgnores?: WorkspaceIntegrationHandlers['classifyDirectoryIgnores'];
     inspectWorkspaceLocation?: (input: Readonly<{
         context: ScmBackendContext;
     }>) => Promise<ScmWorkspaceIntegrationWorkspaceLocationInspection | null>;

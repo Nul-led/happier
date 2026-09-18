@@ -15,7 +15,11 @@ import type { ActionOperationProgressUpdate } from './actionOperationTypes';
 function readRequestId(actionId: string, input: unknown): string | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const record = input as Readonly<Record<string, unknown>>;
-  const candidate = actionId === 'session.spawn_new' ? record.creationKey : record.requestId;
+  const candidate = actionId === 'session.spawn_new'
+    ? record.creationKey
+    : actionId === 'session.handoff'
+      ? record.actionRequestId ?? record.requestId
+      : record.requestId;
   if (typeof candidate !== 'string') return undefined;
   const normalized = candidate.trim();
   return normalized.length > 0 && normalized.length <= 2_000 ? normalized : undefined;
@@ -77,6 +81,7 @@ export function createHostActionOperationRuntime(deps: Readonly<{
     actionRequestId?: string;
     sessionId?: string;
     execute: (context: Readonly<{
+      actionRequestId?: string;
       signal: AbortSignal;
       operationProgress: Readonly<{ update: (update: ActionOperationProgressUpdate) => void }>;
       operationOwnerUpdate: Readonly<{ update: (update: import('./actionOperationTypes').ActionOperationOwnerUpdate) => void }>;
@@ -108,12 +113,14 @@ export function createHostActionOperationRuntime(deps: Readonly<{
         ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       },
       ...(requestId ? { requestId } : {}),
+      input: request.input,
       ...(domainRef ? { domainRef } : {}),
       cancellation: cancellableActionId
         && deps.supportsCoreCancellation?.(cancellableActionId, request.input) === true
         ? 'supported'
         : 'unsupported',
-      execute: async ({ signal, updateProgress, publishOwnerUpdate }) => await request.execute({
+      execute: async ({ actionRequestId, signal, updateProgress, publishOwnerUpdate }) => await request.execute({
+        ...(actionRequestId ? { actionRequestId } : {}),
         signal,
         operationProgress: { update: updateProgress },
         operationOwnerUpdate: { update: publishOwnerUpdate },
@@ -153,6 +160,7 @@ export function createHostActionOperationRuntime(deps: Readonly<{
         ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       },
       ...(request.requestId ? { requestId: request.requestId } : {}),
+      input: request.input,
       execute: async ({ signal, updateProgress }) => await request.execute({
         signal,
         operationProgress: { update: updateProgress },

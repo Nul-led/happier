@@ -42,10 +42,23 @@ export function mergePersistedMemberRuntimeState(
     persistedState: ConnectedServiceAuthGroupMemberStateV1,
 ): ConnectedServiceAuthGroupMemberRuntimeState {
     const persisted = memberStateFromApiState(persistedState);
-    return {
+    const merged = {
         ...persisted,
         ...(runtimeState ?? {}),
     };
+    const persistedResetDescribesLimiterFailure = typeof persisted.providerResetsAtMs === 'number' && (
+        persisted.lastFailureKind === 'usage_limit'
+        || persisted.lastFailureKind === 'rate_limit'
+        || persisted.lastFailureKind === 'capacity'
+        || typeof persisted.exhaustedUntilMs === 'number'
+        || typeof persisted.quotaExhaustedUntilMs === 'number'
+        || typeof persisted.rateLimitedUntilMs === 'number'
+        || typeof persisted.capacityLimitedUntilMs === 'number'
+        || typeof persisted.cooldownUntilMs === 'number'
+    );
+    return persistedResetDescribesLimiterFailure
+        ? { ...merged, providerResetsAtMs: persisted.providerResetsAtMs }
+        : merged;
 }
 
 function memberStateFromApiState(
@@ -60,9 +73,12 @@ function memberStateFromApiState(
         ...(readNumberState(state.capacityLimitedUntilMs) === undefined ? {} : { capacityLimitedUntilMs: readNumberState(state.capacityLimitedUntilMs) }),
         ...(readNumberState(state.authInvalidUntilMs) === undefined ? {} : { authInvalidUntilMs: readNumberState(state.authInvalidUntilMs) }),
         ...(readNumberState(state.planUnavailableUntilMs) === undefined ? {} : { planUnavailableUntilMs: readNumberState(state.planUnavailableUntilMs) }),
+        ...(state.modelUnavailableUntilMsByModelId === undefined ? {} : { modelUnavailableUntilMsByModelId: state.modelUnavailableUntilMsByModelId }),
         ...(readNumberState(state.validationBlockedUntilMs) === undefined ? {} : { validationBlockedUntilMs: readNumberState(state.validationBlockedUntilMs) }),
         ...(readNumberState(state.providerResetsAtMs) === undefined ? {} : { providerResetsAtMs: readNumberState(state.providerResetsAtMs) }),
         ...(readStringState(state.lastFailureKind) === undefined ? {} : { lastFailureKind: readStringState(state.lastFailureKind) }),
+        ...(readStringState(state.lastFailureCode) === undefined ? {} : { lastFailureCode: readStringState(state.lastFailureCode) }),
+        ...(state.autoDisabledReason === undefined ? {} : { autoDisabledReason: state.autoDisabledReason }),
         ...(readNumberState(state.lastObservedAtMs) === undefined ? {} : { lastObservedAtMs: readNumberState(state.lastObservedAtMs) }),
     };
 }

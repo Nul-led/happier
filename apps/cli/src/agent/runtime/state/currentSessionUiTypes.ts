@@ -13,7 +13,10 @@ import type {
     InteractionTransientResultV1,
     SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
-import type { CurrentSessionPresentationOwnerV1 } from '@happier-dev/protocol/sessions';
+import type {
+    CurrentSessionPresentationIntentV1,
+    CurrentSessionPresentationOwnerV1,
+} from '@happier-dev/protocol/sessions';
 import type { PluginDiagnosticData, PluginServices } from '@happier-dev/plugin-sdk';
 import type { PermissionRequestOwner } from '@/agent/permissions/permissionRequestOwner';
 
@@ -95,6 +98,8 @@ export interface HostCurrentSessionPresentationService {
         owner: HostSessionPresentationOwner;
     }): Promise<HostSessionPresentationStatefulResult>;
     replaceComposerText(request: { operationId: string; text: string }, options?: { signal?: AbortSignal }): Promise<HostSessionPresentationOneShotResult>;
+    /** Applies one reversible intent to the exact bound current Session UI. */
+    present(request: { operationId: string; intent: CurrentSessionPresentationIntentV1 }, options?: { signal?: AbortSignal }): Promise<HostSessionPresentationOneShotResult>;
 }
 
 export type HostCurrentSessionUiServices = Readonly<{

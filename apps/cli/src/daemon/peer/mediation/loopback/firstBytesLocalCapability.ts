@@ -69,7 +69,11 @@ export type FirstBytesLocalCapabilityProxy = Readonly<{
  */
 export async function startFirstBytesLocalCapabilityProxy(input: Readonly<{
   targetPort: number;
+  /** Cancels an abandoned one-shot target until the exact capability is accepted. */
+  abortSignalUntilClaimed?: AbortSignal;
+  onTargetConnected?: (input: Readonly<{ localPort: number }>) => void;
 }>): Promise<FirstBytesLocalCapabilityProxy> {
+  input.abortSignalUntilClaimed?.throwIfAborted();
   if (!Number.isInteger(input.targetPort) || input.targetPort < 1 || input.targetPort > 65_535) {
     throw new Error('Local capability proxy target port is invalid');
   }
@@ -81,12 +85,16 @@ export async function startFirstBytesLocalCapabilityProxy(input: Readonly<{
   const pending = new Set<Socket>();
   let closed = false;
   let closePromise: Promise<void> | null = null;
+  const onAbortedBeforeClaim = (): void => {
+    if (!accepted) void close();
+  };
   let resolveClosed!: () => void;
   const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const close = (): Promise<void> => {
     closePromise ??= (async () => {
       if (closed) return;
       closed = true;
+      input.abortSignalUntilClaimed?.removeEventListener('abort', onAbortedBeforeClaim);
       for (const socket of pending) socket.destroy();
       pending.clear();
       accepted?.destroy();
@@ -120,10 +128,15 @@ export async function startFirstBytesLocalCapabilityProxy(input: Readonly<{
       for (const pendingSocket of pending) pendingSocket.destroy();
       pending.clear();
       void closeListeningServer(server);
+      input.abortSignalUntilClaimed?.removeEventListener('abort', onAbortedBeforeClaim);
       if (closed) return;
       target = connect({ host: '127.0.0.1', port: input.targetPort, allowHalfOpen: true });
       target.setNoDelay(true);
       target.once('connect', () => {
+        const targetAddress = target!.address();
+        if (typeof targetAddress === 'object' && 'port' in targetAddress) {
+          input.onTargetConnected?.({ localPort: targetAddress.port });
+        }
         socket.setNoDelay(true);
         socket.pipe(target!, { end: false });
         target!.pipe(socket, { end: false });
@@ -154,6 +167,8 @@ export async function startFirstBytesLocalCapabilityProxy(input: Readonly<{
     await close();
     throw new Error('Local capability proxy did not bind');
   }
+  input.abortSignalUntilClaimed?.addEventListener('abort', onAbortedBeforeClaim, { once: true });
+  if (input.abortSignalUntilClaimed?.aborted) onAbortedBeforeClaim();
   return Object.freeze({
     port: address.port,
     localCapability,

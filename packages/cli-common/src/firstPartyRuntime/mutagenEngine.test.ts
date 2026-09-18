@@ -1,13 +1,16 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
 import {
+  MUTAGEN_ENGINE_FORK_BRANCH,
+  MUTAGEN_ENGINE_FORK_REMOTE,
   MUTAGEN_ENGINE_FORK_RELEASE_COMMIT,
   MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT,
+  MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
   MUTAGEN_ENGINE_VERSION,
   MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256,
   MUTAGEN_ENGINE_PROTOCOL_EPOCH,
@@ -22,8 +25,36 @@ import {
   resolveMutagenEngineDataLayout,
   resolveMutagenEngineReleaseTag,
 } from './mutagenEngineArtifact.js';
+
+const MUTAGEN_ENGINE_SOURCE_POLICY = JSON.parse(
+  readFileSync(new URL('../../mutagen-engine.json', import.meta.url), 'utf8'),
+) as Readonly<{
+  schemaVersion: number;
+  component: string;
+  engineVersion: string;
+  fork: Readonly<{
+    remote: string;
+    branch: string;
+    sourceBaseCommit: string;
+    releaseCommit: string;
+    transportSpikeCommit: string;
+  }>;
+  upstream: Readonly<{ tag: string; commit: string }>;
+  toolchain: Readonly<{
+    go: string;
+    distributionSha256: Readonly<Record<string, string>>;
+  }>;
+  protocol: Readonly<{ epoch: string }>;
+  targets: readonly string[];
+  artifact: Readonly<{ releaseRepository: string; sourceRepository: string }>;
+  license: Readonly<{
+    ssplEnabled: boolean;
+    managerBuildTags: readonly string[];
+    agentBuildTags: readonly string[];
+  }>;
+}>;
 const FIXTURE_RELEASE_COMMIT = '3a4774da2a75a0d2a5343e4980d9a03aa44ca81c';
-const APPROVED_FORK_RELEASE_COMMIT = '334d778e8c4bf055ad00e0f3991a8e5ed543950c';
+const APPROVED_FORK_RELEASE_COMMIT = 'f02d01e88f2eeec5e4326a4739243b863f8cebbe';
 const MUTAGEN_UMBRELLA_LICENSE = `Unless otherwise specified, all code in this repository is made available under
 the terms of the MIT License, the text of which can be found below.
 
@@ -67,10 +98,71 @@ const VALID_MANIFEST = {
 };
 
 describe('Mutagen engine artifact contract', () => {
+  it('keeps source-build policy and runtime acquisition constants in strict parity', () => {
+    expect({
+      schemaVersion: 1,
+      component: 'mutagen-engine',
+      engineVersion: MUTAGEN_ENGINE_VERSION,
+      fork: {
+        remote: MUTAGEN_ENGINE_FORK_REMOTE,
+        branch: MUTAGEN_ENGINE_FORK_BRANCH,
+        sourceBaseCommit: MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT,
+        releaseCommit: MUTAGEN_ENGINE_FORK_RELEASE_COMMIT,
+        transportSpikeCommit: MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
+      },
+      upstream: {
+        tag: MUTAGEN_ENGINE_UPSTREAM_TAG,
+        commit: MUTAGEN_ENGINE_UPSTREAM_COMMIT,
+      },
+      toolchain: {
+        go: MUTAGEN_ENGINE_GO_VERSION,
+        distributionSha256: MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256,
+      },
+      protocol: { epoch: MUTAGEN_ENGINE_PROTOCOL_EPOCH },
+      targets: MUTAGEN_ENGINE_SUPPORTED_TARGETS,
+      artifact: {
+        releaseRepository: 'happier-dev/mutagen',
+        sourceRepository: MUTAGEN_ENGINE_FORK_REMOTE.replace(/\.git$/u, ''),
+      },
+      license: {
+        ssplEnabled: true,
+        managerBuildTags: ['mutagensidecar', 'mutagensspl'],
+        agentBuildTags: ['mutagenagent', 'mutagensspl'],
+      },
+    }).toEqual({
+      schemaVersion: MUTAGEN_ENGINE_SOURCE_POLICY.schemaVersion,
+      component: MUTAGEN_ENGINE_SOURCE_POLICY.component,
+      engineVersion: MUTAGEN_ENGINE_SOURCE_POLICY.engineVersion,
+      fork: {
+        remote: MUTAGEN_ENGINE_SOURCE_POLICY.fork.remote,
+        branch: MUTAGEN_ENGINE_SOURCE_POLICY.fork.branch,
+        sourceBaseCommit: MUTAGEN_ENGINE_SOURCE_POLICY.fork.sourceBaseCommit,
+        releaseCommit: MUTAGEN_ENGINE_SOURCE_POLICY.fork.releaseCommit,
+        transportSpikeCommit: MUTAGEN_ENGINE_SOURCE_POLICY.fork.transportSpikeCommit,
+      },
+      upstream: MUTAGEN_ENGINE_SOURCE_POLICY.upstream,
+      toolchain: {
+        go: MUTAGEN_ENGINE_SOURCE_POLICY.toolchain.go,
+        distributionSha256: MUTAGEN_ENGINE_SOURCE_POLICY.toolchain.distributionSha256,
+      },
+      protocol: { epoch: MUTAGEN_ENGINE_SOURCE_POLICY.protocol.epoch },
+      targets: MUTAGEN_ENGINE_SOURCE_POLICY.targets,
+      artifact: {
+        releaseRepository: MUTAGEN_ENGINE_SOURCE_POLICY.artifact.releaseRepository,
+        sourceRepository: MUTAGEN_ENGINE_SOURCE_POLICY.artifact.sourceRepository,
+      },
+      license: {
+        ssplEnabled: MUTAGEN_ENGINE_SOURCE_POLICY.license.ssplEnabled,
+        managerBuildTags: MUTAGEN_ENGINE_SOURCE_POLICY.license.managerBuildTags,
+        agentBuildTags: MUTAGEN_ENGINE_SOURCE_POLICY.license.agentBuildTags,
+      },
+    });
+  });
+
   it('pins the approved fork, upstream, toolchain, protocol, and target matrix', () => {
     expect(MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT).toMatch(/^[0-9a-f]{40}$/u);
     expect(MUTAGEN_ENGINE_FORK_RELEASE_COMMIT).toBe(APPROVED_FORK_RELEASE_COMMIT);
-    expect(MUTAGEN_ENGINE_VERSION).toBe('0.18.1-happier.8');
+    expect(MUTAGEN_ENGINE_VERSION).toBe('0.18.1-happier.9');
     expect(MUTAGEN_ENGINE_UPSTREAM_COMMIT).toBe('a225ae50aee3d7ebb59139203cb84e8a6a3ff4bf');
     expect(MUTAGEN_ENGINE_UPSTREAM_TAG).toBe('v0.18.1');
     expect(MUTAGEN_ENGINE_GO_VERSION).toBe('1.22.12');
@@ -369,7 +461,11 @@ describe('Mutagen engine artifact contract', () => {
     });
     expect(layout.dataDir).toBe('/home/tester/.happier/daemon/workspace-sync/mutagen/data');
     expect(layout.brokerDir).toBe('/home/tester/.happier/daemon/workspace-sync/mutagen/broker');
-    expect(layout.stagingDir).toBe('/home/tester/.happier/daemon/workspace-sync/mutagen/staging');
+    expect(layout).toEqual({
+      rootDir: '/home/tester/.happier/daemon/workspace-sync/mutagen',
+      dataDir: '/home/tester/.happier/daemon/workspace-sync/mutagen/data',
+      brokerDir: '/home/tester/.happier/daemon/workspace-sync/mutagen/broker',
+    });
     expect(() => resolveMutagenEngineDataLayout({
       daemonDataRoot: '/tmp/daemon',
       stackDevTargetMutagenDataDir: '/tmp/daemon/workspace-sync/mutagen/data',

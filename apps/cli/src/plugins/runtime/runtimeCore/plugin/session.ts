@@ -33,6 +33,7 @@ import {
     getAgentResumeConfig,
     resolveModelSelectionIntentFromSessionMetadata,
 } from '@happier-dev/agents';
+import { applyRuntimeDescriptorSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 import {
     buildBackendTargetKeyV2,
     buildUnsupportedSessionPendingInputInterruptAndRunResult,
@@ -44,6 +45,7 @@ import {
     resolveSessionModelSelectionInputRefV1,
     type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
 import type {
   AgentSessionConfigurationSnapshot,
@@ -98,11 +100,17 @@ type NativeAgentSessionRuntimeCreate = (
     | NativeAgentSessionRuntimeCreation
     | Promise<PluginRuntimeHookOperations | NativeAgentSessionRuntimeCreation>;
 
-function normalizeNativeAgentSessionRuntimeCreation(
+async function normalizeNativeAgentSessionRuntimeCreation(
     created: PluginRuntimeHookOperations | NativeAgentSessionRuntimeCreation,
-): NativeAgentSessionRuntimeCreation {
-    if ('operations' in created) return created;
-    return { operations: created };
+): Promise<NativeAgentSessionRuntimeCreation> {
+    const normalized = 'operations' in created ? created : { operations: created };
+    if (typeof normalized.operations.setOnPromptDeliveryOutcome !== 'function') {
+        await normalized.operations.resetOrDisposeRuntime('runtime_recovery').catch(() => undefined);
+        throw new Error(
+            'An admitted Agent Session runtime must provide the canonical provider delivery outcome port',
+        );
+    }
+    return normalized;
 }
 
 function normalizeNonEmptyString(value: unknown): string | null {
@@ -159,7 +167,6 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
     let replacementLifecycle: HostRuntimeReplacementLifecycle | null = null;
     const runtimeEventHandlers = new Set<RuntimeTurnMessageHandler>();
     let runtimeEventUnsubscribe: (() => void) | null = null;
-    let promptAcceptedHandler: PluginRuntimePromptAcceptedHandler | null = null;
     let promptDeliveryOutcomeHandler: ((outcome: PluginRuntimePromptDeliveryOutcome) => void) | null = null;
     let promptTerminallyRejectedHandler: PluginRuntimePromptAcceptedHandler | null = null;
     const hasModelsSource = params.initialRuntime.operations.models !== undefined;
@@ -247,13 +254,7 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
 
     const bindProviderInputHandlersToCurrentRuntime = (): void => {
         const bindingEpoch = runtimeBindingEpoch;
-        currentOperations.setOnPromptAcceptedByProvider?.(promptAcceptedHandler
-            ? (info) => {
-                if (runtimeClosed || bindingEpoch !== runtimeBindingEpoch) return;
-                promptAcceptedHandler?.(info);
-            }
-            : null);
-        currentOperations.setOnPromptDeliveryOutcome?.(promptDeliveryOutcomeHandler
+        currentOperations.setOnPromptDeliveryOutcome(promptDeliveryOutcomeHandler
             ? (outcome) => {
                 if (runtimeClosed || bindingEpoch !== runtimeBindingEpoch) return;
                 promptDeliveryOutcomeHandler?.(outcome);
@@ -268,12 +269,6 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
     };
 
     const reapplyRuntimeHandlers = (): void => {
-        if (promptAcceptedHandler && !currentOperations.setOnPromptAcceptedByProvider) {
-            throw new Error('Recreated plugin session runtime dropped its provider-acceptance seam after the host registered a provider-acceptance handler');
-        }
-        if (promptDeliveryOutcomeHandler && !currentOperations.setOnPromptDeliveryOutcome) {
-            throw new Error('Recreated plugin session runtime dropped its prompt-delivery-outcome seam after the host registered a prompt-delivery-outcome handler');
-        }
         bindProviderInputHandlersToCurrentRuntime();
     };
 
@@ -317,6 +312,10 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
         get permissionCapability() {
             return currentOperations.permissionCapability;
         },
+        getRuntimeLifetimeSignal: () => currentOperations.getRuntimeLifetimeSignal?.() ?? null,
+        readActiveTurnPermissionWitness: () => currentOperations.readActiveTurnPermissionWitness?.() ?? null,
+        readActiveTurnInputId: () => currentOperations.readActiveTurnInputId?.() ?? null,
+        readActiveTurnAdmissionWitness: () => currentOperations.readActiveTurnAdmissionWitness?.() ?? null,
         beginTurnLifecycle() {
             currentOperations.beginTurnLifecycle();
         },
@@ -348,22 +347,10 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
             }
             return await apply(delta);
         },
-        ...(currentOperations.setOnPromptAcceptedByProvider
-            ? {
-                setOnPromptAcceptedByProvider(handler: PluginRuntimePromptAcceptedHandler | null) {
-                    promptAcceptedHandler = handler;
-                    bindProviderInputHandlersToCurrentRuntime();
-                },
-            }
-            : {}),
-        ...(currentOperations.setOnPromptDeliveryOutcome
-            ? {
-                setOnPromptDeliveryOutcome(handler: ((outcome: PluginRuntimePromptDeliveryOutcome) => void) | null) {
-                    promptDeliveryOutcomeHandler = handler;
-                    bindProviderInputHandlersToCurrentRuntime();
-                },
-            }
-            : {}),
+        setOnPromptDeliveryOutcome(handler: ((outcome: PluginRuntimePromptDeliveryOutcome) => void) | null) {
+            promptDeliveryOutcomeHandler = handler;
+            bindProviderInputHandlersToCurrentRuntime();
+        },
         setOnPromptTerminallyRejectedBeforeProvider(handler: PluginRuntimePromptAcceptedHandler | null) {
             promptTerminallyRejectedHandler = handler;
             bindProviderInputHandlersToCurrentRuntime();
@@ -586,7 +573,7 @@ function resolveInitialNativeAgentSessionOpenIntent(
     sessionInput: PluginSessionBindingInput,
     strictNativeResumeIdentity: boolean,
 ): NativeAgentSessionOpenIntent {
-    const providerSessionId = normalizeNonEmptyString(sessionInput.resume.resumeSessionId);
+    const providerSessionId = readNonBlankOpaqueIdentifier(sessionInput.resume.resumeSessionId);
     const nativeForkSource = sessionInput.nativeForkSource;
     if (nativeForkSource) {
         return Object.freeze({ kind: 'fork', source: nativeForkSource });
@@ -873,11 +860,20 @@ export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
         accentColor: 'cyan',
     });
     const providerSessionMetadataKey = resolveNativeAgentVendorResumeIdField(policyAgentId);
+    const augmentSessionMetadata: HostSessionRuntimeConfig['augmentSessionMetadata'] = (metadata) => {
+        const projected = params.sessionProjection?.augmentSessionMetadata?.(metadata) ?? metadata;
+        if (!params.registeredAgentIdentity) return projected;
+        return applyRuntimeDescriptorSessionMetadata(projected, {
+            v: 1,
+            agentId: policyAgentId,
+            agent: {},
+        });
+    };
 
     return createCatalogHostSessionRuntimePlan({
         agentId: params.backend.id,
         opts: buildPluginHostSessionRuntimeOptions(params.sessionInput),
-        config: createCatalogHostSessionRuntimeConfig({
+        config: createCatalogHostSessionRuntimeConfig<PluginRuntimeHookOperations>({
             agentId: params.backend.id,
             config: {
                 displayName,
@@ -885,10 +881,10 @@ export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
                 ...(params.sessionProjection
                     ? {
                         agentMessageType: params.sessionProjection.agentMessageType,
-                        ...(params.sessionProjection.augmentSessionMetadata
-                            ? { augmentSessionMetadata: params.sessionProjection.augmentSessionMetadata }
-                            : {}),
                     }
+                    : {}),
+                ...(params.registeredAgentIdentity || params.sessionProjection?.augmentSessionMetadata
+                    ? { augmentSessionMetadata }
                     : {}),
                 policyAgentId,
                 providerRequirements:
@@ -918,7 +914,7 @@ export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
                 formatPromptErrorMessage: (error) => `Error: ${error instanceof Error ? error.message : String(error)}`,
                 ...(providerSessionMetadataKey ? { providerSessionMetadataKey } : {}),
                 createNativeRuntime: async (runtimeParams) => {
-                    const initialRuntime = normalizeNativeAgentSessionRuntimeCreation(
+                    const initialRuntime = await normalizeNativeAgentSessionRuntimeCreation(
                         await params.createSessionRuntime(
                             resolveInitialNativeAgentSessionOpenIntent(
                                 params.sessionInput,

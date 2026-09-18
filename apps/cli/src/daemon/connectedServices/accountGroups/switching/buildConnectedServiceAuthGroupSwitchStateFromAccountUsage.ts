@@ -1,10 +1,12 @@
 import type {
+    QualifiedConnectedAccountGroupV4,
     ConnectedAccountServiceKey,
     ConnectedServiceAuthGroupMemberStateV1,
     ConnectedServiceAuthGroupPolicyV1,
     ConnectedServiceUsageSourceV1,
     ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
+import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
 
 import type { ProviderAccountUsageStore } from '../../accountUsage/store';
 import { projectProviderAccountUsageSnapshotToAuthGroupRuntimeState } from '../quotas/projection';
@@ -50,6 +52,22 @@ export type ConnectedServiceAuthGroupAccountUsageView = Readonly<{
         createdAt: number;
     }>[];
 }>;
+
+export function buildQualifiedConnectedAccountAuthGroupAccountUsageView(
+    group: QualifiedConnectedAccountGroupV4,
+): ConnectedServiceAuthGroupAccountUsageView {
+    return {
+        serviceId: buildQualifiedPluginContributionKey(group.ref.service),
+        groupId: group.ref.groupId,
+        activeProfileId: group.activeConnectedAccountId,
+        generation: group.generation,
+        policy: group.policy,
+        members: group.members.map((member) => ({
+            profileId: member.connectedAccountId, priority: member.priority, enabled: member.enabled,
+            state: member.state, createdAt: member.createdAt,
+        })),
+    };
+}
 
 function buildGroupMemberSource(input: Readonly<{
     group: ConnectedServiceAuthGroupAccountUsageView;

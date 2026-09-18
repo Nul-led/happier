@@ -24,7 +24,7 @@ describe('runtime-auth projection custody', () => {
       credentials: { token: 'test', encryption: null },
       resolveSessionTransportContext: async () => ({
         ok: true, sessionId: 'session', rawSession, ctx: null, mode: 'plain',
-        accountEncryptionCurrentness: { mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 },
+        accountEncryptionCurrentness: { mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1, recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' } },
       }),
     });
     try {

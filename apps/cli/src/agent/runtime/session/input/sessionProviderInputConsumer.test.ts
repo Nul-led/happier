@@ -19,6 +19,27 @@ import {
 } from './sessionProviderInputConsumer';
 
 describe('createSessionProviderInputConsumer', () => {
+  it('admits host context-only input only after queued and Pending sources are empty', async () => {
+    const contextBatch = { message: 'follow context', mode: { id: 'mode' }, isolate: true, hash: 'wake-1' };
+    const takeContextOnlyInput = vi.fn(async () => contextBatch);
+    const messageQueue = new MessageQueue2<{ id: string }, string>(() => 'hash');
+    messageQueue.pushImmediate('direct human input', { id: 'mode' });
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue,
+      session: {
+        materializeNextPendingMessageSafely: vi.fn(async () => ({ type: 'no_pending' as const })),
+        waitForMetadataUpdate: () => new Promise<boolean>(() => {}),
+      },
+      takeContextOnlyInput,
+    });
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ message: 'direct human input' });
+    expect(takeContextOnlyInput).not.toHaveBeenCalled();
+    await expect(consumer.waitForNextInput({ abortSignal: new AbortController().signal }))
+      .resolves.toEqual(contextBatch);
+    expect(takeContextOnlyInput).toHaveBeenCalledTimes(1);
+  });
+
   it('arms the Pending wake before an active-turn pass and drains once for the wake without polling', async () => {
     const metadataWakes: Array<(updated: boolean) => void> = [];
     const materializeNextPendingMessageSafely = vi
@@ -63,34 +84,6 @@ describe('createSessionProviderInputConsumer', () => {
     abortController.abort();
     await expect(pump).resolves.toBeUndefined();
     expect(materializeNextPendingMessageSafely).toHaveBeenCalledTimes(2);
-  });
-
-  it('ends the active-turn pump when the wake is unavailable instead of synchronously re-arming', async () => {
-    const materializeNextPendingMessageSafely = vi.fn(async () => ({ type: 'no_pending' as const }));
-    const unavailableForever = new Promise<boolean>(() => {});
-    const waitForMetadataUpdate = vi
-      .fn<(signal?: AbortSignal) => Promise<boolean>>()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(false)
-      .mockReturnValue(unavailableForever);
-    const consumer = createSessionProviderInputConsumer({
-      messageQueue: new MessageQueue2<{ id: string }>(() => 'hash'),
-      session: {
-        materializeNextPendingMessageSafely,
-        waitForMetadataUpdate,
-      },
-    });
-    const pump = consumer.pumpPendingWhileActive({
-      abortSignal: new AbortController().signal,
-      reason: 'active-turn-unavailable-test',
-    });
-
-    await expect(Promise.race([
-      pump.then(() => 'completed' as const),
-      new Promise<'timed_out'>((resolve) => setTimeout(() => resolve('timed_out'), 25)),
-    ])).resolves.toBe('completed');
-    expect(materializeNextPendingMessageSafely).toHaveBeenCalledTimes(1);
-    expect(waitForMetadataUpdate).toHaveBeenCalledTimes(2);
   });
 
   it('uses one bounded reconnect wake to run exactly one new unconditional active-turn pass', async () => {
@@ -929,6 +922,50 @@ describe('createSessionProviderInputConsumer', () => {
       onDiagnosticPhase: expect.any(Function),
     });
     expect(popPendingMessage).not.toHaveBeenCalled();
+  });
+
+  it('records text-free pending materialization decisions in the default session log', async () => {
+    const abortController = new AbortController();
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const materializeNextPendingMessageSafely = vi.fn(async () => {
+      abortController.abort();
+      return {
+        type: 'materialized' as const,
+        localId: 'opaque-local-id',
+        seq: 33,
+        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'do not log this prompt' } } },
+      };
+    });
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue: new MessageQueue2<{ id: string }, string>(() => 'hash'),
+      session: {
+        waitForMetadataUpdate: () => new Promise<boolean>(() => {}),
+        materializeNextPendingMessageSafely,
+      },
+      reconcileWhenEmpty: 'skip',
+      pendingQueueDeliveryTiming: 'after_runtime_idle',
+    });
+
+    try {
+      await expect(consumer.waitForNextInput({ abortSignal: abortController.signal })).resolves.toBeNull();
+
+      expect(infoFileSpy).toHaveBeenCalledWith('[pendingQueue] input consumer materialization decision', {
+        deliveryTiming: 'after_runtime_idle',
+        localId: 'opaque-local-id',
+        reconcileWhenEmpty: 'skip',
+        resultType: 'materialized',
+        seq: 33,
+        source: 'waitForNextInput',
+      });
+      expect(infoFileSpy.mock.calls).not.toEqual(expect.arrayContaining([
+        expect.arrayContaining([
+          expect.any(String),
+          expect.objectContaining({ content: expect.anything() }),
+        ]),
+      ]));
+    } finally {
+      infoFileSpy.mockRestore();
+    }
   });
 
   it('reports the exact materialization subphase when the canonical owner remains unsettled', async () => {

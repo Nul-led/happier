@@ -25,6 +25,7 @@ import type {
 import type { PermissionRequestOwner } from '@/agent/permissions/permissionRequestOwner';
 import type { InteractionTransientRequesterV1 } from '@happier-dev/protocol';
 import type { AgentInvocationTurnAdmissionWitness } from './types';
+import { isWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 
 type PresentationResult = HostSessionPresentationOneShotResult | HostSessionPresentationStatefulResult;
 type AppliedPresentationResult = Readonly<{ status: 'applied' | 'unchanged'; revision: string }>;
@@ -98,6 +99,7 @@ function createUnavailablePresentation(): PresentationService {
         'Plugin presentation requires a bound current session with available host presentation services',
     );
     return Object.freeze({
+        present: fail,
         notify: fail,
         status: Object.freeze({ set: fail }),
         widget: Object.freeze({ set: fail }),
@@ -217,7 +219,8 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                 assertCurrent();
                 const result = await currentSession.interactions.request(request, operationOptions(interactionOptions?.signal));
                 return result;
-            } catch {
+            } catch (error) {
+                if (isWorkflowInteractionCapacityError(error)) throw error;
                 if (params.signal.aborted || interactionOptions?.signal?.aborted) {
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'approval', status: 'requesterAborted' });
                 }
@@ -239,7 +242,8 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                 assertCurrent();
                 const result = await currentSession.interactions.request(request, operationOptions(questionOptions?.signal));
                 return result;
-            } catch {
+            } catch (error) {
+                if (isWorkflowInteractionCapacityError(error)) throw error;
                 if (params.signal.aborted || questionOptions?.signal?.aborted) {
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'questions', status: 'requesterAborted' });
                 }
@@ -259,7 +263,8 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
                 assertCurrent();
                 const result = await currentSession.interactions.request(request, operationOptions(confirmOptions?.signal));
                 return result;
-            } catch {
+            } catch (error) {
+                if (isWorkflowInteractionCapacityError(error)) throw error;
                 if (params.signal.aborted || confirmOptions?.signal?.aborted) {
                     return Object.freeze({ requestId: fallbackRequestId, kind: 'confirmation', status: 'requesterAborted' });
                 }
@@ -316,6 +321,18 @@ export function createPluginInvocationPresentation(params: InvocationInteraction
     }
 
     return Object.freeze({
+        async present(intent: import('@happier-dev/protocol').CurrentSessionPresentationIntentV1, mutationOptions?: Readonly<{ signal?: AbortSignal }>) {
+            assertCurrent();
+            if (!currentSession.presentation) {
+                throwUiError('plugin_ui_unavailable', 'The requested UI presentation operation is unavailable');
+            }
+            const result = await currentSession.presentation.present({
+                operationId: createOperationId(),
+                intent,
+            }, operationOptions(mutationOptions?.signal));
+            assertCurrent();
+            assertPresentationApplied(result);
+        },
         async notify(message: string, notifyOptions?: Readonly<{ severity?: InteractionSeverity; signal?: AbortSignal }>) {
             assertCurrent();
             if (!currentSession.presentation) {

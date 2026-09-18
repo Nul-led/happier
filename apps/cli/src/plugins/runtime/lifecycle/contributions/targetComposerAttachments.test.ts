@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   ComposerAttachmentRuntime,
   PluginInvocationContext,
+  PluginScopedInvocationContextV1,
 } from '@happier-dev/plugin-sdk';
 import type {
   ComposerAttachmentDraftV1,
@@ -11,6 +12,7 @@ import type {
   ComposerAttachmentPrepareRequestV1,
   ComposerAttachmentPrepareResultV1,
   ComposerAttachmentResolveRequestV1,
+  ComposerAttachmentResolveRequestV2,
   ComposerAttachmentResolveResultV1,
 } from '@happier-dev/protocol';
 
@@ -56,6 +58,17 @@ function invocationContext(
   });
 }
 
+function scopedInvocationContext(
+  signal = new AbortController().signal,
+  diagnostic: ReturnType<typeof vi.fn> = vi.fn(),
+): PluginScopedInvocationContextV1 {
+  return Object.freeze({
+    ...invocationContext(signal, diagnostic),
+    scope: Object.freeze({ kind: 'session' as const, sessionId: 'session-1' }),
+    session: Object.freeze({ id: 'session-1' }),
+  });
+}
+
 function fixture(
   overrides: Partial<ComposerAttachmentRuntime> = {},
   options: Readonly<{ callbackTimeoutMs?: number }> = {},
@@ -67,14 +80,22 @@ function fixture(
   const createInvocationContext = vi.fn((input: Readonly<{
     attachment: Readonly<{ pluginId: string; localId: string }>;
     generation: string;
-    sessionId: string;
+    scope:
+      | Readonly<{ kind: 'session'; sessionId: string }>
+      | Readonly<{ kind: 'execution_run'; executionRunId: string }>;
     signal: AbortSignal;
     isCurrent(): boolean;
   }>) => {
     const complete = vi.fn();
     completedContexts.push(complete);
+    const base = invocationContext(input.signal, diagnostic);
+    const { session: _session, ...scopeNeutralBase } = base;
+    const scope = input.scope;
+    const context: PluginScopedInvocationContextV1 = scope.kind === 'session'
+      ? Object.freeze({ ...base, scope, session: Object.freeze({ id: scope.sessionId }) })
+      : Object.freeze({ ...scopeNeutralBase, scope });
     return Object.freeze({
-      context: invocationContext(input.signal, diagnostic),
+      context,
       complete,
     });
   });
@@ -168,7 +189,7 @@ describe('target composer attachment registry', () => {
       retirementSignal: new AbortController().signal,
     });
     const createInvocationContext: TargetComposerAttachmentInvocationContextFactory = () => Object.freeze({
-      context: invocationContext(),
+      context: scopedInvocationContext(),
       complete: () => {},
     });
 
@@ -228,7 +249,7 @@ describe('target composer attachment registry', () => {
     expect(subject.createInvocationContext).toHaveBeenNthCalledWith(1, expect.objectContaining({
       attachment: ATTACHMENT,
       generation: '7',
-      sessionId: 'session-1',
+      scope: { kind: 'session', sessionId: 'session-1' },
       signal: expect.any(AbortSignal),
       isCurrent: expect.any(Function),
     }));
@@ -236,6 +257,49 @@ describe('target composer attachment registry', () => {
     for (const complete of subject.completedContexts) {
       expect(complete).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it('uses only the V2 callback for detached execution and exposes no fabricated Session', async () => {
+    const resolveForDispatchV2 = vi.fn(async (
+      request: ComposerAttachmentResolveRequestV2,
+      context: PluginScopedInvocationContextV1,
+    ) => {
+      expect(request.scope).toEqual({ kind: 'execution_run', executionRunId: 'run-1' });
+      expect(context.scope).toEqual(request.scope);
+      expect('session' in context).toBe(false);
+      return {
+        attachments: request.attachments.map((attachment) => ({
+          instanceId: attachment.instanceId,
+          status: 'ready' as const,
+          context: `Detached context for ${attachment.key}`,
+        })),
+      };
+    });
+    const subject = fixture({
+      resolveForDispatch: undefined,
+      resolveForDispatchV2,
+    });
+    const request = {
+      scope: { kind: 'execution_run', executionRunId: 'run-1' },
+      localId: 'local-1',
+      attachments: resolveRequest.attachments,
+    } as const satisfies ComposerAttachmentResolveRequestV2;
+
+    await expect(subject.registry.resolveForDispatch({
+      attachment: ATTACHMENT,
+      request,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      attachments: [
+        { instanceId: 'attachment-1', status: 'ready', context: 'Detached context for issue' },
+        { instanceId: 'attachment-2', status: 'ready', context: 'Detached context for issue' },
+      ],
+    });
+    expect(resolveForDispatchV2).toHaveBeenCalledOnce();
+    expect(subject.runtime.resolveForDispatch).toBeUndefined();
+    expect(subject.createInvocationContext).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { kind: 'execution_run', executionRunId: 'run-1' },
+    }));
   });
 
   it('surfaces a failed post-acceptance callback through the plugin diagnostic owner', async () => {
@@ -328,7 +392,7 @@ describe('target composer attachment registry', () => {
         retirementSignal: new AbortController().signal,
       }),
       createInvocationContext: () => ({
-        context: invocationContext(),
+        context: scopedInvocationContext(),
         complete() {},
       }),
       activateAttachmentOnDemand,
@@ -373,7 +437,7 @@ describe('target composer attachment registry', () => {
         retirementSignal: new AbortController().signal,
       }),
       createInvocationContext: () => ({
-        context: invocationContext(),
+        context: scopedInvocationContext(),
         complete() {},
       }),
     });
@@ -418,7 +482,7 @@ describe('target composer attachment registry', () => {
         retirementSignal: new AbortController().signal,
       }),
       createInvocationContext: () => ({
-        context: invocationContext(),
+        context: scopedInvocationContext(),
         complete() {},
       }),
     });
@@ -476,7 +540,7 @@ describe('target composer attachment registry', () => {
         retirementSignal: new AbortController().signal,
       }),
       createInvocationContext: () => ({
-        context: invocationContext(),
+        context: scopedInvocationContext(),
         complete() {},
       }),
     });
@@ -528,7 +592,7 @@ describe('target composer attachment registry', () => {
         retirementSignal: new AbortController().signal,
       }),
       createInvocationContext: () => ({
-        context: invocationContext(),
+        context: scopedInvocationContext(),
         complete() {},
       }),
     });

@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
@@ -101,7 +102,7 @@ async function createClient(token = 'fake-token') {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const { ApiSessionClient } = await import('./sessionClient');
-    return new ApiSessionClient(token, createPlainSessionFixture({ id: 'session-1' }));
+    return createTestApiSessionClient(ApiSessionClient, token, createPlainSessionFixture({ id: 'session-1' }));
 }
 
 afterEach(() => {

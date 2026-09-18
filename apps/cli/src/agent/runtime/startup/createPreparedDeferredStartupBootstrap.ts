@@ -7,6 +7,7 @@ import type {
   ApiSessionClientOptions,
 } from '@/api/session/sessionClient';
 import type { MachineMetadata, PermissionMode } from '@/api/types';
+import type { Metadata } from '@/api/types';
 import type { BackendFlavor, SessionLaunchControlMetadata } from '@/agent/runtime/createSessionMetadata';
 import { createDeferredStartupBootstrap } from '@/agent/runtime/startup/createDeferredStartupBootstrap';
 import { createDeferredStartupMetadataPlan } from '@/agent/runtime/startup/createDeferredStartupMetadataPlan';
@@ -17,10 +18,12 @@ import type {
 import { createStartupTiming } from '@/agent/runtime/startup/startupTiming';
 import type { InitializeBackendRunSessionOptions } from '@/agent/runtime/initializeBackendRunSession';
 import type { StoredCredentials } from '@/persistence';
+import type { SessionAttachSecret } from '@/agent/runtime/sessionAttach';
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
 import { configuration } from '@/configuration';
 
 import { createTimedDeferredStartupBootstrap, type TimedDeferredStartupBootstrapResult } from './createTimedDeferredStartupBootstrap';
+import type { DeferredStartupBackendApiContextInitializer } from './createDeferredStartupBootstrap';
 import type { DeferredStartupBootstrapResult } from './deferredStartupTypes';
 import type { StartupTiming } from './startupSpec';
 
@@ -45,8 +48,10 @@ export async function createPreparedDeferredStartupBootstrap(params: Readonly<{
   modelSelection?: SessionModelSelectionV1;
   terminalRuntime?: TerminalRuntimeFlags | null;
   launchControlMetadata: SessionLaunchControlMetadata;
+  augmentSessionMetadata?: (metadata: Metadata) => Metadata;
   existingSessionId?: string;
   sessionAttachFilePath?: string;
+  sessionAttachSecret?: SessionAttachSecret;
   attachMetadataIdentityPolicy?: SessionAttachMetadataIdentityPolicy | null;
   sessionTag?: string;
   startupSideEffectsOrder?: InitializeBackendRunSessionOptions['startupSideEffectsOrder'];
@@ -62,6 +67,7 @@ export async function createPreparedDeferredStartupBootstrap(params: Readonly<{
   transformSessionInputBeforeCommit?: ApiSessionClientOptions['transformSessionInputBeforeCommit'];
   afterComposerAttachmentMessageAccepted?: ApiSessionClientOptions['afterComposerAttachmentMessageAccepted'];
   machineAdmissionTransport?: ApiSessionClientOptions['machineAdmissionTransport'];
+  initializeBackendApiContext?: DeferredStartupBackendApiContextInitializer;
 }>): Promise<TimedDeferredStartupBootstrapResult<DeferredStartupBootstrapResult>> {
   const metadataPlan = createDeferredStartupMetadataPlan({
     flavor: params.flavor,
@@ -75,6 +81,7 @@ export async function createPreparedDeferredStartupBootstrap(params: Readonly<{
     sessionModeId: params.sessionModeId ?? undefined,
     sessionModeUpdatedAt: params.sessionModeUpdatedAt,
     modelSelection: params.modelSelection,
+    augmentSessionMetadata: params.augmentSessionMetadata,
     launchControlMetadata: params.launchControlMetadata,
   });
   const timing = createStartupTiming({ enabled: configuration.startupTimingEnabled, nowMs: () => Date.now() });
@@ -88,6 +95,7 @@ export async function createPreparedDeferredStartupBootstrap(params: Readonly<{
     sessionTag: params.sessionTag ?? randomUUID(),
     existingSessionId: params.existingSessionId,
     sessionAttachFilePath: params.sessionAttachFilePath,
+    sessionAttachSecret: params.sessionAttachSecret,
     attachMetadataIdentityPolicy: params.attachMetadataIdentityPolicy,
     initialMetadata: metadataPlan.initialMetadata,
     createInitializedSessionMetadata: metadataPlan.createInitializedSessionMetadata,
@@ -110,6 +118,7 @@ export async function createPreparedDeferredStartupBootstrap(params: Readonly<{
     afterComposerAttachmentMessageAccepted:
       params.afterComposerAttachmentMessageAccepted,
     machineAdmissionTransport: params.machineAdmissionTransport,
+    initializeBackendApiContext: params.initializeBackendApiContext,
   });
 
   return createTimedDeferredStartupBootstrap({

@@ -93,6 +93,9 @@ const ACP_AGENT_IDS = new Set([
     'codex',
     'copilot',
     'cursor',
+    'devin',
+    'droid',
+    'fx',
     'gemini',
     'grok',
     'kilo',
@@ -425,6 +428,9 @@ function createAcpBoundaryContext(
                     const session = createBoundarySession();
                     sessions.push(session);
                     return session;
+                },
+                openExecutionRunV1: async (): Promise<never> => {
+                    throw new Error('Execution Run ACP composition is unavailable in this Session fixture');
                 },
             },
         }),
@@ -913,6 +919,7 @@ function createPiExecBoundaryContext(input: Readonly<{
         protocols: {
             ...baseContext.protocols,
             acp: {
+                ...baseContext.protocols.acp,
                 open: async () => {
                     throw new Error('Pi is not ACP');
                 },
@@ -943,6 +950,9 @@ describe('first-party runner Agent factory matrix', () => {
             'codex',
             'copilot',
             'cursor',
+            'devin',
+            'droid',
+            'fx',
             'gemini',
             'grok',
             'kilo',
@@ -955,6 +965,7 @@ describe('first-party runner Agent factory matrix', () => {
         ]);
 
         const loadedByAgentId = new Map<string, AgentRuntimeFactory>();
+        const declarativeAgentIds = new Set<string>();
         try {
             for (const agent of sessionAgents) {
                 const pluginId = agent.pluginId;
@@ -1098,9 +1109,17 @@ describe('first-party runner Agent factory matrix', () => {
                         activation.registrations,
                         localAgentId,
                     );
-                    if (agent.id === 'kiro') {
-                        expect(registration?.factory).toBeUndefined();
-                        expect(registration?.sessionRunnerFactory).toBeUndefined();
+                    // A host-declarative ACP Agent registers neither a runtime
+                    // factory nor a runner leaf: the host synthesizes both from
+                    // the attested manifest, which is exactly what this branch
+                    // exercises. Keying on that registration shape rather than
+                    // on an Agent id keeps every declarative Agent covered as
+                    // more of them migrate off custom session stacks.
+                    if (
+                        registration?.factory === undefined
+                        && registration?.sessionRunnerFactory === undefined
+                    ) {
+                        declarativeAgentIds.add(agent.id);
                         const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({
                             happyHomeDir,
                             contributes: createResolvedContributionRegistry({
@@ -1124,7 +1143,7 @@ describe('first-party runner Agent factory matrix', () => {
                         try {
                             const lease = runtimeRegistry.agentRuntimesByAgentId.get(agent.id);
                             if (!lease?.hasPrimaryRuntime) {
-                                throw new Error('Kiro declarative ACP runtime was not synthesized by the host');
+                                throw new Error(`Declarative ACP runtime for '${agent.id}' was not synthesized by the host`);
                             }
                             expect(lease.sessionRunnerFactoryBinding).toMatchObject({
                                 kind: 'host_declarative_acp_v1',
@@ -1138,23 +1157,74 @@ describe('first-party runner Agent factory matrix', () => {
                             expect(runtime.sessions).toBeDefined();
                             expect(runtime.executionRuns).toBeUndefined();
 
+                            // Static contract: every reached declarative ACP Agent
+                            // promises resume. Keying on the canonical
+                            // Session capability (not an Agent id) keeps
+                            // future same-contract peers covered.
+                            expect(
+                                readAgentSessionCapabilities(
+                                    agent.richDefinition?.definition,
+                                )?.open,
+                                `${agent.id} declarative static resume`,
+                            ).toContain('resume');
+
                             const boundarySessions: AgentSessionRuntime[] = [];
-                            const context = createAcpBoundaryContext(agent.id, boundarySessions);
+                            const openedRequests: AgentSessionOpenRequest[] = [];
+                            const baseContext = createAcpBoundaryContext(agent.id, boundarySessions);
+                            const baseAcpOpen = baseContext.protocols.acp.open.bind(
+                                baseContext.protocols.acp,
+                            );
+                            const context = Object.freeze({
+                                ...baseContext,
+                                protocols: Object.freeze({
+                                    ...baseContext.protocols,
+                                    acp: Object.freeze({
+                                        ...baseContext.protocols.acp,
+                                        open: async (
+                                            ...args: Parameters<typeof baseAcpOpen>
+                                        ) => {
+                                            openedRequests.push(args[0]);
+                                            return await baseAcpOpen(...args);
+                                        },
+                                    }),
+                                }),
+                            });
                             const session = await runtime.sessions!.open(
                                 createOpenRequest(agent.id, 'create'),
                                 context,
                             );
-                            await exerciseSessionLifecycle(session, 'kiro-declarative-session');
+                            await exerciseSessionLifecycle(session, `${agent.id}-declarative-session`);
+                            expect(
+                                openedRequests[0],
+                                `${agent.id} declarative create`,
+                            ).toMatchObject({ kind: 'create' });
+
+                            // Composed resume evidence through the canonical
+                            // runtime factory: kind + providerSessionId must
+                            // survive to protocols.acp.open unchanged.
+                            const resumeRequest = createOpenRequest(agent.id, 'resume');
+                            const resumeSession = await runtime.sessions!.open(
+                                resumeRequest,
+                                context,
+                            );
+                            await exerciseSessionLifecycle(resumeSession, `${agent.id}-declarative-resume`);
+                            expect(
+                                openedRequests[1],
+                                `${agent.id} declarative resume`,
+                            ).toMatchObject({
+                                kind: 'resume',
+                                providerSessionId: `provider-${agent.id}`,
+                            });
 
                             const run = await createExecutionRunHostBackendFromSessionRuntime({
                                 request: {
                                     kind: 'create',
-                                    runId: 'kiro-host-derived-run',
+                                    runId: `${agent.id}-host-derived-run`,
                                     cwd: '/workspace',
                                     profile: { pluginId, localId: localAgentId },
                                     input: { text: 'hello from the host-derived Run' },
                                 },
-                                sessionId: 'kiro-host-derived-run',
+                                sessionId: `${agent.id}-host-derived-run`,
                                 openSession: async (request) => await runtime.sessions!.open(
                                     request,
                                     context,
@@ -1165,7 +1235,8 @@ describe('first-party runner Agent factory matrix', () => {
                             try {
                                 expect(runEvents.map((event) => event.kind)).toContain('run-start');
                                 expect(runEvents.map((event) => event.kind)).toContain('run-complete');
-                                expect(boundarySessions).toHaveLength(2);
+                                expect(boundarySessions, `${agent.id} declarative create+resume+run`).toHaveLength(3);
+                                expect(openedRequests, `${agent.id} declarative composed opens`).toHaveLength(3);
                             } finally {
                                 runWatch.dispose();
                                 await run.dispose();
@@ -1268,10 +1339,16 @@ describe('first-party runner Agent factory matrix', () => {
                     });
                 }
             }
-            expect([...loadedByAgentId.keys()]).toHaveLength(14);
+            // Every Session Agent is exercised exactly once: a declarative
+            // Agent through the host-synthesized runtime above, every other
+            // through its own attested runner leaf.
+            expect([...loadedByAgentId.keys()]).toHaveLength(
+                sessionAgents.length - declarativeAgentIds.size,
+            );
+            expect(declarativeAgentIds.size).toBeGreaterThan(0);
 
             for (const agent of sessionAgents) {
-                if (agent.id === 'kiro') continue;
+                if (declarativeAgentIds.has(agent.id)) continue;
                 const factory = loadedByAgentId.get(agent.id);
                 if (!factory) {
                     throw new Error(

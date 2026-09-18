@@ -184,18 +184,27 @@ export async function createLocalPathPluginDistributionIdentity(path: string): P
   });
 }
 
-function canonicalizeRemoteArchiveUrl(value: string): string {
-  const url = new URL(value.trim());
+export function isRemotePluginArchiveLocator(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return /^https?:/iu.test(value.trim());
+  }
+}
+
+export function canonicalizeRemotePluginArchiveUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error('Invalid remote plugin archive source URL');
+  }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
     throw new Error('Invalid remote plugin archive source URL');
   }
-  const durableSelectors = [...url.searchParams.entries()].filter(
-    ([key, selector]) => key === 'download' && selector === '1',
-  );
-  url.search = '';
-  for (const [key, selector] of durableSelectors) {
-    url.searchParams.append(key, selector);
-  }
+  // The reviewed URL is also the explicit Update source. Preserve query bytes,
+  // ordering, and duplicates: dropping any parameter can select another archive.
   return url.toString();
 }
 
@@ -205,7 +214,7 @@ export async function createArchivePluginDistributionIdentity(params: Readonly<{
 }>): Promise<PluginDistributionIdentity> {
   const source = params.source.kind === 'localFile'
     ? { kind: 'localFile' as const, canonicalPath: await canonicalizeExistingPath(params.source.path) }
-    : { kind: 'remoteUrl' as const, canonicalUrl: canonicalizeRemoteArchiveUrl(params.source.url) };
+    : { kind: 'remoteUrl' as const, canonicalUrl: canonicalizeRemotePluginArchiveUrl(params.source.url) };
   return PluginDistributionIdentitySchema.parse({
     kind: 'archive',
     source,

@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, posix as posixPath } from 'node:path';
 
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../happierCloud.js';
 
 import {
   applyServicePlan,
@@ -51,6 +52,7 @@ import {
 import { resolvePersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalHome/layout.js';
 import type { PersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalHome/layout.js';
 import { withPersonalHomeOperationLock } from '../firstPartyRuntime/personalHome/lock.js';
+import { withPersonalHomeOperationAdmission } from '../firstPartyRuntime/personalHome/operationAdmission.js';
 import { hasMeaningfulPersonalHomeData } from '../firstPartyRuntime/personalHome/restore.js';
 import { assertPersonalHomeRelocationSourceAllowsActivation } from '../firstPartyRuntime/personalHome/relocationCoordinator.js';
 import { assertPersonalHomeRelocationDestinationAllowsActivation } from '../firstPartyRuntime/personalHome/relocationDestination.js';
@@ -67,6 +69,7 @@ import {
   readPersonalHomeIdentityValueFromSqlite,
   readPersonalHomeDataCountsFromSqlite,
   readPersonalHomeSanitizedConfiguration,
+  validateCanonicalPersonalHomeLayout,
 } from '../firstPartyRuntime/personalHome/productionAdapters.js';
 
 import { buildRelayRuntimeHealthProbeCommand, RELAY_RUNTIME_HEALTH_OK_TOKEN } from './buildRelayRuntimeHealthProbeCommand.js';
@@ -99,17 +102,20 @@ type RemoteDeps = Readonly<{
   resolveRemoteReleaseTarget: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<RemoteReleaseTarget>;
   runRemoteText: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     remoteCommand: string;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<RelayHostRemoteCommandResult>;
   copyLocalDirectoryToRemote: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     localPath: string;
     remotePath: string;
     knownHostsMode?: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<void>;
 }>;
 
@@ -121,6 +127,7 @@ type RemoteInstaller = (params: Readonly<{
   installerBinaryPath?: string;
   localBinaryPath?: string;
   remoteHomeDir?: string;
+  signal?: AbortSignal;
 }>) => Promise<Readonly<{ binaryPath: string; versionId: string }>>;
 
 function parsePersistedManagedRelayPurpose(value: unknown): ManagedRelayPurpose | undefined {
@@ -291,8 +298,6 @@ export type RelayHostEngine = Readonly<{
 const LOCAL_RELAY_STATUS_HEALTH_TIMEOUT_MS = 1_000;
 const LOCAL_RELAY_CONTROL_HEALTH_TIMEOUT_MS = 120_000;
 const RELAY_RUNTIME_CHANNELS: readonly PublicReleaseRingId[] = ['stable', 'preview', 'publicdev'];
-const REMOTE_BOOTSTRAP_CLOUD_SERVER_URL = 'https://api.happier.dev';
-
 function quoteRemoteShellArg(value: string): string {
   const raw = String(value ?? '');
   if (raw === '') return "''";
@@ -1865,8 +1870,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             });
           }
         },
-        createPersonalHomeRestorePoint: async ({ happierVersion }) => {
-          const layout = await resolvePersonalHomeUpgradeLayout();
+        createPersonalHomeRestorePoint: async ({ happierVersion, layout }) => {
           if (!existsSync(layout.databasePath)) return null;
           if (!happierVersion) {
             throw new Error('Personal Home restore-point version is unavailable for an existing Home.');
@@ -1885,8 +1889,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             operationLeaseHeld: true,
           });
         },
-        openPersonalHomeRestorePoint: async ({ archivePath, expectedHomeServerIdentityId, schemaVersion }) => {
-          const layout = await resolvePersonalHomeUpgradeLayout();
+        openPersonalHomeRestorePoint: async ({ archivePath, expectedHomeServerIdentityId, schemaVersion, layout }) => {
           return openPersonalHomeRestorePointWithLease({
             layout,
             archivePath,
@@ -2028,7 +2031,28 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       lockParentDir: dirname(defaults.installRoot),
       operation: async () => {
         if (personalHomeLayout) {
-          await withPersonalHomeOperationLock(personalHomeLayout.dataDir, 'uninstall', uninstallRuntime);
+          await withPersonalHomeOperationAdmission({
+            request: { kind: 'uninstall' },
+            readValidatedTarget: async () => {
+              const currentPurpose = resolveEffectiveLocalMutationPurpose({
+                persisted: await readPersistedManagedRelayPurpose(defaults),
+                requested: parsed.purpose,
+              });
+              const layout = await resolvePersistedLocalPersonalHomeLayout({ defaults, homeDir: homedir(), platform: process.platform });
+              await validateCanonicalPersonalHomeLayout(layout, {
+                homeDir: homedir(), installRoot: defaults.installRoot, configDir: defaults.configDir,
+              });
+              return {
+                layout,
+                canonicalServerUrl: currentPurpose?.kind === 'personal-home' ? currentPurpose.canonicalServerUrl : null,
+                homeServerIdentityId: existsSync(layout.databasePath) ? (await readPersonalHomeIdentityValueFromSqlite(layout.databasePath)).homeServerIdentityId : null,
+              };
+            },
+            isHomeRunning: async () => {
+              const state = classifyLocalServiceTerminalState(resolveLocalServiceState({ backend, label: effectiveServiceName }));
+              return state !== 'registered-inactive' && state !== 'deregistered';
+            },
+          }, uninstallRuntime);
           return;
         }
         await uninstallRuntime();
@@ -2135,6 +2159,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       ssh: params.ssh,
       knownHostsMode,
       remoteHomeDir: resolveRemoteHomeDirForComponents(),
+      ...(params.parsed.signal ? { signal: params.parsed.signal } : {}),
     });
 
     const localServerOverride = typeof params.parsed.selfHostRelayBinaryOverride === 'string'
@@ -2148,6 +2173,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           knownHostsMode,
           remoteHomeDir: resolveRemoteHomeDirForComponents(),
           localBinaryPath: localServerOverride,
+          ...(params.parsed.signal ? { signal: params.parsed.signal } : {}),
         })
       : null;
 
@@ -2156,7 +2182,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       knownHostsMode,
       remoteCommand: buildRemoteBootstrapCommand({
         label: 'relay.runtime.install',
-        serverUrl: REMOTE_BOOTSTRAP_CLOUD_SERVER_URL,
+        serverUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
         channel: formatRelayChannelLabel(channel),
         data: {
           relayRuntimeMode: mode,
@@ -2166,6 +2192,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             : {}),
         },
       }),
+      ...(params.parsed.signal ? { signal: params.parsed.signal } : {}),
     });
 
     const envelope = parseJsonLinesBestEffort<{
@@ -2255,7 +2282,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       knownHostsMode,
       remoteCommand: buildRemoteBootstrapCommand({
         label: 'relay.host.uninstall',
-        serverUrl: REMOTE_BOOTSTRAP_CLOUD_SERVER_URL,
+        serverUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
         channel: formatRelayChannelLabel(channel),
         data: { relayRuntimeMode: mode },
       }),

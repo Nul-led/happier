@@ -193,16 +193,18 @@ export function registerDaemonLocalServicesMachineRpcHandlers(
             },
         );
 
-        rpc.registerHandler(
-            RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_START,
-            async (raw: unknown): Promise<DaemonLocalServiceLauncherStartResponseV1> => {
-                const request = DaemonLocalServiceLauncherStartRequestV1Schema.parse(raw);
-                const routes = requireLauncherStartRoutes(options);
-                return DaemonLocalServiceLauncherStartResponseV1Schema.parse(
-                    await routes.startTarget(request),
-                );
-            },
-        );
+        if (options.localServicesLauncher.startTarget) {
+            rpc.registerHandler(
+                RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_START,
+                async (raw: unknown): Promise<DaemonLocalServiceLauncherStartResponseV1> => {
+                    const request = DaemonLocalServiceLauncherStartRequestV1Schema.parse(raw);
+                    const routes = requireLauncherStartRoutes(options);
+                    return DaemonLocalServiceLauncherStartResponseV1Schema.parse(
+                        await routes.startTarget(request),
+                    );
+                },
+            );
+        }
 
         // LSV-1 launcher leaves: openPreview (safe "open in browser"), registerPreview (persist a
         // loopback launch target as a private preview), and history.clear (dismiss the launcher

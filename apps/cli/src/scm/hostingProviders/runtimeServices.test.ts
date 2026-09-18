@@ -16,6 +16,11 @@ import {
   githubPullRequestAdapter,
 } from '@happier-dev/plugins-scm-github';
 
+import {
+  CONNECTED_ACCOUNT_METADATA_LIST_MAX_LIMIT,
+  type StablePluginConnectedAccountsOwner,
+} from '@/plugins/runtime/invocation/services/connectedAccounts';
+
 import { runWithHostingProviderExecutionAuthority } from './executionAuthority';
 import { createHostScmHostingProviderRuntimeServices } from './runtimeServices';
 
@@ -127,6 +132,57 @@ const githubProvider = {
   nameWithOwner: 'happier-dev/happier',
   urlSafety: { allowedSchemes: ['https:'] },
 } satisfies ScmHostingProviderRef;
+
+type ConfiguredDeploymentListing = Awaited<
+  ReturnType<NonNullable<StablePluginConnectedAccountsOwner['listAccounts']>>
+>;
+
+function createListedDeploymentAccount(
+  service: Readonly<{ pluginId: string; localId: string }>,
+  accountId: string,
+  base: string,
+): ConfiguredDeploymentListing['accounts'][number] {
+  return {
+    account: { service, accountId },
+    displayName: accountId,
+    state: 'connected',
+    connectedAccountOrigins: [new URL(base).origin],
+    connectedAccountBases: [base],
+  };
+}
+
+/**
+ * A routing adapter that can only recognize its remotes through the host-supplied configured
+ * deployment bases — the self-managed forge the listing exists for.
+ */
+function createConfiguredBaseRoutingRegistration(id: string, kind: string) {
+  return {
+    id,
+    adapter: {
+      routing: {
+        detectRemote: (input: Readonly<{
+          remoteName: string | null;
+          remoteUrl: string;
+          connectedAccountBases?: readonly string[];
+        }>) => {
+          const base = (input.connectedAccountBases ?? []).find(
+            (candidate) => input.remoteUrl.startsWith(`${candidate}/`),
+          );
+          return base
+            ? {
+              id,
+              kind,
+              displayName: id,
+              baseUrl: base,
+              nameWithOwner: 'team/repository',
+            }
+            : null;
+        },
+        buildCompareUrl: () => null,
+      },
+    },
+  };
+}
 
 function runAsHostingProvider<T>(
   pluginId: string,
@@ -805,5 +861,174 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('recognizes a configured deployment anywhere inside the canonical authorized inventory bound', async () => {
+    const service = { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' } as const;
+    // A user whose 21st authorized deployment is still far below the canonical Connected
+    // Account metadata ceiling must not lose recognition of it.
+    const accounts = Array.from({ length: 21 }, (_, index) => createListedDeploymentAccount(
+      service,
+      `account-${index}`,
+      `https://forge-${index}.example.test`,
+    ));
+    const listAccounts = vi.fn(async (
+      input: Readonly<{ limit: number }>,
+    ): Promise<ConfiguredDeploymentListing> => {
+      // The canonical owner clamps and then reports its own elision; it has no cursor.
+      const admitted = accounts.slice(0, input.limit);
+      return {
+        status: admitted.length < accounts.length ? 'truncated' : 'complete',
+        accounts: admitted,
+      };
+    });
+    const baseInput = createRuntimeInput();
+    const services = createHostScmHostingProviderRuntimeServices({
+      ...baseInput,
+      scmHostingProvidersById: new Map([[
+        GITHUB_SCM_HOSTING_PROVIDER_ID,
+        {
+          pluginId: GITHUB_PLUGIN_MANIFEST.id,
+          generation: 'test-generation',
+          registration: createConfiguredBaseRoutingRegistration('github', 'github'),
+        },
+      ]]),
+      resolveConnectedAccountPurposeBindingOwner: () => ({
+        materialize: async () => { throw new Error('not used'); },
+        listAccounts,
+      }),
+    });
+
+    const registry = await services.resolveScmHostingProviderRegistry?.();
+
+    expect(listAccounts).toHaveBeenCalledWith(expect.objectContaining({
+      limit: CONNECTED_ACCOUNT_METADATA_LIST_MAX_LIMIT,
+    }));
+    expect(registry?.detectRemote({
+      remoteName: 'origin',
+      remoteUrl: 'https://forge-20.example.test/team/repository.git',
+    })).toMatchObject({
+      kind: 'resolved',
+      providerId: GITHUB_SCM_HOSTING_PROVIDER_ID,
+      provider: { baseUrl: 'https://forge-20.example.test' },
+    });
+    expect(registry?.diagnostics).toEqual([]);
+  });
+
+  it('keeps a truncated deployment listing usable without asserting that nothing is configured', async () => {
+    const service = { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' } as const;
+    const listAccounts = vi.fn(async (): Promise<ConfiguredDeploymentListing> => ({
+      status: 'truncated',
+      accounts: [createListedDeploymentAccount(
+        service,
+        'account-known',
+        'https://known.example.test',
+      )],
+    }));
+    const baseInput = createRuntimeInput();
+    const services = createHostScmHostingProviderRuntimeServices({
+      ...baseInput,
+      scmHostingProvidersById: new Map([[
+        GITHUB_SCM_HOSTING_PROVIDER_ID,
+        {
+          pluginId: GITHUB_PLUGIN_MANIFEST.id,
+          generation: 'test-generation',
+          registration: createConfiguredBaseRoutingRegistration('github', 'github'),
+        },
+      ]]),
+      resolveConnectedAccountPurposeBindingOwner: () => ({
+        materialize: async () => { throw new Error('not used'); },
+        listAccounts,
+      }),
+    });
+
+    const registry = await services.resolveScmHostingProviderRegistry?.();
+
+    // A base the elided listing did publish stays usable.
+    expect(registry?.detectRemote({
+      remoteName: 'origin',
+      remoteUrl: 'https://known.example.test/team/repository.git',
+    })).toMatchObject({ kind: 'resolved', providerId: GITHUB_SCM_HOSTING_PROVIDER_ID });
+    // A base it could not publish is not evidence that no deployment is configured.
+    expect(registry?.detectRemote({
+      remoteName: 'origin',
+      remoteUrl: 'https://elided.example.test/team/repository.git',
+    })).toEqual({
+      kind: 'unknown',
+      provider: expect.objectContaining({
+        id: 'unknown',
+        unsupportedReason: 'configured_deployment_listing_incomplete',
+      }),
+    });
+    expect(registry?.diagnostics).toEqual([expect.objectContaining({
+      code: 'scm_hosting_provider_configured_deployments_truncated',
+      pluginId: GITHUB_PLUGIN_MANIFEST.id,
+      providerId: 'github',
+    })]);
+  });
+
+  it('keeps one provider\'s unreadable deployment listing from hiding another provider\'s', async () => {
+    const bitbucketService = {
+      pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
+      localId: 'bitbucket-account',
+    } as const;
+    const listAccounts = vi.fn(async (
+      input: Readonly<{ purpose: Readonly<{ consumer: Readonly<{ pluginId: string }> }> }>,
+    ): Promise<ConfiguredDeploymentListing> => {
+      if (input.purpose.consumer.pluginId === GITHUB_PLUGIN_MANIFEST.id) {
+        throw new Error('connected account listing is unavailable');
+      }
+      return {
+        status: 'complete',
+        accounts: [createListedDeploymentAccount(
+          bitbucketService,
+          'account-bitbucket',
+          'https://bitbucket.example.test',
+        )],
+      };
+    });
+    const baseInput = createCrossProviderRuntimeInput();
+    const services = createHostScmHostingProviderRuntimeServices({
+      ...baseInput,
+      scmHostingProvidersById: new Map([
+        [
+          GITHUB_SCM_HOSTING_PROVIDER_ID,
+          {
+            pluginId: GITHUB_PLUGIN_MANIFEST.id,
+            generation: 'test-generation',
+            registration: createConfiguredBaseRoutingRegistration('github', 'github'),
+          },
+        ],
+        [
+          BITBUCKET_SCM_HOSTING_PROVIDER_ID,
+          {
+            pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
+            generation: 'test-generation',
+            registration: createConfiguredBaseRoutingRegistration('bitbucket', 'bitbucket'),
+          },
+        ],
+      ]),
+      resolveConnectedAccountPurposeBindingOwner: () => ({
+        materialize: async () => { throw new Error('not used'); },
+        listAccounts,
+      }),
+    });
+
+    const registry = await services.resolveScmHostingProviderRegistry?.();
+
+    expect(registry?.detectRemote({
+      remoteName: 'origin',
+      remoteUrl: 'https://bitbucket.example.test/team/repository.git',
+    })).toMatchObject({
+      kind: 'resolved',
+      providerId: BITBUCKET_SCM_HOSTING_PROVIDER_ID,
+    });
+    expect(registry?.getProvider(GITHUB_SCM_HOSTING_PROVIDER_ID))
+      .not.toHaveProperty('connectedAccountBases');
+    expect(registry?.diagnostics).toEqual([expect.objectContaining({
+      code: 'scm_hosting_provider_configured_deployments_unavailable',
+      pluginId: GITHUB_PLUGIN_MANIFEST.id,
+      providerId: 'github',
+    })]);
   });
 });

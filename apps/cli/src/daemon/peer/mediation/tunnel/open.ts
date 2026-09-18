@@ -4,11 +4,12 @@ import {
     PEER_MEDIATION_RECEIPTS,
     PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
     PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
-    PEER_TCP_TUNNEL_ENCODING_V1,
+    PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_STREAM_PATH,
     PeerTcpTunnelOpenResponseV1Schema,
     PeerTcpTunnelOpenV1Schema,
     PeerTcpTunnelOpenV2Schema,
+    type PeerTcpTunnelDestinationV1,
     type PeerTcpTunnelOpenResponseV1,
     type PeerTcpTunnelOpenV1,
     type PeerTcpTunnelOpenV2,
@@ -63,6 +64,13 @@ export type OpenPeerTcpTunnelResult =
         response: PeerTcpTunnelOpenResponseV1;
         receipt: typeof PEER_MEDIATION_RECEIPTS.tunnelOpened;
         flowKind: Extract<PeerFlowKindV1, 'tcp_tunnel' | 'voice_media'>;
+        /**
+         * The admitted tunnel's one canonical destination, already normalized by this owner.
+         * Every later dial on the tunnel — the base `connection` here and the substream mux in
+         * `registerRoutes` — resolves it from this field rather than re-deriving a second
+         * normalization from the open frame. Absent for `voice_media`, which never dials TCP.
+         */
+        destination?: PeerTcpTunnelDestinationV1;
         voiceMediaApplicationAuthority?: VoiceMediaApplicationAuthorityV1;
         connection?: PeerTcpTunnelTcpConnection;
         limits: PeerTcpTunnelRuntimeLimits;
@@ -156,15 +164,18 @@ export async function connectPeerTcpTunnelTcp(
     };
 }
 
-function validateDestination(open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2): OpenPeerTcpTunnelReasonCode | null {
-    if (!isPeerTcpTunnelLoopbackDestinationHost(open.destination.host)) {
+function validateDestination(
+    open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2,
+    destination: PeerTcpTunnelDestinationV1,
+): OpenPeerTcpTunnelReasonCode | null {
+    if (!isPeerTcpTunnelLoopbackDestinationHost(destination.host)) {
         return 'destination_host_not_allowed';
     }
 
     const scope = open.grant?.payload.scope;
     if (scope?.kind !== 'tcp_tunnel' && scope?.kind !== 'voice_media') return 'grant_scope_mismatch';
     if (scope.tunnelId !== open.tunnelId) return 'grant_scope_mismatch';
-    if (scope.kind === 'tcp_tunnel' && !scope.allowedPorts.includes(open.destination.port)) {
+    if (scope.kind === 'tcp_tunnel' && !scope.allowedPorts.includes(destination.port)) {
         return 'destination_port_not_allowed';
     }
 
@@ -172,11 +183,11 @@ function validateDestination(open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2): O
 }
 
 function validateEncodingSelection(open: PeerTcpTunnelOpenV1 | PeerTcpTunnelOpenV2): OpenPeerTcpTunnelReasonCode | null {
-    const selectedEncoding = open.selectedEncoding ?? PEER_TCP_TUNNEL_ENCODING_V1;
-    const supportedEncodings = open.supportedEncodings ?? [PEER_TCP_TUNNEL_ENCODING_V1];
+    const selectedEncoding = open.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2;
+    const supportedEncodings = open.supportedEncodings ?? [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2];
 
     if (!supportedEncodings.includes(selectedEncoding)) return 'encoding_unsupported';
-    if (selectedEncoding === PEER_TCP_TUNNEL_ENCODING_V1 && open.allowV1Fallback === false) {
+    if (selectedEncoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) {
         return 'encoding_unsupported';
     }
 
@@ -192,6 +203,11 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
         : PeerTcpTunnelOpenV1Schema.parse(input.open);
 
     if (open.routeKind !== 'loopback_direct') return fallback('route_kind_unsupported');
+    // Protocol V1 admits a destination-free open only for the provider-broker application relay,
+    // which is a `server_relay` route this direct owner never serves. A loopback direct open that
+    // names no destination is therefore an unusable frame, not an authorization decision.
+    const requestedDestination = open.destination;
+    if (!requestedDestination) return fallback('open_invalid');
     if (!open.grant) return fallback('grant_missing');
     if (open.v === 1 && !open.nonceProof) return fallback('nonce_invalid');
     const requestedFlowKind = open.grant.payload.flowKind;
@@ -252,8 +268,12 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
         : { valid: false as const, reasonCode: 'nonce_invalid' as const };
     if (!nonceVerification.valid) return fallback(nonceVerification.reasonCode);
 
-    const destinationInvalid = validateDestination(open);
+    const destinationInvalid = validateDestination(open, requestedDestination);
     if (destinationInvalid) return fallback(destinationInvalid);
+    const destination: PeerTcpTunnelDestinationV1 = {
+        host: normalizeDestinationHost(requestedDestination.host),
+        port: requestedDestination.port,
+    };
     const encodingInvalid = validateEncodingSelection(open);
     if (encodingInvalid) return fallback(encodingInvalid);
     const scope = grantVerification.payload.scope;
@@ -274,7 +294,7 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
                 v: 1,
                 tunnelId: open.tunnelId,
                 streamPath: PEER_TCP_TUNNEL_STREAM_PATH,
-                encoding: open.selectedEncoding ?? PEER_TCP_TUNNEL_ENCODING_V1,
+                encoding: open.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: input.initialWindowBytes ?? PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
                 maxFrameBytes: input.maxFrameBytes ?? PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
             }),
@@ -296,10 +316,7 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
 
     let connection: PeerTcpTunnelTcpConnection;
     try {
-        connection = await (input.connectTcp ?? connectPeerTcpTunnelTcp)({
-            host: normalizeDestinationHost(open.destination.host),
-            port: open.destination.port,
-        });
+        connection = await (input.connectTcp ?? connectPeerTcpTunnelTcp)(destination);
     } catch {
         // Safe direct retry rule: connectTcp rejects before it returns an
         // activated connection, so no tunnel was exposed to the caller.
@@ -315,12 +332,13 @@ export async function openPeerTcpTunnel(input: OpenPeerTcpTunnelInput): Promise<
             v: 1,
             tunnelId: open.tunnelId,
             streamPath: PEER_TCP_TUNNEL_STREAM_PATH,
-            encoding: open.selectedEncoding ?? PEER_TCP_TUNNEL_ENCODING_V1,
+            encoding: open.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             initialWindowBytes: input.initialWindowBytes ?? PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
             maxFrameBytes: input.maxFrameBytes ?? PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
         }),
         receipt: PEER_MEDIATION_RECEIPTS.tunnelOpened,
         flowKind: requestedFlowKind,
+        destination,
         connection,
         limits: {
             maxIdleMs: scope.maxIdleMs,

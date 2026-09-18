@@ -1,10 +1,11 @@
-import { areWorkspaceSyncRelationshipDefinitionsEqual, DeleteWorkspaceSyncConflictLoserV1Schema, ReadWorkspaceSyncFileV1Schema, WorkspaceSyncCopyOnceV1Schema } from '@happier-dev/protocol';
+import { areWorkspaceSyncRelationshipDefinitionsEqual, DeleteWorkspaceSyncConflictLoserV1Schema, ReadWorkspaceSyncFileV1Schema, WorkspaceSyncCopyOnceV1Schema, type WorkspaceSyncConflictResolveActionInputV1 } from '@happier-dev/protocol';
 import { machineCarrierUnavailableError } from '@/daemon/peer/iroh/machineCarrier';
 import { validateWorkspaceSyncRelationship, validateWorkspaceSyncRelationships } from './workspaceSyncSettings';
 import { deriveWorkspaceSyncEndpointId } from './transport/workspaceSyncBrokerProtocol';
 import {
   connectWorkspaceSyncMachineTunnel,
-  type WorkspaceSyncMachineTunnelOpen,
+  type WorkspaceSyncMachineTunnel,
+  type WorkspaceSyncMachineTunnelOpenInput,
 } from './workspaceSyncMachineCarrierStream';
 import type { Duplex } from 'node:stream';
 import { realpath } from 'node:fs/promises';
@@ -12,7 +13,9 @@ import type { WorkspaceRootOwnershipHandle, WorkspaceRootOwnershipManager } from
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
 import { resolveWorkspaceSyncRelationshipEndpointRoles } from './workspaceSyncRelationshipEndpoints';
 import { probeScmExecutableAvailable } from '@/scm/runtime';
-import type { DeleteWorkspaceSyncConflictLoserV1, ManagedWorkspaceSync, ReadWorkspaceSyncFileResultV1, ReadWorkspaceSyncFileV1, WorkspaceContentPolicyV1, WorkspaceSyncConflictListV1, WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipPreparation, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
+import type { DeleteWorkspaceSyncConflictLoserV1, ManagedWorkspaceSync, ReadWorkspaceSyncFileResultV1, ReadWorkspaceSyncFileV1, WorkspaceContentPolicyV1, WorkspaceSyncConflictPageRequestV1, WorkspaceSyncConflictPageV1, WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipPreparation, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
+import { deleteWorkspaceSyncConflictLoserAtRoot } from './workspaceSyncConflicts';
+import { readWorkspaceSyncFileAtRoot } from './workspaceSyncFileRead';
 
 export type WorkspaceSyncResolvedRef = Readonly<{
   serverId?: string;
@@ -20,6 +23,8 @@ export type WorkspaceSyncResolvedRef = Readonly<{
   rootPath: string;
 }>;
 export type WorkspaceSyncTargetConflictDelete = (input: Readonly<{
+  actionReceiptId: string;
+  actionInput: WorkspaceSyncConflictResolveActionInputV1;
   relationshipId: string;
   targetMachineId: string;
   targetWorkspaceRefId: string;
@@ -28,6 +33,10 @@ export type WorkspaceSyncTargetConflictDelete = (input: Readonly<{
   expectedKind: DeleteWorkspaceSyncConflictLoserV1['expectedKind'];
   signal?: AbortSignal;
 }>) => Promise<void>;
+export type WorkspaceSyncConflictResolutionAuthorizationAssert = (
+  actionReceiptId: string,
+  actionInput: WorkspaceSyncConflictResolveActionInputV1,
+) => Promise<void>;
 export type WorkspaceSyncTargetFileRead = (input: Readonly<{
   relationshipId: string;
   targetMachineId: string;
@@ -77,7 +86,7 @@ export interface WorkspaceSyncMutagenAdapter {
   pause(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   resume(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   terminate(relationshipId: string, signal?: AbortSignal): Promise<void>;
-  listConflicts(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1>;
+  listConflicts(request: WorkspaceSyncConflictPageRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictPageV1>;
 }
 export type WorkspaceSyncControllerOptions = Readonly<{
   adapter: WorkspaceSyncMutagenAdapter;
@@ -93,10 +102,13 @@ export type WorkspaceSyncControllerOptions = Readonly<{
     ownershipHandles?: readonly WorkspaceRootOwnershipHandle[];
   }> | void>;
   recoverCopyOnceTarget?: WorkspaceSyncCopyOnceTargetRecovery;
-  openMachineCarrierTunnel?: WorkspaceSyncMachineTunnelOpen;
+  openMachineCarrierTunnel?: (
+    input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>,
+  ) => Promise<WorkspaceSyncMachineTunnel>;
   openLocalWorkspaceAgentStream?: WorkspaceSyncLocalAgentStreamOpen;
   deleteConflictLoserAtTarget?: WorkspaceSyncTargetConflictDelete;
   readFileAtTarget?: WorkspaceSyncTargetFileRead;
+  assertConflictResolutionAuthorized?: WorkspaceSyncConflictResolutionAuthorizationAssert;
   /**
    * Explicit runtime-dependency probe for the `git_worktree` content
    * selection, whose ignore decisions are owned by the persistent Git
@@ -139,6 +151,39 @@ function areContentPoliciesEqual(left: WorkspaceContentPolicyV1, right: Workspac
     && left.extraIncludePatterns.every((pattern, index) => pattern === right.extraIncludePatterns[index]);
 }
 
+// The manager exposes status through bounded GET/LIST requests rather than a
+// push stream. Keep active relationship subscriptions responsive without
+// turning status projection into a continuous manager hot loop.
+const WORKSPACE_SYNC_STATUS_OBSERVATION_INTERVAL_MS = 1_000;
+
+function areWorkspaceSyncStatusesEqual(left: WorkspaceSyncStatusV1, right: WorkspaceSyncStatusV1): boolean {
+  return left.relationshipId === right.relationshipId
+    && left.controllerMachineId === right.controllerMachineId
+    && left.state === right.state
+    && left.alphaPath === right.alphaPath
+    && left.betaPath === right.betaPath
+    && left.mode === right.mode
+    && left.changedFiles === right.changedFiles
+    && left.conflictCount === right.conflictCount
+    && left.lastSuccessfulSyncAtMs === right.lastSuccessfulSyncAtMs
+    && left.errorCode === right.errorCode;
+}
+
+async function waitForStatusObservation(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    timer = setTimeout(finish, WORKSPACE_SYNC_STATUS_OBSERVATION_INTERVAL_MS);
+    timer.unref?.();
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
 const requiredAdapterMethods = ['discoverCopyOnceRecoveries', 'rehydrate', 'ensure', 'copyOnce', 'get', 'list', 'flush', 'pause', 'resume', 'terminate', 'listConflicts'] as const;
 
 function assertCompleteAdapter(adapter: WorkspaceSyncMutagenAdapter): void {
@@ -157,13 +202,15 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
   private readonly resolveDefinition: NonNullable<WorkspaceSyncControllerOptions['resolveRelationshipDefinition']>;
   private readonly prepareTarget: NonNullable<WorkspaceSyncControllerOptions['prepareRelationshipTarget']>;
   private readonly recoverCopyTarget?: WorkspaceSyncCopyOnceTargetRecovery;
-  private readonly openMachineCarrier?: WorkspaceSyncMachineTunnelOpen;
+  private readonly openMachineCarrier?: WorkspaceSyncControllerOptions['openMachineCarrierTunnel'];
   private readonly openLocalAgent?: WorkspaceSyncLocalAgentStreamOpen;
   private readonly deleteAtTarget?: WorkspaceSyncTargetConflictDelete;
   private readonly readAtTarget?: WorkspaceSyncTargetFileRead;
+  private readonly assertConflictResolutionAuthorized?: WorkspaceSyncConflictResolutionAuthorizationAssert;
   private readonly probeGit: NonNullable<WorkspaceSyncControllerOptions['probeGitRuntimeDependency']>;
   private readonly assertStateAvailable: () => void;
   private readonly onStatusPublished: (status: WorkspaceSyncStatusV1) => void;
+  private readonly observePersistentStatus: boolean;
   private readonly definitions = new Map<string, WorkspaceSyncRelationshipV1>();
   /** Prepared Action relationships retained until their matching Settings record is published. */
   private readonly transientDefinitions = new Set<string>();
@@ -186,8 +233,13 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
   }>>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly listeners = new Map<string, Set<(status: WorkspaceSyncStatusV1) => void>>();
+  private readonly statusObservations = new Map<string, Readonly<{
+    abort: AbortController;
+    task: Promise<void>;
+  }>>();
+  private shuttingDown = false;
 
-  constructor(options: WorkspaceSyncControllerOptions) { assertCompleteAdapter(options.adapter); this.adapter = options.adapter; this.lifecycle = options.lifecycle; this.localServerId = options.localServerId?.trim() || null; this.localMachineId = options.localMachineId; this.resolveRef = options.resolveWorkspaceRef; this.rootOwnershipManager = options.rootOwnershipManager; this.resolveDefinition = options.resolveRelationshipDefinition ?? (() => null); this.prepareTarget = options.prepareRelationshipTarget ?? (async () => undefined); this.recoverCopyTarget = options.recoverCopyOnceTarget; this.openMachineCarrier = options.openMachineCarrierTunnel; this.openLocalAgent = options.openLocalWorkspaceAgentStream; this.deleteAtTarget = options.deleteConflictLoserAtTarget; this.readAtTarget = options.readFileAtTarget; this.probeGit = options.probeGitRuntimeDependency ?? (async (signal) => await probeScmExecutableAvailable({ bin: 'git', ...(signal ? { signal } : {}) })); this.assertStateAvailable = options.assertLegacyStateAvailable ?? (() => undefined); this.onStatusPublished = options.onStatusPublished ?? (() => undefined); }
+  constructor(options: WorkspaceSyncControllerOptions) { assertCompleteAdapter(options.adapter); this.adapter = options.adapter; this.lifecycle = options.lifecycle; this.localServerId = options.localServerId?.trim() || null; this.localMachineId = options.localMachineId; this.resolveRef = options.resolveWorkspaceRef; this.rootOwnershipManager = options.rootOwnershipManager; this.resolveDefinition = options.resolveRelationshipDefinition ?? (() => null); this.prepareTarget = options.prepareRelationshipTarget ?? (async () => undefined); this.recoverCopyTarget = options.recoverCopyOnceTarget; this.openMachineCarrier = options.openMachineCarrierTunnel; this.openLocalAgent = options.openLocalWorkspaceAgentStream; this.deleteAtTarget = options.deleteConflictLoserAtTarget; this.readAtTarget = options.readFileAtTarget; this.assertConflictResolutionAuthorized = options.assertConflictResolutionAuthorized; this.probeGit = options.probeGitRuntimeDependency ?? (async (signal) => await probeScmExecutableAvailable({ bin: 'git', ...(signal ? { signal } : {}) })); this.assertStateAvailable = options.assertLegacyStateAvailable ?? (() => undefined); this.observePersistentStatus = options.onStatusPublished !== undefined; this.onStatusPublished = options.onStatusPublished ?? (() => undefined); }
 
   private assertLocalSourcePlacement(ref: WorkspaceSyncResolvedRef | null): asserts ref is WorkspaceSyncResolvedRef {
     const serverMatches = this.localServerId === null || ref?.serverId?.trim() === this.localServerId;
@@ -197,6 +249,49 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         { code: 'workspace_machine_not_enrolled' },
       );
     }
+  }
+
+  private async resolveLocalSourceAccess(
+    definition: WorkspaceSyncRelationshipV1,
+    endpointRole: 'alpha' | 'beta',
+  ): Promise<Readonly<{ canonicalRoot: string; assertCurrentAuthority(): Promise<void> }> | null> {
+    const [alpha, beta] = await Promise.all([
+      this.resolveRef(definition.alphaWorkspaceRefId),
+      this.resolveRef(definition.betaWorkspaceRefId),
+    ]);
+    if (!alpha || !beta) return null;
+    const roles = resolveWorkspaceSyncRelationshipEndpointRoles({
+      mode: definition.mode,
+      controllerMachineId: definition.controllerMachineId,
+      alphaMachineId: alpha.machineId,
+      betaMachineId: beta.machineId,
+    });
+    if (roles?.sourceEndpointRole !== endpointRole) return null;
+    const source = endpointRole === 'alpha' ? alpha : beta;
+    if (source.machineId.trim() !== this.localMachineId.trim()) return null;
+    this.assertLocalSourcePlacement(source);
+    const canonicalRoot = await realpath(source.rootPath).catch(() => source.rootPath);
+    const custody = this.fences.get(definition.relationshipId);
+    const sourceHandle = custody?.handles.find((handle) => (
+      getPathRemainderWithinBase(handle.owner.canonicalRoot, canonicalRoot) === ''
+      && getPathRemainderWithinBase(canonicalRoot, handle.owner.canonicalRoot) === ''
+    ));
+    if (!custody || !sourceHandle) {
+      throw Object.assign(new Error('Workspace sync source root is not retained by the relationship'), {
+        code: 'workspace_root_ownership_lost',
+      });
+    }
+    return {
+      canonicalRoot: sourceHandle.owner.canonicalRoot,
+      assertCurrentAuthority: async () => {
+        if (this.definitions.get(definition.relationshipId) !== definition
+          || this.fences.get(definition.relationshipId) !== custody
+          || this.ownershipLost.has(definition.relationshipId)) {
+          throw Object.assign(new Error('Workspace root ownership was lost'), { code: 'workspace_root_ownership_lost' });
+        }
+        await this.assertRelationshipOwnershipCurrent(definition.relationshipId, sourceHandle);
+      },
+    };
   }
 
   /**
@@ -227,7 +322,69 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       : this.enqueue(ordered[index]!, undefined, async () => await acquire(index + 1));
     return acquire(0);
   }
-  private publish(status: WorkspaceSyncStatusV1): WorkspaceSyncStatusV1 { this.statuses.set(status.relationshipId, status); for (const listener of this.listeners.get(status.relationshipId) ?? []) listener(status); this.onStatusPublished(status); return status; }
+  private publish(status: WorkspaceSyncStatusV1): WorkspaceSyncStatusV1 {
+    this.statuses.set(status.relationshipId, status);
+    for (const listener of this.listeners.get(status.relationshipId) ?? []) listener(status);
+    this.onStatusPublished(status);
+    this.reconcileStatusObservation(status.relationshipId);
+    return status;
+  }
+
+  private shouldObserveStatus(id: string): boolean {
+    if (this.shuttingDown) return false;
+    if ((this.listeners.get(id)?.size ?? 0) > 0) return true;
+    const definition = this.definitions.get(id);
+    return this.observePersistentStatus
+      && definition?.enabled === true
+      && !this.transientDefinitions.has(id);
+  }
+
+  private reconcileStatusObservation(id: string): void {
+    const current = this.statusObservations.get(id);
+    if (!this.shouldObserveStatus(id)) {
+      current?.abort.abort();
+      return;
+    }
+    if (current) return;
+    const abort = new AbortController();
+    const observation = {
+      abort,
+      task: this.observeStatus(id, abort.signal),
+    };
+    this.statusObservations.set(id, observation);
+    void observation.task.finally(() => {
+      if (this.statusObservations.get(id) !== observation) return;
+      this.statusObservations.delete(id);
+      this.reconcileStatusObservation(id);
+    }).catch(() => undefined);
+  }
+
+  private async observeStatus(id: string, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted && this.shouldObserveStatus(id)) {
+      try {
+        const observed = await this.enqueue(id, signal, async () => {
+          if (!this.shouldObserveStatus(id)) return null;
+          await this.lifecycle.start();
+          return await this.adapter.get(id, signal);
+        });
+        if (observed && !signal.aborted && this.shouldObserveStatus(id)) {
+          const previous = this.statuses.get(id);
+          if (!previous || !areWorkspaceSyncStatusesEqual(previous, observed)) this.publish(observed);
+        }
+      } catch (error) {
+        if (signal.aborted || this.shuttingDown || (error instanceof Error && error.name === 'AbortError')) return;
+        // Runtime readiness owns engine availability errors. Preserve the
+        // last known relationship projection and retry while demand remains.
+      }
+      if (!signal.aborted && this.shouldObserveStatus(id)) await waitForStatusObservation(signal);
+    }
+  }
+
+  private async stopAllStatusObservations(): Promise<void> {
+    const observations = [...this.statusObservations.values()];
+    for (const observation of observations) observation.abort.abort();
+    await Promise.all(observations.map(async ({ task }) => await task));
+  }
   private async acquireRoots(
     definition: WorkspaceSyncRelationshipV1,
     carriedHandles: readonly WorkspaceRootOwnershipHandle[] = [],
@@ -298,11 +455,18 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Workspace root custody cleanup failed');
   }
-  private async assertRelationshipOwnershipCurrent(id: string): Promise<void> {
+  private async assertRelationshipOwnershipCurrent(
+    id: string,
+    finalHandle?: WorkspaceRootOwnershipHandle,
+  ): Promise<void> {
     const custody = this.fences.get(id);
     const handles = custody?.handles ?? [];
     try {
-      await Promise.all(handles.map((handle) => handle.bindCurrentRootIdentity()));
+      const retainedFinalHandle = finalHandle && handles.includes(finalHandle) ? finalHandle : undefined;
+      await Promise.all(handles
+        .filter((handle) => handle !== retainedFinalHandle)
+        .map((handle) => handle.bindCurrentRootIdentity()));
+      await retainedFinalHandle?.bindCurrentRootIdentity();
     } catch {
       this.ownershipLost.add(id);
       await this.closeActiveIngress(id);
@@ -480,6 +644,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     }
     const previous = this.definitions.get(valid.relationshipId);
     const recoveringOwnership = previous !== undefined && this.ownershipLost.has(valid.relationshipId);
+    const needsOwnership = !previous || recoveringOwnership || !this.fences.has(valid.relationshipId);
     if (previous && !areWorkspaceSyncRelationshipDefinitionsEqual(previous, valid)) {
       throw Object.assign(new Error('Workspace sync relationship definition conflicts with active relationship'), { code: 'relationship_definition_conflict' });
     }
@@ -487,14 +652,14 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     let acquiredHandles: WorkspaceRootOwnershipHandle[] | undefined;
     let sourceHandles: WorkspaceRootOwnershipHandle[] = [];
     try {
-      if (!previous || recoveringOwnership) {
+      if (needsOwnership) {
         sourceHandles = await this.acquireSourceRoots(valid);
       }
       const targetPreparation = await this.withSourceSeedAuthorization(valid, sourceHandles, async () => (
         await this.prepareTarget(valid, signal, preparation)
       ));
       const carriedHandles = [...sourceHandles, ...(targetPreparation?.ownershipHandles ?? [])];
-      if (!previous || recoveringOwnership) {
+      if (needsOwnership) {
         acquiredHandles = await this.acquireRoots(valid, carriedHandles);
         this.fences.set(valid.relationshipId, {
           handles: [...carriedHandles, ...acquiredHandles],
@@ -513,7 +678,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       this.ownershipLost.delete(valid.relationshipId);
       return this.publish(status);
     } catch (error) {
-      if (!previous || recoveringOwnership) {
+      if (needsOwnership) {
         if (!previous) this.definitions.delete(valid.relationshipId);
         if (!previous) this.transientDefinitions.delete(valid.relationshipId);
         await this.releaseRootHandles([...sourceHandles, ...(acquiredHandles ?? [])]);
@@ -626,23 +791,51 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     }
     if (previousStatus) this.publish({ ...previousStatus, state: 'stopped', changedFiles: 0 });
   }); }
-  async listConflicts(id: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1> { this.assertStateAvailable(); abortIfRequested(signal); await this.lifecycle.start(); return await this.adapter.listConflicts(id, signal); }
-  async deleteConflictLoser(request: DeleteWorkspaceSyncConflictLoserV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> {
+  async listConflicts(request: WorkspaceSyncConflictPageRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictPageV1> { this.assertStateAvailable(); abortIfRequested(signal); await this.lifecycle.start(); return await this.adapter.listConflicts(request, signal); }
+  async deleteConflictLoser(request: DeleteWorkspaceSyncConflictLoserV1, signal?: AbortSignal, actionReceiptId?: string): Promise<WorkspaceSyncStatusV1> {
     this.assertStateAvailable();
     const valid = DeleteWorkspaceSyncConflictLoserV1Schema.parse(request);
+    if (!actionReceiptId?.trim()) {
+      throw Object.assign(new Error('Confirmed workspace conflict Action receipt is required'), { code: 'approval_required' });
+    }
     return this.enqueue(valid.relationshipId, signal, async () => {
       if (this.ownershipLost.has(valid.relationshipId)) throw Object.assign(new Error('Workspace root ownership was lost'), { code: 'workspace_root_ownership_lost' });
       const definition = this.definitions.get(valid.relationshipId);
       if (!definition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
-      if (!this.deleteAtTarget) {
-        throw Object.assign(new Error('Authenticated target conflict resolution is unavailable'), { code: 'agent_unavailable' });
-      }
+      const losingRole = valid.keep === 'alpha' ? 'beta' : 'alpha';
       const losingRefId = valid.keep === 'alpha' ? definition.betaWorkspaceRefId : definition.alphaWorkspaceRefId;
       const target = await this.resolveRef(losingRefId);
       if (!target) throw Object.assign(new Error('Workspace sync conflict target is unavailable'), { code: 'peer_unavailable' });
       await this.lifecycle.start();
       await this.assertRelationshipOwnershipCurrent(valid.relationshipId);
+      const actionInput: WorkspaceSyncConflictResolveActionInputV1 = {
+        controllerMachineId: this.localMachineId,
+        request: valid,
+      };
+      const localSource = await this.resolveLocalSourceAccess(definition, losingRole);
+      if (localSource) {
+        const assertConflictResolutionAuthorized = this.assertConflictResolutionAuthorized;
+        if (!assertConflictResolutionAuthorized) {
+          throw Object.assign(new Error('Workspace conflict Action receipt authority is unavailable'), { code: 'approval_required' });
+        }
+        await deleteWorkspaceSyncConflictLoserAtRoot({
+          rootPath: localSource.canonicalRoot,
+          relativePath: valid.path,
+          expectedKind: valid.expectedKind,
+          ...(valid.expectedDigest === undefined ? {} : { expectedDigest: valid.expectedDigest }),
+          assertCurrentAuthority: async () => {
+            await assertConflictResolutionAuthorized(actionReceiptId, actionInput);
+            await localSource.assertCurrentAuthority();
+          },
+        });
+        return this.publish(await this.adapter.flush(valid.relationshipId, signal));
+      }
+      if (!this.deleteAtTarget) {
+        throw Object.assign(new Error('Authenticated target conflict resolution is unavailable'), { code: 'agent_unavailable' });
+      }
       await this.deleteAtTarget({
+        actionReceiptId,
+        actionInput,
         relationshipId: valid.relationshipId,
         targetMachineId: target.machineId,
         targetWorkspaceRefId: losingRefId,
@@ -660,6 +853,24 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     const valid = ReadWorkspaceSyncFileV1Schema.parse(request);
     const definition = this.definitions.get(valid.relationshipId);
     if (!definition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
+    const localSource = await this.resolveLocalSourceAccess(definition, valid.side);
+    if (localSource) {
+      return await this.enqueue(valid.relationshipId, signal, async () => {
+        const currentDefinition = this.definitions.get(valid.relationshipId);
+        if (!currentDefinition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
+        const currentLocalSource = await this.resolveLocalSourceAccess(currentDefinition, valid.side);
+        if (!currentLocalSource) {
+          throw Object.assign(new Error('Workspace sync source endpoint is no longer local'), { code: 'relationship_not_ready' });
+        }
+        return await readWorkspaceSyncFileAtRoot({
+          rootPath: currentLocalSource.canonicalRoot,
+          relativePath: valid.path,
+          ...(valid.expectedDigest === undefined ? {} : { expectedDigest: valid.expectedDigest }),
+          maxBytes: valid.maxBytes,
+          assertCurrentAuthority: currentLocalSource.assertCurrentAuthority,
+        });
+      });
+    }
     if (!this.readAtTarget) throw Object.assign(new Error('Authenticated target file preview is unavailable'), { code: 'agent_unavailable' });
     const targetWorkspaceRefId = valid.side === 'alpha'
       ? definition.alphaWorkspaceRefId
@@ -753,19 +964,32 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     }
   }
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     const cleanupFailures: unknown[] = [];
-    const ingressCleanup = await Promise.allSettled(
-      [...this.activeIngress.keys()].map(async (id) => await this.closeActiveIngress(id)),
-    );
-    for (const result of ingressCleanup) {
-      if (result.status === 'rejected') cleanupFailures.push(result.reason);
+    try {
+      await this.stopAllStatusObservations();
+    } catch (error) {
+      cleanupFailures.push(error);
     }
     try {
       await this.lifecycle.stop();
     } catch (error) {
       cleanupFailures.push(error);
     }
+    const activeIngressIds = [...this.activeIngress.keys()];
+    const ingressCleanup = await Promise.allSettled(
+      activeIngressIds.map(async (id) => await this.closeActiveIngress(id)),
+    );
+    const failedIngressIds = new Set<string>();
+    for (let index = 0; index < ingressCleanup.length; index += 1) {
+      const result = ingressCleanup[index]!;
+      if (result.status === 'rejected') {
+        cleanupFailures.push(result.reason);
+        failedIngressIds.add(activeIngressIds[index]!);
+      }
+    }
     for (const [id, custody] of [...this.fences]) {
+      if (failedIngressIds.has(id)) continue;
       const results = await Promise.allSettled(custody.ownedHandles.map(async (handle) => {
         this.pendingRootReleases.add(handle);
         await handle.release();
@@ -784,6 +1008,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       else this.fences.set(id, { handles: failedHandles, ownedHandles: failedHandles });
     }
     for (const [id, handles] of [...this.copyOwnedFences]) {
+      if (failedIngressIds.has(id)) continue;
       const results = await Promise.allSettled(handles.map(async (handle) => {
         this.pendingRootReleases.add(handle);
         await handle.release();
@@ -830,22 +1055,29 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     const relationships = validateWorkspaceSyncRelationships(value).filter((relationship) => (
       relationship.controllerMachineId === this.localMachineId
     ));
-    const gitRelationships = relationships.filter(({ contentPolicy }) => contentPolicy.selection === 'git_worktree');
+    const disabledRelationships = relationships.filter((relationship) => !relationship.enabled);
+    const enabledRelationships = relationships.filter((relationship) => relationship.enabled);
+    const gitRelationships = enabledRelationships.filter(({ contentPolicy }) => contentPolicy.selection === 'git_worktree');
     const gitUnavailable = gitRelationships.length > 0 && !(await this.probeGit());
-    // Preserve the existing fail-closed single-mode result, while allowing a
-    // mixed settings snapshot to restore independent all-files relationships.
-    if (gitUnavailable && gitRelationships.length === relationships.length) {
-      throw Object.assign(new Error('Git is unavailable for the git_worktree workspace sync selection'), { code: 'git_selection_unavailable' });
-    }
+    const rejectUnavailableGit = gitUnavailable
+      && gitRelationships.length === enabledRelationships.length
+      && disabledRelationships.length === 0;
     const activeRelationships = gitUnavailable
-      ? relationships.filter(({ contentPolicy }) => contentPolicy.selection !== 'git_worktree')
-      : relationships;
+      ? enabledRelationships.filter(({ contentPolicy }) => contentPolicy.selection !== 'git_worktree')
+      : enabledRelationships;
     return await this.enqueueAll([
       ...relationships.map(({ relationshipId }) => relationshipId),
       ...this.definitions.keys(),
       ...this.copyOperations.keys(),
     ], async () => {
-      const desired = new Map(activeRelationships.map((relationship) => [relationship.relationshipId, relationship]));
+      // Disabled records remain settings intent. Their local roots are fenced
+      // before runtime discovery so an existing sidecar cannot race its
+      // terminal transition. They never bootstrap a target or create a new
+      // runtime session during cold rehydration.
+      const desired = new Map(
+        [...activeRelationships, ...disabledRelationships]
+          .map((relationship) => [relationship.relationshipId, relationship]),
+      );
       for (const id of this.transientDefinitions) {
         const definition = this.definitions.get(id);
         if (definition && !desired.has(id)) desired.set(id, definition);
@@ -858,6 +1090,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         for (const relationship of activeRelationships) {
           const current = this.definitions.get(relationship.relationshipId);
           if (current && areWorkspaceSyncRelationshipDefinitionsEqual(current, relationship)
+            && this.fences.has(relationship.relationshipId)
             && !this.ownershipLost.has(relationship.relationshipId)) {
             try {
               await this.assertRelationshipOwnershipCurrent(relationship.relationshipId);
@@ -867,6 +1100,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
             }
           }
           if (!current || !areWorkspaceSyncRelationshipDefinitionsEqual(current, relationship)
+            || !this.fences.has(relationship.relationshipId)
             || this.ownershipLost.has(relationship.relationshipId)) {
             const sourceHandles = await this.acquireSourceRoots(relationship);
             // Recorded before target preparation so a failure there still
@@ -884,6 +1118,19 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
             });
           }
         }
+        for (const relationship of disabledRelationships) {
+          const current = this.definitions.get(relationship.relationshipId);
+          if (current && areWorkspaceSyncRelationshipDefinitionsEqual(current, relationship)
+            && this.fences.has(relationship.relationshipId)) {
+            await this.assertRelationshipOwnershipCurrent(relationship.relationshipId);
+            continue;
+          }
+          const acquiredHandles = await this.acquireRoots(relationship);
+          pendingFences.set(relationship.relationshipId, {
+            handles: acquiredHandles,
+            ownedHandles: acquiredHandles,
+          });
+        }
       } catch (error) {
         await this.releaseRootHandles(
           [...pendingFences.values()].flatMap((custody) => custody.ownedHandles),
@@ -895,7 +1142,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         custody: Readonly<{ handles: WorkspaceRootOwnershipHandle[]; ownedHandles: WorkspaceRootOwnershipHandle[] }> | undefined;
         ingress: ReadonlySet<ActiveWorkspaceSyncIngress>;
       }>>();
-      for (const relationship of activeRelationships) {
+      for (const relationship of [...activeRelationships, ...disabledRelationships]) {
         const custody = pendingFences.get(relationship.relationshipId);
         if (!custody) continue;
         stagedPrevious.set(relationship.relationshipId, {
@@ -934,13 +1181,22 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       await this.releaseRootHandles(
         [...stagedPrevious.values()].flatMap((previous) => previous.custody?.ownedHandles ?? []),
       );
+      for (const relationship of disabledRelationships) {
+        await this.closeActiveIngress(relationship.relationshipId);
+        await this.releaseRelationshipOwnership(relationship.relationshipId);
+        this.ownershipLost.delete(relationship.relationshipId);
+        this.definitions.set(relationship.relationshipId, relationship);
+        this.transientDefinitions.delete(relationship.relationshipId);
+      }
       for (const [id, current] of this.definitions) {
         const next = desired.get(id);
         if (next && areWorkspaceSyncRelationshipDefinitionsEqual(next, current)) continue;
+        await this.closeActiveIngress(id);
         await this.releaseRelationshipOwnership(id);
         this.definitions.delete(id);
         this.transientDefinitions.delete(id);
         this.statuses.delete(id);
+        this.reconcileStatusObservation(id);
       }
       const statuses: WorkspaceSyncStatusV1[] = [];
       for (const relationship of activeRelationships) {
@@ -968,6 +1224,28 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
           throw error;
         }
       }
+      for (const relationship of disabledRelationships) {
+        const adopted = existing.get(relationship.relationshipId);
+        if (adopted) {
+          statuses.push(this.publish({ ...adopted, state: 'paused' }));
+          continue;
+        }
+        const [alpha, beta] = await Promise.all([
+          this.resolveRef(relationship.alphaWorkspaceRefId),
+          this.resolveRef(relationship.betaWorkspaceRefId),
+        ]);
+        statuses.push(this.publish({
+          relationshipId: relationship.relationshipId,
+          controllerMachineId: relationship.controllerMachineId,
+          state: 'paused',
+          alphaPath: alpha?.rootPath ?? relationship.alphaWorkspaceRefId,
+          betaPath: beta?.rootPath ?? relationship.betaWorkspaceRefId,
+          mode: relationship.mode,
+          changedFiles: 0,
+          conflictCount: 0,
+          lastSuccessfulSyncAtMs: null,
+        }));
+      }
       if (gitUnavailable) {
         for (const relationship of gitRelationships) {
           const [alpha, beta] = await Promise.all([
@@ -988,11 +1266,17 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
           }));
         }
       }
+      if (rejectUnavailableGit) {
+        throw Object.assign(new Error('Git is unavailable for the git_worktree workspace sync selection'), { code: 'git_selection_unavailable' });
+      }
       return statuses;
     });
   }
   async openExternalStream(input: Readonly<{ endpointId: string; signal?: AbortSignal }>): Promise<Duplex> {
     this.assertStateAvailable();
+    if (this.shuttingDown) {
+      throw Object.assign(new Error('Workspace sync endpoint is not owned'), { code: 'relationship_not_owned' });
+    }
     const candidates = [...this.definitions.values(), ...this.copyOperations.values()];
     const match = candidates.flatMap((operation) => {
       const operationId = 'relationshipId' in operation ? operation.relationshipId : operation.operationId;
@@ -1013,6 +1297,21 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     const endpoint = role === 'alpha' ? alpha : beta;
     const counterpart = role === 'alpha' ? beta : alpha;
     const endpointRefId = role === 'alpha' ? operation.alphaWorkspaceRefId : operation.betaWorkspaceRefId;
+    const retainIfStillOwned = async (owned: WorkspaceSyncOwnedLocalAgent): Promise<Duplex> => {
+      const current = 'relationshipId' in operation
+        ? this.definitions.get(operationId)
+        : this.copyOperations.get(operationId);
+      if (!this.shuttingDown && current === operation && !this.ownershipLost.has(operationId)) {
+        return this.trackOwnedIngress(operationId, owned);
+      }
+      owned.stream.destroy();
+      await owned.stop();
+      const ownershipLost = this.ownershipLost.has(operationId);
+      throw Object.assign(
+        new Error(ownershipLost ? 'Workspace root ownership was lost' : 'Workspace sync endpoint is not owned'),
+        { code: ownershipLost ? 'workspace_root_ownership_lost' : 'relationship_not_owned' },
+      );
+    };
     if (endpoint.machineId === this.localMachineId) {
       if (!this.openLocalAgent) throw Object.assign(new Error('Verified local workspace agent is unavailable'), { code: 'agent_unavailable' });
       const canonicalRoot = await realpath(endpoint.rootPath).catch(() => {
@@ -1037,7 +1336,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
           throw Object.assign(new Error('Workspace sync endpoint root changed after admission'), { code: 'root_changed' });
         }
       }
-      return this.trackOwnedIngress(operationId, await this.openLocalAgent({ operationId, role, workspaceRefId: endpointRefId, canonicalRoot, ...(input.signal ? { signal: input.signal } : {}) }));
+      return await retainIfStillOwned(await this.openLocalAgent({ operationId, role, workspaceRefId: endpointRefId, canonicalRoot, ...(input.signal ? { signal: input.signal } : {}) }));
     }
     if (!this.openMachineCarrier) throw machineCarrierUnavailableError();
     const tunnel = await this.openMachineCarrier({
@@ -1048,7 +1347,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       ...(input.signal ? { signal: input.signal } : {}),
     });
     const ownedTunnel = await connectWorkspaceSyncMachineTunnel(tunnel, input.signal);
-    return this.trackOwnedIngress(operationId, { stream: ownedTunnel.stream, stop: ownedTunnel.stop });
+    return await retainIfStillOwned({ stream: ownedTunnel.stream, stop: ownedTunnel.stop });
   }
   subscribe(id: string, signal: AbortSignal): AsyncIterable<WorkspaceSyncStatusV1> {
     const self = this;
@@ -1060,7 +1359,21 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       const listeners = self.listeners.get(id) ?? new Set();
       listeners.add(listener);
       self.listeners.set(id, listeners);
-      signal.addEventListener('abort', wakeOnAbort);
+      self.reconcileStatusObservation(id);
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        signal.removeEventListener('abort', abortAndWake);
+        listeners.delete(listener);
+        if (listeners.size === 0) self.listeners.delete(id);
+        self.reconcileStatusObservation(id);
+      };
+      const abortAndWake = () => {
+        cleanup();
+        wakeOnAbort();
+      };
+      signal.addEventListener('abort', abortAndWake);
       try {
         while (!signal.aborted) {
           if (queue.length === 0) {
@@ -1073,9 +1386,8 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
           if (!signal.aborted && queue.length) yield queue.shift()!;
         }
       } finally {
-        signal.removeEventListener('abort', wakeOnAbort);
-        listeners.delete(listener);
-        if (listeners.size === 0) self.listeners.delete(id);
+        signal.removeEventListener('abort', abortAndWake);
+        cleanup();
       }
     } };
   }

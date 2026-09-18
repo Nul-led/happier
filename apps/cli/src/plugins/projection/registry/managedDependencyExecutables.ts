@@ -23,17 +23,37 @@ type ManagedPypiWheelAssetSourceV2 = Extract<
     { kind: 'managedPypiWheelAsset' }
 >;
 
+type PinnedArchiveSourceV2 = Extract<
+    PluginManagedDependencyContributionV2['sources'][number],
+    { kind: 'pinnedArchive' }
+>;
+
 export type ManagedDependencyProjectionHost = Readonly<{
     platform: NodeJS.Platform;
     architecture: string;
 }>;
 
-type ManagedPypiWheelAssetProjectionInput = Readonly<{
+type ManagedDependencyProjectionInput<TSource> = Readonly<{
     definition: PluginManagedDependencyContributionV2;
-    source: ManagedPypiWheelAssetSourceV2;
+    source: TSource;
     pluginId?: string;
     manifestPath?: string;
     host?: ManagedDependencyProjectionHost;
+}>;
+
+type ManagedPypiWheelAssetProjectionInput = ManagedDependencyProjectionInput<ManagedPypiWheelAssetSourceV2>;
+type PinnedArchiveProjectionInput = ManagedDependencyProjectionInput<PinnedArchiveSourceV2>;
+
+/**
+ * Host and declaration facts every managed executable source must satisfy
+ * before it may claim an installables descriptor. Incomplete immutable manifest
+ * facts and hosts the declaration does not cover stay out of the registry.
+ */
+type ManagedDependencyProjectionGate = Readonly<{
+    platformKey: string;
+    title: string;
+    description: string;
+    executable: string;
 }>;
 
 function localizedFallback(
@@ -50,24 +70,18 @@ function declaredPlatform(platform: NodeJS.Platform): 'macos' | 'linux' | 'windo
     return null;
 }
 
-function managedPypiAssetPlatformKey(host: ManagedDependencyProjectionHost): string | null {
+function managedAssetPlatformKey(host: ManagedDependencyProjectionHost): string | null {
     if (host.architecture !== 'arm64' && host.architecture !== 'x64') return null;
     if (host.platform !== 'darwin' && host.platform !== 'linux' && host.platform !== 'win32') return null;
     return `${host.platform}-${host.architecture}`;
 }
 
-/**
- * Projects the one currently supported Manifest V2 managed source into the
- * existing installables descriptor contract. This is intentionally partial:
- * incomplete immutable manifest facts, unsupported hosts, and every other
- * source kind stay out of the installables registry rather than being coerced.
- */
-export function projectManagedPypiWheelAssetInstallableDescriptor(
-    input: ManagedPypiWheelAssetProjectionInput,
-): InstallableDependencyDescriptor | null {
+function resolveManagedDependencyProjectionGate(
+    input: ManagedDependencyProjectionInput<unknown>,
+): ManagedDependencyProjectionGate | null {
     const host = input.host ?? { platform: process.platform, architecture: process.arch };
     const platform = declaredPlatform(host.platform);
-    const platformKey = managedPypiAssetPlatformKey(host);
+    const platformKey = managedAssetPlatformKey(host);
     if (
         !input.pluginId
         || !input.manifestPath
@@ -75,15 +89,33 @@ export function projectManagedPypiWheelAssetInstallableDescriptor(
         || !platformKey
         || (input.definition.platforms && !input.definition.platforms.includes(platform))
         || (input.definition.architectures && !input.definition.architectures.includes(host.architecture))
-        || !input.source.assetPathByPlatform[platformKey]
     ) {
         return null;
     }
-
     const title = localizedFallback(input.definition.title);
-    if (!title || !input.definition.executable) return null;
-    const description = localizedFallback(input.definition.description)
-        ?? `Managed runtime for ${input.pluginId}/${input.definition.id}`;
+    const executable = input.definition.executable;
+    if (!title || !executable) return null;
+    return {
+        platformKey,
+        title,
+        executable,
+        description: localizedFallback(input.definition.description)
+            ?? `Managed runtime for ${input.pluginId}/${input.definition.id}`,
+    };
+}
+
+/**
+ * Projects a complete Manifest V2 managed PyPI wheel source into the existing
+ * installables descriptor contract. This is intentionally partial: incomplete
+ * immutable manifest facts, unsupported hosts, and every non-executable source
+ * kind stay out of the installables registry rather than being coerced.
+ */
+export function projectManagedPypiWheelAssetInstallableDescriptor(
+    input: ManagedPypiWheelAssetProjectionInput,
+): InstallableDependencyDescriptor | null {
+    const gate = resolveManagedDependencyProjectionGate(input);
+    if (!gate || !input.source.assetPathByPlatform[gate.platformKey]) return null;
+    const { title, description } = gate;
     const parsed = InstallableDependencyDescriptorSchema.safeParse({
         id: input.source.installId,
         key: input.source.installId,
@@ -125,6 +157,57 @@ export function projectManagedPypiWheelAssetInstallableDescriptor(
     return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Projects a complete Manifest V2 pinned-archive source into the same
+ * installables descriptor contract, so a declarative managed executable is
+ * reachable from capability status/install and from the UI installables
+ * registry. The immutable digest-pinned artifact has no update discovery, so
+ * the descriptor declares no auto-update mode; the pinned-archive installer
+ * itself stays the single install owner.
+ */
+export function projectPinnedArchiveInstallableDescriptor(
+    input: PinnedArchiveProjectionInput,
+): InstallableDependencyDescriptor | null {
+    const gate = resolveManagedDependencyProjectionGate(input);
+    const asset = gate
+        ? input.source.assetsByPlatform[gate.platformKey as keyof PinnedArchiveSourceV2['assetsByPlatform']]
+        : undefined;
+    if (!gate || !asset) return null;
+    const parsed = InstallableDependencyDescriptorSchema.safeParse({
+        id: input.source.installId,
+        key: input.source.installId,
+        kind: 'dep',
+        version: '1',
+        capabilityId: input.source.installId,
+        display: { name: gate.title },
+        description: gate.description,
+        source: {
+            kind: 'pinned_archive',
+            version: input.source.version,
+            assetsByPlatform: input.source.assetsByPlatform,
+        },
+        binary: {
+            commands: [gate.executable],
+            systemFirst: false,
+            managedFallback: true,
+        },
+        defaultPolicy: {
+            autoInstallWhenNeeded: true,
+            autoUpdateMode: 'off',
+        },
+        consent: {
+            install: 'not_required',
+            update: 'not_required',
+            commandsPreviewRequired: false,
+        },
+        stability: {
+            experimental: true,
+            supported: true,
+        },
+    });
+    return parsed.success ? parsed.data : null;
+}
+
 export function isExecutableManagedDependency(
     contribution: ResolvedInstallableContribution,
 ): contribution is ResolvedExecutableManagedDependency {
@@ -133,9 +216,10 @@ export function isExecutableManagedDependency(
 
 /**
  * Manifest V2 managed-dependency contributions describe dependency requests.
- * Each complete managed-PyPI source projects through the canonical
- * installables descriptor owner; all other V2 source kinds remain request-only
- * and must never be coerced into executable descriptors.
+ * Each complete host-managed executable source (managed PyPI wheel asset,
+ * pinned archive) projects through the canonical installables descriptor
+ * owner; all other V2 source kinds remain request-only and must never be
+ * coerced into executable descriptors.
  */
 export function selectExecutableManagedDependencies(
     contributions: readonly ResolvedInstallableContribution[],
@@ -150,14 +234,16 @@ export function selectExecutableManagedDependencies(
         const parsed = PluginManagedDependencyContributionV2Schema.safeParse(contribution.definition);
         if (!parsed.success) continue;
         for (const source of parsed.data.sources) {
-            if (source.kind !== 'managedPypiWheelAsset') continue;
-            const descriptor = projectManagedPypiWheelAssetInstallableDescriptor({
+            if (source.kind !== 'managedPypiWheelAsset' && source.kind !== 'pinnedArchive') continue;
+            const common = {
                 definition: parsed.data,
-                source,
                 ...(contribution.pluginId ? { pluginId: contribution.pluginId } : {}),
                 ...(contribution.manifestPath ? { manifestPath: contribution.manifestPath } : {}),
                 ...(host ? { host } : {}),
-            });
+            };
+            const descriptor = source.kind === 'managedPypiWheelAsset'
+                ? projectManagedPypiWheelAssetInstallableDescriptor({ ...common, source })
+                : projectPinnedArchiveInstallableDescriptor({ ...common, source });
             if (!descriptor) continue;
             executable.push(Object.freeze({
                 ...contribution,

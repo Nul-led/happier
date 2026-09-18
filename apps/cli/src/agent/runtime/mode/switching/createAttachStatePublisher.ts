@@ -190,14 +190,17 @@ export function createAgentAttachStatePublisher(params: Readonly<{
         rawSession: params.rawSession,
         accountEncryptionCurrentness,
       });
-      currentTupleSnapshot = await (
+      const updated = await (
         params.updateSessionMetadataEnvelopeTupleWithRetryFn
         ?? updateSessionMetadataEnvelopeTupleWithRetry
       )({
         token: params.credentials.token,
         sessionId: params.sessionId,
-        credentials: params.credentials,
-        accountEncryptionCurrentness,
+        authority: {
+          kind: 'owner',
+          credentials: params.credentials,
+          accountEncryptionCurrentness,
+        },
         ...storedContentCrypto,
         initialSnapshot: currentTupleSnapshot,
         mutation: {
@@ -207,6 +210,10 @@ export function createAgentAttachStatePublisher(params: Readonly<{
         },
         mutateLegacy: mutateLegacyAgentState,
       });
+      if (updated.mode === 'shared_editor') {
+        throw new Error('Owner Agent-state publication changed to shared-editor authority');
+      }
+      currentTupleSnapshot = updated;
     },
   };
 }

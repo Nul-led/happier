@@ -17,8 +17,9 @@ import {
 import type { AcpPermissionHandler } from './permissions/acpPermissionHandler';
 import { pickPermissionOutcome } from './permissions/permissionMapping';
 import type { AcpClientConnectionHandlers } from './connection/types';
-import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import type { LegacyAcpToolRuntime } from './toolCalls/legacy/runtime';
+import { isWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 import {
   extractPermissionInputWithFallback,
   extractPermissionToolNameHint,
@@ -65,6 +66,8 @@ export function createAcpClientHandlers(params: Readonly<{
   incrementToolCallCountSincePrompt: () => void;
   toolCalls: LegacyAcpToolRuntime;
   lastSelectedPermissionOptionIdByToolCallId: Map<string, string>;
+  /** Host-private turn failure witness; never crosses the ACP wire. */
+  failTurn?: (error: Error) => void;
 }>): Pick<AcpClientConnectionHandlers, 'sessionUpdate' | 'requestPermission'> {
   return {
     sessionUpdate: async (notification: SessionNotification) => {
@@ -233,6 +236,7 @@ export function createAcpClientHandlers(params: Readonly<{
           return { outcome };
         } catch (error) {
           logger.debug('[AcpBackend] Error in permission handler:', error);
+          if (isWorkflowInteractionCapacityError(error)) params.failTurn?.(error);
           await cancelAndTerminalize('permission handler error');
           return { outcome: { outcome: 'cancelled' } };
         }

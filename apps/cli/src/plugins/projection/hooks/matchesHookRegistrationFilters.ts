@@ -1,4 +1,4 @@
-import type { HookEventEnvelopeV1 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, type HookEventEnvelopeV1 } from '@happier-dev/protocol';
 
 import type { ResolvedActivatedHookRegistration } from '@/plugins/projection/registry/types';
 
@@ -12,10 +12,13 @@ function normalizeNonEmpty(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+// `happySessionId` is Happier-minted and keeps its canonicalization. `agentSessionId` is minted by
+// the Agent and is opaque: folding it through the same trim would make two distinct Agent sessions
+// compare equal, so it is matched by exact bytes.
 function readEnvelopeSessionIds(envelope: HookEventEnvelopeV1): readonly string[] {
   return [
     normalizeNonEmpty(envelope.happySessionId),
-    normalizeNonEmpty(envelope.agentSessionId),
+    readNonBlankOpaqueIdentifier(envelope.agentSessionId),
   ].filter((value): value is string => Boolean(value));
 }
 

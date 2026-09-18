@@ -128,7 +128,6 @@ describe('prepareExecuteSpawnSessionRequest logging privacy', () => {
                     token: 'token',
                     encryption: null,
                 },
-                loadLocalHandoffMetadataByVendorResumeId: async () => null,
             },
             validateEnvVarRecordStrict: () => ({
                 ok: false,
@@ -172,7 +171,6 @@ describe('prepareExecuteSpawnSessionRequest logging privacy', () => {
                     token: 'token',
                     encryption: null,
                 },
-                loadLocalHandoffMetadataByVendorResumeId: async () => null,
             },
             validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
         });
@@ -207,7 +205,6 @@ describe('prepareExecuteSpawnSessionRequest logging privacy', () => {
                 encryption: null,
             },
             api: {},
-            loadLocalHandoffMetadataByVendorResumeId: async () => null,
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             connectedServiceRefreshCoordinator: null,
             connectedServiceQuotasCoordinator: null,

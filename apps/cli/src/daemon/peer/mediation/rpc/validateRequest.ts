@@ -216,7 +216,13 @@ export function validatePeerMachineRpcDirectRequest(
         },
       });
     if (!grantVerification.valid) {
-        options.quarantine.recordVerificationFailure(qKey);
+        // A signing root can disappear during an authenticated Home refresh or while that
+        // authority is temporarily unavailable. Refuse the request, but do not convert a
+        // legitimate stale grant into a local endpoint quarantine that survives authority
+        // recovery. Bad signatures and all other verification failures still count.
+        if (grantVerification.reasonCode !== 'grant_unknown_key') {
+            options.quarantine.recordVerificationFailure(qKey);
+        }
         return {
             ok: false,
             response: fallback({

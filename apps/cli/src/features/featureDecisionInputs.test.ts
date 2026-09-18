@@ -52,11 +52,13 @@ describe('featureDecisionInputs', () => {
   });
 
   it('loads server snapshot when resolving inputs for a server URL', async () => {
-    const fetchSpy = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => createFeaturesResponse(),
-    })) as unknown as typeof fetch;
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify(createFeaturesResponse()),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as unknown as typeof fetch;
     vi.stubGlobal('fetch', fetchSpy);
 
     const inputs = await loadCliFeatureDecisionInputsForServer({
@@ -71,11 +73,13 @@ describe('featureDecisionInputs', () => {
   });
 
   it('does not fetch server snapshot when global policy denies the feature', async () => {
-    const fetchSpy = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => createFeaturesResponse(),
-    })) as unknown as typeof fetch;
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify(createFeaturesResponse()),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as unknown as typeof fetch;
     vi.stubGlobal('fetch', fetchSpy);
 
     const inputs = await loadCliFeatureDecisionInputsForServer({

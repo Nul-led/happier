@@ -67,6 +67,26 @@ function deferred<T>(): Readonly<{
     return Object.freeze({ promise, resolve });
 }
 
+function explicitStartOutcome(cleanup: () => void | Promise<void> = () => {}) {
+    return Object.freeze({
+        status: 'running' as const,
+        projection: Object.freeze({
+            access: Object.freeze({
+                endpointUrl: () => 'http://127.0.0.1:43120/v1',
+                request: async () => Object.freeze({
+                    ok: true,
+                    status: 200,
+                    statusText: 'OK',
+                    headers: Object.freeze({}),
+                    body: null,
+                }),
+            }),
+            isCurrent: () => true,
+            cleanup,
+        }),
+    });
+}
+
 function createLifecycleProcess(
     pid: number,
     onDispose?: () => void | Promise<void>,
@@ -1747,7 +1767,7 @@ describe('managed-services SVC09 owner', () => {
 
         let publicMaterializeInput: Readonly<{
             endpointUrl: string;
-            credentialPlaceholder: string;
+            credentialPlaceholder: string | null;
         }> | null = null;
         const materialized = await harness.owner
             .materializeManagedProviderAgentBinding!({
@@ -1756,6 +1776,9 @@ describe('managed-services SVC09 owner', () => {
                 endpointTemplateId: 'responses',
                 materialize: async (input) => {
                     publicMaterializeInput = input;
+                    if (input.credentialPlaceholder === null) {
+                        throw new Error('Expected the managed spawn credential placeholder');
+                    }
                     const renderedPlaceholder = `Basic ${Buffer.from(
                         `happier:${input.credentialPlaceholder}`,
                         'utf8',
@@ -4617,7 +4640,7 @@ describe('managed-services SVC09 owner', () => {
         }>) => {
             release = input.release;
             await launchGate.promise;
-            return Object.freeze({ status: 'running' as const });
+            return explicitStartOutcome();
         });
         const operation = (input: Readonly<{
             purposeBindingsEqualityKey?: string;
@@ -4649,13 +4672,13 @@ describe('managed-services SVC09 owner', () => {
 
         expect(establish).toHaveBeenCalledOnce();
         launchGate.resolve(undefined);
-        await expect(Promise.all([first, concurrentRetry])).resolves.toEqual([
+        await expect(Promise.all([first, concurrentRetry])).resolves.toMatchObject([
             { status: 'established', value: { status: 'running' } },
             { status: 'established', value: { status: 'running' } },
         ]);
         await expect(harness.owner.runManagedProviderExplicitStart(
             operation(),
-        )).resolves.toEqual({
+        )).resolves.toMatchObject({
             status: 'established',
             value: { status: 'running' },
         });
@@ -4673,6 +4696,166 @@ describe('managed-services SVC09 owner', () => {
 
         await release!();
         await expect(harness.owner.dispose()).resolves.toBeUndefined();
+    });
+
+    it('retains host-private Provider endpoint access per explicit-start operation while join cleanup stays caller-scoped', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const request = vi.fn(async () => Object.freeze({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            headers: Object.freeze({}),
+            body: null,
+        }));
+        let operationCurrent = true;
+        let projectionCurrent = true;
+        const projectionCleanup = vi.fn(() => {
+            projectionCurrent = false;
+        });
+        const establish = vi.fn(async () => Object.freeze({
+            status: 'running' as const,
+            projection: Object.freeze({
+                access: Object.freeze({
+                    endpointUrl: () => 'http://127.0.0.1:43120/v1',
+                    request,
+                }),
+                isCurrent: () => projectionCurrent,
+                cleanup: projectionCleanup,
+            }),
+        }));
+        const operation = (signal?: AbortSignal) => Object.freeze({
+            operationId: JSON.stringify([
+                'managed-provider-broker',
+                'session',
+                'session-one',
+                'acme.providers',
+                'gateway',
+            ]),
+            pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway',
+            generation: 'provider-p',
+            purposeBindingsEqualityKey: 'binding-key-one',
+            isCurrent: () => operationCurrent,
+            ...(signal ? { signal } : {}),
+            establish,
+        });
+
+        const firstAbort = new AbortController();
+        const first = await harness.owner.runManagedProviderExplicitStart(
+            operation(firstAbort.signal),
+        );
+        const second = await harness.owner.runManagedProviderExplicitStart(
+            operation(),
+        );
+        expect(first.status).toBe('established');
+        expect(second.status).toBe('established');
+        if (first.status !== 'established' || second.status !== 'established') {
+            throw new Error('Expected exact explicit-start joins');
+        }
+        expect(first.value.projection).not.toBe(second.value.projection);
+        expect(first.value.projection.isCurrent()).toBe(true);
+        expect(second.value.projection.isCurrent()).toBe(true);
+
+        firstAbort.abort('caller stopped waiting');
+        expect(first.value.projection.isCurrent()).toBe(false);
+        expect(second.value.projection.isCurrent()).toBe(true);
+        expect(projectionCleanup).not.toHaveBeenCalled();
+        await expect(second.value.projection.access.request({
+            pathAndQuery: '/v1/responses',
+            method: 'POST',
+            timeoutMs: 1_000,
+        })).resolves.toMatchObject({ ok: true, status: 200 });
+        expect(request).toHaveBeenCalledOnce();
+
+        await expect(harness.owner.retireManagedProviderExplicitStart({
+            operationId: operation().operationId,
+            pluginId: operation().pluginId,
+            contributionQualifiedId: operation().contributionQualifiedId,
+        })).resolves.toBe(true);
+        expect(second.value.projection.isCurrent()).toBe(false);
+        expect(projectionCleanup).toHaveBeenCalledOnce();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(0);
+
+        operationCurrent = false;
+        await expect(harness.owner.dispose()).resolves.toBeUndefined();
+    });
+
+    it('revalidates retained broker claims exactly and tears down the broker family without touching public explicit starts', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        const cleanupByOperation = new Map<string, ReturnType<typeof vi.fn>>();
+        const currentByOperation = new Map<string, boolean>([
+            ['external-key-a', true],
+            ['external-key-b', true],
+            ['session-one', true],
+            ['execution-run-one', true],
+            ['public-start', true],
+        ]);
+        const operation = (
+            operationIdentity: string,
+            lifecycleKind: 'providerBroker' | 'publicExplicitStart',
+        ) => {
+            const cleanup = vi.fn(async () => undefined);
+            cleanupByOperation.set(operationIdentity, cleanup);
+            return Object.freeze({
+                operationId: operationIdentity,
+                pluginId: 'acme.providers',
+                contributionQualifiedId: 'acme.providers/providers/gateway',
+                generation: 'provider-p',
+                purposeBindingsEqualityKey: `binding-${operationIdentity}`,
+                lifecycleKind,
+                isCurrent: () => true,
+                revalidateRetainedCurrentness: async () =>
+                    currentByOperation.get(operationIdentity) === true,
+                establish: async () => explicitStartOutcome(cleanup),
+            });
+        };
+
+        await expect(Promise.all([
+            harness.owner.runManagedProviderExplicitStart(operation('external-key-a', 'providerBroker')),
+            harness.owner.runManagedProviderExplicitStart(operation('external-key-b', 'providerBroker')),
+            harness.owner.runManagedProviderExplicitStart(operation('session-one', 'providerBroker')),
+            harness.owner.runManagedProviderExplicitStart(operation('execution-run-one', 'providerBroker')),
+            harness.owner.runManagedProviderExplicitStart(operation('public-start', 'publicExplicitStart')),
+        ])).resolves.toMatchObject([
+            { status: 'established' },
+            { status: 'established' },
+            { status: 'established' },
+            { status: 'established' },
+            { status: 'established' },
+        ]);
+
+        const cancelledSweep = new AbortController();
+        cancelledSweep.abort();
+        await expect(harness.owner.revalidateManagedProviderExplicitStarts(
+            cancelledSweep.signal,
+        )).rejects.toMatchObject({ name: 'AbortError' });
+        for (const cleanup of cleanupByOperation.values()) {
+            expect(cleanup).not.toHaveBeenCalled();
+        }
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(5);
+
+        currentByOperation.set('external-key-a', false);
+        await expect(harness.owner.revalidateManagedProviderExplicitStarts())
+            .resolves.toBe(1);
+        expect(cleanupByOperation.get('external-key-a')).toHaveBeenCalledOnce();
+        expect(cleanupByOperation.get('external-key-b')).not.toHaveBeenCalled();
+        expect(cleanupByOperation.get('session-one')).not.toHaveBeenCalled();
+        expect(cleanupByOperation.get('execution-run-one')).not.toHaveBeenCalled();
+        expect(cleanupByOperation.get('public-start')).not.toHaveBeenCalled();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(4);
+
+        await expect(harness.owner.revalidateManagedProviderExplicitStarts())
+            .resolves.toBe(0);
+        await expect(harness.owner.retireManagedProviderExplicitStarts('providerBroker'))
+            .resolves.toBe(3);
+        expect(cleanupByOperation.get('external-key-b')).toHaveBeenCalledOnce();
+        expect(cleanupByOperation.get('session-one')).toHaveBeenCalledOnce();
+        expect(cleanupByOperation.get('execution-run-one')).toHaveBeenCalledOnce();
+        expect(cleanupByOperation.get('public-start')).not.toHaveBeenCalled();
+        expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(1);
+
+        await expect(harness.owner.dispose()).resolves.toBeUndefined();
+        expect(cleanupByOperation.get('public-start')).toHaveBeenCalledOnce();
     });
 
     it('retires a terminal explicit-start claim before concurrent retries establish one replacement', async () => {
@@ -4754,7 +4937,7 @@ describe('managed-services SVC09 owner', () => {
                 id: 'gateway',
                 port: 43_130,
             }));
-            return Object.freeze({ status: 'running' as const });
+            return explicitStartOutcome();
         });
         const operation = () => Object.freeze({
             operationId,
@@ -4768,7 +4951,7 @@ describe('managed-services SVC09 owner', () => {
 
         await expect(owner.runManagedProviderExplicitStart(
             operation(),
-        )).resolves.toEqual({
+        )).resolves.toMatchObject({
             status: 'established',
             value: { status: 'running' },
         });
@@ -4789,7 +4972,7 @@ describe('managed-services SVC09 owner', () => {
         ]);
         releaseCleanup.resolve(undefined);
 
-        await expect(retries).resolves.toEqual([
+        await expect(retries).resolves.toMatchObject([
             {
                 status: 'established',
                 value: { status: 'running' },
@@ -4873,7 +5056,7 @@ describe('managed-services SVC09 owner', () => {
                 id: 'gateway',
                 port: 43_131,
             }));
-            return Object.freeze({ status: 'running' as const });
+            return explicitStartOutcome();
         });
         const operation = () => Object.freeze({
             operationId,
@@ -4969,7 +5152,7 @@ describe('managed-services SVC09 owner', () => {
                 id: 'gateway',
                 port: 43_132,
             }));
-            return Object.freeze({ status: 'running' as const });
+            return explicitStartOutcome();
         });
         const operation = (purposeBindingsEqualityKey: string) =>
             Object.freeze({

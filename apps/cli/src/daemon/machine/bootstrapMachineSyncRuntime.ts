@@ -27,7 +27,11 @@ import {
     readServerEnabledBit,
   SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY,
   SessionUsageLimitRecoveryV1Schema,
+  SessionExecutionRunBrokerAuthorityResponseV1Schema,
 } from '@happier-dev/protocol';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
+import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import { UpdateBodySchema } from '@happier-dev/protocol/updates';
 import type { SessionHandoffLocalMetadataSource } from '@/session/handoff/metadata/runtimeLocalSessionHandoffMetadata';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
@@ -78,22 +82,23 @@ import {
   type FeaturesResponse,
   type PeerLoopbackEndpointCandidateV1,
 } from '@happier-dev/protocol';
-import type { PeerTcpTunnelRelayEnvelope, WorkspaceContentPolicyV1 } from '@happier-dev/protocol';
+import type { WorkspaceContentPolicyV1 } from '@happier-dev/protocol';
 import {
   startPeerMediationLoopback,
   type StartPeerMediationLoopbackInput,
   type StartedPeerMediationLoopback,
 } from '../peer/mediation/rpc/startLoopback';
 import { createMachineLiveStreamRelayTerminator } from '../peer/mediation/stream';
-import { registerPeerTcpTunnelRelayTerminator } from '../peer/mediation/tunnel/relay';
+import { registerMachinePeerTcpTunnelRelayRuntime } from './registerMachinePeerTcpTunnelRelayRuntime';
 import { createDaemonPeerMediationObservabilityRuntime } from './peerMediationObservabilityRuntime';
 import type { DaemonPeerMediationObservabilityEmitter } from '../peer/mediation/observability/events';
-import { connectPeerTcpTunnelTcp } from '../peer/mediation/tunnel/open';
+import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrantV1';
 import type { DaemonMachineIrohRuntime } from '../peer/iroh/daemonMachineIrohRuntime';
 import type {
   PeerTcpTunnelVoiceBinaryAppendConsumer,
   PeerTcpTunnelVoiceBinaryTerminalConsumer,
 } from '../peer/mediation/tunnel/voiceBinaryAppend';
+import type { RegisterPeerTcpTunnelRelayTerminatorOptions } from '../peer/mediation/tunnel/relay';
 import type { NormalizedLocalServiceInventorySnapshot } from '../local/services/inventory/scanner';
 import { projectProviderDiscoveryCandidates } from '@/providers/discovery/project';
 import { createProviderLocalInstallationReader } from '@/providers/discovery/installations';
@@ -130,6 +135,9 @@ import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
 import type { RpcActionExecutor } from '@/rpc/handlers/_actionDispatchAdapter';
 import type { SessionSpawnDirectTargetTransport } from '@/session/actions/createCliActionDeps';
 import type { ExternalActionIngressOwner } from '@/rpc/handlers/externalAction';
+import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
+import { createWorkflowRecoveryTriggers } from '@/daemon/workflows/recoveryTriggers';
+import type { WorkflowRecoveryTrigger } from '@/daemon/workflows/recovery';
 
 function readAccountSettingsChangedHintVersion(update: unknown): number | null {
   if (!update || typeof update !== 'object') return null;
@@ -233,16 +241,26 @@ type PeerMediationMachineRpcBootstrapConfig = Readonly<{
     }>) => MachineLiveStreamControlLeaseV1 | null;
   }>;
   startPeerMediationLoopbackServer?: StartPeerMediationLoopbackInput['startPeerMediationLoopbackServer'];
+  /**
+   * Target-daemon owner for the provider-broker application stream. The
+   * resolver is deliberately supplied by the runtime composition root: it
+   * must bind an already admitted Session/Run provider operation to the
+   * existing managed-service endpoint and never infer a destination from the
+   * handshake. Keeping this callback optional preserves fail-closed startup
+   * until that owner is live.
+   */
+  resolveProviderBrokerApplicationTarget?: NonNullable<
+    StartPeerMediationLoopbackInput['irohMachineAdmission']
+  >['resolveProviderBrokerApplicationTarget'];
+  resolveExternalProviderBrokerApplicationTarget?: RegisterPeerTcpTunnelRelayTerminatorOptions['resolveProviderBrokerApplicationTarget'];
+  resolveRunnerBrokerReadinessApplicationTarget?: NonNullable<
+    StartPeerMediationLoopbackInput['irohMachineAdmission']
+  >['resolveRunnerBrokerReadinessApplicationTarget'];
 }>;
 
 type PeerTcpTunnelRelayBootstrapContext = Readonly<{
   accountId: string;
   serverFeatures: FeaturesResponse;
-}>;
-
-type SavePreparedTargetLocalMetadataInput = Readonly<{
-  remoteSessionId: string;
-  exportMetadataOverlay: Record<string, unknown>;
 }>;
 
 const PEER_MEDIATION_MACHINE_RPC_FEATURES_TIMEOUT_MS = 1_500;
@@ -362,6 +380,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
   acquireWorkspaceSyncMachineIngress?: BootstrapMachineSyncRuntimeParams['acquireWorkspaceSyncMachineIngress'];
   getServerFeaturesSnapshot?: BootstrapMachineSyncRuntimeParams['getServerFeaturesSnapshot'];
+  resolvePeerMediationTrustRoots?: BootstrapMachineSyncRuntimeParams['resolvePeerMediationTrustRoots'];
 }>): Promise<StartedPeerMediationLoopback | null> {
   const serverFeatures = await resolvePeerMediationMachineRpcServerFeatures(params.config);
   if (!serverFeatures) return null;
@@ -378,6 +397,9 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
     machineId: params.machineId,
     ...(accountSigningSeed ? { accountSigningSeed } : {}),
     serverFeatures,
+    ...(params.resolvePeerMediationTrustRoots
+      ? { resolveTrustRoots: params.resolvePeerMediationTrustRoots }
+      : {}),
     rpcHandlerManager: params.connectedApiMachine.getPeerMediationMachineRpcHandlerManager(),
     tunnel: {
       ...(params.voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer: params.voiceBinaryAppendConsumer } : {}),
@@ -400,15 +422,11 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
       irohMachineAdmission: {
         localEndpointId: params.machineIrohRuntime.endpoint.endpointId,
         role: 'acceptor' as const,
+        // Machine-carrier handshake flows only. The provider-broker and runner
+        // readiness branches are admitted by their own resolvers below.
         allowedFlows: ['finite_transfer', 'workspace_sync'] as const,
-        resolveTrustRoots: () => {
-          const current = params.getServerFeaturesSnapshot?.();
-          const features = current?.status === 'ready' ? current.features : serverFeatures;
-          return features.capabilities.machines.peerMediation.grantSigningKeys
-            .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
-            .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }));
-        },
-        resolveApplicationTarget: async ({ handshake }) => {
+        resolveTrustRoots: params.resolvePeerMediationTrustRoots ?? (() => []),
+        resolveApplicationTarget: async ({ handshake, signal }) => {
           if (handshake.flow === 'finite_transfer') {
             return params.directPeerServerLifecycle
               ? { port: await params.directPeerServerLifecycle.ensureListening() }
@@ -420,9 +438,23 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
             operationId: handshake.operationId,
             sourceMachineId: handshake.initiator.machineId,
             targetMachineId: handshake.target.machineId,
+            expiresAtMs: handshake.grant.payload.exp,
+            signal,
           });
           return { port: ingress.port, localCapability: ingress.localCapability };
         },
+        ...(params.config?.resolveProviderBrokerApplicationTarget
+          ? {
+              resolveProviderBrokerApplicationTarget:
+                params.config.resolveProviderBrokerApplicationTarget,
+            }
+          : {}),
+        ...(params.config?.resolveRunnerBrokerReadinessApplicationTarget
+          ? {
+              resolveRunnerBrokerReadinessApplicationTarget:
+                params.config.resolveRunnerBrokerReadinessApplicationTarget,
+            }
+          : {}),
       },
     } : {}),
   });
@@ -439,19 +471,6 @@ async function resolvePeerTcpTunnelRelayBootstrapContext(params: Readonly<{
     ?? resolveAccountIdFromCredentials(params.credentials);
   if (!accountId) return null;
   return { accountId, serverFeatures };
-}
-
-function resolvePeerTcpTunnelRelayTrustRoots(input: Readonly<{
-  serverFeatures: FeaturesResponse;
-  nowMs: number;
-}>): Array<Readonly<{ keyId: string; publicKeyBase64Url: string; expiresAt: number | null }>> {
-  return input.serverFeatures.capabilities.machines.peerMediation.grantSigningKeys
-    .filter((key) => key.expiresAt == null || key.expiresAt > input.nowMs)
-    .map((key) => ({
-      keyId: key.keyId,
-      publicKeyBase64Url: key.publicKey,
-      expiresAt: key.expiresAt,
-    }));
 }
 
 export type BootstrapMachineSyncRuntimeResult = Readonly<{
@@ -582,7 +601,6 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   awaitAgentSessionOpen?: SessionLifecycleMachineDeps['awaitAgentSessionOpen'];
   isSessionAlreadyRunning: (sessionId: string) => Promise<boolean>;
   loadLocalSessionMetadataForHandoff: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
-  savePreparedTargetLocalMetadata: (input: SavePreparedTargetLocalMetadataInput) => Promise<void>;
   beforeShutdown: () => Promise<void>;
   requestShutdown: (source: 'happier-app', errorMessage?: string) => void;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
@@ -593,6 +611,7 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
     operationId: string;
     sourceMachineId: string;
     targetMachineId: string;
+    expiresAtMs?: number;
     signal?: AbortSignal;
   }>) => Promise<Readonly<{
     port: number;
@@ -605,6 +624,8 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   connectedServiceQuotasLoopHandle: ConnectedServiceQuotasLoopHandle | null;
   daemonServerWorkScheduler: DaemonServerWorkScheduler;
   retryTemporaryThrottleNow?: (input: Readonly<{ sessionId: string }>) => Promise<unknown> | unknown;
+  readTemporaryThrottleRecovery?: (sessionId: string) => Readonly<{ issueFingerprint: string; armedAtMs: number }> | null;
+  cancelTemporaryThrottleRecovery?: (input: Readonly<{ sessionId: string; issueFingerprint?: string; armedAtMs?: number }>) => Promise<unknown> | unknown;
   cancelConnectedServiceRuntimeAuthRecovery?: (input: Readonly<{
     sessionId: string;
     attemptId: string;
@@ -615,6 +636,7 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   subscribeConnectedAccountInvalidations?: (listener: () => void) => () => void;
   startVoiceInferenceWorkerForMachine: (machineId: string, accountId: string | null) => Promise<VoiceInferenceWorkerHandle | null>;
   getServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
+  resolvePeerMediationTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
   peerMediationMachineRpc?: PeerMediationMachineRpcBootstrapConfig;
   inactiveUsageLimitRecoveryStore?: DurableBackoffRecoveryStore<UsageLimitRecoveryIntent>;
   readLocalServiceInventorySnapshot?: () => Promise<NormalizedLocalServiceInventorySnapshot | null>;
@@ -624,6 +646,9 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   resolveManagedPurposeBindingIntent?: Parameters<
     typeof createRuntimeProviderModelManagementServices
   >[0]['resolveManagedPurposeBindingIntent'];
+  openTeamDirect?: Parameters<
+    typeof createRuntimeProviderModelManagementServices
+  >[0]['openTeamDirect'];
   createAgentCatalogObservation?: (
     infrastructure: Pick<
       Parameters<typeof createAgentProviderCatalogObservationService>[0],
@@ -639,6 +664,8 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
     operations: ExternalSessionHostOperationSet,
   ) => Promise<ExternalSessionHostOperationInstallation>;
   externalActionIngressOwner?: ExternalActionIngressOwner;
+  prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
+  recoverWorkflowRuns?: (trigger: WorkflowRecoveryTrigger) => Promise<void>;
 }>;
 
 export async function bootstrapMachineSyncRuntime(
@@ -664,6 +691,9 @@ export async function bootstrapMachineSyncRuntime(
   }
 
   const connectedApiMachine = await params.createConnectedApiMachine(params.machine);
+  const workflowRecoveryTriggers = params.recoverWorkflowRuns
+    ? createWorkflowRecoveryTriggers(params.recoverWorkflowRuns)
+    : null;
   let automationWorker: AutomationWorkerHandle | null = null;
   let externalSessionPluginAdmissionOwner:
     ExternalSessionPluginAdmissionOwner | undefined;
@@ -753,6 +783,9 @@ export async function bootstrapMachineSyncRuntime(
   });
   const directTransferExportHandlers = directPeerServerLifecycle
     ? {
+        releaseExportSession: (transferId: string) => {
+          directPeerServerLifecycle.clearPublishedTransfer(transferId);
+        },
         prepareExportSession: async (
           input:
             | Readonly<{
@@ -1054,6 +1087,7 @@ export async function bootstrapMachineSyncRuntime(
               params.resolveManagedPurposeBindingIntent,
           }
         : {}),
+      ...(params.openTeamDirect ? { openTeamDirect: params.openTeamDirect } : {}),
     });
     providerLocalInstallationReader = createProviderLocalInstallationReader({
       ...providerLocalToolContext,
@@ -1121,12 +1155,6 @@ export async function bootstrapMachineSyncRuntime(
         stopSession: params.stopSession,
         isSessionActive: params.isSessionAlreadyRunning,
         loadLocalSessionMetadata: params.loadLocalSessionMetadataForHandoff,
-        savePreparedTargetLocalMetadata: async ({ remoteSessionId, exportMetadataOverlay }) => {
-          await params.savePreparedTargetLocalMetadata({
-            remoteSessionId,
-            exportMetadataOverlay,
-          });
-        },
         requestShutdown: () => {
           void params.beforeShutdown().finally(() => params.requestShutdown('happier-app'));
         },
@@ -1172,6 +1200,8 @@ export async function bootstrapMachineSyncRuntime(
         },
         ...(agentCatalogObservation ? { agentCatalogObservation } : {}),
         emitExternalSessionTranscriptUpdate: (payload) => connectedApiMachine.emitExternalSessionTranscriptUpdate(payload),
+        emitExternalSessionSourceUnavailableOccurrence: (payload) =>
+          connectedApiMachine.emitExternalSessionSourceUnavailableOccurrence(payload),
         ...(params.deviceLocalSecretStorage
           ? { deviceLocalSecretStorage: params.deviceLocalSecretStorage }
           : {}),
@@ -1184,6 +1214,39 @@ export async function bootstrapMachineSyncRuntime(
         installExternalSessionHostOperations:
           params.installExternalSessionHostOperations,
         currentMachineId: params.machineId,
+        ...(params.prepareRunTeamCredentialProviderBinding
+          ? { prepareRunTeamCredentialProviderBinding: params.prepareRunTeamCredentialProviderBinding }
+          : {}),
+        ...(storedCredentials
+          ? {
+              resolveExecutionRunLiveBrokerAuthority: async (input) => {
+                const snapshot = params.getServerFeaturesSnapshot?.();
+                const target = await resolveSessionTransportContext({
+                  credentials: storedCredentials,
+                  idOrPrefix: input.sessionId,
+                  ...(snapshot ? { serverFeaturesSnapshot: snapshot } : {}),
+                });
+                if (!target.ok || target.sessionId !== input.sessionId) {
+                  return { status: 'not_current' as const, reason: 'runtime_unavailable' as const };
+                }
+                const rpc = {
+                  token: storedCredentials.token,
+                  sessionId: target.sessionId,
+                  method: `${target.sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE_V1}`,
+                  request: {
+                    v: 1,
+                    executionRunId: input.executionRunId,
+                    ...(input.expectedIntent !== undefined ? { expectedIntent: input.expectedIntent } : {}),
+                    expectedOccurrenceId: input.expectedOccurrenceId,
+                  },
+                };
+                const response = target.mode === 'plain'
+                  ? await callSessionRpc({ ...rpc, mode: 'plain' })
+                  : await callSessionRpc({ ...rpc, mode: 'e2ee', ctx: target.ctx });
+                return SessionExecutionRunBrokerAuthorityResponseV1Schema.parse(response);
+              },
+            }
+          : {}),
         ...(params.externalActionIngressOwner
           ? { externalActionIngressOwner: params.externalActionIngressOwner }
           : {}),
@@ -1242,6 +1305,12 @@ export async function bootstrapMachineSyncRuntime(
         ...(params.retryTemporaryThrottleNow
           ? { retryTemporaryThrottleNow: params.retryTemporaryThrottleNow }
           : {}),
+        ...(params.readTemporaryThrottleRecovery
+          ? { readTemporaryThrottleRecovery: params.readTemporaryThrottleRecovery }
+          : {}),
+        ...(params.cancelTemporaryThrottleRecovery
+          ? { cancelTemporaryThrottleRecovery: params.cancelTemporaryThrottleRecovery }
+          : {}),
       },
     );
     externalSessionPluginAdmissionOwner =
@@ -1280,6 +1349,9 @@ export async function bootstrapMachineSyncRuntime(
         : {}),
       ...(params.getServerFeaturesSnapshot
         ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
+        : {}),
+      ...(params.resolvePeerMediationTrustRoots
+        ? { resolvePeerMediationTrustRoots: params.resolvePeerMediationTrustRoots }
         : {}),
       ...(voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer } : {}),
       ...(voiceBinaryTerminalConsumer ? { voiceBinaryTerminalConsumer } : {}),
@@ -1326,46 +1398,34 @@ export async function bootstrapMachineSyncRuntime(
     });
     if (peerTcpTunnelRelayContext) {
       const nowMs = params.peerMediationMachineRpc?.nowMs ?? (() => Date.now());
-      const serverRoutedCaps = peerTcpTunnelRelayContext.serverFeatures.capabilities.machines.tunnel.serverRouted;
-      const relayAuthorizationTrustRoots = resolvePeerTcpTunnelRelayTrustRoots({
-        serverFeatures: peerTcpTunnelRelayContext.serverFeatures,
-        nowMs: nowMs(),
-      });
-      if (relayAuthorizationTrustRoots.length > 0) {
-        let cleanupRelaySubscription: (() => void) | null = null;
-        const relaySocket = {
-          on: (_event: string, handler: (payload?: unknown) => void | Promise<void>) => (
-            cleanupRelaySubscription = connectedApiMachine.onPeerTcpTunnelRelayEnvelope((payload) => {
-              void Promise.resolve(handler(payload)).catch((error) => {
-                logger.warn('[DAEMON RUN] Peer TCP tunnel relay handler failed', error);
-              });
-            })
-          ),
-          emit: (_event: string, payload: unknown) => {
-            connectedApiMachine.sendPeerTcpTunnelRelayEnvelope(payload as PeerTcpTunnelRelayEnvelope);
-          },
-        };
-        registerPeerTcpTunnelRelayTerminator({
+      const relayRuntime = registerMachinePeerTcpTunnelRelayRuntime({
           accountId: peerTcpTunnelRelayContext.accountId,
           machineId: params.machineId,
-          socket: relaySocket,
+          serverFeatures: peerTcpTunnelRelayContext.serverFeatures,
           nowMs,
-          relayAuthorizationTrustRoots,
-          connectTcp: connectPeerTcpTunnelTcp,
-          maxFrameBytes: serverRoutedCaps.maxFrameBytes,
-          maxBinaryHeaderBytes: serverRoutedCaps.maxBinaryHeaderBytes,
-          maxRawPayloadBytes: serverRoutedCaps.maxRawPayloadBytes,
-          maxFramedMessageBytes: serverRoutedCaps.maxFramedMessageBytes,
-          maxActiveTunnels: serverRoutedCaps.maxActiveTunnelsPerSocket,
-          substreamCaps: serverRoutedCaps.substreams,
+          eventPort: {
+            subscribe: (listener) => connectedApiMachine.onPeerTcpTunnelRelayEnvelope(listener),
+            emit: (payload) => connectedApiMachine.sendPeerTcpTunnelRelayEnvelope(payload),
+          },
           observability: peerMediationObservabilityEmitter,
           ...(voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer } : {}),
           ...(voiceBinaryTerminalConsumer ? { voiceBinaryTerminalConsumer } : {}),
+          ...(params.peerMediationMachineRpc?.resolveExternalProviderBrokerApplicationTarget
+            ? {
+                resolveProviderBrokerApplicationTarget:
+                  params.peerMediationMachineRpc.resolveExternalProviderBrokerApplicationTarget,
+              }
+            : {}),
+          onHandlerError: (error) => {
+            logger.warn('[DAEMON RUN] Peer TCP tunnel relay handler failed', error);
+          },
         });
+      if (relayRuntime) {
         cleanupPeerTcpTunnelRelay = () => {
-          cleanupRelaySubscription?.();
-          cleanupRelaySubscription = null;
           cleanupPeerTcpTunnelRelay = null;
+          void relayRuntime.dispose().catch((error) => {
+            logger.warn('[DAEMON RUN] Failed to retire peer TCP tunnel relay', error);
+          });
         };
       }
     }
@@ -1676,12 +1736,22 @@ export async function bootstrapMachineSyncRuntime(
         }
       }
     };
-    resumeMachineConnectionPublications = refreshMachineConnectionPublications;
+    resumeMachineConnectionPublications = async () => {
+      await refreshMachineConnectionPublications();
+      if (params.isShuttingDown()) return;
+      await workflowRecoveryTriggers?.onResumed().catch((error) => {
+        logger.warn('[DAEMON RUN] Workflow custody resume recovery failed; pending custody retained', error);
+      });
+    };
     const handleMachineConnected = async (): Promise<void> => {
       await refreshMachineConnectionPublications();
       if (params.isShuttingDown()) return;
       await recoverPendingSessionActivationsAfterConnect().catch((error) => {
         logger.warn('[DAEMON RUN] Pending session activation reconnect scan failed; waiting custody retained', error);
+      });
+      if (params.isShuttingDown()) return;
+      await workflowRecoveryTriggers?.onConnected().catch((error) => {
+        logger.warn('[DAEMON RUN] Workflow custody startup/reconnect recovery failed; pending custody retained', error);
       });
     };
     connectedApiMachine.connect({

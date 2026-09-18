@@ -1,7 +1,10 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES,
   ConnectedAccountServiceKeySchema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   ConnectedServiceCredentialRevisionV1Schema,
   ConnectedServiceUxDiagnosticCodeV1Schema,
   ConnectedServiceMaterializationIdentityV1Schema,
@@ -9,7 +12,7 @@ import {
   isConnectedServiceCredentialHealthStatusUsable,
   normalizeConnectedServiceCredentialHealthStatus,
   type ConnectedServiceUxDiagnosticV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedAccountServiceKey,
   type ConnectedServiceMaterializationIdentityV1,
   type QualifiedConnectedAccountGroupV4,
@@ -68,7 +71,7 @@ import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/r
 
 type ConnectedServiceId = ConnectedAccountServiceKey;
 
-type ConnectedServiceBinding = ConnectedServiceBindingsV1['bindingsByServiceId'][string];
+type ConnectedServiceBinding = ConnectedServiceBindingsV2['bindingsByServiceId'][string];
 type SessionConnectedServiceAuthSwitchFailure = Extract<
   SessionConnectedServiceAuthSwitchResult,
   Readonly<{ ok: false }>
@@ -240,7 +243,7 @@ export type SessionConnectedServiceAuthSwitchResult =
   | Readonly<{
       ok: true;
       action: 'unchanged' | 'restart_requested' | 'hot_applied' | 'metadata_updated';
-      normalizedBindings: ConnectedServiceBindingsV1;
+      normalizedBindings: ConnectedServiceBindingsV2;
       continuityByServiceId: Readonly<Record<string, SessionConnectedServiceSwitchContinuity['mode']>>;
       warnings: readonly string[];
       verificationByServiceId?: AcceptedConnectedServiceAccountVerificationByServiceId;
@@ -454,7 +457,7 @@ function hotApplyAlreadyAppliedAnyService(input: Readonly<{
 async function settleFailedRestartAttempt(input: Readonly<{
   persistSessionBindings: SwitchSessionConnectedServiceAuthInput['persistSessionBindings'];
   sessionId: string;
-  previousBindings: ConnectedServiceBindingsV1;
+  previousBindings: ConnectedServiceBindingsV2;
   previousSpawnOptions: TrackedSession['spawnOptions'];
   tracked: TrackedSession;
   reason: ConnectedServiceSessionAuthSwitchReason;
@@ -503,10 +506,13 @@ function isPostSwitchRecoveryFailure(result: Readonly<{ ok: false; errorCode?: s
 export type SessionConnectedServiceAuthSwitchRequest = Readonly<{
   sessionId: string;
   agentId: string;
-  bindings: ConnectedServiceBindingsV1;
+  bindings: ConnectedServiceBindingsV2;
   rematerializeServiceId?: ConnectedServiceId;
   expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
   accountSettingsVersionHint?: number;
+  teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+  previousTeamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+  teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
 }>;
 
 type ConnectedServiceProfilesApi = Readonly<{
@@ -520,11 +526,14 @@ type ConnectedServiceProfilesApi = Readonly<{
 }>;
 
 type EffectiveBinding = Readonly<{
-  source: 'native' | 'connected';
-  selection: 'native' | 'profile' | 'group';
+  source: 'native' | 'connected' | 'team_resource';
+  selection: 'native' | 'profile' | 'group' | 'team_resource';
   serviceId: ConnectedServiceId;
   profileId: string | null;
   groupId: string | null;
+  resourceId?: string;
+  deliveryMode?: Extract<ConnectedServiceBinding, Readonly<{ source: 'team_resource' }>>['deliveryMode'];
+  disclosedMember?: Extract<ConnectedServiceBinding, Readonly<{ source: 'team_resource' }>>['disclosedMember'];
 }>;
 type ConnectedServiceGroupRuntimeMetadata = Readonly<{
   groupId: string;
@@ -543,8 +552,8 @@ export type SessionConnectedServiceRuntimeAuthSelectionMaterializerInput = Reado
   serviceId: ConnectedServiceId;
   previous: EffectiveBinding | null;
   next: EffectiveBinding;
-  previousBindings: ConnectedServiceBindingsV1;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  previousBindings: ConnectedServiceBindingsV2;
+  normalizedBindings: ConnectedServiceBindingsV2;
   groupMetadata?: ConnectedServiceGroupRuntimeMetadata;
 }>;
 
@@ -552,7 +561,7 @@ export type SwitchContinuationRecoveryInput = Readonly<{
   tracked: TrackedSession;
   sessionId: string;
   attemptId: string;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   serviceIds: ReadonlySet<ConnectedServiceId>;
   action: 'hot_applied' | 'restart_requested';
   switchReason?: ConnectedServiceSessionAuthSwitchReason;
@@ -570,7 +579,7 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
   resolveInactiveSession?(input: Readonly<{ sessionId: string }>): Promise<Readonly<{
     /** Absent when the Session declares no Agent this daemon has installed. */
     agentId: CatalogAgentId | null;
-    connectedServices: ConnectedServiceBindingsV1;
+    connectedServices: ConnectedServiceBindingsV2;
     connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1 | null;
     vendorResumeId?: string | null;
     /** Session working directory — drives the source-aware resume-reachability probe at continuity. */
@@ -587,8 +596,8 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
     serviceId: ConnectedServiceId;
     previous: EffectiveBinding | null;
     next: EffectiveBinding;
-    previousBindings: ConnectedServiceBindingsV1;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    previousBindings: ConnectedServiceBindingsV2;
+    normalizedBindings: ConnectedServiceBindingsV2;
     connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1 | null;
     vendorResumeId?: string | null;
     runtimeAuthSelection?: unknown;
@@ -607,7 +616,7 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
   restartSession(tracked: TrackedSession): Promise<void>;
 	  hotApply(input: Readonly<{
 	    tracked: TrackedSession;
-	    normalizedBindings: ConnectedServiceBindingsV1;
+	    normalizedBindings: ConnectedServiceBindingsV2;
 	    serviceIds?: ReadonlySet<ConnectedServiceId>;
 	    runtimeAuthSelectionsByServiceId?: RuntimeAuthSelectionsByServiceId;
 	  }>): Promise<
@@ -625,7 +634,7 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
 	  >;
   persistSessionBindings?(input: Readonly<{
     sessionId: string;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    normalizedBindings: ConnectedServiceBindingsV2;
     connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1 | null;
   }>): Promise<void>;
   recoverAfterRuntimeAuthSwitch?(input: SwitchPostAuthRecoveryInput): Promise<SwitchPostAuthRecoveryResult>;
@@ -640,7 +649,7 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
       profileId: string | null;
       groupId?: string | null;
     }>;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    normalizedBindings: ConnectedServiceBindingsV2;
     action: 'hot_applied' | 'restart_requested';
     runtimeAuthSelection?: unknown;
   }>): Promise<ConnectedServiceAccountTransitionVerificationResult>;
@@ -651,7 +660,7 @@ export type SwitchSessionConnectedServiceAuthInput = Readonly<{
   registerHotApplyTargets(input: Readonly<{
     tracked: TrackedSession;
     runtimeAuthSelectionsByServiceId: RuntimeAuthSelectionsByServiceId;
-    acceptedConnectedServicesBindingsRaw: ConnectedServiceBindingsV1;
+    acceptedConnectedServicesBindingsRaw: ConnectedServiceBindingsV2;
     acceptedConnectedServiceSelectionsEnv: Readonly<Record<string, string>>;
   }>): void | Promise<void>;
   emitSessionEvent(sessionId: string, event: unknown): void | Promise<void>;
@@ -671,7 +680,7 @@ type RollbackPersistedSessionBindingsResult =
 async function rollbackPersistedSessionBindings(input: Readonly<{
   persistSessionBindings: SwitchSessionConnectedServiceAuthInput['persistSessionBindings'];
   sessionId: string;
-  previousBindings: ConnectedServiceBindingsV1;
+  previousBindings: ConnectedServiceBindingsV2;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1 | null;
 }>): Promise<RollbackPersistedSessionBindingsResult> {
   if (!input.persistSessionBindings) return { ok: true };
@@ -904,6 +913,18 @@ function toEffectiveBinding(
       groupId: null,
     };
   }
+  if (binding.source === 'team_resource') {
+    return {
+      source: 'team_resource',
+      selection: 'team_resource',
+      serviceId,
+      profileId: null,
+      groupId: null,
+      resourceId: binding.resourceId,
+      deliveryMode: binding.deliveryMode,
+      ...(binding.disclosedMember ? { disclosedMember: binding.disclosedMember } : {}),
+    };
+  }
   if (binding.selection === 'group') {
     return {
       source: 'connected',
@@ -927,7 +948,10 @@ function effectiveBindingChanged(previous: EffectiveBinding | null, next: Effect
   return previous.source !== next.source
     || previous.selection !== next.selection
     || previous.profileId !== next.profileId
-    || previous.groupId !== next.groupId;
+    || previous.groupId !== next.groupId
+    || previous.resourceId !== next.resourceId
+    || previous.deliveryMode !== next.deliveryMode
+    || !isDeepStrictEqual(previous.disclosedMember, next.disclosedMember);
 }
 
 function buildConnectedServiceChildSelection(input: Readonly<{
@@ -984,7 +1008,7 @@ function buildConnectedServiceChildSelection(input: Readonly<{
 
 function buildTrackedSessionEnvironmentVariables(input: Readonly<{
   existingEnvironmentVariables?: Record<string, string>;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   runtimeAuthSelectionsByServiceId?: RuntimeAuthSelectionsByServiceId;
   groupMetadataByServiceId?: ReadonlyMap<ConnectedServiceId, ConnectedServiceGroupRuntimeMetadata>;
 }>): Record<string, string> | undefined {
@@ -1263,20 +1287,20 @@ async function normalizeRequestedBindings(input: Readonly<{
 }>): Promise<
   | Readonly<{
     ok: true;
-    normalized: ConnectedServiceBindingsV1;
+    normalized: ConnectedServiceBindingsV2;
     effectiveByServiceId: ReadonlyMap<ConnectedServiceId, EffectiveBinding>;
     groupMetadataByServiceId: ReadonlyMap<ConnectedServiceId, ConnectedServiceGroupRuntimeMetadata>;
   }>
   | SessionConnectedServiceAuthSwitchFailure
 > {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(input.request.bindings);
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(input.request.bindings);
   if (!parsed.success) {
     return { ok: false, errorCode: 'unsupported_service' };
   }
 
   const effectiveByServiceId = new Map<ConnectedServiceId, EffectiveBinding>();
   const groupMetadataByServiceId = new Map<ConnectedServiceId, ConnectedServiceGroupRuntimeMetadata>();
-  const normalizedBindingsByServiceId: ConnectedServiceBindingsV1['bindingsByServiceId'] = {};
+  const normalizedBindingsByServiceId: ConnectedServiceBindingsV2['bindingsByServiceId'] = {};
   const supportedServiceIds = resolveCatalogAgentConnectedAccountServiceIds(input.agentId);
 
   for (const [serviceIdRaw, binding] of Object.entries(parsed.data.bindingsByServiceId)) {
@@ -1297,6 +1321,21 @@ async function normalizeRequestedBindings(input: Readonly<{
         serviceId,
         profileId: null,
         groupId: null,
+      });
+      continue;
+    }
+
+    if (binding.source === 'team_resource') {
+      normalizedBindingsByServiceId[serviceId] = binding;
+      effectiveByServiceId.set(serviceId, {
+        source: 'team_resource',
+        selection: 'team_resource',
+        serviceId,
+        profileId: null,
+        groupId: null,
+        resourceId: binding.resourceId,
+        deliveryMode: binding.deliveryMode,
+        ...(binding.disclosedMember ? { disclosedMember: binding.disclosedMember } : {}),
       });
       continue;
     }
@@ -1421,7 +1460,7 @@ async function normalizeRequestedBindings(input: Readonly<{
   return {
     ok: true,
     normalized: {
-      v: 1,
+      v: 2,
       bindingsByServiceId: normalizedBindingsByServiceId,
     },
     effectiveByServiceId,
@@ -1429,9 +1468,9 @@ async function normalizeRequestedBindings(input: Readonly<{
   };
 }
 
-function readConnectedServiceBindingsOrEmpty(raw: unknown): ConnectedServiceBindingsV1 {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(raw);
-  return parsed.success ? parsed.data : { v: 1, bindingsByServiceId: {} };
+function readConnectedServiceBindingsOrEmpty(raw: unknown): ConnectedServiceBindingsV2 {
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(raw);
+  return parsed.success ? parsed.data : { v: 2, bindingsByServiceId: {} };
 }
 
 function readConnectedServiceMaterializationIdentity(value: unknown): ConnectedServiceMaterializationIdentityV1 | null {
@@ -1439,13 +1478,14 @@ function readConnectedServiceMaterializationIdentity(value: unknown): ConnectedS
   return parsed.success ? parsed.data : null;
 }
 
-function bindingsRequireMaterializationIdentity(bindings: ConnectedServiceBindingsV1): boolean {
-  return Object.values(bindings.bindingsByServiceId).some((binding) => binding.source === 'connected');
+function bindingsRequireMaterializationIdentity(bindings: ConnectedServiceBindingsV2): boolean {
+  return Object.values(bindings.bindingsByServiceId)
+    .some((binding) => binding.source === 'connected' || binding.source === 'team_resource');
 }
 
 function resolveMaterializationIdentityForAcceptedBindings(input: Readonly<{
   existingIdentity: unknown;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
 }>): ConnectedServiceMaterializationIdentityV1 | null {
   const existing = readConnectedServiceMaterializationIdentity(input.existingIdentity);
   if (existing) return existing;
@@ -1590,13 +1630,13 @@ async function maybeMaterializeRuntimeAuthSelection(input: Readonly<{
   serviceId: ConnectedServiceId;
   previous: EffectiveBinding | null;
   next: EffectiveBinding;
-  previousBindings: ConnectedServiceBindingsV1;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  previousBindings: ConnectedServiceBindingsV2;
+  normalizedBindings: ConnectedServiceBindingsV2;
   groupMetadataByServiceId?: ReadonlyMap<ConnectedServiceId, ConnectedServiceGroupRuntimeMetadata>;
   mode: SessionConnectedServiceRuntimeAuthSelectionMaterializerMode;
   runtimeAuthApplyReason?: ConnectedServiceRuntimeAuthApplyReason;
 }>): Promise<unknown | null> {
-  if (!input.materializeRuntimeAuthSelection || input.next.source !== 'connected') return null;
+  if (!input.materializeRuntimeAuthSelection || input.next.source === 'native') return null;
   return await input.materializeRuntimeAuthSelection({
     mode: input.mode,
     ...(input.runtimeAuthApplyReason ? { runtimeAuthApplyReason: input.runtimeAuthApplyReason } : {}),
@@ -1636,7 +1676,7 @@ async function rematerializeUnchangedConnectedServiceBinding(input: Readonly<{
   trackedAgentId: CatalogAgentId;
   previousByServiceId: ReadonlyMap<ConnectedServiceId, EffectiveBinding>;
   nextByServiceId: ReadonlyMap<ConnectedServiceId, EffectiveBinding>;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   groupMetadataByServiceId: ReadonlyMap<ConnectedServiceId, ConnectedServiceGroupRuntimeMetadata>;
   resolveContinuity: SwitchSessionConnectedServiceAuthInput['resolveContinuity'];
   materializeRuntimeAuthSelection: SwitchSessionConnectedServiceAuthInput['materializeRuntimeAuthSelection'];
@@ -1987,8 +2027,8 @@ async function applyConnectedServiceAuthGenerationToTrackedSessionWithGroupConve
         ...(connectedServiceMaterializationIdentityV1
           ? { connectedServiceMaterializationIdentityV1 }
           : {}),
-        ...(typeof inactive.vendorResumeId === 'string' && inactive.vendorResumeId.trim()
-          ? { vendorResumeId: inactive.vendorResumeId.trim() }
+        ...(readNonBlankOpaqueIdentifier(inactive.vendorResumeId)
+          ? { vendorResumeId: inactive.vendorResumeId as string }
           : {}),
         // Inactive switch (tracked=null): forward the session cwd + persisted hint so the daemon
         // adapter can reconstruct the target materialized root and prove resume reachability.

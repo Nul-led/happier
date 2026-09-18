@@ -53,7 +53,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'session', sessionId: 'session-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices: null,
@@ -75,7 +75,7 @@ describe('direct Provider launch lifecycle', () => {
     expect(cleanupOnFailure).toHaveBeenCalledOnce();
   });
 
-  it('materializes and commit-revalidates the exact qualified binding before returning scoped runtime input', async () => {
+  it('materializes a detached execution-run binding without inventing a Session identity', async () => {
     const events: string[] = [];
     const cleanupOnFailure = vi.fn(() => events.push('failure-cleanup'));
     const cleanupOnExit = vi.fn(() => events.push('exit-cleanup'));
@@ -133,7 +133,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'execution_run', executionRunId: 'run-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices: null,
@@ -216,7 +216,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'session', sessionId: 'session-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices: null,
@@ -254,7 +254,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'session', sessionId: 'session-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices: null,
@@ -305,7 +305,7 @@ describe('direct Provider launch lifecycle', () => {
       takeCleanupOnExit: vi.fn(() => vi.fn()),
     };
     const connectedServices = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
         'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'native-auth' },
         github: { source: 'connected' as const, selection: 'profile' as const, profileId: 'github' },
@@ -321,7 +321,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'session', sessionId: 'session-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices,
@@ -336,7 +336,7 @@ describe('direct Provider launch lifecycle', () => {
       ok: true,
       kind: 'provider',
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           github: {
             source: 'connected',
@@ -364,7 +364,7 @@ describe('direct Provider launch lifecycle', () => {
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
       agentId: 'codex',
-      sessionId: 'session-a',
+      scope: { kind: 'session', sessionId: 'session-a' },
       previousBinding: null,
       confirmation: null,
       connectedServices: null,

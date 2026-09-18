@@ -78,6 +78,8 @@ export type PeerMediationLoopbackAppOptions = Readonly<{
   expected: PeerMediationLoopbackExpectedBinding;
   expectedByFlow?: Partial<Record<PeerFlowKindV1, PeerMediationLoopbackExpectedBinding>>;
   trustRoots: readonly DirectRouteGrantTrustRoot[];
+  /** Resolves current authenticated Home signing roots for each new admission. */
+  resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
   bodyLimitBytes?: number;
   rpc?: PeerMachineRpcDirectRuntimeOptions;
   stream?: PeerMachineLiveStreamDirectRuntimeOptions;
@@ -152,6 +154,7 @@ function resolveExpectedBindingForFlow(
 }
 
 export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackAppOptions): FastifyInstance {
+  const resolveTrustRoots = options.resolveTrustRoots ?? (() => options.trustRoots);
   const configuredBodyLimit = typeof options.bodyLimitBytes === 'number' && Number.isFinite(options.bodyLimitBytes)
     ? Math.floor(options.bodyLimitBytes)
     : PEER_MEDIATION_LOOPBACK_BODY_LIMIT_BYTES;
@@ -191,7 +194,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
 
     const verification = verifyDirectRouteGrantV1({
       grant: parsedRequest.data.grant,
-      trustRoots: options.trustRoots,
+      trustRoots: resolveTrustRoots(),
       nowMs: options.nowMs(),
       expected: {
         accountId: expected.accountId,
@@ -250,6 +253,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
       expected,
       observability: directFlowObserverFor(expected),
       trustRoots: options.trustRoots,
+      resolveTrustRoots,
     });
   }
 
@@ -261,6 +265,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
       expected,
       observability: directFlowObserverFor(expected),
       trustRoots: options.trustRoots,
+      resolveTrustRoots,
     });
   }
 
@@ -277,6 +282,7 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
         accountPublicKey: expected.accountPublicKey,
       },
       trustRoots: options.trustRoots,
+      resolveTrustRoots,
     });
   }
 

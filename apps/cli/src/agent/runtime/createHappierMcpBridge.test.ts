@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createHappierMcpBridge } from '@/agent/runtime/createHappierMcpBridge'
+import { normalizeActionsSettingsV1 } from '@happier-dev/protocol'
 
 const { requireJavaScriptRuntimeExecutableMock } = vi.hoisted(() => ({
   requireJavaScriptRuntimeExecutableMock: vi.fn(async (): Promise<string> => process.execPath),
@@ -9,6 +10,7 @@ const { requireJavaScriptRuntimeExecutableMock } = vi.hoisted(() => ({
 const { startHappyServerMock } = vi.hoisted(() => ({
   startHappyServerMock: vi.fn(async () => ({
     url: 'http://127.0.0.1:12345',
+    supportedSessionReadActions: [],
     stop: vi.fn(),
   })),
 }))
@@ -50,6 +52,7 @@ describe('createHappierMcpBridge', () => {
     startHappyServerMock.mockReset()
     startHappyServerMock.mockResolvedValue({
       url: 'http://127.0.0.1:12345',
+      supportedSessionReadActions: [],
       stop: vi.fn(),
     })
   })
@@ -160,6 +163,37 @@ describe('createHappierMcpBridge', () => {
     expect(mcpServers.happier.env).toEqual({
       HAPPIER_ACTIONS_SETTINGS_V1: JSON.stringify(accountSettings.actionsSettingsV1),
     })
+  })
+
+  it('uses the explicit scoped Action policy for stdio discovery instead of ambient settings', async () => {
+    const ambient = process.env.HAPPIER_ACTIONS_SETTINGS_V1
+    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+      v: 1,
+      actions: { 'session.list': { enabled: true } },
+    })
+    try {
+      vi.mocked(existsSync).mockImplementation((pathLike) => (
+        String(pathLike).endsWith('/package-dist/mcp/bridges/happierMcpStdioBridge.mjs')
+      ))
+      const scoped = normalizeActionsSettingsV1({
+        v: 1,
+        actions: { 'session.list': { enabled: false } },
+      })
+      const actionsSettingsProvider = Object.freeze({
+        getActionsSettings: () => scoped,
+      })
+
+      const { mcpServers } = await createHappierMcpBridge({} as any, {
+        actionsSettingsProvider,
+      })
+
+      expect(mcpServers.happier.env).toEqual({
+        HAPPIER_ACTIONS_SETTINGS_V1: JSON.stringify(scoped),
+      })
+    } finally {
+      if (ambient === undefined) delete process.env.HAPPIER_ACTIONS_SETTINGS_V1
+      else process.env.HAPPIER_ACTIONS_SETTINGS_V1 = ambient
+    }
   })
 
   it('prefers the source entrypoint when the CLI source-entrypoint e2e flag is enabled', async () => {

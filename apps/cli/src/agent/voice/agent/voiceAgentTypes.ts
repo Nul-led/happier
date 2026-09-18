@@ -7,7 +7,7 @@ import type {
   VoiceAssistantAction,
 } from '@happier-dev/protocol';
 import type { ExecutionRunResumeHandle } from '@happier-dev/protocol';
-import type { ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 import type { PermissionIntent } from '@happier-dev/agents';
 
 export type Verbosity = 'short' | 'balanced';
@@ -39,7 +39,7 @@ export type VoiceAgentStartParams = Readonly<{
    * silently running on the runner's native account (R3-2 fail-closed). `null` opts out (native);
    * `undefined` defers to session-mirrored defaulting inside the run runtime resolver.
    */
-  connectedServices?: ConnectedServiceBindingsV1 | null;
+  connectedServices?: ConnectedServiceBindingsV2 | null;
   disabledActionIds?: readonly string[];
   /**
    * Optional one-time bootstrap behavior for newly created (non-resumed) sessions.
@@ -104,7 +104,7 @@ export type BackendFactory = (opts: {
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
   permissionIntent: PermissionIntent;
   start?: Readonly<{ intent: 'voice_agent' }>;
-  connectedServices?: ConnectedServiceBindingsV1 | null;
+  connectedServices?: ConnectedServiceBindingsV2 | null;
 }) => ExecutionRunHostRuntime;
 
 export type ResolveVoiceSystemAppendBlocksArgs = Readonly<{
@@ -150,7 +150,7 @@ export type VoiceAgentInstance = {
   commitModelSelection?: ProviderBoundModelRef;
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
   initialContext: string;
-  connectedServices?: ConnectedServiceBindingsV1 | null;
+  connectedServices?: ConnectedServiceBindingsV2 | null;
   disabledActionIds: readonly string[];
   memoryRecallGuidanceEnabled: boolean;
   systemAppendBlocks: readonly string[];

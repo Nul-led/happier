@@ -14,6 +14,7 @@ describe('action operation store', () => {
       scope: { ...ACCOUNT_SCOPE, sessionId: 'session-1' },
       title: 'Fork session',
       cancellation: 'unsupported',
+      inputIdentity: '{}',
     });
 
     expect(accepted).toMatchObject({ state: 'accepted', revision: 1, createdAt: 1_000 });
@@ -50,6 +51,7 @@ describe('action operation store', () => {
       scope: ACCOUNT_SCOPE,
       title: 'Active',
       cancellation: 'unsupported',
+      inputIdentity: '{}',
     });
 
     for (let index = 0; index < 52; index += 1) {
@@ -60,6 +62,7 @@ describe('action operation store', () => {
         scope: ACCOUNT_SCOPE,
         title: `Settled ${index}`,
         cancellation: 'unsupported',
+        inputIdentity: '{}',
       });
       store.markRunning(operationId);
       now += 1;

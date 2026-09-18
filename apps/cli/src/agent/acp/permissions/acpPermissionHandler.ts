@@ -71,5 +71,12 @@ export interface AcpPermissionHandler {
     context?: AcpPermissionCallContext,
   ): Promise<AcpPermissionDecisionResult>;
 
+  /**
+   * Abort one exact provider permission occurrence and settle its durable host
+   * projection before returning. Execution-run wrappers use this instead of
+   * the session-wide abort below so retiring one child cannot affect siblings.
+   */
+  abortPendingRequestAndFlush?(requestId: string, reason: string): Promise<void>;
+
   abortPendingRequestsAndFlush?(reason: string): Promise<void>;
 }

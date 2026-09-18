@@ -16,6 +16,18 @@ import {
 import { readOrCreateDeviceLocalSecretStorage } from './deviceLocalSecretStorage';
 
 describe('adoptSessionsFromMarkers respawn descriptor', () => {
+  it('does not persist fresh grants or Team context in a runner respawn descriptor', () => {
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions({
+      directory: '/workspace',
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      initialAccess: { grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'edit', canApprovePermissions: false }] },
+      primaryTeamId: 'team-1',
+    });
+    expect(descriptor).not.toBeNull();
+    expect(descriptor).not.toHaveProperty('initialAccess');
+    expect(descriptor).not.toHaveProperty('primaryTeamId');
+  });
+
   it('adopts the same process generation when the observed command drifts', () => {
     const markerCommand = 'happier plugins list --json';
     const runningCommand = 'happier claude --resume sess-existing';

@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
 
 import {
@@ -65,13 +66,13 @@ function isCheckoutUnavailable(errorCode: string | undefined): boolean {
     || errorCode === SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE;
 }
 
-function resolveSessionDirectoryInCheckout(input: Readonly<{
+export async function resolveSessionDirectoryInCheckout(input: Readonly<{
   sourceDirectory: string;
   sourceRootPath: string | undefined;
   checkoutRootPath: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
-}>): string {
+}>): Promise<string> {
   const platform = input.platform ?? process.platform;
   const sourceRoot = input.sourceRootPath
     ? resolveCanonicalAbsolutePath(input.sourceRootPath, {
@@ -91,13 +92,27 @@ function resolveSessionDirectoryInCheckout(input: Readonly<{
     !sourceRoot
     || !sourceDirectory
     || !checkoutRoot
-    || !isCanonicalAbsolutePathInsideRoot(sourceRoot.path, sourceDirectory.path, { platform })
   ) {
     return checkoutRoot?.path ?? input.checkoutRootPath;
   }
 
+  const resolveExistingPath = async (path: string) => {
+    try {
+      return await realpath(path);
+    } catch {
+      return path;
+    }
+  };
+  const [existingSourceRoot, existingSourceDirectory] = await Promise.all([
+    resolveExistingPath(sourceRoot.path),
+    resolveExistingPath(sourceDirectory.path),
+  ]);
+  if (!isCanonicalAbsolutePathInsideRoot(existingSourceRoot, existingSourceDirectory, { platform })) {
+    return checkoutRoot.path;
+  }
+
   const pathApi = platform === 'win32' ? win32 : posix;
-  const relativeSourcePath = pathApi.relative(sourceRoot.path, sourceDirectory.path);
+  const relativeSourcePath = pathApi.relative(existingSourceRoot, existingSourceDirectory);
   if (!relativeSourcePath) {
     return checkoutRoot.path;
   }
@@ -207,7 +222,7 @@ export async function prepareSessionCreationTarget(input: Readonly<{
   }
   return SessionCreationTargetPreparationResultV1Schema.parse({
     ok: true,
-    directory: resolveSessionDirectoryInCheckout({
+    directory: await resolveSessionDirectoryInCheckout({
       sourceDirectory: canonicalSource.path,
       sourceRootPath: checkoutResult.sourceRootPath,
       checkoutRootPath: canonicalFinal.path,

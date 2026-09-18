@@ -1,16 +1,14 @@
 import {
+  extractShellCommand,
   getActionSpec,
-  isApprovalRequiredByActionsSettings,
   listActionSpecs,
-  resolveActionApprovalRouting,
-  type AccountSettings,
   type ActionId,
-  type ActionSurfaces,
 } from '@happier-dev/protocol';
 
-import { isActionApprovalRequiredByEnv } from '@/settings/actionsSettings';
+import type { PermissionMode } from '@/api/types';
 
 import { getEquivalentActionIdForBuiltInTool } from './actionToolCatalog';
+import { parseTrustedHappierToolsShellBridgeCommand } from './runtime/buildHappierToolsShellBridgeCommand';
 
 const ACTION_IDS = new Set<ActionId>(listActionSpecs().map((spec) => spec.id as ActionId));
 
@@ -40,34 +38,46 @@ export function resolveHappierActionForMcpToolName(params: Readonly<{
   input: unknown;
 }>): ActionId | null {
   const firstPartyToolName = normalizeFirstPartyHappierToolName(params.toolName);
-  if (!firstPartyToolName) return null;
+  if (!firstPartyToolName) {
+    const providerToolName = normalizeToolName(params.toolName).toLowerCase();
+    if (providerToolName !== 'bash' && providerToolName !== 'execute' && providerToolName !== 'shell') {
+      return null;
+    }
+    const command = extractShellCommand(params.input);
+    const bridge = command ? parseTrustedHappierToolsShellBridgeCommand(command) : null;
+    if (!bridge || bridge.kind !== 'call' || bridge.source !== 'happier') return null;
+    return resolveHappierActionForMcpToolName({
+      toolName: `happier_${bridge.tool}`,
+      input: bridge.args,
+    });
+  }
   if (firstPartyToolName === 'action_execute') return readActionExecuteActionId(params.input);
   const actionId = getEquivalentActionIdForBuiltInTool(firstPartyToolName);
   return ACTION_IDS.has(actionId as ActionId) ? actionId as ActionId : null;
 }
 
-export function shouldSuppressProviderPermissionForHappierApproval(params: Readonly<{
+export function resolveProviderPermissionForHappierAction(params: Readonly<{
   toolName: string;
   input: unknown;
-  accountSettings?: Pick<AccountSettings, 'actionsSettingsV1'> | null;
-  surface: keyof ActionSurfaces;
-}>): Readonly<{ suppress: boolean; actionId: ActionId | null }> {
+  permissionMode: PermissionMode;
+}>): Readonly<{
+  decision: 'approved' | 'denied' | null;
+  actionId: ActionId | null;
+}> {
   const actionId = resolveHappierActionForMcpToolName({
     toolName: params.toolName,
     input: params.input,
   });
-  if (!actionId) return { suppress: false, actionId: null };
+  if (!actionId) return { decision: null, actionId: null };
 
-  const settings = params.accountSettings?.actionsSettingsV1 ?? null;
-  const required = settings
-    ? isApprovalRequiredByActionsSettings(actionId, settings, { surface: params.surface })
-    : isActionApprovalRequiredByEnv(actionId, { surface: params.surface });
-  const routing = resolveActionApprovalRouting({
+  const spec = getActionSpec(actionId);
+  const permissionCeilingDeniesAction =
+    (params.permissionMode === 'read-only' || params.permissionMode === 'plan')
+    && spec.sideEffectClass !== 'none'
+    && spec.sideEffectClass !== 'read';
+
+  return {
+    decision: permissionCeilingDeniesAction ? 'denied' : 'approved',
     actionId,
-    spec: getActionSpec(actionId),
-    context: { surface: params.surface },
-    requiredByPolicy: required,
-  });
-
-  return { suppress: routing.required, actionId };
+  };
 }

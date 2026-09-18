@@ -248,7 +248,48 @@ describe('AcpBackend session models', () => {
             currentValue: 'model-b',
           }),
         ]);
-        expect(backend.getSessionModelState()?.currentModelId).toBe('model-a');
+        expect(backend.getSessionModelState()?.currentModelId).toBe('model-b');
+      } finally {
+        await backend.dispose();
+      }
+    });
+  });
+
+  it('round-trips projected model identities through a provider model config option', async () => {
+    await withTempDir('happier-acp-projected-model-config-option-', async (dir) => {
+      const backend = new AcpBackend({
+        agentName: 'test',
+        cwd: dir,
+        command: process.execPath,
+        args: [writeFakeAcpAgentScript({ dir })],
+        modelConfigOptionId: 'agent-model-choice',
+        sessionModelAdapter: {
+          projectModelState: ({ normalizedModelState }) => ({
+            currentModelId: `projected:${normalizedModelState.currentModelId}`,
+            availableModels: normalizedModelState.availableModels.map((model) => ({
+              ...model,
+              id: `projected:${model.id}`,
+            })),
+          }),
+          projectModelId: ({ modelId }) => `projected:${modelId}`,
+          resolveModelUpdate: ({ modelId }) => ({
+            modelId: modelId.replace(/^projected:/, ''),
+          }),
+        },
+      });
+      try {
+        const started = await backend.startSession();
+        expect(backend.getSessionModelState()?.currentModelId).toBe('projected:model-a');
+
+        await backend.setSessionModel(started.sessionId, 'projected:model-b');
+
+        expect(backend.getSessionConfigOptionsState()).toEqual([
+          expect.objectContaining({
+            id: 'agent-model-choice',
+            currentValue: 'model-b',
+          }),
+        ]);
+        expect(backend.getSessionModelState()?.currentModelId).toBe('projected:model-b');
       } finally {
         await backend.dispose();
       }

@@ -633,17 +633,19 @@ describe('provider spawn authorization lifecycle', () => {
   it('filters only selected-intake native auth services and leaves unrelated services intact', () => {
     expect(filterSuppressedConnectedServiceBindings({
       bindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'codex-work' },
-          github: { source: 'connected', selection: 'profile', profileId: 'github-work' },
+          'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'codex-work' },
+          'acme.external/accounts': { source: 'connected', selection: 'profile', profileId: 'external-work' },
         },
       },
       suppressConnectedServiceIds: ['openai-codex'],
     })).toEqual({
       bindings: {
-        v: 1,
-        bindingsByServiceId: { github: { source: 'connected', selection: 'profile', profileId: 'github-work' } },
+        v: 2,
+        bindingsByServiceId: {
+          'acme.external/accounts': { source: 'connected', selection: 'profile', profileId: 'external-work' },
+        },
       },
       suppressedServiceIds: ['openai-codex'],
     });

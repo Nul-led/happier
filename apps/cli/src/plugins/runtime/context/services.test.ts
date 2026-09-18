@@ -861,7 +861,7 @@ describe('A.11 plugin context services', () => {
         await fileFollowPathGrants.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: filePath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },

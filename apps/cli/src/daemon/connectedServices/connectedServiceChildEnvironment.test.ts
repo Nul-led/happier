@@ -12,6 +12,7 @@ import {
   resolveConnectedServiceRuntimeAuthContextFromSelection,
   serializeConnectedServiceMaterializedEnvKeys,
   serializeConnectedServiceChildSelections,
+  stripInheritedConnectedServiceEnvironment,
 } from './connectedServiceChildEnvironment';
 
 describe('connectedServiceChildEnvironment', () => {
@@ -102,6 +103,27 @@ describe('connectedServiceChildEnvironment', () => {
     });
   });
 
+  it('does not reinterpret a Team resource as legacy Connected Account runtime auth', () => {
+    expect(resolveConnectedServiceRuntimeAuthContextFromSessionMetadata({
+      getMetadataSnapshot: () => ({
+        connectedServices: {
+          v: 2,
+          bindingsByServiceId: {
+            'happier.agent.codex/openai-codex': {
+              source: 'team_resource',
+              resourceId: 'resource-1',
+              deliveryMode: 'brokered',
+            },
+          },
+        },
+      }),
+    }, 'happier.agent.codex/openai-codex')).toEqual({
+      serviceId: 'happier.agent.codex/openai-codex',
+      profileId: null,
+      groupId: null,
+    });
+  });
+
   it('serializes materialized env keys without values', () => {
     const serialized = serializeConnectedServiceMaterializedEnvKeys({
       CLAUDE_CODE_OAUTH_TOKEN: 'secret-token',
@@ -112,5 +134,27 @@ describe('connectedServiceChildEnvironment', () => {
     expect(readConnectedServiceMaterializedEnvKeysFromEnv({
       [HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY]: serialized ?? undefined,
     })).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR']);
+  });
+
+  it('removes an inherited connected-service identity while preserving unrelated native environment', () => {
+    const stripped = stripInheritedConnectedServiceEnvironment({
+      OPENAI_API_KEY: 'parent-connected-secret',
+      CODEX_HOME: '/materialized/parent/codex-home',
+      NATIVE_AGENT_HOME: '/native/agent/home',
+      [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([{
+        kind: 'profile',
+        serviceId: 'openai-codex',
+        profileId: 'parent',
+      }]),
+      [HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY]: JSON.stringify([
+        'OPENAI_API_KEY',
+        'CODEX_HOME',
+      ]),
+      HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT: '/materialized/parent',
+    });
+
+    expect(stripped).toEqual({
+      NATIVE_AGENT_HOME: '/native/agent/home',
+    });
   });
 });

@@ -30,8 +30,8 @@ export interface CreateAcpBackendOptions {
   /** Working directory for the agent */
   cwd: string;
 
-  /** Command to spawn the ACP agent */
-  command: string;
+  /** Command to spawn the ACP agent. Required unless `networkTransport` is set. */
+  command?: string;
 
   /** Arguments for the agent command */
   args?: string[];
@@ -44,6 +44,9 @@ export interface CreateAcpBackendOptions {
 
   transformAgentChildLaunchEnvironment?:
     AcpBackendOptions['transformAgentChildLaunchEnvironment'];
+
+  /** Declared ACP network endpoint used instead of spawning a child process. */
+  networkTransport?: AcpBackendOptions['networkTransport'];
 
   /** MCP servers to make available to the agent */
   mcpServers?: Record<string, McpServerConfig>;
@@ -74,6 +77,8 @@ export interface CreateAcpBackendOptions {
 
   projectModel?: AcpBackendOptions['projectModel'];
 
+  sessionModelAdapter?: AcpBackendOptions['sessionModelAdapter'];
+
   prepareSessionModels?: AcpBackendOptions['prepareSessionModels'];
 
   projectSetModelResponse?: AcpBackendOptions['projectSetModelResponse'];
@@ -87,6 +92,7 @@ export interface CreateAcpBackendOptions {
   extensions?: ReadonlyArray<AcpExtensionRegistration>;
   createExtensionContext?: AcpExtensionContextFactory;
   onProcessExit?: AcpBackendOptions['onProcessExit'];
+  onConnectionLost?: AcpBackendOptions['onConnectionLost'];
   onPublishedTerminalToolResult?: AcpBackendOptions['onPublishedTerminalToolResult'];
 }
 
@@ -113,7 +119,7 @@ export function createAcpBackend(options: CreateAcpBackendOptions): AcpBackend {
   const backendOptions: AcpBackendOptions = {
     agentName: options.agentName,
     cwd: options.cwd,
-    command: options.command,
+    ...(options.command ? { command: options.command } : {}),
     args: options.args,
     env: options.env,
     ...(options.unsetEnv ? { unsetEnv: options.unsetEnv } : {}),
@@ -123,6 +129,7 @@ export function createAcpBackend(options: CreateAcpBackendOptions): AcpBackend {
             options.transformAgentChildLaunchEnvironment,
         }
       : {}),
+    ...(options.networkTransport ? { networkTransport: options.networkTransport } : {}),
     mcpServers: options.mcpServers,
     permissionHandler: options.permissionHandler,
     ...(typeof options.fsEnabled === 'boolean' ? { fsEnabled: options.fsEnabled } : {}),
@@ -137,6 +144,7 @@ export function createAcpBackend(options: CreateAcpBackendOptions): AcpBackend {
       ? { modelConfigOptionId: options.modelConfigOptionId }
       : {}),
     ...(options.projectModel ? { projectModel: options.projectModel } : {}),
+    ...(options.sessionModelAdapter ? { sessionModelAdapter: options.sessionModelAdapter } : {}),
     ...(options.prepareSessionModels
       ? { prepareSessionModels: options.prepareSessionModels }
       : {}),
@@ -155,6 +163,7 @@ export function createAcpBackend(options: CreateAcpBackendOptions): AcpBackend {
       ? { createExtensionContext: options.createExtensionContext }
       : {}),
     ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
+    ...(options.onConnectionLost ? { onConnectionLost: options.onConnectionLost } : {}),
     ...(options.onPublishedTerminalToolResult
       ? { onPublishedTerminalToolResult: options.onPublishedTerminalToolResult }
       : {}),

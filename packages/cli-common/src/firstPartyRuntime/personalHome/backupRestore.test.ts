@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, writeFile, readdir, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +11,9 @@ import { createPersonalHomeArchive, extractVerifiedPersonalHomeArchive, extractV
 import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { finalizePersonalHomeRestoreWithLease, hasMeaningfulPersonalHomeData, inspectPersonalHomeRestoreRecovery, recoverPersonalHomeRestoreWithLease, restorePersonalHomeBackup as restorePersonalHomeBackupOwner } from './restore.js';
 import { parsePersonalHomeBackupManifest } from './manifest.js';
+import { preparePersonalHomeSanitizedConfiguration } from './productionAdapters.js';
 import { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './sqliteSnapshot.js';
+import type { PersonalHomeRestorableConfigurationV1 } from './configuration.js';
 
 const sqliteOk = { checkpoint: async () => ({ busy: 0 }), quickCheck: async () => true, close: async () => undefined } as const;
 const prepareConfiguration = async () => ({ rollbackArtifact: '/tmp/test-config-rollback', apply: async () => undefined, rollback: async () => undefined });
@@ -64,6 +67,104 @@ function recoveryJournalFixture(layout: ReturnType<typeof resolvePersonalHomeRun
 }
 
 describe('Personal Home backup and restore owner', () => {
+  it('normalizes manifest entries with locale-independent artifact ordering', () => {
+    const hash = createHash('sha256').update('').digest('hex');
+    const manifest = parsePersonalHomeBackupManifest({
+      format: 'happier-personal-home-backup', version: 1, createdAt: new Date(0).toISOString(), happierVersion: '0',
+      schemaVersion: '1', homeServerIdentityId: 'home-identity', masterSecretFingerprint: hash,
+      databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: 'linux', sourceRuntimeMode: 'user',
+      entries: [
+        { path: 'files/public/ä.txt', size: 0, sha256: hash },
+        { path: 'configuration/home.env.json', size: 0, sha256: hash },
+        { path: 'files/public/z.txt', size: 0, sha256: hash },
+        { path: 'secrets/handy-master-secret.txt', size: 0, sha256: hash },
+        { path: 'database/home.sqlite', size: 0, sha256: hash },
+      ],
+    });
+
+    expect(manifest.entries.map((entry) => entry.path)).toEqual([
+      'configuration/home.env.json',
+      'database/home.sqlite',
+      'files/public/z.txt',
+      'files/public/ä.txt',
+      'secrets/handy-master-secret.txt',
+    ]);
+  });
+
+  it.runIf(process.platform !== 'win32').each([false, true])('keeps archive bytes private throughout creation (interrupted: %s)', async (interrupt) => {
+    const { root, layout } = await fixture();
+    const outputParent = join(root, 'public-output');
+    await mkdir(outputParent, { mode: 0o755 });
+    await chmod(root, 0o755);
+    const previousUmask = process.umask(0o022);
+    const observedModes: number[] = [];
+    const writtenSizes: number[] = [];
+    const originalWrite = fs.write;
+    // Observe the real filesystem boundary while tar and the complete backup owner run unchanged.
+    const write = vi.spyOn(fs, 'write').mockImplementation((...args: unknown[]) => {
+      const fd = args[0];
+      const callback = args[args.length - 1];
+      if (typeof fd !== 'number' || typeof callback !== 'function') throw new Error('Unexpected filesystem write');
+      observedModes.push(fs.fstatSync(fd).mode & 0o777);
+      args[args.length - 1] = (...result: unknown[]) => {
+        writtenSizes.push(fs.fstatSync(fd).size);
+        if (interrupt && writtenSizes.length === 1) callback(Object.assign(new Error('Interrupted archive write'), { code: 'EIO' }), 0);
+        else Reflect.apply(callback, undefined, result);
+      };
+      Reflect.apply(originalWrite, fs, args);
+    });
+    try {
+      const operation = createPersonalHomeBackup({
+        layout, outputPath: join(outputParent, 'home.tar'), stagingDir: join(root, 'stage'),
+        homeServerIdentityId: 'home-identity', schemaVersion: '1', happierVersion: '0',
+        configuration: {}, sqlite: sqliteOk,
+      });
+      if (interrupt) await expect(operation).rejects.toThrow('Interrupted archive write');
+      else await operation;
+      expect(writtenSizes.some((size) => size > 0)).toBe(true);
+      expect(observedModes.length).toBeGreaterThan(0);
+      expect(observedModes.every((mode) => mode === 0o600)).toBe(true);
+    } finally {
+      write.mockRestore();
+      process.umask(previousUmask);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a verified backup with exact cleanup attention when operation-owned staging cannot be removed', async () => {
+    const { root, layout } = await fixture();
+    const stagingDir = join(root, 'cleanup-failure-stage');
+    const outputPath = join(layout.backupsDir, 'cleanup-failure.tar');
+    const cleanupStaging = vi.fn(async () => {
+      throw Object.assign(new Error('simulated cleanup refusal'), { code: 'EACCES' });
+    });
+    try {
+      const result = await createPersonalHomeBackup({
+        layout,
+        outputPath,
+        stagingDir,
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0',
+        configuration: {},
+        sqlite: sqliteOk,
+        cleanupStaging,
+      });
+
+      expect(result.path).toBe(outputPath);
+      expect(result.cleanupRequired).toEqual({
+        kind: 'backup_staging',
+        path: stagingDir,
+        error: 'simulated cleanup refusal',
+      });
+      expect(cleanupStaging).toHaveBeenCalledTimes(2);
+      await expect(stat(outputPath)).resolves.toBeTruthy();
+      await expect(stat(stagingDir)).resolves.toBeTruthy();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform !== 'win32')('fails closed when target metadata cannot be read', async () => {
     const { root, layout } = await fixture();
     const databaseParent = dirname(layout.databasePath);
@@ -670,6 +771,47 @@ describe('Personal Home backup and restore owner', () => {
     }
   });
 
+  it('restores the destination approval-required policy when post-activation restore validation fails', async () => {
+    const source = await fixture();
+    const destination = await fixture();
+    const destinationEnvPath = join(destination.layout.configDir, 'server.env');
+    try {
+      const archivePath = join(source.layout.backupsDir, 'approval-policy-rollback.tar');
+      await createPersonalHomeBackup({
+        layout: source.layout,
+        outputPath: archivePath,
+        stagingDir: join(source.root, 'staging-approval-policy-rollback'),
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0.0.0',
+        configuration: { homeDeviceApprovalRequired: false },
+        sqlite: sqliteOk,
+      });
+      await mkdir(destination.layout.configDir, { recursive: true });
+      await writeFile(destinationEnvPath, [
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${destination.layout.dataDir}`,
+        'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1',
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'));
+
+      const result = await restorePersonalHomeBackup({
+        layout: destination.layout,
+        archivePath,
+        expectedHomeServerIdentityId: 'home-identity',
+        confirmOverwrite: true,
+        healthCheck: async () => false,
+        prepareConfiguration: (configuration) => preparePersonalHomeSanitizedConfiguration(destination.layout, configuration),
+      });
+
+      expect(result.outcome).toBe('rolled_back');
+      await expect(readFile(destinationEnvPath, 'utf8')).resolves.toContain('HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1');
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      await rm(destination.root, { recursive: true, force: true });
+    }
+  });
+
   it('restarts an untouched running Home when active SQLite validation fails after stop but before journaling', async () => {
     const source = await fixture();
     const destination = await fixture();
@@ -1124,7 +1266,7 @@ describe('Personal Home backup and restore owner', () => {
     }
   });
 
-  it('retains successful restore rollback material until explicit finalization removes only the recorded artifacts', { timeout: 30_000 }, async () => {
+  it('retains transient rollback material until the verified restore owner finalizes only the recorded artifacts', { timeout: 30_000 }, async () => {
     const source = await fixture();
     const destination = await fixture();
     try {
@@ -1139,7 +1281,7 @@ describe('Personal Home backup and restore owner', () => {
         configuration: { canonicalServerUrl: 'http://127.0.0.1:43110' },
         sqlite: sqliteOk,
       });
-      let appliedConfiguration: Readonly<Record<string, string>> | undefined;
+      let appliedConfiguration: PersonalHomeRestorableConfigurationV1 | undefined;
       const rollbackArtifact = join(destination.layout.configDir, `server.env.${randomUUID()}.restore-rollback`);
       await mkdir(destination.layout.configDir, { recursive: true });
       await writeFile(rollbackArtifact, 'previous-configuration');
@@ -1169,6 +1311,47 @@ describe('Personal Home backup and restore owner', () => {
       for (const path of rollbackPaths) await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(lstat(rollbackArtifact)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(lstat(join(destination.layout.dataDir, '.operations', 'restore-journal.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      await rm(destination.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])('preserves Home device approval policy=%s through the backup/restore configuration artifact', async (homeDeviceApprovalRequired) => {
+    const source = await fixture();
+    const destination = await fixture();
+    try {
+      const archivePath = join(source.layout.backupsDir, 'approval-policy.tar');
+      await createPersonalHomeBackup({
+        layout: source.layout,
+        outputPath: archivePath,
+        stagingDir: join(source.root, 'staging-approval-policy'),
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0.0.0',
+        configuration: { homeDeviceApprovalRequired },
+        sqlite: sqliteOk,
+      });
+      let appliedConfiguration: PersonalHomeRestorableConfigurationV1 | undefined;
+      const rollbackArtifact = join(destination.layout.configDir, `server.env.${randomUUID()}.restore-rollback`);
+      await mkdir(destination.layout.configDir, { recursive: true });
+      await writeFile(rollbackArtifact, 'previous-configuration');
+
+      const result = await restorePersonalHomeBackup({
+        layout: destination.layout,
+        archivePath,
+        expectedHomeServerIdentityId: 'home-identity',
+        confirmOverwrite: true,
+        healthCheck: async () => true,
+        prepareConfiguration: async (configuration) => ({
+          rollbackArtifact,
+          apply: async () => { appliedConfiguration = configuration; },
+          rollback: async () => undefined,
+        }),
+      });
+
+      expect(result.outcome).toBe('restored');
+      expect(appliedConfiguration).toMatchObject({ homeDeviceApprovalRequired });
     } finally {
       await rm(source.root, { recursive: true, force: true });
       await rm(destination.root, { recursive: true, force: true });

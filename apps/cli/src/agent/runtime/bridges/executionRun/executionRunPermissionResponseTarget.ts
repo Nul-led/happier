@@ -8,10 +8,14 @@ import {
   readExecutionRunParentSessionPermissionResponseTarget,
   type ExecutionRunParentSessionPermissionResponseTarget,
 } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
+import type { StructuredQuestionAnswersV1 } from '@happier-dev/protocol';
 
 export type { ExecutionRunParentSessionPermissionResponseTarget };
 
 export type ExecutionRunPermissionRequestStore = Readonly<{
+  readOutstandingRequest?(requestId: string): Readonly<{
+    responseTarget?: AgentStateRequestResponseTarget;
+  }> | null;
   publishRequest(params: Readonly<{
     requestId: string;
     toolName: string;
@@ -24,6 +28,26 @@ export type ExecutionRunPermissionRequestStore = Readonly<{
     sidechainId?: string | null;
     permissionSuggestions?: readonly unknown[] | null;
   }>): void;
+  publishRequestAndWait?(params: Readonly<{
+    requestId: string;
+    toolName: string;
+    toolInput: unknown;
+    createdAt: number;
+    kind?: string;
+    source?: string;
+    responseTarget?: AgentStateRequestResponseTarget | null;
+    subagentRef?: unknown;
+    sidechainId?: string | null;
+    permissionSuggestions?: readonly unknown[] | null;
+  }>): Promise<void>;
+  completeRequest?(params: Readonly<{
+    requestId: string;
+    status: string;
+    decision?: string;
+    reason?: string;
+    answers?: StructuredQuestionAnswersV1;
+  }>): Promise<boolean> | boolean;
+  retireCompletedRequestsForTurn?(turnId: string): Promise<void>;
   registerResponseTargetHandler(
     kind: 'execution_run_host_bridge',
     handler: AgentStateResponseTargetHandler,

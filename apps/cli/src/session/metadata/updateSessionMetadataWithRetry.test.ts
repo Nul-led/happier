@@ -8,11 +8,13 @@ import {
   createAccountScopedCryptoMaterialSnapshotV1,
   convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
   openSessionOwnerMetadataEnvelopeV1,
+  projectSessionAccessCapabilitiesV1,
   projectSessionOwnerCompatibilityViewV1,
   readExternalHistoryImportV1FromMetadata,
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
   removeLinkedExternalSessionMetadataV1,
   sealSessionOwnerMetadataEnvelopeV1,
+  SessionEffectiveAccessV1Schema,
 } from '@happier-dev/protocol';
 import {
   decryptStoredSessionPayload,
@@ -24,6 +26,7 @@ import {
 } from '@happier-dev/agents/session/state/metadataWriters';
 import {
   prepareSessionMetadataTuplePatchForTransaction,
+  readSessionMetadataSharedEditorTupleSnapshot,
   readSessionMetadataTupleWriterSnapshot,
   updateSessionMetadataEnvelopeTupleWithRetry,
   updateSessionMetadataWithRetry,
@@ -57,7 +60,15 @@ const plainCurrentness = {
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
   updatedAt: 1,
+  recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 };
+
+const ownerEffectiveAccess = SessionEffectiveAccessV1Schema.parse({
+  v: 1,
+  level: 'owner',
+  sources: [{ kind: 'owner' }],
+  capabilities: projectSessionAccessCapabilitiesV1({ owner: true, grants: [] }),
+});
 
 function e2eeCurrentness(credentials: Readonly<{
   encryption: Readonly<{ type: 'legacy'; secret: Uint8Array }>;
@@ -78,6 +89,7 @@ function e2eeCurrentness(credentials: Readonly<{
         snapshot.contentPublicKeyFingerprint,
       ),
     updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'available' as const },
   };
 }
 
@@ -259,19 +271,21 @@ describe('updateSessionMetadataWithRetry', () => {
       encryptionKey: credentials.encryption.secret,
       encryptionVariant: 'legacy',
     });
+    const rawSession = {
+      metadataLayoutVersion: 1,
+      metadata: fields.sharedMetadata.ciphertext,
+      metadataVersion: 7,
+      ownerMetadata: fields.ownerMetadata,
+      agentState: fields.agentState,
+      agentStateVersion: 3,
+      encryptionMode: 'e2ee',
+      dataEncryptionKey: null,
+      effectiveAccess: ownerEffectiveAccess,
+    };
     const patch = await prepareSessionMetadataTuplePatchForTransaction({
       credentials,
       accountEncryptionCurrentness: e2eeCurrentness(credentials),
-      rawSession: {
-        metadataLayoutVersion: 1,
-        metadata: fields.sharedMetadata.ciphertext,
-        metadataVersion: 7,
-        ownerMetadata: fields.ownerMetadata,
-        agentState: fields.agentState,
-        agentStateVersion: 3,
-        encryptionMode: 'e2ee',
-        dataEncryptionKey: null,
-      },
+      rawSession,
       updater: (current) => ({
         ...current,
         path: '/private/encrypted-transcript-after',
@@ -832,21 +846,23 @@ describe('updateSessionMetadataWithRetry', () => {
       agentState: { version: 8 },
     });
 
+    const rawSession = {
+      metadataLayoutVersion: 1,
+      metadata: fields.sharedMetadata.ciphertext,
+      metadataVersion: 3,
+      ownerMetadata: encryptedOwnerMetadata,
+      agentState: fields.agentState,
+      agentStateVersion: 7,
+      encryptionMode: 'e2ee',
+      dataEncryptionKey: null,
+      effectiveAccess: ownerEffectiveAccess,
+    };
     const result = await updateSessionMetadataWithRetry({
       token: credentials.token,
       credentials,
       sessionId: 'sess_layout_1',
       accountEncryptionCurrentness: e2eeCurrentness(credentials),
-      rawSession: {
-        metadataLayoutVersion: 1,
-        metadata: fields.sharedMetadata.ciphertext,
-        metadataVersion: 3,
-        ownerMetadata: encryptedOwnerMetadata,
-        agentState: fields.agentState,
-        agentStateVersion: 7,
-        encryptionMode: 'e2ee',
-        dataEncryptionKey: null,
-      },
+      rawSession,
       updater: (metadata) => ({
         ...metadata,
         path: '/private/after',
@@ -1019,6 +1035,124 @@ describe('updateSessionMetadataWithRetry', () => {
     });
     expect(fetchSessionByIdCompatMock).not.toHaveBeenCalled();
     expect(patchSessionMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it('atomically carries a Team model binding through the inactive model CAS', async () => {
+    const credentials = {
+      token: 'token-1',
+      encryption: {
+        type: 'legacy' as const,
+        secret: new Uint8Array(32).fill(35),
+      },
+    };
+    const fields = buildSessionMetadataEnvelopeFields({
+      credentials,
+      accountEncryptionMode: 'e2ee',
+      metadata: { path: '/private/before', host: 'private-host' },
+      agentState: null,
+      storedContentMode: 'plain',
+    });
+    patchSessionMetadataEnvelopeTupleMock.mockResolvedValue({
+      success: true,
+      metadataLayoutVersion: 1,
+      sharedMetadata: { version: 4 },
+      agentState: { version: 8 },
+    });
+
+    await updateSessionMetadataWithRetry({
+      token: credentials.token,
+      credentials,
+      sessionId: 'sess_team_model',
+      accountEncryptionCurrentness: e2eeCurrentness(credentials),
+      rawSession: {
+        metadataLayoutVersion: 1,
+        metadata: fields.sharedMetadata.ciphertext,
+        metadataVersion: 3,
+        ownerMetadata: fields.ownerMetadata,
+        agentState: fields.agentState,
+        agentStateVersion: 7,
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+      },
+      sessionExpectation: { kind: 'inactive_model_intent' },
+      teamCredentialBindings: [{
+        v: 1,
+        slot: { kind: 'provider_model' },
+        resourceId: 'resource-1',
+        expectedResourceRevision: 9,
+        deliveryMode: 'brokered',
+      }],
+      updater: (metadata) => ({ ...metadata, path: '/private/after' }),
+    });
+
+    expect(patchSessionMetadataEnvelopeTupleMock).toHaveBeenCalledTimes(1);
+    expect(patchSessionMetadataEnvelopeTupleMock.mock.calls[0]?.[0].patch).toMatchObject({
+      mode: 'owner_team_credential_binding',
+      operation: 'session.model.set',
+      sessionExpectation: { kind: 'inactive_model_intent' },
+      teamCredentialBindings: [{
+        v: 1,
+        slot: { kind: 'provider_model' },
+        resourceId: 'resource-1',
+        expectedResourceRevision: 9,
+        deliveryMode: 'brokered',
+      }],
+    });
+  });
+
+  it('preserves a typed Team binding refusal without retrying it as a tuple conflict', async () => {
+    const credentials = {
+      token: 'token-1',
+      encryption: {
+        type: 'legacy' as const,
+        secret: new Uint8Array(32).fill(36),
+      },
+    };
+    const fields = buildSessionMetadataEnvelopeFields({
+      credentials,
+      accountEncryptionMode: 'e2ee',
+      metadata: { path: '/private/before', host: 'private-host' },
+      agentState: null,
+      storedContentMode: 'plain',
+    });
+    patchSessionMetadataEnvelopeTupleMock.mockResolvedValue({
+      success: false,
+      error: 'session_team_credential_binding_rejected',
+      reason: 'resource_changed',
+    });
+
+    await expect(updateSessionMetadataWithRetry({
+      token: credentials.token,
+      credentials,
+      sessionId: 'sess_team_model_stale',
+      accountEncryptionCurrentness: e2eeCurrentness(credentials),
+      rawSession: {
+        metadataLayoutVersion: 1,
+        metadata: fields.sharedMetadata.ciphertext,
+        metadataVersion: 3,
+        ownerMetadata: fields.ownerMetadata,
+        agentState: fields.agentState,
+        agentStateVersion: 7,
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+      },
+      sessionExpectation: { kind: 'inactive_model_intent' },
+      teamCredentialBindings: [{
+        v: 1,
+        slot: { kind: 'provider_model' },
+        resourceId: 'resource-1',
+        expectedResourceRevision: 9,
+        deliveryMode: 'brokered',
+      }],
+      updater: (metadata) => ({ ...metadata, path: '/private/after' }),
+      maxAttempts: 3,
+    })).rejects.toMatchObject({
+      code: 'session_team_credential_binding_rejected',
+      reason: 'resource_changed',
+      retryable: false,
+    });
+    expect(patchSessionMetadataEnvelopeTupleMock).toHaveBeenCalledTimes(1);
+    expect(fetchSessionByIdCompatMock).not.toHaveBeenCalled();
   });
 
   it('does not send a layout-1 tuple for a deep-equal metadata update', async () => {
@@ -1533,4 +1667,180 @@ describe('updateSessionMetadataWithRetry', () => {
     expect(patchSessionMetadataMock).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('shared-editor Session metadata authority', () => {
+  const sessionEncryptionKey = new Uint8Array(32).fill(7);
+
+  beforeEach(() => {
+    fetchSessionByIdCompatMock.mockReset();
+    patchSessionMetadataEnvelopeTupleMock.mockReset();
+    patchSessionMetadataMock.mockReset();
+    fetchAccountEncryptionCurrentnessMock.mockReset();
+    fetchAccountEncryptionCurrentnessMock.mockRejectedValue(
+      new Error('shared editors must not read Account encryption currentness'),
+    );
+  });
+
+  function buildRawSharedEditorSession(params: Readonly<{
+    metadata: Record<string, unknown>;
+    metadataVersion: number;
+  }>) {
+    const fields = buildSessionMetadataEnvelopeFields({
+      credentials: { token: 'owner-token', encryption: null },
+      accountEncryptionMode: 'plain',
+      metadata: params.metadata,
+      agentState: null,
+      storedContentMode: 'e2ee',
+      encryptionKey: sessionEncryptionKey,
+      encryptionVariant: 'legacy',
+    });
+    return {
+      // A shared recipient never receives the owner envelope or full Agent state.
+      metadataLayoutVersion: 1,
+      metadata: fields.sharedMetadata.ciphertext,
+      metadataVersion: params.metadataVersion,
+      agentState: null,
+      agentStateVersion: 4,
+      encryptionMode: 'e2ee',
+      dataEncryptionKey: null,
+    };
+  }
+
+  it('reads the shared projection from the Session data key without Account credentials', () => {
+    const snapshot = readSessionMetadataSharedEditorTupleSnapshot({
+      rawSession: buildRawSharedEditorSession({
+        metadata: {
+          path: '/owner/only',
+          summary: { text: 'Shared title', updatedAt: 11 },
+        },
+        metadataVersion: 5,
+      }),
+      mode: 'e2ee',
+      ctx: {
+        encryptionKey: sessionEncryptionKey,
+        encryptionVariant: 'legacy',
+      },
+    });
+
+    expect(snapshot).toMatchObject({
+      mode: 'shared_editor',
+      metadataLayoutVersion: 1,
+      metadataVersion: 5,
+      value: {
+        metadata: { v: 1, summary: { text: 'Shared title', updatedAt: 11 } },
+        ownerMetadata: null,
+        agentState: null,
+      },
+    });
+    expect(
+      (snapshot.value.metadata as Record<string, unknown>).path,
+    ).toBeUndefined();
+  });
+
+  it('commits a shared-editor tuple patch without owner metadata or Agent state', async () => {
+    const rawSession = buildRawSharedEditorSession({
+      metadata: { summary: { text: 'Before', updatedAt: 1 } },
+      metadataVersion: 5,
+    });
+    patchSessionMetadataEnvelopeTupleMock.mockResolvedValue({
+      success: true,
+      metadataLayoutVersion: 1,
+      sharedMetadata: { version: 6 },
+    });
+
+    const updated = await updateSessionMetadataEnvelopeTupleWithRetry({
+      token: 'runtime-token',
+      sessionId: 'sess_shared_editor',
+      authority: { kind: 'shared_editor' },
+      mode: 'e2ee',
+      ctx: {
+        encryptionKey: sessionEncryptionKey,
+        encryptionVariant: 'legacy',
+      },
+      initialSnapshot: readSessionMetadataSharedEditorTupleSnapshot({
+        rawSession,
+        mode: 'e2ee',
+        ctx: {
+          encryptionKey: sessionEncryptionKey,
+          encryptionVariant: 'legacy',
+        },
+      }),
+      mutation: {
+        kind: 'metadata',
+        update: (metadata) => ({
+          ...metadata,
+          summary: { text: 'After', updatedAt: 2 },
+        }),
+      },
+    });
+
+    expect(updated).toMatchObject({
+      mode: 'shared_editor',
+      metadataVersion: 6,
+      value: {
+        metadata: { v: 1, summary: { text: 'After', updatedAt: 2 } },
+      },
+    });
+    expect(patchSessionMetadataEnvelopeTupleMock).toHaveBeenCalledTimes(1);
+    const [{ patch, token }] =
+      patchSessionMetadataEnvelopeTupleMock.mock.calls[0];
+    expect(token).toBe('runtime-token');
+    expect(patch).toMatchObject({
+      mode: 'shared_editor',
+      metadataLayoutVersion: 1,
+      sharedMetadata: { expectedVersion: 5 },
+    });
+    expect(patch.ownerMetadata).toBeUndefined();
+    expect(patch.agentState).toBeUndefined();
+    expect(fetchAccountEncryptionCurrentnessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an owner-only field and an owner Agent-state mutation from a shared editor', async () => {
+    const rawSession = buildRawSharedEditorSession({
+      metadata: { summary: { text: 'Before', updatedAt: 1 } },
+      metadataVersion: 5,
+    });
+    const crypto = {
+      mode: 'e2ee' as const,
+      ctx: {
+        encryptionKey: sessionEncryptionKey,
+        encryptionVariant: 'legacy' as const,
+      },
+    };
+    const initialSnapshot = readSessionMetadataSharedEditorTupleSnapshot({
+      rawSession,
+      ...crypto,
+    });
+
+    await expect(updateSessionMetadataEnvelopeTupleWithRetry({
+      token: 'runtime-token',
+      sessionId: 'sess_shared_editor',
+      authority: { kind: 'shared_editor' },
+      ...crypto,
+      initialSnapshot,
+      mutation: {
+        kind: 'metadata',
+        update: (metadata) => ({ ...metadata, path: '/owner/only' }),
+      },
+    })).rejects.toMatchObject({
+      code: 'metadata_privacy_upgrade_required',
+    });
+
+    await expect(updateSessionMetadataEnvelopeTupleWithRetry({
+      token: 'runtime-token',
+      sessionId: 'sess_shared_editor',
+      authority: { kind: 'shared_editor' },
+      ...crypto,
+      initialSnapshot,
+      mutation: {
+        kind: 'agentState',
+        update: (agentState) => ({ ...agentState, thinking: true }),
+      },
+    })).rejects.toMatchObject({
+      code: 'metadata_privacy_upgrade_required',
+    });
+
+    expect(patchSessionMetadataEnvelopeTupleMock).not.toHaveBeenCalled();
+  });
 });

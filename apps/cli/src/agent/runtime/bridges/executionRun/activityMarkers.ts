@@ -1,7 +1,7 @@
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import type { ExecutionRunState } from './executionRunTypes';
 import { writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
-import { readBackendTargetRefV2 } from '@happier-dev/protocol';
+import { projectExecutionRunRequestedConfiguration, readBackendTargetRefV2 } from '@happier-dev/protocol';
 import { buildExecutionRunConnectedServicesCleanupReceipt } from './connectedServicesCleanupReceipt';
 
 export function enqueueExecutionRunMarkerWrite(args: Readonly<{
@@ -47,6 +47,10 @@ export async function writeExecutionRunActivityMarker(args: Readonly<{
   const cleanupReceipt = buildExecutionRunConnectedServicesCleanupReceipt(
     run.launch?.connectedServicesRegistration,
   );
+  const requestedConfiguration = projectExecutionRunRequestedConfiguration({
+    modelId: run.launch?.modelSelection?.modelId ?? run.launch?.modelId,
+    sessionConfigOptionOverrides: run.launch?.sessionConfigOptionOverrides,
+  });
   const markerPayload = {
     pid: process.pid,
     happySessionId: run.sessionId,
@@ -56,6 +60,7 @@ export async function writeExecutionRunActivityMarker(args: Readonly<{
     intent: run.intent,
     backendTarget: readBackendTargetRefV2(run.backendTarget),
     ...(run.launch?.launchOrigin ? { launchOrigin: run.launch.launchOrigin } : {}),
+    ...(requestedConfiguration ? { requestedConfiguration } : {}),
     permissionMode: run.permissionMode,
     retentionPolicy: run.retentionPolicy,
     runClass: run.runClass,

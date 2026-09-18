@@ -3,9 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
     AccountSettingsSavedSecretMutationError,
     applyAccountSettingsSavedSecretMutation,
-    decryptSecretValueWithKeysV1,
+    parseSavedSecretRefV1,
+    resolveAccountSettingsPluginSecretBinding,
     resolveAccountSettingsPluginSecret,
-    type AccountSettingsPluginSecretResolution,
+    type PluginAccountSecretBinding,
     type PluginAccountSecretBindingTarget,
 } from '@happier-dev/protocol';
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
@@ -19,6 +20,7 @@ import {
 import { readStoredCredentials } from '@/persistence';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 import type { AccountSettingsMutationResult } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
+import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
 
 import { updateActivePluginAccountSettingsOnce } from './accountSettingsStorage';
 import type {
@@ -89,16 +91,18 @@ function targetFor(pluginId: string, secretId: string): PluginAccountSecretBindi
 
 function revisionFor(
     snapshot: AccountSecretSnapshot,
-    resolution: AccountSettingsPluginSecretResolution | null,
+    binding: PluginAccountSecretBinding | null,
+    materialFingerprint: string | null,
+    materialStatus: string | null,
 ): string {
     const hash = createHash('sha256');
     hash.update(snapshot.scopeKey ?? 'unscoped');
     hash.update('\0');
     hash.update(String(snapshot.settingsVersion));
     hash.update('\0');
-    hash.update(resolution?.binding.savedSecretId ?? 'missing');
+    hash.update(binding?.savedSecretId ?? 'missing');
     hash.update('\0');
-    hash.update(String(resolution?.secret.updatedAt ?? 0));
+    hash.update(materialFingerprint ?? materialStatus ?? 'missing');
     return `account-secret-r1:${hash.digest('hex')}`;
 }
 
@@ -116,6 +120,10 @@ function savedSecretName(pluginId: string, secretId: string): string {
  */
 export function createAccountPluginSecretCustodyRouter(params: Readonly<{
     owner?: AccountSettingsMutationOwner;
+    /** Exact authenticated Account reader selected by the enclosing runtime. */
+    readCredentials?: typeof readStoredCredentials;
+    /** When supplied, Account-backed custody is available only to this exact Account lifetime. */
+    accountScopeKey?: string | null;
     createId?: () => string;
     nowMs?: () => number;
 }> = {}): Readonly<{
@@ -139,21 +147,33 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
         assertCurrent?: () => void;
     }>): Promise<Readonly<{ revision: string }>>;
 }> {
+    const readCredentials = params.readCredentials ?? readStoredCredentials;
+    const readBoundSnapshot = (): AccountSecretSnapshot | null => {
+        if (params.accountScopeKey === null) return null;
+        const snapshot = getActiveAccountSettingsSnapshot();
+        if (params.accountScopeKey === undefined) return snapshot;
+        return snapshot?.scopeKey === params.accountScopeKey
+            ? snapshot
+            : null;
+    };
     const owner: AccountSettingsMutationOwner = params.owner ?? Object.freeze({
-        readSnapshot: getActiveAccountSettingsSnapshot,
+        readSnapshot: readBoundSnapshot,
         readLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken,
         async updateOnce(input): Promise<AccountSettingsMutationResult> {
             return await updateActivePluginAccountSettingsOnce({
                 expectedVersion: input.expectedVersion,
                 mutate: input.mutate,
-                deps: { assertCurrent: input.assertCurrent },
+                deps: {
+                    assertCurrent: input.assertCurrent,
+                    readCredentials,
+                },
             });
         },
         async rereadAfterAmbiguousWrite(input: Readonly<{
             expectedLifetimeToken?: number;
             expectedScopeKey?: string;
         }> = {}): Promise<AccountSecretSnapshot | null> {
-            const credentials = await readStoredCredentials();
+            const credentials = await readCredentials();
             if (!credentials) return null;
             const stillOwnsPublicationLifetime = () => {
                 if (input.expectedLifetimeToken === undefined) return true;
@@ -196,12 +216,12 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
         }
     }
 
-    function resolveSavedSecret(
+    function resolveBinding(
         snapshot: AccountSecretSnapshot,
         target: PluginAccountSecretBindingTarget,
-    ): AccountSettingsPluginSecretResolution | null {
+    ): PluginAccountSecretBinding | null {
         try {
-            return resolveAccountSettingsPluginSecret(snapshot.settings, target);
+            return resolveAccountSettingsPluginSecretBinding(snapshot.settings, target);
         } catch {
             throw custodyError(
                 'plugin_secret_custody_unavailable',
@@ -214,14 +234,33 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
         snapshot: AccountSecretSnapshot,
         target: PluginAccountSecretBindingTarget,
     ): Readonly<{
-        resolution: AccountSettingsPluginSecretResolution | null;
+        binding: PluginAccountSecretBinding | null;
         revision: string;
     }> {
-        const resolution = resolveSavedSecret(snapshot, target);
+        const binding = resolveBinding(snapshot, target);
+        const inspected = binding
+            ? createSavedSecretMaterializerFromSnapshotV1(snapshot).inspect(binding.savedSecretId)
+            : null;
         return Object.freeze({
-            resolution,
-            revision: revisionFor(snapshot, resolution),
+            binding,
+            revision: revisionFor(
+                snapshot,
+                binding,
+                inspected?.status === 'ready' ? inspected.fingerprint : null,
+                inspected?.status ?? null,
+            ),
         });
+    }
+
+    function personalSecretRevision(
+        snapshot: AccountSecretSnapshot,
+        binding: PluginAccountSecretBinding | null,
+    ): number | null {
+        if (!binding || parseSavedSecretRefV1(binding.savedSecretId).kind === 'shared_resource') return null;
+        return resolveAccountSettingsPluginSecret(snapshot.settings, targetFor(
+            binding.pluginId,
+            binding.localId,
+        ))?.secret.updatedAt ?? null;
     }
 
     function assertExpectedRevision(
@@ -373,34 +412,34 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                 const snapshot = requireBoundAccountSnapshot();
                 const current = state(snapshot, target);
                 return Object.freeze({
-                    state: current.resolution ? 'configured' as const : 'missing' as const,
+                    state: current.binding ? 'configured' as const : 'missing' as const,
                     revision: current.revision,
                 });
             },
             async get() {
                 const snapshot = requireBoundAccountSnapshot();
                 const current = state(snapshot, target);
-                if (!current.resolution) return null;
+                if (!current.binding) return null;
                 assertSnapshotCurrent(snapshot);
-                const value = decryptSecretValueWithKeysV1(
-                    current.resolution.secret.encryptedValue,
-                    snapshot.settingsSecretsReadKeys,
-                );
+                const material = createSavedSecretMaterializerFromSnapshotV1(snapshot)
+                    .resolve(current.binding.savedSecretId);
                 requireBoundAccountSnapshot();
-                if (value === null) {
+                if (material.status !== 'ready') {
                     throw custodyError(
                         'plugin_secret_custody_unavailable',
                         'Account plugin secret material is unavailable',
+                        { materialStatus: material.status },
+                        material.status === 'temporarily_unavailable',
                     );
                 }
-                return Object.freeze({ value, revision: current.revision });
+                return Object.freeze({ value: material.value, revision: current.revision });
             },
             async set(input) {
                 input.assertCurrent?.();
                 const snapshot = requireBoundAccountSnapshot();
                 const current = state(snapshot, target);
                 assertExpectedRevision(current, input.expectedRevision);
-                const existing = current.resolution;
+                const existing = current.binding;
                 const now = nowMs();
                 const savedSecretId = createId();
                 const after = await update(
@@ -409,8 +448,8 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                         ...applyAccountSettingsSavedSecretMutation(settings, {
                             kind: 'replacePluginSecret',
                             target,
-                            expectedSecretId: existing?.binding.savedSecretId ?? null,
-                            expectedSecretUpdatedAt: existing?.secret.updatedAt ?? null,
+                            expectedSecretId: existing?.savedSecretId ?? null,
+                            expectedSecretUpdatedAt: personalSecretRevision(snapshot, existing),
                             secret: {
                                 id: savedSecretId,
                                 name: savedSecretName(pluginId, declaration.id),
@@ -429,16 +468,15 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                         requireBoundAccountSnapshot();
                     },
                     (reread) => {
-                        const resolved = resolveSavedSecret(reread, target);
-                        if (!resolved || resolved.secret.id !== savedSecretId) return false;
-                        return decryptSecretValueWithKeysV1(
-                            resolved.secret.encryptedValue,
-                            reread.settingsSecretsReadKeys,
-                        ) === input.value;
+                        const binding = resolveBinding(reread, target);
+                        if (!binding || binding.savedSecretId !== savedSecretId) return false;
+                        const resolved = createSavedSecretMaterializerFromSnapshotV1(reread)
+                            .resolve(savedSecretId);
+                        return resolved.status === 'ready' && resolved.value === input.value;
                     },
                 );
                 const next = state(after, target);
-                if (!next.resolution) {
+                if (!next.binding) {
                     throw custodyError(
                         'plugin_secret_custody_unavailable',
                         'Account plugin secret mutation did not produce a binding',
@@ -451,7 +489,7 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                 const snapshot = requireBoundAccountSnapshot();
                 const current = state(snapshot, target);
                 assertExpectedRevision(current, input.expectedRevision);
-                const existing = current.resolution;
+                const existing = current.binding;
                 if (!existing) return Object.freeze({ revision: current.revision });
                 const after = await update(
                     snapshot,
@@ -459,15 +497,15 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                         ...applyAccountSettingsSavedSecretMutation(settings, {
                             kind: 'removePluginSecret',
                             target,
-                            expectedSecretId: existing.binding.savedSecretId,
-                            expectedSecretUpdatedAt: existing.secret.updatedAt,
+                            expectedSecretId: existing.savedSecretId,
+                            expectedSecretUpdatedAt: personalSecretRevision(snapshot, existing),
                         }).settings,
                     }),
                     () => {
                         input.assertCurrent?.();
                         requireBoundAccountSnapshot();
                     },
-                    (reread) => resolveSavedSecret(reread, target) === null,
+                    (reread) => resolveBinding(reread, target) === null,
                 );
                 return Object.freeze({ revision: state(after, target).revision });
             },
@@ -502,29 +540,39 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
         assertCurrent();
         const current = state(snapshot, target);
         assertExpectedRevision(current, input.expectedRevision);
-        const existing = current.resolution;
+        const selected = createSavedSecretMaterializerFromSnapshotV1(snapshot)
+            .inspect(input.savedSecretId);
+        if (selected.status !== 'ready') {
+            throw custodyError(
+                'plugin_secret_custody_unavailable',
+                'The selected Account SavedSecret is unavailable',
+                { materialStatus: selected.status },
+                selected.status === 'temporarily_unavailable',
+            );
+        }
+        const existing = current.binding;
         const after = await update(
             snapshot,
             (settings) => ({
                 ...applyAccountSettingsSavedSecretMutation(settings, {
                     kind: 'bindPluginSecret',
                     target,
-                    expectedSecretId: existing?.binding.savedSecretId ?? null,
-                    expectedSecretUpdatedAt: existing?.secret.updatedAt ?? null,
+                    expectedSecretId: existing?.savedSecretId ?? null,
+                    expectedSecretUpdatedAt: personalSecretRevision(snapshot, existing),
                     secretId: input.savedSecretId,
                 }).settings,
             }),
             assertCurrent,
             (reread) => {
-                const resolved = resolveSavedSecret(reread, target);
-                return resolved?.binding.savedSecretId === input.savedSecretId
-                    && resolved.binding.createdForBinding === false;
+                const binding = resolveBinding(reread, target);
+                return binding?.savedSecretId === input.savedSecretId
+                    && binding.createdForBinding === false;
             },
         );
         const next = state(after, target);
         if (
-            next.resolution?.binding.savedSecretId !== input.savedSecretId
-            || next.resolution.binding.createdForBinding !== false
+            next.binding?.savedSecretId !== input.savedSecretId
+            || next.binding.createdForBinding !== false
         ) {
             throw custodyError(
                 'plugin_secret_custody_unavailable',
@@ -560,7 +608,7 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
         assertCurrent();
         const current = state(snapshot, target);
         assertExpectedRevision(current, input.expectedRevision);
-        const existing = current.resolution;
+        const existing = current.binding;
         if (!existing) return Object.freeze({ revision: current.revision });
         const after = await update(
             snapshot,
@@ -568,12 +616,12 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                 ...applyAccountSettingsSavedSecretMutation(settings, {
                     kind: 'unbindPluginSecret',
                     target,
-                    expectedSecretId: existing.binding.savedSecretId,
-                    expectedSecretUpdatedAt: existing.secret.updatedAt,
+                    expectedSecretId: existing.savedSecretId,
+                    expectedSecretUpdatedAt: personalSecretRevision(snapshot, existing),
                 }).settings,
             }),
             assertCurrent,
-            (reread) => resolveSavedSecret(reread, target) === null,
+            (reread) => resolveBinding(reread, target) === null,
         );
         return Object.freeze({ revision: state(after, target).revision });
     }

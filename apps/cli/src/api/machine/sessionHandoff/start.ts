@@ -153,6 +153,28 @@ function shouldDeferSourcePreparation(
   return request.negotiatedTransportStrategy === 'direct_peer' && options.hasServerRoutedFallback;
 }
 
+function resolveSessionHandoffTransportStrategy(
+  request: SessionHandoffStartRequest,
+  availability: Readonly<{
+    machineTransferChannelPresent: boolean;
+    directPeerTransferPresent: boolean;
+  }>,
+): SessionHandoffStartRequest['negotiatedTransportStrategy'] {
+  const isAvailable = (strategy: NonNullable<SessionHandoffStartRequest['negotiatedTransportStrategy']>) => (
+    strategy === 'direct_peer'
+      ? availability.directPeerTransferPresent
+      : availability.machineTransferChannelPresent
+  );
+  if (
+    request.negotiatedTransportStrategy
+    && request.preferredTransportStrategies.includes(request.negotiatedTransportStrategy)
+    && isAvailable(request.negotiatedTransportStrategy)
+  ) {
+    return request.negotiatedTransportStrategy;
+  }
+  return request.preferredTransportStrategies.find(isAvailable);
+}
+
 export function createSessionHandoffStartActionHandler(
   params: RegisterSessionHandoffStartRpcHandlerInput,
 ): (raw: unknown, context?: RpcHandlerContext) => Promise<unknown> {
@@ -182,6 +204,21 @@ export function createSessionHandoffStartActionHandler(
     if (hasUnsupportedWorkspaceAction(raw)) return workspaceSyncUpdateRequired();
     const parsed = SessionHandoffStartRequestSchema.safeParse(raw);
     if (!parsed.success) return invalidRequest();
+    const negotiatedTransportStrategy = resolveSessionHandoffTransportStrategy(parsed.data, {
+      machineTransferChannelPresent,
+      directPeerTransferPresent: directPeerTransfer !== undefined,
+    });
+    if (!negotiatedTransportStrategy) {
+      return {
+        ok: false,
+        errorCode: 'transport_unavailable',
+        error: 'transport_unavailable',
+      } as const;
+    }
+    const request: SessionHandoffStartRequest = {
+      ...parsed.data,
+      negotiatedTransportStrategy,
+    };
 
     const reportBundleProgress = (label: string) => (
       progress: Readonly<{ currentBytes: number; totalBytes: number }>,
@@ -198,7 +235,7 @@ export function createSessionHandoffStartActionHandler(
       });
     };
 
-    const metadata = await loadSessionMetadata(parsed.data.sessionId, parsed.data.sourceMachineId);
+    const metadata = await loadSessionMetadata(request.sessionId, request.sourceMachineId);
     if (!metadata) {
       return { ok: false, errorCode: 'session_not_found' } as const;
     }
@@ -215,17 +252,24 @@ export function createSessionHandoffStartActionHandler(
         error: `${sourceTranscriptAuthority.error}:${sourceTranscriptAuthority.reason}`,
       } as const;
     }
-    invalidateDirectPeerRouteCacheForHandoffMachines([parsed.data.sourceMachineId, parsed.data.targetMachineId]);
+    if (sourceTranscriptAuthority.transcriptStorage !== request.sessionStorageMode) {
+      return {
+        ok: false,
+        errorCode: 'session_storage_mode_mismatch',
+        error: 'The source Session storage mode changed before handoff started',
+      } as const;
+    }
+    invalidateDirectPeerRouteCacheForHandoffMachines([request.sourceMachineId, request.targetMachineId]);
 
     const handoffId = `handoff_${createUuid()}`;
-    const operationRequestId = `handoff:${parsed.data.sessionId}:${parsed.data.sourceMachineId}:${parsed.data.targetMachineId}:${parsed.data.sessionStorageMode}:${parsed.data.negotiatedTransportStrategy ?? 'unselected'}`;
+    const operationRequestId = `handoff:${request.sessionId}:${request.sourceMachineId}:${request.targetMachineId}:${request.sessionStorageMode}:${request.negotiatedTransportStrategy}`;
     const exclusionRequest = {
       kind: 'handoff',
-      sessionId: parsed.data.sessionId,
+      sessionId: request.sessionId,
       requestId: operationRequestId,
-      sourceMachineId: parsed.data.sourceMachineId,
-      targetMachineId: parsed.data.targetMachineId,
-      semanticRequest: serializeSessionHandoffSemanticRequest(parsed.data),
+      sourceMachineId: request.sourceMachineId,
+      targetMachineId: request.targetMachineId,
+      semanticRequest: serializeSessionHandoffSemanticRequest(request),
     } as const;
     const exclusion = context?.signal
       ? await sessionOperationExclusion.acquire(exclusionRequest, {
@@ -246,8 +290,8 @@ export function createSessionHandoffStartActionHandler(
     let claimLossPersistence: Promise<void> | null = null;
     const hasServerRoutedFallback =
       machineTransferChannelPresent
-      && parsed.data.preferredTransportStrategies.includes('server_routed_stream');
-    let shouldDefer = shouldDeferSourcePreparation(parsed.data, { hasServerRoutedFallback });
+      && request.preferredTransportStrategies.includes('server_routed_stream');
+    let shouldDefer = shouldDeferSourcePreparation(request, { hasServerRoutedFallback });
     let deferredStartWorkPromise: Promise<void> | null = null;
     let deferredMarkerWritten = false;
 
@@ -333,18 +377,21 @@ export function createSessionHandoffStartActionHandler(
       // for deferred handoffs (instead of racing to `not_found` before export writes).
       await claimMaintenance.race(() => sourceExportStore.save({
         handoffId,
-        sessionId: parsed.data.sessionId,
-        sourceMachineId: parsed.data.sourceMachineId,
-        targetMachineId: parsed.data.targetMachineId,
+        sessionId: request.sessionId,
+        sourceMachineId: request.sourceMachineId,
+        targetMachineId: request.targetMachineId,
         exportedAtMs: Date.now(),
       }));
     };
 
     try {
-    const pendingStatus = buildStartPendingStatus({
-      handoffId,
-      sourceStopState: 'already_inactive',
-    });
+    const pendingStatus: SessionHandoffStatus = {
+      ...buildStartPendingStatus({
+        handoffId,
+        sourceStopState: 'already_inactive',
+      }),
+      transportStrategy: request.negotiatedTransportStrategy,
+    };
     if (shouldDefer) {
       const targetPath = resolveSessionHandoffTargetPathFromMetadata(metadata);
       if (!targetPath) {
@@ -362,8 +409,8 @@ export function createSessionHandoffStartActionHandler(
       // was negotiated so the target can remain on the direct-peer path even if a server-routed
       // fallback also exists.
       const isDirectPeerDeferredStart =
-        parsed.data.negotiatedTransportStrategy === 'direct_peer'
-        && parsed.data.preferredTransportStrategies.includes('direct_peer')
+        request.negotiatedTransportStrategy === 'direct_peer'
+        && request.preferredTransportStrategies.includes('direct_peer')
         && directPeerTransfer !== undefined;
 
       let deferredStartEndpointCandidates: readonly TransferEndpointCandidate[] = [];
@@ -375,7 +422,7 @@ export function createSessionHandoffStartActionHandler(
       if (isDirectPeerDeferredStart && directPeerTransfer) {
         const sourceStopState =
           stopSessionForHandoff
-            ? await claimMaintenance.race(() => stopSessionForHandoff(parsed.data.sessionId))
+            ? await claimMaintenance.race(() => stopSessionForHandoff(request.sessionId))
             : 'already_inactive';
         if (sourceStopState === 'failed') {
           await releaseSessionOperationClaim(handoffId);
@@ -389,7 +436,7 @@ export function createSessionHandoffStartActionHandler(
         try {
           const deferredDirectPeerStart = await claimMaintenance.race(() => prepareDeferredDirectPeerStart({
             handoffId,
-            request: parsed.data,
+            request,
             metadata,
             hasServerRoutedFallback,
             directPeerTransfer,
@@ -430,9 +477,9 @@ export function createSessionHandoffStartActionHandler(
 
       startDeferredWork({
         deferredStartWorkPromise,
-        sessionId: parsed.data.sessionId,
+        sessionId: request.sessionId,
         handoffId,
-        request: parsed.data,
+        request,
         metadata,
         ...(preExportedAgentBundle ? { preExportedAgentBundle } : {}),
         stopSessionForHandoff,
@@ -455,7 +502,7 @@ export function createSessionHandoffStartActionHandler(
     try {
       const stopState =
         stopSessionForHandoff
-          ? await claimMaintenance.race(() => stopSessionForHandoff(parsed.data.sessionId))
+          ? await claimMaintenance.race(() => stopSessionForHandoff(request.sessionId))
           : 'already_inactive';
       if (stopState === 'failed') {
         await releaseSessionOperationClaim(handoffId);
@@ -469,7 +516,7 @@ export function createSessionHandoffStartActionHandler(
       claimMaintenance.throwIfLost();
       const prepared = await claimMaintenance.race(() => prepareStartedState({
         handoffId,
-        request: parsed.data,
+        request,
         metadata,
         sourceStopState: stopState,
         onProgress: reportBundleProgress('Packaging session state'),
@@ -477,7 +524,10 @@ export function createSessionHandoffStartActionHandler(
 
       return {
         handoffId,
-        status: prepared.nextState.status,
+        status: {
+          ...prepared.nextState.status,
+          transportStrategy: request.negotiatedTransportStrategy,
+        },
         endpointCandidates: prepared.endpointCandidates,
         targetPath: prepared.targetPath,
         ...(prepared.nextState.handoffMetadataV2 ? { handoffMetadataV2: prepared.nextState.handoffMetadataV2 } : {}),

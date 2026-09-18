@@ -17,14 +17,16 @@ import {
     discardPendingQueueV2Messages,
     listPendingQueueV2LocalIdsFromServer,
     materializeNextPendingQueueV2Message,
+    materializeNextPendingExecutionRunMessage,
     readPendingQueueMaterializationTransportDiagnostic,
     settlePendingQueueV2Admission,
     type PendingMaterializationDeliveryTiming,
+    type PendingClaimForegroundState,
     type PendingQueueMaterializedMessage,
     type PendingQueueMaterializeNextResult,
 } from '../../pendingQueueV2Transport';
 import { runPendingQueueV2ReleasedServerAdapter } from '../../pendingQueueV2ReleasedServerAdapter';
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { SessionSyncPendingInputServerContractResult } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
 import { runSupervisedRequest } from '@/api/connection/requestSupervision/runSupervisedRequest';
 import { addDiscardedCommittedMessageLocalIds } from '../../../queue/discardedCommittedMessageLocalIds';
@@ -38,21 +40,58 @@ import { serializeAxiosErrorForLog } from '../../../client/serializeAxiosErrorFo
 import { serializeEphemeralSendError } from '../transcript/ephemeralSendOutcome';
 import type { SessionSnapshotRefreshReason } from '../../sessionSnapshotRefreshReason';
 import {
-    decryptSessionPayload,
+    openSessionMessageContent,
+    deriveSessionInputEqualityTagV1,
     encryptSessionPayload,
     type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import type { SessionCatchUpRequest } from '../../sessionChangesSyncOnConnect';
 import {
     coerceSessionUserPromptV1,
-    assertSessionInputAdmissionReceiptForRequestV1,
+    assertSessionInputAdmissionReceiptForRequest,
+    PENDING_INPUT_PROTOCOL_VERSION_V3,
+    SESSION_INPUT_REQUEST_META_KEY,
     SESSION_MESSAGE_PROVENANCE_META_KEY,
-    readSessionInputRequestV1,
+    readSessionInputRequest,
     settleSessionInputRequestV1,
+    settleSessionInputRequestV2,
     settleSessionMessageProvenanceV1,
-    withSessionInputAuthorityV1,
+    settleSessionMessageProvenanceV2,
+    SessionBroadcastContainerSchema,
+    withSessionInputAuthority,
+    type SessionInputRequest,
+    type SessionInputAuthority,
     type SessionInputSettlementValidationV1,
 } from '@happier-dev/protocol';
+import { buildImmutableSessionInputEqualityEnvelopeV1 } from '@/session/services/sessionInputEqualityEnvelope';
+
+/**
+ * The exact admission/custody facts this owner hands to one target-bound runtime
+ * consumer. Runtime code composes this type; it must not publish a second
+ * admitted-input schema or re-derive these facts from the pending row.
+ */
+export type ExecutionRunAdmittedPendingInputV1 = UserMessage & Readonly<{
+    authorAccountId: string | null;
+    inputAdmissionReceipt: PendingQueueMaterializedMessage['inputAdmissionReceipt'] | null;
+    pendingProviderAction: PendingQueueMaterializedMessage['providerAction'] | null;
+    pendingRequestedAction?: PendingQueueMaterializedMessage['requestedAction'];
+}>;
+
+export type ExecutionRunPendingInputBinding = Readonly<{
+    recipient: Readonly<{ kind: 'execution_run'; runId: string }>;
+    sidechainId: string;
+    isCurrent: () => boolean;
+    foregroundState: () => PendingClaimForegroundState;
+    getMetadataSnapshot: () => Metadata | null;
+    consume: (message: ExecutionRunAdmittedPendingInputV1) => boolean;
+    /** Existing Session pending-version wake, projected to this exact target. */
+    wake?: () => void;
+}>;
+
+type ExecutionRunPendingMaterialization = ExecutionRunPendingInputBinding & Readonly<{
+    hasCustody: (localId: string) => boolean;
+    markCustody: (localId: string) => void;
+}>;
 
 function arePendingQueueStatesEqual(left: PendingQueueState, right: PendingQueueState): boolean {
     if (left.known !== right.known) return false;
@@ -99,18 +138,10 @@ function readMaterializedPendingUserMessage(params: Readonly<{
     const message = params.message;
     if (!message?.content) return null;
     let body: unknown;
-    if (message.content.t === 'plain') {
-        body = message.content.v;
-    } else {
-        if (params.mode !== 'e2ee') return null;
-        try {
-            body = decryptSessionPayload({
-                ctx: params.ctx,
-                ciphertextBase64: message.content.c,
-            });
-        } catch {
-            return null;
-        }
+    try {
+        body = openSessionMessageContent({ ...params, content: message.content });
+    } catch {
+        return null;
     }
     const bodyWithTransportFields = {
         ...(body && typeof body === 'object' && !Array.isArray(body) ? body : {}),
@@ -143,15 +174,10 @@ function readPendingStoredPayload(
 ): Record<string, unknown> | null {
     if (!message.content) return null;
     let payload: unknown;
-    if (message.content.t === 'plain') {
-        payload = message.content.v;
-    } else {
-        if (crypto.mode !== 'e2ee') return null;
-        try {
-            payload = decryptSessionPayload({ ctx: crypto.ctx, ciphertextBase64: message.content.c });
-        } catch {
-            return null;
-        }
+    try {
+        payload = openSessionMessageContent({ ...crypto, content: message.content });
+    } catch {
+        return null;
     }
     return payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -159,8 +185,9 @@ function readPendingStoredPayload(
 }
 
 function buildInputSettlementValidation(
-    request: NonNullable<ReturnType<typeof readSessionInputRequestV1>>,
+    request: SessionInputRequest,
 ): SessionInputSettlementValidationV1 | undefined {
+    if (request.v === 2) return undefined;
     const validation = {
         ...(request.sourceSession
             ? {
@@ -182,6 +209,7 @@ async function reconcileProtectedPendingInput(params: Readonly<{
     message: PendingQueueMaterializedMessage;
     metadata: Metadata | null;
     crypto: SessionStoredContentCryptoContext;
+    executionRun?: boolean;
 }>): Promise<ReconciledPendingInput> {
     const localId = params.message.localId;
     const payload = readPendingStoredPayload(params.message, params.crypto);
@@ -189,8 +217,27 @@ async function reconcileProtectedPendingInput(params: Readonly<{
     const meta = payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
         ? payload.meta as Record<string, unknown>
         : {};
-    const request = readSessionInputRequestV1(meta);
-    if (!Object.hasOwn(meta, 'happierInputRequestV1')) {
+    const request = readSessionInputRequest(meta);
+    const requestEqualityEvidenceV1 = params.executionRun && params.crypto.mode === 'e2ee'
+        ? {
+            kind: 'e2eeTag' as const,
+            tag: deriveSessionInputEqualityTagV1({
+                ctx: params.crypto.ctx,
+                sessionId: params.sessionId,
+                requestEnvelope: buildImmutableSessionInputEqualityEnvelopeV1({ localId, record: payload }),
+                requestedAction: params.message.requestedAction ?? { v: 1, kind: 'enqueue' },
+            }),
+        }
+        : undefined;
+    if (!Object.hasOwn(meta, SESSION_INPUT_REQUEST_META_KEY)) {
+        if (requestEqualityEvidenceV1) {
+            const result = await settlePendingQueueV2Admission({
+                socket: params.socket, sessionId: params.sessionId, localId,
+                decision: { kind: 'admit', finalContent: params.message.content, requestEqualityEvidenceV1 },
+            });
+            if (result.status === 'rejected') return { status: 'rejected' };
+            if (result.status === 'outcomeUnknown' || result.localId !== localId) return { status: 'outcomeUnknown' };
+        }
         return { status: 'legacy', message: params.message };
     }
     if (!request) {
@@ -205,9 +252,9 @@ async function reconcileProtectedPendingInput(params: Readonly<{
             : { status: 'rejected' };
     }
 
-    let inputAdmissionReceipt: ReturnType<typeof assertSessionInputAdmissionReceiptForRequestV1>;
+    let inputAdmissionReceipt: ReturnType<typeof assertSessionInputAdmissionReceiptForRequest>;
     try {
-        inputAdmissionReceipt = assertSessionInputAdmissionReceiptForRequestV1({
+        inputAdmissionReceipt = assertSessionInputAdmissionReceiptForRequest({
             request,
             inputAdmissionReceipt: params.message.inputAdmissionReceipt,
         });
@@ -230,13 +277,11 @@ async function reconcileProtectedPendingInput(params: Readonly<{
 
     const currentSessionPermissionCeiling = resolvePermissionIntentFromSessionMetadata(params.metadata)?.intent
         ?? 'default';
-    let authority: ReturnType<typeof settleSessionInputRequestV1>;
+    let authority: SessionInputAuthority;
     try {
-        authority = settleSessionInputRequestV1({
-            request,
-            currentSessionPermissionCeiling,
-            inputAdmissionReceipt,
-        });
+        authority = request.v === 2
+            ? settleSessionInputRequestV2({ request, currentSessionPermissionCeiling, inputAdmissionReceipt })
+            : settleSessionInputRequestV1({ request, currentSessionPermissionCeiling, inputAdmissionReceipt });
     } catch {
         const result = await settlePendingQueueV2Admission({
             socket: params.socket,
@@ -257,12 +302,18 @@ async function reconcileProtectedPendingInput(params: Readonly<{
     const finalPayload = {
         ...payload,
         meta: {
-            ...withSessionInputAuthorityV1(meta, authority),
-            [SESSION_MESSAGE_PROVENANCE_META_KEY]: settleSessionMessageProvenanceV1({
-                request,
-                requestedProvenance: meta[SESSION_MESSAGE_PROVENANCE_META_KEY],
-                inputAdmissionReceipt,
-            }),
+            ...withSessionInputAuthority(meta, authority),
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: request.v === 2
+                ? settleSessionMessageProvenanceV2({
+                    request,
+                    requestedProvenance: meta[SESSION_MESSAGE_PROVENANCE_META_KEY],
+                    inputAdmissionReceipt,
+                })
+                : settleSessionMessageProvenanceV1({
+                    request,
+                    requestedProvenance: meta[SESSION_MESSAGE_PROVENANCE_META_KEY],
+                    inputAdmissionReceipt,
+                }),
         },
     };
     const finalContent = params.message.content.t === 'plain'
@@ -282,6 +333,7 @@ async function reconcileProtectedPendingInput(params: Readonly<{
         decision: {
             kind: 'admit',
             finalContent,
+            ...(requestEqualityEvidenceV1 ? { requestEqualityEvidenceV1 } : {}),
             ...(validation ? { validation } : {}),
         },
     });
@@ -326,6 +378,7 @@ export type SessionClientInteractionApi = Readonly<{
     discardPendingMessageQueueV2All: (opts: { reason: 'switch_to_local' | 'manual' }) => Promise<number>;
     discardCommittedMessageLocalIds: (opts: { localIds: string[]; reason: 'switch_to_local' | 'manual' }) => Promise<number>;
     materializeNextPendingMessageSafely: (opts?: MaterializeNextPendingOptions) => Promise<MaterializeNextPendingResult>;
+    materializeNextExecutionRunPendingMessageSafely: (target: ExecutionRunPendingMaterialization, opts?: MaterializeNextPendingOptions) => Promise<MaterializeNextPendingResult>;
     popPendingMessage: () => Promise<boolean>;
 }>;
 
@@ -333,12 +386,13 @@ export function createSessionClientInteractionApi(
     deps: Readonly<{
         sessionId: string;
         token: string;
+        serverUrl?: string;
         getClosed: () => boolean;
         setClosed: (value: boolean) => void;
         getSocket: () => Socket<ServerToClientEvents, ClientToServerEvents>;
         getSessionConnectionEpoch: () => number;
         getSessionSyncPendingInputServerContractResult: () => SessionSyncPendingInputServerContractResult | null;
-        getUserSocket: () => Socket<ServerToClientEvents, ClientToServerEvents>;
+        getUserSocket: () => Socket<ServerToClientEvents, ClientToServerEvents> | null;
         getSessionConnectionSupervisor: () => import('@happier-dev/connection-supervisor').ManagedConnectionSupervisor | null;
         getRpcHandlerManager: () => { handleRequest: (data: { method: string; params: unknown }) => Promise<unknown> };
         getMetadata: () => Metadata | null;
@@ -375,6 +429,7 @@ export function createSessionClientInteractionApi(
         logPendingMaterializationSkip?: (stage: string) => void;
         maybeScheduleUserSocketDisconnect: () => void;
         handleSessionScopedUpdate: (data: Update) => void;
+        onSessionFollowInvalidated?: () => void;
         deliverMaterializedUserMessageToAgentQueue?: (
             message: UserMessage,
             providerAction: PendingQueueMaterializedMessage['providerAction'],
@@ -400,14 +455,17 @@ export function createSessionClientInteractionApi(
         getStoredContentCryptoContext: () => SessionStoredContentCryptoContext;
     }>,
 ): SessionClientInteractionApi {
+    const serverUrl = deps.serverUrl ?? resolveServerHttpBaseUrl();
+    const metadataWaitAbortController = new AbortController();
     let pendingQueueStateReconcileInFlight: Promise<boolean> | null = null;
     let lastPendingQueueStateReconcileAt = 0;
 
-    const runMaterializeNextPendingMessageInner = async (opts: MaterializeNextPendingOptions = {}): Promise<{
+    const runMaterializeNextPendingMessageInner = async (opts: MaterializeNextPendingOptions = {}, target?: ExecutionRunPendingMaterialization): Promise<{
         didMaterialize: boolean;
         result: MaterializeNextPendingResult;
     }> => {
-        const deliveryTiming = deps.resolvePendingClaimDeliveryTiming?.(opts.deliveryTiming) ?? opts.deliveryTiming;
+        const deliveryTiming = target ? opts.deliveryTiming
+            : deps.resolvePendingClaimDeliveryTiming?.(opts.deliveryTiming) ?? opts.deliveryTiming;
         const contractResult = deps.getSessionSyncPendingInputServerContractResult();
         const socket = deps.getSocket();
         const hasCurrentContractAuthority = (): boolean => (
@@ -418,6 +476,7 @@ export function createSessionClientInteractionApi(
             && deps.getSocket() === socket
             && socket.connected === true
             && !deps.getClosed()
+            && (!target || target.isCurrent())
         );
         if (!contractResult || !hasCurrentContractAuthority()) {
             return { didMaterialize: false, result: { type: 'retryable_transport' } };
@@ -427,6 +486,12 @@ export function createSessionClientInteractionApi(
         }
         if (contractResult.pendingInput === 'indeterminate') {
             return { didMaterialize: false, result: { type: 'retryable_transport' } };
+        }
+        if (target && (contractResult.pendingInputProtocolVersion ?? 0) < PENDING_INPUT_PROTOCOL_VERSION_V3) {
+            return {
+                didMaterialize: false,
+                result: { type: 'unsupported', code: 'session_input_target_update_required' },
+            };
         }
         const supervisor = deps.getSessionConnectionSupervisor();
         if (!supervisor) {
@@ -443,7 +508,7 @@ export function createSessionClientInteractionApi(
                     requireOnline: false,
                     request: () => runPendingQueueV2ReleasedServerAdapter({
                         token: deps.token,
-                        serverUrl: resolveServerHttpBaseUrl(),
+                        serverUrl,
                         sessionId: deps.sessionId,
                         contractResult,
                         getContractResult: deps.getSessionSyncPendingInputServerContractResult,
@@ -467,6 +532,7 @@ export function createSessionClientInteractionApi(
             }
         }
         let materializeResult: PendingQueueMaterializeNextResult;
+        let targetAuthorAccountId: string | null = null;
         try {
             reportDiagnosticPhase('materialize.server_claim');
             materializeResult = await runSupervisedRequest({
@@ -474,8 +540,18 @@ export function createSessionClientInteractionApi(
                 requireAuth: true,
                 requireOnline: false,
                 request: async () => {
+                    if (target) {
+                        const result = await materializeNextPendingExecutionRunMessage({
+                            socket, sessionId: deps.sessionId, recipient: target.recipient,
+                            sidechainId: target.sidechainId,
+                            deliveryTiming: deliveryTiming ?? 'after_foreground_ready',
+                            foregroundState: target.foregroundState(),
+                        });
+                        targetAuthorAccountId = result.authorAccountId;
+                        return result;
+                    }
                     const pendingQueueState = deps.getPendingQueueState();
-                    return await materializeNextPendingQueueV2Message({
+                    return await runWithServerHttpBaseUrl(serverUrl, async () => materializeNextPendingQueueV2Message({
                         token: deps.token,
                         sessionId: deps.sessionId,
                         socket,
@@ -486,7 +562,7 @@ export function createSessionClientInteractionApi(
                         ...(deliveryTiming === 'after_runtime_idle' && opts.expectedRuntimeActivityRevision !== undefined
                             ? { expectedRuntimeActivityRevision: opts.expectedRuntimeActivityRevision }
                             : {}),
-                    });
+                    }));
                 },
             });
         } catch (error) {
@@ -512,7 +588,7 @@ export function createSessionClientInteractionApi(
         if (!hasCurrentContractAuthority()) {
             return { didMaterialize: false, result: { type: 'retryable_transport' } };
         }
-        const pendingStateChanged = deps.observePendingMaterializeResult({
+        const pendingStateChanged = !target && deps.observePendingMaterializeResult({
             didMaterialize: materializeResult.didMaterialize,
             pendingQueueState: materializeResult.pendingQueueState,
         });
@@ -544,13 +620,15 @@ export function createSessionClientInteractionApi(
         let materializedMessage: PendingQueueMaterializedMessage | null | undefined = materializedMessageWithLocalId;
         if (materializedMessage) {
             reportDiagnosticPhase('materialize.input_admission');
-            const reconciled = await reconcileProtectedPendingInput({
+            const messageToReconcile = materializedMessage;
+            const reconciled = await runWithServerHttpBaseUrl(serverUrl, () => reconcileProtectedPendingInput({
                 socket,
                 sessionId: deps.sessionId,
-                message: materializedMessage,
-                metadata: deps.getMetadata(),
+                message: messageToReconcile,
+                metadata: target ? target.getMetadataSnapshot() : deps.getMetadata(),
                 crypto: deps.getStoredContentCryptoContext(),
-            });
+                ...(target ? { executionRun: true } : {}),
+            }));
             if (reconciled.status === 'outcomeUnknown') {
                 return {
                     didMaterialize: false,
@@ -562,21 +640,35 @@ export function createSessionClientInteractionApi(
             }
             materializedMessage = reconciled.message;
         }
+        if (!hasCurrentContractAuthority()) {
+            return { didMaterialize: false, result: { type: 'retryable_transport' } };
+        }
         const materializedUpdate = createMaterializedPendingQueueUpdate({
             sessionId: deps.sessionId,
             message: materializedMessage,
         });
-        if (materializedLocalId) {
+        const alreadyInTargetCustody = target && materializedLocalId ? target.hasCustody(materializedLocalId) : false;
+        if (materializedLocalId && target) {
+            target.markCustody(materializedLocalId);
+        } else if (materializedLocalId) {
             deps.markPendingQueueMaterializedLocalId(materializedLocalId);
         }
-        if (materializedUpdate) {
+        if (materializedUpdate && !target) {
             deps.handleSessionScopedUpdate(materializedUpdate);
         }
         const materializedUserMessage = readMaterializedPendingUserMessage({
             message: materializedMessage,
             ...deps.getStoredContentCryptoContext(),
         });
-        const deliveredMaterializedMessage = materializedUserMessage
+        const deliveredMaterializedMessage = target
+            ? Boolean(materializedUserMessage && !alreadyInTargetCustody && target.consume({
+                ...materializedUserMessage,
+                authorAccountId: targetAuthorAccountId,
+                inputAdmissionReceipt: materializedMessage?.inputAdmissionReceipt ?? null,
+                pendingProviderAction: materializedMessage?.providerAction ?? null,
+                pendingRequestedAction: materializedMessage?.requestedAction,
+            }))
+            : materializedUserMessage
             ? (deps.deliverMaterializedUserMessageToAgentQueue?.(
                 materializedUserMessage,
                 materializedMessage?.providerAction ?? null,
@@ -631,6 +723,10 @@ export function createSessionClientInteractionApi(
     };
 
     return {
+        async materializeNextExecutionRunPendingMessageSafely(target, opts = {}) {
+            if (!target.isCurrent() || deps.getClosed()) return { type: 'no_pending' };
+            return (await runMaterializeNextPendingMessageInner(opts, target)).result;
+        },
         onUserMessage(callback) {
             logger.debug('[API] onUserMessage callback attached', {
                 sessionId: deps.sessionId,
@@ -687,7 +783,7 @@ export function createSessionClientInteractionApi(
         },
 
         waitForMetadataUpdate(abortSignal) {
-            if (abortSignal?.aborted) {
+            if (deps.getClosed() || abortSignal?.aborted) {
                 return Promise.resolve(false);
             }
 
@@ -715,27 +811,23 @@ export function createSessionClientInteractionApi(
                             onUpdate();
                         });
                 };
-                const onDisconnect = () => {
-                    cleanup();
-                    resolve(false);
-                };
                 const cleanup = () => {
                     if (cleanedUp) return;
                     cleanedUp = true;
                     deps.offMetadataUpdated(onUpdate);
                     abortSignal?.removeEventListener('abort', onAbort);
-                    deps.getUserSocket().off('connect', onConnect);
-                    deps.getUserSocket().off('disconnect', onDisconnect);
+                    metadataWaitAbortController.signal.removeEventListener('abort', onAbort);
+                    deps.getUserSocket()?.off('connect', onConnect);
                     deps.maybeScheduleUserSocketDisconnect();
                 };
 
                 deps.onMetadataUpdated(onUpdate);
-                deps.getUserSocket().on('connect', onConnect);
-                deps.getUserSocket().on('disconnect', onDisconnect);
+                deps.getUserSocket()?.on('connect', onConnect);
                 abortSignal?.addEventListener('abort', onAbort, { once: true });
+                metadataWaitAbortController.signal.addEventListener('abort', onAbort, { once: true });
                 deps.kickUserSocketConnect();
 
-                if (abortSignal?.aborted) {
+                if (deps.getClosed() || abortSignal?.aborted) {
                     onAbort();
                     return;
                 }
@@ -791,12 +883,12 @@ export function createSessionClientInteractionApi(
                     clearTimeout(timer);
                     deps.offMetadataUpdated(onUpdate);
                     abortSignal?.removeEventListener('abort', onAbort);
-                    deps.getUserSocket().off('disconnect', onDisconnect);
+                    deps.getUserSocket()?.off('disconnect', onDisconnect);
                     deps.maybeScheduleUserSocketDisconnect();
                 };
 
                 deps.onMetadataUpdated(onUpdate);
-                deps.getUserSocket().on('disconnect', onDisconnect);
+                deps.getUserSocket()?.on('disconnect', onDisconnect);
                 abortSignal?.addEventListener('abort', onAbort, { once: true });
                 onUpdate();
             });
@@ -835,10 +927,11 @@ export function createSessionClientInteractionApi(
                 });
             }
             deps.setClosed(true);
+            metadataWaitAbortController.abort();
             deps.clearPendingMaterializedState();
             deps.clearCommittedLocalIdCleanupTimers();
             try {
-                deps.getUserSocket().close();
+                deps.getUserSocket()?.close();
             } catch {
                 // ignore
             }
@@ -856,7 +949,7 @@ export function createSessionClientInteractionApi(
             });
 
             socket.on(SOCKET_RPC_EVENTS.REQUEST, async (data: { method: string; params: unknown }, callback: (response: unknown) => void) => {
-                callback(await deps.getRpcHandlerManager().handleRequest(data));
+                callback(await runWithServerHttpBaseUrl(serverUrl, () => deps.getRpcHandlerManager().handleRequest(data)));
             });
             socket.on('connect_error', (error) => {
                 logger.debug('[API] Socket connection error:', {
@@ -864,7 +957,14 @@ export function createSessionClientInteractionApi(
                 });
             });
             socket.on('update', (data: Update) => deps.handleSessionScopedUpdate(data));
-            socket.on('session', () => {});
+            socket.on('session', (raw: unknown) => {
+                if (!deps.onSessionFollowInvalidated) return;
+                const parsed = SessionBroadcastContainerSchema.safeParse(raw);
+                if (!parsed.success) return;
+                if (parsed.data.body.t !== 'session-changed') return;
+                if (parsed.data.body.sessionId !== deps.sessionId) return;
+                deps.onSessionFollowInvalidated();
+            });
             socket.on('error', (error) => {
                 logger.debug('[API] Socket error:', {
                     error: serializeAxiosErrorForLog(error),
@@ -873,10 +973,10 @@ export function createSessionClientInteractionApi(
         },
 
         async listPendingMessageQueueV2LocalIds() {
-            const request = () => listPendingQueueV2LocalIdsFromServer({
+            const request = () => runWithServerHttpBaseUrl(serverUrl, async () => listPendingQueueV2LocalIdsFromServer({
                 token: deps.token,
                 sessionId: deps.sessionId,
-            });
+            }));
             const supervisor = deps.getSessionConnectionSupervisor();
             if (!supervisor) {
                 return request();
@@ -956,12 +1056,12 @@ export function createSessionClientInteractionApi(
             if (pendingQueueState.known && pendingQueueState.pendingCount <= 0) return 0;
             const localIds = await this.listPendingMessageQueueV2LocalIds();
             if (localIds.length === 0) return 0;
-            const request = () => discardPendingQueueV2Messages({
+            const request = () => runWithServerHttpBaseUrl(serverUrl, async () => discardPendingQueueV2Messages({
                 token: deps.token,
                 sessionId: deps.sessionId,
                 localIds,
                 reason: opts.reason,
-            });
+            }));
             const supervisor = deps.getSessionConnectionSupervisor();
             if (!supervisor) {
                 return request();

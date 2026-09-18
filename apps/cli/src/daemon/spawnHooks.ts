@@ -26,6 +26,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { resolveAgentCliCommand } from '@/packagedRuntime/managedTools/agentCliResolution';
+import { buildAgentCliLaunchSpecFromResolution } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 import { getRuntimeInstallableAdapter } from '@/packagedRuntime/installables/registry';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
 
@@ -88,10 +89,12 @@ function resolveProviderCliTool(input: Readonly<{
   try {
     const resolved = resolveAgentCliCommand(input.toolId, { processEnv: input.processEnv });
     if (!resolved) return null;
+    const launch = buildAgentCliLaunchSpecFromResolution(resolved, { processEnv: input.processEnv });
+    if (!launch) return null;
     return {
       ok: true,
-      command: resolved.command,
-      args: [],
+      command: launch.command,
+      args: [...launch.args],
       source: toDaemonToolSource(resolved.source),
     };
   } catch {
@@ -206,10 +209,11 @@ export function createDaemonSpawnToolResolutionContext(params: Readonly<{
         return { ok: false, reasonCode: 'aborted', errorMessage: 'Tool execution was cancelled.' };
       }
 
+      const env = { ...params.processEnv, ...(input.env ?? {}) };
       const resolved = await (async (): Promise<DaemonResolvedToolV1> => {
         const providerCliTool = resolveProviderCliTool({
           toolId: input.toolId,
-          processEnv: params.processEnv,
+          processEnv: env,
         });
         if (providerCliTool) {
           diagnostics.info({
@@ -243,7 +247,6 @@ export function createDaemonSpawnToolResolutionContext(params: Readonly<{
 
       if (!resolved.ok) return resolved;
 
-      const env = { ...params.processEnv, ...(input.env ?? {}) };
       const args = [...resolved.args, ...(input.args ?? [])];
       const invocation = resolveWindowsCommandInvocation({
         command: resolved.command,

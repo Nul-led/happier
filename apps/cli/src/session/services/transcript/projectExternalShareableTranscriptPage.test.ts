@@ -524,6 +524,52 @@ describe('projectExternalShareableTranscriptPage', () => {
     expect(nullFinal).toMatchObject({ nextCursor: '4', scannedThroughSeq: 4, hasMore: false });
   });
 
+  it('preserves a valid final assistant for continuation when the aggregate consumed-input budget is full', async () => {
+    const firstInputs = Array.from({ length: 60 }, (_, index) => index + 1);
+    const secondInputs = Array.from({ length: 60 }, (_, index) => index + 62);
+    const turns = [firstInputs, secondInputs].map((userMessageSeqs, index) => ({
+      ...completedTurn,
+      turnId: `turn-${index + 1}`,
+      transcriptAnchors: {
+        startSeqInclusive: userMessageSeqs[0]!,
+        endSeqInclusive: userMessageSeqs.at(-1)! + 1,
+        userMessageSeqs,
+        finalAssistantMessageSeq: userMessageSeqs.at(-1)! + 1,
+      },
+    }));
+    const secondUserRows = secondInputs.map((seq) => row(seq, 'user', `input-${seq}`));
+    const params = {
+      sessionId: 'session-1', turns, ctx: null, limit: 100,
+      upstreamHasMore: false, publicationBlocked: false,
+    };
+    const firstPage = await projectExternalShareableTranscriptPage({
+      ...params,
+      rows: [row(61, 'agent', 'first final'), ...secondUserRows, row(122, 'agent', 'second final')],
+      referencedUserRows: firstInputs.map((seq) => row(seq, 'user', `input-${seq}`)),
+      cursorSeq: 60,
+    });
+    expect(firstPage).toMatchObject({ nextCursor: '121', scannedThroughSeq: 121, hasMore: true });
+    expect(firstPage.items.filter((item) => item.kind === 'assistantText')).toEqual([
+      expect.objectContaining({
+        seq: 61, text: 'first final',
+        consumedInputs: firstInputs.map((seq) => expect.objectContaining({ localId: `local-${seq}` })),
+      }),
+    ]);
+    const secondPage = await projectExternalShareableTranscriptPage({
+      ...params,
+      rows: [row(122, 'agent', 'second final')],
+      referencedUserRows: secondUserRows,
+      cursorSeq: Number(firstPage.nextCursor),
+    });
+    expect(secondPage).toMatchObject({ nextCursor: '122', scannedThroughSeq: 122, hasMore: false });
+    expect(secondPage.items).toEqual([
+      expect.objectContaining({
+        kind: 'assistantText', seq: 122, text: 'second final',
+        consumedInputs: secondInputs.map((seq) => expect.objectContaining({ localId: `local-${seq}` })),
+      }),
+    ]);
+  });
+
   it('keeps a fitting prefix when aggregate candidates would exceed the serialized page ceiling', async () => {
     const userSeqs = Array.from({ length: 50 }, (_, index) => index + 1);
     const rows = userSeqs.map((seq) => row(seq, 'user', 'x'.repeat(50_000)));

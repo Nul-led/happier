@@ -18,6 +18,38 @@ function readSource(path: string): string {
 }
 
 describe('daemon spawn hook substrate', () => {
+  it('runs a JavaScript Agent override without system Node on PATH', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-preflight-js-'));
+    try {
+      const script = join(root, 'claude.cjs');
+      await writeFile(script, '#!/usr/bin/env node\nprocess.stdout.write("selected-agent");\n');
+      await chmod(script, 0o755);
+      const context = daemonSpawnHooks.createDaemonSpawnToolResolutionContext({
+        processEnv: { PATH: '', HAPPIER_CLAUDE_PATH: script, HAPPIER_JS_RUNTIME_PATH: process.execPath },
+      });
+      await expect(context.runSystemTool({ toolId: 'claude', reason: 'Agent prerequisite', timeoutMs: 2_000 }))
+        .resolves.toMatchObject({ ok: true, exitCode: 0, stdout: 'selected-agent' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the Agent executable from the supplied environment before running it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-preflight-env-'));
+    try {
+      const script = join(root, 'claude.cjs');
+      await writeFile(script, '#!/usr/bin/env node\nprocess.stdout.write("profile-agent");\n');
+      await chmod(script, 0o755);
+      const context = daemonSpawnHooks.createDaemonSpawnToolResolutionContext({ processEnv: { PATH: '' } });
+      await expect(context.runSystemTool({
+        toolId: 'claude', reason: 'Selected Agent prerequisite', timeoutMs: 2_000,
+        env: { HAPPIER_CLAUDE_PATH: script, HAPPIER_JS_RUNTIME_PATH: process.execPath },
+      })).resolves.toMatchObject({ ok: true, exitCode: 0, stdout: 'profile-agent' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the daemon hook contract provider-neutral', () => {
     const source = readSource('./spawnHooks.ts');
 

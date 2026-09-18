@@ -222,6 +222,12 @@ export async function resolveCliEngineRegistry(
                         ...(params?.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : {}),
                         runnerAgentSessionRuntimeSource:
                             params?.runnerAgentSessionRuntimeSource ?? null,
+                        ...(params?.prepareTeamCredentialProviderBinding
+                            ? {
+                                prepareTeamCredentialProviderBinding:
+                                    params.prepareTeamCredentialProviderBinding,
+                            }
+                            : {}),
                     });
                 } finally {
                     await runtimeRegistryHandle?.release();

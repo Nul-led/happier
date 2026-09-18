@@ -7,9 +7,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { Credentials, StoredCredentials } from '@/persistence';
-import type { AgentStateResponseTargetDispatch } from '@/agent/permissions/agentStateRequestStore';
+import {
+  AgentStateRequestStore,
+  type AgentStateResponseTargetDispatch,
+} from '@/agent/permissions/agentStateRequestStore';
+import type { AgentState } from '@/api/types';
+import { buildRunScopedExecutionPermissionRequestId } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
+import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
+import type { ExecutionRunHostRunScopeBinding } from '@/agent/runtime/registry/engineRegistryTypes';
 import {
   createTestExecutionRunHostRuntime,
   type TestExecutionRunHostRuntime,
@@ -17,18 +24,28 @@ import {
 } from '@/agent/runtime/bridges/executionRun/testkit';
 import { buildExecutionRunProfileCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
+import {
+  accountSettingsParse,
+  sealSavedSecretResourceStoredContentV1,
+} from '@happier-dev/protocol';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 type TestRuntimeFactoryInput = Readonly<{
   cwd: string;
   runId?: string;
+  scope: 'session_owned' | 'detached';
   backendId: string;
   backendTarget?: unknown;
   modelId?: string;
   permissionMode: string;
   accountSettings?: Readonly<Record<string, unknown>> | null;
+  secretReferenceEnvironment?: Readonly<Record<string, string>>;
   start?: unknown;
   happyHomeDir?: string | null;
   parentSessionStateTarget?: unknown;
+  happierSessionId?: string;
+  sessionInteractionHost?: unknown;
+  sessionOwnedRunScope?: unknown;
   onConnectedServicesRegistration?: (registration: typeof CONNECTED_SERVICES_REGISTRATION) => void | Promise<void>;
 }>;
 
@@ -43,7 +60,7 @@ const CONNECTED_SERVICES_REGISTRATION = {
   agentId: TEST_PRIMARY_BACKEND_ID,
   materializationKey: 'replaced-at-runtime',
   connectedServicesBindings: {
-    v: 1 as const,
+    v: 2 as const,
     bindingsByServiceId: {},
   },
   connectedServiceSelectionsEnv: {},
@@ -151,6 +168,200 @@ afterAll(async () => {
 beforeEach(() => {
   runtimeFactoryRef.current = null;
   createExecutionRunRuntimeMock.mockClear();
+  dispatchBridgeLifecycleHookEvent.mockClear();
+});
+
+it.each([
+  {
+    name: 'missing',
+    requestedRevision: 1,
+    resources: [],
+    expectedCode: 'provider_secret_missing',
+  },
+  {
+    name: 'stale',
+    requestedRevision: 6,
+    resources: [{
+      resourceId: 'shared-key',
+      ownerAccountId: 'owner-account',
+      displayName: 'Shared key',
+      kind: 'apiKey' as const,
+      encryptionMode: 'plain' as const,
+      revision: 7,
+      materialStatus: 'access_removed' as const,
+      storedContent: null,
+    }],
+    expectedCode: 'provider_binding_changed',
+  },
+])('rejects a $name launch secret reference before creating any Run effect', async ({
+  requestedRevision,
+  resources,
+  expectedCode,
+}) => {
+  const createRuntime = vi.fn(() => createTestExecutionRunHostRuntime());
+  const sendAcp = vi.fn(async () => {});
+  const manager = createExecutionRunManager({
+    parentProvider: TEST_PRIMARY_BACKEND_ID,
+    cwd: process.cwd(),
+    createRuntime,
+    sendAcp,
+    getNowMs: () => 1_700_000_000_000,
+    resolveAccountSettingsSnapshot: async () => ({
+      source: 'network',
+      settings: accountSettingsParse({}),
+      settingsVersion: 1,
+      loadedAtMs: 1_700_000_000_000,
+      settingsSecretsReadKeys: [],
+      savedSecretResources: resources,
+      savedSecretCatalogState: 'ready',
+    }),
+  });
+
+  await expect(manager.start({
+    sessionId: 'parent_session_1',
+    intent: 'delegate',
+    backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+    instructions: 'do not create a run',
+    permissionMode: 'read_only',
+    retentionPolicy: 'ephemeral',
+    runClass: 'bounded',
+    ioMode: 'request_response',
+    secretReferenceOverlay: {
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:shared-key',
+          revision: requestedRevision,
+        },
+      },
+    },
+  })).rejects.toMatchObject({
+    code: expectedCode,
+    details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+  });
+
+  expect(createRuntime).not.toHaveBeenCalled();
+  expect(sendAcp).not.toHaveBeenCalled();
+  expect(dispatchBridgeLifecycleHookEvent).not.toHaveBeenCalled();
+  expect((manager as unknown as { runs: Map<string, ExecutionRunState> }).runs.size)
+    .toBe(0);
+  expect((manager as unknown as { controllers: Map<string, ExecutionRunController> }).controllers.size)
+    .toBe(0);
+});
+
+it('denies a Run before effects when operation refresh observes a missed shared revocation', async () => {
+  const createRuntime = vi.fn(() => createTestExecutionRunHostRuntime());
+  const manager = createExecutionRunManager({
+    parentProvider: TEST_PRIMARY_BACKEND_ID,
+    cwd: process.cwd(),
+    createRuntime,
+    sendAcp: vi.fn(async () => {}),
+    resolveAccountSettingsSnapshot: async () => {
+      throw new SavedSecretOperationAdmissionError({
+        reason: 'reference_stale',
+        reference: 'happier:shared-secret:v1:shared-key',
+      });
+    },
+  });
+
+  await expect(manager.start({
+    sessionId: 'parent_session_1',
+    intent: 'delegate',
+    backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+    instructions: 'do not use revoked material',
+    permissionMode: 'read_only',
+    retentionPolicy: 'ephemeral',
+    runClass: 'bounded',
+    ioMode: 'request_response',
+    secretReferenceOverlay: {
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:shared-key',
+          revision: 7,
+        },
+      },
+    },
+  })).rejects.toMatchObject({
+    code: 'provider_binding_changed',
+    details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+  });
+  expect(createRuntime).not.toHaveBeenCalled();
+  expect((manager as unknown as { runs: Map<string, ExecutionRunState> }).runs.size).toBe(0);
+});
+
+it('starts with a current reference while passing only materialized process-local values to the runtime', async () => {
+  const createRuntime = vi.fn(() => createTestExecutionRunHostRuntime({
+    onSendPrompt: async () => {},
+    onWaitForTurnCompletion: async () => {},
+  }));
+  const resolveAccountSettingsSnapshot = vi.fn(async () => ({
+    source: 'network' as const,
+    settings: accountSettingsParse({}),
+    settingsVersion: 1,
+    loadedAtMs: 1_700_000_000_000,
+    settingsSecretsReadKeys: [],
+    savedSecretCatalogState: 'ready' as const,
+    savedSecretResources: [{
+      resourceId: 'shared-key',
+      ownerAccountId: 'owner-account',
+      displayName: 'Shared key',
+      kind: 'apiKey' as const,
+      encryptionMode: 'plain' as const,
+      revision: 7,
+      materialStatus: 'ready' as const,
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId: 'shared-key',
+        mode: 'plain',
+        content: { v: 1, name: 'Shared key', kind: 'apiKey', value: 'current-value' },
+      }),
+    }],
+  }));
+  const manager = createExecutionRunManager({
+    parentProvider: TEST_PRIMARY_BACKEND_ID,
+    cwd: process.cwd(),
+    createRuntime,
+    sendAcp: async () => {},
+    getNowMs: () => 1_700_000_000_000,
+    resolveAccountSettingsSnapshot,
+  });
+
+  const started = await manager.start({
+    sessionId: null,
+    intent: 'delegate',
+    backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+    instructions: 'use current secret',
+    permissionMode: 'read_only',
+    retentionPolicy: 'ephemeral',
+    runClass: 'bounded',
+    ioMode: 'request_response',
+    secretReferenceOverlay: {
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:shared-key',
+          revision: 7,
+        },
+      },
+    },
+  });
+
+  expect(createExecutionRunRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
+    secretReferenceEnvironment: { API_KEY: 'current-value' },
+  }));
+  expect(resolveAccountSettingsSnapshot).toHaveBeenCalledExactlyOnceWith({
+    secretReferenceOverlay: {
+      v: 1,
+      bindings: {
+        API_KEY: {
+          ref: 'happier:shared-secret:v1:shared-key',
+          revision: 7,
+        },
+      },
+    },
+  });
+  expect(JSON.stringify(manager.get(started.runId))).not.toContain('current-value');
+  await manager.stop(started.runId);
 });
 
 function createExecutionRunManager(
@@ -163,6 +374,49 @@ function createExecutionRunManager(
     cwd: bridgeOptions.cwd === process.cwd() ? defaultExecutionRunManagerTestCwd : bridgeOptions.cwd,
   });
 }
+
+it('keeps a terminal waiter registered from the first running publication until canonical terminal state', async () => {
+  const runtime = createTestExecutionRunHostRuntime({
+    onWaitForTurnCompletion: () => new Promise<void>(() => {}),
+    onCancel: async () => {},
+  });
+  let manager!: ExecutionRunManager;
+  let waiter: Promise<void> | null = null;
+  let waiterSettled = false;
+  manager = createExecutionRunManager({
+    parentProvider: TEST_PRIMARY_BACKEND_ID,
+    cwd: process.cwd(),
+    createRuntime: () => runtime,
+    sendAcp: async () => {},
+    onPublicStateUpdated: (run) => {
+      if (run.status !== 'running' || waiter) return;
+      waiter = manager.waitForTerminal(run.runId);
+      void waiter.then(() => {
+        waiterSettled = true;
+      });
+    },
+    getNowMs: () => 1_700_000_000_000,
+  });
+
+  const started = await manager.start({
+    sessionId: 'parent_session_1',
+    intent: 'delegate',
+    backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+    instructions: 'wait for cancellation',
+    permissionMode: 'read_only',
+    retentionPolicy: 'ephemeral',
+    runClass: 'bounded',
+    ioMode: 'request_response',
+  });
+
+  await Promise.resolve();
+  expect(waiter).not.toBeNull();
+  expect(waiterSettled).toBe(false);
+
+  await manager.stop(started.runId);
+  await expect(waiter).resolves.toBeUndefined();
+  expect(waiterSettled).toBe(true);
+});
 
 async function readExecutionRunTurnStreamUntilDone(args: Readonly<{
   manager: ExecutionRunManager;
@@ -308,10 +562,10 @@ function createReviewResumeRuntime(): Readonly<{
     },
     {
       resumeSupported: true,
-      resumeSessionId: 'child_session_resumed',
-      onProvisionSession: async (opts) => {
-        if (opts?.resumeSessionId) {
-          loadSessionCalls.push(opts.resumeSessionId);
+      resumeRuntimeId: 'child_session_resumed',
+      onProvisionRuntime: async (opts) => {
+        if (opts?.resumeRuntimeId) {
+          loadSessionCalls.push(opts.resumeRuntimeId);
         }
       },
     },
@@ -321,6 +575,240 @@ function createReviewResumeRuntime(): Readonly<{
 }
 
 describe('ExecutionRunManager (review intent)', () => {
+  it('cancels only the exact current retained Run turn without terminalizing the Run', async () => {
+    const cancel = vi.fn(async () => {});
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createTestExecutionRunHostRuntime(),
+      sendAcp: async () => {},
+    });
+    const internals = manager as unknown as {
+      runs: Map<string, ExecutionRunState>;
+      controllers: Map<string, ExecutionRunController>;
+    };
+    const lifetime = new AbortController();
+    const controller = {
+      kind: 'backend',
+      backend: {
+        ...createTestExecutionRunHostRuntime({ onCancel: cancel }),
+        interaction: {
+          kind: 'retained_agent_session.v1',
+          capabilities: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+        },
+      },
+      runtimeId: 'run-a',
+      cancelled: false,
+      turnInFlight: true,
+      turnEpoch: 7,
+      turnCancelReason: null,
+      turnCancelEpoch: null,
+      currentInputTurn: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
+      executionRunOccurrence: {
+        runId: 'run-a',
+        sidechainId: 'sidechain-a',
+        occurrenceId: 'occurrence-a',
+        runtimeLifetimeSignal: lifetime.signal,
+        isCurrent: () => internals.controllers.get('run-a') === controller,
+        readActiveTurnAdmissionWitness: () => null,
+      },
+    } as unknown as ExecutionRunController;
+    internals.runs.set('run-a', {
+      runId: 'run-a', sessionId: 'parent-session', sidechainId: 'sidechain-a', status: 'running',
+    } as unknown as ExecutionRunState);
+    internals.controllers.set('run-a', controller);
+
+    await expect(manager.cancelCurrentTurn('run-a', {
+      occurrenceId: 'occurrence-a', turnId: 'turn-a',
+    })).resolves.toEqual({
+      ok: true, status: 'requested', runId: 'run-a', occurrenceId: 'occurrence-a', turnId: 'turn-a',
+    });
+    expect(cancel).toHaveBeenCalledWith('run-a');
+    expect(internals.runs.get('run-a')?.status).toBe('running');
+    expect(internals.controllers.get('run-a')).toBe(controller);
+
+    await expect(manager.cancelCurrentTurn('run-a', {
+      occurrenceId: 'occurrence-a', turnId: 'turn-a',
+    })).resolves.toMatchObject({ ok: true, status: 'already_requested' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    await expect(manager.cancelCurrentTurn('run-a', {
+      occurrenceId: 'stale-occurrence', turnId: 'turn-a',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_not_current' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('projects live input turns from the canonical controller occurrence instead of stale persisted state', () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createTestExecutionRunHostRuntime(),
+      sendAcp: async () => {},
+    });
+    const internals = manager as unknown as {
+      runs: Map<string, ExecutionRunState>;
+      controllers: Map<string, ExecutionRunController>;
+    };
+    const lifetime = new AbortController();
+    const controller = {
+      kind: 'backend',
+      backend: createTestExecutionRunHostRuntime(),
+      cancelled: false,
+      currentInputTurn: { turnId: 'current-turn', inputIds: ['current-input'], state: 'active' },
+      lastInputTurn: { turnId: 'previous-turn', inputIds: ['previous-input'], state: 'completed' },
+      executionRunOccurrence: {
+        runId: 'run-a', sidechainId: 'sidechain-a', occurrenceId: 'current-occurrence',
+        runtimeLifetimeSignal: lifetime.signal,
+        isCurrent: () => internals.controllers.get('run-a') === controller,
+        readActiveTurnAdmissionWitness: () => null,
+      },
+    } as unknown as ExecutionRunController;
+    internals.runs.set('run-a', {
+      runId: 'run-a', callId: 'call-a', sessionId: 'parent-session', sidechainId: 'sidechain-a',
+      depth: 0,
+      intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      backendId: TEST_PRIMARY_BACKEND_ID, instructions: '', permissionMode: 'read_only',
+      retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
+      inputTurns: {
+        occurrenceId: 'retired-occurrence',
+        last: { turnId: 'retired-turn', inputIds: ['retired-input'], state: 'completed' },
+      },
+    } as ExecutionRunState);
+    internals.controllers.set('run-a', controller);
+
+    expect(manager.getPublic('run-a')?.inputTurns).toEqual({
+      occurrenceId: 'current-occurrence',
+      current: { turnId: 'current-turn', inputIds: ['current-input'], state: 'active' },
+      last: { turnId: 'previous-turn', inputIds: ['previous-input'], state: 'completed' },
+    });
+  });
+
+  it('awaits one exact input settlement from controller events without polling run state', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createTestExecutionRunHostRuntime(),
+      sendAcp: async () => {},
+    });
+    const internals = manager as unknown as {
+      runs: Map<string, ExecutionRunState>;
+      controllers: Map<string, ExecutionRunController>;
+      emitPublicStateUpdated(runId: string): void;
+    };
+    const controller = {
+      kind: 'backend', backend: createTestExecutionRunHostRuntime(), cancelled: false,
+      inputTurnOccurrenceId: 'current-occurrence',
+      currentInputTurn: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
+    } as unknown as ExecutionRunController;
+    internals.runs.set('run-a', {
+      runId: 'run-a', callId: 'call-a', sessionId: null, sidechainId: 'sidechain-a',
+      depth: 0,
+      intent: 'delegate', backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      backendId: TEST_PRIMARY_BACKEND_ID, instructions: '', permissionMode: 'read_only',
+      retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
+    } as ExecutionRunState);
+    internals.controllers.set('run-a', controller);
+
+    let settled = false;
+    const waiting = manager.waitForInputTurn('run-a', 'input-a').then((observation) => {
+      settled = true;
+      return observation;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    Object.assign(controller, {
+      currentInputTurn: undefined,
+      lastInputTurn: { turnId: 'turn-a', inputIds: ['input-a'], state: 'completed' },
+    });
+    internals.emitPublicStateUpdated('run-a');
+
+    await expect(waiting).resolves.toEqual({
+      occurrenceId: 'current-occurrence',
+      turn: { turnId: 'turn-a', inputIds: ['input-a'], state: 'completed' },
+    });
+    expect(settled).toBe(true);
+  });
+
+  it('stops exact-input observation when the process-local controller is unavailable', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createTestExecutionRunHostRuntime(),
+      sendAcp: async () => {},
+    });
+    const internals = manager as unknown as {
+      runs: Map<string, ExecutionRunState>;
+    };
+    internals.runs.set('run-a', {
+      runId: 'run-a', callId: 'call-a', sessionId: null, sidechainId: 'sidechain-a',
+      depth: 0,
+      intent: 'agent', backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      backendId: TEST_PRIMARY_BACKEND_ID, instructions: '', permissionMode: 'read_only',
+      retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'request_response', status: 'running', startedAtMs: 1,
+    } as ExecutionRunState);
+
+    await expect(manager.waitForInputTurn('run-a', 'input-a')).resolves.toBeNull();
+  });
+
+  it('stamps Run terminal transcript records with only the matching retained input-turn witness', async () => {
+    const enqueueAgentMessageCommitted = vi.fn(async (
+      _provider: string,
+      _body: ACPMessageData,
+      _opts: Readonly<{ meta?: Record<string, unknown> }>,
+    ) => ({ persisted: true as const, delivered: false as const }));
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createStaticJsonRuntime('{"summary":"ok"}'),
+      sendAcp: async () => {},
+      sessionInteractionHost: {
+        session: {
+          sessionId: 'parent-session',
+          getMetadataSnapshot: () => null,
+          updateMetadata: vi.fn(),
+          updateAgentState: vi.fn(),
+          enqueueAgentMessageCommitted,
+        },
+        machineId: 'machine-a',
+        permissionHandler: { handleToolCall: vi.fn() },
+      } as never,
+    });
+    const internals = manager as unknown as {
+      runs: Map<string, ExecutionRunState>;
+      controllers: Map<string, ExecutionRunController>;
+      createSessionOwnedRunScope: (runId: string) => ExecutionRunHostRunScopeBinding | null;
+    };
+    internals.runs.set('run-a', {
+      sessionId: 'parent-session', sidechainId: 'sidechain-a',
+    } as unknown as ExecutionRunState);
+    internals.controllers.set('run-a', {
+      kind: 'backend', cancelled: false, pendingInputAcceptance: Promise.resolve('accepted'),
+      currentInputTurn: {
+        turnId: 'turn-a', inputIds: ['input-a', 'input-b'], state: 'active',
+      },
+    } as unknown as ExecutionRunController);
+
+    const target = internals.createSessionOwnedRunScope('run-a')!.projectRunTranscriptSession();
+    const opts = {
+      localId: 'turn-a:task_complete',
+      meta: { runtimeTurnId: 'turn-a' },
+      provenance: { kind: 'non_dependent', source: 'external' } as const,
+    };
+    await target.enqueueAgentMessageCommitted('claude', { type: 'task_complete', id: 'turn-a' }, opts);
+    await target.enqueueAgentMessageCommitted('claude', { type: 'task_complete', id: 'turn-z' }, {
+      ...opts, localId: 'turn-z:task_complete', meta: { runtimeTurnId: 'turn-z' },
+    });
+
+    expect(enqueueAgentMessageCommitted.mock.calls[0]?.[1]).toMatchObject({ sidechainId: 'sidechain-a' });
+    expect(enqueueAgentMessageCommitted.mock.calls[0]?.[2]?.meta).toMatchObject({
+      happierExecutionRunInputTurnV1: {
+        turnId: 'turn-a', inputIds: ['input-a', 'input-b'], state: 'active',
+      },
+    });
+    expect(enqueueAgentMessageCommitted.mock.calls[1]?.[2]?.meta)
+      .not.toHaveProperty('happierExecutionRunInputTurnV1');
+  });
+
   it('emits SubAgentRun tool-call, sidechain message, and tool-result with review_findings.v2 meta', async () => {
     const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
     let lastPrompt = '';
@@ -365,12 +853,20 @@ describe('ExecutionRunManager (review intent)', () => {
       },
       getNowMs: () => 1_700_000_000_000,
     });
-
     const started = await manager.start({
       sessionId: 'parent_session_1',
       intent: 'review',
       backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
       instructions: 'Review this repo.',
+      modelId: 'claude-opus-5',
+      sessionConfigOptionOverrides: {
+        v: 1,
+        updatedAt: 1,
+        overrides: {
+          reasoning_effort: { updatedAt: 1, value: 'high' },
+          api_token: { updatedAt: 1, value: 'must-not-survive' },
+        },
+      },
       permissionMode: 'read_only',
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
@@ -379,11 +875,21 @@ describe('ExecutionRunManager (review intent)', () => {
 
     expect(started.runId).toMatch(/^run_/);
     expect(started.callId).toMatch(/^subagent_run_/);
+    expect(started.requestedConfiguration).toEqual({
+      modelId: 'claude-opus-5',
+      reasoningEffort: 'high',
+    });
 
     // Wait for completion since the fake backend is async.
     await manager.waitForTerminal(started.runId);
     const final = manager.get(started.runId);
     expect(final?.status).toBe('succeeded');
+    expect(manager.getPublic(started.runId)).toMatchObject({
+      requestedConfiguration: {
+        modelId: 'claude-opus-5',
+        reasoningEffort: 'high',
+      },
+    });
     // Prompt contract: review runs must include a strict JSON output schema.
     expect(lastPrompt).toContain('"findings"');
 
@@ -391,6 +897,13 @@ describe('ExecutionRunManager (review intent)', () => {
     expect(toolCall).toBeTruthy();
     expect((toolCall?.body as any).name).toBe('SubAgentRun');
     expect((toolCall?.body as any)?.input?.runId).toBe(started.runId);
+    expect((toolCall?.body as any)?.input?.requestedConfiguration).toEqual({
+      modelId: 'claude-opus-5',
+      reasoningEffort: 'high',
+    });
+    expect(JSON.stringify(started)).not.toContain('must-not-survive');
+    expect(JSON.stringify(manager.getPublic(started.runId))).not.toContain('must-not-survive');
+    expect(JSON.stringify((toolCall?.body as any)?.input)).not.toContain('must-not-survive');
 
     const sidechainToolCall = sent.find((m) => (m.body as any)?.type === 'tool-call' && (m.body as any)?.name === 'read_file');
     expect(sidechainToolCall).toBeTruthy();
@@ -461,7 +974,7 @@ describe('ExecutionRunManager (review intent)', () => {
         });
       },
       {
-        onProvisionSession: async () => {
+        onProvisionRuntime: async () => {
           startSessionCalled = true;
           await startSessionPromise;
         },
@@ -900,7 +1413,7 @@ describe('ExecutionRunManager (review intent)', () => {
               }),
             });
           },
-          { sessionId: `child_session_${prompts.length + 1}` },
+          { runtimeId: `child_session_${prompts.length + 1}` },
         ),
       sendAcp: async () => {},
       getNowMs: () => 1_700_000_000_000,
@@ -976,7 +1489,7 @@ describe('ExecutionRunManager (review intent)', () => {
               }),
             });
           },
-          { sessionId: `child_session_${prompts.length + 1}` },
+          { runtimeId: `child_session_${prompts.length + 1}` },
         ),
       sendAcp: async () => {},
       getNowMs: () => 1_700_000_000_000,
@@ -1085,7 +1598,7 @@ describe('ExecutionRunManager (review intent)', () => {
     const runtime = createPromptRuntime((promptRuntime) => {
       promptRuntime.emitMessage({ type: 'event', name: 'provider_session_id', payload: { sessionId: providerSessionId } } as AgentMessage);
       promptRuntime.emitMessage({ type: 'model-output', fullText: JSON.stringify({ findings: [], summary: 'ok' }) });
-    }, { sessionId: 'placeholder_session' });
+    }, { runtimeId: 'placeholder_session' });
 
     const manager = createExecutionRunManager({
       parentProvider: TEST_PRIMARY_BACKEND_ID,
@@ -1295,6 +1808,67 @@ describe('ExecutionRunManager (long-lived runs)', () => {
       runtime.emitMessage({ type: 'model-output', fullText: `reply:${prompt}` });
     });
   }
+
+  it('returns a detached handle before provisioning and orders an immediate send after initial instructions', async () => {
+    let releaseProvision!: () => void;
+    let markProvisionStarted!: () => void;
+    const provisionGate = new Promise<void>((resolve) => {
+      releaseProvision = resolve;
+    });
+    const provisionStarted = new Promise<void>((resolve) => {
+      markProvisionStarted = resolve;
+    });
+    const prompts: string[] = [];
+    const runtime = createPromptRuntime(
+      (_runtime, _sessionId, prompt) => {
+        prompts.push(prompt);
+      },
+      {
+        onProvisionRuntime: async () => {
+          markProvisionStarted();
+          await provisionGate;
+        },
+      },
+    );
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => runtime,
+      sendAcp: async () => {},
+    });
+    const startPromise = manager.start({
+      sessionId: null,
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      instructions: 'Initial work.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    });
+
+    await provisionStarted;
+    const startOutcome = await Promise.race([
+      startPromise.then((started) => ({ kind: 'started' as const, started })),
+      new Promise<{ kind: 'still_waiting' }>((resolve) => {
+        setTimeout(() => resolve({ kind: 'still_waiting' }), 30);
+      }),
+    ]);
+    const send = startOutcome.kind === 'started'
+      ? manager.send(startOutcome.started.runId, { message: 'Follow-up work.' })
+      : Promise.resolve({ ok: false });
+    expect(prompts).toEqual([]);
+
+    releaseProvision();
+    const started = await startPromise;
+    await expect(send).resolves.toEqual({ ok: true });
+
+    expect(startOutcome).toMatchObject({ kind: 'started', started: { runId: started.runId } });
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    expect(prompts[0]).toContain('Initial work.');
+    expect(prompts[1]).toBe('Follow-up work.');
+    await manager.stop(started.runId);
+  });
 
   it('publishes and disposes once when stop races detached completion', async () => {
     let releaseCompletion!: () => void;
@@ -1601,18 +2175,34 @@ describe('ExecutionRunManager (long-lived runs)', () => {
       });
       expect(responseTargetHandler).not.toBeNull();
 
+      const responseTarget = {
+        kind: 'execution_run_host_bridge',
+        sessionId: 'parent_session_1',
+        runId: 'run-1',
+        callId: 'call-1',
+        sidechainId: 'sidechain-1',
+        backendId: 'backend-1',
+        runtimeKind: 'acp',
+        providerRequestId: 'provider-request-1',
+        controllerOccurrenceId: 'occurrence-1',
+      } as const;
+      const requestId = buildRunScopedExecutionPermissionRequestId({
+        runId: responseTarget.runId,
+        controllerOccurrenceId: responseTarget.controllerOccurrenceId,
+        providerRequestId: responseTarget.providerRequestId,
+      });
+
+      const mismatchedDelivery = await responseTargetHandler!({
+        requestId: `${requestId}-mismatch`,
+        responseTarget,
+        completedRequest: { status: 'approved', decision: 'approved' },
+      });
+      expect(mismatchedDelivery).toBe(false);
+      expect(respond).not.toHaveBeenCalled();
+
       const delivery = await responseTargetHandler!({
-        requestId: 'agent-state-request-1',
-        responseTarget: {
-          kind: 'execution_run_host_bridge',
-          sessionId: 'parent_session_1',
-          runId: 'run-1',
-          callId: 'call-1',
-          sidechainId: 'sidechain-1',
-          backendId: 'backend-1',
-          runtimeKind: 'acp',
-          providerRequestId: 'provider-request-1',
-        },
+        requestId,
+        responseTarget,
         completedRequest: { status: 'approved', decision: 'approved' },
       });
 
@@ -1621,6 +2211,625 @@ describe('ExecutionRunManager (long-lived runs)', () => {
         approved: true,
       }));
       expect(delivery).toBe(false);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('acknowledges provider-delivered permission custody exactly once and terminalizes transcript failure', async () => {
+    let agentState: AgentState = {
+      requests: Object.create(null),
+      completedRequests: Object.create(null),
+    };
+    const permissionStore = new AgentStateRequestStore({
+      target: {
+        scopeId: 'execution-run-permission-custody',
+        readState: () => agentState,
+        updateState: (updater) => {
+          agentState = updater(agentState);
+        },
+      },
+      logPrefix: '[ExecutionRunPermissionCustodyTest]',
+    });
+    const providerDelivery = vi.fn(async () => ({ delivered: true as const }));
+    const sendAcp = vi.fn(async (_provider: string, body: ACPMessageData) => {
+      if (body.type === 'permission-response') throw new Error('transcript unavailable');
+    });
+    const dispose = vi.fn(async () => {});
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}, {
+        onRespondToPermission: providerDelivery,
+        onDispose: dispose,
+      }),
+      sendAcp,
+      getPermissionRequestStore: () => permissionStore,
+      getNowMs: () => 1_700_000_000_000,
+    });
+    const directResults: Awaited<ReturnType<typeof manager.respondToPermissionRequest>>[] = [];
+    const respondToPermissionRequest = manager.respondToPermissionRequest.bind(manager);
+    vi.spyOn(manager, 'respondToPermissionRequest').mockImplementation(async (...args) => {
+      const result = await respondToPermissionRequest(...args);
+      directResults.push(result);
+      return result;
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: '',
+        permissionMode: 'default',
+        retentionPolicy: 'ephemeral',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const run = manager.get(started.runId)!;
+      const controller = (manager as unknown as {
+        controllers: Map<string, ExecutionRunController>;
+      }).controllers.get(started.runId);
+      if (!controller || controller.kind !== 'backend') throw new Error('expected backend controller');
+      const providerRequestId = 'provider-permission-1';
+      const requestId = buildRunScopedExecutionPermissionRequestId({
+        runId: run.runId,
+        controllerOccurrenceId: controller.controllerOccurrenceId,
+        providerRequestId,
+      });
+      permissionStore.publishRequest({
+        requestId,
+        toolName: 'Bash',
+        toolInput: { command: 'git status' },
+        createdAt: 1,
+        responseTarget: {
+          kind: 'execution_run_host_bridge',
+          sessionId: run.sessionId,
+          runId: run.runId,
+          callId: run.callId,
+          sidechainId: run.sidechainId,
+          backendId: run.backendId,
+          runtimeKind: 'acp',
+          providerRequestId,
+          controllerOccurrenceId: controller.controllerOccurrenceId,
+        },
+      });
+
+      await expect(permissionStore.completeRequest({
+        requestId,
+        status: 'approved',
+        decision: 'approved',
+      })).resolves.toBe(true);
+
+      await vi.waitFor(() => {
+        expect(manager.get(run.runId)).toMatchObject({
+          status: 'failed',
+          error: { code: 'execution_run_transcript_custody_unavailable' },
+        });
+        expect(agentState.completedRequests?.[requestId]?.responseTarget).toBeUndefined();
+      });
+      expect(directResults).toEqual([{
+        ok: false,
+        errorCode: 'execution_run_transcript_custody_unavailable',
+        error: 'Permission response was delivered but its transcript fact was not admitted to durable custody',
+        delivery: { delivered: true },
+      }]);
+      expect(permissionStore.readCompletedResponseTarget(requestId)).toBeNull();
+      expect(providerDelivery).toHaveBeenCalledOnce();
+      expect(providerDelivery).toHaveBeenCalledWith(providerRequestId, true);
+      expect(dispose).toHaveBeenCalledOnce();
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('retains a provider-undelivered permission response target for replay', async () => {
+    let agentState: AgentState = {
+      requests: Object.create(null),
+      completedRequests: Object.create(null),
+    };
+    const permissionStore = new AgentStateRequestStore({
+      target: {
+        scopeId: 'execution-run-permission-undelivered',
+        readState: () => agentState,
+        updateState: (updater) => {
+          agentState = updater(agentState);
+        },
+      },
+      logPrefix: '[ExecutionRunPermissionUndeliveredTest]',
+    });
+    const providerDelivery = vi.fn(async () => ({
+      delivered: false as const,
+      reason: 'unknown_request' as const,
+    }));
+    const sendAcp = vi.fn(async (_provider: unknown, _body: ACPMessageData) => {});
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}, {
+        onRespondToPermission: providerDelivery,
+      }),
+      sendAcp,
+      getPermissionRequestStore: () => permissionStore,
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: '',
+        permissionMode: 'default',
+        retentionPolicy: 'ephemeral',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const run = manager.get(started.runId)!;
+      const controller = (manager as unknown as {
+        controllers: Map<string, ExecutionRunController>;
+      }).controllers.get(started.runId);
+      if (!controller || controller.kind !== 'backend') throw new Error('expected backend controller');
+      const providerRequestId = 'provider-permission-undelivered';
+      const requestId = buildRunScopedExecutionPermissionRequestId({
+        runId: run.runId,
+        controllerOccurrenceId: controller.controllerOccurrenceId,
+        providerRequestId,
+      });
+      const responseTarget = {
+        kind: 'execution_run_host_bridge',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        callId: run.callId,
+        sidechainId: run.sidechainId,
+        backendId: run.backendId,
+        runtimeKind: 'acp',
+        providerRequestId,
+        controllerOccurrenceId: controller.controllerOccurrenceId,
+      } as const;
+      permissionStore.publishRequest({
+        requestId,
+        toolName: 'Bash',
+        toolInput: { command: 'git status' },
+        createdAt: 1,
+        responseTarget,
+      });
+
+      await expect(permissionStore.completeRequest({
+        requestId,
+        status: 'approved',
+        decision: 'approved',
+      })).resolves.toBe(true);
+
+      await vi.waitFor(() => expect(providerDelivery).toHaveBeenCalledOnce());
+      expect(permissionStore.readCompletedResponseTarget(requestId)).toMatchObject({ responseTarget });
+      expect(manager.get(run.runId)?.status).toBe('running');
+      expect(sendAcp.mock.calls.some(([, body]) => body.type === 'permission-response')).toBe(false);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('rejects a delayed permission response from a retired controller occurrence', async () => {
+    const sendAcp = vi.fn(async (_provider: unknown, _body: ACPMessageData) => {});
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}),
+      sendAcp,
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: 'first',
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const run = manager.get(started.runId)!;
+      const internals = manager as unknown as {
+        controllers: Map<string, ExecutionRunController>;
+      };
+      const retired = internals.controllers.get(started.runId);
+      if (!retired || retired.kind !== 'backend') throw new Error('expected backend controller');
+      const respondToPermission = vi.fn()
+        .mockResolvedValueOnce({ delivered: false as const, reason: 'unknown_request' as const })
+        .mockResolvedValue({ delivered: true as const });
+      internals.controllers.set(started.runId, {
+        ...retired,
+        backend: createTestExecutionRunHostRuntime({ onRespondToPermission: respondToPermission }),
+        controllerOccurrenceId: 'occurrence-current',
+      });
+      sendAcp.mockClear();
+
+      await expect(manager.respondToPermissionRequest(started.runId, {
+        requestId: 'provider-request-reused',
+        approved: true,
+        responseTarget: {
+          kind: 'execution_run_host_bridge',
+          sessionId: run.sessionId,
+          runId: run.runId,
+          callId: run.callId,
+          sidechainId: run.sidechainId,
+          backendId: run.backendId,
+          runtimeKind: 'acp',
+          providerRequestId: 'provider-request-reused',
+          controllerOccurrenceId: 'occurrence-retired',
+        } as never,
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_invalid_action_input',
+      });
+      expect(respondToPermission).not.toHaveBeenCalled();
+
+      const currentResponseTarget = {
+        kind: 'execution_run_host_bridge',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        callId: run.callId,
+        sidechainId: run.sidechainId,
+        backendId: run.backendId,
+        runtimeKind: 'acp',
+        providerRequestId: 'provider-request-reused',
+        controllerOccurrenceId: 'occurrence-current',
+      } as const;
+      await expect(manager.respondToPermissionRequest(started.runId, {
+        requestId: 'provider-request-reused',
+        approved: true,
+        responseTarget: currentResponseTarget,
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_permission_not_delivered',
+      });
+      expect(sendAcp).not.toHaveBeenCalled();
+
+      await expect(manager.respondToPermissionRequest(started.runId, {
+        requestId: 'provider-request-reused',
+        approved: true,
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_invalid_action_input',
+      });
+      expect(respondToPermission).toHaveBeenCalledOnce();
+
+      await expect(manager.respondToPermissionRequest(started.runId, {
+        requestId: 'provider-request-reused',
+        approved: true,
+        responseTarget: {
+          kind: 'execution_run_host_bridge',
+          sessionId: run.sessionId,
+          runId: run.runId,
+          callId: run.callId,
+          sidechainId: run.sidechainId,
+          backendId: run.backendId,
+          runtimeKind: 'acp',
+          providerRequestId: 'provider-request-reused',
+        } as never,
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_invalid_action_input',
+      });
+      expect(respondToPermission).toHaveBeenCalledOnce();
+
+      await expect(manager.respondToPermissionRequest(started.runId, {
+        requestId: 'provider-request-reused',
+        approved: true,
+        responseTarget: currentResponseTarget,
+      })).resolves.toEqual({ ok: true });
+      expect(respondToPermission).toHaveBeenCalledTimes(2);
+      expect(respondToPermission).toHaveBeenCalledWith('provider-request-reused', true);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('resolves broker authority only from the exact live controller occurrence', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}),
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_authority',
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        instructions: 'first',
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const current = manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'delegate',
+        expectedOccurrenceId: null,
+      });
+      expect(current).toMatchObject({
+        status: 'current',
+        executionRunId: started.runId,
+        parentSessionId: 'parent_session_authority',
+      });
+      if (current.status !== 'current') throw new Error('expected current occurrence');
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'delegate',
+        expectedOccurrenceId: 'retired-occurrence',
+      })).toEqual({ status: 'not_current', reason: 'occurrence_mismatch' });
+
+      const internals = manager as unknown as { controllers: Map<string, ExecutionRunController> };
+      const controller = internals.controllers.get(started.runId);
+      if (!controller) throw new Error('expected controller');
+      controller.cancelled = true;
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'delegate',
+        expectedOccurrenceId: current.occurrenceId,
+      })).toEqual({ status: 'not_current', reason: 'runtime_unavailable' });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('publishes stable idle authority before backend readiness and later reads the admitted turn', async () => {
+    let releaseReadiness!: () => void;
+    const readiness = new Promise<void>((resolve) => { releaseReadiness = resolve; });
+    let active = false;
+    const base = createTestExecutionRunHostRuntime({ runtimeId: 'provider-backed-child' });
+    const runtime: ExecutionRunHostRuntime = {
+      ...base,
+      async readResumeSupport() {
+        await readiness;
+        return true;
+      },
+      readActiveTurnAdmissionWitness: () => active
+        ? ({ turnId: 'provider-turn-1' } as ReturnType<NonNullable<ExecutionRunHostRuntime['readActiveTurnAdmissionWitness']>>)
+        : null,
+    };
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => runtime,
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const starting = manager.start({
+        sessionId: 'parent_provider_authority',
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const internals = manager as unknown as { controllers: Map<string, ExecutionRunController> };
+      await vi.waitFor(() => expect(internals.controllers.size).toBe(1));
+      const runId = [...internals.controllers.keys()][0]!;
+      const idle = manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: runId,
+        expectedOccurrenceId: null,
+      });
+      expect(idle).toMatchObject({ status: 'current', runtimeState: 'idle' });
+      expect(idle).toMatchObject({ activeTurnId: null });
+      if (idle.status !== 'current') throw new Error('expected accepted controller occurrence');
+      active = true;
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: runId,
+        expectedOccurrenceId: idle.occurrenceId,
+      })).toMatchObject({
+        status: 'current',
+        occurrenceId: idle.occurrenceId,
+        runtimeState: 'active_turn',
+        activeTurnId: 'provider-turn-1',
+      });
+      releaseReadiness();
+      await starting;
+    } finally {
+      releaseReadiness();
+      await manager.dispose();
+    }
+  });
+
+  it('attests a detached Run from the same stable live controller occurrence', async () => {
+    let active = false;
+    const base = createTestExecutionRunHostRuntime({ runtimeId: 'detached-runtime-child' });
+    const runtime: ExecutionRunHostRuntime = {
+      ...base,
+      readActiveTurnAdmissionWitness: () => active
+        ? ({ turnId: 'detached-turn-1' } as ReturnType<NonNullable<ExecutionRunHostRuntime['readActiveTurnAdmissionWitness']>>)
+        : null,
+    };
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => runtime,
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const idle = manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'agent',
+        expectedOccurrenceId: null,
+      });
+      expect(idle).toMatchObject({
+        status: 'current',
+        parentSessionId: null,
+        runtimeState: 'idle',
+      });
+      if (idle.status !== 'current') throw new Error('expected detached controller occurrence');
+      active = true;
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'agent',
+        expectedOccurrenceId: idle.occurrenceId,
+      })).toMatchObject({
+        status: 'current',
+        parentSessionId: null,
+        occurrenceId: idle.occurrenceId,
+        runtimeState: 'active_turn',
+      });
+      await manager.stop(started.runId);
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'agent',
+        expectedOccurrenceId: idle.occurrenceId,
+      })).toMatchObject({ status: 'not_current' });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it.each([
+    ['attached', 'parent_direct_material'],
+    ['detached', null],
+  ] as const)('binds %s Run direct material authority to its exact Provider resource', async (_kind, sessionId) => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}),
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const started = await manager.start({
+        sessionId,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        teamCredentialModel: {
+          kind: 'team_credential_provider_model',
+          resourceId: 'resource-current',
+          teamId: 'team-1',
+          expectedResourceRevision: 7,
+          deliveryMode: 'direct',
+          agentTargetKey: `backend:${TEST_PRIMARY_BACKEND_ID}:built_in` as never,
+          modelId: 'model-current' as never,
+        },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const request = {
+        v: 1 as const,
+        executionRunId: started.runId,
+        expectedOccurrenceId: null,
+        expectedDirectMaterialUse: {
+          resourceId: 'resource-current',
+          slot: { kind: 'provider_model' as const },
+          sourceMemberKey: 'provider-member',
+        },
+      };
+      expect(manager.resolveLiveBrokerAuthority(request)).toMatchObject({
+        status: 'current', parentSessionId: sessionId,
+      });
+      expect(manager.resolveLiveBrokerAuthority({
+        ...request,
+        expectedDirectMaterialUse: { ...request.expectedDirectMaterialUse, resourceId: 'resource-substitute' },
+      })).toEqual({ status: 'not_current', reason: 'identity_mismatch' });
+
+      const brokered = await manager.start({
+        sessionId,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        teamCredentialModel: {
+          kind: 'team_credential_provider_model',
+          resourceId: 'resource-current',
+          teamId: 'team-1',
+          expectedResourceRevision: 7,
+          deliveryMode: 'brokered',
+          agentTargetKey: `backend:${TEST_PRIMARY_BACKEND_ID}:built_in` as never,
+          modelId: 'model-current' as never,
+        },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      expect(manager.resolveLiveBrokerAuthority({
+        ...request,
+        executionRunId: brokered.runId,
+      })).toEqual({ status: 'not_current', reason: 'identity_mismatch' });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('projects idle Voice Follow currentness without accepting an intent substitution', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}),
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_voice_authority',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+        chatModelId: 'chat-model',
+        commitModelId: 'commit-model',
+        initialContext: 'Voice context',
+        bootstrapMode: 'none',
+      });
+      const current = manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'voice_agent',
+        expectedOccurrenceId: null,
+      });
+      expect(current).toMatchObject({
+        status: 'current',
+        parentSessionId: 'parent_voice_authority',
+        intent: 'voice_agent',
+        runtimeState: 'idle',
+      });
+      if (current.status !== 'current') throw new Error('expected current Voice occurrence');
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'voice_agent',
+        expectedOccurrenceId: current.occurrenceId,
+      })).toMatchObject({
+        status: 'current',
+        occurrenceId: current.occurrenceId,
+      });
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1,
+        executionRunId: started.runId,
+        expectedIntent: 'agent',
+        expectedOccurrenceId: null,
+      })).toEqual({ status: 'not_current', reason: 'identity_mismatch' });
     } finally {
       await manager.dispose();
     }
@@ -1644,7 +2853,7 @@ describe('ExecutionRunManager (long-lived runs)', () => {
             runtime.emitMessage({ type: 'model-output', fullText: `reply:${prompt}` });
           },
           {
-            sessionId: `child_session_${index}`,
+            runtimeId: `child_session_${index}`,
             onDispose: async () => {
               disposeCalls.push(`runtime_${index}`);
             },
@@ -1707,7 +2916,7 @@ describe('ExecutionRunManager (long-lived runs)', () => {
           fullText: sendCount === 1 ? 'READY' : `reply:${prompt}`,
         });
       },
-      { sessionId: 'child_session_ready' },
+      { runtimeId: 'child_session_ready' },
     );
   }
 
@@ -1743,6 +2952,7 @@ describe('ExecutionRunManager (long-lived runs)', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({
       runId: expect.stringMatching(/^run_/),
+      scope: 'session_owned',
       backendId: TEST_SECONDARY_BACKEND_ID,
       permissionMode: 'read_only',
       parentSessionStateTarget: {
@@ -1750,6 +2960,58 @@ describe('ExecutionRunManager (long-lived runs)', () => {
         enqueueRegisteredSessionStateFieldMutation,
       },
     });
+  });
+
+  it('keeps detached retained Runs run-rooted even when the manager owns a parent Session host', async () => {
+    const seen: TestRuntimeFactoryInput[] = [];
+    const parentSessionStateTarget = {
+      sessionId: 'parent_session_1',
+      enqueueRegisteredSessionStateFieldMutation: vi.fn(),
+    };
+    const sessionInteractionHost = {
+      session: {
+        sessionId: 'parent_session_1',
+        getMetadataSnapshot: () => null,
+        updateMetadata: vi.fn(),
+        updateAgentState: vi.fn(),
+        enqueueAgentMessageCommitted: vi.fn(),
+      },
+      machineId: 'machine-a',
+      permissionHandler: { handleToolCall: vi.fn() },
+    } as never;
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      parentSessionStateTarget,
+      sessionInteractionHost,
+      createRuntime: (opts) => {
+        seen.push(opts);
+        return createPromptEchoResumeRuntime();
+      },
+      sendAcp: async () => {},
+    });
+
+    try {
+      await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_SECONDARY_BACKEND_ID },
+        instructions: 'Keep this detached conversation resumable.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ scope: 'detached' });
+      expect(seen[0]).not.toHaveProperty('parentSessionStateTarget');
+      expect(seen[0]).not.toHaveProperty('happierSessionId');
+      expect(seen[0]).not.toHaveProperty('sessionInteractionHost');
+      expect(seen[0]).not.toHaveProperty('sessionOwnedRunScope');
+    } finally {
+      await manager.dispose();
+    }
   });
 
   it('ACKs send() for long-lived runs without awaiting waitForResponseComplete (prevents UI timeouts)', async () => {
@@ -1994,8 +3256,8 @@ describe('ExecutionRunManager (long-lived runs)', () => {
         const occurrence = runtimeCount;
         return createPromptRuntime(() => {}, {
           resumeSupported: true,
-          async onProvisionSession(opts) {
-            if (occurrence === 2 && opts?.resumeSessionId) {
+          async onProvisionRuntime(opts) {
+            if (occurrence === 2 && opts?.resumeRuntimeId) {
               resumeProvisionStarted();
               await resumeProvisionGate;
             }
@@ -2063,8 +3325,8 @@ describe('ExecutionRunManager (long-lived runs)', () => {
         runtimeCount += 1;
         return createPromptRuntime(() => {}, {
           resumeSupported: true,
-          onProvisionSession: async (opts) => {
-            if (!opts?.resumeSessionId) return;
+          onProvisionRuntime: async (opts) => {
+            if (!opts?.resumeRuntimeId) return;
             resumeProvisionStarted();
             await resumeProvisionGate;
           },
@@ -2123,8 +3385,8 @@ describe('ExecutionRunManager (long-lived runs)', () => {
         const isResumedRuntime = runtimeCount === 2;
         return createPromptRuntime(() => {}, {
           resumeSupported: true,
-          onProvisionSession: async (opts) => {
-            if (!isResumedRuntime || !opts?.resumeSessionId) return;
+          onProvisionRuntime: async (opts) => {
+            if (!isResumedRuntime || !opts?.resumeRuntimeId) return;
             resumeProvisionStarted();
             await resumeProvisionGate;
           },

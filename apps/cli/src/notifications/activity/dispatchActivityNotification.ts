@@ -1,6 +1,7 @@
 import {
   accountSettingsParse,
   type AttentionDeliveryDecision,
+  type AttentionDeliveryEventId,
   BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID,
   isPushNotificationBundledSoundId,
   resolveExpoNotificationSoundName,
@@ -40,6 +41,7 @@ function isTopicEnabled(channel: {
   };
 }, topic: ActivityNotificationEvent['topic']): boolean {
   if (channel.enabled !== true) return false;
+  if (topic === 'workflow_run_update') return true;
   if (topic === 'ready') return channel.topics.ready === true;
   if (topic === 'permission_request') return channel.topics.permissionRequest === true;
   if (topic === 'user_action_request') return channel.topics.userActionRequest === true;
@@ -53,6 +55,9 @@ function isTopicEnabled(channel: {
 const recentDispatchesByKey = new Map<string, number>();
 
 function notificationDedupeKey(event: ActivityNotificationEvent): string | null {
+  if (event.topic === 'workflow_run_update') {
+    return [event.topic, event.runId, event.updateKind].join('\0');
+  }
   if (event.topic === 'connected_service_account_switch') {
     return [
       event.topic,
@@ -114,6 +119,20 @@ function recordDeliveredNotificationForDedupe(input: Readonly<{
   recentDispatchesByKey.set(key, input.nowMs);
 }
 
+export function resolveActivityNotificationPolicyEvent(
+  event: ActivityNotificationEvent,
+): AttentionDeliveryEventId {
+  if (event.topic === 'connected_service_credential_health') {
+    return 'connected_service_account_switch';
+  }
+  if (event.topic !== 'workflow_run_update') return event.topic;
+  if (event.updateKind === 'completed' || event.updateKind === 'completed_with_failures') {
+    return 'task_completed';
+  }
+  if (event.updateKind === 'failed' || event.updateKind === 'outcome_uncertain') return 'task_failed';
+  return 'user_action_request';
+}
+
 function resolveChannelDecision(params: Readonly<{
   settings: AccountSettings;
   channel: 'expo_push' | 'webhook' | 'live_activity';
@@ -122,7 +141,7 @@ function resolveChannelDecision(params: Readonly<{
 }>): AttentionDeliveryDecision {
   return resolveAttentionDeliveryPolicyDecision({
     policy: params.settings.attentionDeliveryPolicyV1,
-    event: params.event.topic,
+    event: resolveActivityNotificationPolicyEvent(params.event),
     channel: params.channel,
     now: params.now,
   });
@@ -164,6 +183,7 @@ function buildCanonicalExpoPushChannel(decision: AttentionDeliveryDecision): Exp
       connectedServiceQuotaRecovered: true,
     },
     readyIncludeMessageText: decision.previewBehavior === 'include_preview',
+    requestIncludeMessageText: decision.previewBehavior === 'include_preview',
   };
 }
 
@@ -253,7 +273,10 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
     attemptedChannels += 1;
     try {
       await sendWebhookActivityNotificationAsync({
-        channel,
+        channel: {
+          ...channel,
+          requestIncludeMessageText: decision.previewBehavior === 'include_preview' && channel.requestIncludeMessageText !== false,
+        },
         event: params.event,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         nowMs: params.nowMs,

@@ -5,11 +5,26 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  parsePersonalHomeAuthenticatedReadiness,
   readPersonalHomeStartupReadiness,
   removePersonalHomeStartupReadiness,
 } from './readiness.js';
 
 describe('Personal Home startup readiness', () => {
+  it('keeps predecessor readiness receipts readable while preserving current H6 setup state', () => {
+    expect(parsePersonalHomeAuthenticatedReadiness({
+      authenticated: true,
+      homeServerIdentityId: 'srv_home_readiness',
+      accountCount: 1,
+      sessionCount: 0,
+    })).toEqual({
+      authenticated: true,
+      homeServerIdentityId: 'srv_home_readiness',
+      accountCount: 1,
+      sessionCount: 0,
+    });
+  });
+
   it('reads only a live token-free authenticated Home attestation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-home-readiness-'));
     const path = join(root, 'startup-receipt.json');
@@ -24,6 +39,7 @@ describe('Personal Home startup readiness', () => {
           homeServerIdentityId: 'srv_home_readiness',
           accountCount: 2,
           sessionCount: 3,
+          teamsBootstrapStatus: 'setup_required',
         },
       })}\n`);
 
@@ -32,6 +48,7 @@ describe('Personal Home startup readiness', () => {
         homeServerIdentityId: 'srv_home_readiness',
         accountCount: 2,
         sessionCount: 3,
+        teamsBootstrapStatus: 'setup_required',
       });
       await removePersonalHomeStartupReadiness(path);
       await expect(readPersonalHomeStartupReadiness({ path, timeoutMs: 10 })).rejects.toThrow(
@@ -43,6 +60,14 @@ describe('Personal Home startup readiness', () => {
   });
 
   it('rejects malformed, implausible, or dead-process readiness facts', async () => {
+    expect(parsePersonalHomeAuthenticatedReadiness({
+      authenticated: true,
+      homeServerIdentityId: 'srv_home_readiness',
+      accountCount: 1,
+      sessionCount: 0,
+      teamsBootstrapStatus: 'failed',
+    })).toBeNull();
+
     const root = await mkdtemp(join(tmpdir(), 'happier-home-readiness-invalid-'));
     const path = join(root, 'startup-receipt.json');
     try {

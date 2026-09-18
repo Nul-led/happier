@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { projectExecutablePluginToolCatalog } from './toolCatalog';
+import {
+  projectExecutablePluginToolCatalog,
+  projectGenerationBoundExecutablePluginToolCatalog,
+} from './toolCatalog';
 
 function createRegistry(
   outcome: 'visible' | 'denied',
@@ -113,5 +116,26 @@ describe('projectExecutablePluginToolCatalog', () => {
     expect(projectExecutablePluginToolCatalog(createRegistry('visible', {
       when: { fact: 'plugin.enabled', operator: 'equals', value: false },
     }))).toEqual([]);
+  });
+
+  it('binds transport-facing tools to the exact contributor generation and drops unbound entries', () => {
+    const registry = createRegistry('visible') as {
+      contributes: {
+        immutableGenerationIdsByPluginId?: Readonly<Record<string, string>>;
+      };
+    };
+    registry.contributes.immutableGenerationIdsByPluginId = {
+      'acme.review.plugin': 'immutable-generation-7',
+    };
+
+    expect(projectGenerationBoundExecutablePluginToolCatalog(registry as never)).toEqual([
+      expect.objectContaining({
+        toolId: 'acme.review.plugin/review-tool',
+        expectedContributorImmutableGenerationId: 'immutable-generation-7',
+      }),
+    ]);
+
+    registry.contributes.immutableGenerationIdsByPluginId = {};
+    expect(projectGenerationBoundExecutablePluginToolCatalog(registry as never)).toEqual([]);
   });
 });

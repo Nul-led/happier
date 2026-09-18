@@ -741,6 +741,7 @@ describe('bounded Agent External Sessions invocation', () => {
         const item = { id: 'item-1', createdAtMs: 1, raw: canonicalTranscriptRaw };
         const value = (count: number) => ({
             outcome: 'advanced',
+            hasMore: false,
             items: Array.from({ length: count }, () => item),
             nextCursor: 'native-next',
             boundary: 'item-1',
@@ -943,6 +944,7 @@ describe('bounded Agent External Sessions invocation', () => {
                             ? { items: [item], nextCursor: null }
                             : {
                                 outcome: 'advanced',
+                                hasMore: false,
                                 items: [item],
                                 nextCursor: 'native-next',
                                 boundary: 'item-1',
@@ -984,6 +986,7 @@ describe('bounded Agent External Sessions invocation', () => {
                             ? { items: [item], nextCursor: null }
                             : {
                                 outcome: 'advanced',
+                                hasMore: false,
                                 items: [item],
                                 nextCursor: 'native-next',
                                 boundary: 'item-sidechain-1',
@@ -1033,6 +1036,7 @@ describe('bounded Agent External Sessions invocation', () => {
                         ? { items: [item], nextCursor: null }
                         : {
                             outcome: 'advanced',
+                            hasMore: false,
                             items: [item],
                             nextCursor: 'native-next',
                             boundary: 'item-1',
@@ -1283,7 +1287,7 @@ describe('bounded Agent External Sessions invocation', () => {
         ['read-after boundary', 2_000, (value: string) => ({ boundary: value })],
         ['read-after diagnostic code', 128, (value: string) => ({
             boundary: 'item-1',
-            diagnostics: [{ code: value, count: 1, positions: [0] }],
+            diagnostics: [{ code: value, severity: 'benign', count: 1, positions: [0] }],
         })],
     ] as const)(
         'accepts the exact %s code-unit bound and rejects first-over',
@@ -1295,6 +1299,7 @@ describe('bounded Agent External Sessions invocation', () => {
                         ok: true,
                         value: {
                             outcome: 'advanced',
+                            hasMore: false,
                             items: [{ id: 'item-1', createdAtMs: 1, raw: canonicalTranscriptRaw }],
                             nextCursor: 'native-next',
                             ...fields(value),
@@ -1393,6 +1398,7 @@ describe('bounded Agent External Sessions invocation', () => {
                                 ? { items: [], nextCursor: null, [field]: cursor }
                                 : {
                                     outcome: 'advanced',
+                                    hasMore: false,
                                     items: [{ id: 'item-1', createdAtMs: 1, raw: canonicalTranscriptRaw }],
                                     nextCursor: cursor,
                                     boundary: 'item-1',
@@ -1481,6 +1487,7 @@ describe('bounded Agent External Sessions invocation', () => {
         });
         await expect(call({
             outcome: 'advanced',
+            hasMore: false,
             items: [],
             nextCursor: 'native-next',
             boundary: 'record:17',
@@ -1491,11 +1498,13 @@ describe('bounded Agent External Sessions invocation', () => {
         });
         await expect(call({
             outcome: 'advanced',
+            hasMore: false,
             items: [],
             nextCursor: 'native-next',
             boundary: 'record:17',
             diagnostics: [{
                 code: 'malformed_record_skipped',
+                severity: 'benign',
                 count: 1,
                 positions: [17],
             }],
@@ -1989,6 +1998,7 @@ describe('bounded Agent External Sessions invocation', () => {
                         ok: true,
                         value: {
                             outcome: 'advanced',
+                            hasMore: false,
                             items: [{ id: 'item-1', createdAtMs: 1, raw: canonicalTranscriptRaw }],
                             nextCursor: 'native-current-continuation',
                             boundary: 'item-1',

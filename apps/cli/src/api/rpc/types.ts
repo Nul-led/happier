@@ -23,6 +23,9 @@ export type RpcLocalActionContext = Readonly<Pick<
     ActionExecutorContext,
     'surface' | 'authority' | 'callerPermissionMode' | 'causalPermissionAuthority' | 'actionRequestId'
 > & {
+    /** Exact Workflow invocation store, admitted only by an in-process host. */
+    executionRunPermissionRequestStore?: unknown;
+    executionRunWorkflowObservationSink?: unknown;
     operationProgress?: Readonly<{
         update(progress: Readonly<{
             label?: string;
@@ -41,6 +44,8 @@ export type RpcLocalActionContext = Readonly<Pick<
 
 export type RpcHandlerContext = Readonly<{
     signal: AbortSignal;
+    /** Validated transport correlation; authenticated relays replace caller values before dispatch. */
+    transportRequestId?: string;
     /**
      * Server-derived transport context. It is absent for local invocation so
      * an in-process caller cannot synthesize authenticated account authority.

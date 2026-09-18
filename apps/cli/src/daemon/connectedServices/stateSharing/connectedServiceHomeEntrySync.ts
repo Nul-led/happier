@@ -1,5 +1,6 @@
-import { cp, lstat, mkdir, rename, rm, stat, symlink } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { createAbsolutePathSymlink } from '@happier-dev/plugin-sdk/fs';
+import { cp, lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 export type ConnectedServiceHomeEntryStat = Awaited<ReturnType<typeof stat>>;
 
@@ -81,12 +82,9 @@ export async function linkConnectedServiceHomeEntry(
   sourceStat: ConnectedServiceHomeEntryStat,
 ): Promise<void> {
   await mkdir(dirname(destinationPath), { recursive: true });
-  const type = process.platform === 'win32'
-    ? sourceStat.isDirectory()
-      ? 'junction'
-      : 'file'
-    : sourceStat.isDirectory()
-      ? 'dir'
-      : 'file';
-  await symlink(resolve(sourcePath), destinationPath, type);
+  await createAbsolutePathSymlink({
+    sourcePath,
+    destinationPath,
+    sourceKind: sourceStat.isDirectory() ? 'directory' : 'file',
+  });
 }

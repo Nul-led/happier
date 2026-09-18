@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 
 import type { TerminalHostAdapter, TerminalHostHandle } from '@happier-dev/agents';
 import { createSessionHooksService } from '@/plugins/runtime/hooks/session/service';
+import { logger } from '@/ui/logger';
 import {
   readTerminalHostAttachmentInfo,
   writeTerminalHostAttachmentInfo,
@@ -43,7 +44,7 @@ function buildAdapter(dispose: TerminalHostAdapter['dispose']): TerminalHostAdap
       paneId: HANDLE.paneId,
     }),
     interruptTurn: async () => undefined,
-    evaluateLiveness: async () => ({ paneAlive: true, observedAt: 1 }),
+    evaluateLiveness: vi.fn(async () => ({ paneAlive: true, observedAt: 1 })),
     dispose,
   };
 }
@@ -125,6 +126,77 @@ describe('executeTerminalHostDisposition', () => {
       descriptorRetained: true,
     });
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires the descriptor when disposal reports failure but the exact host is positively dead', async () => {
+    const attachment = {
+      version: 2 as const,
+      attachmentId: HANDLE.attachmentId!,
+      sessionId: 'session-disappeared-during-dispose',
+      handle: { ...HANDLE, attachmentId: HANDLE.attachmentId! },
+      updatedAt: 1,
+    };
+    const removeAttachmentInfo = vi.fn(async () => true);
+    const adapter = buildAdapter(async () => {
+      throw Object.assign(new Error('tmux target disappeared during kill'), { code: 'ENOENT' });
+    });
+    vi.mocked(adapter.evaluateLiveness).mockResolvedValue({
+      paneAlive: false,
+      paneDead: true,
+      observedAt: 2,
+    });
+
+    await expect(executeTerminalHostDisposition({
+      happyHomeDir: '/tmp/happy',
+      sessionId: attachment.sessionId,
+      expectedAttachmentId: attachment.attachmentId,
+      intent: { kind: 'destroy_owned_host', reason: 'explicit_user_stop' },
+      adapter,
+      readAttachmentInfo: vi.fn(async () => attachment),
+      removeAttachmentInfo,
+    })).resolves.toEqual({ status: 'destroyed', attachmentId: attachment.attachmentId });
+
+    expect(adapter.evaluateLiveness).toHaveBeenCalledWith(attachment.handle);
+    expect(removeAttachmentInfo).toHaveBeenCalledOnce();
+  });
+
+  it('retains the retry descriptor and logs the disposal failure when host death is unproven', async () => {
+    const warning = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const attachment = {
+      version: 2 as const,
+      attachmentId: HANDLE.attachmentId!,
+      sessionId: 'session-dispose-failed',
+      handle: { ...HANDLE, attachmentId: HANDLE.attachmentId! },
+      updatedAt: 1,
+    };
+    const removeAttachmentInfo = vi.fn(async () => true);
+    const disposalError = Object.assign(new Error('permission denied while closing pane'), { code: 'EPERM' });
+    const adapter = buildAdapter(async () => {
+      throw disposalError;
+    });
+    vi.mocked(adapter.evaluateLiveness).mockResolvedValue({ paneAlive: true, observedAt: 2 });
+
+    await expect(executeTerminalHostDisposition({
+      happyHomeDir: '/tmp/happy',
+      sessionId: attachment.sessionId,
+      expectedAttachmentId: attachment.attachmentId,
+      intent: { kind: 'destroy_owned_host', reason: 'explicit_user_stop' },
+      adapter,
+      readAttachmentInfo: vi.fn(async () => attachment),
+      removeAttachmentInfo,
+    })).resolves.toEqual({ status: 'parked', reason: 'destroy_failed' });
+
+    expect(removeAttachmentInfo).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(
+      '[TERMINAL HOST] Failed to destroy exact terminal host; retaining descriptor for retry',
+      expect.objectContaining({
+        sessionId: attachment.sessionId,
+        attachmentId: attachment.attachmentId,
+        hostKind: 'tmux',
+        error: disposalError,
+        livenessStatus: 'alive',
+      }),
+    );
   });
 
   it('retires remote ownership evidence before removing the local descriptor', async () => {

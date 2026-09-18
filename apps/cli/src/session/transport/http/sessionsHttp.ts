@@ -28,17 +28,35 @@ import {
   type SessionOrganizationPlacementV1,
   type SessionTurnsProjectionV1,
   type AccountEncryptionCurrentnessResponse,
+  type SessionListQueryV1,
+  type SessionListQueryResponseV1,
+  SessionListQueryResponseV1Schema,
+  SessionListUnavailableQueryV1Schema,
+  type SessionListUnavailableQueryV1,
+  SessionCurrentProjectionRecordV1Schema,
+  type SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
+import {
+  SessionTeamCredentialBindingMutationRejectionV1Schema,
+  type SessionTeamCredentialBindingIntentV1,
+  type SessionTeamCredentialBindingIntentListV1,
+  type SessionTeamCredentialBindingMetadataPatchV1,
+  type SessionTeamCredentialBindingRejectionV1,
+} from '@happier-dev/protocol/teams';
 
 import type { StoredCredentials } from '@/persistence';
+import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveSessionEncryptionContext } from '@/api/client/encryptionKey';
-import { createHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
+import { createHttpStatusError, HttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { encodeBase64 } from '@/api/encryption';
 import {
   buildCurrentAccountStoredContentCompatibilityHttpHeaders,
   readCliClientUpgradeRequired,
 } from '@/api/clientCompatibility/cliClientCompatibility';
 import { resolveSessionCreateEncryptionMode } from '@/api/session/resolveSessionCreateEncryptionMode';
+import { resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
+import { assertSessionEncryptionModeAllowedByEffectiveClientRequirement } from '@/settings/accountSettings/resolveEffectiveClientEncryptionRequirement';
 import {
   resolveSessionSnapshotRequestPurpose,
   type SessionSnapshotRefreshReason,
@@ -46,6 +64,13 @@ import {
 import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
 import { buildSessionMetadataEnvelopeCreateFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
+import {
+  buildSessionInitialAccessCreateFields,
+  materializeSessionInitialAccessCreateFields,
+  readSessionInitialAccessUpdateRequiredError,
+  readSessionTeamCredentialBindingUpdateRequiredError,
+  readSessionInitialAccessServerError,
+} from '@/api/session/sessionCreationInitialAccess';
 
 export type RawSessionRecord = V2SessionByIdResponse['session'];
 export type RawSessionListRow = V2SessionListResponse['sessions'][number];
@@ -102,7 +127,67 @@ function throwUnexpectedStatusError(path: string, status: number): never {
   throw createHttpStatusError(status, `Unexpected status from ${path}: ${status}`);
 }
 
+class SessionListQueryHttpError extends HttpStatusError {
+  readonly retryable = false;
+
+  constructor(
+    readonly code: SessionListUnavailableQueryV1['code'],
+    readonly details: SessionListUnavailableQueryV1,
+  ) {
+    super(404, code);
+    this.name = 'SessionListQueryHttpError';
+  }
+}
+
 type SessionByIdHttpResponse = AxiosResponse<unknown>;
+
+function parseSessionByIdResponse(
+  payload: unknown,
+  accessProjectionVersion: 1 | undefined,
+): RawSessionRecord {
+  const session = parseOrThrow<V2SessionByIdResponse>(
+    V2SessionByIdResponseSchema,
+    payload,
+    'Unexpected /v2/sessions response shape',
+  ).session;
+  if (accessProjectionVersion === 1) {
+    return parseOrThrow<RawSessionRecord>(
+      SessionCurrentProjectionRecordV1Schema,
+      session,
+      'Unexpected /v2/sessions response shape',
+    );
+  }
+  return session;
+}
+
+/**
+ * Selects the current detail projection only from the feature snapshot already bound to the
+ * request's exact Home. Missing, malformed and unsupported snapshots retain the released bare
+ * owner/direct request; this helper never probes or consults ambient active-Home state.
+ */
+export function resolveSessionDetailAccessProjectionVersion(params: Readonly<{
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+  env?: NodeJS.ProcessEnv;
+}>): 1 | undefined {
+  if (!params.serverFeaturesSnapshot) return undefined;
+  return resolveCliFeatureDecision({
+    featureId: 'sessions.collaboration',
+    env: params.env ?? process.env,
+    serverSnapshot: params.serverFeaturesSnapshot,
+  }).state === 'enabled'
+    ? 1
+    : undefined;
+}
+
+function resolveRequestedSessionDetailAccessProjectionVersion(params: Readonly<{
+  accessProjectionVersion?: 1;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+}>): 1 | undefined {
+  return params.accessProjectionVersion
+    ?? resolveSessionDetailAccessProjectionVersion({
+      ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
+    });
+}
 
 const sessionByIdInFlightRequests = new Map<string, Promise<SessionByIdHttpResponse>>();
 
@@ -111,19 +196,41 @@ function buildSessionByIdInFlightKey(params: Readonly<{
   token: string;
   encodedSessionId: string;
   requestPurpose: string;
+  accessProjectionVersion?: 1;
 }>): string {
-  return [params.serverUrl, params.token, params.encodedSessionId, params.requestPurpose].join('\u0000');
+  return [
+    params.serverUrl,
+    params.token,
+    params.encodedSessionId,
+    params.requestPurpose,
+    String(params.accessProjectionVersion ?? ''),
+  ].join('\u0000');
 }
 
 async function getSessionByIdResponse(params: Readonly<{
   token: string;
+  authorizationHeaders?: Readonly<Record<string, string>>;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
+  serverUrl?: string;
   reason?: SessionSnapshotRefreshReason;
   signal?: AbortSignal;
   deadlineAtMs?: number;
+  accessProjectionVersion?: 1;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<SessionByIdHttpResponse> {
-  const serverUrl = resolveServerHttpBaseUrl();
+  const serverUrl = params.serverUrl ?? resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
+  const accessProjectionVersion = resolveRequestedSessionDetailAccessProjectionVersion(params);
+  const sessionDetailUrl = `${serverUrl}/v2/sessions/${encodedSessionId}${accessProjectionVersion === 1 ? '?accessProjectionVersion=1' : ''}`;
+  const requestPath = `/v2/sessions/${encodedSessionId}${accessProjectionVersion === 1 ? '?accessProjectionVersion=1' : ''}`;
+  const resolvedAuthorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path: requestPath })
+    ?? (params.resolveAuthorizationHeaders ? null : params.authorizationHeaders);
+  if (params.resolveAuthorizationHeaders && !resolvedAuthorizationHeaders) {
+    throw new Error('External Action authorization unavailable');
+  }
   const requestPurpose = resolveSessionSnapshotRequestPurpose(params.reason);
   const deadlineRemainingMs = params.deadlineAtMs === undefined
     ? null
@@ -134,10 +241,10 @@ async function getSessionByIdResponse(params: Readonly<{
     throw error;
   }
   if (params.signal || deadlineRemainingMs !== null) {
-    return await axios.get(`${serverUrl}/v2/sessions/${encodedSessionId}`, {
+    return await axios.get(sessionDetailUrl, {
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.token}`,
+        ...(resolvedAuthorizationHeaders ?? { Authorization: `Bearer ${params.token}` }),
         'Content-Type': 'application/json',
         'X-Happier-Request-Purpose': requestPurpose,
       },
@@ -147,16 +254,29 @@ async function getSessionByIdResponse(params: Readonly<{
       validateStatus: () => true,
     });
   }
+  if (resolvedAuthorizationHeaders) {
+    return await axios.get(sessionDetailUrl, {
+      headers: {
+        ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+        ...resolvedAuthorizationHeaders,
+        'Content-Type': 'application/json',
+        'X-Happier-Request-Purpose': requestPurpose,
+      },
+      timeout: configuration.sessionControlHttpTimeoutMs,
+      validateStatus: () => true,
+    });
+  }
   const key = buildSessionByIdInFlightKey({
     serverUrl,
     token: params.token,
     encodedSessionId,
     requestPurpose,
+    accessProjectionVersion,
   });
   const existing = sessionByIdInFlightRequests.get(key);
   if (existing) return await existing;
 
-  const promise = axios.get(`${serverUrl}/v2/sessions/${encodedSessionId}`, {
+  const promise = axios.get(sessionDetailUrl, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
       Authorization: `Bearer ${params.token}`,
@@ -178,14 +298,32 @@ async function getSessionByIdResponse(params: Readonly<{
 
 export async function fetchSessionById(params: Readonly<{
   token: string;
+  authorizationHeaders?: Readonly<Record<string, string>>;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
+  serverUrl?: string;
   reason?: SessionSnapshotRefreshReason;
   signal?: AbortSignal;
   deadlineAtMs?: number;
+  /** Supply only after the exact Home's canonical sessions.collaboration decision is enabled. */
+  accessProjectionVersion?: 1;
+  /** Exact Home snapshot already owned by the caller's runtime/connection; never fetched here. */
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<RawSessionRecord | null> {
-  const response = await getSessionByIdResponse(params);
+  const accessProjectionVersion = resolveRequestedSessionDetailAccessProjectionVersion(params);
+  const response = await getSessionByIdResponse({ ...params, accessProjectionVersion });
 
-  if (response.status === 404) return null;
+  if (response.status === 404) {
+    if (
+      accessProjectionVersion === 1
+      && looksLikeMissingV2SessionRoute404(response.data, params.sessionId)
+    ) {
+      throw new Error('Unexpected /v2/sessions response shape');
+    }
+    return null;
+  }
   if (isAuthenticationStatus(response.status)) {
     throwAuthenticationStatusError(response.status);
   }
@@ -210,11 +348,14 @@ export async function fetchSessionById(params: Readonly<{
     throwUnexpectedStatusError(`/v2/sessions/${params.sessionId}`, response.status);
   }
 
-  return parseOrThrow<V2SessionByIdResponse>(V2SessionByIdResponseSchema, response.data, 'Unexpected /v2/sessions response shape').session;
+  return parseSessionByIdResponse(response.data, accessProjectionVersion);
 }
 
 export async function lookupSessionsByTags(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'POST'; path: string; body: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   tags: readonly string[];
   signal?: AbortSignal;
   deadlineAtMs?: number;
@@ -234,13 +375,17 @@ export async function lookupSessionsByTags(params: Readonly<{
   }
 
   const path = '/v2/sessions/lookup-by-tags';
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({
+    method: 'POST', path, body: request,
+  }) ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
   const response = await axios.post(
     `${resolveServerHttpBaseUrl()}${path}`,
     request,
     {
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.token}`,
+        ...authorizationHeaders,
         'Content-Type': 'application/json',
       },
       ...(params.signal ? { signal: params.signal } : {}),
@@ -365,18 +510,42 @@ function looksLikeMissingV2SessionRoute404(data: unknown, sessionId: string): bo
   );
 }
 
-export async function fetchSessionByIdCompat(params: Readonly<{ token: string; sessionId: string; reason?: SessionSnapshotRefreshReason }>): Promise<RawSessionRecord | null> {
-  const response = await getSessionByIdResponse(params);
+export async function fetchSessionByIdCompat(params: Readonly<{
+  token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
+  sessionId: string;
+  reason?: SessionSnapshotRefreshReason;
+  signal?: AbortSignal;
+  /** Supply only after the exact Home's canonical sessions.collaboration decision is enabled. */
+  accessProjectionVersion?: 1;
+  /** Exact Home snapshot already owned by the caller's runtime/connection; never fetched here. */
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+}>): Promise<RawSessionRecord | null> {
+  const accessProjectionVersion = resolveRequestedSessionDetailAccessProjectionVersion(params);
+  const response = await getSessionByIdResponse({ ...params, accessProjectionVersion });
 
   if (response.status === 404) {
     if (!looksLikeMissingV2SessionRoute404(response.data, params.sessionId)) return null;
+    if (accessProjectionVersion === 1) {
+      throw new Error('Unexpected /v2/sessions response shape');
+    }
 
     let cursor: string | undefined = undefined;
     const seenCursors = new Set<string>();
     while (true) {
-      const res = await fetchSessionsPage({ token: params.token, cursor, limit: 200 });
-      const match = res.sessions.find((row) => (row as any) && String((row as any).id ?? '') === params.sessionId);
-      if (match) return match as unknown as RawSessionRecord;
+      const res = await fetchSessionsPage({
+        token: params.token,
+        cursor,
+        limit: 200,
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+      const match = res.sessions.find((row) => row.id === params.sessionId);
+      if (match) return match;
       if (!res.hasNext || !res.nextCursor) return null;
       if (seenCursors.has(res.nextCursor)) return null;
       seenCursors.add(res.nextCursor);
@@ -390,11 +559,14 @@ export async function fetchSessionByIdCompat(params: Readonly<{ token: string; s
     throwUnexpectedStatusError(`/v2/sessions/${params.sessionId}`, response.status);
   }
 
-  return parseOrThrow<V2SessionByIdResponse>(V2SessionByIdResponseSchema, response.data, 'Unexpected /v2/sessions response shape').session;
+  return parseSessionByIdResponse(response.data, accessProjectionVersion);
 }
 
 export async function patchSessionMetadata(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'PATCH'; path: string; body: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
   ciphertext: string;
   expectedVersion: number;
@@ -418,13 +590,18 @@ export async function patchSessionMetadata(params: Readonly<{
         },
       } satisfies SessionMetadataInactiveModelIntentPatchV1
     : { metadata };
+  const path = `/v2/sessions/${encodedSessionId}`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({
+    method: 'PATCH', path, body: requestBody,
+  }) ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
   const response = await axios.patch(
-    `${serverUrl}/v2/sessions/${encodedSessionId}`,
+    `${serverUrl}${path}`,
     requestBody,
     {
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.token}`,
+        ...authorizationHeaders,
         'Content-Type': 'application/json',
       },
       timeout: configuration.sessionControlHttpTimeoutMs,
@@ -538,6 +715,11 @@ export type PatchSessionMetadataEnvelopeTupleResult =
     }>
   | Readonly<{
       success: false;
+      error: 'session_team_credential_binding_rejected';
+      reason: SessionTeamCredentialBindingRejectionV1;
+    }>
+  | Readonly<{
+      success: false;
       error: 'session_metadata_version_conflict';
       metadataLayoutVersion: 1;
       sharedMetadata: Readonly<{ version: number }>;
@@ -553,20 +735,29 @@ export type PatchSessionMetadataEnvelopeTupleResult =
  */
 export async function patchSessionMetadataEnvelopeTuple(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'PATCH'; path: string; body: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
   patch:
     | SessionMetadataTuplePatchV1
-    | SessionMetadataInactiveModelIntentOwnerPatchV1;
+    | SessionMetadataInactiveModelIntentOwnerPatchV1
+    | SessionTeamCredentialBindingMetadataPatchV1;
 }>): Promise<PatchSessionMetadataEnvelopeTupleResult> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
+  const path = `/v2/sessions/${encodedSessionId}`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({
+    method: 'PATCH', path, body: params.patch,
+  }) ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
   const response = await axios.patch(
-    `${serverUrl}/v2/sessions/${encodedSessionId}`,
+    `${serverUrl}${path}`,
     params.patch,
     {
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.token}`,
+        ...authorizationHeaders,
         'Content-Type': 'application/json',
       },
       timeout: configuration.sessionControlHttpTimeoutMs,
@@ -627,6 +818,15 @@ export async function patchSessionMetadataEnvelopeTuple(params: Readonly<{
     }
   }
   if (response.status === 409) {
+    const bindingRejection =
+      SessionTeamCredentialBindingMutationRejectionV1Schema.safeParse(body);
+    if (bindingRejection.success) {
+      return {
+        success: false,
+        error: 'session_team_credential_binding_rejected',
+        reason: bindingRejection.data.reason,
+      };
+    }
     if (body?.code === 'session_publisher_authority_lost') {
       return {
         success: false,
@@ -836,16 +1036,22 @@ export async function applySessionAgentTransitionCutover(params: Readonly<{
 
 export async function fetchSessionsPage(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   cursor?: string;
   limit?: number;
   activeOnly?: boolean;
   archivedOnly?: boolean;
   signal?: AbortSignal;
-}>): Promise<{
+}>): Promise<Readonly<{
   sessions: RawSessionListRow[];
   nextCursor: string | null;
   hasNext: boolean;
-}> {
+}> & (
+  | SessionListAttentionContinuationV1
+  | Readonly<{ attentionNextCursor?: never; attentionHasNext?: never }>
+)> {
   if (params.signal?.aborted) {
     const error = new Error('Session list was cancelled');
     error.name = 'AbortError';
@@ -859,15 +1065,24 @@ export async function fetchSessionsPage(params: Readonly<{
   }
 
   const path = params.activeOnly ? '/v2/sessions/active' : params.archivedOnly ? '/v2/sessions/archived' : '/v2/sessions';
-  const response = await axios.get(`${serverUrl}${path}`, {
+  const query = new URLSearchParams();
+  if (params.activeOnly) {
+    if (limit) query.set('limit', String(limit));
+  } else {
+    if (params.cursor) query.set('cursor', params.cursor);
+    if (limit) query.set('limit', String(limit));
+  }
+  const queryString = query.toString();
+  const requestPath = queryString ? `${path}?${queryString}` : path;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path: requestPath })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.get(`${serverUrl}${requestPath}`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${params.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
-    params: params.activeOnly
-      ? { ...(limit ? { limit } : {}) }
-      : { ...(params.cursor ? { cursor: params.cursor } : {}), ...(limit ? { limit } : {}) },
     ...(params.signal ? { signal: params.signal } : {}),
     timeout: configuration.sessionControlHttpTimeoutMs,
     validateStatus: () => true,
@@ -890,11 +1105,102 @@ export async function fetchSessionsPage(params: Readonly<{
     throw new Error(`Unexpected ${path} response shape`);
   }
 
-  return {
+  const attentionContinuation = readSessionListAttentionContinuation(parsed);
+
+  const page = {
     sessions: parsed.sessions,
     nextCursor: typeof parsed.nextCursor === 'string' ? parsed.nextCursor : null,
     hasNext: Boolean(parsed.hasNext),
   };
+  return attentionContinuation === null
+    ? page
+    : { ...page, ...attentionContinuation };
+}
+
+export type SessionListPageV1 = Awaited<ReturnType<typeof fetchSessionsPage>>;
+
+/**
+ * The filtered listing's second continuation frontier, kept separate from the ordinary cursor.
+ *
+ * Current ordinary GET and strict query responses may produce it, while predecessor GET responses
+ * omit it. Callers that accept either page shape read it through
+ * `readSessionListAttentionContinuation`: the two fields travel together, and a caller must not
+ * end up carrying a cursor without its flag.
+ */
+export type SessionListAttentionContinuationV1 = Readonly<{
+  attentionNextCursor: string | null;
+  attentionHasNext: boolean;
+}>;
+
+/** Strict filtered-listing transport. Query failures never broaden into legacy GET semantics. */
+export async function fetchSessionsQueryPage(params: Readonly<{
+  token: string;
+  query: SessionListQueryV1;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'POST'; path: string; body: SessionListQueryV1;
+  }>) => Readonly<Record<string, string>> | null;
+  signal?: AbortSignal;
+}>): Promise<SessionListQueryResponseV1> {
+  if (params.signal?.aborted) {
+    const error = new Error('Session list was cancelled');
+    error.name = 'AbortError';
+    throw error;
+  }
+  const path = '/v2/sessions/query';
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({
+    method: 'POST', path, body: params.query,
+  }) ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.post(
+    `${resolveServerHttpBaseUrl()}${path}`,
+    params.query,
+    {
+      headers: {
+        ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+        ...authorizationHeaders,
+        'Content-Type': 'application/json',
+      },
+      ...(params.signal ? { signal: params.signal } : {}),
+      timeout: configuration.sessionControlHttpTimeoutMs,
+      validateStatus: () => true,
+    },
+  );
+  if (isAuthenticationStatus(response.status)) throwAuthenticationStatusError(response.status);
+  if (response.status === 404) {
+    const unavailable = SessionListUnavailableQueryV1Schema.safeParse(response.data);
+    if (unavailable.success) {
+      throw new SessionListQueryHttpError(unavailable.data.code, unavailable.data);
+    }
+    throwUnexpectedStatusError(path, response.status);
+  }
+  if (response.status !== 200) throwUnexpectedStatusError(path, response.status);
+
+  const parsed = parseOrThrow<SessionListQueryResponseV1>(
+    SessionListQueryResponseV1Schema,
+    response.data,
+    `Unexpected ${path} response shape`,
+  );
+  return parsed;
+}
+
+export type SessionListQueryPageV1 = Awaited<ReturnType<typeof fetchSessionsQueryPage>>;
+
+/** Returns the attention continuation frontier, or `null` for a page shape that has none. */
+export function readSessionListAttentionContinuation(
+  page: Readonly<{
+    attentionNextCursor?: string | null;
+    attentionHasNext?: boolean;
+  }>,
+): SessionListAttentionContinuationV1 | null {
+  const attentionNextCursor = page.attentionNextCursor;
+  const attentionHasNext = page.attentionHasNext;
+  const hasAttentionNextCursor = attentionNextCursor !== undefined;
+  const hasAttentionHasNext = attentionHasNext !== undefined;
+  if (hasAttentionNextCursor !== hasAttentionHasNext) {
+    throw new Error('Session list response included a partial attention continuation');
+  }
+  if (attentionNextCursor === undefined || attentionHasNext === undefined) return null;
+  return { attentionNextCursor, attentionHasNext };
 }
 
 export async function commitSessionEncryptedMessage(params: Readonly<{
@@ -1047,6 +1353,9 @@ export async function getOrCreateSessionByTag(params: Readonly<{
   currentStorageState?: 'machine_only';
   organizationPlacement?: SessionOrganizationPlacementV1;
   shouldCommit?: () => boolean;
+  initialAccess?: SessionInitialAccessDraftV1;
+  primaryTeamId?: string | null;
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
   accountEncryptionCurrentness?: AccountEncryptionCurrentnessResponse;
 }>): Promise<{
   session: RawSessionRecord;
@@ -1059,6 +1368,7 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     desiredSessionEncryptionMode,
     accountEncryptionCurrentness,
     serverSupportsFeatureSnapshot,
+    serverFeaturesSnapshot,
   } = await resolveSessionCreateEncryptionMode({
     token: params.credentials.token,
     serverBaseUrl: serverUrl,
@@ -1067,6 +1377,7 @@ export async function getOrCreateSessionByTag(params: Readonly<{
       : {}),
   });
 
+  const initialAccessFields = buildSessionInitialAccessCreateFields(params, serverFeaturesSnapshot);
   const sessionEncryptionContext =
     desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(params.credentials)
@@ -1098,6 +1409,15 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     sessionEncryptionContext?.dataEncryptionKey
       ? encodeBase64(sessionEncryptionContext.dataEncryptionKey)
       : null;
+  const materializedInitialAccessFields = await materializeSessionInitialAccessCreateFields({
+    fields: initialAccessFields,
+    sessionEncryptionMode: desiredSessionEncryptionMode,
+    sessionDataKey: sessionEncryptionContext?.encryptionVariant === 'dataKey'
+      ? sessionEncryptionContext.encryptionKey
+      : null,
+    token: params.credentials.token,
+    serverHttpBaseUrl: serverUrl,
+  });
 
   if (params.shouldCommit && !params.shouldCommit()) {
     throw new Error('Session creation commit precondition failed');
@@ -1107,7 +1427,9 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     ...metadataEnvelopeFields,
     dataEncryptionKey: dataEncryptionKeyPayload,
     ...(params.currentStorageState ? { currentStorageState: params.currentStorageState } : {}),
-    ...(params.organizationPlacement ? { organizationPlacement: params.organizationPlacement } : {}),
+      ...(params.organizationPlacement ? { organizationPlacement: params.organizationPlacement } : {}),
+      ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
+    ...materializedInitialAccessFields,
     ...(serverSupportsFeatureSnapshot ? { encryptionMode: desiredSessionEncryptionMode } : {}),
   }, {
     headers: {
@@ -1119,6 +1441,10 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     validateStatus: () => true,
   });
 
+  const initialAccessServerError = response.status === 200
+    ? null
+    : readSessionInitialAccessServerError(response.data, response.status);
+  if (initialAccessServerError) throw initialAccessServerError;
   if (isAuthenticationStatus(response.status)) {
     throwAuthenticationStatusError(response.status);
   }
@@ -1140,6 +1466,10 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     }
   }
   if (response.status !== 200) {
+    const updateRequired = readSessionInitialAccessUpdateRequiredError(response.data);
+    if (updateRequired) throw updateRequired;
+    const teamCredentialUpdateRequired = readSessionTeamCredentialBindingUpdateRequiredError(response.data);
+    if (teamCredentialUpdateRequired) throw teamCredentialUpdateRequired;
     throw new Error(`Unexpected status from /v1/sessions: ${response.status}`);
   }
 
@@ -1151,6 +1481,9 @@ export async function getOrCreateSessionByTag(params: Readonly<{
   if (!parsed || !parsed.session || typeof parsed.session !== 'object') {
     throw new Error('Unexpected /v1/sessions response shape');
   }
+  assertSessionEncryptionModeAllowedByEffectiveClientRequirement(
+    resolveSessionStoredContentEncryptionMode(parsed.session),
+  );
   // Released and predecessor servers omit `created`; preserve their historical
   // create-or-load behavior while current servers report the exact race result.
   return {

@@ -121,6 +121,7 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
 }>): Promise<void> {
   const built = buildActivityNotificationContent(params.event, {
     readyIncludeMessageText: params.channel.readyIncludeMessageText !== false,
+    requestIncludeMessageText: params.channel.requestIncludeMessageText !== false,
   });
   const request = params.event.topic === 'permission_request' || params.event.topic === 'user_action_request'
     ? {
@@ -138,11 +139,18 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
       title: built.title,
       body: built.body,
     },
-    session: {
+    session: 'sessionId' in params.event && params.event.sessionId ? {
       sessionId: params.event.sessionId,
       title: params.event.sessionTitle ?? null,
-    },
+    } : null,
     request,
+    workflowRun: params.event.topic === 'workflow_run_update'
+      ? {
+        runId: params.event.runId,
+        updateKind: params.event.updateKind,
+        ...(params.event.reason ? { reason: params.event.reason } : {}),
+      }
+      : null,
   });
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const headers: Record<string, string> = {

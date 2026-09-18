@@ -2,8 +2,11 @@ import type { PeerTcpTunnelStreamConnection } from '@happier-dev/peer-transport'
 import { MACHINE_ALPN } from '@happier-dev/iroh-native/node';
 import {
     IrohMachineHandshakeV1Schema,
+    IrohProviderBrokerHandshakeV1Schema,
     type IrohMachineCarrierFlowV1,
     type PeerFlowKindV1,
+    type IrohProviderBrokerHandshakeV1,
+    type RunnerBrokerReadinessRequestV1,
 } from '@happier-dev/protocol';
 import {
     verifyDirectRouteGrantV2,
@@ -34,6 +37,81 @@ export function machineCarrierRouteMismatchError(): MachineCarrierError {
     );
 }
 
+function machineCarrierAbortReason(signal: AbortSignal): unknown {
+    return signal.reason ?? Object.assign(new Error('The machine carrier operation was aborted.'), { name: 'AbortError' });
+}
+
+export async function awaitMachineCarrierControlPlane<T>(
+    pending: Promise<T>,
+    signal: AbortSignal | undefined,
+): Promise<T> {
+    if (!signal) return await pending;
+    if (signal.aborted) {
+        void pending.catch(() => undefined);
+        throw machineCarrierAbortReason(signal);
+    }
+    return await new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            reject(machineCarrierAbortReason(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.then(
+            (value) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                resolve(value);
+            },
+            (error: unknown) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            },
+        );
+    });
+}
+
+export async function awaitMachineCarrierTunnelOpen<T extends Readonly<{ close: () => Promise<void> }>>(
+    pending: Promise<T>,
+    signal: AbortSignal | undefined,
+): Promise<T> {
+    if (!signal) return await pending;
+    if (signal.aborted) {
+        void pending.then(async (late) => await late.close()).catch(() => undefined);
+        throw machineCarrierAbortReason(signal);
+    }
+    return await new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            void pending.then(async (late) => await late.close()).catch(() => undefined);
+            reject(machineCarrierAbortReason(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.then(
+            (tunnel) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                resolve(tunnel);
+            },
+            (error: unknown) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            },
+        );
+    });
+}
+
 /**
  * Transport boundary input. `remoteEndpointId` is the dial/peer hint derived
  * from the validated handshake — it is never treated as transport identity.
@@ -46,6 +124,30 @@ export type MachineCarrierTransportOpenInput = Readonly<{
     operationId?: string;
     /** Exact canonical handshake bytes parsed and verified by `verifyMachineCarrierHandshakeV1`. */
     handshake: ReturnType<typeof IrohMachineHandshakeV1Schema.parse>;
+}>;
+
+/**
+ * Provider-broker machine/1 opens deliberately have no same-account flow or
+ * operation id. They are carried by the existing native framing and are
+ * admitted by the target daemon's provider-broker branch. Keeping this shape
+ * separate prevents the ordinary V1 verifier from gaining a cross-account
+ * escape hatch.
+ */
+export type ProviderBrokerMachineCarrierTransportOpenInput = Readonly<{
+    alpn: typeof MACHINE_CARRIER_ALPN_V1;
+    remoteEndpointId: string;
+    flow: 'provider_broker';
+    handshake: IrohProviderBrokerHandshakeV1;
+    handshakeProvider?: () => Promise<IrohProviderBrokerHandshakeV1>;
+}>;
+
+/** Pre-Session, content-free readiness uses the same carrier but a distinct
+ * purpose and closed proof. It can never be passed to the inference handler. */
+export type RunnerBrokerReadinessMachineCarrierTransportOpenInput = Readonly<{
+    alpn: typeof MACHINE_CARRIER_ALPN_V1;
+    remoteEndpointId: string;
+    flow: 'provider_broker_readiness';
+    handshake: RunnerBrokerReadinessRequestV1;
 }>;
 
 /**

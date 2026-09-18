@@ -27,6 +27,9 @@ test('package export entrypoints load in Node ESM', async () => {
   assert.equal(typeof firstPartyRuntime.getFirstPartyComponentCatalogEntry, 'function');
   assert.equal(typeof root.firstPartyRuntime.getFirstPartyComponentCatalogEntry, 'function');
 
+  const runtimePathMatching = await import('@happier-dev/cli-common/happierRuntime/runtimePathMatching');
+  assert.equal(typeof runtimePathMatching.isHappierRuntimePathWithinRoot, 'function');
+
   const serviceDiscovery = await import('../dist/service/discovery/index.js');
   assert.equal(typeof serviceDiscovery.parseLaunchdPlist, 'function');
   assert.equal(typeof root.service.parseLaunchdPlist, 'function');

@@ -16,6 +16,39 @@ describe('createAcpAgentMessageForwarder', () => {
     expect(sendAcp).toHaveBeenCalledTimes(0);
   });
 
+  it('preserves explicit zero usage dimensions and provider cost provenance', () => {
+    const sent: ACPMessageData[] = [];
+    const forwarder = createAcpAgentMessageForwarder({
+      sendAcp: vi.fn((_provider: unknown, body: ACPMessageData) => { sent.push(body); }),
+      provider: 'grok' as any,
+      makeId: () => 'usage-1',
+    });
+
+    forwarder.forward({
+      type: 'token-count',
+      source: 'provider_result',
+      scope: 'turn_delta',
+      tokens: { total: 8, input: 8, output: 0 },
+      cost: {
+        total: 0,
+        reportedUsd: 0,
+        costSource: 'provider_reported',
+        currency: 'USD',
+      },
+    } as any);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'token_count',
+      tokens: { total: 8, input: 8, output: 0 },
+      cost: {
+        reportedUsd: 0,
+        costSource: 'provider_reported',
+        currency: 'USD',
+      },
+    });
+  });
+
   it('namespaces tool-call ids into a sidechain', () => {
     const sent: ACPMessageData[] = [];
     const sendAcp = vi.fn((_provider: any, body: ACPMessageData) => {

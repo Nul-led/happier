@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { RUNTIME_ACTION_IDS_V1 } from '@happier-dev/protocol/actions';
+import type {
+  CliServerFeaturesSnapshot,
+  FetchServerFeaturesSnapshotParams,
+} from '@/features/serverFeaturesClient';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 import { handleSessionCommand } from '../handleSessionCommand';
 
@@ -7,6 +12,7 @@ const {
   bootstrapAccountSettingsContext,
   createCliActionExecutor,
   execute,
+  fetchServerFeaturesSnapshot,
   resolveSessionTransportContext,
 } = vi.hoisted(() => {
   const resolveSessionTransportContext = vi.fn();
@@ -20,10 +26,17 @@ const {
     settingsSecretsReadKeys: [],
     whenRefreshed: null,
   }));
+  const fetchServerFeaturesSnapshot = vi.fn<
+    (params: FetchServerFeaturesSnapshotParams) => Promise<CliServerFeaturesSnapshot>
+  >(async () => ({
+    status: 'unsupported' as const,
+    reason: 'endpoint_missing' as const,
+  }));
   return {
     bootstrapAccountSettingsContext,
     createCliActionExecutor,
     execute,
+    fetchServerFeaturesSnapshot,
     resolveSessionTransportContext,
   };
 });
@@ -71,13 +84,67 @@ vi.mock('@/settings/accountSettings/bootstrapAccountSettingsContext', () => ({
   bootstrapAccountSettingsContext,
 }));
 
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot,
+}));
+
 describe('happier session actions (unit)', () => {
   beforeEach(() => {
     resolveSessionTransportContext.mockReset();
     execute.mockReset();
     createCliActionExecutor.mockClear();
     bootstrapAccountSettingsContext.mockClear();
+    fetchServerFeaturesSnapshot.mockReset();
+    fetchServerFeaturesSnapshot.mockResolvedValue({
+      status: 'unsupported',
+      reason: 'endpoint_missing',
+    });
     delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+  });
+
+  it('binds current Session resolution to the selected Home feature projection', async () => {
+    const serverFeaturesSnapshot = {
+      status: 'ready' as const,
+      features: FeaturesResponseSchema.parse({
+        features: {
+          sessions: { enabled: true, collaboration: { enabled: true } },
+        },
+        capabilities: {},
+      }),
+    };
+    fetchServerFeaturesSnapshot.mockResolvedValueOnce(serverFeaturesSnapshot);
+    resolveSessionTransportContext.mockResolvedValueOnce({
+      ok: true,
+      sessionId: 'team-session',
+      rawSession: { id: 'team-session', metadata: {} },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      ctx: null,
+      mode: 'plain' as const,
+    });
+    execute.mockResolvedValueOnce({ ok: true, result: { status: 'idle' } });
+
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['actions', 'execute', 'team-session', 'session.status.get', '--json'], {
+        readCredentialsFn: async () => ({ token: 'token_test', encryption: null }),
+      });
+
+      expect(fetchServerFeaturesSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+        token: 'token_test',
+        serverUrl: expect.any(String),
+      }));
+      const boundServerUrl = fetchServerFeaturesSnapshot.mock.calls[0]?.[0].serverUrl;
+      expect(resolveSessionTransportContext).toHaveBeenCalledWith(expect.objectContaining({
+        idOrPrefix: 'team-session',
+        serverFeaturesSnapshot,
+      }));
+      expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
+        serverHttpBaseUrl: boundServerUrl,
+        serverId: expect.any(String),
+      }));
+    } finally {
+      output.restore();
+    }
   });
 
   it('prints a JSON envelope for actions execute', async () => {
@@ -115,6 +182,7 @@ describe('happier session actions (unit)', () => {
         {
           defaultSessionId: 'sess-1',
           surface: 'cli',
+          authority: 'present_user',
           actionRequestId: 'attempt-1',
           resumeActionRequest: true,
         },
@@ -374,7 +442,7 @@ describe('happier session actions (unit)', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.terminalComposer.clear',
         { sessionId: 'sess-1', expectedStateAtMs: 42 },
-        { defaultSessionId: 'sess-1', surface: 'cli' },
+        { defaultSessionId: 'sess-1', surface: 'cli', authority: 'present_user' },
       );
     } finally {
       output.restore();
@@ -416,8 +484,12 @@ describe('happier session actions (unit)', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.list',
         { limit: 10 },
-        { defaultSessionId: 'sess-1', surface: 'cli' },
+        { defaultSessionId: 'sess-1', surface: 'cli', authority: 'present_user' },
       );
+      expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
+        serverId: expect.any(String),
+        serverHttpBaseUrl: expect.stringMatching(/^https?:\/\//),
+      }));
     } finally {
       output.restore();
     }
@@ -454,7 +526,7 @@ describe('happier session actions (unit)', () => {
       expect(parsed.kind).toBe('session_actions_execute');
       expect(bootstrapAccountSettingsContext).toHaveBeenCalledWith(expect.objectContaining({
         credentials: expect.objectContaining({ token: 'token_test' }),
-        mode: 'fast',
+        mode: 'blocking',
       }));
     } finally {
       output.restore();
@@ -497,7 +569,7 @@ describe('happier session actions (unit)', () => {
       expect(parsed.data.actionSpecs.some((spec: { id: string }) => spec.id === 'review.start')).toBe(false);
       expect(bootstrapAccountSettingsContext).toHaveBeenCalledWith(expect.objectContaining({
         credentials: expect.objectContaining({ token: 'token_test' }),
-        mode: 'fast',
+        mode: 'blocking',
       }));
     } finally {
       output.restore();

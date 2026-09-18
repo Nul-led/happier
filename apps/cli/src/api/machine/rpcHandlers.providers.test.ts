@@ -67,6 +67,12 @@ function harness(providersEnabled: boolean | (() => boolean) = true) {
     projectModels: vi.fn(async (request: { agentTargetKey: string }) => ({
       status: 'success' as const, agentTargetKey: request.agentTargetKey, groups: [],
     })),
+    resolveTeamCredentialRequestPolicySupport: vi.fn(async () => ({
+      status: 'unavailable' as const, reason: 'model_unavailable' as const,
+    })),
+    resolveTeamCredentialResourceTestCandidate: vi.fn(async () => ({
+      status: 'unavailable' as const, reason: 'model_unavailable' as const,
+    })),
     mutateModelSettings: vi.fn(async (request: DaemonProviderModelSettingsMutationRequestV1) => ({
       status: 'success' as const, action: request.action,
     })),
@@ -102,6 +108,51 @@ function harness(providersEnabled: boolean | (() => boolean) = true) {
 }
 
 describe('machine provider RPC registration', () => {
+  it('dispatches source-only request-policy support discovery to its exact Machine service', async () => {
+    const h = harness();
+    const request = {
+      machineId: 'machine-a',
+      source: {
+        v: 1, kind: 'connected_pool',
+        target: {
+          kind: 'group',
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+          groupId: 'pool-1',
+        },
+        poolIncarnation: 'incarnation-1',
+      },
+      refreshPolicy: 'current_only',
+    } as const;
+    await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT)!(request))
+      .resolves.toEqual({ status: 'unavailable', reason: 'model_unavailable' });
+    expect(h.services.resolveTeamCredentialRequestPolicySupport).toHaveBeenCalledWith(request);
+
+    await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT)!({
+      ...request, machineId: 'machine-b',
+    })).resolves.toEqual({ status: 'unavailable', reason: 'source_unavailable' });
+    expect(h.services.resolveTeamCredentialRequestPolicySupport).toHaveBeenCalledOnce();
+  });
+
+  it('dispatches the strict resource-test candidate request only to its exact Machine service', async () => {
+    const h = harness();
+    const request = {
+      machineId: 'machine-a', teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 3,
+      refreshPolicy: 'current_only',
+      source: {
+        v: 1, kind: 'provider_connection', connectionId: 'connection-1', credentialSlotId: 'slot-1',
+        connectionSecurityFingerprint: 'connection-security:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    } as const;
+    await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE)!(request))
+      .resolves.toEqual({ status: 'unavailable', reason: 'model_unavailable' });
+    expect(h.services.resolveTeamCredentialResourceTestCandidate).toHaveBeenCalledWith(request, undefined);
+
+    await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE)!({
+      ...request, machineId: 'machine-b',
+    })).resolves.toEqual({ status: 'unavailable', reason: 'source_unavailable' });
+    expect(h.services.resolveTeamCredentialResourceTestCandidate).toHaveBeenCalledOnce();
+  });
+
   it('fails provider reads and new mutations closed before invoking runtime services when the root feature is disabled', async () => {
     const h = harness(false);
     await expect(h.handlers.get(RPC_METHODS.DAEMON_PROVIDERS_PROBE)!({ connectionId: 'pc_1', machineId: 'machine-a' }))

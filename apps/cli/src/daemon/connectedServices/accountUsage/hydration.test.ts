@@ -197,4 +197,56 @@ describe('hydrateProviderAccountUsageStoreFromCurrentSources', () => {
     expect(result.hydratedRecordIds).toEqual([snapshot.recordId]);
     expect(store.resolveBySource(localGroupSource)?.recordId).toBe(snapshot.recordId);
   });
+
+  it('hydrates future-dated evidence as stale and schedules a bounded refresh', async () => {
+    const snapshot = {
+      ...createSnapshot(),
+      observedAtMs: 100_000,
+      fetchedAtMs: 100_000,
+    };
+    const store = createProviderAccountUsageStore();
+
+    const result = await hydrateProviderAccountUsageStoreFromCurrentSources({
+      sources: [v4HydrationSource()],
+      resolveRecordIdForSource: async (source) => ({
+        source,
+        recordId: snapshot.recordId,
+        providerAccountId: 'acct-work',
+        fetchedAt: snapshot.fetchedAtMs,
+        staleAfterMs: snapshot.staleAfterMs,
+      }),
+      api: {
+        getAccountEncryptionMode: async () => 'plain' as const,
+        readProviderAccountUsageRecord: async () => ({
+          content: { t: 'plain' as const, v: snapshot },
+          metadata: {
+            fetchedAt: snapshot.fetchedAtMs,
+            staleAfterMs: snapshot.staleAfterMs,
+            status: 'ok' as const,
+          },
+          sources: [qualifiedGroupSource],
+        }),
+      },
+      credentials: { token: 'token', encryption: null },
+      store,
+      nowMs: 10_000,
+    });
+
+    expect(result.dispositions).toEqual([{
+      source: expect.objectContaining({
+        profileId: 'work',
+        bindingKind: 'group_member',
+        groupId: 'team',
+        groupGeneration: 4,
+      }),
+      status: 'hydrated_stale',
+      recordId: snapshot.recordId,
+    }]);
+    expect(result.refreshSources).toEqual([expect.objectContaining({
+      profileId: 'work',
+      bindingKind: 'group_member',
+      groupId: 'team',
+      groupGeneration: 4,
+    })]);
+  });
 });

@@ -21,6 +21,7 @@ import {
   copyCliNodeWorkspaceRuntimePackages,
   copyCliNodeWorkspaceRuntimePackagesFromRuntimeRoot,
   readCliNodeWorkspaceRuntimeIdentity,
+  readCliNodeWorkspaceRuntimeIdentityAsync,
 } from './copyCliNodeRuntimePayload.js';
 
 function writeWorkspacePackage(
@@ -38,6 +39,47 @@ function writeWorkspacePackage(
   writeFileSync(join(root, 'package.json'), packageJson, 'utf8');
   writeFileSync(join(root, 'dist', 'index.js'), source, 'utf8');
 }
+
+it('reads workspace identity without withholding event-loop service and preserves the synchronous fingerprint', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'happier-cli-runtime-responsive-'));
+  try {
+    const hostRoot = join(root, 'apps', 'cli');
+    mkdirSync(hostRoot, { recursive: true });
+    writeFileSync(join(hostRoot, 'package.json'), JSON.stringify({
+      name: '@happier-dev/cli',
+      bundledDependencies: ['@happier-dev/protocol'],
+    }));
+    writeWorkspacePackage(join(root, 'packages', 'protocol'), 'export {};\n');
+    const installedPackage = join(hostRoot, 'node_modules', '@happier-dev', 'protocol');
+    writeWorkspacePackage(installedPackage, 'export {};\n');
+    for (const name of ['z', 'ä', '🧪', '.tmp']) {
+      mkdirSync(join(installedPackage, name));
+      writeFileSync(join(installedPackage, name, 'payload.bin'), Buffer.from([0, 255, 1]));
+    }
+    const expected = readCliNodeWorkspaceRuntimeIdentity({ repoRoot: root });
+    let serviced = 0;
+    let reading = true;
+    const serve = () => {
+      serviced += 1;
+      if (reading) setImmediate(serve);
+    };
+    setImmediate(serve);
+    let actual;
+    try {
+      actual = await readCliNodeWorkspaceRuntimeIdentityAsync({ repoRoot: root });
+    } finally {
+      reading = false;
+    }
+    expect(serviced).toBeGreaterThan(1);
+    expect(actual).toEqual(expected);
+    if (process.platform !== 'win32') {
+      symlinkSync('dist/index.js', join(installedPackage, 'linked.js'));
+      await expect(readCliNodeWorkspaceRuntimeIdentityAsync({ repoRoot: root })).rejects.toThrow(/contains a symlink/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it('orders Unicode sibling names by code units for a locale-independent runtime identity', () => {
   const siblingNames = ['🧪', 'ä', 'z'];

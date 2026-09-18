@@ -25,7 +25,12 @@ import {
 } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
 import { bundlePluginDaemonRuntime } from '@/plugins/authoring/bundleDaemonRuntime';
 import { evaluatePluginAuthorSource } from '@/plugins/authoring/sourceModule';
-import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import {
+  resolveExecutablePluginRuntimeRegistry,
+  type ResolvedExecutablePluginRuntimeRegistry,
+} from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
+import { createEphemeralPluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import {
   projectExecutablePluginToolCatalog,
   type ProjectedPluginToolCatalogEntry,
@@ -38,6 +43,8 @@ import { writeCommittedLocalPathPluginFixture } from '@/plugins/store/state.test
 import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
+import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
+import { normalizeActionsSettingsV1 } from '@happier-dev/protocol';
 
 const daemonCatalogBoundary = vi.hoisted(() => ({
   read: vi.fn(),
@@ -129,8 +136,13 @@ import { startHappyServer, type HappyMcpSessionClient } from '@/mcp/startHappySe
 const COMPANION_PLUGIN_ID = 'examples.public-sdk-review-assistant';
 const COMPANION_TOOL_ID = 'review-summary-tool';
 const COMPANION_TOOL_NAME = 'review_summary';
+const COMPANION_ACTION_SETTINGS_ID = `${COMPANION_PLUGIN_ID}/actions/review-summary` as const;
 const UNMANAGED_TOOL_NAME = 'always_visible';
 const COMPANION_SESSION_ID = 'composition-turn-session';
+const getTestServerBinding = () => ({
+  serverId: 'test-home',
+  serverUrl: 'https://test-home.example.test',
+} as const);
 
 type CompositionResolutionRegistry = Parameters<typeof resolveAgentCompositionThroughRuntimeRegistry>[0];
 
@@ -370,7 +382,7 @@ async function createTrustedLocalLinkInstall(params: Readonly<{
 }
 
 async function createPublicAuthoringRuntimeRegistry(): Promise<Readonly<{
-  runtimeRegistry: CompositionResolutionRegistry;
+  runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry;
   immutableGenerationId: string;
   manifestId: string;
   dispose: () => Promise<void>;
@@ -571,6 +583,7 @@ async function runComposedTurn(params: Readonly<{
       };
     },
     setActiveAgentCompositionToolSelection: (selection) => { params.selection.current = selection; },
+    registerProviderAcceptedEffect: () => undefined,
     formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
   } satisfies Parameters<typeof runPermissionModePromptLoop>[0];
   const loop = runPermissionModePromptLoop(loopOptions);
@@ -585,6 +598,139 @@ async function runComposedTurn(params: Readonly<{
 }
 
 describe('startHappyServer Agent composition turn', () => {
+  it('lists and executes a contributed tool from the exact scoped registry without daemon control', async () => {
+    const runtime = await createPublicAuthoringRuntimeRegistry();
+    try {
+      daemonCatalogBoundary.read.mockReset();
+      daemonCatalogBoundary.execute.mockReset();
+      daemonCatalogBoundary.read.mockResolvedValue({
+        kind: 'available',
+        plugins: Object.freeze([]),
+        tools: Object.freeze([createUnmanagedDaemonTool()]),
+      });
+      daemonCatalogBoundary.execute.mockRejectedValue(new Error('ambient daemon must not execute'));
+      const runtimeLease = createEphemeralPluginRuntimeRegistryLease(runtime.runtimeRegistry);
+      const lease = Object.freeze({
+        ...runtimeLease,
+        // This fixture owns the temporary installation and disposes it after
+        // the server stops; the server merely borrows the exact lease.
+        release: vi.fn(async () => undefined),
+      }) satisfies PluginRuntimeRegistryLease;
+      const server = await startHappyServer({
+        sessionId: COMPANION_SESSION_ID,
+        getServerBinding: getTestServerBinding,
+        rpcHandlerManager: {
+          registerHandler: () => undefined,
+          invokeLocal: async () => ({}),
+        },
+        updateMetadata: () => undefined,
+      }, {
+        pluginRuntimeRegistryLease: lease,
+        actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+          normalizeActionsSettingsV1({ v: 1, actions: {} }),
+        ),
+      });
+      try {
+        expect(await listToolNames(server.url)).toContain(COMPANION_TOOL_NAME);
+        await expect(callTool(server.url, COMPANION_TOOL_NAME, {
+          transcript: 'The scoped Runner executes this exact reviewed generation.',
+        })).resolves.toMatchObject({
+          isError: false,
+          structuredContent: {
+            summary: 'The scoped Runner executes this exact reviewed generation.',
+          },
+        });
+        expect(daemonCatalogBoundary.read).not.toHaveBeenCalled();
+        expect(daemonCatalogBoundary.execute).not.toHaveBeenCalled();
+      } finally {
+        server.stop();
+      }
+    } finally {
+      await runtime.dispose();
+    }
+  }, 120_000);
+
+  it('enforces scoped Action policy and retired-generation currentness without ambient daemon fallback', async () => {
+    const runtime = await createPublicAuthoringRuntimeRegistry();
+    const runtimeLease = createEphemeralPluginRuntimeRegistryLease(runtime.runtimeRegistry);
+    const lease = Object.freeze({
+      ...runtimeLease,
+      release: vi.fn(async () => await runtimeLease.release()),
+    }) satisfies PluginRuntimeRegistryLease;
+    daemonCatalogBoundary.read.mockReset();
+    daemonCatalogBoundary.execute.mockReset();
+    daemonCatalogBoundary.read.mockRejectedValue(new Error('ambient daemon must not be read'));
+    daemonCatalogBoundary.execute.mockRejectedValue(new Error('ambient daemon must not execute'));
+
+    const disabledServer = await startHappyServer({
+      sessionId: COMPANION_SESSION_ID,
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { registerHandler: () => undefined, invokeLocal: async () => ({}) },
+      updateMetadata: () => undefined,
+    }, {
+      pluginRuntimeRegistryLease: lease,
+      actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+        normalizeActionsSettingsV1({
+          v: 1,
+          actions: { [COMPANION_ACTION_SETTINGS_ID]: { enabled: false } },
+        }),
+      ),
+    });
+    try {
+      expect(await listToolNames(disabledServer.url)).not.toContain(COMPANION_TOOL_NAME);
+    } finally {
+      disabledServer.stop();
+    }
+
+    const approvalServer = await startHappyServer({
+      sessionId: COMPANION_SESSION_ID,
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { registerHandler: () => undefined, invokeLocal: async () => ({}) },
+      updateMetadata: () => undefined,
+    }, {
+      pluginRuntimeRegistryLease: lease,
+      actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+        normalizeActionsSettingsV1({
+          v: 1,
+          actions: {
+            [COMPANION_ACTION_SETTINGS_ID]: { approvalRequiredSurfaces: ['agent'] },
+          },
+        }),
+      ),
+    });
+    try {
+      expect(await listToolNames(approvalServer.url)).toContain(COMPANION_TOOL_NAME);
+      await expect(callTool(approvalServer.url, COMPANION_TOOL_NAME, {
+        transcript: 'This handler must not run without canonical approval custody.',
+      })).resolves.toMatchObject({ isError: true });
+    } finally {
+      approvalServer.stop();
+    }
+
+    const retiredServer = await startHappyServer({
+      sessionId: COMPANION_SESSION_ID,
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { registerHandler: () => undefined, invokeLocal: async () => ({}) },
+      updateMetadata: () => undefined,
+    }, {
+      pluginRuntimeRegistryLease: lease,
+      actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+        normalizeActionsSettingsV1({ v: 1, actions: {} }),
+      ),
+    });
+    try {
+      await lease.release();
+      await expect(callTool(retiredServer.url, COMPANION_TOOL_NAME, {
+        transcript: 'A released generation must fail closed.',
+      })).resolves.toMatchObject({ isError: true });
+      expect(daemonCatalogBoundary.read).not.toHaveBeenCalled();
+      expect(daemonCatalogBoundary.execute).not.toHaveBeenCalled();
+    } finally {
+      retiredServer.stop();
+      await runtime.dispose();
+    }
+  }, 120_000);
+
   it('keeps generation G bound in-flight and admits a canonical public-authoring generation H on the next turn', async () => {
     const runtimeG = await createPublicAuthoringRuntimeRegistry();
     try {
@@ -627,6 +773,7 @@ describe('startHappyServer Agent composition turn', () => {
         };
         const happyClient: HappyMcpSessionClient = {
           sessionId: 'composition-turn-session',
+          getServerBinding: getTestServerBinding,
           rpcHandlerManager,
           updateMetadata: () => undefined,
           getActiveAgentCompositionToolSelection: () => selection.current,

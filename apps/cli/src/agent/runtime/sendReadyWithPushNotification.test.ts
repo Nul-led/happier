@@ -35,7 +35,7 @@ describe('sendReadyWithPushNotification', () => {
       logPrefix: '[Qwen]',
     })
 
-    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready' })
+    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
     expect(sendToAllDevices).toHaveBeenCalledWith(
       'Qwen Code',
       'Qwen Code is waiting for your command',
@@ -97,7 +97,7 @@ describe('sendReadyWithPushNotification', () => {
       shouldSendPush: () => false,
     })
 
-    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready' })
+    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
     expect(sendToAllDevices).not.toHaveBeenCalled()
   })
 
@@ -137,7 +137,7 @@ describe('sendReadyWithPushNotification', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready' })
+    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled()
   })
 
@@ -194,6 +194,45 @@ describe('sendReadyWithPushNotification', () => {
     })
   })
 
+  it('keeps the owner on the Home leg when the runtime has no rich alert sender', async () => {
+    const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {})
+    const session = createSessionStub('session-live-only')
+
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: accountSettingsParse({
+        attentionDeliveryPolicyV1: {
+          v: 1,
+          channels: {
+            expo_push: { enabled: true },
+          },
+          liveActivityRemoteUpdates: {
+            enabled: true,
+            preferredMode: 'direct_apns',
+          },
+        },
+      }),
+      settingsVersion: 10,
+      loadedAtMs: 123,
+      settingsSecretsReadKeys: [],
+    })
+
+    await sendReadyWithPushNotification({
+      session: session as any,
+      pushSender: {
+        serverId: 'server-a',
+        sendLiveActivityRemoteUpdateAsync,
+      },
+      waitingForCommandLabel: 'Codex',
+      logPrefix: '[Codex]',
+    })
+
+    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({
+      type: 'ready',
+      ownerActivityDelivery: 'home_required',
+    })
+  })
+
   it('redacts non-Axios push errors before logging', async () => {
     const session = createSessionStub('session-456')
     const pushError = new Error(
@@ -212,7 +251,7 @@ describe('sendReadyWithPushNotification', () => {
       loggerDebug,
     })
 
-    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready' })
+    expect(session.enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'rich_sender' })
     expect(sendToAllDevices).toHaveBeenCalledTimes(1)
     const [, logged] = loggerDebug.mock.calls[0] ?? []
     expect(logged).toEqual(expect.objectContaining({

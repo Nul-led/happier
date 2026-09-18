@@ -3,7 +3,7 @@ import { readAdmittedHappierStructuredInputV1FromMeta } from '@happier-dev/proto
 
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { deterministicStringify } from '@/utils/deterministicJson';
-import { decryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
+import { openSessionMessageContent } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
     readPendingQueueV2MessageContentByLocalIdFromServer,
 } from '../../pendingQueueV2Transport';
@@ -43,29 +43,16 @@ const DEFAULT_DEPS: RejoinDeps = Object.freeze({
     findTranscript: findTranscriptEncryptedMessageByLocalIdV2,
 });
 
-function decryptExactStoredContent(
-    content: SessionMessageContent,
-    context: TranscriptQueryContext,
-): unknown {
-    if (context.encryptionMode === 'plain') {
-        if (content.t !== 'plain') throw new Error('Persisted Session input encryption mode mismatch');
-        return content.v;
-    }
-    if (content.t !== 'encrypted') throw new Error('Persisted Session input encryption mode mismatch');
-    return decryptSessionPayload({
-        ctx: {
-            encryptionKey: context.encryptionKey,
-            encryptionVariant: context.encryptionVariant,
-        },
-        ciphertextBase64: content.c,
-    });
-}
-
 function parsePersistedUserMessage(
     content: SessionMessageContent,
     context: TranscriptQueryContext,
 ): PersistedSessionUserMessageAdmission {
-    const decrypted = decryptExactStoredContent(content, context);
+    const decrypted = openSessionMessageContent({
+        content,
+        ...(context.encryptionMode === 'plain'
+            ? { mode: 'plain', ctx: null } as const
+            : { mode: 'e2ee', ctx: { encryptionKey: context.encryptionKey, encryptionVariant: context.encryptionVariant } } as const),
+    });
     if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
         throw new Error('Malformed persisted Session user message');
     }

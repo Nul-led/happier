@@ -120,20 +120,41 @@ function toWorkerClaimResponse(response: AutomationV3WorkerClaimResponse): Autom
   if (response.run === null && response.automation === null) {
     return { protocol: 'v3', run: null, automation: null };
   }
-  if (
-    response.run === null
-    || response.automation === null
-    || response.accountCurrentness === null
-  ) {
-    throw new Error('Automation V3 claim response did not contain Run, Automation, and Account currentness together');
+  if (response.run === null || response.accountCurrentness === null) {
+    throw new Error('Automation V3 claim response did not contain Run and Account currentness together');
+  }
+  if (response.run.automationId === null) {
+    if (response.automation !== null) throw new Error('Direct Workflow claim unexpectedly contained an Automation');
+    return {
+      protocol: 'v3',
+      run: {
+        id: response.run.id,
+        automationId: null,
+        attempt: response.run.attempt,
+        revision: response.run.revision,
+        origin: response.run.origin,
+        workflowAcceptedSnapshotEnvelope: response.run.workflowAcceptedSnapshotEnvelope,
+        triggerId: null,
+      },
+      automation: null,
+      accountCurrentness: response.accountCurrentness,
+    };
+  }
+  if (response.automation === null) {
+    throw new Error('Automation-origin V3 claim did not contain its Automation');
   }
   return {
     protocol: 'v3',
-    run: {
-      id: response.run.id,
-      automationId: response.run.automationId,
-      attempt: response.run.attempt,
+      run: {
+        id: response.run.id,
+        automationId: response.run.automationId,
+        attempt: response.run.attempt,
+        revision: response.run.revision,
+        recipeKind: response.run.recipeKind,
       executionInputEnvelope: response.run.executionInputEnvelope,
+      ...(response.run.automationEvidenceEnvelope !== undefined
+        ? { automationEvidenceEnvelope: response.run.automationEvidenceEnvelope }
+        : {}),
       triggerId: response.run.triggerId,
       cause: response.run.cause,
       resultDelivery: response.run.resultDelivery ?? { kind: 'none' },

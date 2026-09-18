@@ -8,13 +8,15 @@ describe('engineRegistry (opencode runtimeCore)', () => {
     expect(resolution?.backendId).toBe('opencode');
 
     expect(resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+      scope: 'detached',
       cwd: process.cwd(),
       backendId: 'opencode',
       permissionMode: 'read_only',
     })).toEqual(expect.objectContaining({
       readResumeSupport: expect.any(Function),
-      provisionSession: expect.any(Function),
-      sendPrompt: expect.any(Function),
+      provisionRuntime: expect.any(Function),
+      deliverInput: expect.any(Function),
+      getRuntimeLifetimeSignal: expect.any(Function),
       waitForTurnCompletion: expect.any(Function),
       probeTurnLiveness: expect.any(Function),
       dispose: expect.any(Function),

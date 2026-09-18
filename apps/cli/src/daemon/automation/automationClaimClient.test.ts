@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE } from '@happier-dev/protocol';
+import releasedV2Wire from '../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json';
 
 const { axiosGet, axiosPost } = vi.hoisted(() => ({
   axiosGet: vi.fn(),
@@ -178,6 +179,8 @@ describe('createAutomationClaimClient', () => {
         id: 'run-1',
         automationId: 'automation-1',
         attempt: 1,
+        revision: 0,
+        recipeKind: 'legacy',
         triggerId: null,
         triggerRetired: false,
         cause: { kind: 'manual' as const, invokedAt: 1_723_247_201_000 },
@@ -216,6 +219,8 @@ describe('createAutomationClaimClient', () => {
         id: 'run-1',
         automationId: 'automation-1',
         attempt: 1,
+        revision: 0,
+        recipeKind: 'legacy',
         triggerId: null,
         cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
         executionInputEnvelope: frozenExecutionInput,
@@ -337,7 +342,7 @@ describe('createAutomationClaimClient', () => {
         event: 'parentTurnCompleted' as const,
         sourceSessionId: 'session-1',
         sourceTurnId: 'turn-1',
-        policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-1' },
+        policy: { kind: 'currentTurn' as const },
       },
     };
     axiosPost.mockResolvedValue({
@@ -346,6 +351,8 @@ describe('createAutomationClaimClient', () => {
           id: 'run-parent-turn',
           automationId: 'automation-parent-turn',
           attempt: 1,
+          revision: 0,
+          recipeKind: 'legacy',
           triggerId: 'trigger-parent-turn',
           triggerRetired: false,
           cause,
@@ -365,6 +372,8 @@ describe('createAutomationClaimClient', () => {
         id: 'run-parent-turn',
         automationId: 'automation-parent-turn',
         attempt: 1,
+        revision: 0,
+        recipeKind: 'legacy',
         triggerId: 'trigger-parent-turn',
         cause,
         executionInputEnvelope: JSON.stringify({ v: 1 }),
@@ -407,6 +416,8 @@ describe('createAutomationClaimClient', () => {
           id: 'run-final',
           automationId: 'automation-final',
           attempt: 1,
+          revision: 0,
+          recipeKind: 'legacy',
           triggerId: null,
           triggerRetired: false,
           cause: {
@@ -549,6 +560,22 @@ describe('createAutomationClaimClient', () => {
       { machineId: 'machine-1', leaseDurationMs: 30_000 },
       expect.anything(),
     );
+  });
+
+  it('reads the provenance-pinned v0.2.11 claim response after endpoint negotiation', async () => {
+    axiosGet
+      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
+      .mockResolvedValueOnce({ data: releasedV2Wire.assignmentResponse });
+    axiosPost.mockResolvedValue({ data: releasedV2Wire.claimResponse });
+
+    const client = createAutomationClaimClient({ token: 'token-v2-vector' });
+    await client.fetchAssignments(releasedV2Wire.claimRequest.machineId);
+
+    await expect(client.claimRun(releasedV2Wire.claimRequest)).resolves.toEqual({
+      protocol: 'v2',
+      run: { id: 'run-v2', automationId: 'automation-v2', attempt: 1 },
+      automation: releasedV2Wire.claimResponse.automation,
+    });
   });
 
   it('keeps the released V2 claim projection cause-free even if an incompatible server injects a V3 key', async () => {
@@ -807,6 +834,8 @@ describe('createAutomationClaimClient', () => {
             id: 'run-v3',
             automationId: 'automation-event',
             attempt: 1,
+            revision: 0,
+            recipeKind: 'legacy',
             triggerId: 'trigger-event',
             triggerRetired: false,
             cause: {

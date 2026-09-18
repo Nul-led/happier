@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { legacyCustomAcpCompat } from '@happier-dev/agents';
@@ -39,6 +39,15 @@ describe('readBackendCliSourcePreference', () => {
     expect(readBackendCliSourcePreference('codex', {
       HAPPIER_BACKEND_CLI_SOURCE_PREFERENCES_JSON: JSON.stringify({
         'backend:codex': 'managed-first',
+      }),
+    } as NodeJS.ProcessEnv)).toBe('managed-first');
+  });
+
+  it('honors the canonical qualified bundled Agent target key emitted by current UI', () => {
+    expect(readBackendCliSourcePreference('codex', {
+      HAPPIER_BACKEND_CLI_SOURCE_PREFERENCES_JSON: JSON.stringify({
+        'agent:happier.agent.codex/codex': 'managed-first',
+        'backend:codex': 'system-first',
       }),
     } as NodeJS.ProcessEnv)).toBe('managed-first');
   });
@@ -385,5 +394,82 @@ describe('resolveAgentCliCommand', () => {
       isBunRuntime: true,
       currentExecPath: join(root, 'happier'),
     })).toBeNull();
+  });
+});
+
+describe('resolveAgentCliCommand managed_only source policy', () => {
+  function createManagedOnlyFixture(): Readonly<{
+    root: string;
+    happyHomeDir: string;
+    managedPath: string;
+    systemPath: string;
+    overridePath: string;
+    systemBinDir: string;
+  }> {
+    const root = mkdtempSync(join(tmpdir(), 'happier-cli-common-agent-managed-only-'));
+    const happyHomeDir = join(root, 'home');
+    const managedPath = join(happyHomeDir, 'tools', 'providers', 'ohMyPi', 'current', 'bin', 'omp');
+    const systemBinDir = join(root, 'system-bin');
+    const systemPath = join(systemBinDir, 'omp');
+    const overrideDir = join(root, 'override-bin');
+    const overridePath = join(overrideDir, 'omp');
+    for (const path of [managedPath, systemPath, overridePath]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, '#!/bin/sh\nexit 0\n', 'utf8');
+      chmodSync(path, 0o755);
+    }
+    return { root, happyHomeDir, managedPath, systemPath, overridePath, systemBinDir };
+  }
+
+  it('ignores an override and a system install and answers the activation-local managed install', () => {
+    if (process.platform === 'win32') return;
+
+    const fixture = createManagedOnlyFixture();
+    try {
+      const processEnv = {
+        HAPPIER_HOME_DIR: fixture.happyHomeDir,
+        PATH: fixture.systemBinDir,
+        HAPPIER_OHMYPI_PATH: fixture.overridePath,
+        HAPPIER_BACKEND_CLI_SOURCE_PREFERENCES_JSON: JSON.stringify({ ohMyPi: 'system-first' }),
+      } as NodeJS.ProcessEnv;
+
+      expect(resolveAgentCliCommand('ohMyPi', {
+        processEnv,
+        isBunRuntime: false,
+        currentExecPath: process.execPath,
+      })).toEqual({ source: 'override', command: fixture.overridePath });
+
+      expect(resolveAgentCliCommand('ohMyPi', {
+        processEnv,
+        sourcePolicy: 'managed_only',
+        isBunRuntime: false,
+        currentExecPath: process.execPath,
+      })).toEqual({ source: 'managed', command: fixture.managedPath });
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('answers null when only override and system installs exist', () => {
+    if (process.platform === 'win32') return;
+
+    const fixture = createManagedOnlyFixture();
+    try {
+      rmSync(join(fixture.happyHomeDir, 'tools'), { recursive: true, force: true });
+      const processEnv = {
+        HAPPIER_HOME_DIR: fixture.happyHomeDir,
+        PATH: fixture.systemBinDir,
+        HAPPIER_OHMYPI_PATH: fixture.overridePath,
+      } as NodeJS.ProcessEnv;
+
+      expect(resolveAgentCliCommand('ohMyPi', {
+        processEnv,
+        sourcePolicy: 'managed_only',
+        isBunRuntime: false,
+        currentExecPath: process.execPath,
+      })).toBeNull();
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
   });
 });

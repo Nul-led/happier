@@ -1,9 +1,10 @@
 import { MUTAGEN_ENGINE_VERSION } from '@happier-dev/cli-common/firstPartyRuntime';
 import { AccountSettingsSchema } from '@happier-dev/protocol';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import { deriveWorkspaceSyncEndpointId } from '@/workspaces/sync/transport/workspaceSyncBrokerProtocol';
@@ -56,8 +57,20 @@ function snapshot(
 ) {
   return {
     source: 'network' as const,
-    settings: AccountSettingsSchema.parse({ workspaceSyncRelationshipsV1: relationships }),
-    rawSettings: { workspaceSyncRelationshipsV1: rawRelationships },
+    settings: AccountSettingsSchema.parse({
+      workspaceRefsV1: [
+        { id: 'alpha-ref', serverId: 'server-1', machineId: 'machine-1', rootPath: '/canonical/alpha', createdAtMs: 1 },
+        { id: 'beta-ref', serverId: 'server-1', machineId: 'machine-2', rootPath: '/canonical/beta', createdAtMs: 1 },
+      ],
+      workspaceSyncRelationshipsV1: relationships,
+    }),
+    rawSettings: {
+      workspaceRefsV1: [
+        { id: 'alpha-ref', serverId: 'server-1', machineId: 'machine-1', rootPath: '/canonical/alpha', createdAtMs: 1 },
+        { id: 'beta-ref', serverId: 'server-1', machineId: 'machine-2', rootPath: '/canonical/beta', createdAtMs: 1 },
+      ],
+      workspaceSyncRelationshipsV1: rawRelationships,
+    },
     settingsVersion,
     loadedAtMs: 1,
     settingsSecretsReadKeys: [],
@@ -93,7 +106,7 @@ function boundaries(options: Readonly<{
     if (input.t === 'pause') relationshipPaused = true;
     if (input.t === 'resume') relationshipPaused = false;
     if (input.t === 'list') return { sessions: [session({ paused: relationshipPaused })], nextCursor: null };
-    if (input.t === 'get' || input.t === 'pause' || input.t === 'resume') {
+    if (input.t === 'get' || input.t === 'flush' || input.t === 'pause' || input.t === 'resume') {
       return session({ paused: relationshipPaused });
     }
     return [];
@@ -130,7 +143,7 @@ function boundaries(options: Readonly<{
     input.validatePayload('/installed/version');
     return { currentPath: '/installed/current', resolvedCurrentPath: '/installed/version' } as any;
   });
-  const resolveDataLayout = vi.fn(() => ({ rootDir: '/daemon/workspace-sync/mutagen', dataDir: '/daemon/workspace-sync/mutagen/data', brokerDir: '/daemon/workspace-sync/mutagen/broker', stagingDir: '/daemon/workspace-sync/mutagen/staging' }));
+  const resolveDataLayout = vi.fn(() => ({ rootDir: '/daemon/workspace-sync/mutagen', dataDir: '/daemon/workspace-sync/mutagen/data', brokerDir: '/daemon/workspace-sync/mutagen/broker' }));
   const unsubscribeSettings = vi.fn();
   const prepareRelationshipTarget = vi.fn(async () => undefined);
   return {
@@ -172,7 +185,92 @@ function boundaries(options: Readonly<{
 }
 
 describe('createDaemonWorkspaceSyncRuntime', () => {
-  it('keeps disabled settings relationships as paused sessions, resumes them, and terminates only on removal', async () => {
+  it('applies the canonical protected ACL after creating both Windows runtime directories', async () => {
+    const harness = boundaries();
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-private-windows-'));
+    const dataDir = join(root, 'data');
+    const brokerDir = join(root, 'broker');
+    const applyAndVerify = vi.fn(async ({ path }: { path: string }) => {
+      expect((await stat(path)).isDirectory()).toBe(true);
+    });
+    const verify = vi.fn(async ({ path }: { path: string }) => {
+      expect((await stat(path)).isDirectory()).toBe(true);
+    });
+    const { ensurePrivateDirectory: _testOverride, ...productionDefaults } = harness.deps;
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...productionDefaults,
+      platform: 'win32',
+      windowsAclBoundary: { applyAndVerify, verify },
+      resolveDataLayout: () => ({ rootDir: root, dataDir, brokerDir }),
+    });
+
+    try {
+      await runtime.start();
+      expect(applyAndVerify.mock.calls.map(([input]) => input)).toEqual([
+        { path: dataDir, kind: 'directory' },
+        { path: brokerDir, kind: 'directory' },
+      ]);
+      expect(verify.mock.calls.map(([input]) => input)).toEqual([
+        { path: dataDir, kind: 'directory' },
+        { path: brokerDir, kind: 'directory' },
+      ]);
+    } finally {
+      await runtime.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before broker bind or spawn when the Windows protected ACL cannot be verified', async () => {
+    const harness = boundaries();
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-private-windows-failure-'));
+    const dataDir = join(root, 'data');
+    const brokerDir = join(root, 'broker');
+    const applyAndVerify = vi.fn(async () => {
+      throw new Error('unsafe inherited ACL');
+    });
+    const verify = vi.fn(async () => undefined);
+    const { ensurePrivateDirectory: _testOverride, ...productionDefaults } = harness.deps;
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...productionDefaults,
+      platform: 'win32',
+      windowsAclBoundary: { applyAndVerify, verify },
+      resolveDataLayout: () => ({ rootDir: root, dataDir, brokerDir }),
+    });
+
+    try {
+      await expect(runtime.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+      expect(harness.createBroker).not.toHaveBeenCalled();
+      expect(harness.spawnSidecar).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps POSIX runtime data and broker directories owner-only', async () => {
+    if (process.platform === 'win32') return;
+    const harness = boundaries();
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-private-posix-'));
+    const dataDir = join(root, 'data');
+    const brokerDir = join(root, 'broker');
+    const { ensurePrivateDirectory: _testOverride, ...productionDefaults } = harness.deps;
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...productionDefaults,
+      platform: 'linux',
+      resolveDataLayout: () => ({ rootDir: root, dataDir, brokerDir }),
+    });
+
+    try {
+      await runtime.start();
+      expect((await stat(dataDir)).mode & 0o777).toBe(0o700);
+      expect((await stat(brokerDir)).mode & 0o777).toBe(0o700);
+    } finally {
+      await runtime.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates disabled settings relationships, recreates them on enable, and terminates them on removal', async () => {
     const harness = boundaries();
     const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
     await runtime.start();
@@ -182,13 +280,13 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
 
     harness.publishSnapshot(snapshot([{ ...relationship, enabled: false, updatedAtMs: 2 }], undefined, 2));
     await runtime.whenSettingsSettled({ settingsVersion: 2, scopeKey: 'account-1' });
-    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'pause' }), undefined);
-    expect(harness.command).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'terminate' }), expect.anything());
-    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toMatchObject({ state: 'paused' });
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'terminate' }), undefined);
+    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toBeNull();
 
     harness.command.mockClear();
     harness.publishSnapshot(snapshot([{ ...relationship, updatedAtMs: 3 }], undefined, 3));
     await runtime.whenSettingsSettled({ settingsVersion: 3, scopeKey: 'account-1' });
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), undefined);
     expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'resume' }), undefined);
 
     harness.command.mockClear();
@@ -215,7 +313,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     await runtime.stop();
   });
 
-  it('recreates a missing session for a disabled restart record without starting synchronization', async () => {
+  it('does not recreate a missing session for a disabled restart record', async () => {
     const harness = boundaries();
     const disabledSnapshot = snapshot([{ ...relationship, enabled: false, updatedAtMs: 2 }], undefined, 2);
     const runtime = createDaemonWorkspaceSyncRuntime({
@@ -224,9 +322,9 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     });
 
     await runtime.start();
-    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), undefined);
+    expect(harness.command).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), expect.anything());
     expect(harness.command).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'resume' }), expect.anything());
-    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toMatchObject({ state: 'paused' });
+    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toBeNull();
     await runtime.stop();
   });
 
@@ -499,6 +597,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     try {
       await runtime.start();
       expect(spawnSidecar).toHaveBeenCalledTimes(1);
+      expect(harness.resolveInstalledComponentPaths).toHaveBeenCalledTimes(1);
       expect(brokerCommands[0]).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), expect.anything());
 
       exits[0]?.({ type: 'exited', code: 1 });
@@ -508,6 +607,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       await vi.advanceTimersByTimeAsync(20_000);
 
       expect(spawnSidecar).toHaveBeenCalledTimes(2);
+      expect(harness.resolveInstalledComponentPaths).toHaveBeenCalledTimes(2);
       expect(maximumActiveSidecars).toBe(1);
       await settingsSettled;
       expect(brokerCommands[1]).toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), undefined);
@@ -593,5 +693,48 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       signal: undefined,
     });
     await runtime.stop();
+  });
+
+  it('composes exact Action receipt authorization into local source conflict deletion', async () => {
+    const harness = boundaries();
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-runtime-source-delete-'));
+    const sourceRoot = join(fixture, 'source');
+    const loserPath = join(sourceRoot, 'loser.txt');
+    const loserBytes = 'local loser';
+    const expectedDigest = createHash('sha1').update(loserBytes).digest('hex');
+    await mkdir(sourceRoot);
+    await writeFile(loserPath, loserBytes);
+    const assertConflictResolutionAuthorized = vi.fn(async () => undefined);
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...harness.deps,
+      assertConflictResolutionAuthorized,
+      resolveWorkspaceRef: (id) => id === 'alpha-ref'
+        ? { serverId: 'server-1', machineId: 'machine-1', rootPath: sourceRoot }
+        : { serverId: 'server-1', machineId: 'machine-2', rootPath: '/remote/beta' },
+    });
+    const request = {
+      relationshipId: relationship.relationshipId,
+      path: 'loser.txt',
+      keep: 'beta' as const,
+      expectedKind: 'file' as const,
+      expectedDigest,
+    };
+    try {
+      await runtime.start();
+      harness.activateRelationships();
+      await runtime.whenSettingsSettled();
+
+      await runtime.managedWorkspaceSync.deleteConflictLoser(request, undefined, 'approval-local-source');
+
+      expect(assertConflictResolutionAuthorized).toHaveBeenCalledWith('approval-local-source', {
+        controllerMachineId: 'machine-1',
+        request,
+      });
+      expect(harness.deleteConflictLoserAtTarget).not.toHaveBeenCalled();
+      await expect(access(loserPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await runtime.stop();
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { withAbortTimeout } from '@/diagnostics/httpClient';
+import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveCurrentCliHomeTarget } from '@/server/homeTarget';
 
 import { verifyTerminalAuthEnrollmentRuntime } from './terminalAuthEnrollmentClient';
@@ -17,6 +18,7 @@ type StoredAuthTokenValidationParams = Readonly<{
   baseUrl: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }>;
 
 function readResponseCode(body: unknown, fallback: string): string {
@@ -40,6 +42,7 @@ async function readJsonBody(response: Response): Promise<unknown> {
 export async function validateStoredAuthTokenAgainstServer(
   params: StoredAuthTokenValidationParams,
 ): Promise<ActiveServerStoredTokenValidationResult> {
+  params.signal?.throwIfAborted();
   const trimmedToken = String(params.token ?? '').trim();
   if (!trimmedToken) {
     return { state: 'invalid', httpStatus: 401, reasonCode: 'missing-token' };
@@ -49,17 +52,20 @@ export async function validateStoredAuthTokenAgainstServer(
     return { state: 'unknown', httpStatus: null, reasonCode: 'missing-server-url' };
   }
   const fetchImpl = params.fetchImpl ?? fetch;
-
   try {
-    const response = await fetchImpl(`${baseUrl}/v1/account/profile`, {
-      method: 'GET',
-      headers: {
-        ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${trimmedToken}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(params.timeoutMs ?? 5_000),
-    });
+    const response = await withAbortTimeout(
+      params.timeoutMs ?? 5_000,
+      async (requestSignal) => await fetchImpl(`${baseUrl}/v1/account/profile`, {
+        method: 'GET',
+        headers: {
+          ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+          Authorization: `Bearer ${trimmedToken}`,
+          'Content-Type': 'application/json',
+        },
+        signal: requestSignal,
+      }),
+      params.signal,
+    );
 
     const body = await readJsonBody(response);
     if (response.ok) {
@@ -84,6 +90,7 @@ export async function validateStoredAuthTokenAgainstServer(
       reasonCode: readResponseCode(body, `http-${response.status}`),
     };
   } catch (error) {
+    params.signal?.throwIfAborted();
     return {
       state: 'unknown',
       httpStatus: null,
@@ -94,18 +101,23 @@ export async function validateStoredAuthTokenAgainstServer(
 
 export async function validateStoredAuthTokenAgainstActiveServer(
   token: string,
+  signal?: AbortSignal,
 ): Promise<ActiveServerStoredTokenValidationResult> {
+  signal?.throwIfAborted();
   const target = await resolveCurrentCliHomeTarget().catch(() => null);
+  signal?.throwIfAborted();
   if (!target?.descriptor) {
     return validateStoredAuthTokenAgainstServer({
       token,
       baseUrl: resolveServerHttpBaseUrl(),
+      ...(signal ? { signal } : {}),
     });
   }
 
   const acquired = await acquireTerminalAuthEnrollmentRuntime(
     target.descriptor,
     target.preferredTransport,
+    signal,
   );
   if (!acquired.ok) {
     return {
@@ -117,9 +129,10 @@ export async function validateStoredAuthTokenAgainstActiveServer(
     };
   }
   try {
-    const snapshot = await fetchServerFeaturesSnapshot({
+    const snapshot = await observeServerFeaturesSnapshot({
       serverUrl: acquired.runtime.runtimeOrigin,
       token,
+      ...(signal ? { signal } : {}),
     });
     verifyTerminalAuthEnrollmentRuntime({
       target,
@@ -129,8 +142,10 @@ export async function validateStoredAuthTokenAgainstActiveServer(
     return await validateStoredAuthTokenAgainstServer({
       token,
       baseUrl: acquired.runtime.runtimeOrigin,
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       state: 'unknown',
       httpStatus: null,

@@ -3,13 +3,18 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
-import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { buildConnectedServiceCredentialRecord, FeaturesResponseSchema } from '@happier-dev/protocol';
 import { CLAUDE_CODE_RECOMMENDED_OAUTH_SCOPE } from '@happier-dev/plugins-claude/agent';
 
 import type { Machine } from '@/api/types';
 import { encodeBase64, encrypt } from '@/api/encryption';
 import { configuration } from '@/configuration';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import {
+    clearActiveAccountSettingsSnapshot,
+    getActiveAccountSettingsSnapshot,
+    setActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { createPromptAssetAdapterRegistry } from '@/prompts/assets/createPromptAssetAdapterRegistry';
 import { createPromptRegistryAdapterRegistry } from '@/prompts/registries/createPromptRegistryAdapterRegistry';
 import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
@@ -165,6 +170,61 @@ function createMachineSocket(options: {
 }
 
 describe('ApiMachineClient /v2/changes reconnect', () => {
+    it('advances a Saved Secret AccountChange cursor without hydration retries when Teams is disabled', async () => {
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => {
+            if (url.endsWith('/v1/account/profile')) return { status: 200, data: { id: 'account-1' } };
+            if (url.includes('/v2/changes')) {
+                return {
+                    status: 200,
+                    data: {
+                        changes: [{
+                            cursor: 1,
+                            kind: 'savedSecretResource',
+                            entityId: 'resource-1',
+                            changedAt: 1,
+                            hint: null,
+                        }],
+                        nextCursor: 1,
+                    },
+                };
+            }
+            throw new Error(`unexpected url: ${url}`);
+        });
+        writeAccountChangesCursor.mockClear();
+        const resolveServerFeaturesSnapshot = vi.fn(async () => ({
+            status: 'ready' as const,
+            features: FeaturesResponseSchema.parse({
+                features: {
+                    teams: {
+                        enabled: false,
+                        credentialResources: { enabled: true },
+                    },
+                },
+                capabilities: {},
+            }),
+        }));
+        const client = new ApiMachineClient('token', machine, undefined, {
+            resolveServerFeaturesSnapshot,
+        });
+
+        await expect((client as any).syncChangesOnConnect({ reason: 'live' })).resolves.toBeUndefined();
+
+        expect(resolveServerFeaturesSnapshot).toHaveBeenCalledTimes(1);
+        expect(axiosGet.mock.calls.some(([url]) => String(url).includes('/saved-secrets/resources/materials')))
+            .toBe(false);
+        expect(writeAccountChangesCursor).toHaveBeenCalledTimes(1);
+        expect(writeAccountChangesCursor).toHaveBeenCalledWith('account-1', 1);
+    });
+
     it('resolves an exact Session Resource admission without acknowledging the returned Account cursor', async () => {
         const machine: Machine = {
             id: 'machine-1',
@@ -409,6 +469,71 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             source: 'changes',
         });
         expect(writeAccountChangesCursor).toHaveBeenCalledWith('acc-1', 2);
+    });
+
+    it('retains the Account cursor when Team-change managed Provider revalidation fails', async () => {
+        const priorSnapshot = getActiveAccountSettingsSnapshot();
+        clearActiveAccountSettingsSnapshot();
+        setActiveAccountSettingsSnapshot({
+            source: 'network',
+            settings: {} as never,
+            settingsVersion: 1,
+            loadedAtMs: 1,
+            settingsSecretsReadKeys: [],
+            scopeKey: resolveAccountSettingsScopeKeyForToken('token'),
+        });
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => {
+            if (url.includes('/v1/account/profile')) return { status: 200, data: { id: 'acc-1' } };
+            if (url.includes('/v1/account/saved-secrets/resources/materials')) {
+                return { status: 404, data: {} };
+            }
+            if (url.includes('/v2/changes')) {
+                return {
+                    status: 200,
+                    data: {
+                        changes: [{
+                            cursor: 1,
+                            kind: 'account',
+                            entityId: 'teams',
+                            changedAt: 1,
+                            hint: null,
+                        }],
+                        nextCursor: 1,
+                    },
+                };
+            }
+            throw new Error(`unexpected url: ${url}`);
+        });
+        writeAccountChangesCursor.mockClear();
+        const client = new ApiMachineClient('token', machine);
+        client.onConnectedServicesProjection(async () => {});
+        const revalidate = vi.fn(async () => {
+            throw new Error('managed_provider_revalidation_failed');
+        });
+        client.onManagedProviderRetainedCurrentnessInvalidation(revalidate);
+
+        try {
+            await expect((client as any).syncChangesOnConnect({ reason: 'live' }))
+                .rejects.toThrow('managed_provider_revalidation_failed');
+
+            expect(revalidate).toHaveBeenCalledWith({
+                source: 'changes',
+                signal: expect.any(AbortSignal),
+            });
+            expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+        } finally {
+            clearActiveAccountSettingsSnapshot();
+            if (priorSnapshot) setActiveAccountSettingsSnapshot(priorSnapshot);
+        }
     });
 
     it('wakes only the matching Account plugin Settings record watcher from the closed settings change arm', async () => {
@@ -710,6 +835,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         const restartRequestedPids = new Set<number>();
         const runtime = await startDaemonSessionControlRuntime({
             machineId: machine.id,
+            serverId: 'server-v2-reconnect',
             serverBaseUrl: 'https://account.example.test',
             credentials: {
                 token: 'token',
@@ -727,7 +853,6 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 getConnectedServiceAuthGroup,
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: join(tempRoot, 'materializations'),
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -793,7 +918,6 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,

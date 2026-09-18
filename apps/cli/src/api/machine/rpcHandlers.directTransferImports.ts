@@ -2,8 +2,9 @@ import type { TransferEndpointCandidate } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { DirectTransferImportOpenRequest } from '@/machines/transfer/directTransferImportSession';
+import { DirectTransferImportOpenRequestSchema } from '@/machines/transfer/directTransferImportOpenRequest';
 
-import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
+import type { RpcHandlerRegistrar } from '../rpc/types';
 
 type DirectTransferImportPrepareResponse = Readonly<
   | {
@@ -30,7 +31,7 @@ type DirectTransferImportAbortResponse = Readonly<
 const DIRECT_TRANSFER_IMPORT_UPLOAD_ID_MAX_CHARS = 256;
 
 export function registerMachineDirectTransferImportRpcHandlers(params: Readonly<{
-  rpcHandlerManager: RpcHandlerManager;
+  rpcHandlerManager: RpcHandlerRegistrar;
   prepareImportSession: (input: DirectTransferImportOpenRequest) => Promise<Readonly<{
     uploadId: string;
     destDisplayPath: string;
@@ -45,10 +46,11 @@ export function registerMachineDirectTransferImportRpcHandlers(params: Readonly<
   ) => Promise<void | Readonly<{ aborted: boolean }>>;
 }>): void {
   params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE, async (data: unknown) => {
-    const request = data as DirectTransferImportOpenRequest | null;
-    if (!request || typeof request !== 'object') {
+    const parsedRequest = DirectTransferImportOpenRequestSchema.safeParse(data);
+    if (!parsedRequest.success) {
       return { success: false, error: 'Invalid direct transfer import request' } satisfies DirectTransferImportPrepareResponse;
     }
+    const request = parsedRequest.data;
 
     try {
       const prepared = await params.prepareImportSession(request);

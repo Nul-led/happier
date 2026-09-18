@@ -88,7 +88,10 @@ export async function cmdSessionPlanStart(
     ...(runClass ? { runClass } : null),
     ...(ioMode ? { ioMode } : null),
   };
-  const started = await executor.execute('subagents.plan.start', input, { defaultSessionId: sessionId });
+  const started = await executor.execute('subagents.plan.start', input, {
+    authority: 'present_user',
+    defaultSessionId: sessionId,
+  });
   const normalized = normalizeSessionStartActionResults(started);
 
   if (!normalized.ok) {

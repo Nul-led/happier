@@ -1,9 +1,11 @@
 import { createUserScopedSocket } from '@/api/session/sockets';
+import { randomUUID } from 'node:crypto';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import type { SessionEncryptionContext, SessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
 import { waitForSocketConnect } from '@/session/transport/socket/waitForSocketConnect';
+import { createSocketRpcAbortScope, type SocketRpcAbortScope } from '@/session/transport/socket/createSocketRpcAbortScope';
 import { resolveSessionControlSocketConnectTimeoutMs } from '@/session/transport/shared/sessionTimeouts';
 import {
   markRpcRequestDisposition,
@@ -44,7 +46,8 @@ type CallSessionRpcParams = Readonly<{
   sessionId: string;
   method: string;
   request: unknown;
-  timeoutMs?: number;
+  /** Null delegates acknowledgement lifetime to the caller signal/server lifecycle. */
+  timeoutMs?: number | null;
   signal?: AbortSignal;
 }> & (
   | Readonly<{ mode: 'plain'; ctx?: null }>
@@ -53,17 +56,31 @@ type CallSessionRpcParams = Readonly<{
 
 export async function callSessionRpc(params: CallSessionRpcParams): Promise<unknown> {
   let socket: ReturnType<typeof createUserScopedSocket> | null = null;
+  let abortScope: SocketRpcAbortScope | null = null;
   let requestEmitted = false;
   try {
     params.signal?.throwIfAborted();
     const activeSocket = createUserScopedSocket({ token: params.token });
     socket = activeSocket;
-    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 20_000;
-    const connectTimeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? timeoutMs : resolveSessionControlSocketConnectTimeoutMs();
+    abortScope = createSocketRpcAbortScope({
+      socket: activeSocket,
+      ...(params.signal ? { callerSignal: params.signal } : {}),
+      disconnectError: () => new Error('RPC socket disconnected before acknowledgement'),
+    });
+    const rpcSignal = abortScope.signal;
+    const timeoutMs = params.timeoutMs === null
+      ? null
+      : typeof params.timeoutMs === 'number' && params.timeoutMs > 0
+        ? params.timeoutMs
+        : 20_000;
+    const connectTimeoutMs = typeof timeoutMs === 'number' && typeof params.timeoutMs === 'number'
+      ? timeoutMs
+      : resolveSessionControlSocketConnectTimeoutMs();
     const connectPromise = waitForSocketConnect(activeSocket as unknown as import('socket.io-client').Socket, connectTimeoutMs);
     activeSocket.connect();
-    await waitForConnectWithSignal(connectPromise, params.signal);
-    params.signal?.throwIfAborted();
+    rpcSignal.throwIfAborted();
+    await waitForConnectWithSignal(connectPromise, rpcSignal);
+    rpcSignal.throwIfAborted();
 
     const rpcParams = params.mode === 'plain'
       ? params.request
@@ -71,23 +88,36 @@ export async function callSessionRpc(params: CallSessionRpcParams): Promise<unkn
 
     const response = await new Promise<{ ok: boolean; result?: unknown; error?: string; errorCode?: string }>((resolve, reject) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const settle = (callback: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
-        params.signal?.removeEventListener('abort', onAbort);
+        if (timer !== null) clearTimeout(timer);
+        rpcSignal.removeEventListener('abort', onAbort);
         callback();
       };
-      const onAbort = () => settle(() => reject(abortReason(params.signal!)));
-      params.signal?.addEventListener('abort', onAbort, { once: true });
-      const timer = setTimeout(() => {
-        settle(() => reject(new Error('RPC call timeout')));
-      }, timeoutMs);
+      const onAbort = () => settle(() => reject(abortReason(rpcSignal)));
+      rpcSignal.addEventListener('abort', onAbort, { once: true });
+      if (rpcSignal.aborted) {
+        onAbort();
+        return;
+      }
+      if (timeoutMs !== null) {
+        timer = setTimeout(() => {
+          settle(() => reject(new Error('RPC call timeout')));
+        }, timeoutMs);
+      }
       try {
         requestEmitted = true;
+        const requestId = randomUUID();
         activeSocket.emit(
           SOCKET_RPC_EVENTS.CALL,
-          { method: params.method, params: rpcParams, timeoutMs },
+          {
+            method: params.method,
+            params: rpcParams,
+            requestId,
+            ...(timeoutMs !== null ? { timeoutMs } : {}),
+          },
           (payload: { ok: boolean; result?: unknown; error?: string; errorCode?: string }) => {
             settle(() => resolve(payload));
           },
@@ -114,6 +144,7 @@ export async function callSessionRpc(params: CallSessionRpcParams): Promise<unkn
   } catch (error) {
     throw markRpcRequestDisposition(error, requestEmitted ? 'outcomeUnknown' : 'notSent');
   } finally {
+    abortScope?.dispose();
     if (socket) {
       try {
         socket.disconnect();

@@ -12,7 +12,7 @@ import {
 
 type ReadyNotificationSession = Readonly<{
   sessionId: string;
-  enqueueSessionEventCommitted: (event: { type: 'ready' }) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
+  enqueueSessionEventCommitted: (event: { type: 'ready'; ownerActivityDelivery?: 'rich_sender' | 'home_required' }) => Promise<Readonly<{ persisted: boolean; delivered: boolean }>>;
   getMetadataSnapshot?: () => unknown;
   getTurnAssistantTextSnapshotStore?: () => TurnAssistantTextSnapshotStore;
 }>;
@@ -44,7 +44,7 @@ export function createReadyNotificationDispatcher(
 ): () => Promise<void> {
   return async () => {
     if (!params.pushSender) {
-      await enqueueReadySessionEventCommitted(params.session);
+      await enqueueReadySessionEventCommitted(params.session, 'home_required');
       return;
     }
 

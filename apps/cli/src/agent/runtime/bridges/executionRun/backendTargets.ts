@@ -3,6 +3,7 @@ import {
   AgentExecutionTargetV1Schema,
   BackendTargetKeyV2Schema,
   buildBackendTargetKeyV2,
+  convertBackendTargetRefV2ToV1,
   parseBackendTargetKeyV2,
   readBackendTargetRefV2,
   type BackendTargetRefV1,
@@ -10,27 +11,43 @@ import {
 } from '@happier-dev/protocol';
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
 
+type ExecutionRunAgentCatalog = ReturnType<typeof readAgentCatalogSnapshot>;
+
+function readRequestedAgentIdentity(
+  input: BackendTargetRefV1 | BackendTargetRefV2Input,
+): Readonly<{ pluginId: string; localId: string }> | null {
+  const agentTarget = AgentExecutionTargetV1Schema.safeParse(input);
+  if (agentTarget.success) return agentTarget.data.identity;
+
+  if (typeof input !== 'string') return null;
+  const keyedTarget = BackendTargetKeyV2Schema.safeParse(input);
+  if (!keyedTarget.success) return null;
+  const parsedTarget = parseBackendTargetKeyV2(keyedTarget.data);
+  return parsedTarget.kind === 'agent' ? parsedTarget.identity : null;
+}
+
+function resolveExecutionRunAgentRoutingId(
+  identity: Readonly<{ pluginId: string; localId: string }>,
+  catalog: ExecutionRunAgentCatalog,
+): string | null {
+  for (const [routingId, contribution] of catalog.agentDefinitionsById) {
+    if (
+      contribution.identity?.pluginId === identity.pluginId
+      && contribution.identity.localId === identity.localId
+    ) return routingId;
+  }
+  return null;
+}
+
 function resolveExecutionRunCanonicalBackendTargetKey(
   input: BackendTargetRefV1 | BackendTargetRefV2Input,
-  catalog: ReturnType<typeof readAgentCatalogSnapshot>,
+  catalog: ExecutionRunAgentCatalog,
 ): string | null {
-  const agentTarget = AgentExecutionTargetV1Schema.safeParse(input);
-  const keyedTarget = typeof input === 'string'
-    ? BackendTargetKeyV2Schema.safeParse(input)
-    : null;
-  const parsedKeyedTarget = keyedTarget?.success
-    ? parseBackendTargetKeyV2(keyedTarget.data)
-    : null;
-  const keyedAgentIdentity = parsedKeyedTarget?.kind === 'agent'
-    ? parsedKeyedTarget.identity
-    : null;
-  const requestedAgentIdentity = agentTarget.success ? agentTarget.data.identity : keyedAgentIdentity;
+  const requestedAgentIdentity = readRequestedAgentIdentity(input);
 
   if (requestedAgentIdentity) {
-    const contribution = [...catalog.agentDefinitionsById.values()].find(
-      (candidate) => candidate.identity?.pluginId === requestedAgentIdentity.pluginId
-        && candidate.identity.localId === requestedAgentIdentity.localId,
-    );
+    const routingId = resolveExecutionRunAgentRoutingId(requestedAgentIdentity, catalog);
+    const contribution = routingId ? catalog.agentDefinitionsById.get(routingId) : null;
     return contribution?.identity
       ? buildBackendTargetKeyV2({ kind: 'agent', identity: contribution.identity })
       : null;
@@ -45,6 +62,32 @@ function resolveExecutionRunCanonicalBackendTargetKey(
       }
     }
     return buildBackendTargetKeyV2(target);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the stable public Agent identity against the one current plugin
+ * catalog, then lowers it to the execution-run runtime's retained V1 target.
+ * A missing identity fails closed instead of being guessed from localId.
+ */
+export function resolveExecutionRunRuntimeBackendTarget(
+  backendTarget: BackendTargetRefV1 | BackendTargetRefV2Input,
+): BackendTargetRefV1 | null {
+  const requestedAgentIdentity = readRequestedAgentIdentity(backendTarget);
+  if (requestedAgentIdentity) {
+    const routingId = resolveExecutionRunAgentRoutingId(
+      requestedAgentIdentity,
+      readAgentCatalogSnapshot(),
+    );
+    return routingId
+      ? { kind: 'builtInAgent', agentId: routingId }
+      : null;
+  }
+
+  try {
+    return convertBackendTargetRefV2ToV1(readBackendTargetRefV2(backendTarget));
   } catch {
     return null;
   }

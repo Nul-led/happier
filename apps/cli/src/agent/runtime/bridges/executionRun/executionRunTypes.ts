@@ -1,34 +1,65 @@
 import type {
   AcpConfigOptionOverridesV1,
   BackendTargetRefV1,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
   ExecutionRunDisplay,
   ExecutionRunIntent,
+  ExecutionRunInitialInputV1,
   ExecutionRunLaunchOrigin,
+  ExecutionRunRequestedConfiguration,
   ExecutionRunResumeHandle,
   ExecutionRunConnectedServicesLaunchV1,
+  ExecutionRunResultContractV1,
+  HappierStructuredInputV1,
   ProviderBoundModelRef,
+  PortableRuntimeDescriptorV1,
   SessionInputCausalPermissionAuthorityV1,
+  SessionMcpSelectionV1,
+  SecretReferenceOverlayV1,
+  TeamCredentialProviderModelSelectionV1,
 } from '@happier-dev/protocol';
 import type { PermissionIntent } from '@happier-dev/agents';
-
+import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
+import type { DurableProviderInputAcceptanceV1 } from '@/agent/runtime/session/input/providerInputOutcome';
 import type {
   ExecutionRunStructuredMeta,
   ExecutionRunStructuredOutputRecovery,
 } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
+import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
+import type { ExecutionRunWorkflowObservationSink } from './executionRunWorkflowObservation';
 
 export type ExecutionRunManagerStartParams = Readonly<{
   /** Session association is explicit; `null` is a daemon-owned detached run. */
   sessionId: string | null;
+  /** Host-only store bound to this exact Run occurrence when it differs from the bridge default. */
+  getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
+  /** Host-private exact Workflow invocation projection; never persisted with Run state. */
+  workflowObservationSink?: ExecutionRunWorkflowObservationSink;
   intent: ExecutionRunIntent;
   backendTarget: BackendTargetRefV1;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   instructions?: string;
+  /** Explicit attached-run creation without an initial turn. */
+  initialInput?: ExecutionRunInitialInputV1;
+  /** Host-stamped Action identity used only to rejoin the same accepted start. */
+  actionRequestId?: string;
   /**
    * Intent-scoped configuration. The execution-run substrate treats this as opaque,
    * but execution-run profiles and backends may interpret it.
    */
   intentInput?: unknown;
+  /** Canonical host-owned structured input for the initial native turn. */
+  structuredInput?: HappierStructuredInputV1;
+  /** Stable authored identity for the initial input; never regenerated downstream. */
+  localInputId?: string;
+  /** Exact contract for the initial turn only; later sends carry their own. */
+  resultContract?: ExecutionRunResultContractV1;
+  /** Per-Run cwd selected by the workspace owner. */
+  cwd?: string;
+  /** Canonical managed MCP selection for this Run. */
+  mcpSelection?: SessionMcpSelectionV1;
+  acpSessionModeId?: string;
+  runtimeDescriptorV1?: PortableRuntimeDescriptorV1;
   display?: ExecutionRunDisplay;
   launchOrigin?: ExecutionRunLaunchOrigin;
   /**
@@ -37,7 +68,7 @@ export type ExecutionRunManagerStartParams = Readonly<{
    * Connected selections fail closed at backend resolution when the daemon cannot
    * resolve + materialize the selected auth.
    */
-  connectedServices?: ConnectedServiceBindingsV1 | null;
+  connectedServices?: ConnectedServiceBindingsV2 | null;
   /**
    * Bare per-service default tokens (RO-F5): serviceIds asking for their STORED account default,
    * threaded from the run-start request alongside `connectedServices`. The run-start CS owner resolves
@@ -52,12 +83,15 @@ export type ExecutionRunManagerStartParams = Readonly<{
   modelId?: string;
   /** Exact re-resolvable Agent/Provider/model tuple for this run. */
   modelSelection?: ProviderBoundModelRef;
+  /** Exact recipient-safe Team resource/model tuple for this run. */
+  teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
   /**
    * Optional canonical agent config-option overrides (e.g. reasoning effort) for the run backend,
    * reusing the SAME `AcpConfigOptionOverridesV1` shape as session spawn. The `configOptions`
    * shorthand is merged into this at the action boundary before the run request is built.
    */
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
+  secretReferenceOverlay?: SecretReferenceOverlayV1;
   /**
    * Host-only active-turn authority for this initial launch. It is purposely
    * absent from persisted run state, so a later resume cannot inherit a stale
@@ -68,6 +102,7 @@ export type ExecutionRunManagerStartParams = Readonly<{
   retentionPolicy: 'ephemeral' | 'resumable';
   runClass: 'bounded' | 'long_lived';
   ioMode: 'request_response' | 'streaming';
+  notifyParentOnCompletion?: boolean;
   profileId?: string | null;
   profileGenerationId?: string | null;
   // Internal runtime override for bounded-run timeouts. Not part of the public RPC contract.
@@ -94,6 +129,7 @@ export type ExecutionRunStartResult = Readonly<{
   runId: string;
   callId: string;
   sidechainId: string;
+  requestedConfiguration?: ExecutionRunRequestedConfiguration;
 }>;
 
 export type ExecutionRunRuntimeSettings = Readonly<{
@@ -117,6 +153,7 @@ export type ExecutionRunState = Readonly<{
   retentionPolicy: ExecutionRunManagerStartParams['retentionPolicy'];
   runClass: ExecutionRunManagerStartParams['runClass'];
   ioMode: ExecutionRunManagerStartParams['ioMode'];
+  notifyParentOnCompletion?: boolean;
   /**
    * Cumulative backend turn count for long-lived runs.
    * Persisted in run state so resuming cannot reset enforcement (for example maxTurns).
@@ -131,12 +168,18 @@ export type ExecutionRunState = Readonly<{
    * env values, or closures. Dev materializes the selection daemon-side (fail-closed) at resume.
    */
   launch?: Readonly<{
+    cwd?: string;
+    mcpSelection?: SessionMcpSelectionV1;
+    acpSessionModeId?: string;
+    runtimeDescriptorV1?: PortableRuntimeDescriptorV1;
     launchOrigin?: ExecutionRunLaunchOrigin;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
+    teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
-    connectedServicesSelection?: ConnectedServiceBindingsV1 | null;
+    connectedServicesSelection?: ConnectedServiceBindingsV2 | null;
     connectedServicesRegistration?: ExecutionRunConnectedServicesLaunchV1;
+    secretReferenceOverlay?: SecretReferenceOverlayV1;
   }>;
   status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timeout';
   startedAtMs: number;
@@ -145,6 +188,12 @@ export type ExecutionRunState = Readonly<{
   summary?: string;
   structuredMeta?: ExecutionRunStructuredMeta;
   latestToolResult?: unknown;
+  /** Canonical current/last exact input result retained beyond controller settlement. */
+  inputTurns?: Readonly<{
+    occurrenceId: string;
+    current?: import('@happier-dev/protocol').ExecutionRunInputTurnV1;
+    last?: import('@happier-dev/protocol').ExecutionRunInputTurnV1;
+  }>;
   resumeHandle?: ExecutionRunResumeHandle | null;
   voiceAgentConfig?: Readonly<{
     profileId?: string | null;
@@ -163,6 +212,19 @@ export type ExecutionRunState = Readonly<{
     transcript: Readonly<{ persistenceMode: 'ephemeral' | 'persistent'; epoch: number }>;
   }>;
 }>;
+
+export type RetainedRunSessionInputAttachment = Readonly<{
+  release: () => Promise<void>;
+  /** Event-driven durable outcome for one exact Pending input identity. */
+  awaitInputAdmission: (localId: string) => Promise<DurableProviderInputAcceptanceV1>;
+}>;
+
+/** Binds a retained Session-owned Run occurrence to the parent Session input owner. */
+export type AttachRetainedRunSessionInput = (params: Readonly<{
+  runId: string;
+  sidechainId: string;
+  controller: ExecutionRunBackendController;
+}>) => RetainedRunSessionInputAttachment | null;
 
 export type ExecutionRunActionParams = Readonly<{
   actionId: string;

@@ -2,6 +2,7 @@ import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runPendingQueueV2ReleasedServerAdapter } from './pendingQueueV2ReleasedServerAdapter';
+import { encodeBase64, encrypt } from '../encryption';
 
 const axiosGetMock = vi.hoisted(() => vi.fn());
 
@@ -53,11 +54,8 @@ function createHarness(overrides: Record<string, unknown> = {}) {
         getSessionConnectionEpoch: () => 4,
         getSocket: () => socket,
         isRuntimeAuthorityCurrent: () => runtimeAuthorityCurrent,
-        mode: 'e2ee' as const,
-        ctx: {
-            encryptionKey: new Uint8Array(32),
-            encryptionVariant: 'legacy' as const,
-        },
+        mode: 'plain' as const,
+        ctx: null,
         deliverMaterializedUserMessageToAgentQueue,
         ...overrides,
     };
@@ -95,6 +93,39 @@ describe('released-server Pending-input adapter', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it.each(['plain', 'corrupt', 'encrypted'] as const)('opens %s content under E2EE before provider delivery', async (envelope) => {
+        const payload = { role: 'user', content: { type: 'text', text: 'released prompt' } };
+        const content = envelope === 'plain'
+            ? { t: 'plain', v: payload }
+            : { t: 'encrypted', c: envelope === 'corrupt' ? 'invalid' : encodeBase64(encrypt(new Uint8Array(32), 'legacy', payload)) };
+        const harness = createHarness();
+        axiosGetMock.mockResolvedValueOnce({ status: 200, data: { message: transcriptMessage({ content }) } });
+
+        const result = await runPendingQueueV2ReleasedServerAdapter({
+            ...harness.params,
+            mode: 'e2ee',
+            ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
+        });
+        if (envelope === 'encrypted') {
+            expect(result).toMatchObject({ type: 'materialized', localId: 'local-1' });
+            expect(harness.deliverMaterializedUserMessageToAgentQueue).toHaveBeenCalledWith({
+                ...payload, localId: 'local-1', createdAt: 100,
+            }, 'send');
+        } else {
+            expect(result).toEqual({ type: 'no_pending' });
+            expect(harness.deliverMaterializedUserMessageToAgentQueue).not.toHaveBeenCalled();
+        }
+    });
+
+    it('does not open encrypted content under a plain Session', async () => {
+        const harness = createHarness();
+        axiosGetMock.mockResolvedValueOnce({ status: 200, data: { message: transcriptMessage({
+            content: { t: 'encrypted', c: encodeBase64(encrypt(new Uint8Array(32), 'legacy', { role: 'user', content: { type: 'text', text: 'released prompt' } })) },
+        }) } });
+        await expect(runPendingQueueV2ReleasedServerAdapter(harness.params)).resolves.toEqual({ type: 'no_pending' });
+        expect(harness.deliverMaterializedUserMessageToAgentQueue).not.toHaveBeenCalled();
     });
 
     it('looks up the exact ACK identity and invokes the ordinary provider callback exactly once', async () => {

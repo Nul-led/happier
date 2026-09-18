@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     buildProviderAccountUsageRecordId,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ProviderAccountUsageRecordKeyV1,
     type ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
@@ -120,6 +120,56 @@ describe('native Agent account-usage host owner', () => {
         expect(source).not.toHaveProperty('credentialFingerprint');
     });
 
+    it('prefers the current hot-applied session binding over a stale launch selection hint', async () => {
+        const service = createNativeAgentAccountUsageService({
+            sessionId: 'session-1',
+            session: {
+                getMetadataSnapshot: () => ({
+                    path: '/workspace',
+                    host: 'test-host',
+                    homeDir: '/home/test',
+                    happyHomeDir: '/home/test/.happier',
+                    happyLibDir: '/home/test/.happier/lib',
+                    happyToolsDir: '/home/test/.happier/tools',
+                    connectedServices: {
+                        v: 2,
+                        bindingsByServiceId: {
+                            'happier.agent.claude/claude-subscription': {
+                                source: 'connected',
+                                selection: 'group',
+                                groupId: 'team',
+                                profileId: 'profile-current',
+                            },
+                        },
+                    } satisfies ConnectedServiceBindingsV2,
+                }),
+            },
+            signal: new AbortController().signal,
+        });
+
+        const source = await service.resolveSourceContext({
+            serviceId: 'happier.agent.claude/claude-subscription',
+            env: {
+                HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: JSON.stringify([{
+                    kind: 'group',
+                    serviceId: 'happier.agent.claude/claude-subscription',
+                    groupId: 'team',
+                    activeProfileId: 'profile-at-launch',
+                    fallbackProfileId: 'profile-current',
+                    generation: 7,
+                    policy: null,
+                }]),
+            },
+        });
+
+        expect(source).toEqual({
+            serviceId: 'happier.agent.claude/claude-subscription',
+            profileId: 'profile-current',
+            bindingKind: 'group_member',
+            groupId: 'team',
+        });
+    });
+
     it('re-resolves source currentness from its semantic address for every record', async () => {
         notifySnapshot.mockResolvedValue({
             ok: true,
@@ -200,16 +250,14 @@ describe('native Agent account-usage host owner', () => {
             ok: true,
             result: { status: 'recorded' },
         });
-        let connectedServices: ConnectedServiceBindingsV1 = {
-            v: 1,
+        let connectedServices: ConnectedServiceBindingsV2 = {
+            v: 2,
             bindingsByServiceId: {
                 'happier.agent.codex/openai-codex': {
                     source: 'connected',
                     selection: 'group',
-                    serviceId: 'happier.agent.codex/openai-codex',
                     groupId: 'team',
                     profileId: 'profile-1',
-                    groupGeneration: 7,
                 },
             },
         };
@@ -237,15 +285,13 @@ describe('native Agent account-usage host owner', () => {
         })).resolves.toEqual({ status: 'recorded' });
 
         connectedServices = {
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 'happier.agent.codex/openai-codex': {
                     source: 'connected',
                     selection: 'group',
-                    serviceId: 'happier.agent.codex/openai-codex',
                     groupId: 'team',
                     profileId: 'profile-2',
-                    groupGeneration: 8,
                 },
             },
         };
@@ -258,13 +304,11 @@ describe('native Agent account-usage host owner', () => {
         expect(notifySnapshot).toHaveBeenNthCalledWith(1, expect.objectContaining({
             source: expect.objectContaining({
                 profileId: 'profile-1',
-                groupGeneration: 7,
             }),
         }));
         expect(notifySnapshot).toHaveBeenNthCalledWith(2, expect.objectContaining({
             source: expect.objectContaining({
                 profileId: 'profile-2',
-                groupGeneration: 8,
             }),
         }));
     });

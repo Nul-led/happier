@@ -123,7 +123,6 @@ describe('bootstrapMachineSyncRuntime memory startup ordering', () => {
       stopSession: vi.fn(async () => true),
       isSessionAlreadyRunning: vi.fn(async () => false),
       loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-      savePreparedTargetLocalMetadata: vi.fn(async () => {}),
       beforeShutdown: vi.fn(async () => {}),
       requestShutdown: vi.fn(),
       directPeerServerLifecycle: null,

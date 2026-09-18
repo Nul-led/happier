@@ -59,6 +59,7 @@ const resolvePlainAccountEncryptionCurrentness = async () => Object.freeze({
     signingKeyFingerprint: null,
     contentKeyFingerprint: null,
     updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 });
 
 describe('Account plugin Data collection watch lifecycle', () => {

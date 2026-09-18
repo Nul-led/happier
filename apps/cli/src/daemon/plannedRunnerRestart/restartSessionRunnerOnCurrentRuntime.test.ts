@@ -899,6 +899,7 @@ describe('restartSessionRunnerOnCurrentRuntime', () => {
 
   it('does not kill a runner whose startup instructions make cold resume unproven', async () => {
     const requestRestart = vi.fn(async () => ({ signaled: true }));
+    const refreshTrackedSessionRuntimeSnapshot = vi.fn(async () => {});
 
     const result = await restartSessionRunnerOnCurrentRuntime({
       request: {
@@ -907,6 +908,15 @@ describe('restartSessionRunnerOnCurrentRuntime', () => {
         reason: 'daemon_restart_session_runners_command',
       },
       tracked: trackedSession({
+        vendorResumeId: undefined,
+        spawnOptions: {
+          directory: '/tmp/workspace',
+          backendTarget: {
+            kind: 'backend',
+            backendId: 'claude',
+            sourceKind: 'built_in',
+          },
+        },
         agentSessionStartupInstructionsMarkerV1: {
           v: 1,
           id: 'happier.global_voice_agent',
@@ -915,12 +925,56 @@ describe('restartSessionRunnerOnCurrentRuntime', () => {
       }),
       currentIdentity: currentIdentity('0.2.11'),
       requestRestart,
+      refreshTrackedSessionRuntimeSnapshot,
     });
 
     expect(result).toEqual(expect.objectContaining({
       ok: false,
       status: 'missing_resume_snapshot',
       reasonCode: 'missing_resume_identity',
+    }));
+    expect(refreshTrackedSessionRuntimeSnapshot).not.toHaveBeenCalled();
+    expect(requestRestart).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a missing tracked resume identity before deciding restart eligibility', async () => {
+    const requestRestart = vi.fn(async () => ({ signaled: true }));
+    const tracked = trackedSession({
+      vendorResumeId: undefined,
+      spawnOptions: {
+        directory: '/tmp/workspace',
+        backendTarget: {
+          kind: 'backend',
+          backendId: 'codex',
+          sourceKind: 'built_in',
+        },
+      },
+    });
+    const refreshTrackedSessionRuntimeSnapshot = vi.fn(async () => {
+      tracked.vendorResumeId = 'codex-thread-from-persisted-metadata';
+    });
+
+    const result = await restartSessionRunnerOnCurrentRuntime({
+      request: {
+        sessionId: 'sess-1',
+        mode: 'force_current_cli',
+        dryRun: true,
+        reason: 'daemon_restart_session_runners_command',
+      },
+      tracked,
+      currentIdentity: currentIdentity('0.2.11'),
+      requestRestart,
+      refreshTrackedSessionRuntimeSnapshot,
+    });
+
+    expect(refreshTrackedSessionRuntimeSnapshot).toHaveBeenCalledExactlyOnceWith({
+      sessionId: 'sess-1',
+      tracked,
+    });
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: 'dry_run_restartable',
+      sessionId: 'sess-1',
     }));
     expect(requestRestart).not.toHaveBeenCalled();
   });

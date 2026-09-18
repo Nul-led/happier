@@ -14,9 +14,11 @@ import {
 } from '@/session/metadata/sessionMetadataLayout';
 import {
     readSessionMetadataEnvelopeTupleSnapshot,
+    readSessionMetadataSharedEditorTupleSnapshot,
     type SessionMetadataEnvelopeTupleSnapshot,
+    type SessionMetadataSharedEditorSnapshot,
 } from '@/session/metadata/updateSessionMetadataWithRetry';
-import { readKnownPendingQueueState, type KnownPendingQueueState } from './pendingQueueState';
+import { readKnownPendingQueueState, readPendingExecutionRunIds, type KnownPendingQueueState } from './pendingQueueState';
 import type { SessionSnapshotRefreshReason } from './sessionSnapshotRefreshReason';
 import {
     readLatestTurnStatusSnapshot,
@@ -58,7 +60,17 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
     token: string;
     sessionId: string;
     credentials?: StoredCredentials | null;
-    accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+    /**
+     * Owner is the default. A `shared_editor` client holds no Account content
+     * key, so it reads the layout-1 shared projection instead of the owner
+     * tuple and never receives owner metadata or full Agent state.
+     */
+    metadataAuthority?: 'owner' | 'shared_editor';
+    /**
+     * Owner Account currentness. A shared editor supplies null: it must not
+     * read Account-scoped encryption state with its Session runtime token.
+     */
+    accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse | null;
     currentMetadataLayoutVersion?: number;
     currentMetadataVersion: number;
     currentAgentStateVersion: number;
@@ -68,9 +80,11 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
 } & SessionStoredContentCryptoContext): Promise<{
     metadataLayoutVersion?: number;
     metadataTuple?: SessionMetadataEnvelopeTupleSnapshot;
+    sharedMetadataTuple?: SessionMetadataSharedEditorSnapshot;
     metadata?: { metadata: Metadata | null; metadataVersion: number };
     agentState?: { agentState: AgentState | null; agentStateVersion: number };
     pendingQueueState?: KnownPendingQueueState;
+    pendingExecutionRunIds?: readonly string[];
     latestTurnStatus?: LatestTurnStatusSnapshot;
     latestTurnStatusObservedAt?: number;
 }> {
@@ -83,9 +97,11 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
     const out: {
         metadataLayoutVersion?: number;
         metadataTuple?: SessionMetadataEnvelopeTupleSnapshot;
+        sharedMetadataTuple?: SessionMetadataSharedEditorSnapshot;
         metadata?: { metadata: Metadata | null; metadataVersion: number };
         agentState?: { agentState: AgentState | null; agentStateVersion: number };
         pendingQueueState?: KnownPendingQueueState;
+        pendingExecutionRunIds?: readonly string[];
         latestTurnStatus?: LatestTurnStatusSnapshot;
         latestTurnStatusObservedAt?: number;
     } = {};
@@ -93,6 +109,10 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
     const pendingQueueState = readKnownPendingQueueState(raw);
     if (pendingQueueState) {
         out.pendingQueueState = pendingQueueState;
+    }
+    const pendingExecutionRunIds = readPendingExecutionRunIds(raw);
+    if (pendingExecutionRunIds) {
+        out.pendingExecutionRunIds = pendingExecutionRunIds;
     }
 
     const latestTurnStatus = readLatestTurnStatusSnapshot((raw as { latestTurnStatus?: unknown } | null)?.latestTurnStatus);
@@ -122,9 +142,20 @@ export async function fetchSessionSnapshotUpdateFromServer(opts: {
     }
 
     if (nextMetadataLayoutVersion === SESSION_METADATA_LAYOUT_VERSION_V1) {
+        if (opts.metadataAuthority === 'shared_editor') {
+            out.metadataLayoutVersion = SESSION_METADATA_LAYOUT_VERSION_V1;
+            out.sharedMetadataTuple = readSessionMetadataSharedEditorTupleSnapshot({
+                rawSession: raw,
+                ...(opts.mode === 'plain'
+                    ? { mode: 'plain' as const, ctx: null }
+                    : { mode: 'e2ee' as const, ctx: opts.ctx }),
+            });
+            return out;
+        }
         if (
             !opts.credentials
             || opts.credentials.token !== opts.token
+            || !opts.accountEncryptionCurrentness
         ) {
             throw Object.assign(
                 new Error('Owner session credentials are unavailable'),

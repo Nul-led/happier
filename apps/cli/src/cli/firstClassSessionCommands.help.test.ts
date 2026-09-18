@@ -54,7 +54,7 @@ describe('first-class CLI session command help', () => {
         v: 1,
         ok: true,
         kind: expectedKind,
-        data: { help: expect.stringMatching(new RegExp(`^happier ${command}(?: |$)`)) },
+        data: { help: expect.stringMatching(new RegExp(`^happier ${command}(?:\\s|$)`)) },
       });
     } finally {
       output.restore();

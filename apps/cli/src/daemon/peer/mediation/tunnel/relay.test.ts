@@ -5,7 +5,11 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     encodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+    ProviderConnectionIdSchema,
+    ProviderConnectionSecurityFingerprintV1Schema,
     type PeerTcpTunnelRelayEnvelopeV1,
+    type PeerTcpTunnelRelayAuthorizationV2,
+    type ProviderBrokerRelayApplicationBindingV1,
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
@@ -142,7 +146,8 @@ function createRelayAuthorization(
     tunnelId: string,
     overrides?: Readonly<{
         destination?: Readonly<{ host: string; port: number }>;
-        flowKind?: 'tcp_tunnel' | 'voice_media';
+        flowKind?: 'tcp_tunnel' | 'voice_media' | 'provider_broker';
+        providerBroker?: ProviderBrokerRelayApplicationBindingV1;
         maxFrameBytes?: number;
         maxDurationMs?: number;
         maxTotalBytes?: number;
@@ -155,7 +160,7 @@ function createRelayAuthorization(
         applicationAttemptId?: string;
         applicationAuthorityDigest?: string;
     }>,
-) {
+): PeerTcpTunnelRelayAuthorizationV2 {
     const destination = overrides?.destination ?? { host: '127.0.0.1', port: 3000 };
     const flowKind = overrides?.flowKind ?? 'tcp_tunnel';
     const payload = {
@@ -174,7 +179,9 @@ function createRelayAuthorization(
                 ?? createSpeechTranscriptionApplicationAuthorityDigestV1('request_1'),
         } : {}),
         relaySocketId: overrides?.relaySocketId ?? 'relay_socket_a',
-        destination,
+        ...(flowKind === 'provider_broker'
+            ? { providerBroker: overrides?.providerBroker }
+            : { destination }),
         capProfileId: 'interactive',
         maxFrameBytes: overrides?.maxFrameBytes ?? 64 * 1024,
         maxIdleMs: 30_000,
@@ -235,38 +242,29 @@ function createOpenEnvelope(
     };
 }
 
-function createDataEnvelope(tunnelId: string, payload: string): PeerTcpTunnelRelayEnvelopeV1 {
-    return {
-        v: 1,
-        scopeUserId: 'user_1',
-        sender: { kind: 'user' },
-        recipient: { kind: 'machine', machineId: 'machine_1' },
-        frame: {
-            v: 1,
-            kind: 'data',
-            tunnelId,
-            direction: 'client_to_daemon',
-            sequence: 0,
-            payloadBase64: Buffer.from(payload).toString('base64'),
-        },
-    };
+function createDataEnvelope(tunnelId: string, payload: string) {
+    return createBinaryEnvelope(tunnelId, payload);
 }
 
-function createCloseEnvelope(tunnelId: string): PeerTcpTunnelRelayEnvelopeV1 {
+function createCloseEnvelope(tunnelId: string) {
     return {
-        v: 1,
+        v: 2,
         scopeUserId: 'user_1',
         sender: { kind: 'user' },
         recipient: { kind: 'machine', machineId: 'machine_1' },
-        frame: {
-            v: 1,
-            kind: 'close',
-            tunnelId,
-            direction: 'client_to_daemon',
-            halfClose: false,
-            reasonCode: 'client_closed',
-        },
-    };
+        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+        frame: encodePeerTcpTunnelBinaryFrameV2({
+            header: {
+                version: 2,
+                kind: 'close',
+                tunnelId,
+                direction: 'client_to_daemon',
+                halfClose: false,
+                reasonCode: 'client_closed',
+                payloadLength: 0,
+            },
+        }),
+    } as const;
 }
 
 function createBinaryEnvelope(tunnelId: string, payload: string) {
@@ -344,6 +342,74 @@ function deferred<T>() {
 }
 
 describe('registerPeerTcpTunnelRelayTerminator', () => {
+    it('carries the authenticated Resource Test relay authorization to one target-local capability stream', async () => {
+        const mod = await loadRelayModule();
+        expect(mod?.registerPeerTcpTunnelRelayTerminator).toBeTypeOf('function');
+        if (!mod?.registerPeerTcpTunnelRelayTerminator) return;
+
+        const socket = createSocket();
+        const connection = { write: vi.fn(), onData: vi.fn(), close: vi.fn() };
+        const binding = {
+            v: 1 as const,
+            kind: 'resource_test' as const,
+            teamId: 'team-1',
+            resourceId: 'resource-1',
+            requestId: 'request-1',
+            actorAccountId: 'actor-1',
+            expectedResourceRevision: 7,
+            application: {
+                agentTargetKey: 'codex',
+                implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+                endpointTemplateId: 'responses',
+                protocol: 'openai-responses' as const,
+            },
+            source: {
+                v: 1 as const,
+                kind: 'provider_connection' as const,
+                connectionId: ProviderConnectionIdSchema.parse('connection-1'),
+                connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:1'),
+                credentialSlotId: 'apiKey',
+            },
+            verifiedCredentialEvidence: {
+                v: 1 as const,
+                evidence: [{ kind: 'home_method' as const, methodId: 'email_password' }],
+            },
+        };
+        const resolveProviderBrokerApplicationTarget = vi.fn(async () => ({
+            port: 47_001,
+            localCapability: 'c'.repeat(64),
+        }));
+        const connectTcp = vi.fn(async () => connection);
+        const runtime = mod.registerPeerTcpTunnelRelayTerminator({
+            accountId: 'user_1',
+            machineId: 'machine_1',
+            socket,
+            nowMs: () => 2_000,
+            relayAuthorizationTrustRoots,
+            connectTcp,
+            resolveProviderBrokerApplicationTarget,
+        });
+        const tunnelId = 'provider-broker-1';
+        const authorization = createRelayAuthorization(tunnelId, {
+            flowKind: 'provider_broker',
+            providerBroker: binding,
+        });
+        const base = createOpenEnvelope(tunnelId, { relayAuthorization: authorization });
+        if (base.frame.kind !== 'open') throw new Error('expected open frame fixture');
+        const { destination: _destination, ...applicationOpen } = base.frame.open;
+        await socket.trigger(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, {
+            ...base,
+            frame: { ...base.frame, open: applicationOpen },
+        });
+
+        expect(resolveProviderBrokerApplicationTarget).toHaveBeenCalledWith({
+            binding,
+            relayAuthorization: authorization,
+        });
+        expect(connectTcp).toHaveBeenCalledWith({ host: '127.0.0.1', port: 47_001 });
+        expect(connection.write).toHaveBeenCalledWith(Buffer.from('c'.repeat(64), 'ascii'));
+        await runtime.dispose();
+    });
     it('settles the surviving daemon application exactly once when the user relay socket disconnects', async () => {
         const mod = await loadRelayModule();
         const registerServerRelay = await loadServerRegisterRelayHandler();
@@ -2114,7 +2180,6 @@ describe('registerPeerTcpTunnelRelayTerminator', () => {
                     ...openEnvelope.frame.open,
                     selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                     supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
-                    allowV1Fallback: false,
                 },
             },
         });

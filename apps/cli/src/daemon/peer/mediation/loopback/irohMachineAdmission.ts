@@ -1,9 +1,13 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   IrohEndpointIdV1Schema,
   IrohMachineHandshakeV1Schema,
+  IrohProviderBrokerHandshakeV1Schema,
+  RunnerBrokerReadinessRequestV1Schema,
   type IrohMachineCarrierFlowV1,
   type IrohMachineHandshakeV1,
+  type IrohProviderBrokerHandshakeV1,
+  type RunnerBrokerReadinessRequestV1,
 } from '@happier-dev/protocol';
 import {
   IROH_MACHINE_ADMISSION_PATH,
@@ -16,6 +20,7 @@ import {
   verifyMachineCarrierHandshakeV1,
   type MachineCarrierRole,
 } from '../../iroh/machineCarrier';
+import { verifyProviderBrokerRouteGrantV1 } from '../verifyProviderBrokerRouteGrantV1';
 import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
 import {
   isFirstBytesLocalCapability,
@@ -47,6 +52,31 @@ export type PeerMediationLoopbackIrohMachineAdmissionOptions = Readonly<{
   resolveApplicationTarget: (input: Readonly<{
     handshake: IrohMachineHandshakeV1;
     authenticatedRemoteEndpointId: string;
+    signal: AbortSignal;
+  }>) => Readonly<{ port: number; localCapability?: string }> | null
+    | Promise<Readonly<{ port: number; localCapability?: string }> | null>;
+  /**
+   * Provider-broker application admission is a separate authority from the
+   * same-account machine grant. The callback is intentionally required for
+   * this branch so the resource/Session owner can recheck current state before
+   * exposing the local managed-provider port; a broker envelope alone never
+   * selects a destination.
+   */
+  resolveProviderBrokerApplicationTarget?: (input: Readonly<{
+    handshake: IrohProviderBrokerHandshakeV1;
+    authenticatedRemoteEndpointId: string;
+    localEndpointId: string;
+    authority: IrohProviderBrokerHandshakeV1['authority'];
+    signal: AbortSignal;
+  }>) => Readonly<{ port: number; localCapability?: string }> | null
+    | Promise<Readonly<{ port: number; localCapability?: string }> | null>;
+  /** Activation-bound, non-inference application target. The resolver must
+   * complete the Home currentness check before returning the fixed route. */
+  resolveRunnerBrokerReadinessApplicationTarget?: (input: Readonly<{
+    request: RunnerBrokerReadinessRequestV1;
+    authenticatedRemoteEndpointId: string;
+    localEndpointId: string;
+    signal: AbortSignal;
   }>) => Readonly<{ port: number; localCapability?: string }> | null
     | Promise<Readonly<{ port: number; localCapability?: string }> | null>;
 }>;
@@ -66,6 +96,25 @@ export type RegisterPeerMediationIrohMachineAdmissionRouteOptions = Readonly<{
  * acceptor could mistake for admission.
  */
 const IROH_MACHINE_ADMISSION_REJECT_STATUS = 403;
+
+async function resolveWhileAdmissionRequestIsOpen<T>(
+  request: FastifyRequest,
+  resolve: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const abort = new AbortController();
+  const onAborted = () => abort.abort(new Error('iroh_machine_admission_client_closed'));
+  request.raw.once('aborted', onAborted);
+  request.raw.socket.once('close', onAborted);
+  if (request.raw.aborted) onAborted();
+  try {
+    const value = await resolve(abort.signal);
+    abort.signal.throwIfAborted();
+    return value;
+  } finally {
+    request.raw.off('aborted', onAborted);
+    request.raw.socket.off('close', onAborted);
+  }
+}
 
 export function registerPeerMediationIrohMachineAdmissionRoute(
   app: FastifyInstance,
@@ -96,11 +145,120 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
     // the admitted operation flow. The pure verifier below re-validates the same body
     // through that one schema, so there is no second handshake parser or grant verifier.
     const parsedHandshake = IrohMachineHandshakeV1Schema.safeParse(request.body);
-    if (!parsedHandshake.success || !options.admission.allowedFlows.includes(parsedHandshake.data.flow)) {
-      return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
-    }
+    const parsedProviderBrokerHandshake = IrohProviderBrokerHandshakeV1Schema.safeParse(request.body);
+    const parsedRunnerReadiness = RunnerBrokerReadinessRequestV1Schema.safeParse(request.body);
+    const isProviderBroker = parsedProviderBrokerHandshake.success;
+    if (
+      (!parsedHandshake.success || !options.admission.allowedFlows.includes(parsedHandshake.data.flow))
+      && (!isProviderBroker || options.admission.resolveProviderBrokerApplicationTarget === undefined)
+      && (!parsedRunnerReadiness.success || options.admission.resolveRunnerBrokerReadinessApplicationTarget === undefined)
+    ) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
 
     try {
+      if (parsedRunnerReadiness.success) {
+        const readiness = parsedRunnerReadiness.data;
+        if (
+          options.admission.role !== 'acceptor'
+          || readiness.initiator.endpointId !== authenticatedRemoteEndpointId
+          || readiness.target.machineId !== options.machineId
+          || readiness.target.endpointId !== options.admission.localEndpointId
+        ) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
+        const target = await resolveWhileAdmissionRequestIsOpen(request, async (signal) => (
+          await options.admission.resolveRunnerBrokerReadinessApplicationTarget!({
+            request: readiness,
+            authenticatedRemoteEndpointId,
+            localEndpointId: options.admission.localEndpointId,
+            signal,
+          })
+        ));
+        if (!target || !Number.isInteger(target.port) || target.port < 1 || target.port > 65_535
+          || (target.localCapability !== undefined && !isFirstBytesLocalCapability(target.localCapability))) {
+          return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
+        }
+        let applicationTarget = target;
+        if (applicationTarget.localCapability === undefined) {
+          const proxy = await startFirstBytesLocalCapabilityProxy({ targetPort: applicationTarget.port });
+          activeCapabilityProxies.add(proxy);
+          void proxy.closed.finally(() => activeCapabilityProxies.delete(proxy));
+          applicationTarget = { port: proxy.port, localCapability: proxy.localCapability };
+        }
+        return reply.code(204)
+          .header(IROH_MACHINE_REMOTE_ENDPOINT_HEADER, authenticatedRemoteEndpointId)
+          .header(IROH_MACHINE_APPLICATION_PORT_HEADER, String(applicationTarget.port))
+          .header(IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, applicationTarget.localCapability)
+          .send();
+      }
+      if (isProviderBroker) {
+        // The provider branch has no same-account `flow` or V2 proof. Its
+        // callback is the canonical resource/consumer verifier and target
+        // resolver; it must bind the transport identities before returning a
+        // local managed-provider target.
+        const providerHandshake = parsedProviderBrokerHandshake.data;
+        if (
+          options.admission.role !== 'acceptor'
+          || providerHandshake.authority.payload.target.custodianAccountId !== options.accountId
+          || providerHandshake.authority.payload.target.machineId !== options.machineId
+          || providerHandshake.authority.payload.target.endpointId !== options.admission.localEndpointId
+          || providerHandshake.authority.payload.initiator.endpointId !== authenticatedRemoteEndpointId
+        ) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
+        // The machine/1 transport identity check above is necessary but not
+        // sufficient: the Home-signed cross-account authority must also be
+        // current and bound to this exact transport. Reuse the broker grant
+        // verifier here; the callback owns the mutable resource/consumer
+        // decision and local application target selection.
+        const verification = verifyProviderBrokerRouteGrantV1({
+          authority: providerHandshake.authority,
+          trustRoots: options.admission.resolveTrustRoots?.() ?? options.trustRoots,
+          nowMs: options.nowMs(),
+          expected: {
+            teamId: providerHandshake.authority.payload.teamId,
+            resourceId: providerHandshake.authority.payload.resourceId,
+            expectedResourceRevision: providerHandshake.authority.payload.expectedResourceRevision,
+            modelId: providerHandshake.authority.payload.modelId,
+            sourceRevision: providerHandshake.authority.payload.sourceRevision,
+            initiator: providerHandshake.authority.payload.initiator,
+            target: providerHandshake.authority.payload.target,
+            consumer: providerHandshake.authority.payload.consumer,
+            application: providerHandshake.authority.payload.application,
+          },
+          authenticatedRemoteEndpointId,
+        });
+        if (!verification.valid) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
+        return await resolveWhileAdmissionRequestIsOpen(request, async (signal) => {
+          const resolvedApplicationTarget = await options.admission.resolveProviderBrokerApplicationTarget!({
+            handshake: providerHandshake,
+            authenticatedRemoteEndpointId,
+            localEndpointId: options.admission.localEndpointId,
+            authority: verification.authority,
+            signal,
+          });
+          if (
+            !resolvedApplicationTarget
+            || !Number.isInteger(resolvedApplicationTarget.port)
+            || resolvedApplicationTarget.port < 1
+            || resolvedApplicationTarget.port > 65_535
+            || (resolvedApplicationTarget.localCapability !== undefined
+              && !isFirstBytesLocalCapability(resolvedApplicationTarget.localCapability))
+          ) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
+          let applicationTarget = resolvedApplicationTarget;
+          if (applicationTarget.localCapability === undefined) {
+            const proxy = await startFirstBytesLocalCapabilityProxy({
+              targetPort: applicationTarget.port,
+              abortSignalUntilClaimed: signal,
+            });
+            activeCapabilityProxies.add(proxy);
+            void proxy.closed.finally(() => activeCapabilityProxies.delete(proxy));
+            applicationTarget = { port: proxy.port, localCapability: proxy.localCapability };
+          }
+          signal.throwIfAborted();
+          return reply
+            .code(204)
+            .header(IROH_MACHINE_REMOTE_ENDPOINT_HEADER, authenticatedRemoteEndpointId)
+            .header(IROH_MACHINE_APPLICATION_PORT_HEADER, String(applicationTarget.port))
+            .header(IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, applicationTarget.localCapability)
+            .send();
+        });
+      }
       const verified = verifyMachineCarrierHandshakeV1({
         handshake: request.body,
         accountId: options.accountId,
@@ -111,22 +269,30 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
         nowMs: options.nowMs(),
         authenticatedRemoteEndpointId,
       });
-      const resolvedApplicationTarget = await options.admission.resolveApplicationTarget({
-        handshake: verified.handshake,
-        authenticatedRemoteEndpointId: verified.remoteEndpointId,
-      });
+      const resolvedApplicationTarget = await resolveWhileAdmissionRequestIsOpen(request, async (signal) => (
+        await options.admission.resolveApplicationTarget({
+          handshake: verified.handshake,
+          authenticatedRemoteEndpointId: verified.remoteEndpointId,
+          signal,
+        })
+      ));
       if (
         !resolvedApplicationTarget
         || !Number.isInteger(resolvedApplicationTarget.port)
         || resolvedApplicationTarget.port < 1
         || resolvedApplicationTarget.port > 65_535
+        || (verified.handshake.flow === 'finite_transfer'
+          && resolvedApplicationTarget.localCapability !== undefined)
         || (resolvedApplicationTarget.localCapability !== undefined
           && !isFirstBytesLocalCapability(resolvedApplicationTarget.localCapability))
       ) {
         return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
       }
       let applicationTarget = resolvedApplicationTarget;
-      if (applicationTarget.localCapability === undefined) {
+      if (
+        verified.handshake.flow !== 'finite_transfer'
+        && applicationTarget.localCapability === undefined
+      ) {
         const proxy = await startFirstBytesLocalCapabilityProxy({ targetPort: applicationTarget.port });
         activeCapabilityProxies.add(proxy);
         void proxy.closed.finally(() => activeCapabilityProxies.delete(proxy));
@@ -135,8 +301,11 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
           localCapability: proxy.localCapability,
         };
       }
-      // Bodyless 204 with both values required by the native acceptor: the
-      // authenticated endpoint echo and the trusted, stream-specific local port.
+      // Bodyless 204 with the authenticated endpoint echo and the trusted,
+      // stream-specific local port. Finite transfer has already passed the
+      // canonical carrier grant and is routed directly to the existing
+      // prepared-transfer listener; workspace and sibling broker streams keep
+      // their independently owned first-bytes application capabilities.
       const response = reply
         .code(204)
         .header(IROH_MACHINE_REMOTE_ENDPOINT_HEADER, verified.remoteEndpointId)

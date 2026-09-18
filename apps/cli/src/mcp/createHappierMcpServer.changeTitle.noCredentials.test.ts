@@ -33,6 +33,10 @@ describe('createHappierMcpServer (change_title without credentials)', () => {
         createHappierMcpServer(
             {
                 sessionId: 'sess_change_title_no_creds_2',
+                getServerBinding: () => ({
+                    serverId: 'test-home',
+                    serverUrl: 'https://test-home.example.test',
+                }),
                 rpcHandlerManager: { invokeLocal: async () => ({}) },
                 updateMetadata,
             } as any,

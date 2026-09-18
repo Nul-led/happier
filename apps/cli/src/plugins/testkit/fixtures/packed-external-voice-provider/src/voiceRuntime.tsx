@@ -497,6 +497,9 @@ export function activate(api: PluginClientApi): void {
               arguments: { commandId },
             }));
           },
+          setOutputFocusState(state) {
+            fixtureEvents.push({ kind: 'output_focus', state });
+          },
           async close(reason) {
             pendingCurrentUiCommands.clear();
             emitControl = null;

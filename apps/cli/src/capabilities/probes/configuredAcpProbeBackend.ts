@@ -33,6 +33,7 @@ export async function createConfiguredAcpProbeBackend(params: Readonly<{
   cwd: string;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   credentials?: StoredCredentials | null;
+  processEnv?: NodeJS.ProcessEnv;
 }>): Promise<AcpProbeBackend | null> {
   if (!isConfiguredAcpProbeTarget(params)) return null;
 
@@ -49,11 +50,13 @@ export async function createConfiguredAcpProbeBackend(params: Readonly<{
       backend,
       accountSettings: params.accountSettings,
       credentials: params.credentials,
+      processEnv: params.processEnv,
     });
   }
 
   return createConfiguredAcpBackend({
     cwd: params.cwd,
+    env: params.processEnv,
     backend,
     launchEnv,
     mcpServers: {},

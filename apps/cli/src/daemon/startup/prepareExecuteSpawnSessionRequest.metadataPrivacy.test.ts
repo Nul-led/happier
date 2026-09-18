@@ -91,6 +91,7 @@ const e2eeAccountEncryptionCurrentness = {
   signingKeyFingerprint: null,
   contentKeyFingerprint: accountCryptoMaterial.contentPublicKeyFingerprint,
   updatedAt: 1,
+  recipientEnvelopeReadiness: { status: 'available' },
 } satisfies AccountEncryptionCurrentnessResponse;
 
 function buildSplitSession(
@@ -134,8 +135,6 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
       mocks.fetchSessionByIdCompat.mockResolvedValueOnce(
         buildSplitSession(ownerMetadata),
       );
-      const loadLocalHandoffMetadataByVendorResumeId = vi.fn(async () => null);
-
       const result = await prepareExecuteSpawnSessionRequest({
         request: {
           options: {
@@ -143,13 +142,11 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
             existingSessionId: 'session-private-resume',
           },
           credentials,
-          loadLocalHandoffMetadataByVendorResumeId,
         },
         validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
       });
 
       expect(mocks.ensureSessionDirectory).not.toHaveBeenCalled();
-      expect(loadLocalHandoffMetadataByVendorResumeId).not.toHaveBeenCalled();
       expect(result).toEqual({
         type: 'error',
         errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
@@ -207,7 +204,6 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
           existingSessionId: 'session-private-resume',
         },
         credentials,
-        loadLocalHandoffMetadataByVendorResumeId: async () => null,
       },
       validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
     });
@@ -259,8 +255,6 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
     mocks.fetchSessionByIdCompat.mockResolvedValueOnce(
       buildSplitSession(null),
     );
-    const loadLocalHandoffMetadataByVendorResumeId = vi.fn(async () => null);
-
     const result = await executeSpawnSessionRequest({
       options: {
         directory: '/shared-fallback-must-not-run',
@@ -272,7 +266,6 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
       },
       credentials,
       api: {},
-      loadLocalHandoffMetadataByVendorResumeId,
       connectedServicesMaterializationBaseDir: '/tmp/connected-services',
       connectedServiceRefreshCoordinator: null,
       connectedServiceQuotasCoordinator: null,
@@ -289,7 +282,6 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
     } as never);
 
     expect(mocks.ensureSessionDirectory).not.toHaveBeenCalled();
-    expect(loadLocalHandoffMetadataByVendorResumeId).not.toHaveBeenCalled();
     expect(mocks.prepareDaemonSpawnChildEnvironment).not.toHaveBeenCalled();
     expect(mocks.routeSpawnModeAndWaitForWebhook).not.toHaveBeenCalled();
     expect(result).toEqual({

@@ -140,7 +140,7 @@ export function projectPluginInstallationReviewExecutableRealms(
   if (manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'reactNative')) {
     realms.push('reactNative');
   }
-  if (manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'hostedWeb')) {
+  if (manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'hostedWeb' || renderer.kind === 'hostedHtml')) {
     realms.push('hostedWeb');
   }
   return Object.freeze(realms);

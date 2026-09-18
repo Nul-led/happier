@@ -28,7 +28,7 @@ describe('createIdleReadyNotificationDispatcher', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(settled).toBe(false);
-    expect(enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready' });
+    expect(enqueueSessionEventCommitted).toHaveBeenCalledWith({ type: 'ready', ownerActivityDelivery: 'home_required' });
 
     resolveAdmission({ persisted: true, delivered: false });
     await publication;

@@ -2,8 +2,8 @@ import type {
   ExecutionRunHostRuntime,
   ExecutionRunHostRuntimeMessageHandler,
   ExecutionRunPermissionCapability,
-  ExecutionRunSessionProvisionOptions,
-  ExecutionRunSessionProvisionResult,
+  ExecutionRunRuntimeProvisionOptions,
+  ExecutionRunRuntimeProvisionResult,
   RuntimePermissionResponseOutcome,
 } from '../executionRunHostRuntime';
 
@@ -13,29 +13,31 @@ export type TestExecutionRunHostRuntimeActions = Readonly<{
   emit: (message: TestExecutionRunHostRuntimeMessage) => void;
 }>;
 
-type PromptMeta = Parameters<ExecutionRunHostRuntime['sendPrompt']>[2];
+type PromptMeta = Parameters<ExecutionRunHostRuntime['deliverInput']>[2];
 
 export type TestExecutionRunHostRuntimeOverrides = Readonly<{
-  sessionId?: string;
+  runtimeId?: string;
   permissionCapability?: ExecutionRunPermissionCapability;
   readResumeSupport?: ExecutionRunHostRuntime['readResumeSupport'];
-  provisionSession?: (
-    opts: ExecutionRunSessionProvisionOptions | undefined,
+  provisionRuntime?: (
+    opts: ExecutionRunRuntimeProvisionOptions | undefined,
     actions: TestExecutionRunHostRuntimeActions,
-  ) => Promise<ExecutionRunSessionProvisionResult> | ExecutionRunSessionProvisionResult;
+  ) => Promise<ExecutionRunRuntimeProvisionResult> | ExecutionRunRuntimeProvisionResult;
   sendPrompt?: (
-    sessionId: string,
+    runtimeId: string,
     prompt: string,
     actions: TestExecutionRunHostRuntimeActions,
     meta: PromptMeta,
   ) => Promise<void> | void;
+  deliverInput?: ExecutionRunHostRuntime['deliverInput'];
+  steerInput?: ExecutionRunHostRuntime['steerInput'];
   sendSteerPrompt?: (
-    sessionId: string,
+    runtimeId: string,
     prompt: string,
     meta: PromptMeta,
     actions: TestExecutionRunHostRuntimeActions,
   ) => Promise<void> | void;
-  cancel?: (sessionId: string, actions: TestExecutionRunHostRuntimeActions) => Promise<void> | void;
+  cancel?: (runtimeId: string, actions: TestExecutionRunHostRuntimeActions) => Promise<void> | void;
   respondToPermission?: (
     requestId: string,
     approved: boolean,
@@ -56,6 +58,7 @@ export function createTestExecutionRunHostRuntime(
 ): TestExecutionRunHostRuntimeHarness {
   const handlers = new Set<ExecutionRunHostRuntimeMessageHandler>();
   let disposed = false;
+  const lifetime = new AbortController();
 
   const emit = (message: TestExecutionRunHostRuntimeMessage): void => {
     for (const handler of handlers) {
@@ -63,35 +66,40 @@ export function createTestExecutionRunHostRuntime(
     }
   };
   const actions: TestExecutionRunHostRuntimeActions = Object.freeze({ emit });
-  const sessionId = overrides.sessionId ?? 'test_session_1';
+  const runtimeId = overrides.runtimeId ?? 'test_runtime_1';
 
   const runtime: ExecutionRunHostRuntime = Object.freeze({
     ...(overrides.permissionCapability
       ? { permissionCapability: overrides.permissionCapability }
       : {}),
     readResumeSupport: overrides.readResumeSupport ?? (async () => true),
-    provisionSession: async (opts) => {
-      if (overrides.provisionSession) {
-        return await overrides.provisionSession(opts, actions);
+    provisionRuntime: async (opts) => {
+      if (overrides.provisionRuntime) {
+        return await overrides.provisionRuntime(opts, actions);
       }
-      return { sessionId };
+      return { runtimeId };
     },
-    sendPrompt: async (activeSessionId, prompt, meta) => {
-      await overrides.sendPrompt?.(activeSessionId, prompt, actions, meta);
+    getRuntimeLifetimeSignal: () => lifetime.signal,
+    deliverInput: async (activeRuntimeId, input, meta) => {
+      if (overrides.deliverInput) return await overrides.deliverInput(activeRuntimeId, input, meta);
+      await overrides.sendPrompt?.(activeRuntimeId, input.text, actions, meta);
+      return { status: 'admitted' };
     },
-    ...(overrides.sendSteerPrompt
+    ...(overrides.sendSteerPrompt || overrides.steerInput
       ? {
-          sendSteerPrompt: async (
-            activeSessionId: string,
-            prompt: string,
+          steerInput: async (
+            activeRuntimeId: string,
+            input: Parameters<ExecutionRunHostRuntime['deliverInput']>[1],
             meta?: PromptMeta,
           ) => {
-            await overrides.sendSteerPrompt!(activeSessionId, prompt, meta, actions);
+            if (overrides.steerInput) return await overrides.steerInput(activeRuntimeId, input, meta);
+            await overrides.sendSteerPrompt!(activeRuntimeId, input.text, meta, actions);
+            return { status: 'admitted' as const };
           },
         }
       : {}),
-    cancel: async (activeSessionId) => {
-      await overrides.cancel?.(activeSessionId, actions);
+    cancel: async (activeRuntimeId) => {
+      await overrides.cancel?.(activeRuntimeId, actions);
     },
     subscribeMessages(handler) {
       handlers.add(handler);
@@ -113,6 +121,7 @@ export function createTestExecutionRunHostRuntime(
       : {}),
     dispose: async () => {
       disposed = true;
+      lifetime.abort();
       await overrides.dispose?.();
     },
   });

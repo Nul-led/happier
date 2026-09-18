@@ -37,6 +37,7 @@ import type {
 import {
     appendDiagnostic,
     appendDiagnostics,
+    DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS,
     normalizePositiveTimeoutMs,
     projectPluginFailureText,
     runWithOptionalTimeout,
@@ -158,9 +159,8 @@ export type ActivatedPluginRuntimeRegistry = ActivatedHandlerRegistry & Readonly
     ) => Promise<readonly PluginActivationDemandResult[]>;
     /**
      * Records a host-owned terminal availability failure that arrives after
-     * this plugin's activation fact was produced — readiness rejection or an
-     * unexpectedly settled generation-long background service. The plugin
-     * leaves the activated set, its one activation fact becomes `unavailable`,
+     * this plugin's activation fact was produced, such as readiness rejection.
+     * The plugin leaves the activated set, its one activation fact becomes `unavailable`,
      * and the reason uses the existing activation diagnostic owner.
      */
     recordPluginActivationFailure: (pluginId: string, message: string) => void;
@@ -428,12 +428,18 @@ export async function activatePluginRuntimeRegistry(params: Readonly<{
                 }
                 cacheGenerationId = committedAuthorization.immutableGenerationId;
             }
-            moduleNamespace = await loadPluginModule({
-                source: activationSource,
-                // Module graphs are scoped by the direct immutable generation,
-                // never a copied manifest/package digest.
-                cacheKey: `generation:${cacheGenerationId}`,
-            }) as PluginDaemonModuleNamespace;
+            moduleNamespace = await runWithOptionalTimeout(
+                DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS,
+                () => loadPluginModule({
+                    source: activationSource,
+                    // Module graphs are scoped by the direct immutable generation,
+                    // never a copied manifest/package digest.
+                    cacheKey: `generation:${cacheGenerationId}`,
+                }) as Promise<PluginDaemonModuleNamespace>,
+                () => new Error(
+                    `Plugin '${target.pluginId}' daemon module loading timed out after ${DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS}ms`,
+                ),
+            );
         } catch (error) {
             if (!isActivationCurrent()) {
                 continue;
@@ -590,7 +596,6 @@ export async function activatePluginRuntimeRegistry(params: Readonly<{
             });
         }
     }
-    const terminalBackgroundServicePluginIds = new Set<string>();
     const backgroundServiceRunnerHost = createBackgroundServiceRunnerHost({
         registrations: params.invocationServices ? backgroundServiceRegistrations : Object.freeze([]),
         createContext(input) {
@@ -708,26 +713,6 @@ export async function activatePluginRuntimeRegistry(params: Readonly<{
                 ...(event.code === 'background_service_unavailable' ? { reason: event.reason } : {}),
             });
         },
-        onUnexpectedSettlement(event) {
-            // Background services are generation-long required contributions.
-            // Once one stops while its generation is current, the existing
-            // activation fact is the canonical availability owner: retire the
-            // plugin's active projection there and invalidate its readers. A
-            // watchdog/restart loop would contradict the background-service
-            // lifecycle contract and conceal the provider's stopped observer.
-            if (terminalBackgroundServicePluginIds.has(event.pluginId)) return;
-            terminalBackgroundServicePluginIds.add(event.pluginId);
-            const detail = event.outcome === 'rejected'
-                ? projectPluginFailureText(event.error)
-                : event.outcome === 'unavailable'
-                    ? `${event.reason?.code ?? 'background_service_unavailable'} (${event.reason?.hostAccessId ?? 'unknown'})`
-                    : 'runner resolved while its generation remained current';
-            recordPluginActivationFailure(
-                event.pluginId,
-                `Background service '${event.localId}' stopped: ${detail}`,
-            );
-            params.onTerminalActivationFailure?.(event.pluginId);
-        },
     });
     let backgroundServicesStarted = false;
     const targetHookHandlers = createTargetHookHandlerRegistry({
@@ -841,9 +826,9 @@ export async function activatePluginRuntimeRegistry(params: Readonly<{
         ...lazyActivatedRegistries,
     ]);
 
-    // A host-owned failure after the activation loop — readiness preparation or
-    // unexpected generation-long background-service settlement — can invalidate
-    // a plugin the loop already reported as active. It is represented exactly
+    // A host-owned failure after the activation loop — such as readiness
+    // preparation — can invalidate a plugin the loop already reported as active.
+    // It is represented exactly
     // like an activation-time failure so every reader keeps one meaning of
     // "ready": one `unavailable` fact carrying one typed diagnostic.
     function recordPluginActivationFailure(pluginId: string, message: string): void {
@@ -1195,8 +1180,8 @@ export async function activatePluginRuntimeRegistry(params: Readonly<{
         targetRegistrations,
         // Component registries retain the lifecycle owner for their required
         // contributions. Read their current facts instead of copying a startup
-        // snapshot that would keep advertising a background runner after it
-        // terminally settles.
+        // snapshot that would keep advertising a component after its registry
+        // is retired. Ordinary finite runner settlement is diagnostic-only.
         get targetActivationFacts() {
             return readCurrentTargetActivationFacts();
         },

@@ -16,6 +16,27 @@ const ACTUAL_VOICE_RUNTIME_LOADER_SOURCE = readFileSync(
   'utf8',
 );
 
+test('CLI dist dependency extraction ignores generated module source after a regular expression literal', () => {
+  const emittedScaffoldChunk = String.raw`
+const quotePattern = /["']/;
+const generatedPluginSource = [
+  "import { createSessionAgentRuntime } from './agent/sessionAgent.js';",
+].join('\n');
+export { generatedPluginSource, quotePattern };
+`;
+
+  assert.deepEqual(
+    cliDistBuildManifest.extractRelativeModuleSpecifiers(emittedScaffoldChunk),
+    [],
+  );
+  assert.deepEqual(
+    cliDistBuildManifest.extractRelativeModuleSpecifiers(
+      `${emittedScaffoldChunk}\nimport './real-runtime-module.js';\n`,
+    ),
+    ['./real-runtime-module.js'],
+  );
+});
+
 function writeWorkspacePackageFixture({ repoRoot, packageName, relativeDir }) {
   const packageDir = join(repoRoot, ...relativeDir);
   const distDir = join(packageDir, 'dist');
@@ -185,6 +206,17 @@ function writeCliProxyApiManagedRuntimeFixture(repoRoot, target) {
   writeFileSync(join(licenseDir, 'CLIProxyAPI-LICENSE'), 'CLIProxyAPI license fixture\n', 'utf8');
   writeFileSync(join(licenseDir, 'THIRD-PARTY-NOTICES'), 'CLIProxyAPI third-party notices fixture\n', 'utf8');
   return executablePath;
+}
+
+function materializeProcessCustodyRuntimeFromGoBuild(cmd, args) {
+  if (cmd !== 'go') return;
+  const outputFlagIndex = args.indexOf('-o');
+  if (outputFlagIndex < 0 || outputFlagIndex === args.length - 1) {
+    throw new Error('process custody fixture expected go build -o <path>');
+  }
+  const executablePath = args[outputFlagIndex + 1];
+  mkdirSync(join(executablePath, '..'), { recursive: true });
+  writeFileSync(executablePath, 'signed process custody runtime\n', 'utf8');
 }
 
 function prismaEngineFileNameForFixture({ platform = 'linux', arch = 'x64' } = {}) {
@@ -490,6 +522,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         runCalls.push({ cmd, args });
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
@@ -510,7 +543,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
 
     assert.equal(result.executableName, artifacts.resolveExecutableName({ baseName: 'happier', target }));
     assert.equal(result.entrypoint, artifacts.resolveExecutableName({ baseName: 'happier', target }));
-    assert.deepEqual(runCalls, []);
+    assert.deepEqual(runCalls.map(({ cmd }) => cmd), ['go']);
     assert.equal(compileCalls.length, 1);
     assert.deepEqual(compileCalls[0].externals.sort(), [
       '@homebridge/node-pty-prebuilt-multiarch',
@@ -612,7 +645,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
             target,
             cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
             commandProbe: () => true,
-            runCommand: () => {},
+            runCommand: (cmd, args) => materializeProcessCustodyRuntimeFromGoBuild(cmd, args),
             compileBinary: async ({ outfile }) => {
               writeFileSync(outfile, '#!/bin/sh\necho happier\n', 'utf8');
               const runtimeLinksDir = join(payloadDir, 'runtime-links');
@@ -737,7 +770,8 @@ test('buildCliBinaryArtifactPayload removes compile-generated node_modules befor
       target: resolveHostCliBinaryTarget(artifacts),
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
       commandProbe: () => true,
-      runCommand: () => {
+      runCommand: (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
       },
@@ -847,7 +881,8 @@ test('buildCliBinaryArtifactPayload snapshots CLI dist before compile/copy so la
       target: resolveHostCliBinaryTarget(artifacts),
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
       commandProbe: () => true,
-      runCommand: async () => {
+      runCommand: async (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'export { detect } from "./detect-BwxnBwvx.mjs";\n', 'utf8');
         writeFileSync(join(cliDistDir, 'detect-BwxnBwvx.mjs'), 'export const detect = true;\n', 'utf8');
@@ -932,7 +967,8 @@ test('buildCliBinaryArtifactPayload derives bundled workspace packages from apps
       target: resolveHostCliBinaryTarget(artifacts),
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
       commandProbe: () => true,
-      runCommand: () => {
+      runCommand: (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
       },
@@ -1014,7 +1050,8 @@ test('buildCliBinaryArtifactPayload restores runtime sidecars after compile rewr
       target: resolveHostCliBinaryTarget(artifacts),
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
       commandProbe: () => true,
-      runCommand: () => {
+      runCommand: (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
       },
@@ -1112,7 +1149,8 @@ test('buildCliBinaryArtifactPayload stages embeddings runtime packages and exter
       target,
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
-      runCommand: () => {
+      runCommand: (cmd, args) => {
+        materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
         mkdirSync(cliDistDir, { recursive: true });
         writeFileSync(join(cliDistDir, 'index.mjs'), 'console.log("cli");\n', 'utf8');
       },

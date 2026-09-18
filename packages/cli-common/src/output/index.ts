@@ -40,6 +40,8 @@ export {
   type TerminalStyles,
 } from './presentation.js';
 export { createStepPrinter, runCommandLogged } from './progress.js';
+export { createNumericPlanetFrame, type NumericPlanetCell, type NumericPlanetFrame } from '../../numericPlanetFrame.mjs';
+export { createSetupChoicePrompt, renderSetupChoice, renderSetupWelcome, type SetupChoice, type SetupChoicePrompt, type SetupChoiceRenderOptions } from './planet.js';
 export { createHelpFormatter, helpFormatter, type HelpRow, type HelpRenderOptions } from './help.js';
 export { renderHelpPage, type HelpPageOptions, type HelpPageSection, type RenderHelpPageOptions } from './helpPage.js';
 export {

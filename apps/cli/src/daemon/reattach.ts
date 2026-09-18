@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import { ALLOWED_HAPPY_SESSION_PROCESS_TYPES } from './pidSafety';
 import type { HappyProcessInfo } from './doctor';
 import { hashProcessCommand, writeSessionMarker } from './sessionRegistry';
@@ -218,7 +220,9 @@ export function adoptSessionsFromMarkers(params: {
       continue;
     }
 
-    const commandVendorResumeId = normalizeOptionalString(extractResumeIdFromCommand(currentCommand));
+    // Opaque Agent identity on every reattach branch: presence only, bytes kept.
+    const commandVendorResumeId =
+      readNonBlankOpaqueIdentifier(extractResumeIdFromCommand(currentCommand)) ?? undefined;
     let spawnOptions: SpawnSessionOptions | undefined;
     let vendorResumeId = commandVendorResumeId;
     if (respawnParsed.success) {
@@ -241,7 +245,7 @@ export function adoptSessionsFromMarkers(params: {
       spawnOptions = runtimeSnapshot.spawnOptions;
       vendorResumeId = runtimeSnapshot.snapshot.vendorResumeId?.value
         ?? commandVendorResumeId
-        ?? normalizeOptionalString(respawnParsed.data.vendorResumeId);
+        ?? readNonBlankOpaqueIdentifier(respawnParsed.data.vendorResumeId) ?? undefined;
 
       const validatedRespawnDescriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(spawnOptions);
       if (!validatedRespawnDescriptor || validatedRespawnDescriptor.version !== respawnParsed.data.version) {

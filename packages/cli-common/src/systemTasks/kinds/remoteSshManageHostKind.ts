@@ -14,7 +14,16 @@ import { redactSensitiveSystemTaskJsonValue, type InteractiveSystemTaskKind } fr
 import { parseSystemTaskSshConfig, type SystemTaskSshConnectionConfig } from './relayRuntimeKinds.js';
 import type { RemoteHostTrustResolution } from './remoteSshBootstrapMachineKind.js';
 import { materializeSshIdentityPrivateKeyToTempFile } from '../ssh/materializeSshIdentityPrivateKeyToTempFile.js';
-import type { PersonalHomeRelocationPublicationFacts } from '../../firstPartyRuntime/personalHome/relocationCoordinator.js';
+import {
+  PersonalHomeRelocationTransferCleanupError,
+  type PersonalHomeRelocationPublicationFacts,
+} from '../../firstPartyRuntime/personalHome/relocationCoordinator.js';
+import {
+  parsePersonalHomeRelocationDestinationFacts,
+  type PersonalHomeRelocationDestinationFacts,
+  type PersonalHomeRelocationDestinationOwner,
+  type PersonalHomeRelocationDestinationStageInput,
+} from '../../firstPartyRuntime/personalHome/relocationDestination.js';
 
 export type RemoteSshManageHostAction =
   | 'testConnection'
@@ -46,17 +55,20 @@ export type RemoteSshManageHostDeps = Readonly<{
   resolveHostTrust: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     knownHostsMode: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<RemoteHostTrustResolution>;
   testConnection: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     auth: RemoteSshAuth;
     knownHostsMode: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<void>;
   installRemoteCli: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     auth: RemoteSshAuth;
     knownHostsMode: 'app' | 'system';
     channel: 'stable' | 'preview' | 'dev';
+    signal?: AbortSignal;
   }>) => Promise<void>;
   runDaemonServiceCommand: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
@@ -65,6 +77,7 @@ export type RemoteSshManageHostDeps = Readonly<{
     action: 'installOrUpdate' | 'start' | 'stop' | 'restart';
     serviceMode: 'user' | 'none';
     channel: 'stable' | 'preview' | 'dev';
+    signal?: AbortSignal;
   }>) => Promise<void>;
   runRelayRuntimeCommand: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
@@ -73,6 +86,7 @@ export type RemoteSshManageHostDeps = Readonly<{
     action: 'status' | 'installOrUpdate' | 'start' | 'stop' | 'restart';
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<SystemTaskJsonObject | null | void>;
   runPersonalHomeCommand?: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
@@ -83,6 +97,7 @@ export type RemoteSshManageHostDeps = Readonly<{
     args: readonly string[];
     input?: string;
     resultContract?: 'create' | 'task';
+    timeoutMs?: number | null;
     signal?: AbortSignal;
   }>) => Promise<SystemTaskJsonObject>;
   transferPersonalHomeArchive?: (params: Readonly<{
@@ -133,6 +148,163 @@ export type RemoteSshManageHostDeps = Readonly<{
     readPublishedDescriptor(homeServerIdentityId: string): Promise<HomeConnectionDescriptorV1 | null>;
   }>) => Promise<SystemTaskJsonObject>;
 }>;
+
+const PERSONAL_HOME_RELOCATION_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const PERSONAL_HOME_RELOCATION_SHA256 = /^[a-f0-9]{64}$/u;
+
+function assertRelocationOperationId(operationId: string): void {
+  if (!PERSONAL_HOME_RELOCATION_OPERATION_ID.test(operationId)) {
+    throw new Error('Invalid Personal Home relocation operation id.');
+  }
+}
+
+function parseRelocationUpload(value: SystemTaskJsonObject, operationId: string): Readonly<{
+  uploadLocator: string;
+}> {
+  if (Object.keys(value).some((key) => !['operationId', 'uploadLocator'].includes(key))
+    || value.operationId !== operationId
+    || typeof value.uploadLocator !== 'string'
+    || !value.uploadLocator.trim()
+    || /[\r\n\0]/u.test(value.uploadLocator)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home relocation destination returned an invalid upload reservation.');
+  }
+  return { uploadLocator: value.uploadLocator };
+}
+
+function sanitizeRelocationTransferError(error: unknown, uploadLocator: string): Error {
+  const rawMessage = error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : 'Personal Home relocation archive transfer failed.';
+  const sanitizedMessage = rawMessage.split(uploadLocator).join('[redacted-destination-upload]');
+  return new Error(sanitizedMessage || 'Personal Home relocation archive transfer failed.');
+}
+
+/** One SSH destination protocol adapter shared by CLI and bootstrap hosts. */
+export function createRemoteSshPersonalHomeRelocationDestination(params: Readonly<{
+  ssh: SystemTaskSshConnectionConfig;
+  auth: RemoteSshAuth;
+  knownHostsMode: 'app' | 'system';
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+  runPersonalHomeCommand: NonNullable<RemoteSshManageHostDeps['runPersonalHomeCommand']>;
+  transferPersonalHomeArchive: NonNullable<RemoteSshManageHostDeps['transferPersonalHomeArchive']>;
+  ensureRuntime(purpose: Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>, signal?: AbortSignal): Promise<void>;
+}>): PersonalHomeRelocationDestinationOwner {
+  const destinationCommand = async (args: readonly string[], signal?: AbortSignal) => await params.runPersonalHomeCommand({
+    ssh: params.ssh,
+    auth: params.auth,
+    knownHostsMode: params.knownHostsMode,
+    channel: params.channel,
+    mode: params.mode,
+    args: ['home', 'relocation-destination', ...args, '--json', '--channel', params.channel, '--mode', params.mode],
+    ...(signal ? { signal } : {}),
+  });
+  const remoteCommand = async (args: readonly string[], operationId: string, signal?: AbortSignal) => parsePersonalHomeRelocationDestinationFacts(
+    await destinationCommand(args, signal),
+    operationId,
+  );
+  const status = async (operationId: string) => {
+    assertRelocationOperationId(operationId);
+    return await remoteCommand(['status', '--operation-id', operationId], operationId);
+  };
+
+  return Object.freeze({
+    status,
+    stage: async (input: PersonalHomeRelocationDestinationStageInput) => {
+      assertRelocationOperationId(input.operationId);
+      if (!input.archivePath.trim()
+        || !PERSONAL_HOME_RELOCATION_SHA256.test(input.bundleSha256)
+        || !input.expectedHomeServerIdentityId.trim()
+        || !input.expectedCanonicalServerUrl.trim()
+        || !Number.isSafeInteger(input.sourceDescriptorRevision)
+        || input.sourceDescriptorRevision < 1) {
+        throw new Error('Invalid Personal Home relocation destination stage input.');
+      }
+      input.signal?.throwIfAborted();
+      await params.ensureRuntime({ kind: 'personal-home', canonicalServerUrl: input.expectedCanonicalServerUrl }, input.signal);
+      input.signal?.throwIfAborted();
+      const upload = parseRelocationUpload(await destinationCommand([
+        'stage', '--operation-id', input.operationId, '--prepare-upload',
+      ], input.signal), input.operationId);
+      let stagedFacts: PersonalHomeRelocationDestinationFacts | undefined;
+      let stageFailure: unknown;
+      try {
+        try {
+          await params.transferPersonalHomeArchive({
+            ssh: params.ssh,
+            auth: params.auth,
+            knownHostsMode: params.knownHostsMode,
+            direction: 'upload',
+            localPath: input.archivePath,
+            remotePath: upload.uploadLocator,
+            ...(input.signal ? { signal: input.signal } : {}),
+          });
+        } catch (transferError) {
+          const sanitizedTransferError = sanitizeRelocationTransferError(transferError, upload.uploadLocator);
+          let cleanupConfirmed = false;
+          try {
+            const aborted = await remoteCommand(['abort', '--operation-id', input.operationId], input.operationId);
+            cleanupConfirmed = (aborted.status === 'absent' || aborted.status === 'aborted')
+              && aborted.transferCleanupNeedsAttention !== true;
+          } catch {
+            // Preserve the transfer failure and report only cleanup attention.
+          }
+          if (!cleanupConfirmed) throw new PersonalHomeRelocationTransferCleanupError(sanitizedTransferError);
+          throw sanitizedTransferError;
+        }
+        try {
+          const facts = await remoteCommand([
+            'stage',
+            '--operation-id', input.operationId,
+            '--bundle-sha256', input.bundleSha256,
+            '--expected-home-id', input.expectedHomeServerIdentityId,
+            '--expected-canonical-server-url', input.expectedCanonicalServerUrl,
+            '--source-descriptor-revision', String(input.sourceDescriptorRevision),
+          ], input.operationId, input.signal);
+          if (facts.status === 'absent'
+            || facts.bundleSha256 !== input.bundleSha256
+            || facts.expectedHomeServerIdentityId !== input.expectedHomeServerIdentityId
+            || facts.sourceDescriptorRevision !== input.sourceDescriptorRevision) {
+            throw new Error('Remote Personal Home relocation stage returned facts for a different bundle.');
+          }
+          stagedFacts = facts;
+        } catch (stageError) {
+          try {
+            const current = await status(input.operationId);
+            if (current.status !== 'absent'
+              && current.bundleSha256 === input.bundleSha256
+              && current.expectedHomeServerIdentityId === input.expectedHomeServerIdentityId
+              && current.sourceDescriptorRevision === input.sourceDescriptorRevision
+              && (current.status === 'quarantined' || current.status === 'active')) {
+              stagedFacts = current;
+            } else {
+              stageFailure = stageError;
+            }
+          } catch {
+            stageFailure = stageError;
+          }
+        }
+      } catch (error) {
+        stageFailure = error;
+      }
+      if (stageFailure) throw stageFailure;
+      if (!stagedFacts) throw new Error('Remote Personal Home relocation stage did not return authoritative destination facts.');
+      return stagedFacts;
+    },
+    commit: async (input) => {
+      assertRelocationOperationId(input.operationId);
+      const publishedDescriptor = HomeConnectionDescriptorV1Schema.parse(input.publishedDescriptor);
+      return await remoteCommand([
+        'commit', '--operation-id', input.operationId,
+        '--published-descriptor-json', JSON.stringify(publishedDescriptor),
+      ], input.operationId) as PersonalHomeRelocationDestinationFacts;
+    },
+    abort: async (operationId) => {
+      assertRelocationOperationId(operationId);
+      return await remoteCommand(['abort', '--operation-id', operationId], operationId);
+    },
+  });
+}
 
 export function redactRemoteSshManageHostPayload(value: SystemTaskJsonValue): SystemTaskJsonValue {
   return redactSensitiveSystemTaskJsonValue(value);
@@ -217,6 +389,7 @@ export function createRemoteSshManageHostTaskKind(
         const trustResolution = await deps.resolveHostTrust({
           ssh: parsed.ssh,
           knownHostsMode,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
         });
         const trust = trustResolution.status === 'prompt'
           ? normalizeRemoteHostTrustResolution(trustResolution)
@@ -254,6 +427,7 @@ export function createRemoteSshManageHostTaskKind(
             ssh: parsed.ssh,
             auth,
             knownHostsMode,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           return { action: parsed.action } satisfies SystemTaskJsonObject;
         }
@@ -269,6 +443,7 @@ export function createRemoteSshManageHostTaskKind(
             auth,
             knownHostsMode,
             channel: parsed.channel,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           return { action: parsed.action } satisfies SystemTaskJsonObject;
         }
@@ -282,7 +457,7 @@ export function createRemoteSshManageHostTaskKind(
           const runtimeChannel = parsed.relayRuntime.channel ?? 'stable';
           const runtimeMode = parsed.relayRuntime.mode ?? 'user';
           ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
-          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel, ...(ctx.signal ? { signal: ctx.signal } : {}) });
           const personalHome = await deps.runPersonalHomeRelocation({
             ssh: parsed.ssh,
             auth,
@@ -294,18 +469,24 @@ export function createRemoteSshManageHostTaskKind(
             sourceDescriptorRevision: relocation.sourceDescriptorRevision,
             ...(relocation.recoveryAction ? { recoveryAction: relocation.recoveryAction } : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
-            progress: (stepId, message) => ctx.emit({ type: 'progress', stepId, ...(message ? { message } : {}) }),
+            progress: (stepId, message) => ctx.emit({
+              type: 'progress',
+              stepId: stepId.startsWith('personal_home.') ? stepId : `personal_home.${stepId}`,
+              ...(message ? { message } : {}),
+            }),
             publishDestination: async (facts) => parseRelocationDescriptorPromptAnswer(await ctx.prompt({
               kind: 'personal_home.publish_relocation_descriptor.v1',
               stepId: 'personal_home.publish_relocation_descriptor',
               message: 'Publishing the verified Personal Home destination',
               data: facts,
+              nonCancellable: true,
             }), false),
             readPublishedDescriptor: async (homeServerIdentityId) => parseRelocationDescriptorPromptAnswer(await ctx.prompt({
               kind: 'personal_home.read_relocation_descriptor.v1',
               stepId: 'personal_home.read_relocation_descriptor',
               message: 'Reading the current Personal Home destination',
               data: { operationId: relocation.operationId, homeServerIdentityId },
+              nonCancellable: true,
             }), true),
           });
           return { action: parsed.action, personalHome } satisfies SystemTaskJsonObject;
@@ -319,7 +500,7 @@ export function createRemoteSshManageHostTaskKind(
           const runtimeChannel = parsed.relayRuntime.channel ?? 'stable';
           const runtimeMode = parsed.relayRuntime.mode ?? 'user';
           ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
-          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel, ...(ctx.signal ? { signal: ctx.signal } : {}) });
           ctx.emit({ type: 'progress', stepId: 'personal_home.create', message: 'Creating the remote Personal Home' });
           const raw = await deps.runPersonalHomeCommand({
             ssh: parsed.ssh,
@@ -328,6 +509,7 @@ export function createRemoteSshManageHostTaskKind(
             channel: parsed.channel,
             mode: runtimeMode,
             args: ['home', 'create', '--yes', '--json', '--link-account', 'never', '--channel', runtimeChannel, '--mode', runtimeMode],
+            resultContract: 'create',
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           const created = parseRemotePersonalHomeCreateResult(raw, { channel: runtimeChannel, mode: runtimeMode });
@@ -397,6 +579,7 @@ export function createRemoteSshManageHostTaskKind(
             args: readonly string[],
             input?: string,
             includeTaskSignal = true,
+            timeoutMs?: number | null,
           ): Promise<SystemTaskJsonObject> => await deps.runPersonalHomeCommand!({
             ssh: parsed.ssh,
             auth,
@@ -406,6 +589,7 @@ export function createRemoteSshManageHostTaskKind(
             args: [...args, '--json', '--channel', runtimeChannel, '--mode', runtimeMode],
             resultContract: 'task',
             ...(input === undefined ? {} : { input }),
+            ...(timeoutMs === undefined ? {} : { timeoutMs }),
             ...(includeTaskSignal && ctx.signal ? { signal: ctx.signal } : {}),
           });
           const inspect = async () => parseRemotePersonalHomeStatus(await runRemoteTask(['home', 'status']));
@@ -417,7 +601,7 @@ export function createRemoteSshManageHostTaskKind(
               throw new SystemTaskExecutionError('unsupported', 'Remote Personal Home archive transfer is unavailable.');
             }
             const operationId = (deps.createOperationId ?? randomUUID)();
-            const prepared = parseRemotePersonalHomeTransferReservation(await runRemoteTask([
+            const prepared = parseRelocationUpload(await runRemoteTask([
               'home', 'relocation-destination', 'stage', '--operation-id', operationId, '--prepare-upload',
             ]), operationId);
             let outcome: T | undefined;
@@ -452,7 +636,7 @@ export function createRemoteSshManageHostTaskKind(
           };
 
           ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
-          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel, ...(ctx.signal ? { signal: ctx.signal } : {}) });
 
           if (parsed.action === 'personalHome.status') {
             return { action: parsed.action, personalHome: (await inspect()).data } satisfies SystemTaskJsonObject;
@@ -496,9 +680,10 @@ export function createRemoteSshManageHostTaskKind(
                 if (!answer) throw new SystemTaskExecutionError('confirmation_declined', 'Remote Personal Home restore was not confirmed.');
                 approvalInput = serializeRemotePersonalHomeApprovalInput(approval);
               }
+              ctx.signal?.throwIfAborted();
               return parseRemotePersonalHomeMutationResult(await runRemoteTask([
                 'home', 'restore', remotePath, ...(approvalInput ? ['--approval-stdin'] : []),
-              ], approvalInput));
+              ], approvalInput, false, null));
             });
             return { action: parsed.action, personalHome: restored } satisfies SystemTaskJsonObject;
           }
@@ -513,9 +698,12 @@ export function createRemoteSshManageHostTaskKind(
           if (!await promptRemotePersonalHomeApproval(ctx, parsed.ssh.target, approval)) {
             throw new SystemTaskExecutionError('confirmation_declined', 'Remote Personal Home restore recovery was not confirmed.');
           }
+          ctx.signal?.throwIfAborted();
           const recovered = parseRemotePersonalHomeMutationResult(await runRemoteTask(
             ['home', 'recover-restore', '--approval-stdin'],
             serializeRemotePersonalHomeApprovalInput(approval),
+            false,
+            null,
           ));
           return { action: parsed.action, personalHome: recovered } satisfies SystemTaskJsonObject;
         }
@@ -526,7 +714,7 @@ export function createRemoteSshManageHostTaskKind(
           const runtimeChannel = parsed.relayRuntime.channel ?? 'stable';
           const runtimeMode = parsed.relayRuntime.mode ?? 'user';
           ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
-          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel, ...(ctx.signal ? { signal: ctx.signal } : {}) });
           const inspection = parseRemotePersonalHomeInspection(await deps.runPersonalHomeCommand({
             ssh: parsed.ssh,
             auth,
@@ -556,11 +744,14 @@ export function createRemoteSshManageHostTaskKind(
               homeServerIdentityId: approval.homeServerIdentityId,
               paths: [...approval.paths],
               estimatedBytes: approval.estimatedBytes,
+              previewComplete: true,
+              previewReason: null,
             },
           }) as { confirmed?: unknown };
           if (answer?.confirmed !== true) {
             throw new SystemTaskExecutionError('confirmation_declined', 'Remote Personal Home erase was not confirmed.');
           }
+          ctx.signal?.throwIfAborted();
           const erased = parseRemotePersonalHomeEraseResult(await deps.runPersonalHomeCommand({
             ssh: parsed.ssh,
             auth,
@@ -570,7 +761,7 @@ export function createRemoteSshManageHostTaskKind(
             args: ['home', 'erase', '--json', '--approval-stdin', '--channel', runtimeChannel, '--mode', runtimeMode],
             input: serializeRemotePersonalHomeApprovalInput(approval),
             resultContract: 'task',
-            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            timeoutMs: null,
           }));
           return { action: parsed.action, personalHome: erased } satisfies SystemTaskJsonObject;
         }
@@ -590,6 +781,7 @@ export function createRemoteSshManageHostTaskKind(
             action: relayRuntimeAction,
             channel: parsed.relayRuntime?.channel ?? 'stable',
             mode: parsed.relayRuntime?.mode ?? 'user',
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
 
           return {
@@ -613,6 +805,7 @@ export function createRemoteSshManageHostTaskKind(
           auth,
           knownHostsMode,
           channel: parsed.channel,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
         });
 
         ctx.emit({
@@ -627,6 +820,7 @@ export function createRemoteSshManageHostTaskKind(
           action: daemonAction,
           serviceMode: parsed.serviceMode,
           channel: parsed.channel,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
         });
 
         return { action: parsed.action } satisfies SystemTaskJsonObject;
@@ -952,10 +1146,12 @@ function parseRemotePersonalHomeInspection(value: SystemTaskJsonObject): Readonl
     ? storage.ownedErasePaths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
     : [];
   const estimatedBytes = storage?.estimatedOwnedBytes;
+  const previewComplete = storage?.estimatedOwnedBytesComplete !== false;
   if (purpose?.kind !== 'personal-home'
     || typeof purpose.canonicalServerUrl !== 'string' || !purpose.canonicalServerUrl.trim()
     || typeof identity?.homeServerIdentityId !== 'string' || !identity.homeServerIdentityId.trim()
     || !Array.isArray(storage?.ownedErasePaths) || paths.length !== storage.ownedErasePaths.length || paths.length === 0
+    || !previewComplete
     || (estimatedBytes !== null && (typeof estimatedBytes !== 'number' || !Number.isSafeInteger(estimatedBytes) || estimatedBytes < 0))) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home status did not return persisted purpose, identity, and exact storage facts.');
   }
@@ -1027,13 +1223,6 @@ function parseRemotePersonalHomeStatus(value: SystemTaskJsonObject): ParsedRemot
   };
 }
 
-function parseRemotePersonalHomeTransferReservation(value: SystemTaskJsonObject, operationId: string): Readonly<{ uploadLocator: string }> {
-  if (value.operationId !== operationId || typeof value.uploadLocator !== 'string' || !value.uploadLocator.trim()) {
-    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home transfer reservation was invalid.');
-  }
-  return { uploadLocator: value.uploadLocator.trim() };
-}
-
 function parseRemotePersonalHomeManifest(value: SystemTaskJsonValue | undefined): SystemTaskJsonObject {
   if (!isJsonObject(value)
     || value.format !== 'happier-personal-home-backup'
@@ -1051,11 +1240,17 @@ function parseRemotePersonalHomeBackupResult(value: SystemTaskJsonObject): Reado
   archiveBytes: number;
   manifest: SystemTaskJsonObject;
   homeNeedsAttention?: boolean;
+  cleanupRequired?: Readonly<{ kind: 'backup_staging'; path: string; error: string }>;
 }> {
+  const cleanupRequired = isJsonObject(value.cleanupRequired) ? value.cleanupRequired : null;
   if (typeof value.path !== 'string' || !value.path.trim()
     || typeof value.sha256 !== 'string' || !value.sha256.trim()
     || typeof value.archiveBytes !== 'number' || !Number.isSafeInteger(value.archiveBytes) || value.archiveBytes < 0
-    || (value.homeNeedsAttention !== undefined && typeof value.homeNeedsAttention !== 'boolean')) {
+    || (value.homeNeedsAttention !== undefined && typeof value.homeNeedsAttention !== 'boolean')
+    || (value.cleanupRequired !== undefined && (!cleanupRequired
+      || cleanupRequired.kind !== 'backup_staging'
+      || typeof cleanupRequired.path !== 'string' || !cleanupRequired.path.trim()
+      || typeof cleanupRequired.error !== 'string' || !cleanupRequired.error.trim()))) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home backup returned invalid archive facts.');
   }
   return {
@@ -1064,6 +1259,7 @@ function parseRemotePersonalHomeBackupResult(value: SystemTaskJsonObject): Reado
     archiveBytes: value.archiveBytes,
     manifest: parseRemotePersonalHomeManifest(value.manifest),
     ...(value.homeNeedsAttention === undefined ? {} : { homeNeedsAttention: value.homeNeedsAttention }),
+    ...(cleanupRequired ? { cleanupRequired: { kind: 'backup_staging' as const, path: String(cleanupRequired.path).trim(), error: String(cleanupRequired.error).trim() } } : {}),
   };
 }
 
@@ -1126,9 +1322,9 @@ async function promptRemotePersonalHomeApproval(
 }
 
 function parseRemotePersonalHomeEraseResult(value: SystemTaskJsonObject): SystemTaskJsonObject {
-  const allowed = new Set(['outcome', 'removedPaths', 'remainingOwnedPaths', 'remainingUnknownPaths', 'error']);
+  const allowed = new Set(['outcome', 'removedPaths', 'remainingOwnedPaths', 'remainingUnknownPaths', 'inspectionComplete', 'inspectionError', 'error']);
   if (Object.keys(value).some((key) => !allowed.has(key))
-    || (value.outcome !== 'completed' && value.outcome !== 'erased' && value.outcome !== 'partial')
+    || (value.outcome !== 'completed' && value.outcome !== 'completed_with_cleanup_attention' && value.outcome !== 'erased' && value.outcome !== 'partial')
     || !Array.isArray(value.removedPaths)
     || value.removedPaths.some((path) => typeof path !== 'string')) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home erase returned an invalid result.');

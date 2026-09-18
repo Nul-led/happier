@@ -7,7 +7,7 @@ import {
   PluginWebhookAutomationAdmissionUnresolvedV1Schema,
 } from '@happier-dev/protocol';
 
-import { processClaimedPluginWebhookDeliveryV1 } from './webhookDeliveryWorker';
+import { processClaimedPluginWebhookDeliveryV1 as processClaimedDelivery } from './webhookDeliveryWorker';
 import {
   readCurrentPluginWebhookInvocationReferenceV1,
   recordCurrentPluginWebhookAutomationAdmissionResultV1,
@@ -32,6 +32,18 @@ const content = {
     credentialVersionId: 'credential-1',
   },
 };
+
+// These existing worker cases supply an already-admitted plugin handler.
+// Canonical Action admission itself is exercised in webhookDeliveryAdmission.test.ts.
+function processClaimedPluginWebhookDeliveryV1(params: Parameters<typeof processClaimedDelivery>[0]) {
+  return processClaimedDelivery({
+    ...params,
+    execute: async (actionId, input, options) => {
+      await options!.beforeHandlerInvocation();
+      return params.execute(actionId, input, options);
+    },
+  });
+}
 
 describe('plugin webhook claimed delivery worker', () => {
   afterEach(() => {
@@ -124,7 +136,7 @@ describe('plugin webhook claimed delivery worker', () => {
     expect(execute).toHaveBeenCalledWith('acme.github/handle-webhook', expect.objectContaining({
       delivery: expect.objectContaining({ deliveryId: 'delivery-1', attempt: 1 }),
       request: expect.objectContaining({ rawBodyBase64: 'e30=' }),
-    }), { signal: expect.any(AbortSignal) });
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       deliveryId: 'delivery-1',
       lease: { leaseId: 'lease-1', revision: 8 },

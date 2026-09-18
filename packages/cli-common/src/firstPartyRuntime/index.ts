@@ -106,6 +106,7 @@ export type {
   ReleaseAssetBundle,
 } from './releaseAssetBundle.js';
 export { extractReleasePayloadRootFromArchive } from './extractReleasePayloadRootFromArchive.js';
+export { removeRuntimePayloadPath } from './copyRuntimePayloadTree.js';
 export {
   readEmbeddedPublicReleaseRingFromPath,
   writeEmbeddedPublicReleaseRingMarker,
@@ -162,6 +163,7 @@ export {
   relocateServerRuntimeArtifactClosure,
   resolveManagedServerRuntimePaths,
   resolveServerRuntimeExecutableNames,
+  resolveServerRuntimePrismaEngineFileName,
   resolveServerRuntimePayloadRootFromBinaryPath,
 } from './serverRuntimeArtifactLayout.js';
 export { readSqliteMigrationCatalog } from './sqliteMigrationCatalog.js';
@@ -183,6 +185,7 @@ export {
   installOrUpdateRelayRuntimeLocal,
   PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
   PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV,
+  RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS,
   uninstallRelayRuntimePayloadLocal,
   waitForRelayRuntimeStartupReceipt,
 } from './relayRuntimeInstall.js';
@@ -209,6 +212,7 @@ export type { PersonalHomeBootAdmissionBlockReason } from './personalHome/bootAd
 export {
   DEFAULT_PERSONAL_HOME_ORIGIN,
   DEFAULT_PERSONAL_HOME_PORT,
+  DEFAULT_PERSONAL_HOME_TEAM_NAME,
   assertPersonalHomeEnvironmentKeys,
   createPersonalHomeRuntimeSpec,
   parsePersonalHomeRuntimePurpose,
@@ -251,6 +255,7 @@ export { PersonalHomeOperationsError } from './personalHome/operations.js';
 export {
   assertPersonalHomeRelocationDestinationAllowsMaintenance,
   createPersonalHomeRelocationDestinationOwner,
+  parsePersonalHomeRelocationDestinationFacts,
   PersonalHomeRelocationDestinationError,
 } from './personalHome/relocationDestination.js';
 export type { PersonalHomeRelocationDestinationMaintenanceAdmission } from './personalHome/relocationDestination.js';
@@ -309,3 +314,18 @@ export type {
   PersonalHomeRelocationSourceCoordinatorParams,
   PersonalHomeRelocationSourceResult,
 } from './personalHome/relocationCoordinator.js';
+export {
+  HAPPIER_DESKTOP_PATH_MARKER_LINE,
+  HAPPIER_DESKTOP_WINDOWS_PATH_PROVENANCE_VARIABLE,
+  ensureHappierCliPathExposure,
+  parseWindowsUserEnvironmentSnapshot,
+  planWindowsUserPathExposure,
+  planWindowsUserPathRemoval,
+  removeHappierCliPathExposure,
+  renderHappierCliPathExportLine,
+  resolveHappierCliShellProfilePlan,
+} from './ensureHappierCliPathExposure.js';
+export type {
+  HappierCliPathExposureResult,
+  HappierCliPathRemovalResult,
+} from './ensureHappierCliPathExposure.js';

@@ -1,25 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createDaemonSessionHandoffMetadataBridge } from './createDaemonSessionHandoffMetadataBridge';
 import type { TrackedSession } from '../types';
 
 describe('createDaemonSessionHandoffMetadataBridge', () => {
-    const createdDirs: string[] = [];
-
-    afterEach(async () => {
-        await Promise.all(createdDirs.splice(0).map(async (directory) => {
-            await rm(directory, { recursive: true, force: true });
-        }));
-    });
-
-    it('reads the current machine id when loading local handoff metadata and exposes the persisted store lookup', async () => {
-        const activeServerDir = await mkdtemp(join(tmpdir(), 'daemon-handoff-bridge-'));
-        createdDirs.push(activeServerDir);
-
+    it('reads the current machine id when loading current tracked-session metadata', async () => {
         let currentMachineId = 'machine-initial';
         const trackedSession: TrackedSession = {
             startedBy: 'daemon',
@@ -44,56 +31,117 @@ describe('createDaemonSessionHandoffMetadataBridge', () => {
         const bridge = createDaemonSessionHandoffMetadataBridge({
             pidToTrackedSession: new Map([[trackedSession.pid, trackedSession]]),
             getMachineId: () => currentMachineId,
-            activeServerDir,
         });
 
         currentMachineId = 'machine-rotated';
 
-        await expect(bridge.loadLocalSessionMetadataForHandoff('sess-live-machine')).resolves.toEqual(
+        await expect(bridge.loadLocalSessionMetadataForHandoff('sess-live-machine')).resolves.toEqual({
+            exportMetadata: {
+                machineId: 'machine-rotated',
+                path: '/repo-source-current',
+                homeDir: homedir(),
+                flavor: 'claude',
+            },
+        });
+
+        expect(bridge).toEqual({
+            loadLocalSessionMetadataForHandoff: expect.any(Function),
+        });
+    });
+
+    it('matches provider-only handoff ids exactly while keeping Happier id normalization', async () => {
+        const opaqueVendorResumeId = ' provider-only-session\n';
+        const opaqueSpawnResumeId = '\tspawn-only-session ';
+        const providerOnlySession: TrackedSession = {
+            startedBy: 'daemon',
+            pid: 202,
+            vendorResumeId: opaqueVendorResumeId,
+            spawnOptions: {
+                directory: '/repo-provider-only',
+                backendTarget: {
+                    kind: 'backend',
+                    backendId: 'claude',
+                    sourceKind: 'built_in',
+                },
+                transcriptStorage: 'direct',
+                environmentVariables: {
+                    HOME: '/Users/target',
+                    CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+                },
+            },
+        };
+        const happierIdentifiedSession: TrackedSession = {
+            startedBy: 'daemon',
+            pid: 203,
+            happySessionId: 'happier-session-id',
+            happySessionMetadataFromLocalWebhook: {
+                machineId: 'machine-source',
+                path: '/repo-happier-id',
+                host: 'localhost',
+                homeDir: '/Users/target',
+                happyHomeDir: '/Users/target/.happier',
+                happyLibDir: '/Users/target/.happier/lib',
+                happyToolsDir: '/Users/target/.happier/tools',
+                flavor: 'claude',
+            },
+        };
+        const spawnResumeOnlySession: TrackedSession = {
+            startedBy: 'daemon',
+            pid: 204,
+            spawnOptions: {
+                directory: '/repo-spawn-resume-only',
+                backendTarget: {
+                    kind: 'backend',
+                    backendId: 'claude',
+                    sourceKind: 'built_in',
+                },
+                resume: opaqueSpawnResumeId,
+                transcriptStorage: 'direct',
+                environmentVariables: {
+                    HOME: '/Users/target',
+                    CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+                },
+            },
+        };
+        const bridge = createDaemonSessionHandoffMetadataBridge({
+            pidToTrackedSession: new Map([
+                [providerOnlySession.pid, providerOnlySession],
+                [happierIdentifiedSession.pid, happierIdentifiedSession],
+                [spawnResumeOnlySession.pid, spawnResumeOnlySession],
+            ]),
+            getMachineId: () => 'machine-current',
+        });
+        await expect(bridge.loadLocalSessionMetadataForHandoff(opaqueVendorResumeId)).resolves.toEqual(
             expect.objectContaining({
                 exportMetadata: expect.objectContaining({
-                    machineId: 'machine-rotated',
-                    path: '/repo-source-current',
-                    homeDir: '/Users/target',
-                    flavor: 'claude',
-                }),
-                runtimeLocalMetadata: expect.objectContaining({
-                    claudeSessionId: 'vendor-live-machine',
-                    externalSessionV1: expect.objectContaining({
-                        machineId: 'machine-rotated',
-                        remoteSessionId: 'vendor-live-machine',
-                    }),
+                    path: '/repo-provider-only',
                 }),
             }),
         );
-
-        await bridge.savePreparedTargetLocalMetadata({
-            remoteSessionId: 'remote-session-1',
-            exportMetadataOverlay: {
-                handoffV1: {
-                    v: 1,
-                    sourceMachineId: 'machine-source',
-                    targetMachineId: 'machine-rotated',
-                    providerId: 'claude',
-                    sessionStorageBefore: 'direct',
-                    sessionStorageAfter: 'direct',
-                    transportStrategy: 'direct_peer',
-                    completedAtMs: 1,
-                },
-            },
-        });
-
-        await expect(bridge.loadLocalHandoffMetadataByVendorResumeId('remote-session-1')).resolves.toEqual({
-            handoffV1: {
-                v: 1,
-                sourceMachineId: 'machine-source',
-                targetMachineId: 'machine-rotated',
-                providerId: 'claude',
-                sessionStorageBefore: 'direct',
-                sessionStorageAfter: 'direct',
-                transportStrategy: 'direct_peer',
-                completedAtMs: 1,
-            },
-        });
+        await expect(
+            bridge.loadLocalSessionMetadataForHandoff(opaqueVendorResumeId.trim()),
+        ).resolves.toBeNull();
+        await expect(bridge.loadLocalSessionMetadataForHandoff(' \n\t ')).resolves.toBeNull();
+        await expect(
+            bridge.loadLocalSessionMetadataForHandoff(opaqueSpawnResumeId),
+        ).resolves.toEqual(
+            expect.objectContaining({
+                exportMetadata: expect.objectContaining({
+                    path: '/repo-spawn-resume-only',
+                }),
+            }),
+        );
+        await expect(
+            bridge.loadLocalSessionMetadataForHandoff(opaqueSpawnResumeId.trim()),
+        ).resolves.toBeNull();
+        await expect(
+            bridge.loadLocalSessionMetadataForHandoff('  happier-session-id\n'),
+        ).resolves.toEqual(
+            expect.objectContaining({
+                exportMetadata: expect.objectContaining({
+                    path: '/repo-happier-id',
+                }),
+            }),
+        );
     });
 });

@@ -64,9 +64,9 @@ function platformName(platform: ManagedDependencyHostPlatform): DeclaredPlatform
 }
 
 function sourceVersion(source: V2Source): string | null {
-    return source.kind === 'managedPypiWheelAsset'
-        ? source.versionSpecifier
-        : null;
+    if (source.kind === 'managedPypiWheelAsset') return source.versionSpecifier;
+    if (source.kind === 'pinnedArchive') return source.version;
+    return null;
 }
 
 function normalizeSources(

@@ -1,4 +1,5 @@
 import type { CommandContext, CommandHandler } from './commandRegistry';
+import { argvBeforeOptionTerminator } from './commands/shared/argvFlags';
 
 export type FirstClassSessionCommandDescriptor = Readonly<{
   command: string;
@@ -11,7 +12,7 @@ export type FirstClassSessionCommandDescriptor = Readonly<{
 
 function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandler {
   return async (context: CommandContext) => {
-    if (context.args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
+    if (argvBeforeOptionTerminator(context.args.slice(1)).some((arg) => arg === '--help' || arg === '-h')) {
       const [
         { formatFirstClassSessionCommandHelp },
         { emitSessionHelp, inferSessionKind },
@@ -22,7 +23,7 @@ function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandle
       const command = context.args[0] ?? sessionPath[0] ?? 'session';
       await emitSessionHelp({
         help: formatFirstClassSessionCommandHelp({ command, sessionPath }),
-        json: context.args.includes('--json'),
+        json: argvBeforeOptionTerminator(context.args).includes('--json'),
         kind: inferSessionKind(sessionPath),
       });
       return;
@@ -31,6 +32,35 @@ function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandle
     await handleSessionCliCommand({
       ...context,
       args: ['session', ...sessionPath, ...context.args.slice(1)],
+    });
+  };
+}
+
+/**
+ * A first-class root whose canonical owner is a compiled Action command. It
+ * projects argv into that one owner — parser, help and Action invocation all
+ * come from the compiled descriptor, so the root spelling adds no grammar.
+ */
+function delegateToCompiledActionCliCommand(commandPath: readonly [string, ...string[]]): CommandHandler {
+  return async (context: CommandContext) => {
+    const [{ resolveAdmittedActionCliCommand }, { runCompiledActionCliCommand }] = await Promise.all([
+      import('./commandRegistry'),
+      import('./actions/executeCommand'),
+    ]);
+    // A first-class alias (currently `ls`) reaches the same handler as its
+    // canonical root. Preserve the spelling the user invoked so the registry
+    // selects that alias descriptor and help/JSON kinds describe the actual
+    // command, while both descriptors still execute the same Action.
+    const invokedRoot = context.args[0] ?? commandPath[0];
+    const argv = [invokedRoot, ...commandPath.slice(1), ...context.args.slice(1)];
+    const command = await resolveAdmittedActionCliCommand(argv);
+    if (!command) {
+      throw new Error(`No Action owns the command \`happier ${commandPath.join(' ')}\``);
+    }
+    await runCompiledActionCliCommand({
+      command,
+      argv,
+      ...(context.signal ? { signal: context.signal } : {}),
     });
   };
 }
@@ -50,14 +80,17 @@ export const FIRST_CLASS_SESSION_COMMANDS: readonly FirstClassSessionCommandDesc
     sessionPath: ['list'],
     rootHelpLabel: 'happier list [options]',
     rootHelpDescription: 'List sessions',
-    handler: delegateToSessionCommand(['list']),
+    handler: delegateToCompiledActionCliCommand(['list']),
   },
   {
     command: 'send',
     sessionPath: ['send'],
     rootHelpLabel: 'happier send <session> <message>',
     rootHelpDescription: 'Send a message to a session',
-    handler: delegateToSessionCommand(['send']),
+    // `session.message.send` owns this spelling; root dispatch resolves the
+    // compiled `send` alias directly, and this handler reaches the same owner
+    // for any caller that enters through the registry entry instead.
+    handler: delegateToCompiledActionCliCommand(['send']),
   },
   {
     command: 'history',
@@ -71,14 +104,14 @@ export const FIRST_CLASS_SESSION_COMMANDS: readonly FirstClassSessionCommandDesc
     sessionPath: ['wait'],
     rootHelpLabel: 'happier wait <session> [options]',
     rootHelpDescription: 'Wait for a session to become idle',
-    handler: delegateToSessionCommand(['wait']),
+    handler: delegateToCompiledActionCliCommand(['wait']),
   },
   {
     command: 'stop',
     sessionPath: ['stop'],
     rootHelpLabel: 'happier stop <session>',
     rootHelpDescription: 'Stop a session',
-    handler: delegateToSessionCommand(['stop']),
+    handler: delegateToCompiledActionCliCommand(['stop']),
   },
   {
     command: 'delegate',

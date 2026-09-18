@@ -13,16 +13,24 @@ import {
 } from '@/api/session/messageActionReference';
 import {
     createAccountScopedCryptoMaterialSnapshotV1,
+    EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
+    readServerEnabledBit,
+    type FeaturesResponse,
     sealAccountScopedBlobCiphertext,
-    ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1,
+    ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
+    type ActionOperationRevisionEphemeralV1,
     type ConnectedServiceExecutionAuthorityV1,
+    type ExternalSessionSourceUnavailableOccurrenceV1,
 } from '@happier-dev/protocol';
 import { fetchAccountProfile } from './accountProfile';
 import { fetchAccountEncryptionCurrentness } from './client/connectedServiceCredentialApi';
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { resolveMachineSessionInputAdmissionCapability } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
 import { createCurrentMachineExecutionOriginContextResolver } from './machine/resolveCurrentMachineExecutionOriginContext';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+
 import { MachineMetadata, DaemonState, Machine, Update, UpdateMachineBody } from './types';
 import type { SocketRpcCallResponse } from './types';
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
@@ -110,6 +118,9 @@ import {
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { changesRequireSavedSecretCatalogRefresh } from '@/settings/secrets/savedSecretCatalogChangeInvalidation';
 import {
     resolveServerHttpBaseUrl,
     resolveServerSocketIoTransports,
@@ -136,6 +147,7 @@ import type { AgentProviderCatalogObservationService } from '@/providers/probe/a
 import type { DaemonToServerEvents, ServerToDaemonEvents } from './machine/socketTypes';
 import {
     readAuthoritativeSessionDeletionChangeV1,
+    TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
 } from '@happier-dev/protocol/changes';
 import {
     registerMachineRpcHandlers,
@@ -173,6 +185,11 @@ import {
 import { createLoopbackReadinessProbe } from '@/api/connection/createLoopbackReadinessProbe';
 import { createMachineSocketTransport } from '@/api/machine/connection/createMachineSocketTransport';
 import {
+    CURRENT_SESSION_RUNTIME_OPERATION_PROTOCOL_CAPABILITIES_V1,
+    publishMachineOperationProtocolCapabilitiesOnSocket,
+} from '@/api/machine/publishMachineOperationProtocolCapabilities';
+import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
+import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/api/clientCompatibility/accountStoredContentActivation';
 import { readMachineOwnerConflictFromSocketError, type MachineOwnerConflictDetails } from '@/api/machine/machineOwnerConflict';
@@ -195,20 +212,22 @@ import {
 import {
     MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1,
     MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1,
-    MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
     SESSION_SERVER_START_DAEMON_RPC_METHOD_V1,
     SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
     SESSION_SERVER_START_INGRESS_EVENT_V1,
     MachineSessionTerminalCaptureResponseV1Schema,
     MachineSessionTerminalFinalizeResponseV1Schema,
-    MachineUpdateOperationProtocolCapabilitiesRequestV1Schema,
-    MachineUpdateOperationProtocolCapabilitiesResponseV1Schema,
     SessionPendingEnqueueByMachineRequestV1Schema,
     SessionPendingEnqueueByMachineResponseV1Schema,
+    SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2,
+    SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
+    SessionPendingExecutionRunEnqueueByMachineResponseV2Schema,
+    type SessionPendingExecutionRunEnqueueByMachineRequestV2,
     SessionServerStartDispatchResultV1Schema,
     SessionServerStartIngressRequestV1Schema,
     SessionServerStartIngressResponseV1Schema,
     type MachineOperationProtocolCapabilitiesV1,
+    ACCOUNT_STORED_CONTENT_SESSION_SPAWN_PLACEMENT_ORIGIN_PROTOCOL_VERSION,
     type MachineSessionTerminalAuthorityV1,
     type MachineSessionTerminalCaptureResponseV1,
     type MachineSessionTerminalFinalizeResponseV1,
@@ -219,6 +238,18 @@ import {
 } from '@happier-dev/protocol';
 
 export type AccountSettingsVersionHintSource = 'changes' | 'cursor-gone' | 'page-limit';
+
+export function emitActionOperationSnapshotV1(params: Readonly<{
+    socket: Pick<Socket<ServerToDaemonEvents, DaemonToServerEvents>, 'emit'> | null;
+    machineId: string;
+    ciphertext: string;
+}>): void {
+    params.socket?.emit(ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1, {
+        type: ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
+        machineId: params.machineId,
+        content: { t: 'encrypted', c: params.ciphertext },
+    });
+}
 
 const REQUIRED_MACHINE_CONTROL_RPC_METHODS = Object.freeze([
     RPC_METHODS.SPAWN_HAPPY_SESSION,
@@ -234,11 +265,17 @@ const MACHINE_CONTROL_RPC_REGISTRATION_TIMEOUT_MS = 10_000;
 // Published only after the authenticated Machine enqueue and exact target
 // settlement paths are both installed. The server uses this leaf as a strict
 // admission prerequisite, so absent/older daemons continue to fail closed.
-const CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1:
+export const CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1:
     MachineOperationProtocolCapabilitiesV1 = Object.freeze({
-        sessionInputAdmission: { protocolVersions: [1] },
-        sessionSpawn: { protocolVersions: [1] },
+        ...CURRENT_SESSION_RUNTIME_OPERATION_PROTOCOL_CAPABILITIES_V1,
+        // Ordinary and restricted Session construction always installs the exact
+        // Session/reconnect -> process Follow wake consumer. AccountChange adds
+        // completeness invalidation when its optional feed is enabled.
+        sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
+        sessionInputAdmission: { protocolVersions: [1, 2] as const },
+        sessionSpawn: { protocolVersions: [1, 2] as const },
         pluginWebhookClaim: { protocolVersions: [1] },
+        externalActionExecutionAuthorization: { protocolVersions: [1] },
     });
 
 export type AccountSettingsVersionHintNotification = Readonly<{
@@ -286,6 +323,11 @@ export type SessionAccessResetNotification = Readonly<{
     cursor: number;
 }>;
 
+export type ManagedProviderRetainedCurrentnessInvalidation = Readonly<{
+    source: 'connect' | 'reconnect' | 'changes' | 'page-limit' | 'cursor-gone';
+    signal: AbortSignal;
+}>;
+
 export type ConnectedServicesProjectionNotification = Readonly<{
     source: AccountSettingsVersionHintSource | 'startup' | 'reconnect' | 'live';
     executionAuthority: ConnectedServiceExecutionAuthorityV1;
@@ -297,6 +339,7 @@ export type ConnectedServicesProjectionNotification = Readonly<{
 export type ApiMachineClientLifecycleDependencies = Readonly<{
     isDaemonQuiescing?: () => boolean;
     requireCurrentAccountStoredContentCompatibility?: () => Promise<void>;
+    resolveServerFeaturesSnapshot?: () => Promise<Awaited<ReturnType<typeof fetchServerFeaturesSnapshot>> | undefined>;
     createCapabilitiesApiClient?: MachineRpcHandlerDeps['createCapabilitiesApiClient'];
     /** Test seam for the canonical Resource lifecycle owner. */
     resourceSessionLifecycle?: Pick<
@@ -381,6 +424,9 @@ export class ApiMachineClient {
     private sessionAccessResetListeners = new Set<(
         change: SessionAccessResetNotification,
     ) => void | Promise<void>>();
+    private managedProviderRetainedCurrentnessListeners = new Set<(
+        change: ManagedProviderRetainedCurrentnessInvalidation,
+    ) => void | Promise<void>>();
     private connectedServicesProjectionListener: ((notification: ConnectedServicesProjectionNotification) => void | Promise<void>) | null = null;
     private machineTransferListeners = new Set<(payload: MachineTransferReceiveEnvelope) => void>();
     private transferRelayV2Listeners = new Set<(payload: TransferRelayV2SendEnvelope) => void>();
@@ -403,10 +449,15 @@ export class ApiMachineClient {
         'activatePurposeBindings' | 'listActionFormConnectedAccountOptions'
     > | null = null;
     private sessionSpawnV1OutcomeRequired = false;
+    private externalActionExecutionAuthorizationV1OutcomeRequired = false;
     private currentIrohMachineEndpointId: string | null = null;
+    /** Reflects only an installed provider-broker application handler; the
+     * composition root owns the fact, this client only publishes it. */
+    private providerBrokerIngressAdvertised = false;
     private agentCatalogObservation: AgentProviderCatalogObservationService | null = null;
     private activeTransportGeneration = 0;
     private advertisedOperationProtocolCapabilitiesGeneration: number | null = null;
+    private machineControlReadinessFailureGeneration: number | null = null;
     private machineControlRunningGeneration: number | null = null;
     private machineControlReadinessPublication: Readonly<{
         generation: number;
@@ -514,7 +565,7 @@ export class ApiMachineClient {
         this.rpcHandlerManager.replayUnacknowledgedHandlerRegistrations();
 
         const promise = (async () => {
-            const capabilities = this.currentMachineOperationProtocolCapabilities();
+            const capabilities = await this.resolveCurrentMachineOperationProtocolCapabilitiesForPublication();
             if (
                 capabilities !== null
                 && this.advertisedOperationProtocolCapabilitiesGeneration !== transportGeneration
@@ -576,6 +627,27 @@ export class ApiMachineClient {
             && this.currentConnectionState.lastConnectedAt === state.lastConnectedAt
             && this.currentConnectionState.lastDisconnectedAt === state.lastDisconnectedAt
             && this.currentConnectionState.lastErrorMessage === state.lastErrorMessage;
+    }
+
+    private reportMachineControlReadinessPublicationFailure(params: Readonly<{
+        socket: Socket<ServerToDaemonEvents, DaemonToServerEvents>;
+        transportGeneration: number;
+    }>): void {
+        if (
+            this.socket !== params.socket
+            || params.socket.connected !== true
+            || this.activeTransportGeneration !== params.transportGeneration
+            || this.machineControlReadinessFailureGeneration === params.transportGeneration
+        ) return;
+        const supervisor = this.connectionSupervisor;
+        const scope = supervisor?.captureProbeReportScope?.();
+        if (!supervisor?.reportProbeResult || !scope) return;
+        this.machineControlReadinessFailureGeneration = params.transportGeneration;
+        supervisor.reportProbeResult({
+            status: 'retry_later',
+            reason: 'probe_failed',
+            errorMessage: 'Machine capability publication did not establish readiness',
+        }, scope);
     }
 
     private isActiveTransportGeneration(generation: number): boolean {
@@ -655,10 +727,15 @@ export class ApiMachineClient {
                 if (!socket) {
                     return;
                 }
+                const transportGeneration = this.activeTransportGeneration;
                 void this.publishMachineControlReadinessWhenReady({
                     socket,
-                    transportGeneration: this.activeTransportGeneration,
+                    transportGeneration,
                     timeoutMs: 0,
+                }).then((result) => {
+                    if (result.readiness.status === 'ready' && !result.ready) {
+                        this.reportMachineControlReadinessPublicationFailure({ socket, transportGeneration });
+                    }
                 });
             },
         });
@@ -680,8 +757,8 @@ export class ApiMachineClient {
                             payload: snapshot,
                             randomBytes: (length) => new Uint8Array(randomBytes(length)),
                         });
-                        this.socket?.emit(ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1, {
-                            v: 1,
+                        emitActionOperationSnapshotV1({
+                            socket: this.socket,
                             machineId: this.machine.id,
                             ciphertext,
                         });
@@ -708,7 +785,6 @@ export class ApiMachineClient {
         const resolveCurrentMachineExecutionOriginContext = createCurrentMachineExecutionOriginContextResolver({
             serverUrl: configuration.serverUrl,
             resolveCurrentMachineId: () => this.machine.id,
-            timeoutMs: 1_500,
         });
         registerSessionHandlers(this.rpcHandlerManager, this.machineRpcWorkingDirectory, {
             accessPolicy: this.filesystemAccessPolicy,
@@ -739,10 +815,10 @@ export class ApiMachineClient {
             },
             daemonContributionRegistryProjection: {
                 observePluginExecution: this.actionOperationRuntime.observePluginExecution,
-                resolveServerFeaturesSnapshot: async () => await fetchServerFeaturesSnapshot({
-                    serverUrl: configuration.serverUrl,
-                    timeoutMs: 1_500,
-                }),
+                resolveServerFeaturesSnapshot: async () => (
+                    await this.lifecycleDependencies.resolveServerFeaturesSnapshot?.()
+                    ?? await fetchServerFeaturesSnapshot({ serverUrl: configuration.serverUrl })
+                ),
                 resolvePluginProjectionExecutionOriginContext: async () =>
                     await resolveCurrentMachineExecutionOriginContext(),
                 resolveMessageActionReference: async ({ reference, signal }) => {
@@ -871,7 +947,6 @@ export class ApiMachineClient {
         stopSession,
         isSessionActive,
         loadLocalSessionMetadata,
-        savePreparedTargetLocalMetadata,
         requestShutdown,
         memory,
         daemonServerWorkScheduler,
@@ -884,7 +959,16 @@ export class ApiMachineClient {
     }: MachineRpcHandlers, deps?: Omit<MachineRpcHandlerDeps, 'externalAction'> & Readonly<{
         externalActionIngressOwner?: ExternalActionIngressOwner;
     }>): MachineRpcLifecycleRegistration {
+        const tokenPayload = decodeJwtPayload(this.token);
+        const executionRunRuntimeAccountId = typeof tokenPayload?.sub === 'string' && tokenPayload.sub.trim()
+            ? tokenPayload.sub.trim()
+            : undefined;
+        const actionsSettingsProvider = deps?.actionsSettingsProvider ?? createActionSettingsProvider({
+            scopeKey: resolveAccountSettingsScopeKeyForToken(this.token),
+        });
         this.sessionSpawnV1OutcomeRequired = sessionSpawnV1OutcomeRequired === true;
+        this.externalActionExecutionAuthorizationV1OutcomeRequired =
+            deps?.externalActionIngressOwner?.externalActionMachineRequestPrivateKey !== undefined;
         this.agentCatalogObservation = deps?.agentCatalogObservation ?? null;
         const machineRpcLifecycleRegistration = registerMachineRpcHandlers({
             rpcHandlerManager: this.rpcHandlerManager,
@@ -897,7 +981,6 @@ export class ApiMachineClient {
                 stopSession,
                 ...(isSessionActive ? { isSessionActive } : {}),
                 ...(loadLocalSessionMetadata ? { loadLocalSessionMetadata } : {}),
-                ...(savePreparedTargetLocalMetadata ? { savePreparedTargetLocalMetadata } : {}),
                 requestShutdown,
                 ...(memory ? { memory } : {}),
                 ...(daemonServerWorkScheduler ? { daemonServerWorkScheduler } : {}),
@@ -910,6 +993,8 @@ export class ApiMachineClient {
             },
             deps: {
                 ...deps,
+                actionsSettingsProvider,
+                ...(executionRunRuntimeAccountId ? { executionRunRuntimeAccountId } : {}),
                 ...(deps?.externalActionIngressOwner
                     ? {
                         externalAction: {
@@ -992,6 +1077,34 @@ export class ApiMachineClient {
                 options?.signal ? { signal: options.signal } : undefined,
             ),
         };
+    }
+
+    /** Host-private exact-daemon Action transport; local context never reaches Socket.IO. */
+    async invokeLocalMachineAction(
+        method: string,
+        request: unknown,
+        options?: Readonly<{
+            signal?: AbortSignal;
+            executionRunPermissionRequestStore?: unknown;
+            executionRunWorkflowObservationSink?: unknown;
+        }>,
+    ): Promise<unknown> {
+        return await this.rpcHandlerManager.invokeLocal(method, request, {
+            ...(options?.signal ? { signal: options.signal } : {}),
+            ...(options?.executionRunPermissionRequestStore === undefined
+                && options?.executionRunWorkflowObservationSink === undefined
+                ? {}
+                : {
+                    localActionContext: {
+                        ...(options?.executionRunPermissionRequestStore === undefined
+                            ? {}
+                            : { executionRunPermissionRequestStore: options.executionRunPermissionRequestStore }),
+                        ...(options?.executionRunWorkflowObservationSink === undefined
+                            ? {}
+                            : { executionRunWorkflowObservationSink: options.executionRunWorkflowObservationSink }),
+                    },
+                }),
+        });
     }
 
     registerLocalServicesPreviewRoutes(localServicesPreview: LocalServicePreviewRoutes): void {
@@ -1155,6 +1268,25 @@ export class ApiMachineClient {
         change: SessionAccessResetNotification,
     ): Promise<void> {
         for (const listener of this.sessionAccessResetListeners) {
+            await Promise.resolve(listener(change));
+        }
+    }
+
+    onManagedProviderRetainedCurrentnessInvalidation(
+        listener: (
+            change: ManagedProviderRetainedCurrentnessInvalidation,
+        ) => void | Promise<void>,
+    ): () => void {
+        this.managedProviderRetainedCurrentnessListeners.add(listener);
+        return () => {
+            this.managedProviderRetainedCurrentnessListeners.delete(listener);
+        };
+    }
+
+    private async notifyManagedProviderRetainedCurrentnessInvalidation(
+        change: ManagedProviderRetainedCurrentnessInvalidation,
+    ): Promise<void> {
+        for (const listener of this.managedProviderRetainedCurrentnessListeners) {
             await Promise.resolve(listener(change));
         }
     }
@@ -1335,6 +1467,13 @@ export class ApiMachineClient {
         this.socket.emit('external-session-transcript-invalidated', payload);
     }
 
+    emitExternalSessionSourceUnavailableOccurrence(
+        payload: ExternalSessionSourceUnavailableOccurrenceV1,
+    ): void {
+        if (!this.socket) return;
+        this.socket.emit(EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1, payload);
+    }
+
     async executeExternalSessionHistoricalImportCommand(
         command: ExternalSessionOperationSocketCommandV1,
     ): Promise<ExternalSessionOperationSocketResponseV1> {
@@ -1499,7 +1638,7 @@ export class ApiMachineClient {
     }
 
     async enqueueSessionPendingByMachine(
-        request: SessionPendingEnqueueByMachineRequestV1,
+        request: SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2,
         options?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<SessionInputAdmissionResultV1> {
         if (options?.signal?.aborted) {
@@ -1512,15 +1651,29 @@ export class ApiMachineClient {
                 code: 'session_input_target_unavailable',
             };
         }
-        const payload = SessionPendingEnqueueByMachineRequestV1Schema.parse(request);
+        const payload = request.v === 2
+            ? SessionPendingExecutionRunEnqueueByMachineRequestV2Schema.parse(request)
+            : SessionPendingEnqueueByMachineRequestV1Schema.parse(request);
         try {
-            const raw = await emitSocketWithAck({
-                socket,
-                event: SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
-                payload,
-                ...(options?.signal ? { signal: options.signal } : {}),
-            });
-            const parsed = SessionPendingEnqueueByMachineResponseV1Schema.safeParse(raw);
+            // Keep the Socket.IO event and payload correlated for each protocol
+            // version. Passing their unions through the generic ACK helper loses
+            // that relationship and makes the real typed Machine socket invalid.
+            const raw = payload.v === 2
+                ? await emitSocketWithAck({
+                    socket,
+                    event: SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2,
+                    payload,
+                    ...(options?.signal ? { signal: options.signal } : {}),
+                })
+                : await emitSocketWithAck({
+                    socket,
+                    event: SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
+                    payload,
+                    ...(options?.signal ? { signal: options.signal } : {}),
+                });
+            const parsed = payload.v === 2
+                ? SessionPendingExecutionRunEnqueueByMachineResponseV2Schema.safeParse(raw)
+                : SessionPendingEnqueueByMachineResponseV1Schema.safeParse(raw);
             return parsed.success
                 ? parsed.data.result
                 : {
@@ -1607,28 +1760,26 @@ export class ApiMachineClient {
         socket: Socket<ServerToDaemonEvents, DaemonToServerEvents>,
         capabilities: MachineOperationProtocolCapabilitiesV1,
     ): Promise<number> {
-        const request = MachineUpdateOperationProtocolCapabilitiesRequestV1Schema.parse({
+        return await publishMachineOperationProtocolCapabilitiesOnSocket({
+            socket,
             machineId: this.machine.id,
             capabilities,
         });
-        const raw = await emitSocketWithAck({
-            socket,
-            event: MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
-            payload: request,
-        });
-        const response = MachineUpdateOperationProtocolCapabilitiesResponseV1Schema.parse(raw);
-        if (response.result !== 'success') {
-            throw new Error(`Machine operation protocol capability update failed: ${response.code}`);
-        }
-        return response.revision;
     }
 
     private currentMachineOperationProtocolCapabilities(
         includeSessionCapabilities = true,
     ): MachineOperationProtocolCapabilitiesV1 | null {
+        const {
+            externalActionExecutionAuthorization: _externalActionExecutionAuthorization,
+            ...sessionCapabilities
+        } = CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1;
         const capabilities: MachineOperationProtocolCapabilitiesV1 = {
             ...(includeSessionCapabilities && this.sessionSpawnV1OutcomeRequired
-                ? CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1
+                ? sessionCapabilities
+                : {}),
+            ...(this.externalActionExecutionAuthorizationV1OutcomeRequired
+                ? { externalActionExecutionAuthorization: { protocolVersions: [1] } }
                 : {}),
             ...(this.currentIrohMachineEndpointId
                 ? {
@@ -1638,8 +1789,63 @@ export class ApiMachineClient {
                     },
                 }
                 : {}),
+            ...(this.providerBrokerIngressAdvertised
+                ? { providerBrokerIngress: { protocolVersions: [1] } }
+                : {}),
         };
         return Object.keys(capabilities).length > 0 ? capabilities : null;
+    }
+
+    private async resolveCurrentMachineOperationProtocolCapabilitiesForPublication(
+        includeSessionCapabilities = true,
+        currentServerFeatures?: FeaturesResponse,
+    ): Promise<MachineOperationProtocolCapabilitiesV1 | null> {
+        let capabilities = this.currentMachineOperationProtocolCapabilities(includeSessionCapabilities);
+        if (!capabilities) return null;
+
+        // The Home's resolved server feature bit is both product enablement and
+        // proof that its strict Machine projection accepts this new leaf. Older,
+        // malformed, disabled, or dependency-disabled Homes therefore keep the
+        // handler installed locally but receive no incompatible advertisement.
+        const snapshot = currentServerFeatures
+            ? { status: 'ready' as const, features: currentServerFeatures }
+            : await this.lifecycleDependencies.resolveServerFeaturesSnapshot?.();
+        if (
+            capabilities.providerBrokerIngress
+            && (
+                snapshot?.status !== 'ready'
+                || readServerEnabledBit(snapshot.features, 'teams.credentialResources') !== true
+            )
+        ) {
+            const { providerBrokerIngress: _providerBrokerIngress, ...compatibleCapabilities } = capabilities;
+            capabilities = Object.keys(compatibleCapabilities).length > 0
+                ? compatibleCapabilities
+                : null;
+        }
+        if (!capabilities) return null;
+        if (!capabilities?.sessionSpawn) return capabilities;
+
+        // Capability publication consumes only the daemon-wide cache supplied by
+        // composition. Absence is unknown and must not trigger a per-publication
+        // feature request or advertise a target route an older server cannot own.
+        const sessionInputAdmission = resolveMachineSessionInputAdmissionCapability(snapshot);
+        const requirements = snapshot?.status === 'ready'
+            ? snapshot.features.capabilities.accountStoredContentCompatibility
+            : undefined;
+        const negotiatedCapabilities = {
+            ...capabilities,
+            sessionInputAdmission,
+        };
+        if (
+            !requirements
+            || requirements.currentProtocolVersion
+                < ACCOUNT_STORED_CONTENT_SESSION_SPAWN_PLACEMENT_ORIGIN_PROTOCOL_VERSION
+        ) return negotiatedCapabilities;
+
+        return {
+            ...negotiatedCapabilities,
+            sessionSpawnPlacementOrigin: { protocolVersions: [1] },
+        };
     }
 
     private async synchronizeIrohMachineEndpointAuthority(
@@ -1652,15 +1858,51 @@ export class ApiMachineClient {
 
         const socket = this.socket;
         if (!socket || socket.connected !== true) return;
-        const capabilities = this.currentMachineOperationProtocolCapabilities(
-            this.machineControlRunningGeneration === this.activeTransportGeneration,
-        ) ?? {};
+        // The server stores this as a replace-all projection. Endpoint changes
+        // therefore have to republish the complete capability set; publishing
+        // only the endpoint while readiness is still being established would
+        // silently withdraw session and plugin capabilities.
+        const capabilities = await this.resolveCurrentMachineOperationProtocolCapabilitiesForPublication() ?? {};
         try {
             await this.publishOperationProtocolCapabilitiesOnSocket(socket, capabilities);
         } catch (error) {
             this.currentIrohMachineEndpointId = previousEndpointId;
             throw error;
         }
+        if (this.socket === socket && socket.connected === true) {
+            this.advertisedOperationProtocolCapabilitiesGeneration = this.activeTransportGeneration;
+        }
+    }
+
+    /**
+     * Publishes or withdraws the broker application capability. The composition
+     * root calls this only when the exact provider-broker application handler
+     * is installed; absence keeps the leaf withdrawn so every Machine stays
+     * ineligible as a broker (fail closed).
+     */
+    async setProviderBrokerIngressLive(live: boolean): Promise<void> {
+        if (this.providerBrokerIngressAdvertised === live) return;
+        const previous = this.providerBrokerIngressAdvertised;
+        this.providerBrokerIngressAdvertised = live;
+        try {
+            await this.refreshProviderBrokerIngressAdvertisement();
+        } catch (error) {
+            this.providerBrokerIngressAdvertised = previous;
+            throw error;
+        }
+    }
+
+    /** Re-evaluates Home support after the canonical feature snapshot changes. */
+    async refreshProviderBrokerIngressAdvertisement(currentServerFeatures?: FeaturesResponse): Promise<void> {
+        const socket = this.socket;
+        if (!socket || socket.connected !== true) return;
+        // Replace-all projection: republish the complete capability set so the
+        // broker leaf change never withdraws session or endpoint capabilities.
+        const capabilities = await this.resolveCurrentMachineOperationProtocolCapabilitiesForPublication(
+            true,
+            currentServerFeatures,
+        ) ?? {};
+        await this.publishOperationProtocolCapabilitiesOnSocket(socket, capabilities);
         if (this.socket === socket && socket.connected === true) {
             this.advertisedOperationProtocolCapabilitiesGeneration = this.activeTransportGeneration;
         }
@@ -1987,6 +2229,17 @@ export class ApiMachineClient {
                                         transportGeneration,
                                         timeoutMs: MACHINE_CONTROL_RPC_REGISTRATION_TIMEOUT_MS,
                                     });
+                            }
+                            if (
+                                registrationResult.readiness.status === 'ready'
+                                && !registrationResult.ready
+                                && isCurrentTransport()
+                            ) {
+                                this.reportMachineControlReadinessPublicationFailure({
+                                    socket,
+                                    transportGeneration,
+                                });
+                                return;
                             }
                             if (
                                 registrationResult.readiness.status === 'timeout'
@@ -2491,6 +2744,32 @@ export class ApiMachineClient {
         lifecycle.applyResourceSessionAccessWitness(params);
     }
 
+    /**
+     * Synchronizes the Account-scoped Saved Secret catalog through its one
+     * feature decision. Shared Saved Secrets belong to Teams itself; the
+     * narrower credential-resource product is not their activation owner.
+     */
+    private async synchronizeSavedSecretCatalog(signal: AbortSignal): Promise<void> {
+        let snapshot: Awaited<ReturnType<NonNullable<
+            ApiMachineClientLifecycleDependencies['resolveServerFeaturesSnapshot']
+        >>> | undefined;
+        try {
+            snapshot = await this.lifecycleDependencies.resolveServerFeaturesSnapshot?.();
+        } catch (error) {
+            signal.throwIfAborted();
+            logger.debug('[API MACHINE] Saved Secret feature decision unavailable; withdrawing shared catalog', {
+                message: error instanceof Error ? error.message : String(error),
+            });
+            snapshot = undefined;
+        }
+        signal.throwIfAborted();
+        await hydrateSavedSecretCatalog({
+            token: this.token,
+            serverFeatures: snapshot?.status === 'ready' ? snapshot.features : null,
+            signal,
+        });
+    }
+
     private async syncChangesOnConnect(
         opts: { reason: 'connect' | 'reconnect' | 'live' },
         signal: AbortSignal = new AbortController().signal,
@@ -2499,6 +2778,7 @@ export class ApiMachineClient {
         const executionAuthority = opts.reason === 'live'
             ? 'runtime_recovery' as const
             : 'passive_projection' as const;
+        const requestSupervisionScope = this.connectionSupervisor?.captureProbeReportScope?.();
         signal.throwIfAborted();
         if (opts.reason !== 'live') {
             try {
@@ -2511,6 +2791,7 @@ export class ApiMachineClient {
                     supervisor: this.connectionSupervisor,
                     error,
                     hadAuth: true,
+                    scope: requestSupervisionScope,
                 })) {
                     return;
                 }
@@ -2539,6 +2820,7 @@ export class ApiMachineClient {
         signal.throwIfAborted();
 
         if (result.status === 'cursor-gone') {
+            publishSessionFollowWakeInvalidation();
             this.applyResourceSessionAccessWitness({ accountId });
             signal.throwIfAborted();
             await this.notifySessionAccessReset({ cursor: result.currentCursor });
@@ -2555,6 +2837,13 @@ export class ApiMachineClient {
             });
             await this.reconcileConnectedServicesProjection({ source: 'cursor-gone', executionAuthority }, signal);
             signal.throwIfAborted();
+            await this.synchronizeSavedSecretCatalog(signal);
+            signal.throwIfAborted();
+            await this.notifyManagedProviderRetainedCurrentnessInvalidation({
+                source: 'cursor-gone',
+                signal,
+            });
+            signal.throwIfAborted();
             await writeAccountChangesCursor(accountId, result.currentCursor);
             signal.throwIfAborted();
             return;
@@ -2564,6 +2853,7 @@ export class ApiMachineClient {
                 supervisor: this.connectionSupervisor,
                 error: result.error,
                 hadAuth: true,
+                scope: requestSupervisionScope,
             })) {
                 return;
             }
@@ -2586,6 +2876,9 @@ export class ApiMachineClient {
         }
 
         const changes = result.response.changes;
+        if (opts.reason !== 'live' || changes.length >= CHANGES_PAGE_LIMIT || changes.some((change) => change.kind === 'session')) {
+            publishSessionFollowWakeInvalidation();
+        }
         const nextCursor = result.response.nextCursor;
         this.applyResourceSessionAccessWitness({
             accountId,
@@ -2615,6 +2908,11 @@ export class ApiMachineClient {
                 && !Array.isArray(hint)
                 && (hint as { connectedServices?: unknown }).connectedServices === true;
         });
+        const hasSavedSecretCatalogChange = changesRequireSavedSecretCatalogRefresh(changes);
+        const hasTeamChange = changes.some((change) => (
+            change.kind === 'account'
+            && change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1
+        ));
         const pendingActivationHints = changes.flatMap((change): PendingSessionActivationHintNotification[] => {
             if (change.kind !== 'session') return [];
             const hint = asRecord(change.hint);
@@ -2692,6 +2990,10 @@ export class ApiMachineClient {
                 executionAuthority,
             }, signal);
         }
+        if (opts.reason !== 'live' || hasSavedSecretCatalogChange || changes.length >= CHANGES_PAGE_LIMIT) {
+            await this.synchronizeSavedSecretCatalog(signal);
+            signal.throwIfAborted();
+        }
         for (const activationHint of pendingActivationHints) {
             signal.throwIfAborted();
             await this.notifyPendingSessionActivationHint(activationHint);
@@ -2712,6 +3014,22 @@ export class ApiMachineClient {
             await this.notifySessionAccessRevoked({
                 sessionId: entry.sessionId,
                 cursor: entry.cursor,
+            });
+        }
+
+        if (
+            opts.reason !== 'live'
+            || changes.length >= CHANGES_PAGE_LIMIT
+            || hasTeamChange
+            || hasConnectedServicesChange
+            || hasSavedSecretCatalogChange
+        ) {
+            signal.throwIfAborted();
+            await this.notifyManagedProviderRetainedCurrentnessInvalidation({
+                source: changes.length >= CHANGES_PAGE_LIMIT
+                    ? 'page-limit'
+                    : opts.reason === 'live' ? 'changes' : opts.reason,
+                signal,
             });
         }
 

@@ -67,6 +67,8 @@ describe('Vitest lane separation', () => {
 
         const unitWrapper = packageJson.scripts?.['test:unit'];
         const unitLocal = packageJson.scripts?.['test:unit:local'];
+        const unitVitestWrapper = packageJson.scripts?.['test:unit:vitest'];
+        const unitVitestLocal = packageJson.scripts?.['test:unit:vitest:local'];
         const integrationWrapper = packageJson.scripts?.['test:integration'];
         const integrationLocal = packageJson.scripts?.['test:integration:local'];
         const slowWrapper = packageJson.scripts?.['test:slow'];
@@ -80,8 +82,10 @@ describe('Vitest lane separation', () => {
         ].join('\n');
 
         expect(unitWrapper).toContain('--script=test:unit:local');
-        expect(unitLocal).toContain(
-            'vitest run --config vitest.config.ts',
+        expect(unitLocal).toContain('test:unit:vitest:local');
+        expect(unitVitestWrapper).toContain('--script=test:unit:vitest:local');
+        expect(unitVitestLocal).toContain(
+            'node scripts/runVitestShards.mjs --config vitest.config.ts',
         );
         expect(unitLocal).toContain('test:import-cycles');
         expect(unitLocal).toContain('node --test scripts/prepack-script.test.mjs scripts/stageManagedRuntimeArchives.test.mjs');

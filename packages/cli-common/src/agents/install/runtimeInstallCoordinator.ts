@@ -1,5 +1,5 @@
 import type { InstallAgentCliResult, AgentCliInstallIntent, AgentCliInstallPlan } from '../install.js';
-import { type AgentCliRuntimeDescriptor } from '../resolution.js';
+import { type AgentCliRuntimeDescriptor, type AgentCliSourcePolicy } from '../resolution.js';
 import type { ManagedInstallDeps } from './managedInstall.js';
 import {
     createRuntimeInstallLifecycleContext,
@@ -18,8 +18,11 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
     skipIfInstalled?: boolean;
     intent?: AgentCliInstallIntent;
     allowVendorRecipeExecution?: boolean;
+    sourcePolicy?: AgentCliSourcePolicy;
+    signal?: AbortSignal;
     deps: ManagedInstallDeps;
 }>): Promise<InstallAgentCliResult> {
+    params.signal?.throwIfAborted();
     const { runtimeSpec, plan, env } = params;
 
     const preflight = runRuntimeInstallPreflight({
@@ -30,6 +33,7 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
         skipIfInstalled: params.skipIfInstalled,
         intent: params.intent,
         allowVendorRecipeExecution: params.allowVendorRecipeExecution,
+        sourcePolicy: params.sourcePolicy,
     });
     if (preflight.kind === 'return') {
         return preflight.result;
@@ -49,8 +53,10 @@ export async function runRuntimeInstallCoordinator(params: Readonly<{
             env,
             lifecycleContext,
             deps: params.deps,
+            signal: params.signal,
         });
     } catch (error) {
+        params.signal?.throwIfAborted();
         return buildRuntimeInstallFailureResult({ error, plan, lifecycleContext });
     } finally {
         await disposeRuntimeInstallLifecycleContext(lifecycleContext);

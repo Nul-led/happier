@@ -1,18 +1,47 @@
+import { randomBytes } from 'node:crypto';
+
 import {
   prepareExternalActionResponseEnvelopeV1,
   ExternalActionActionIdV1Schema,
-  ExternalActionRequestEnvelopeV1Schema,
+  ExternalActionExecutionAuthorizationV1Schema,
+  ExternalActionRequestEnvelopeSchema,
+  computeExternalActionRequestEnvelopeDigestV1,
+  externalActionTargetsEqualV1,
+  isExternalActionRequestWithinLimit,
+  openExternalActionRequestV2,
+  SIGNED_ROOT_ACTION_OUTPUT_SCHEMAS,
+  prepareExternalActionResponseV2,
   PublicActionIdSchema,
+  SignedRootActionIdSchema,
   projectExternalActionExecutionResultV1,
+  readExternalActionProtectedRequestId,
+  signExternalActionApprovalInputV1,
   type ActionExecuteResult,
   type ActionExecutorContext,
   type ExternalActionResponseEnvelopeV1,
   type ExternalActionTargetV1,
-  type PreparedExternalActionResponseEnvelopeV1,
-  type PublicActionId,
+  type PreparedExternalActionResponseEnvelope,
+  type ExternalActionEncryptionBindingV2,
+  type ExternalActionExecutionAuthorizationV1,
+  type SignedRootActionId,
 } from '@happier-dev/protocol/actions';
 
 import { reconcileExternalActionTarget } from './reconcileExternalActionTarget';
+
+type PublicOutputValidationResult =
+  | Readonly<{ success: true; data: unknown }>
+  | Readonly<{ success: false }>;
+
+type PublicOutputRuntimeSchema = Readonly<{
+  safeParse(value: unknown): PublicOutputValidationResult;
+}>;
+
+// The generated map retains exact per-Action result types for SDK consumers.
+// This transport needs only its shared runtime parser contract; erasing the
+// per-key generic here avoids asking TypeScript to instantiate the complete
+// public Action result cross-product for one dynamic Action id.
+const SIGNED_ROOT_ACTION_OUTPUT_RUNTIME_SCHEMAS: Readonly<Record<SignedRootActionId, PublicOutputRuntimeSchema>> =
+  SIGNED_ROOT_ACTION_OUTPUT_SCHEMAS;
 
 export type ExternalActionPrincipal =
   | Readonly<{
@@ -27,7 +56,7 @@ export type ExternalActionPrincipal =
 
 export type ExternalActionExecutor = Readonly<{
   execute: (
-    actionId: PublicActionId,
+    actionId: SignedRootActionId,
     input: unknown,
     context?: ActionExecutorContext,
   ) => Promise<ActionExecuteResult>;
@@ -38,23 +67,30 @@ export type ExternalActionExecutor = Readonly<{
  * canonical Action executor runs. `null` means this daemon must not execute it.
  */
 export type ResolveExternalActionTarget = (input: Readonly<{
-  actionId: PublicActionId;
+  actionId: SignedRootActionId;
   target: ExternalActionTargetV1 | undefined;
   currentMachineId: string;
   signal?: AbortSignal;
 }>) => Promise<ExternalActionTargetV1 | null>;
 
+/** Existing daemon credential and stable Home identity, resolved at invocation. */
+export type ResolveExternalActionEncryption = (signal?: AbortSignal) => Promise<Readonly<{
+  serverIdentityId: string;
+  material: Readonly<{ type: 'dataKey'; machineKey: Uint8Array }>;
+}> | null>;
+
 export type ExecuteExternalActionResult = Readonly<
   | {
     kind: 'invalid_request';
-    errorCode: 'invalid_action' | 'invalid_envelope';
+    errorCode: 'invalid_action' | 'invalid_envelope' | 'invalid_encrypted_envelope' | 'encrypted_action_unsupported' | 'request_too_large' | 'target_required';
+    requestId?: string;
   }
   | {
     kind: 'response';
     /** Semantic envelope for local inspection; transport adapters use `prepared`. */
-    response: ExternalActionResponseEnvelopeV1;
+    response: PreparedExternalActionResponseEnvelope['response'];
     /** Both HTTP origins consume this one canonical serialized projection. */
-    prepared: PreparedExternalActionResponseEnvelopeV1;
+    prepared: PreparedExternalActionResponseEnvelope;
   }
 >;
 
@@ -68,10 +104,17 @@ export async function executeExternalAction(input: Readonly<{
   envelope: unknown;
   principal: ExternalActionPrincipal;
   currentMachineId: string;
-  /** Daemon-owned active server identity; never accepted from the envelope. */
+  /** Daemon-owned local profile id used for routing; never accepted from the envelope. */
   currentServerId?: string;
+  resolveEncryption?: ResolveExternalActionEncryption;
   resolveTarget: ResolveExternalActionTarget;
   executor: ExternalActionExecutor;
+  /** Host-owned interactive ingress classification; never accepted from an external envelope. */
+  surface?: 'ui' | 'cli';
+  /** Home-minted invocation authority relayed or exchanged at admission. */
+  executionAuthorization?: ExternalActionExecutionAuthorizationV1;
+  /** Existing installation private key; never serialized into Action context or approval storage. */
+  externalActionMachineRequestPrivateKey?: string | Uint8Array;
   signal?: AbortSignal;
 }>): Promise<ExecuteExternalActionResult> {
   // Keep both public HTTP origins deterministic: first accept the bounded path
@@ -79,27 +122,118 @@ export async function executeExternalAction(input: Readonly<{
   // daemon-owned registry whether that scalar names a public Action.
   const externalActionId = ExternalActionActionIdV1Schema.safeParse(input.actionId);
   if (!externalActionId.success) {
-    return { kind: 'invalid_request', errorCode: 'invalid_action' };
+    const requestId = readExternalActionProtectedRequestId(input.envelope);
+    return {
+      kind: 'invalid_request',
+      errorCode: 'invalid_action',
+      ...(requestId === undefined ? {} : { requestId }),
+    };
   }
 
-  const envelope = ExternalActionRequestEnvelopeV1Schema.safeParse(input.envelope);
+  const envelope = ExternalActionRequestEnvelopeSchema.safeParse(input.envelope);
   if (!envelope.success) {
-    return { kind: 'invalid_request', errorCode: 'invalid_envelope' };
+    const requestId = readExternalActionProtectedRequestId(input.envelope);
+    return {
+      kind: 'invalid_request',
+      errorCode: 'invalid_envelope',
+      ...(requestId === undefined ? {} : { requestId }),
+    };
+  }
+  if (!isExternalActionRequestWithinLimit(envelope.data)) {
+    return {
+      kind: 'invalid_request',
+      errorCode: 'request_too_large',
+      ...(envelope.data.v === 2 ? { requestId: envelope.data.requestId } : {}),
+    };
   }
 
-  const actionId = PublicActionIdSchema.safeParse(externalActionId.data);
+  const actionId = input.principal.authority === 'account_automation'
+    ? PublicActionIdSchema.safeParse(externalActionId.data)
+    : SignedRootActionIdSchema.safeParse(externalActionId.data);
   if (!actionId.success) {
-    return { kind: 'invalid_request', errorCode: 'invalid_action' };
+    return {
+      kind: 'invalid_request',
+      errorCode: 'invalid_action',
+      ...(envelope.data.v === 2 ? { requestId: envelope.data.requestId } : {}),
+    };
+  }
+
+  const executionAuthorization = input.executionAuthorization === undefined
+    ? undefined
+    : ExternalActionExecutionAuthorizationV1Schema.safeParse(input.executionAuthorization);
+  if (
+    executionAuthorization !== undefined
+    && (
+      !executionAuthorization.success
+      || !input.externalActionMachineRequestPrivateKey
+      || input.principal.authority !== 'account_automation'
+      || input.currentServerId === undefined
+      || executionAuthorization.data.binding.accountId !== input.principal.accountId
+      || executionAuthorization.data.binding.principalId !== input.principal.principalId
+      || executionAuthorization.data.binding.credentialId !== input.principal.credentialId
+      || executionAuthorization.data.binding.machineId !== input.currentMachineId
+      || executionAuthorization.data.binding.actionId !== actionId.data
+      || executionAuthorization.data.binding.requestEnvelopeDigest
+        !== computeExternalActionRequestEnvelopeDigestV1(envelope.data)
+      || (envelope.data.requestId !== undefined
+        && executionAuthorization.data.binding.requestId !== envelope.data.requestId)
+      || !externalActionTargetsEqualV1(
+        executionAuthorization.data.binding.target,
+        envelope.data.target ?? { kind: 'machine', machineId: input.currentMachineId },
+      )
+    )
+  ) {
+    return {
+      kind: 'invalid_request',
+      errorCode: envelope.data.v === 2 ? 'invalid_encrypted_envelope' : 'invalid_envelope',
+      ...(envelope.data.requestId === undefined ? {} : { requestId: envelope.data.requestId }),
+    };
+  }
+
+  let decodedInput: unknown;
+  let prepare = preparedResponse;
+  if (envelope.data.v === 2) {
+    const request = envelope.data;
+    if (!request.target) {
+      return { kind: 'invalid_request', errorCode: 'target_required', requestId: request.requestId };
+    }
+    if (!input.resolveEncryption) return {
+      kind: 'invalid_request', errorCode: 'encrypted_action_unsupported', requestId: request.requestId,
+    };
+    const encryption = await input.resolveEncryption(input.signal).catch(() => null);
+    if (!encryption) return {
+      kind: 'invalid_request', errorCode: 'encrypted_action_unsupported', requestId: request.requestId,
+    };
+    if (input.principal.authority !== 'account_automation') {
+      return { kind: 'invalid_request', errorCode: 'invalid_encrypted_envelope', requestId: request.requestId };
+    }
+    const binding: ExternalActionEncryptionBindingV2 = {
+      serverIdentityId: encryption.serverIdentityId, accountId: input.principal.accountId,
+      credentialId: input.principal.credentialId, actionId: actionId.data,
+      requestId: request.requestId, target: request.target,
+    };
+    const opened = openExternalActionRequestV2({ envelope: request, binding, material: encryption.material });
+    if (!opened || (request.target.kind === 'machine' && request.target.machineId !== input.currentMachineId)) {
+      return { kind: 'invalid_request', errorCode: 'invalid_encrypted_envelope', requestId: request.requestId };
+    }
+    decodedInput = opened.input;
+    prepare = (response) => {
+      const prepared = prepareExternalActionResponseV2({ binding, request, execution: response.execution,
+        executedMachineId: input.currentMachineId, material: encryption.material, randomBytes });
+      return { kind: 'response', response: prepared.response, prepared };
+    };
+  } else {
+    decodedInput = envelope.data.input;
   }
 
   const reconciliation = reconcileExternalActionTarget({
     actionId: actionId.data,
-    rawInput: envelope.data.input,
+    rawInput: decodedInput,
     target: envelope.data.target,
     currentMachineId: input.currentMachineId,
   });
   if (reconciliation.kind === 'rejected') {
-    return preparedResponse({
+    return prepare({
       v: 1,
       actionId: actionId.data,
       ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),
@@ -119,7 +253,7 @@ export async function executeExternalAction(input: Readonly<{
       ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch {
-    return preparedResponse({
+    return prepare({
       v: 1,
       actionId: actionId.data,
       ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),
@@ -127,7 +261,7 @@ export async function executeExternalAction(input: Readonly<{
     });
   }
   if (!target) {
-    return preparedResponse({
+    return prepare({
       v: 1,
       actionId: actionId.data,
       ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),
@@ -136,7 +270,9 @@ export async function executeExternalAction(input: Readonly<{
   }
 
   const context: ActionExecutorContext = {
-    surface: 'api',
+    surface: input.principal.authority === 'account_automation'
+      ? 'api'
+      : input.surface ?? 'ui',
     authority: input.principal.authority,
     actionCaller: { kind: 'host' },
     ...(input.principal.authority === 'account_automation'
@@ -148,23 +284,73 @@ export async function executeExternalAction(input: Readonly<{
           },
         }
       : {}),
+    ...(executionAuthorization?.success
+      ? {
+          externalActionExecutionAuthorization: executionAuthorization.data,
+          signExternalActionApprovalInput: ({ actionId: approvalActionId, input: approvalInput, target: approvalTarget }) =>
+            signExternalActionApprovalInputV1({
+              authorizationToken: executionAuthorization.data.token,
+              actionId: approvalActionId,
+              target: approvalTarget,
+              input: approvalInput,
+              privateKey: input.externalActionMachineRequestPrivateKey!,
+            }),
+        }
+      : {}),
     externalActionTarget: target,
+    // A Session target does not itself name the exact daemon selected by the
+    // server. Persist that custodian in any durable approval origin so a UI
+    // decision never has to infer placement from the Session later.
+    ...(target.kind === 'session' ? { defaultSessionMachineId: input.currentMachineId } : {}),
     ...(input.currentServerId !== undefined ? { serverId: input.currentServerId } : {}),
     ...reconciliation.context,
     ...(reconciliation.executionRunRequiresMachineTarget && target.kind === 'machine'
       ? { executionRunTargetMachineId: target.machineId }
       : {}),
-    ...(envelope.data.requestId ? { actionRequestId: envelope.data.requestId } : {}),
+    ...(executionAuthorization?.success
+      ? { actionRequestId: executionAuthorization.data.binding.requestId }
+      : envelope.data.requestId
+        ? { actionRequestId: envelope.data.requestId }
+        : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
-  const internalExecution = await input.executor.execute(actionId.data, envelope.data.input, context);
-  const execution = projectExternalActionExecutionResultV1(internalExecution) ?? {
+  let internalExecution: ActionExecuteResult;
+  try {
+    internalExecution = await input.executor.execute(actionId.data, decodedInput, context);
+  } catch {
+    return prepare({
+      v: 1,
+      actionId: actionId.data,
+      ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),
+      execution: {
+        ok: false,
+        errorCode: 'internal_error',
+        error: 'internal_error',
+      },
+    });
+  }
+  let execution = projectExternalActionExecutionResultV1(internalExecution) ?? {
     ok: false as const,
     errorCode: 'invalid_action_output',
     error: 'invalid_action_output',
   };
+  if (
+    execution.ok
+    && !(
+      execution.result !== null
+      && typeof execution.result === 'object'
+      && !Array.isArray(execution.result)
+      && 'kind' in execution.result
+      && execution.result.kind === 'approval_request_created'
+    )
+  ) {
+    const publicResult = SIGNED_ROOT_ACTION_OUTPUT_RUNTIME_SCHEMAS[actionId.data].safeParse(execution.result);
+    execution = publicResult.success
+      ? { ok: true, result: publicResult.data }
+      : { ok: false, errorCode: 'invalid_action_output', error: 'invalid_action_output' };
+  }
 
-  return preparedResponse({
+  return prepare({
     v: 1,
     actionId: actionId.data,
     ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),

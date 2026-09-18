@@ -1,10 +1,13 @@
 import {
     hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason,
+    isConnectedServiceAuthGroupProviderLimitSelected,
     selectConnectedServiceAuthGroupCandidate,
+    resolveConnectedServiceAuthGroupQuotaResetCandidates,
     type ConnectedServiceAuthGroupCandidateDecisionTrace,
     type ConnectedServiceAuthGroupMember,
     type ConnectedServiceAuthGroupMemberRuntimeState,
     type ConnectedServiceAuthGroupPolicyV1,
+    type ConnectedServiceAuthGroupQuotaSnapshot,
 } from '../selection/selectConnectedServiceAuthGroupCandidate';
 import { resolveConnectedServiceAuthGroupPreTurnQuotaProbeProfileIds } from '../selection/resolveConnectedServiceAuthGroupPreTurnQuotaProbeProfileIds';
 import { readConnectedServiceAuthGenerationApplyFailure } from '../../runtimeAuth/connectedServiceAuthGenerationApplyFailure';
@@ -14,7 +17,12 @@ import {
     ConnectedServiceAuthGroupQuotaProbeIncompleteError,
     type ConnectedServiceAuthGroupQuotaProbeResult,
 } from '../quotas/preTurnQuotaProbe';
-import type { ConnectedServiceCredentialRevisionV1 } from '@happier-dev/protocol';
+import type {
+    ConnectedServiceCredentialRevisionV1,
+    ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1,
+} from '@happier-dev/protocol';
+import { logger } from '@/ui/logger';
+import type { AutomaticQuotaResetContext, ConnectedServiceQuotaRecoveryCreditConsumeResult } from '../../quotas/ConnectedServiceQuotasCoordinator';
 
 const WAITABLE_CLASSIFIED_FAILURE_REASONS: ReadonlySet<string> = new Set([
     'usage_limit',
@@ -28,6 +36,38 @@ function shouldWaitForClassifiedFailure(input: Readonly<{
 }>): boolean {
     return WAITABLE_CLASSIFIED_FAILURE_REASONS.has(input.reason)
         && (input.recoveryMode === 'wait_until_reset' || input.recoveryMode === 'switch_or_wait');
+}
+
+type ConnectedServiceAuthGroupQuotaRecoveryProof = Extract<
+    ConnectedServiceAuthGroupSwitchResult,
+    { status: 'observed_generation' }
+>['quotaRecovery'];
+
+function resolveCurrentProfileQuotaRecoveryProof<TServiceIdentity>(input: Readonly<{
+    selected: ReturnType<typeof selectConnectedServiceAuthGroupCandidate>;
+    loaded: ConnectedServiceAuthGroupSwitchState<TServiceIdentity>;
+    receipt?: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1;
+}>): ConnectedServiceAuthGroupQuotaRecoveryProof {
+    const chosen = input.selected.selected;
+    if (!chosen || chosen.profileId !== input.loaded.activeProfileId) return undefined;
+    const evidence = input.selected.decisionTrace.candidates.find(
+        (entry) => entry.profileId === chosen.profileId,
+    )?.quotaEvidence;
+    const snapshot = input.loaded.memberStatesByProfileId.get(chosen.profileId)?.quotaSnapshot;
+    if (
+        !snapshot
+        || evidence?.status !== 'fresh'
+        || chosen.leastLimitedScore === null
+        || chosen.leastLimitedScore <= 0
+        || input.receipt?.status === 'unknown_after_timeout'
+    ) return undefined;
+    return {
+        ...(input.receipt ? { receipt: input.receipt } : {}),
+        quotaSnapshot: {
+            capturedAtMs: snapshot.capturedAtMs,
+            effectiveRemainingPercent: chosen.leastLimitedScore,
+        },
+    };
 }
 
 export type ConnectedServiceAuthGroupSwitchState<
@@ -58,6 +98,7 @@ type LeaseCompletion<TServiceIdentity = string> = Readonly<{
     generation: number;
     credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
     decisionTrace?: ConnectedServiceAuthGroupCandidateDecisionTrace;
+    quotaRecovery?: Extract<ConnectedServiceAuthGroupSwitchResult, { status: 'observed_generation' }>['quotaRecovery'];
 }>;
 
 export type ConnectedServiceAuthGroupGenerationApplyInput<
@@ -279,6 +320,11 @@ export type ConnectedServiceAuthGroupSwitchResult =
         activeProfileId: string | null;
         generation: number;
         credentialRevision?: ConnectedServiceCredentialRevisionV1 | null;
+        /** Producer attaches only after canonical selection proves fresh usable quota on this profile. */
+        quotaRecovery?: Readonly<{
+            receipt?: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1;
+            quotaSnapshot: Pick<ConnectedServiceAuthGroupQuotaSnapshot, 'capturedAtMs' | 'effectiveRemainingPercent'>;
+        }>;
         mode?: ConnectedServiceAccountSwitchMode;
         diagnostics?: unknown;
     }> & ConnectedServiceGenerationApplyEvidence)
@@ -488,6 +534,7 @@ function isReasonEnabled(policy: ConnectedServiceAuthGroupPolicyV1, reason: stri
             return policy.switchOn.usageLimit;
         case 'auth_expired':
         case 'permission_denied':
+        case 'plan':
         case 'account_disabled':
             return policy.switchOn.authExpired;
         case 'account_changed':
@@ -603,10 +650,14 @@ function isProfileEligibleForObservedGeneration(input: Readonly<{
     quotaFreshnessMs: number;
     memberStatesByProfileId: ReadonlyMap<string, ConnectedServiceAuthGroupMemberRuntimeState>;
     selected: ReturnType<typeof selectConnectedServiceAuthGroupCandidate>;
+    policy: ConnectedServiceAuthGroupPolicyV1;
+    providerLimitId?: string | null;
 }>): boolean {
     return input.selected.selected?.profileId === input.profileId
         && hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
             reason: input.reason,
+            policy: input.policy,
+            providerLimitId: input.providerLimitId,
             profileId: input.profileId,
             nowMs: input.nowMs,
             quotaFreshnessMs: input.quotaFreshnessMs,
@@ -721,6 +772,9 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
             retryAtMs?: number | null;
             retryAfterMs?: number | null;
             resetsAtMs?: number | null;
+            limitCategory?: string | null;
+            quotaScope?: string | null;
+            providerLimitId?: string | null;
             planType?: string | null;
         }>): Promise<void>;
         probeQuotaSnapshotsForGroup?(input: Readonly<{
@@ -729,6 +783,12 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
             profileIds: ReadonlyArray<string>;
             reason: string;
         }>): Promise<ConnectedServiceAuthGroupQuotaProbeResult | void>;
+        consumeAvailableRecoveryCreditForProfile?(input: Readonly<{
+            serviceId: TServiceIdentity;
+            groupId: string;
+            profileId: string;
+            automaticResetContext: AutomaticQuotaResetContext;
+        }>): Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult>;
         resolveGenerationConflict?(error: unknown): number | null;
         emitEvent?: (
             event: ConnectedServiceAuthGroupSwitchEvent<TServiceIdentity>,
@@ -740,10 +800,13 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
         activeProfileId: string | null | undefined;
         reason: string;
         allowCurrentProfileRetry?: boolean;
+        unavailableProfileIds?: ReadonlySet<string>;
+        providerLimitId?: string | null;
     }>): Promise<ReturnType<typeof selectConnectedServiceAuthGroupCandidate>> {
         const memberStatesByProfileId = new Map(
             input.state.memberStatesByProfileId,
         );
+        const unavailableProfileIds = new Set(input.unavailableProfileIds);
         for (;;) {
             const selected = selectConnectedServiceAuthGroupCandidate({
                 nowMs: this.deps.nowMs(),
@@ -752,6 +815,10 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 policy: input.state.policy,
                 members: input.state.members,
                 memberStatesByProfileId,
+                unavailableProfileIds,
+                ...(input.providerLimitId === undefined
+                    ? {}
+                    : { providerLimitId: input.providerLimitId }),
                 ...(input.allowCurrentProfileRetry === undefined
                     ? {}
                     : {
@@ -769,6 +836,9 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 reason: input.reason,
             });
             if (prepared.status === 'ready') return selected;
+            // Retryable health remains globally usable, but a failed preflight must not be retried
+            // indefinitely in this operation or disappear from the selector's exclusion evidence.
+            unavailableProfileIds.add(selected.selected.profileId);
             memberStatesByProfileId.set(selected.selected.profileId, {
                 ...(memberStatesByProfileId.get(
                     selected.selected.profileId,
@@ -776,6 +846,126 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 ...prepared.memberState,
             });
         }
+    }
+
+    private resolvePolicyResult(input: Readonly<{
+        trigger: 'classified_failure' | 'pre_turn';
+        request: Readonly<{
+            serviceId: TServiceIdentity; groupId: string; sessionId?: string; reason: string;
+            switchesThisTurn?: number; sessionSwitchesThisHour?: number;
+            retryAtMs?: number | null; retryAfterMs?: number | null; resetsAtMs?: number | null;
+        }>;
+        loaded: ConnectedServiceAuthGroupSwitchState<TServiceIdentity>;
+    }>): ConnectedServiceAuthGroupSwitchResult | null {
+        const { loaded, request } = input;
+        const wait = input.trigger === 'classified_failure' && shouldWaitForClassifiedFailure({
+            reason: request.reason, recoveryMode: loaded.policy.recoveryMode,
+        });
+        const waitResult = () => buildPolicyWaitUntilResetResult({
+            loaded, retryAtMs: input.trigger === 'classified_failure' ? resolvePolicyRecoveryWaitRetryAtMs(request) : null,
+        });
+        if (loaded.policy.recoveryMode === 'off') return { status: 'auto_switch_disabled', generation: loaded.generation };
+        if (!loaded.policy.autoSwitch) return wait ? waitResult() : { status: 'auto_switch_disabled', generation: loaded.generation };
+        if (!isReasonEnabled(loaded.policy, request.reason)) return wait ? waitResult() : { status: 'switch_reason_disabled', generation: loaded.generation };
+        if (loaded.policy.recoveryMode === 'wait_until_reset') return waitResult();
+        const switchesThisTurn = typeof request.switchesThisTurn === 'number' && Number.isFinite(request.switchesThisTurn)
+            ? Math.max(0, Math.trunc(request.switchesThisTurn)) : 0;
+        const key = this.resolveSessionSwitchKey(request);
+        const hourly = typeof request.sessionSwitchesThisHour === 'number' && Number.isFinite(request.sessionSwitchesThisHour)
+            ? Math.max(0, Math.trunc(request.sessionSwitchesThisHour))
+            : key ? this.countRecentSessionSwitches(key, this.deps.nowMs()) : 0;
+        return switchesThisTurn >= loaded.policy.maxSwitchesPerTurn || hourly >= loaded.policy.maxSwitchesPerSessionHour
+            ? { status: 'switch_limit_reached', generation: loaded.generation } : null;
+    }
+
+    private async selectWithQuotaRecovery(input: Readonly<{
+        trigger: 'classified_failure' | 'pre_turn';
+        request: Parameters<ConnectedServiceAuthGroupSwitchCoordinator<TServiceIdentity>['resolvePolicyResult']>[0]['request'] & Readonly<{
+            expectedFailureSource?: ConnectedServiceAuthGroupExpectedFailureSource;
+            providerLimitId?: string | null;
+        }>;
+        loaded: ConnectedServiceAuthGroupSwitchState<TServiceIdentity>;
+        activeProfileId: string | null;
+        allowCurrentProfileRetry?: boolean;
+        overrides?: ReadonlyArray<ConnectedServiceAuthGroupMemberRuntimeStateOverride>;
+    }>): Promise<Readonly<{
+        loaded: ConnectedServiceAuthGroupSwitchState<TServiceIdentity>;
+        selected: ReturnType<typeof selectConnectedServiceAuthGroupCandidate>;
+        quotaRecovery: Extract<ConnectedServiceAuthGroupSwitchResult, { status: 'observed_generation' }>['quotaRecovery'];
+        policyResult: ConnectedServiceAuthGroupSwitchResult | null;
+    }>> {
+        let loaded = input.loaded;
+        let selected = await this.selectPreparedCandidate({ state: loaded, activeProfileId: input.activeProfileId,
+            reason: input.request.reason, allowCurrentProfileRetry: input.allowCurrentProfileRetry,
+            providerLimitId: input.request.providerLimitId });
+        let quotaRecovery = input.allowCurrentProfileRetry === true
+            ? resolveCurrentProfileQuotaRecoveryProof({ selected, loaded })
+            : undefined;
+        if (selected.selected?.profileId === loaded.activeProfileId && !quotaRecovery) {
+            selected = await this.selectPreparedCandidate({
+                state: loaded,
+                activeProfileId: input.activeProfileId,
+                reason: input.request.reason,
+                providerLimitId: input.request.providerLimitId,
+            });
+        }
+        let policyResult: ConnectedServiceAuthGroupSwitchResult | null = null;
+        const unavailableProfileIds = new Set(selected.excluded.filter((entry) => entry.reason === 'credential_unavailable').map((entry) => entry.profileId));
+        const selectionInput = () => ({ nowMs: this.deps.nowMs(), quotaFreshnessMs: this.deps.quotaFreshnessMs,
+            activeProfileId: loaded.activeProfileId, policy: loaded.policy, members: loaded.members,
+            memberStatesByProfileId: loaded.memberStatesByProfileId, unavailableProfileIds });
+        const reconsider = async (receipt?: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1) => {
+            loaded = applyMemberStateOverrides({ loaded: await this.deps.loadState(input.request), overrides: input.overrides });
+            policyResult = !this.isExpectedFailureSourceCurrent(input.request, loaded)
+                ? { status: 'stale_context', generation: loaded.generation }
+                : this.resolvePolicyResult({ ...input, loaded });
+            if (policyResult) return;
+            selected = await this.selectPreparedCandidate({ state: loaded, activeProfileId: loaded.activeProfileId,
+                reason: input.request.reason, allowCurrentProfileRetry: true, unavailableProfileIds,
+                providerLimitId: input.request.providerLimitId });
+            for (const entry of selected.excluded) if (entry.reason === 'credential_unavailable') unavailableProfileIds.add(entry.profileId);
+            const chosen = selected.selected;
+            quotaRecovery = resolveCurrentProfileQuotaRecoveryProof({
+                selected,
+                loaded,
+                ...(receipt ? { receipt } : {}),
+            });
+            if (chosen?.profileId === loaded.activeProfileId && !quotaRecovery) {
+                selected = await this.selectPreparedCandidate({ state: loaded, activeProfileId: loaded.activeProfileId,
+                    reason: input.request.reason, unavailableProfileIds,
+                    providerLimitId: input.request.providerLimitId });
+            }
+        };
+        if (!selected.selected && loaded.policy.autoUseQuotaResetsWhenExhausted === true
+            && (input.request.reason === 'usage_limit' || input.request.reason === 'same_provider_account_exhausted')
+            && this.deps.consumeAvailableRecoveryCreditForProfile) {
+            for (const candidate of resolveConnectedServiceAuthGroupQuotaResetCandidates(selectionInput())) {
+                const prepared = await this.deps.prepareCandidateForSwitch?.({ ...input.request, profileId: candidate.profileId });
+                if (prepared?.status === 'ineligible') {
+                    unavailableProfileIds.add(candidate.profileId);
+                    selected = selectConnectedServiceAuthGroupCandidate({ ...selectionInput(), allowCurrentProfileRetry: true });
+                    break;
+                }
+                await reconsider();
+                if (policyResult || selected.selected || loaded.policy.autoUseQuotaResetsWhenExhausted !== true) break;
+                if (!resolveConnectedServiceAuthGroupQuotaResetCandidates(selectionInput()).some((member) => member.profileId === candidate.profileId)) break;
+                const reset = await this.deps.consumeAvailableRecoveryCreditForProfile({
+                    ...input.request, profileId: candidate.profileId,
+                    automaticResetContext: { groupId: input.request.groupId,
+                        ...(input.request.sessionId ? { sessionId: input.request.sessionId } : {}) },
+                });
+                logger.info('[ConnectedServiceAuthGroupSwitch] quota reset result', {
+                    serviceId: input.request.serviceId, groupId: input.request.groupId, profileId: candidate.profileId,
+                    ok: reset.ok, outcome: reset.receipt?.status ?? (!reset.ok ? reset.errorCode : 'no_receipt'),
+                });
+                await reconsider(reset.receipt);
+                if (policyResult) break;
+                if (!selected.selected && ((!reset.ok && reset.errorCode === 'connected_service_quota_recovery_credit_not_available')
+                    || reset.receipt?.status === 'not_available')) continue;
+                break;
+            }
+        }
+        return { loaded, selected, quotaRecovery, policyResult };
     }
 
     private isExpectedFailureSourceCurrent(input: Readonly<{
@@ -1082,6 +1272,7 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
             activeProfileId: input.activeProfileId,
             generation: input.generation,
             credentialRevision: input.credentialRevision ?? null,
+            ...(input.quotaRecovery ? { quotaRecovery: input.quotaRecovery } : {}),
             ...generationApplyEvidenceFields(applyOutcome),
             ...(decisionTrace === undefined
                 ? {}
@@ -1129,6 +1320,7 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
         if (!isProfileEligibleForObservedGeneration({
             profileId: observedActiveProfileId,
             reason: input.reason ?? '',
+            policy: observed.policy,
             nowMs: this.deps.nowMs(),
             quotaFreshnessMs: this.deps.quotaFreshnessMs,
             memberStatesByProfileId: observed.memberStatesByProfileId,
@@ -1168,6 +1360,9 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
         retryAtMs?: number | null;
         retryAfterMs?: number | null;
         resetsAtMs?: number | null;
+        limitCategory?: string | null;
+        quotaScope?: string | null;
+        providerLimitId?: string | null;
         planType?: string | null;
         lease: Extract<
             LeaseAcquireResult<TServiceIdentity>,
@@ -1190,6 +1385,9 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                     retryAtMs: input.retryAtMs,
                     retryAfterMs: input.retryAfterMs,
                     resetsAtMs: input.resetsAtMs,
+                    limitCategory: input.limitCategory,
+                    quotaScope: input.quotaScope,
+                    providerLimitId: input.providerLimitId,
                     planType: input.planType,
                 });
                 return {
@@ -1361,6 +1559,7 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
         planType?: string | null;
         switchesThisTurn?: number;
         sessionSwitchesThisHour?: number;
+        allowCurrentProfileRetry?: boolean;
         expectedFailureSource?: ConnectedServiceAuthGroupExpectedFailureSource;
     }>): Promise<ConnectedServiceAuthGroupSwitchResult> {
         const startedAtMs = this.deps.nowMs();
@@ -1445,6 +1644,23 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
             if (!this.isExpectedFailureSourceCurrent(input, loaded)) {
                 return this.completeStaleFailureContext(lease, loaded);
             }
+            if (
+                (input.reason === 'usage_limit'
+                    || input.reason === 'rate_limit'
+                    || input.reason === 'same_provider_account_exhausted')
+                && input.providerLimitId != null
+                && !isConnectedServiceAuthGroupProviderLimitSelected({
+                    policy: loaded.policy,
+                    providerLimitId: input.providerLimitId,
+                })
+            ) {
+                const result = {
+                    status: 'switch_reason_disabled' as const,
+                    generation: loaded.generation,
+                };
+                lease.completeResult(result, loaded);
+                return result;
+            }
             const observedFailureOutcome: RecordObservedFailureStateOutcome<
                 TServiceIdentity
             > = input.expectedFailureSource
@@ -1458,6 +1674,9 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                     retryAtMs: input.retryAtMs,
                     retryAfterMs: input.retryAfterMs,
                     resetsAtMs: input.resetsAtMs,
+                    limitCategory: input.limitCategory,
+                    quotaScope: input.quotaScope,
+                    providerLimitId: input.providerLimitId,
                     planType: input.planType,
                     lease,
                 });
@@ -1487,7 +1706,7 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                     request: input,
                     loaded,
                     activeProfileId: selectionActiveProfileId,
-                    allowCurrentProfileRetry: false,
+                    allowCurrentProfileRetry: input.allowCurrentProfileRetry === true,
                 });
                 if (!this.isExpectedFailureSourceCurrent(input, loaded)) {
                     return this.completeStaleFailureContext(lease, loaded);
@@ -1584,144 +1803,46 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 reason: input.reason,
                 recoveryMode: loaded.policy.recoveryMode,
             });
-            if (loaded.policy.recoveryMode === 'off') {
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'auto_switch_disabled',
-                    toProfileId: loaded.activeProfileId,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
-                });
-                const result = { status: 'auto_switch_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result, loaded);
-                return result;
-            }
-            if (!loaded.policy.autoSwitch) {
-                if (waitForClassifiedFailure) {
-                    const result = buildPolicyWaitUntilResetResult({
-                        loaded,
-                        retryAtMs: resolvePolicyRecoveryWaitRetryAtMs(input),
-                    });
-                    this.emitSwitchResult({
-                        request: input,
-                        loaded,
-                        resultStatus: 'no_eligible_member',
-                        toProfileId: null,
-                        toGeneration: loaded.generation,
-                        success: false,
-                        startedAtMs,
-                        decisionTrace: readSwitchResultDecisionTrace(result),
-                    });
-                    lease.completeResult(result, loaded);
-                    return result;
-                }
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'auto_switch_disabled',
-                    toProfileId: loaded.activeProfileId,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
-                });
-                const result = { status: 'auto_switch_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result, loaded);
-                return result;
-            }
-            if (!isReasonEnabled(loaded.policy, input.reason)) {
-                if (waitForClassifiedFailure) {
-                    const result = buildPolicyWaitUntilResetResult({
-                        loaded,
-                        retryAtMs: resolvePolicyRecoveryWaitRetryAtMs(input),
-                    });
-                    this.emitSwitchResult({
-                        request: input,
-                        loaded,
-                        resultStatus: 'no_eligible_member',
-                        toProfileId: null,
-                        toGeneration: loaded.generation,
-                        success: false,
-                        startedAtMs,
-                        decisionTrace: readSwitchResultDecisionTrace(result),
-                    });
-                    lease.completeResult(result, loaded);
-                    return result;
-                }
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'switch_reason_disabled',
-                    toProfileId: loaded.activeProfileId,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
-                });
-                const result = { status: 'switch_reason_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result, loaded);
-                return result;
-            }
-            if (loaded.policy.recoveryMode === 'wait_until_reset') {
-                const result = buildPolicyWaitUntilResetResult({
-                    loaded,
-                    retryAtMs: resolvePolicyRecoveryWaitRetryAtMs(input),
-                });
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'no_eligible_member',
-                    toProfileId: null,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
-                    decisionTrace: readSwitchResultDecisionTrace(result),
-                });
-                lease.completeResult(result, loaded);
-                return result;
-            }
-            const switchesThisTurn = typeof input.switchesThisTurn === 'number' && Number.isFinite(input.switchesThisTurn)
-                ? Math.max(0, Math.trunc(input.switchesThisTurn))
-                : 0;
             const sessionSwitchKey = this.resolveSessionSwitchKey(input);
-            const hourlySwitchCount = typeof input.sessionSwitchesThisHour === 'number' && Number.isFinite(input.sessionSwitchesThisHour)
-                ? Math.max(0, Math.trunc(input.sessionSwitchesThisHour))
-                : sessionSwitchKey
-                    ? this.countRecentSessionSwitches(sessionSwitchKey, this.deps.nowMs())
-                    : 0;
-            if (
-                switchesThisTurn >= loaded.policy.maxSwitchesPerTurn
-                || hourlySwitchCount >= loaded.policy.maxSwitchesPerSessionHour
-            ) {
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'switch_limit_reached',
-                    toProfileId: null,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
-                });
-                const result = { status: 'switch_limit_reached', generation: loaded.generation } as const;
-                lease.completeResult(result, loaded);
-                return result;
+            const policyResult = this.resolvePolicyResult({ trigger: 'classified_failure', request: input, loaded });
+            if (policyResult) {
+                this.emitSwitchResult({ request: input, loaded, resultStatus: policyResult.status,
+                    toProfileId: policyResult.status === 'auto_switch_disabled' || policyResult.status === 'switch_reason_disabled' ? loaded.activeProfileId : null,
+                    toGeneration: loaded.generation, success: false, startedAtMs,
+                    decisionTrace: readSwitchResultDecisionTrace(policyResult) });
+                lease.completeResult(policyResult, loaded);
+                return policyResult;
             }
             if (!didProbeForSelection) {
                 loaded = await this.probeQuotaSnapshotsBeforePreTurnSelection({
                     request: input,
                     loaded,
                     activeProfileId: selectionActiveProfileId,
-                    allowCurrentProfileRetry: false,
+                    allowCurrentProfileRetry: input.allowCurrentProfileRetry === true,
                 });
                 if (!this.isExpectedFailureSourceCurrent(input, loaded)) {
                     return this.completeStaleFailureContext(lease, loaded);
                 }
             }
-            const selected = await this.selectPreparedCandidate({
-                state: loaded,
-                activeProfileId: selectionActiveProfileId,
-                reason: input.reason,
+            const recovery = await this.selectWithQuotaRecovery({
+                trigger: 'classified_failure', request: input, loaded, activeProfileId: selectionActiveProfileId,
+                allowCurrentProfileRetry: input.allowCurrentProfileRetry,
             });
+            loaded = recovery.loaded;
+            const selected = recovery.selected;
+            if (recovery.policyResult) {
+                lease.completeResult(recovery.policyResult, loaded);
+                return recovery.policyResult;
+            }
+            if (recovery.quotaRecovery && selected.selected?.profileId === loaded.activeProfileId) {
+                const completion = { serviceId: input.serviceId, groupId: input.groupId,
+                    activeProfileId: loaded.activeProfileId, generation: loaded.generation,
+                    credentialRevision: loaded.credentialRevision, decisionTrace: selected.decisionTrace,
+                    quotaRecovery: recovery.quotaRecovery };
+                lease.complete(completion);
+                return await this.applyObservedGeneration(this.buildSessionApplyInput({ completion,
+                    sessionId: input.sessionId, reason: input.reason }), selected.decisionTrace);
+            }
             if (!selected.selected) {
                 if (selected.reason === 'manual_strategy') {
                     if (waitForClassifiedFailure) {
@@ -2112,54 +2233,15 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
 
         try {
             let loaded = preloaded;
-            if (!loaded.policy.autoSwitch) {
-                const result = { status: 'auto_switch_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result);
-                return result;
-            }
-            if (loaded.policy.recoveryMode === 'off') {
-                const result = { status: 'auto_switch_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result);
-                return result;
-            }
-            if (!isReasonEnabled(loaded.policy, input.reason)) {
-                const result = { status: 'switch_reason_disabled', generation: loaded.generation } as const;
-                lease.completeResult(result);
-                return result;
-            }
-            if (loaded.policy.recoveryMode === 'wait_until_reset') {
-                const result = buildPolicyWaitUntilResetResult({
-                    loaded,
-                    retryAtMs: null,
-                });
-                lease.completeResult(result);
-                return result;
-            }
-            const switchesThisTurn = typeof input.switchesThisTurn === 'number' && Number.isFinite(input.switchesThisTurn)
-                ? Math.max(0, Math.trunc(input.switchesThisTurn))
-                : 0;
             const sessionSwitchKey = this.resolveSessionSwitchKey(input);
-            const hourlySwitchCount = typeof input.sessionSwitchesThisHour === 'number' && Number.isFinite(input.sessionSwitchesThisHour)
-                ? Math.max(0, Math.trunc(input.sessionSwitchesThisHour))
-                : sessionSwitchKey
-                    ? this.countRecentSessionSwitches(sessionSwitchKey, this.deps.nowMs())
-                    : 0;
-            if (
-                switchesThisTurn >= loaded.policy.maxSwitchesPerTurn
-                || hourlySwitchCount >= loaded.policy.maxSwitchesPerSessionHour
-            ) {
-                this.emitSwitchResult({
-                    request: input,
-                    loaded,
-                    resultStatus: 'switch_limit_reached',
-                    toProfileId: null,
-                    toGeneration: loaded.generation,
-                    success: false,
-                    startedAtMs,
+            const policyResult = this.resolvePolicyResult({ trigger: 'pre_turn', request: input, loaded });
+            if (policyResult) {
+                if (policyResult.status === 'switch_limit_reached') this.emitSwitchResult({
+                    request: input, loaded, resultStatus: policyResult.status, toProfileId: null,
+                    toGeneration: loaded.generation, success: false, startedAtMs,
                 });
-                const result = { status: 'switch_limit_reached', generation: loaded.generation } as const;
-                lease.completeResult(result);
-                return result;
+                lease.completeResult(policyResult);
+                return policyResult;
             }
             const allowCurrentProfileRetry = canRetryObservedProfileDuringPreTurnSelection(input.reason);
             if (!didProbePreTurnQuota) {
@@ -2187,6 +2269,7 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 if (isProfileEligibleForObservedGeneration({
                     profileId: loadedActiveProfileId,
                     reason: input.reason,
+                    policy: loaded.policy,
                     nowMs: this.deps.nowMs(),
                     quotaFreshnessMs: this.deps.quotaFreshnessMs,
                     memberStatesByProfileId: loaded.memberStatesByProfileId,
@@ -2212,12 +2295,25 @@ export class ConnectedServiceAuthGroupSwitchCoordinator<
                 observedProfileId,
                 activeProfileId: loaded.activeProfileId,
             });
-            const selected = await this.selectPreparedCandidate({
-                state: loaded,
-                activeProfileId: loaded.activeProfileId,
-                reason: input.reason,
-                allowCurrentProfileRetry: allowLoadedActiveProfileRetry,
+            const recovery = await this.selectWithQuotaRecovery({
+                trigger: 'pre_turn', request: input, loaded, overrides: input.memberStateOverridesByProfileId,
+                activeProfileId: loaded.activeProfileId, allowCurrentProfileRetry: allowLoadedActiveProfileRetry,
             });
+            loaded = recovery.loaded;
+            const selected = recovery.selected;
+            if (recovery.policyResult) {
+                lease.completeResult(recovery.policyResult, loaded);
+                return recovery.policyResult;
+            }
+            if (recovery.quotaRecovery && selected.selected?.profileId === loaded.activeProfileId) {
+                const completion = { serviceId: input.serviceId, groupId: input.groupId,
+                    activeProfileId: loaded.activeProfileId, generation: loaded.generation,
+                    credentialRevision: loaded.credentialRevision, decisionTrace: selected.decisionTrace,
+                    quotaRecovery: recovery.quotaRecovery };
+                lease.complete(completion);
+                return await this.applyObservedGeneration(this.buildSessionApplyInput({ completion,
+                    sessionId: input.sessionId, reason: input.reason }), selected.decisionTrace);
+            }
             if (!selected.selected) {
                 if (selected.reason === 'manual_strategy') {
                     const result = { status: 'manual_strategy', generation: loaded.generation } as const;

@@ -44,5 +44,6 @@ describe('sessionControl.sessionsHttp timeouts', () => {
 	    expect(axiosGetMock).toHaveBeenCalledTimes(2);
 	    expect(axiosGetMock.mock.calls[0]?.[1]?.timeout).toBe(54_321);
 	    expect(axiosGetMock.mock.calls[1]?.[1]?.timeout).toBe(54_321);
+	    expect(axiosGetMock.mock.calls[1]?.[0]).toBe('http://server.example.test/v2/sessions?limit=1');
 	  });
 });

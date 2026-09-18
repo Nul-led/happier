@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import tweetnacl from 'tweetnacl';
 import {
+  deriveAccountMachineKeyFromRecoverySecret,
   openTerminalProvisioningV3Response,
   resolveTerminalProvisioningVariantV2,
 } from '@happier-dev/protocol';
@@ -115,8 +116,33 @@ describe('approveTerminalAuthRequest', () => {
       });
 
       expect(mockPost).toHaveBeenCalledTimes(1);
-      const [url] = mockPost.mock.calls[0] ?? [];
+      const [url, body] = mockPost.mock.calls[0] ?? [];
       expect(url).toBe('http://127.0.0.1:53288/v1/auth/response');
+      expect(body).not.toHaveProperty('authorizeUnattendedTeamAccess');
+
+      mockPost.mockRejectedValueOnce({
+        response: {
+          status: 409,
+          data: {
+            error: 'credential_authentication_evidence_unavailable',
+            secret: 'DO_NOT_DISCLOSE',
+          },
+        },
+      });
+      await expect(approval.approveTerminalAuthRequest({
+        publicKey: terminalPublicKey,
+        pairing: {
+          secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
+          createdAtMs: Date.now() - 60_000,
+          expiresAtMs: Date.now() + 3_600_000,
+        },
+        supportsTokenOnly: true,
+        authorizeUnattendedTeamAccess: true,
+      })).rejects.toMatchObject({
+        name: 'TerminalAuthenticationEvidenceUnavailableError',
+        code: 'CREDENTIAL_AUTHENTICATION_EVIDENCE_UNAVAILABLE',
+        message: expect.not.stringContaining('DO_NOT_DISCLOSE'),
+      });
     });
   });
 
@@ -177,7 +203,11 @@ describe('approveTerminalAuthRequest', () => {
     });
   });
 
-  it('binds a released remote public-route alias to the saved Home identity before using its credential', async () => {
+  it.each([
+    { authorized: true, authority: 'manual_url' },
+    { authorized: false, authority: 'manual_url' },
+    { authorized: false, authority: 'account_directory' },
+  ] as const)('authorizes a remote route from the saved descriptor before bearer disclosure ($authority, authorized: $authorized)', async ({ authorized, authority }) => {
     await withTempDir('happier-cli-terminal-auth-route-alias-', async (homeDir) => {
       envScope.patch({
         HAPPIER_HOME_DIR: homeDir,
@@ -202,7 +232,10 @@ describe('approveTerminalAuthRequest', () => {
               homeServerIdentityId: 'srv_route_alias_home',
               canonicalServerUrl: 'http://127.0.0.1:3005',
               revision: 1,
-              endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+              endpoints: [
+                { kind: 'iroh', endpointId: 'a'.repeat(64) },
+                ...(authorized ? [{ kind: 'https', url: 'https://public-route.example.test' }] : []),
+              ],
             },
             createdAt: 1,
             updatedAt: 1,
@@ -225,9 +258,15 @@ describe('approveTerminalAuthRequest', () => {
       mockPost.mockResolvedValueOnce({ status: 200, data: {} });
 
       const { resolveCliHomeTarget } = await import('@/server/homeTarget');
-      const target = await resolveCliHomeTarget({ kind: 'https_url', url: 'https://public-route.example.test' });
+      const target = await resolveCliHomeTarget(authority === 'manual_url'
+        ? { kind: 'https_url', url: 'https://public-route.example.test' }
+        : { kind: 'descriptor', authority, descriptor: {
+          v: 1, homeServerIdentityId: 'srv_route_alias_home',
+          canonicalServerUrl: 'https://public-route.example.test', revision: 50,
+          endpoints: [{ kind: 'https', url: 'https://public-route.example.test' }],
+        } });
       const approval = await import('./terminalAuthApproval');
-      await approval.approveTerminalAuthRequest({
+      const result = approval.approveTerminalAuthRequest({
         publicKey: Buffer.alloc(32, 3).toString('base64'),
         pairing: {
           secretB64Url: Buffer.alloc(32, 11).toString('base64url'),
@@ -237,6 +276,14 @@ describe('approveTerminalAuthRequest', () => {
         supportsTokenOnly: true,
         target,
       });
+
+      if (!authorized) {
+        await expect(result).rejects.toThrow();
+        expect(fetchMock.mock.calls.every((call) => !new Headers((call as unknown as [string, RequestInit])[1]?.headers).has('Authorization'))).toBe(true);
+        expect(mockPost).not.toHaveBeenCalled();
+        return;
+      }
+      await result;
 
       expect(fetchMock).toHaveBeenCalledWith(
         'https://public-route.example.test/v1/features',
@@ -561,8 +608,8 @@ describe('approveTerminalAuthRequest', () => {
     });
   });
 
-  it('fails closed with a typed error for legacy recovery-secret credentials instead of issuing derived material', async () => {
-    await withTempDir('happier-cli-terminal-auth-approval-legacy-unavailable-', async (homeDir) => {
+  it('issues canonical derived data-key material for legacy recovery-secret credentials', async () => {
+    await withTempDir('happier-cli-terminal-auth-approval-legacy-derived-material-', async (homeDir) => {
       envScope.patch({
         HAPPIER_HOME_DIR: homeDir,
         HAPPIER_SERVER_URL: 'https://api.happier.dev',
@@ -575,8 +622,9 @@ describe('approveTerminalAuthRequest', () => {
       const configMod = await import('@/configuration');
       configMod.reloadConfiguration();
       const persistence = await import('@/persistence');
+      const legacySecret = new Uint8Array(32).fill(9);
       await persistence.writeCredentialsLegacy({
-        secret: new Uint8Array(32).fill(9),
+        secret: legacySecret,
         token: 'token-1',
       });
 
@@ -584,21 +632,30 @@ describe('approveTerminalAuthRequest', () => {
 
       const approval = await import('./terminalAuthApproval');
       const terminalKeypair = tweetnacl.box.keyPair();
-      await expect(
-        approval.approveTerminalAuthRequest({
-          publicKey: Buffer.from(terminalKeypair.publicKey).toString('base64'),
-          pairing: {
-            secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
-            createdAtMs: Date.now() - 60_000,
-            expiresAtMs: Date.now() + 3_600_000,
-          },
-          supportsTokenOnly: true,
-        }),
-      ).rejects.toMatchObject({
-        name: 'LegacyTerminalProvisioningUnavailableError',
-        code: 'LEGACY_TERMINAL_PROVISIONING_UNAVAILABLE',
+      const pairing = {
+        secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
+        createdAtMs: Date.now() - 60_000,
+        expiresAtMs: Date.now() + 3_600_000,
+      };
+      await approval.approveTerminalAuthRequest({
+        publicKey: Buffer.from(terminalKeypair.publicKey).toString('base64'),
+        pairing,
+        supportsTokenOnly: true,
       });
-      expect(mockPost).not.toHaveBeenCalled();
+
+      expect(mockPost).toHaveBeenCalledOnce();
+      const body = mockPost.mock.calls[0]?.[1] as { response?: string; responseKind?: string } | undefined;
+      expect(body?.responseKind).toBe('dataKey');
+      const opened = openTerminalProvisioningV3Response({
+        payload: new Uint8Array(Buffer.from(String(body?.response), 'base64')),
+        recipientSecretKeyOrSeed: terminalKeypair.secretKey,
+        terminalEphemeralPublicKey: terminalKeypair.publicKey,
+        pairingSecret: new Uint8Array(32).fill(11),
+        createdAtMs: pairing.createdAtMs,
+        expiresAtMs: pairing.expiresAtMs,
+        nowMs: Date.now(),
+      });
+      expect(opened).toEqual({ type: 'dataKey', key: deriveAccountMachineKeyFromRecoverySecret(legacySecret) });
     });
   });
 
@@ -738,11 +795,12 @@ describe('approveTerminalAuthRequest', () => {
       expiresAtMs: Date.now() + 3_600_000,
     };
 
+    const legacySecret = new Uint8Array(32).fill(9);
     const shapeSetups: Array<{
       label: string;
       persist: (persistence: typeof import('@/persistence')) => Promise<void>;
       // Authoritative persisted credential shape inputs for the resolver.
-      encryption: null | { type: 'legacy' } | { type: 'dataKey'; machineKey: Uint8Array };
+      encryption: null | { type: 'legacy'; secret: Uint8Array } | { type: 'dataKey'; machineKey: Uint8Array };
     }> = [
       {
         label: 'token-only',
@@ -764,8 +822,8 @@ describe('approveTerminalAuthRequest', () => {
       {
         label: 'legacy-secret',
         persist: (persistence) =>
-          persistence.writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'token-1' }),
-        encryption: { type: 'legacy' },
+          persistence.writeCredentialsLegacy({ secret: legacySecret, token: 'token-1' }),
+        encryption: { type: 'legacy', secret: legacySecret },
       },
     ];
 
@@ -786,10 +844,11 @@ describe('approveTerminalAuthRequest', () => {
         await setup.persist(persistence);
 
         // The canonical owner decides the variant from the authoritative
-        // persisted credential shape; the CLI must not re-derive it.
+        // persisted credential shape; the CLI must not re-derive it. Legacy
+        // recovery-secret credentials resolve the same derived content key
+        // through the protocol derivation owner.
         const expectedVariant = resolveTerminalProvisioningVariantV2({
           encryptionMode: setup.encryption ? 'e2ee' : 'plain',
-          dataKeyMaterialAvailable: setup.encryption?.type === 'dataKey',
         });
 
         mockPost.mockResolvedValueOnce({ status: 200, data: {} });
@@ -803,30 +862,27 @@ describe('approveTerminalAuthRequest', () => {
           (error: unknown) => ({ posted: false, error }),
         );
 
-        if (expectedVariant === 'legacyProvisioningUnavailable') {
-          expect(result).toMatchObject({ posted: false });
-          expect((result as { error: { code: string } }).error.code).toBe(
-            'LEGACY_TERMINAL_PROVISIONING_UNAVAILABLE',
-          );
-          expect(mockPost).not.toHaveBeenCalled();
+        expect(result).toEqual({ posted: true });
+        const body = mockPost.mock.calls[0]?.[1] as { response?: string; responseKind?: string } | undefined;
+        expect(body?.responseKind).toBe(expectedVariant);
+        const opened = openTerminalProvisioningV3Response({
+          payload: new Uint8Array(Buffer.from(String(body?.response), 'base64')),
+          recipientSecretKeyOrSeed: terminalKeypair.secretKey,
+          terminalEphemeralPublicKey: terminalKeypair.publicKey,
+          pairingSecret,
+          createdAtMs: pairing.createdAtMs,
+          expiresAtMs: pairing.expiresAtMs,
+          nowMs: Date.now(),
+        });
+        if (expectedVariant === 'tokenOnly') {
+          expect(opened).toEqual({ type: 'tokenOnly' });
         } else {
-          expect(result).toEqual({ posted: true });
-          const body = mockPost.mock.calls[0]?.[1] as { response?: string; responseKind?: string } | undefined;
-          expect(body?.responseKind).toBe(expectedVariant);
-          const opened = openTerminalProvisioningV3Response({
-            payload: new Uint8Array(Buffer.from(String(body?.response), 'base64')),
-            recipientSecretKeyOrSeed: terminalKeypair.secretKey,
-            terminalEphemeralPublicKey: terminalKeypair.publicKey,
-            pairingSecret,
-            createdAtMs: pairing.createdAtMs,
-            expiresAtMs: pairing.expiresAtMs,
-            nowMs: Date.now(),
-          });
-          expect(opened).toEqual(
-            expectedVariant === 'tokenOnly'
-              ? { type: 'tokenOnly' }
-              : { type: 'dataKey', key: (setup.encryption as { machineKey: Uint8Array }).machineKey },
-          );
+          const encryption = setup.encryption;
+          if (!encryption) throw new Error('Test setup invariant: e2ee variant requires encryption material');
+          const expectedKey = encryption.type === 'legacy'
+            ? deriveAccountMachineKeyFromRecoverySecret(encryption.secret)
+            : encryption.machineKey;
+          expect(opened).toEqual({ type: 'dataKey', key: expectedKey });
         }
         mockPost.mockReset();
         vi.resetModules();

@@ -7,11 +7,11 @@
  */
 
 import {
-  BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
   ConnectedAccountServiceKeySchema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
+  type ConnectedServiceBindingsV2 as ProtocolConnectedServicesBindingsV2,
   type ConnectedAccountServiceKey,
-  type ConnectedServiceBindingsV1 as ProtocolConnectedServicesBindingsV1,
+  type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
 export type ConnectedServiceBindingSelection =
@@ -25,20 +25,31 @@ export type ConnectedServiceBindingSelection =
       serviceId: ConnectedAccountServiceKey;
       groupId: string;
       fallbackProfileId?: string;
+    }>
+  | Readonly<{
+      kind: 'team_resource';
+      serviceId: ConnectedAccountServiceKey;
+      resourceId: string;
+      deliveryMode: 'brokered';
+    }>
+  | Readonly<{
+      kind: 'team_resource';
+      serviceId: ConnectedAccountServiceKey;
+      resourceId: string;
+      deliveryMode: 'direct';
+      disclosedMember: QualifiedConnectedAccountRef;
     }>;
 
-export type ConnectedServicesBindingsV1 = ProtocolConnectedServicesBindingsV1;
+export type ConnectedServicesBindingsV2 = ProtocolConnectedServicesBindingsV2;
 
-function readTrimmedString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
+// Admission preserves absence, but never recovers malformed explicit intent as native auth.
+// The protocol ingress is the sole owner of current validation and released V1 normalization.
+export const ConnectedServicesBindingsIngressSchema = ConnectedServiceBindingsV2IngressSchema.optional();
 
 export function parseConnectedServiceBindingSelections(raw: unknown): ConnectedServiceBindingSelection[] {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(raw);
-  const admitted = parsed.success
-    ? parsed
-    : BuiltInLegacyConnectedServiceBindingsV1IngressSchema.safeParse(raw);
-  if (!admitted.success) return [];
+  // Recovering metadata projection only; execution admission must validate with the schema above.
+  const admitted = ConnectedServicesBindingsIngressSchema.safeParse(raw);
+  if (!admitted.success || !admitted.data) return [];
   const bindings = admitted.data.bindingsByServiceId;
 
   const out: ConnectedServiceBindingSelection[] = [];
@@ -47,22 +58,34 @@ export function parseConnectedServiceBindingSelections(raw: unknown): ConnectedS
     if (!serviceIdParsed.success) continue;
     const serviceId = serviceIdParsed.data;
     const source = bindingRaw.source;
+    if (source === 'team_resource') {
+      out.push(bindingRaw.deliveryMode === 'direct'
+        ? {
+            kind: 'team_resource',
+            serviceId,
+            resourceId: bindingRaw.resourceId,
+            deliveryMode: 'direct',
+            disclosedMember: bindingRaw.disclosedMember,
+          }
+        : {
+            kind: 'team_resource',
+            serviceId,
+            resourceId: bindingRaw.resourceId,
+            deliveryMode: 'brokered',
+          });
+      continue;
+    }
     if (source !== 'connected') continue;
-    const profileId = readTrimmedString(bindingRaw.profileId);
-    const selection = readTrimmedString(bindingRaw.selection);
-    if (selection === 'group') {
-      const groupId = readTrimmedString(bindingRaw.groupId);
-      if (!groupId) continue;
+    if (bindingRaw.selection === 'group') {
       out.push({
         kind: 'group',
         serviceId,
-        groupId,
-        ...(profileId ? { fallbackProfileId: profileId } : {}),
+        groupId: bindingRaw.groupId,
+        ...(bindingRaw.profileId ? { fallbackProfileId: bindingRaw.profileId } : {}),
       });
       continue;
     }
-    if (!profileId) continue;
-    out.push({ kind: 'profile', serviceId, profileId });
+    out.push({ kind: 'profile', serviceId, profileId: bindingRaw.profileId });
   }
   return out;
 }
@@ -72,7 +95,7 @@ export function parseConnectedServicesBindings(raw: unknown): Array<{ serviceId:
     if (selection.kind === 'profile') {
       return [{ serviceId: selection.serviceId, profileId: selection.profileId }];
     }
-    return selection.fallbackProfileId
+    return selection.kind === 'group' && selection.fallbackProfileId
       ? [{ serviceId: selection.serviceId, profileId: selection.fallbackProfileId }]
       : [];
   });

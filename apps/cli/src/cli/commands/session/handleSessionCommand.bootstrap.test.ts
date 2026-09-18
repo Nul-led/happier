@@ -16,7 +16,8 @@ const execute = vi.fn(async () => ({
   result: { ok: true, sessionId: 'sess-1', title: 'New title' },
 }));
 
-const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute }));
+const resolveSessionTarget = vi.fn(async (idOrPrefix: string) => ({ ok: true as const, sessionId: idOrPrefix }));
+const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute, resolveSessionTarget }));
 const readCredentials = vi.fn(async () => null);
 const readStoredCredentials = vi.fn(async () => ({
   token: 'token_only',
@@ -75,12 +76,12 @@ describe('handleSessionCommand account settings bootstrap', () => {
 
       expect(readStoredCredentials).toHaveBeenCalledTimes(1);
       expect(readCredentials).not.toHaveBeenCalled();
-      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({
+      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith(expect.objectContaining({
         credentials: {
           token: 'token_only',
           encryption: null,
         },
-      });
+      }));
       expect(execute).toHaveBeenCalledTimes(1);
     } finally {
       output.restore();

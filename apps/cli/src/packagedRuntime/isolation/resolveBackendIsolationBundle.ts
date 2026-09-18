@@ -3,10 +3,11 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { configuration } from '@/configuration';
+import { stripInheritedConnectedServiceEnvironment } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
 import type { BackendIsolationBundle, BackendIsolationRequest } from './types';
 
-function readDefinedProcessEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
+function readDefinedProcessEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === 'string') {
       env[key] = value;
@@ -37,7 +38,7 @@ export function resolveBackendIsolationBundle(request: BackendIsolationRequest):
 
   return {
     env: {
-      ...readDefinedProcessEnv(),
+      ...stripInheritedConnectedServiceEnvironment(readDefinedProcessEnv()),
       XDG_STATE_HOME: xdgState,
       XDG_CACHE_HOME: xdgCache,
       XDG_DATA_HOME: xdgData,

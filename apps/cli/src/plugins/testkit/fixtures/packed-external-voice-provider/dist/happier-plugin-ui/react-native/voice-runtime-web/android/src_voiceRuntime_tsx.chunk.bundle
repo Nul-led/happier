@@ -1,5 +1,5 @@
 (self["rspackChunkhappier_plugin_acme_packed_voice_voice_runtime_web"] = self["rspackChunkhappier_plugin_acme_packed_voice_voice_runtime_web"] || []).push([["src_voiceRuntime_tsx"], {
-574: (function (__unused_rspack_module, exports) {
+414: (function (__unused_rspack_module, exports) {
 "use strict";
 
 function asyncGeneratorStep(gen, resolve, reject, _next, _throw, key, arg) {
@@ -32,7 +32,7 @@ exports._ = _async_to_generator;
 
 
 }),
-511: (function (__unused_rspack_module, exports) {
+431: (function (__unused_rspack_module, exports) {
 "use strict";
 
 function _define_property(obj, key, value) {
@@ -50,7 +50,7 @@ exports._ = _define_property;
 
 
 }),
-472: (function (__unused_rspack_module, exports) {
+896: (function (__unused_rspack_module, exports) {
 "use strict";
 
 function _getRequireWildcardCache(nodeInterop) {
@@ -87,10 +87,10 @@ exports._ = _interop_require_wildcard;
 
 
 }),
-613: (function (__unused_rspack_module, exports, __webpack_require__) {
+197: (function (__unused_rspack_module, exports, __webpack_require__) {
 "use strict";
 
-var _define_property = __webpack_require__(511);
+var _define_property = __webpack_require__(431);
 function _object_spread(target) {
     for(var i = 1; i < arguments.length; i++){
         var source = arguments[i] != null ? arguments[i] : {};
@@ -128,9 +128,9 @@ _export(exports, {
         return renderSurface;
     }
 });
-var _async_to_generator = __webpack_require__(574);
-var _interop_require_wildcard = __webpack_require__(472);
-var _object_spread = __webpack_require__(613);
+var _async_to_generator = __webpack_require__(414);
+var _interop_require_wildcard = __webpack_require__(896);
+var _object_spread = __webpack_require__(197);
 var _react = /*#__PURE__*/ _interop_require_wildcard._(__webpack_require__(947));
 var MAX_CATALOG_METADATA_PROPERTIES = 32;
 var FIXTURE_VOICE_ID = 'packed-voice-primary';
@@ -387,6 +387,8 @@ function activate(api) {
         })());
     var activeMediatedInputCapture = null;
     var activeRawInputCapture = null;
+    var mediatedDesiredMuted = false;
+    var rawDesiredMuted = false;
     var mediatedRuntime = {
         kind: CONVERSATION_KIND,
         settingsOperations: {
@@ -536,6 +538,7 @@ function activate(api) {
                     }
                 });
                 activeMediatedInputCapture = inputCapture;
+                inputCapture.setMuted(mediatedDesiredMuted);
                 var emitCurrentUiRead = ()=>{
                     if (!emitControl) return;
                     var responseId = `${CURRENT_UI_READ_RESPONSE_PREFIX}${++nextCurrentUiResponse}`;
@@ -616,6 +619,12 @@ function activate(api) {
                                 }));
                             })();
                         },
+                        setOutputFocusState (state) {
+                            fixtureEvents.push({
+                                kind: 'output_focus',
+                                state
+                            });
+                        },
                         close (reason) {
                             return _async_to_generator._(function*() {
                                 pendingCurrentUiCommands.clear();
@@ -632,9 +641,9 @@ function activate(api) {
             })();
         },
         setInputMuted (muted) {
+            mediatedDesiredMuted = muted;
             var inputCapture = activeMediatedInputCapture;
-            if (!inputCapture) throw new Error('fixture_provider_input_capture_unavailable');
-            inputCapture.setMuted(muted);
+            inputCapture === null || inputCapture === void 0 ? void 0 : inputCapture.setMuted(muted);
         },
         encodeToolResults (results) {
             return [
@@ -723,6 +732,7 @@ function activate(api) {
                     }
                 });
                 activeRawInputCapture = inputCapture;
+                inputCapture.setMuted(rawDesiredMuted);
                 return input.media.createSdkHandleConnection({
                     driver: {
                         open () {
@@ -768,9 +778,9 @@ function activate(api) {
         outputLevelMeter: 'unavailable',
         microphoneMode: 'provider_managed',
         setInputMuted (muted) {
+            rawDesiredMuted = muted;
             var inputCapture = activeRawInputCapture;
-            if (!inputCapture) throw new Error('fixture_provider_input_capture_unavailable');
-            inputCapture.setMuted(muted);
+            inputCapture === null || inputCapture === void 0 ? void 0 : inputCapture.setMuted(muted);
         }
     };
     api.voiceProviders.register('conversation-raw', rawRuntime);

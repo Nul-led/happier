@@ -72,6 +72,7 @@ export async function probeAgentConfigOptionsBestEffort(params: {
   env?: NodeJS.ProcessEnv;
   materializedEnv?: Readonly<Record<string, string>>;
   connectedServiceSelectionCacheKey?: string | null;
+  profileCacheKey?: string | null;
 }): Promise<ProbedAgentConfigOptionsResult> {
   const nowMs = Date.now();
   const cwd = typeof params.cwd === 'string' && params.cwd.trim().length > 0 ? params.cwd.trim() : process.cwd();
@@ -80,6 +81,7 @@ export async function probeAgentConfigOptionsBestEffort(params: {
     probeKind: 'configOptions',
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
+    env: params.env,
   });
   const cacheKey = buildAgentProbeCacheKey({
     agentId: params.agentId,
@@ -87,6 +89,7 @@ export async function probeAgentConfigOptionsBestEffort(params: {
     backendTarget: params.backendTarget,
     variant: probeVariant,
     connectedServiceSelection: params.connectedServiceSelectionCacheKey,
+    profile: params.profileCacheKey,
   });
 
   const cached = agentConfigOptionsProbeCache.get(cacheKey);

@@ -1,8 +1,8 @@
 import { PluginAgentRuntimeAcpV2Schema } from '@happier-dev/protocol';
-import type {
-  PluginAgentAcpDefinitionV2,
-  PluginAgentAcpTransport,
-} from '@happier-dev/protocol';
+import type { PluginAgentAcpTransport } from '@happier-dev/protocol';
+import type { AgentAcpRuntimeDefinition } from '@happier-dev/plugin-sdk/agents/runtime';
+
+import { buildAcpModelSuffixOptionControls } from './modelSuffixOption';
 
 const NEUTRAL_ACP_MCP_POLICY = Object.freeze({
   policy: 'drop' as const,
@@ -10,16 +10,18 @@ const NEUTRAL_ACP_MCP_POLICY = Object.freeze({
 
 export type NormalizedPluginDeclarativeAcpRuntime = Readonly<{
   transport: PluginAgentAcpTransport;
-  definition?: Readonly<
-    Omit<PluginAgentAcpDefinitionV2, 'mcp'>
-    & { mcp: NonNullable<PluginAgentAcpDefinitionV2['mcp']> }
-  >;
+  definition?: AgentAcpRuntimeDefinition;
 }>;
 
 /**
  * Normalizes the one strict Protocol declaration into the existing public ACP
  * composer options. Omitted MCP policy deliberately keeps the composer's
  * neutral no-delivery behavior.
+ *
+ * Declared model projection is compiled here, at the one owner both the
+ * in-daemon registry and the out-of-process Session runner call, so a
+ * host-declarative Agent behaves identically on both paths without loading
+ * plugin code.
  */
 export function normalizePluginDeclarativeAcpRuntime(
   runtime: unknown,
@@ -33,8 +35,18 @@ export function normalizePluginDeclarativeAcpRuntime(
       ...(parsed.definition.stderrRules
         ? { stderrRules: parsed.definition.stderrRules }
         : {}),
+      ...(parsed.definition.permissionModeMapping
+        ? { permissionModeMapping: parsed.definition.permissionModeMapping }
+        : {}),
+      ...(parsed.definition.models
+        ? {
+          models: buildAcpModelSuffixOptionControls(
+            parsed.definition.models.suffixOption,
+          ),
+        }
+        : {}),
       mcp: parsed.definition.mcp ?? NEUTRAL_ACP_MCP_POLICY,
-    }) satisfies NonNullable<NormalizedPluginDeclarativeAcpRuntime['definition']>
+    }) satisfies AgentAcpRuntimeDefinition
     : undefined;
 
   return Object.freeze({

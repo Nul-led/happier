@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import nacl from 'tweetnacl';
 
-import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import { deriveAccountMachineKeyFromRecoverySecret, deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 
@@ -110,12 +111,14 @@ describe('hydrateReplayDialogFromTranscript (integration)', () => {
     expect(res?.dialog?.[0]?.text).toBe('hello');
   });
 
-  it('hydrates encrypted sessions using the published session dataEncryptionKey', async () => {
+  it.each(['dataKey', 'legacy'] as const)('hydrates encrypted sessions with %s credentials using the published session dataEncryptionKey', async (credentialKind) => {
     const sessionId = 'sess_enc_1';
 
     const dek = new Uint8Array(32).fill(3);
     const machineKeySeed = new Uint8Array(32).fill(8);
-    const recipientPublicKey = deriveBoxPublicKeyFromSeed(machineKeySeed);
+    const recipientPublicKey = credentialKind === 'legacy'
+      ? nacl.box.keyPair.fromSecretKey(deriveAccountMachineKeyFromRecoverySecret(machineKeySeed)).publicKey
+      : deriveBoxPublicKeyFromSeed(machineKeySeed);
     const envelope = sealEncryptedDataKeyEnvelopeV1({
       dataKey: dek,
       recipientPublicKey,
@@ -197,7 +200,7 @@ describe('hydrateReplayDialogFromTranscript (integration)', () => {
     const res = await hydrateReplayDialogFromTranscript({
       credentials: {
         token: 't',
-        encryption: {
+        encryption: credentialKind === 'legacy' ? { type: 'legacy', secret: machineKeySeed } : {
           type: 'dataKey',
           publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed),
           machineKey: machineKeySeed,

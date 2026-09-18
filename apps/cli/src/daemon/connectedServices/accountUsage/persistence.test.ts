@@ -278,4 +278,42 @@ describe('provider account usage persistence scheduler', () => {
             scheduler.dispose();
         }
     });
+
+    it('does not let a future-dated observation suppress a later current persistence write', async () => {
+        const writeQualifiedProviderAccountUsage = vi.fn<WriteQualifiedProviderAccountUsage>(async () => ({
+            success: true as const,
+            source: { status: 'linked' as const },
+        }));
+        const scheduler = createProviderAccountUsagePersistenceScheduler({
+            api: { getAccountEncryptionMode: async () => 'plain' },
+            credentials: plainCredentials,
+            writeQualifiedProviderAccountUsage,
+            now: () => 10_000,
+            fingerprintKey: new Uint8Array(32).fill(9),
+            minFreshnessMs: 60_000,
+        });
+        const future = createSnapshot({ fetchedAtMs: 100_000, observedAtMs: 100_000 });
+        const current = createSnapshot({ fetchedAtMs: 10_000, observedAtMs: 10_000 });
+        try {
+            await expect(scheduler.recordInBandSnapshot(future, {
+                targets: [createTarget()],
+            })).resolves.toEqual({
+                status: 'already_persisted',
+                reason: 'future_snapshot',
+            });
+            await expect(scheduler.recordInBandSnapshot(current, {
+                targets: [createTarget()],
+            })).resolves.toEqual({
+                status: 'enqueued',
+                enqueue: 'accepted',
+            });
+            await scheduler.flush(1_000);
+            expect(writeQualifiedProviderAccountUsage).toHaveBeenCalledTimes(1);
+            expect(writeQualifiedProviderAccountUsage).toHaveBeenCalledWith(expect.objectContaining({
+                write: expect.objectContaining({ fetchedAt: 10_000 }),
+            }));
+        } finally {
+            scheduler.dispose();
+        }
+    });
 });

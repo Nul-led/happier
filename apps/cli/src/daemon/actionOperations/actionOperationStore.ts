@@ -21,6 +21,7 @@ type CreateActionOperationInput = Readonly<{
   requestId?: string;
   cancellation: ActionOperationSnapshotV1['cancellation'];
   domainRef?: ActionOperationSnapshotV1['domainRef'];
+  inputIdentity: string;
 }>;
 
 type ListActionOperationsInput = ActionOperationQueryScope & Readonly<{
@@ -58,6 +59,7 @@ export function createActionOperationStore(options?: Readonly<{
   const settledRetentionLimit = options?.settledRetentionLimit ?? SETTLED_RETENTION_LIMIT;
   const settledRetentionMs = options?.settledRetentionMs ?? SETTLED_RETENTION_MS;
   const snapshots = new Map<string, ActionOperationSnapshotV1>();
+  const inputIdentities = new Map<string, string>();
 
   const notify = (snapshot: ActionOperationSnapshotV1): void => {
     try {
@@ -80,7 +82,10 @@ export function createActionOperationStore(options?: Readonly<{
         .map((snapshot) => snapshot.operationId),
     );
     for (const snapshot of retainedSettled) {
-      if (!retainedIds.has(snapshot.operationId)) snapshots.delete(snapshot.operationId);
+      if (!retainedIds.has(snapshot.operationId)) {
+        snapshots.delete(snapshot.operationId);
+        inputIdentities.delete(snapshot.operationId);
+      }
     }
   };
 
@@ -117,6 +122,7 @@ export function createActionOperationStore(options?: Readonly<{
         ...(input.domainRef ? { domainRef: input.domainRef } : {}),
       });
       snapshots.set(input.operationId, snapshot);
+      inputIdentities.set(input.operationId, input.inputIdentity);
       notify(snapshot);
       prune();
       return snapshot;
@@ -196,6 +202,10 @@ export function createActionOperationStore(options?: Readonly<{
         && snapshot.actionId === actionId
         && snapshot.requestId === requestId
       )) ?? null;
+    },
+
+    hasMatchingInputIdentity(operationId: string, inputIdentity: string): boolean {
+      return inputIdentities.get(operationId) === inputIdentity;
     },
 
     list(input: ListActionOperationsInput): Readonly<{

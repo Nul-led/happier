@@ -48,6 +48,10 @@ export interface WorkspaceSyncBrokerConfig {
   launchSecret: Uint8Array;
   expectedSidecarPid?: number;
   maxStreams?: number;
+  /** Test/composition override; production is capped by the protocol constant. */
+  maxPreauthenticatedControls?: number;
+  /** Test/composition override for the bounded HELLO window. */
+  handshakeDeadlineMs?: number;
   now?: () => number;
   validatePeerIdentity?: (context: WorkspaceSyncBrokerPeerIdentityContext) => boolean | Promise<boolean>;
   openExternalStream: (context: WorkspaceSyncBrokerOpenContext) => Promise<NodeJS.ReadWriteStream>;
@@ -64,6 +68,9 @@ export interface WorkspaceSyncBrokerEndpoint {
   remove(path?: string): Promise<void>;
   peerPid(socket: Socket): number | undefined;
 }
+
+export const WORKSPACE_SYNC_BROKER_HANDSHAKE_DEADLINE_MS = 15_000;
+export const MAX_PREAUTHENTICATED_CONTROL_CONNECTIONS = 8;
 
 export function createWorkspaceSyncBrokerEndpoint(input: Readonly<{
   endpointPath: string;
@@ -207,12 +214,15 @@ export class WorkspaceSyncBroker {
   private readonly config: WorkspaceSyncBrokerConfig & {
     now: () => number;
     maxStreams: number;
+    maxPreauthenticatedControls: number;
+    handshakeDeadlineMs: number;
   };
   private readonly pending = new Map<string, PendingStream>();
   private readonly attachRequestIds = new Map<string, string>();
   private readonly activeRequestIds = new Set<string>();
   private readonly commands = new Map<string, PendingCommand>();
   private readonly controlSockets = new Set<Socket>();
+  private readonly preauthenticatedControls = new Set<Socket>();
   private readonly streamsAwaitingCleanup = new Set<PendingStream>();
   private authenticatedControl: Socket | undefined;
   private authenticatedSidecarPidValue: number | undefined;
@@ -232,6 +242,14 @@ export class WorkspaceSyncBroker {
       ...config,
       now: config.now ?? Date.now,
       maxStreams: Math.min(config.maxStreams ?? MAX_CONCURRENT_DATA_STREAMS, MAX_CONCURRENT_DATA_STREAMS),
+      maxPreauthenticatedControls: Math.min(
+        config.maxPreauthenticatedControls ?? MAX_PREAUTHENTICATED_CONTROL_CONNECTIONS,
+        MAX_PREAUTHENTICATED_CONTROL_CONNECTIONS,
+      ),
+      handshakeDeadlineMs: Math.min(
+        config.handshakeDeadlineMs ?? WORKSPACE_SYNC_BROKER_HANDSHAKE_DEADLINE_MS,
+        WORKSPACE_SYNC_BROKER_HANDSHAKE_DEADLINE_MS,
+      ),
     };
     this.endpoint = endpoint;
     this.server = server;
@@ -269,8 +287,19 @@ export class WorkspaceSyncBroker {
       config.launchNonce ?? randomUUID(),
     );
     server.on('connection', (socket) => { void broker.handleControl(socket); });
-    await endpoint.listen(server);
-    await endpoint.secure();
+    let listenerOwned = false;
+    try {
+      await endpoint.listen(server);
+      listenerOwned = true;
+      await endpoint.secure();
+    } catch (error) {
+      const cleanupFailures = await settleCleanup([
+        closeServer(server),
+        listenerOwned ? endpoint.remove() : undefined,
+      ]);
+      if (cleanupFailures.length === 0) throw error;
+      throw new AggregateError([error, ...cleanupFailures], 'workspace sync broker listener setup failed');
+    }
     return broker;
   }
 
@@ -392,6 +421,11 @@ export class WorkspaceSyncBroker {
   }
 
   private async handleControl(socket: Socket): Promise<void> {
+    if (this.closed || this.preauthenticatedControls.size >= this.config.maxPreauthenticatedControls) {
+      socket.destroy();
+      return;
+    }
+    this.preauthenticatedControls.add(socket);
     this.controlSockets.add(socket);
     socket.setNoDelay(true);
     // The sidecar sends manager command envelopes, whose protocol-owned
@@ -400,9 +434,15 @@ export class WorkspaceSyncBroker {
     let authenticated = false;
     let processing = Promise.resolve();
     let terminating = false;
+    const handshakeTimer = setTimeout(() => {
+      if (!authenticated) terminate();
+    }, Math.max(1, this.config.handshakeDeadlineMs));
+    handshakeTimer.unref();
     const terminate = () => {
       if (terminating) return;
       terminating = true;
+      clearTimeout(handshakeTimer);
+      this.preauthenticatedControls.delete(socket);
       for (const stream of [...this.pending.values()]) if (stream.control === socket) void this.closePending(stream);
       if (this.authenticatedControl === socket) {
         this.authenticatedControl = undefined;
@@ -440,6 +480,8 @@ export class WorkspaceSyncBroker {
               return;
             }
             authenticated = true;
+            clearTimeout(handshakeTimer);
+            this.preauthenticatedControls.delete(socket);
             this.authenticatedControl = socket;
             this.authenticatedSidecarPidValue = message.sidecarPid;
             this.send(socket, {
@@ -574,19 +616,21 @@ export class WorkspaceSyncBroker {
         await dataEndpoint.remove();
         return;
       }
+      const attachNowMs = this.config.now();
+      const attachExpiresAtMs = attachNowMs + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS;
       this.send(socket, {
         t: 'data_ready', requestId: message.requestId, streamId: stream.streamId,
         dataEndpoint: dataEndpoint.endpointPath, attachNonce: stream.attachNonce,
         // Fresh broker-owned attach window counted from after the successful
         // external open — never the leftover open budget (§6.4).
-        expiresAtMs: this.config.now() + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
+        expiresAtMs: attachExpiresAtMs,
       });
-      stream.attachExpiresAtMs = this.config.now() + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS;
+      stream.attachExpiresAtMs = attachExpiresAtMs;
       stream.attachTimer = setTimeout(() => {
         if (!stream.attached && !stream.closed) {
           this.failPending(stream, 'data_attach_failed', 'data attachment expired');
         }
-      }, Math.max(1, stream.attachExpiresAtMs - this.config.now()));
+      }, WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS);
       stream.attachTimer.unref();
     } catch (error) {
       clearTimeout(stream.openTimer);

@@ -555,50 +555,9 @@ process.exit(1);
     }
   }, 20_000);
 
-  it('returns dynamic model list from the Antigravity plugin preflight contribution', async () => {
-    const fixture = await createProbeTempDir('happier-cli-model-probe-antigravity');
-    const binDir = resolve(join(fixture.dir, 'bin'));
-    await mkdir(binDir, { recursive: true });
-
-    const agyPath = resolve(join(binDir, 'agy'));
-    await writeExecutableScript(
-      agyPath,
-      `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === "models") {
-  process.stdout.write("Gemini 3.5 Flash (Medium)\\nClaude Sonnet 4.6 (Thinking)\\n");
-  process.exit(0);
-}
-process.exit(1);
-`,
-    );
-
-    const prevPath = process.env.PATH;
-    const prevOverride = process.env.HAPPIER_ANTIGRAVITY_PATH;
-    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`;
-    delete process.env.HAPPIER_ANTIGRAVITY_PATH;
-    try {
-      const res = await probeAgentModelsBestEffort({
-        agentId: 'antigravity',
-        cwd: fixture.dir,
-        timeoutMs: CLI_MODELS_PROBE_TEST_TIMEOUT_MS,
-      });
-      expect(res.source).toBe('dynamic');
-      expect(res.availableModels).toEqual([
-        { id: 'default', name: 'Default' },
-        { id: 'Gemini 3.5 Flash (Medium)', name: 'Gemini 3.5 Flash (Medium)' },
-        { id: 'Claude Sonnet 4.6 (Thinking)', name: 'Claude Sonnet 4.6 (Thinking)' },
-      ]);
-    } finally {
-      process.env.PATH = prevPath;
-      if (typeof prevOverride === 'string') {
-        process.env.HAPPIER_ANTIGRAVITY_PATH = prevOverride;
-      } else {
-        delete process.env.HAPPIER_ANTIGRAVITY_PATH;
-      }
-      await fixture.cleanup();
-    }
-  }, 20_000);
+  // Antigravity deliberately has no CLI-derived model probe: its Happier ACP
+  // sessions run the managed `agy_acp_server`, whose models are negotiated per
+  // session, so interactive `agy models` output is never borrowed as a fallback.
 
   it('falls back only to the default Codex model when Codex dynamic probing is unavailable', async () => {
     const prevPath = process.env.PATH;

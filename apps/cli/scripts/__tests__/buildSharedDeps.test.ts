@@ -544,6 +544,141 @@ describe('buildSharedDeps', () => {
     }
   });
 
+  it('publishes the manifest-derived compiler inputs before the workspaces that compile them', async () => {
+    // `packages/agents/src/generated/agentIds.ts` is a compiler input of
+    // `cli-common`, which the canonical bundled-plugin publisher itself imports.
+    // If that publisher were the first thing to emit it, a newly manifested
+    // bundled Agent could never enter the build: the generator would need its
+    // own generated id to already exist. Both generated-input producers
+    // therefore run here, before any workspace build, bundled-Agent ids first
+    // because `agents`/`protocol` are upstream of the Plugin SDK Action map.
+    const repoRoot = createTempDirSync('happier-cli-generated-compiler-inputs-order-');
+    try {
+      const agentsDir = resolve(repoRoot, 'packages', 'agents');
+      const cliCommonDir = resolve(repoRoot, 'packages', 'cli-common');
+      mkdirSync(resolve(repoRoot, 'apps', 'cli'), { recursive: true });
+      writeFileSync(resolve(repoRoot, 'package.json'), JSON.stringify({
+        private: true,
+        workspaces: ['apps/*', 'packages/*'],
+      }), 'utf8');
+      writeFileSync(resolve(repoRoot, 'yarn.lock'), '# fixture\n', 'utf8');
+      writeFileSync(resolve(repoRoot, 'apps', 'cli', 'package.json'), JSON.stringify({
+        name: '@happier-dev/cli',
+        bundledDependencies: [],
+      }), 'utf8');
+      for (const [packageDir, name] of [
+        [agentsDir, '@happier-dev/agents'],
+        [cliCommonDir, '@happier-dev/cli-common'],
+      ] as const) {
+        mkdirSync(resolve(packageDir, 'src'), { recursive: true });
+        writeFileSync(resolve(packageDir, 'package.json'), JSON.stringify({
+          name,
+          exports: { '.': './dist/index.js' },
+          ...(name === '@happier-dev/cli-common'
+            ? { dependencies: { '@happier-dev/agents': '0.0.0' } }
+            : {}),
+        }), 'utf8');
+        writeFileSync(resolve(packageDir, 'tsconfig.json'), '{}\n', 'utf8');
+        writeFileSync(resolve(packageDir, 'src', 'index.ts'), 'export {};\n', 'utf8');
+      }
+
+      const events: string[] = [];
+      const parentEnv = {
+        PATH: '/repo/bin',
+        HAPPIER_WORKSPACE_DIST_OUTPUT_DIR: '/repo/.dist.parent-stage',
+        Happier_Workspace_Dist_Output_Dir: '/repo/.dist.mixed-case-parent-stage',
+        HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: 'stale-parent-lease',
+        Happier_Workspace_Dist_Build_Lock_Held: 'mixed-case-parent-lease',
+        HAPPIER_WORKSPACE_PACKAGE_PREREQUISITES_READY: '1',
+        Happier_Workspace_Package_Prerequisites_Ready: '1',
+      };
+      const expectedPreparationEnv = {
+        PATH: '/repo/bin',
+        HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: 'compiler-input-lease',
+      };
+      await syncSharedDepsForSourceDev({
+        repoRoot,
+        env: parentEnv,
+        lockOptions: { heldLockValue: 'compiler-input-lease' },
+        workspaceNames: ['cli-common'],
+        includeRuntimeDependencies: false,
+        generatedCompilerInputMode: 'write',
+        prepareBundledPluginCompilerInputsImpl: async (options: { env?: Record<string, string>; mode?: string }) => {
+          expect(options.env).toEqual(expectedPreparationEnv);
+          events.push(`bundled-plugin-compiler-inputs:${options.mode}`);
+          return true;
+        },
+        prepareGeneratedCompilerInputsImpl: async (options: { env?: Record<string, string>; mode?: string }) => {
+          expect(options.env).toEqual(expectedPreparationEnv);
+          events.push(`plugin-sdk-compiler-inputs:${options.mode}`);
+          return true;
+        },
+        stampPath: resolve(repoRoot, '.project', 'tmp', 'compiler-input-order-stamp.json'),
+        withBuildSharedDepsLockImpl: async (run: () => Promise<unknown>) => await run(),
+        ensureWorkspacePackagesBuiltByNameImpl: async (
+          _root: string,
+          packageNames: string[],
+          options: { env?: Record<string, string> },
+        ) => {
+          expect(options.env).toEqual(expectedPreparationEnv);
+          events.push(`build:${packageNames.join(',')}`);
+          for (const packageName of packageNames) {
+            const packageDir = packageName === '@happier-dev/agents' ? agentsDir : cliCommonDir;
+            mkdirSync(resolve(packageDir, 'dist'), { recursive: true });
+            writeFileSync(resolve(packageDir, 'dist', 'index.js'), 'export {};\n', 'utf8');
+          }
+          return { ok: true, built: packageNames, skipped: [] };
+        },
+        publishBundledPluginArtifactsImpl: () => undefined,
+        syncBundledWorkspaceDistImpl: () => undefined,
+        syncBundledWorkspaceRuntimeDependenciesImpl: () => undefined,
+        syncCliRuntimeDependenciesImpl: () => undefined,
+      });
+
+      expect(events.slice(0, 2)).toEqual([
+        'bundled-plugin-compiler-inputs:write',
+        'plugin-sdk-compiler-inputs:write',
+      ]);
+      expect(events.filter((event) => event.startsWith('build:')).length).toBeGreaterThan(0);
+
+      // A caller making several bounded passes over one unchanged manifest set
+      // re-derives identical bytes, so it may opt later passes out. The Plugin
+      // SDK Action map is a separate producer and is unaffected.
+      const secondPassEvents: string[] = [];
+      await syncSharedDepsForSourceDev({
+        repoRoot,
+        env: parentEnv,
+        workspaceNames: ['cli-common'],
+        includeRuntimeDependencies: false,
+        generatedCompilerInputMode: 'write',
+        prepareBundledPluginCompilerInputs: false,
+        prepareBundledPluginCompilerInputsImpl: async () => {
+          secondPassEvents.push('bundled-plugin-compiler-inputs');
+          return true;
+        },
+        prepareGeneratedCompilerInputsImpl: async (options: { env?: Record<string, string> }) => {
+          expect(options.env).toEqual({ PATH: '/repo/bin' });
+          secondPassEvents.push('plugin-sdk-compiler-inputs');
+          return true;
+        },
+        stampPath: resolve(repoRoot, '.project', 'tmp', 'compiler-input-second-pass-stamp.json'),
+        withBuildSharedDepsLockImpl: async (run: () => Promise<unknown>) => await run(),
+        ensureWorkspacePackagesBuiltByNameImpl: async (
+          _root: string,
+          packageNames: string[],
+        ) => ({ ok: true, built: packageNames, skipped: [] }),
+        publishBundledPluginArtifactsImpl: () => undefined,
+        syncBundledWorkspaceDistImpl: () => undefined,
+        syncBundledWorkspaceRuntimeDependenciesImpl: () => undefined,
+        syncCliRuntimeDependenciesImpl: () => undefined,
+      });
+
+      expect(secondPassEvents).toEqual(['plugin-sdk-compiler-inputs']);
+    } finally {
+      removeTempDirSync(repoRoot);
+    }
+  });
+
   it('keeps dev-only workspace dependencies out of a targeted plugin build and publication selection', async () => {
     const repoRoot = createTempDirSync('happier-cli-runtime-only-shared-deps-');
     try {

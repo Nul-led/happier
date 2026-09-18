@@ -15,6 +15,7 @@ const baseGuidance: BackgroundServiceSetupGuidance = {
   managedReleaseChannels: [],
   manualRelayOwner: null,
   exactDefaultServiceExists: false,
+  exactDefaultServiceRunning: false,
   conflictingServices: [],
   foreignHomeConflictingServices: [],
   shouldOfferDefaultReleaseChannelSwitch: true,

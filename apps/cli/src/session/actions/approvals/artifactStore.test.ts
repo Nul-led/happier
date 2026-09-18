@@ -3,13 +3,16 @@ import axios from 'axios';
 import { z } from 'zod';
 
 import type { Credentials, StoredCredentials } from '@/persistence';
-import { decodeBase64, decryptWithDataKey, encodeBase64, libsodiumPublicKeyFromSecretKey } from '@/api/encryption';
+import { decodeBase64, decryptWithDataKey, encryptWithDataKey, encodeBase64, libsodiumPublicKeyFromSecretKey } from '@/api/encryption';
 import {
   ARTIFACT_PLAIN_DATA_KEY_MARKER,
   ApprovalRequestV1Schema,
+  ApprovalRequestV2Schema,
   CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
   ExecutionRunHostActionApprovalRequestV1Schema,
   TargetActionApprovalRequestV1Schema,
+  encodePlainArtifactStoredContent,
   decodePlainArtifactStoredContent,
   openEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
@@ -147,6 +150,180 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(decryptedBody).toEqual({ body: JSON.stringify(request) });
   });
 
+  it('persists V2 execution provenance at the same approval Artifact owner and binds the header to it', async () => {
+    const credentials = createCredentials();
+    const store = createStore(credentials);
+    const request = ApprovalRequestV2Schema.parse({
+      v: 2,
+      actionId: 'session.message.send',
+      status: 'open',
+      summary: 'Approve sending a message',
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      createdBy: { surface: 'mcp' },
+      executionOriginV1: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'api',
+        caller: { kind: 'host' },
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+        serverId: 'server-1',
+        serverIdentityId: 'stable-home-identity',
+        sessionId: 's1',
+        target: { kind: 'session', sessionId: 's1' },
+        actionId: 'session.message.send',
+        requestId: 'request-1',
+        machineId: 'machine-1',
+        externalActionInputSignature: 'a'.repeat(86),
+        externalActionExecutionAuthorization: {
+          v: 1,
+          token: 'home-signed-invocation-requires-machine-possession',
+          binding: {
+            serverIdentityId: 'stable-home-identity', accountId: 'account-1', principalId: 'principal-1',
+            credentialId: 'credential-1', machineId: 'machine-1',
+            actionId: 'session.message.send', requestId: 'request-1',
+            requestEnvelopeDigest: 'a'.repeat(43),
+            target: { kind: 'session', sessionId: 's1' },
+          },
+        },
+      },
+      actionArgs: { sessionId: 's1', message: 'hello' },
+    });
+    let capturedCreateBody: any = null;
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => {
+      capturedCreateBody = body;
+      return { status: 200, data: { id: body.id } };
+    });
+
+    await store.approvalsCreate({ request, serverId: 'server-1' });
+    const dataKey = openEncryptedDataKeyEnvelopeV1({
+      envelope: decodeBase64(capturedCreateBody.dataEncryptionKey),
+      recipientSecretKeyOrSeed: (credentials.encryption as any).machineKey,
+    });
+    const header = decryptWithDataKey(decodeBase64(capturedCreateBody.header), dataKey!);
+    const body = decryptWithDataKey(decodeBase64(capturedCreateBody.body), dataKey!);
+    expect(header).toMatchObject({
+      kind: 'approval_request.v1',
+      actionId: 'session.message.send',
+      serverId: 'server-1',
+      serverIdentityId: 'stable-home-identity',
+      sessionId: 's1',
+    });
+    expect(body).toEqual({ body: JSON.stringify(request) });
+    mockGet.mockResolvedValue({ status: 200, data: {
+      ...capturedCreateBody, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+      header: encodeBase64(encryptWithDataKey({ ...(header as Record<string, unknown>), serverIdentityId: 'wrong-home' }, dataKey!)),
+    } });
+    await expect(store.approvalsGet({ artifactId: capturedCreateBody.id, serverId: 'server-1' })).resolves.toBeNull();
+
+    mockGet.mockResolvedValueOnce({ status: 200, data: {
+      ...capturedCreateBody, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+      header: encodeBase64(encryptWithDataKey({
+        ...(header as Record<string, unknown>),
+        serverIdentityId: ' stable-home-identity ',
+      }, dataKey!)),
+    } });
+    await expect(store.approvalsGet({ artifactId: capturedCreateBody.id, serverId: 'server-1' })).resolves.toBeNull();
+    await expect(store.approvalsCreate({ request, serverId: 'server-2' }))
+      .rejects.toThrow('approval_request_server_target_mismatch');
+
+    mockGet.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: capturedCreateBody.id,
+        header: capturedCreateBody.header,
+        headerVersion: 1,
+        body: capturedCreateBody.body,
+        bodyVersion: 1,
+        dataEncryptionKey: capturedCreateBody.dataEncryptionKey,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+    mockPost.mockClear();
+    const mutatedOrigin = ApprovalRequestV2Schema.parse({
+      ...request,
+      status: 'approved',
+      updatedAtMs: 2,
+      decision: { kind: 'approve', decidedAtMs: 2 },
+      executionOriginV1: {
+        ...request.executionOriginV1,
+        externalActionExecutionAuthorization: {
+          ...request.executionOriginV1.externalActionExecutionAuthorization!,
+          token: 'substituted-home-authorization',
+        },
+      },
+    });
+    await expect(store.approvalsUpdate({
+      artifactId: capturedCreateBody.id,
+      request: mutatedOrigin,
+      serverId: 'server-1',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'subject_mismatch',
+      error: 'approval_request_subject_mismatch',
+    });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('permits only the released V1 approved-to-stale tombstone transition', async () => {
+    const credentials = createCredentials();
+    const store = createStore(credentials);
+    const approved = ApprovalRequestV1Schema.parse({
+      v: 1,
+      actionId: 'session.title.set',
+      status: 'approved',
+      summary: 'Set title',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'system', sessionId: 'session-1' },
+      actionArgs: { sessionId: 'session-1', title: 'Legacy' },
+      decision: { kind: 'approve', decidedAtMs: 2 },
+    });
+    const terminal = ApprovalRequestV1Schema.parse({
+      ...approved,
+      status: 'failed',
+      updatedAtMs: 3,
+      execution: { executedAtMs: 3, ok: false, errorCode: 'approval_stale', error: 'approval_stale' },
+    });
+    let createdPayload: EncryptedArtifactPayload | null = null;
+    mockPost.mockImplementationOnce(async (_url: string, body: EncryptedArtifactPayload) => {
+      createdPayload = body;
+      return { status: 200, data: { id: body.id } };
+    });
+    const created = await store.approvalsCreate({ request: approved, serverId: null });
+    mockPost.mockClear();
+    // approvalsUpdate reads once to validate the transition and once more to
+    // preserve the existing encrypted data key while performing the CAS.
+    mockGet.mockResolvedValue({ status: 200, data: {
+      ...createdPayload!,
+      headerVersion: 1,
+      bodyVersion: 1,
+      seq: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    } });
+
+    mockPost.mockImplementationOnce(async () => ({
+      status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 },
+    }));
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: terminal, serverId: null }))
+      .resolves.toEqual({ ok: true });
+    expect(mockPost).toHaveBeenCalledOnce();
+
+    const nonStaleFailure = ApprovalRequestV1Schema.parse({
+      ...approved,
+      status: 'failed',
+      updatedAtMs: 3,
+      execution: { executedAtMs: 3, ok: false, errorCode: 'action_disabled', error: 'action_disabled' },
+    });
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: nonStaleFailure, serverId: null }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+  });
+
   it('creates, reads, lists, and updates plain approval artifacts with token-only credentials', async () => {
     const credentials: StoredCredentials = { token: 'token-only', encryption: null };
     const store = createCliApprovalsArtifactStore({ credentials });
@@ -194,10 +371,15 @@ describe('createCliApprovalsArtifactStore', () => {
     await expect(store.approvalsGet({ artifactId: created.artifactId, serverId: 'server-1' }))
       .resolves.toEqual(open);
 
-    mockGet.mockResolvedValueOnce({
-      status: 200,
-      data: [record(createdPayload.header, createdPayload.body, 1)],
-    });
+    mockGet
+      .mockResolvedValueOnce({
+        status: 200,
+        data: [record(createdPayload.header, createdPayload.body, 1)],
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: record(createdPayload.header, createdPayload.body, 1),
+      });
     await expect(store.approvalsList({ status: 'open', limit: 10, serverId: 'server-1' }))
       .resolves.toMatchObject({
         items: [{ artifactId: created.artifactId, status: 'open', serverId: 'server-1' }],
@@ -209,7 +391,9 @@ describe('createCliApprovalsArtifactStore', () => {
       updatedAtMs: 2,
       decision: { kind: 'approve', decidedAtMs: 2 },
     });
-    mockGet.mockResolvedValueOnce({ status: 200, data: record(createdPayload.header, createdPayload.body, 1) });
+    mockGet
+      .mockResolvedValueOnce({ status: 200, data: record(createdPayload.header, createdPayload.body, 1) })
+      .mockResolvedValueOnce({ status: 200, data: record(createdPayload.header, createdPayload.body, 1) });
     let updatedPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       updatedPayload = body;
@@ -232,13 +416,13 @@ describe('createCliApprovalsArtifactStore', () => {
       String(url).includes('/v1/artifacts'));
     const artifactPosts = mockPost.mock.calls.filter(([url]) =>
       String(url).includes('/v1/artifacts'));
-    expect(artifactGets).toHaveLength(3);
+    expect(artifactGets).toHaveLength(5);
     expect(artifactPosts).toHaveLength(2);
     for (const [, config] of artifactGets) {
       expect(config).toMatchObject({
         headers: {
           'x-happier-account-stored-content-protocol': String(
-            CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
           ),
         },
       });
@@ -247,11 +431,63 @@ describe('createCliApprovalsArtifactStore', () => {
       expect(config).toMatchObject({
         headers: {
           'x-happier-account-stored-content-protocol': String(
-            CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
           ),
         },
       });
     }
+  });
+
+  it('serializes invitation approval custody with only the Account-bound continuation', async () => {
+    const invitationToken = 'invitation-bearer-must-never-enter-the-artifact';
+    const request = ApprovalRequestV2Schema.parse({
+      v: 2,
+      actionId: 'teams.invitations.accept',
+      status: 'open',
+      summary: 'Accept Team invitation',
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      createdBy: { surface: 'cli' },
+      executionOriginV1: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'cli',
+        caller: { kind: 'host' },
+        serverId: 'home-1',
+        actionId: 'teams.invitations.accept',
+        requestId: 'request-invitation-1',
+      },
+      actionArgs: {
+        v: 1,
+        continuation: {
+          v: 1,
+          kind: 'post_auth_invitation',
+          reference: 'prepared-continuation-reference',
+          teamId: 'team-1',
+        },
+      },
+      preview: {
+        actionId: 'teams.invitations.accept',
+        actionArgs: {
+          homeServerId: 'home-1',
+          continuation: { teamId: 'team-1' },
+          teamName: 'Platform',
+        },
+      },
+    });
+    const store = createStore({ token: 'token-only', encryption: null }, 'plain');
+    let createdPayload: any = null;
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => {
+      createdPayload = body;
+      return { status: 200, data: { id: body.id } };
+    });
+
+    await store.approvalsCreate({ request, serverId: 'home-1' });
+
+    const serializedBody = decodePlainArtifactStoredContent(createdPayload.body);
+    expect(serializedBody).toEqual({ body: JSON.stringify(request) });
+    expect(JSON.stringify(serializedBody)).toContain('prepared-continuation-reference');
+    expect(JSON.stringify(serializedBody)).not.toContain(invitationToken);
   });
 
   it('uses the existing artifact route and codec for cancellable prompt-library storage', async () => {
@@ -287,7 +523,9 @@ describe('createCliApprovalsArtifactStore', () => {
       body: JSON.stringify({ v: 1, markdown: '# Prompt', createdAtMs: 1, updatedAtMs: 1 }),
     });
 
-    mockGet.mockResolvedValueOnce({ status: 200, data: record });
+    mockGet
+      .mockResolvedValueOnce({ status: 200, data: record })
+      .mockResolvedValueOnce({ status: 200, data: record });
     mockPost.mockResolvedValueOnce({ status: 200, data: { success: true } });
     await expect(store.promptLibraryStore.update({
       artifactId,
@@ -395,7 +633,9 @@ describe('createCliApprovalsArtifactStore', () => {
     const approved = ExecutionRunHostActionApprovalRequestV1Schema.parse({
       ...request, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 },
     });
-    mockGet.mockImplementationOnce(async () => fullRecord(openPayload!, 1));
+    mockGet
+      .mockImplementationOnce(async () => fullRecord(openPayload!, 1))
+      .mockImplementationOnce(async () => fullRecord(openPayload!, 1));
     mockPost.mockImplementationOnce(async (_url: string, body: unknown) => {
       approvedPayload = body as EncryptedArtifactPayload;
       return { status: 200, data: { success: true } };
@@ -471,7 +711,7 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(mockPost).toHaveBeenCalledTimes(1);
   });
 
-  it('persists an approved target action through one idempotent terminal execution transition', async () => {
+  it('requires target-action approved→executing→terminal CAS transitions', async () => {
     const credentials = createCredentials();
     const store = createStore(credentials);
     const open = TargetActionApprovalRequestV1Schema.parse({
@@ -489,7 +729,9 @@ describe('createCliApprovalsArtifactStore', () => {
       body: payload.body, bodyVersion: version, dataEncryptionKey: createdPayload.dataEncryptionKey,
       seq: version, createdAt: 1, updatedAt: version,
     } });
-    mockGet.mockImplementationOnce(async () => fullRecord(createdPayload, 1));
+    mockGet
+      .mockImplementationOnce(async () => fullRecord(createdPayload, 1))
+      .mockImplementationOnce(async () => fullRecord(createdPayload, 1));
     mockPost.mockImplementationOnce(async (_url: string, body: any) => { approvedPayload = body; return { status: 200, data: { success: true } }; });
     const approved = TargetActionApprovalRequestV1Schema.parse({
       ...open, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 },
@@ -497,25 +739,59 @@ describe('createCliApprovalsArtifactStore', () => {
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: approved }))
       .resolves.toEqual({ ok: true });
 
-    let executedPayload: any;
-    const executed = TargetActionApprovalRequestV1Schema.parse({
-      ...approved,
-      status: 'executed',
-      updatedAtMs: 3,
+    const directTerminal = TargetActionApprovalRequestV1Schema.parse({
+      ...approved, status: 'executed', updatedAtMs: 3,
       execution: { executedAtMs: 3, ok: true, result: { published: true } },
     });
     mockGet.mockImplementationOnce(async () => fullRecord(approvedPayload, 2));
+    await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: directTerminal }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+    expect(mockPost).toHaveBeenCalledTimes(2);
+
+    let executingPayload: any;
+    const executing = TargetActionApprovalRequestV1Schema.parse({
+      ...approved, status: 'executing', updatedAtMs: 3,
+    });
+    mockGet
+      .mockImplementationOnce(async () => fullRecord(approvedPayload, 2))
+      .mockImplementationOnce(async () => fullRecord(approvedPayload, 2));
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => {
+      executingPayload = body;
+      return { status: 200, data: { success: true } };
+    });
+    await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executing }))
+      .resolves.toEqual({ ok: true });
+    expect(mockPost).toHaveBeenCalledTimes(3);
+
+    // An executing row proves another caller already won the exclusive claim.
+    // Byte-identical claim bytes must not turn that observation into ownership.
+    mockGet.mockImplementationOnce(async () => fullRecord(executingPayload, 3));
+    await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executing }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+    expect(mockPost).toHaveBeenCalledTimes(3);
+
+    let executedPayload: any;
+    const executed = TargetActionApprovalRequestV1Schema.parse({
+      ...executing,
+      status: 'executed',
+      updatedAtMs: 4,
+      execution: { executedAtMs: 4, ok: true, result: { published: true } },
+    });
+    mockGet
+      .mockImplementationOnce(async () => fullRecord(executingPayload, 3))
+      .mockImplementationOnce(async () => fullRecord(executingPayload, 3));
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       executedPayload = body;
       return { status: 200, data: { success: true } };
     });
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executed }))
       .resolves.toEqual({ ok: true });
+    expect(mockPost).toHaveBeenCalledTimes(4);
 
-    mockGet.mockImplementationOnce(async () => fullRecord(executedPayload, 3));
+    mockGet.mockImplementationOnce(async () => fullRecord(executedPayload, 4));
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executed }))
       .resolves.toEqual({ ok: true });
-    expect(mockPost).toHaveBeenCalledTimes(3);
+    expect(mockPost).toHaveBeenCalledTimes(4);
 
     mockGet.mockImplementationOnce(async () => fullRecord(executedPayload, 3));
     const rejected = TargetActionApprovalRequestV1Schema.parse({
@@ -523,7 +799,7 @@ describe('createCliApprovalsArtifactStore', () => {
     });
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: rejected }))
       .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
-    expect(mockPost).toHaveBeenCalledTimes(3);
+    expect(mockPost).toHaveBeenCalledTimes(4);
   });
 
   it('reads approval requests by decrypting artifact bodies', async () => {
@@ -693,6 +969,79 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
+  it('scans Artifact cursors until it finds the requested matching approval', async () => {
+    const store = createStore({ token: 'token-only', encryption: null }, 'plain');
+    const encodedHeader = (value: Record<string, unknown>) => encodeBase64(
+      new TextEncoder().encode(JSON.stringify({ t: 'plain', v: value })),
+      'base64',
+    );
+    const approval = ApprovalRequestV1Schema.parse({
+      v: 1,
+      actionId: 'session.message.send',
+      status: 'open',
+      summary: 'Approve message',
+      createdAtMs: 7,
+      updatedAtMs: 94,
+      createdBy: { surface: 'cli' },
+      actionArgs: { sessionId: 'session-1', message: 'hello' },
+    });
+    const approvalHeader = encodedHeader({
+      v: 1,
+      kind: 'approval_request.v1',
+      title: approval.summary,
+      approvalStatus: approval.status,
+      actionId: approval.actionId,
+      serverId: 'server-1',
+    });
+    const approvalBody = encodePlainArtifactStoredContent({ body: JSON.stringify(approval) });
+    const rows = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        id: `unrelated-${index}`,
+        header: encodedHeader({ v: 1, kind: 'prompt_library_item.v1', title: `Other ${index}` }),
+        headerVersion: 1,
+        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        seq: index + 1,
+        createdAt: index + 1,
+        updatedAt: 100 - index,
+      })),
+      {
+        id: 'approval-after-unrelated',
+        header: approvalHeader,
+        headerVersion: 1,
+        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        seq: 7,
+        createdAt: 7,
+        updatedAt: 94,
+      },
+    ];
+    mockGet.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/artifacts/approval-after-unrelated')) {
+        return {
+          status: 200,
+          data: {
+            id: 'approval-after-unrelated',
+            header: approvalHeader,
+            headerVersion: 1,
+            body: approvalBody,
+            bodyVersion: 1,
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+            seq: 7,
+            createdAt: 7,
+            updatedAt: 94,
+          },
+        };
+      }
+      return { status: 200, data: [rows.shift()] };
+    });
+
+    await expect(store.approvalsList({ status: 'open', limit: 1, serverId: 'server-1' }))
+      .resolves.toMatchObject({
+        items: [{ artifactId: 'approval-after-unrelated', status: 'open', serverId: 'server-1' }],
+        queryPlan: { kind: 'approval_artifact_header_scan' },
+      });
+    expect(mockGet).toHaveBeenCalledTimes(8);
+  });
+
   it('fails a retained encrypted approval list with typed locked state instead of omitting the row', async () => {
     const store = createStore({ token: 'token-only', encryption: null }, 'plain');
     mockGet.mockResolvedValueOnce({
@@ -718,7 +1067,7 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
-  it('lists approval queue items from encrypted artifact headers without reading artifact bodies', async () => {
+  it('lists approval queue items only after the encrypted header and body agree', async () => {
     const credentials = createCredentials();
     const store = createStore(credentials);
 
@@ -740,24 +1089,39 @@ describe('createCliApprovalsArtifactStore', () => {
     });
     const created = await store.approvalsCreate({ request, serverId: 'server-1' });
 
-    mockGet.mockImplementationOnce(async (url: string) => {
-      expect(url).toContain('/v1/artifacts');
-      expect(url).toContain('limit=50');
-      return {
+    mockGet
+      .mockImplementationOnce(async (url: string) => {
+        expect(url).toContain('/v1/artifacts');
+        expect(url).toContain('limit=10');
+        return {
+          status: 200,
+          data: [
+            {
+              id: created.artifactId,
+              header: createdPayload.header,
+              headerVersion: 1,
+              dataEncryptionKey: createdPayload.dataEncryptionKey,
+              seq: 1,
+              createdAt: 1,
+              updatedAt: 2,
+            },
+          ],
+        };
+      })
+      .mockResolvedValueOnce({
         status: 200,
-        data: [
-          {
-            id: created.artifactId,
-            header: createdPayload.header,
-            headerVersion: 1,
-            dataEncryptionKey: createdPayload.dataEncryptionKey,
-            seq: 1,
-            createdAt: 1,
-            updatedAt: 2,
-          },
-        ],
-      };
-    });
+        data: {
+          id: created.artifactId,
+          header: createdPayload.header,
+          headerVersion: 1,
+          body: createdPayload.body,
+          bodyVersion: 1,
+          dataEncryptionKey: createdPayload.dataEncryptionKey,
+          seq: 1,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      });
 
     const listed = await store.approvalsList({ status: 'open', limit: 10, serverId: 'server-1' });
 
@@ -774,13 +1138,88 @@ describe('createCliApprovalsArtifactStore', () => {
         },
       ],
       queryPlan: {
-        kind: 'bounded_approval_artifact_header_scan',
+        kind: 'approval_artifact_header_scan',
         backingStore: 'ArtifactStore',
-        boundedBy: 'GET /v1/artifacts?limit=50',
-        serverLimit: 50,
+        boundedBy: 'ArtifactStore source exhaustion',
+        serverLimit: 10,
         hydratedTranscripts: false,
       },
     });
+  });
+
+  it('filters list results from the hydrated body-authoritative status, not a stale index row', async () => {
+    const store = createStore({ token: 'token-only', encryption: null }, 'plain');
+    const encodeHeader = (value: Record<string, unknown>) => encodeBase64(
+      new TextEncoder().encode(JSON.stringify({ t: 'plain', v: value })),
+      'base64',
+    );
+    const approved = ApprovalRequestV1Schema.parse({
+      v: 1,
+      actionId: 'session.message.send',
+      status: 'approved',
+      summary: 'Approve sending a message',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'cli', sessionId: 's1' },
+      actionArgs: { sessionId: 's1', message: 'hello' },
+      decision: { kind: 'approve', decidedAtMs: 2 },
+    });
+    const staleListHeader = encodeHeader({
+      v: 1,
+      kind: 'approval_request.v1',
+      title: approved.summary,
+      approvalStatus: 'open',
+      actionId: approved.actionId,
+      sessions: ['s1'],
+      sessionId: 's1',
+      serverId: 'server-1',
+    });
+    const hydratedHeader = encodeHeader({
+      v: 1,
+      kind: 'approval_request.v1',
+      title: approved.summary,
+      approvalStatus: 'approved',
+      actionId: approved.actionId,
+      sessions: ['s1'],
+      sessionId: 's1',
+      serverId: 'server-1',
+    });
+    mockGet
+      .mockResolvedValueOnce({
+        status: 200,
+        data: [{
+          id: 'approval-raced',
+          header: staleListHeader,
+          headerVersion: 1,
+          dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+          seq: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          id: 'approval-raced',
+          header: hydratedHeader,
+          headerVersion: 2,
+          body: encodePlainArtifactStoredContent({ body: JSON.stringify(approved) }),
+          bodyVersion: 2,
+          dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+          seq: 2,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      });
+
+    await expect(store.approvalsList({ status: 'approved', limit: 10, serverId: 'server-1' }))
+      .resolves.toMatchObject({
+        items: [{
+          artifactId: 'approval-raced',
+          status: 'approved',
+          updatedAtMs: 2,
+        }],
+      });
   });
 
   it('excludes unscoped approval artifacts from server-scoped list queries', async () => {
@@ -818,7 +1257,20 @@ describe('createCliApprovalsArtifactStore', () => {
           updatedAt: 2,
         },
       ],
-    }));
+    })).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: created.artifactId,
+        header: createdPayload.header,
+        headerVersion: 1,
+        body: createdPayload.body,
+        bodyVersion: 1,
+        dataEncryptionKey: createdPayload.dataEncryptionKey,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    });
 
     const listed = await store.approvalsList({ status: 'open', limit: 10, serverId: 'server-1' });
 
@@ -860,7 +1312,20 @@ describe('createCliApprovalsArtifactStore', () => {
         createdAt: 1,
         updatedAt: 1,
       },
-    }));
+    })).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: created.artifactId,
+        header: createdPayload.header,
+        headerVersion: 1,
+        body: createdPayload.body,
+        bodyVersion: 1,
+        dataEncryptionKey: createdPayload.dataEncryptionKey,
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    });
 
     const read = await store.approvalsGet({ artifactId: created.artifactId, serverId: 'server-1' });
 
@@ -889,20 +1354,35 @@ describe('createCliApprovalsArtifactStore', () => {
     });
     const created = await store.approvalsCreate({ request, serverId: 'server-1' });
 
-    mockGet.mockImplementationOnce(async () => ({
-      status: 200,
-      data: [
-        {
+    mockGet
+      .mockImplementationOnce(async () => ({
+        status: 200,
+        data: [
+          {
+            id: created.artifactId,
+            header: createdPayload.header,
+            headerVersion: 1,
+            dataEncryptionKey: createdPayload.dataEncryptionKey,
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }))
+      .mockImplementationOnce(async () => ({
+        status: 200,
+        data: {
           id: created.artifactId,
           header: createdPayload.header,
           headerVersion: 1,
+          body: createdPayload.body,
+          bodyVersion: 1,
           dataEncryptionKey: createdPayload.dataEncryptionKey,
           seq: 1,
           createdAt: 1,
           updatedAt: 2,
         },
-      ],
-    }));
+      }));
 
     const listed = await store.approvalsList({ status: 'canceled', limit: 10, serverId: 'server-1' });
 
@@ -946,20 +1426,21 @@ describe('createCliApprovalsArtifactStore', () => {
       serverId: null,
     });
 
+    const storedRecord = {
+      id: created.artifactId,
+      header: createPayload.header,
+      headerVersion: 3,
+      body: createPayload.body,
+      bodyVersion: 4,
+      dataEncryptionKey: createPayload.dataEncryptionKey,
+      seq: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
     mockGet.mockImplementationOnce(async () => ({
       status: 200,
-      data: {
-        id: created.artifactId,
-        header: createPayload.header,
-        headerVersion: 3,
-        body: createPayload.body,
-        bodyVersion: 4,
-        dataEncryptionKey: createPayload.dataEncryptionKey,
-        seq: 1,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-    }));
+      data: storedRecord,
+    })).mockImplementationOnce(async () => ({ status: 200, data: storedRecord }));
 
     let capturedUpdateBody: any = null;
     mockPost.mockImplementationOnce(async (url: string, body: any) => {
@@ -992,6 +1473,133 @@ describe('createCliApprovalsArtifactStore', () => {
 
     const decryptedBody = decryptWithDataKey(decodeBase64(capturedUpdateBody.body), dataKey!);
     expect(decryptedBody).toEqual({ body: JSON.stringify(request) });
+  });
+
+  it('admits the executing claim only for current V2 approvals and only through the artifact revision CAS', async () => {
+    const credentials = createCredentials();
+    const store = createStore(credentials);
+
+    const open = ApprovalRequestV2Schema.parse({
+      v: 2,
+      actionId: 'session.message.send',
+      status: 'open',
+      summary: 'Approve sending a message',
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      createdBy: { surface: 'mcp' },
+      requestedSurface: 'mcp',
+      executionOriginV1: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'mcp',
+        caller: { kind: 'host' },
+        serverId: 'server-1',
+        sessionId: 's1',
+        target: { kind: 'session', sessionId: 's1' },
+        actionId: 'session.message.send',
+        requestId: 'request-1',
+      },
+      actionArgs: { sessionId: 's1', message: 'hello' },
+    });
+    const approved = ApprovalRequestV2Schema.parse({
+      ...open, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 },
+    });
+    const executing = ApprovalRequestV2Schema.parse({ ...approved, status: 'executing', updatedAtMs: 3 });
+    const executed = ApprovalRequestV2Schema.parse({
+      ...approved,
+      status: 'executed',
+      updatedAtMs: 4,
+      execution: { executedAtMs: 4, ok: true, result: { status: 'accepted', localId: 'local-1' } },
+    });
+
+    let createPayload: any = null;
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => {
+      createPayload = body;
+      return { status: 200, data: { id: body.id } };
+    });
+    const created = await store.approvalsCreate({ request: open, serverId: 'server-1' });
+
+    const dataKey = openEncryptedDataKeyEnvelopeV1({
+      envelope: decodeBase64(createPayload.dataEncryptionKey),
+      recipientSecretKeyOrSeed: (credentials.encryption as any).machineKey,
+    });
+    const recordFor = (request: unknown, headerVersion: number, bodyVersion: number) => {
+      const header = { ...(decryptWithDataKey(decodeBase64(createPayload.header), dataKey!) as any) };
+      header.approvalStatus = (request as { status: string }).status;
+      return {
+        id: created.artifactId,
+        header: encodeBase64(encryptWithDataKey(header, dataKey!)),
+        headerVersion,
+        body: encodeBase64(encryptWithDataKey({ body: JSON.stringify(request) }, dataKey!)),
+        bodyVersion,
+        dataEncryptionKey: createPayload.dataEncryptionKey,
+        seq: headerVersion,
+        createdAt: 1,
+        updatedAt: headerVersion,
+      };
+    };
+
+    // An open row cannot be claimed: the decision must be committed first.
+    mockGet.mockResolvedValue({ status: 200, data: recordFor(open, 1, 1) });
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executing, serverId: 'server-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+
+    // approved -> executing rides the exact read revision as its CAS precondition.
+    mockGet.mockResolvedValue({ status: 200, data: recordFor(approved, 5, 6) });
+    let claimBody: any = null;
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => {
+      claimBody = body;
+      return { status: 200, data: { success: true, headerVersion: 6, bodyVersion: 7 } };
+    });
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executing, serverId: 'server-1' }))
+      .resolves.toEqual({ ok: true });
+    expect(claimBody).toMatchObject({ expectedHeaderVersion: 5, expectedBodyVersion: 6 });
+
+    // Exact terminal settlements stay idempotent, but an exact executing row is
+    // evidence that this caller did not win the approved -> executing claim.
+    mockGet.mockResolvedValueOnce({ status: 200, data: recordFor(executing, 6, 7) });
+    const postsBeforeDuplicateClaim = mockPost.mock.calls.length;
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executing, serverId: 'server-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+    expect(mockPost.mock.calls.length).toBe(postsBeforeDuplicateClaim);
+
+    // A concurrent claimant that lost the server CAS gets a typed version mismatch, not a silent write.
+    mockPost.mockImplementationOnce(async () => ({
+      status: 200, data: { success: false, error: 'version-mismatch' },
+    }));
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executing, serverId: 'server-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'version_mismatch' });
+
+    // executing -> terminal is the only transition an already-claimed row admits.
+    mockGet.mockResolvedValue({ status: 200, data: recordFor(executing, 6, 7) });
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: approved, serverId: 'server-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+    mockPost.mockImplementationOnce(async () => ({
+      status: 200, data: { success: true, headerVersion: 7, bodyVersion: 8 },
+    }));
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executed, serverId: 'server-1' }))
+      .resolves.toEqual({ ok: true });
+
+    // A duplicate terminal write against the settled row is idempotent, not a second effect.
+    mockGet.mockResolvedValue({ status: 200, data: recordFor(executed, 7, 8) });
+    const postsBeforeDuplicate = mockPost.mock.calls.length;
+    await expect(store.approvalsUpdate({ artifactId: created.artifactId, request: executed, serverId: 'server-1' }))
+      .resolves.toEqual({ ok: true });
+    expect(mockPost.mock.calls.length).toBe(postsBeforeDuplicate);
+
+    // Released V1 owns no executing state at all, at the schema or the store.
+    const legacyApproved = ApprovalRequestV1Schema.parse({
+      v: 1,
+      actionId: 'session.message.send',
+      status: 'approved',
+      summary: 'Approve sending a message',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'cli', sessionId: 's1' },
+      actionArgs: { sessionId: 's1', message: 'hello' },
+      decision: { kind: 'approve', decidedAtMs: 2 },
+    });
+    expect(ApprovalRequestV1Schema.safeParse({ ...legacyApproved, status: 'executing' }).success).toBe(false);
   });
 
   it('rejects updates to approval artifacts from another server scope', async () => {

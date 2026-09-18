@@ -24,6 +24,8 @@ import {
   type ProviderModelLoadDescriptorV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
+import type { ProviderConnectionSecurityFingerprintV1 } from '@happier-dev/protocol/providers';
+import { ProviderConnectionSecurityFingerprintV1Schema } from '@happier-dev/protocol/providers';
 
 import { readProviderSettingsForCli } from '../settings/read';
 import { getProviderContribution } from './lookup';
@@ -192,7 +194,7 @@ function authorizationForRecord(
     scope: 'account' | 'machine';
     connectionId: ProviderConnectionId;
     machineId: string;
-    connectionSecurityFingerprint: string;
+    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1;
     endpointSetFingerprint: string;
   }>,
 ): ResolvedProviderConnectionAuthorization {
@@ -418,7 +420,8 @@ function resolveProviderConnectionFromSettings(
         ...(template.publicHeaders ? { publicHeaders: template.publicHeaders } : {}),
       });
     }
-    const connectionSecurityFingerprint = createProviderConnectionSecurityFingerprintV1({
+    const connectionSecurityFingerprint = ProviderConnectionSecurityFingerprintV1Schema.parse(
+      createProviderConnectionSecurityFingerprintV1({
       securityContractVersion: PROVIDER_CONNECTION_SECURITY_CONTRACT_VERSION_V1,
       endpoints: [],
       catalogProbes: facts.catalogProbes,
@@ -431,7 +434,8 @@ function resolveProviderConnectionFromSettings(
         managedRuntime: resolvedManagedDeployment.managedRuntime,
         logicalEndpoints: managedLogicalEndpoints,
       },
-    });
+      }),
+    );
     const endpointSetFingerprint = createProviderEndpointSetFingerprintV1({
       endpoints: [],
     });
@@ -489,7 +493,8 @@ function resolveProviderConnectionFromSettings(
   )
     ? 'machine'
     : 'account';
-  const connectionSecurityFingerprint = createProviderConnectionSecurityFingerprintV1({
+  const connectionSecurityFingerprint = ProviderConnectionSecurityFingerprintV1Schema.parse(
+    createProviderConnectionSecurityFingerprintV1({
     securityContractVersion: PROVIDER_CONNECTION_SECURITY_CONTRACT_VERSION_V1,
     endpoints: endpoints.map((endpoint) => ({
       endpointTemplateId: endpoint.endpointTemplateId,
@@ -502,7 +507,8 @@ function resolveProviderConnectionFromSettings(
     ...(facts.catalogFallback ? { catalogFallback: facts.catalogFallback } : {}),
     credentialTransports: facts.credentialTransports,
     ...(facts.modelLoad ? { modelLoad: facts.modelLoad } : {}),
-  });
+    }),
+  );
   const assessedByTemplateId = new Map(endpoints.map((endpoint) => [
     endpoint.endpointTemplateId,
     assessProviderEndpoint(endpoint.normalizedUrl, {

@@ -1,9 +1,11 @@
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
-import { hasFlag } from '@/cli/commands/shared/argvFlags';
+import { hasFlag, readCommandPositionals } from '@/cli/commands/shared/argvFlags';
+import { resolveAdmittedActionCliCommand } from '@/cli/commandRegistry';
 
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import {
+  SESSION_HELP_LINES,
   SESSION_NESTED_SUBCOMMAND_HELP_LINES,
   SESSION_SUBCOMMAND_HELP_LINES,
   SESSION_TOP_LEVEL_HELP_LINES,
@@ -81,6 +83,27 @@ function isHelpToken(value: string): boolean {
   return value === 'help' || value === '--help' || value === '-h';
 }
 
+/**
+ * The `happier session` index: dedicated workflow rows from the usage table plus
+ * one generated row for every compiled Action command under this root. A leaf
+ * that migrated to the compiler is documented from that same descriptor, so the
+ * table cannot restate a grammar the parser no longer accepts, and a dispatchable
+ * path is never missing from help.
+ */
+async function buildSessionTopLevelHelpLines(): Promise<readonly string[]> {
+  const { listCompiledActionCliUsageLinesForRoot } = await import('@/cli/actions/commandHelp');
+  return [...SESSION_TOP_LEVEL_HELP_LINES, ...listCompiledActionCliUsageLinesForRoot(['session'])];
+}
+
+/** The compiled rows nested under `happier session <subcommand> …`. */
+async function readCompiledSessionSubcommandHelp(
+  subcommand: string,
+): Promise<readonly string[] | null> {
+  const { listCompiledActionCliUsageLinesForRoot } = await import('@/cli/actions/commandHelp');
+  const rows = listCompiledActionCliUsageLinesForRoot(['session', subcommand]);
+  return rows.length > 0 ? rows : null;
+}
+
 /** The usage this argv asks for, or `null` when no subcommand owns one. */
 function readSessionSubcommandHelp(argv: readonly string[]): readonly string[] | string | null {
   const subcommand = normalizeHelpSubcommand(String(argv[0] ?? '').trim());
@@ -110,77 +133,70 @@ export async function handleSessionCommand(
 
   try {
     if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
-      await emitSessionHelp({ help: SESSION_TOP_LEVEL_HELP_LINES, json, kind: 'session_help' });
+      await emitSessionHelp({ help: await buildSessionTopLevelHelpLines(), json, kind: 'session_help' });
+      return;
+    }
+
+    const readCredentialsFn = deps?.readCredentialsFn ?? (async () => await readStoredCredentials());
+
+    // Root dispatch already resolves a migrated leaf before this handler runs.
+    // Nested callers reach the same compiled owner here, so a migrated command
+    // has exactly one parser, one binder, one help page and one Action
+    // invocation regardless of which entry point named it. There is no
+    // per-command branch and no fallback: an unmigrated spelling simply is not a
+    // compiled path.
+    const compiledArgv = ['session', ...argv];
+    // History is deliberately a retained multi-step workflow (snapshot/follow/
+    // release), not an Action-owned one-shot command. Do not make its argument
+    // validation or help wait for the dynamic Action/plugin catalog only to
+    // discover that the dedicated path is excluded there.
+    const compiledCommand = subcommand === 'history'
+      ? null
+      : await resolveAdmittedActionCliCommand(compiledArgv);
+    if (compiledCommand) {
+      const { runCompiledActionCliCommand } = await import('@/cli/actions/executeCommand');
+      await runCompiledActionCliCommand({
+        command: compiledCommand,
+        argv: compiledArgv,
+        deps: { readCredentialsFn },
+        ...(deps?.signal ? { signal: deps.signal } : {}),
+      });
       return;
     }
 
     if (hasHelpFlag) {
-      const subcommandHelp = readSessionSubcommandHelp(argv);
-      if (subcommandHelp !== null) {
+      const dedicatedHelp = readSessionSubcommandHelp(argv);
+      const compiledHelp = await readCompiledSessionSubcommandHelp(normalizeHelpSubcommand(subcommand));
+      const dedicatedRows = dedicatedHelp === null
+        ? []
+        : typeof dedicatedHelp === 'string' ? [dedicatedHelp] : [...dedicatedHelp];
+      const subcommandHelp = [...dedicatedRows, ...(compiledHelp ?? [])];
+      if (subcommandHelp.length > 0) {
         await emitSessionHelp({ help: subcommandHelp, json, kind });
         return;
       }
     }
 
-    const readCredentialsFn = deps?.readCredentialsFn ?? (async () => await readStoredCredentials());
-
     switch (subcommand) {
-      case 'list': {
-        const { cmdSessionList } = await import('./list');
-        await cmdSessionList(argv, { readCredentialsFn, ...(deps?.signal ? { signal: deps.signal } : {}) });
-        return;
-      }
-      case 'status': {
-        const { cmdSessionStatus } = await import('./status');
-        await cmdSessionStatus(argv, { readCredentialsFn });
-        return;
-      }
       case 'create': {
         const { cmdSessionCreate } = await import('./create');
         await cmdSessionCreate(argv, { readCredentialsFn, ...(deps?.signal ? { signal: deps.signal } : {}) });
         return;
       }
-      case 'set-title': {
-        const { cmdSessionSetTitle } = await import('./setTitle');
-        await cmdSessionSetTitle(argv, { readCredentialsFn });
-        return;
-      }
-      case 'set-permission-mode': {
-        const { cmdSessionSetPermissionMode } = await import('./setPermissionMode');
-        await cmdSessionSetPermissionMode(argv, { readCredentialsFn });
-        return;
-      }
-      case 'set-model': {
-        const { cmdSessionSetModel } = await import('./setModel');
-        await cmdSessionSetModel(argv, { readCredentialsFn });
-        return;
-      }
-      case 'send': {
-        const { cmdSessionSend } = await import('./send');
-        await cmdSessionSend(argv, { readCredentialsFn });
-        return;
-      }
-      case 'wait': {
-        const { cmdSessionWait } = await import('./wait');
-        await cmdSessionWait(argv, { readCredentialsFn });
-        return;
-      }
-      case 'stop': {
-        const { cmdSessionStop } = await import('./stop');
-        await cmdSessionStop(argv, { readCredentialsFn });
-        return;
-      }
-      case 'archive': {
-        const { cmdSessionArchive } = await import('./archive');
-        await cmdSessionArchive(argv, { readCredentialsFn });
-        return;
-      }
-      case 'unarchive': {
-        const { cmdSessionUnarchive } = await import('./unarchive');
-        await cmdSessionUnarchive(argv, { readCredentialsFn });
-        return;
-      }
       case 'history': {
+        // Reject the required selector before loading the comparatively broad
+        // transcript/follow implementation. This keeps malformed invocations
+        // local and guarantees they cannot reach credential or runtime setup.
+        const historyPositionals = readCommandPositionals(argv, {
+          startIndex: 1,
+          valueFlags: ['--tail', '--limit', '--format', '--machine-id'],
+        });
+        if (!historyPositionals[0]) {
+          throw Object.assign(new Error(`Usage: ${SESSION_HELP_LINES.history}`), {
+            code: 'invalid_arguments',
+            expectedFailure: true,
+          });
+        }
         const { cmdSessionHistory } = await import('./history');
         await cmdSessionHistory(argv, { readCredentialsFn, ...(deps?.signal ? { signal: deps.signal } : {}) });
         return;
@@ -188,54 +204,9 @@ export async function handleSessionCommand(
       case 'run': {
         const runSub = String(argv[1] ?? '').trim();
         if (!runSub) throw new Error('Usage: happier session run <subcommand> ...');
-        if (runSub === 'get') {
-          const { cmdSessionRunGet } = await import('./run/get');
-          await cmdSessionRunGet(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'list') {
-          const { cmdSessionRunList } = await import('./run/list');
-          await cmdSessionRunList(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'start') {
-          const { cmdSessionRunStart } = await import('./run/start');
-          await cmdSessionRunStart(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'send') {
-          const { cmdSessionRunSend } = await import('./run/send');
-          await cmdSessionRunSend(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'stop') {
-          const { cmdSessionRunStop } = await import('./run/stop');
-          await cmdSessionRunStop(argv, { readCredentialsFn });
-          return;
-        }
         if (runSub === 'action') {
           const { cmdSessionRunAction } = await import('./run/action');
           await cmdSessionRunAction(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'wait') {
-          const { cmdSessionRunWait } = await import('./run/wait');
-          await cmdSessionRunWait(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'stream-start') {
-          const { cmdSessionRunStreamStart } = await import('./run/streamStart');
-          await cmdSessionRunStreamStart(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'stream-read') {
-          const { cmdSessionRunStreamRead } = await import('./run/streamRead');
-          await cmdSessionRunStreamRead(argv, { readCredentialsFn });
-          return;
-        }
-        if (runSub === 'stream-cancel') {
-          const { cmdSessionRunStreamCancel } = await import('./run/streamCancel');
-          await cmdSessionRunStreamCancel(argv, { readCredentialsFn });
           return;
         }
         throw new Error(`Unknown session run subcommand: ${runSub}`);

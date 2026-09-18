@@ -4,12 +4,13 @@ import {
     ExecutionRunGetResponseSchema,
     ExecutionRunListResponseSchema,
     ExecutionRunPublicStateSchema,
+    ExecutionRunWaitResultSchema,
+    isExecutionRunTerminalStatus,
     readExecutionRunStartRunCreation,
     withExecutionRunStartFailureDetails,
     FeatureAxisSchema,
     FeatureBlockerCodeSchema,
     isFeatureId,
-    waitForExecutionRunTerminal,
     type ExecutionRunListRequest,
     type ExecutionRunPublicState,
     type ExecutionRunStartFailureDetailsV1,
@@ -33,7 +34,6 @@ import type {
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import { readRpcRequestDisposition } from '@/session/transport/rpc/rpcRequestDisposition';
-import { delay, delayUnrefAbortable } from '@/utils/time';
 import { applyExecutionRunListRequest } from './applyExecutionRunListRequest';
 import {
     findExecutionRunPublicStateInHistoryRows,
@@ -213,6 +213,9 @@ function toExecutionRunPublicState(marker: ExecutionRunMarkerRecord): ExecutionR
         backendTarget,
         ...(marker.display !== undefined ? { display: marker.display } : {}),
         ...(marker.launchOrigin !== undefined ? { launchOrigin: marker.launchOrigin } : {}),
+        ...(marker.requestedConfiguration !== undefined
+            ? { requestedConfiguration: marker.requestedConfiguration }
+            : {}),
         permissionMode,
         retentionPolicy: marker.retentionPolicy,
         runClass: marker.runClass,
@@ -280,9 +283,7 @@ async function listTranscriptBackedExecutionRuns(
     params: ExecutionRunRpcContext,
 ): Promise<readonly ExecutionRunPublicState[]> {
     const rows = await readRawSessionHistoryRows({
-        token: params.token,
-        sessionId: params.sessionId,
-        ctx: params.ctx,
+        ...params,
         limit: configuration.memoryMaxTranscriptWindowMessages,
     });
     return listExecutionRunPublicStatesFromHistoryRows(rows);
@@ -292,9 +293,7 @@ async function getTranscriptBackedExecutionRun(
     params: ExecutionRunRpcContext & Readonly<{ runId: string }>,
 ): Promise<ExecutionRunPublicState | null> {
     const rows = await readRawSessionHistoryRows({
-        token: params.token,
-        sessionId: params.sessionId,
-        ctx: params.ctx,
+        ...params,
         limit: configuration.memoryMaxTranscriptWindowMessages,
     });
     return findExecutionRunPublicStateInHistoryRows(rows, params.runId);
@@ -476,17 +475,23 @@ async function callExecutionRunRpc(
         methodSuffix: string;
         request: unknown;
         executionRunStart?: boolean;
+        transportTimeoutMs?: number | null;
     }>,
 ): Promise<ExecutionRunServiceResult<unknown>> {
+    const {
+        methodSuffix,
+        executionRunStart,
+        transportTimeoutMs,
+        ...rpcContext
+    } = params;
     const payload = await callSessionRpc({
-        ...params,
-        token: params.token,
-        sessionId: params.sessionId,
-        method: `${params.sessionId}:${params.methodSuffix}`,
+        ...rpcContext,
+        method: `${params.sessionId}:${methodSuffix}`,
         request: params.request,
+        ...(transportTimeoutMs !== undefined ? { timeoutMs: transportTimeoutMs } : {}),
     });
     return normalizeExecutionRunRpcPayload(payload, {
-        ...(params.executionRunStart === true ? { executionRunStart: true } : {}),
+        ...(executionRunStart === true ? { executionRunStart: true } : {}),
     });
 }
 
@@ -510,7 +515,11 @@ async function fallbackForUnavailableExecutionRunControl(
 }
 
 async function callExecutionRunControlRpc(
-    params: ExecutionRunRpcContext & Readonly<{ methodSuffix: string; request: unknown }>,
+    params: ExecutionRunRpcContext & Readonly<{
+        methodSuffix: string;
+        request: unknown;
+        transportTimeoutMs?: number | null;
+    }>,
 ): Promise<ExecutionRunServiceResult<unknown>> {
     try {
         const result = await callExecutionRunRpc(params);
@@ -536,6 +545,7 @@ export async function startExecutionRun(
             ...params,
             methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_START,
             executionRunStart: true,
+            transportTimeoutMs: null,
         });
         return result.ok || !isFallbackSafeExecutionRunServiceError(result)
             ? result
@@ -750,13 +760,15 @@ export async function getExecutionRun(
     }
 }
 
+/** Released attached-send compatibility: current input uses session.message.send. */
 export async function sendExecutionRunMessage(
-    params: ExecutionRunRpcContext & Readonly<{ request: unknown }>,
+    _params: ExecutionRunRpcContext & Readonly<{ request: unknown }>,
 ): Promise<ExecutionRunServiceResult<unknown>> {
-    return await callExecutionRunControlRpc({
-        ...params,
-        methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
-    });
+    return {
+        ok: false,
+        code: 'session_input_target_update_required',
+        message: 'session_input_target_update_required',
+    };
 }
 
 export async function stopExecutionRun(
@@ -765,6 +777,7 @@ export async function stopExecutionRun(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
+        transportTimeoutMs: null,
     });
 }
 
@@ -774,6 +787,7 @@ export async function executeExecutionRunAction(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
+        transportTimeoutMs: null,
     });
 }
 
@@ -783,6 +797,7 @@ export async function ensureExecutionRun(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE,
+        transportTimeoutMs: null,
     });
 }
 
@@ -792,6 +807,7 @@ export async function ensureOrStartExecutionRun(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START,
+        transportTimeoutMs: null,
     });
 }
 
@@ -801,6 +817,7 @@ export async function startExecutionRunStream(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START,
+        transportTimeoutMs: null,
     });
 }
 
@@ -819,51 +836,81 @@ export async function cancelExecutionRunStream(
     return await callExecutionRunControlRpc({
         ...params,
         methodSuffix: SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
+        transportTimeoutMs: null,
     });
 }
 
 type ExecutionRunWaitRequest = Readonly<{
     runId: string;
     timeoutMs: number | null;
-    pollIntervalMs: number;
     signal?: AbortSignal;
 }>;
 
-type ExecutionRunWaitWithExactReader = ExecutionRunWaitRequest & Readonly<{
-    /**
-     * Exact-daemon adapter for detached scope. The waiter remains the sole
-     * polling/currentness owner; callers only supply the already-selected
-     * transport read operation.
-     */
-    readRun: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
-}>;
+function projectTerminalExecutionRunWaitResult(data: unknown): WaitForExecutionRunResult | null {
+    if (!isRecord(data) || !isRecord(data.run) || !isExecutionRunTerminalStatus(data.run.status)) {
+        return null;
+    }
+    return {
+        ok: true,
+        status: data.run.status,
+        result: data,
+    };
+}
+
+async function readExecutionRunWaitCompatibilitySnapshot(
+    params: ExecutionRunRpcContext & ExecutionRunWaitRequest,
+): Promise<WaitForExecutionRunResult | null> {
+    const snapshot = await getExecutionRun({
+        ...params,
+        request: ExecutionRunGetRequestSchema.parse({
+            runId: params.runId,
+            includeStructured: true,
+        }),
+    });
+    return snapshot.ok ? projectTerminalExecutionRunWaitResult(snapshot.data) : snapshot;
+}
 
 export async function waitForExecutionRun(
-    params: (ExecutionRunRpcContext & ExecutionRunWaitRequest) | ExecutionRunWaitWithExactReader,
+    params: ExecutionRunRpcContext & ExecutionRunWaitRequest,
 ): Promise<WaitForExecutionRunResult> {
-    const request = ExecutionRunGetRequestSchema.parse({
+    const request = {
         runId: params.runId,
-        // Waiting is a terminal observation of the same canonical get result,
-        // including bounded structured/tool output when it is available.
-        includeStructured: true,
-    });
-    return await waitForExecutionRunTerminal<unknown, ExecutionRunServiceFailure>({
-        runId: request.runId,
-        timeoutMs: params.timeoutMs,
-        pollIntervalMs: params.pollIntervalMs,
-        ...(params.signal ? { signal: params.signal } : {}),
-        readRun: async () => 'readRun' in params
-            ? await params.readRun(request)
-            : await getExecutionRun({
-                ...params,
-                request,
-            }),
-        delay: async (ms, signal): Promise<void> => {
-            if (signal) {
-                await delayUnrefAbortable(ms, signal);
-                return;
-            }
-            await delay(ms);
-        },
-    });
+        ...(params.timeoutMs === null
+            ? {}
+            : { timeoutSeconds: Math.max(1, Math.ceil(params.timeoutMs / 1_000)) }),
+    };
+    try {
+        const waitedPayload = await callSessionRpc({
+            ...params,
+            token: params.token,
+            sessionId: params.sessionId,
+            method: `${params.sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_WAIT}`,
+            request,
+            // The daemon owns the optional observation deadline. A second local
+            // acknowledgement timer can only race and discard its final reply.
+            timeoutMs: null,
+        });
+        const waited = ExecutionRunWaitResultSchema.safeParse(waitedPayload);
+        if (waited.success) {
+            return waited.data;
+        }
+        const normalized = normalizeExecutionRunRpcPayload(waitedPayload);
+        if (!normalized.ok && isFallbackSafeExecutionRunServiceError(normalized)) {
+            return await readExecutionRunWaitCompatibilitySnapshot(params) ?? normalized;
+        }
+        return {
+            ok: false,
+            code: 'execution_run_wait_result_invalid',
+            message: 'Execution run wait returned an invalid result',
+        };
+    } catch (error) {
+        const fallbackCode = classifyExecutionRunRpcFallback(error);
+        if (!fallbackCode) throw error;
+        const fallback = await readExecutionRunWaitCompatibilitySnapshot(params);
+        return fallback ?? {
+            ok: false,
+            code: fallbackCode,
+            message: error instanceof Error ? error.message : String(error),
+        };
+    }
 }

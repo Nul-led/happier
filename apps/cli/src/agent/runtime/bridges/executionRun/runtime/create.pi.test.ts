@@ -4,12 +4,18 @@ import os from 'node:os';
 import { join } from 'node:path';
 
 import { buildBackendTargetKey } from '@happier-dev/protocol';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type {
   ExecutionRunHostRuntime,
   ExecutionRunHostRuntimeMessageHandler,
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
+import { configuration, reloadConfiguration } from '@/configuration';
+import { createEnvKeyScope } from '@/testkit/env/envScope';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
 
 const createStubRuntime = () => {
   const messages: AgentMessage[] = [];
@@ -17,13 +23,18 @@ const createStubRuntime = () => {
 
   const runtime: ExecutionRunHostRuntime = {
     readResumeSupport: vi.fn(async () => false),
-    provisionSession: vi.fn(async () => {
+    provisionRuntime: vi.fn(async () => {
       handler?.({ type: 'model-output', fullText: 'pi-runtime-ready' });
-      return { sessionId: 'pi-session-1' };
+      return { runtimeId: 'pi-runtime-1' };
     }),
-    sendPrompt: vi.fn(async (_sessionId: string, prompt: string) => {
-      handler?.({ type: 'model-output', fullText: `pi:${prompt}` });
+    deliverInput: vi.fn(async (
+      _runtimeId: string,
+      input: Parameters<ExecutionRunHostRuntime['deliverInput']>[1],
+    ) => {
+      handler?.({ type: 'model-output', fullText: `pi:${input.text}` });
+      return { status: 'admitted' as const };
     }),
+    getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
     cancel: vi.fn(async () => undefined),
     subscribeMessages: vi.fn((next: ExecutionRunHostRuntimeMessageHandler) => {
       handler = next;
@@ -46,16 +57,11 @@ vi.mock('@/agent/runtime/registry/engineRegistry', () => ({
   resolveBackendEngineAdapterResolution: (...args: unknown[]) => resolveBackendEngineAdapterResolutionMock(...args),
 }));
 
+import { createExecutionRunRuntime } from './create';
+
 describe('createExecutionRunRuntime (pi)', () => {
   beforeEach(() => {
     resolveBackendEngineAdapterResolutionMock.mockReset();
-  });
-
-  afterEach(() => {
-    vi.resetModules();
-    delete process.env.HAPPIER_HOME_DIR;
-    delete process.env.HAPPIER_SERVER_URL;
-    delete process.env.HAPPIER_WEBAPP_URL;
   });
 
   it('creates the pi execution-run runtime through runtimeCore without using the legacy execution-run registry directly', async () => {
@@ -69,10 +75,9 @@ describe('createExecutionRunRuntime (pi)', () => {
         },
       },
     });
-    const { createExecutionRunRuntime } = await import('./create');
-
     const executionRuntime = createExecutionRunRuntime({
       cwd: process.cwd(),
+      scope: 'detached',
       backendId: 'pi',
       permissionMode: 'read_only',
     });
@@ -81,9 +86,9 @@ describe('createExecutionRunRuntime (pi)', () => {
       messages.push(message);
     });
 
-    await expect(executionRuntime.provisionSession()).resolves.toEqual({ sessionId: 'pi-session-1' });
-    await expect(executionRuntime.sendPrompt('pi-session-1', 'hello')).resolves.toBeUndefined();
-    await expect(executionRuntime.cancel('pi-session-1')).resolves.toBeUndefined();
+    await expect(executionRuntime.provisionRuntime()).resolves.toEqual({ runtimeId: 'pi-runtime-1' });
+    await expect(executionRuntime.deliverInput('pi-runtime-1', { text: 'hello' })).resolves.toEqual({ status: 'admitted' });
+    await expect(executionRuntime.cancel('pi-runtime-1')).resolves.toBeUndefined();
     await expect(executionRuntime.waitForTurnCompletion?.()).resolves.toBeUndefined();
     await expect(executionRuntime.dispose()).resolves.toBeUndefined();
     unsubscribe();
@@ -123,16 +128,15 @@ describe('createExecutionRunRuntime (pi)', () => {
         },
       },
     });
-    const { createExecutionRunRuntime } = await import('./create');
-
     const executionRuntime = createExecutionRunRuntime({
       cwd: process.cwd(),
+      scope: 'detached',
       backendId: 'pi',
       permissionMode: 'yolo',
       causalPermissionAuthority,
     });
 
-    await expect(executionRuntime.provisionSession()).resolves.toEqual({ sessionId: 'pi-session-1' });
+    await expect(executionRuntime.provisionRuntime()).resolves.toEqual({ runtimeId: 'pi-runtime-1' });
 
     expect(createExecutionRunBackendMock).toHaveBeenCalledWith(expect.objectContaining({
       permissionMode: 'yolo',
@@ -145,12 +149,17 @@ describe('createExecutionRunRuntime (pi)', () => {
   // root when backend construction throws, or a failed run leaks a directory.
   it('removes the ephemeral isolation root when runtime-core backend construction throws', async () => {
     const homeDir = await mkdtemp(join(os.tmpdir(), 'happier-execution-run-isolation-home-'));
+    const envScope = createEnvKeyScope([
+      'HAPPIER_HOME_DIR',
+      'HAPPIER_SERVER_URL',
+      'HAPPIER_WEBAPP_URL',
+    ]);
     try {
-      process.env.HAPPIER_HOME_DIR = homeDir;
-      process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
-      process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
-
-      const { reloadConfiguration, configuration } = await import('@/configuration');
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: 'https://api.example.test',
+        HAPPIER_WEBAPP_URL: 'https://app.example.test',
+      });
       reloadConfiguration();
 
       resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
@@ -163,10 +172,9 @@ describe('createExecutionRunRuntime (pi)', () => {
           },
         },
       });
-      const { createExecutionRunRuntime } = await import('./create');
-
       const executionRuntime = createExecutionRunRuntime({
         cwd: process.cwd(),
+        scope: 'detached',
         backendId: 'pi',
         runId: 'run_engine_throw',
         permissionMode: 'read_only',
@@ -183,21 +191,22 @@ describe('createExecutionRunRuntime (pi)', () => {
         'run_engine_throw',
       );
 
-      await expect(executionRuntime.provisionSession({ initialPrompt: 'boot' }))
+      await expect(executionRuntime.provisionRuntime({ initialPrompt: 'boot' }))
         .rejects.toThrow('engine backend failed');
       await expect.poll(() => existsSync(isolationRoot)).toBe(false);
     } finally {
+      envScope.restore();
+      reloadConfiguration();
       await rm(homeDir, { recursive: true, force: true });
     }
   });
 
   it('throws when the built-in backend target is disabled in account settings before creating the runtime shell', async () => {
     const targetKey = buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'pi' });
-    const { createExecutionRunRuntime } = await import('./create');
-
     expect(() =>
       createExecutionRunRuntime({
         cwd: process.cwd(),
+        scope: 'detached',
         backendId: 'pi',
         backendTarget: { kind: 'builtInAgent', agentId: 'pi' },
         permissionMode: 'read_only',

@@ -6,6 +6,7 @@ import {
 } from '@/session/metadata/updateSessionMetadataWithRetry';
 
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export type UpdateSessionMetadataForTargetResult =
   | Readonly<{ ok: true; sessionId: string; metadata: Record<string, unknown>; version: number }>
@@ -13,16 +14,24 @@ export type UpdateSessionMetadataForTargetResult =
 
 export async function updateSessionMetadataForTarget(params: Readonly<{
   credentials: StoredCredentials;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   idOrPrefix: string;
   updater: Parameters<typeof updateSessionMetadataWithRetry>[0]['updater'];
   currentness?: SessionMetadataMutationCurrentness;
   maxAttempts?: number;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<UpdateSessionMetadataForTargetResult> {
   assertSessionMetadataMutationCurrentness(params.currentness);
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
     idOrPrefix: params.idOrPrefix,
     ...(params.currentness?.signal ? { signal: params.currentness.signal } : {}),
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   assertSessionMetadataMutationCurrentness(params.currentness);
   if (!sessionTarget.ok) {
@@ -36,6 +45,9 @@ export async function updateSessionMetadataForTarget(params: Readonly<{
   const result = await updateSessionMetadataWithRetry({
     token: params.credentials.token,
     credentials: params.credentials,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
     sessionId: sessionTarget.sessionId,
     rawSession: sessionTarget.rawSession,
     accountEncryptionCurrentness: sessionTarget.accountEncryptionCurrentness,

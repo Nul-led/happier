@@ -1293,7 +1293,7 @@ describe('provider spawn authorization resolver', () => {
             protocol: 'openai-responses',
           },
           runtimeCredentialTransport: {
-            id: 'managed-runtime-bearer',
+            id: 'bearer',
             destination: {
               kind: 'httpHeader',
               name: 'authorization',
@@ -1331,6 +1331,77 @@ describe('provider spawn authorization resolver', () => {
     });
     expect(JSON.stringify(result)).not.toContain('127.0.0.1');
     expect(JSON.stringify(result)).not.toContain('localhost');
+  });
+
+  it('authorizes a credential-free managed Provider without fabricating a bearer', () => {
+    const credentialFreeContribution: ResolvedProviderContribution = {
+      ...managedContribution,
+      definition: ProviderContributionV1Schema.parse({
+        ...managedContribution.definition,
+        credential: undefined,
+      }),
+    };
+    const credentialFreeRegistry = {
+      providersByContributionKey: new Map([[canonicalContributionKey, credentialFreeContribution]]),
+    };
+    const settings = managedGrantedSettings(credentialFreeRegistry);
+    const result = resolveProviderSpawnAuthorization({
+      selection: {
+        v: 1,
+        updatedAt: 1,
+        ref: {
+          agentTargetKey: 'backend:codex',
+          providerConnectionId: connectionId,
+          modelId: 'model-a',
+        },
+      },
+      machineId: 'machine-a',
+      agentTargetKey: 'backend:codex',
+      agentId: 'codex',
+      accountSettings: { providerSettingsV1: settings },
+      providerSettings: settings,
+      registry: credentialFreeRegistry,
+      dnsEvidenceByEndpointUrl: new Map(),
+      lease: lease(
+        undefined,
+        true,
+        'restart_session',
+        credentialFreeRegistry.providersByContributionKey,
+        true,
+      ),
+      managedProviderRuntime: exactManagedProviderRuntime(),
+      managedPurposeBindingSnapshot: {
+        v: 1,
+        bindings: [{
+          purpose: {
+            consumer: { pluginId: 'acme.gateway', localId: 'gateway' },
+            purpose: 'upstream',
+          },
+          target: {
+            kind: 'account',
+            account: {
+              service: {
+                pluginId: 'happier.connected-account.example',
+                localId: 'example',
+              },
+              accountId: 'account-a',
+            },
+          },
+        }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      authorization: {
+        binding: { runtimeCredentialTransport: null },
+        credentialReference: { kind: 'none' },
+        sessionBindingMetadata: {
+          runtimeBindingBasis: { runtimeCredentialTransport: null },
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('managed-runtime-bearer');
   });
 
   it('carries a managed endpoint template public header into the authorized Agent binding', () => {

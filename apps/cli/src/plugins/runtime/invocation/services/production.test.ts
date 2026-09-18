@@ -232,6 +232,7 @@ describe('production invocation service owners', () => {
                 qualifiedId: 'acme.beta/actions/run',
             }),
             generation: '7',
+            immutableGenerationId: 'beta-generation-7',
             correlationId: 'nested-beta-to-gamma',
             surface: 'plugin' as const,
             caller: Object.freeze({
@@ -241,6 +242,7 @@ describe('production invocation service owners', () => {
                     id: 'launch',
                     qualifiedId: 'acme.alpha/actions/launch',
                 }),
+                immutableGenerationId: 'alpha-generation-7',
                 materialization: upstreamMaterialization,
                 originSurface: 'ui' as const,
             }),
@@ -268,6 +270,7 @@ describe('production invocation service owners', () => {
                     id: 'run',
                     qualifiedId: 'acme.beta/actions/run',
                 },
+                immutableGenerationId: 'beta-generation-7',
                 materialization: currentMaterialization,
                 originSurface: 'ui',
             },
@@ -1761,8 +1764,12 @@ process.stdin.on('data', (chunk) => {
                 loggerSink: { write: () => {} },
                 accountSettingsRecordAdapter: {
                     isAvailable: () => true,
-                    readRecord,
-                    writeRecord,
+                    async bindOperation() {
+                        return {
+                            readRecord,
+                            writeRecord,
+                        };
+                    },
                     watchRecord(_model, listener) {
                         watchers.add(listener);
                         return () => watchers.delete(listener);

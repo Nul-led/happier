@@ -41,6 +41,9 @@ export async function startHappyHeadlessInTmux(
   argv: string[],
   options: Readonly<{ output?: 'human' | 'silent' }> = {},
 ): Promise<void> {
+  // Resolve custody before any tmux/session preparation. Compound credentials
+  // are invocation-local and must never be reduced to a bearer for a child.
+  const apiTokenContinuationEnvironment = buildCliApiTokenContinuationEnvironment();
   const argsWithoutTmux = removeFlag(argv, '--tmux');
   const { agent, childArgs } = await resolveHeadlessTmuxAgentLaunchConfig(argsWithoutTmux);
 
@@ -87,7 +90,7 @@ export async function startHappyHeadlessInTmux(
         ...buildWindowEnv(),
         ...(launchSpec.env ?? {}),
       }),
-      ...buildCliApiTokenContinuationEnvironment(),
+      ...apiTokenContinuationEnvironment,
     },
   );
 

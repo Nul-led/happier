@@ -24,6 +24,7 @@ import {
   type RunnerTerminationEvent,
   type RunnerTerminationOutcome,
 } from '@/agent/runtime/lifecycle/runnerTerminationOutcome';
+import type { registerRunnerTerminationHandlers } from '@/agent/runtime/lifecycle/runnerTerminationHandlers';
 import type { RuntimeTurnMessageHandler } from '@/agent/runtime/turns/runtimeTurnOperations';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { createNativeAgentSessionOperations } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
@@ -119,6 +120,7 @@ function createLifecycleParams(overrides?: Readonly<{
     cancelTurn: vi.fn(async () => undefined),
     readSessionIdentity: vi.fn(() => ({ sessionId: 'provider-session-1' })),
     updateSessionRuntimeConfig: vi.fn(async () => undefined),
+    setOnPromptDeliveryOutcome: vi.fn(),
     resetOrDisposeRuntime: vi.fn(async () => undefined),
   };
   const session = {
@@ -170,7 +172,8 @@ function createLifecycleParams(overrides?: Readonly<{
     },
     session: session as unknown as SessionLoopLifecycleParams['session'],
     runtime,
-    hookRuntime: overrides?.hookRuntime ?? null,
+    hookRuntime: overrides?.hookRuntime ?? runtime,
+    registerProviderAcceptedEffect: vi.fn(),
     messageBuffer: new MessageBuffer(),
     permissionHandler: {
       reset: vi.fn(),
@@ -471,6 +474,68 @@ describe('runSessionLoopLifecycle checkpoint controls', () => {
 });
 
 describe('runSessionLoopLifecycle daemon exact-turn custody', () => {
+  it('preserves caller process-lifecycle ownership while exposing canonical explicit stop', async () => {
+    const baseParams = createLifecycleParams({ policyAgentId: 'claude' });
+    let registration: Parameters<typeof registerRunnerTerminationHandlers>[0] | null = null;
+    const params: SessionLoopLifecycleParams = {
+      ...baseParams,
+      config: {
+        ...baseParams.config,
+        processLifecycleOwnership: 'caller',
+      },
+      deps: {
+        ...baseParams.deps,
+        registerRunnerTerminationHandlersFn: vi.fn((nextRegistration) => {
+          registration = nextRegistration;
+          return {
+            dispose: vi.fn(),
+            requestTermination: vi.fn(),
+            whenTerminated: Promise.resolve({
+              event: { kind: 'killSession' as const },
+              outcome: computeRunnerTerminationOutcome({ kind: 'killSession' }),
+            }),
+          };
+        }),
+      },
+    };
+
+    await runSessionLoopLifecycle(params);
+
+    expect(registration).toEqual(expect.objectContaining({
+      processLifecycleOwnership: 'caller',
+    }));
+  });
+
+  it('exposes the canonical explicit-stop operation to a scoped runtime composition', async () => {
+    const baseParams = createLifecycleParams({ policyAgentId: 'claude' });
+    let exposedStop: (() => Promise<void>) | null = null;
+    let releasePromptLoop!: () => void;
+    const promptLoopReleased = new Promise<void>((resolve) => { releasePromptLoop = resolve; });
+    const requestTermination = vi.fn();
+    const params: SessionLoopLifecycleParams = {
+      ...baseParams,
+      config: {
+        ...baseParams.config,
+        onRuntimeStopReady: (stop) => { exposedStop = stop; },
+      },
+      deps: {
+        ...baseParams.deps,
+        registerRunnerTerminationHandlersFn: vi.fn(() => ({
+          dispose: vi.fn(), requestTermination,
+          whenTerminated: Promise.resolve({ event: { kind: 'killSession' as const }, outcome: computeRunnerTerminationOutcome({ kind: 'killSession' }) }),
+        })),
+        runPermissionModePromptLoopFn: vi.fn(async () => { await promptLoopReleased; }),
+      },
+    };
+
+    const runPromise = runSessionLoopLifecycle(params);
+    await vi.waitFor(() => expect(exposedStop).not.toBeNull());
+    await exposedStop!();
+    expect(requestTermination).toHaveBeenCalledOnce();
+    releasePromptLoop();
+    await runPromise;
+  });
+
   it('disposes the runtime as session_closed before explicit killSession requests runner termination', async () => {
     const baseParams = createLifecycleParams({ policyAgentId: 'claude' });
     const order: string[] = [];
@@ -2682,6 +2747,76 @@ describe('runSessionLoopLifecycle runtime transcript projection', () => {
       'cursor',
       expect.objectContaining({ type: 'tool-call' }),
       expect.objectContaining({ localId: expect.stringMatching(/^acp-call-v1:/) }),
+    );
+  });
+
+  it('wires normalized provider tool evidence into the durable canonical Diff transcript', async () => {
+    const baseParams = createLifecycleParams({
+      policyAgentId: 'codex',
+      checkpointToolProtocol: 'codex',
+    });
+    let runtimeEventHandler: RuntimeTurnMessageHandler | null = null;
+    const runtime = baseParams.runtime as unknown as {
+      subscribeRuntimeEvents: ReturnType<typeof vi.fn>;
+    };
+    runtime.subscribeRuntimeEvents = vi.fn((handler: RuntimeTurnMessageHandler) => {
+      runtimeEventHandler = handler;
+      return () => undefined;
+    });
+    const params: SessionLoopLifecycleParams = {
+      ...baseParams,
+      config: {
+        ...baseParams.config,
+        agentMessageType: 'codex',
+      },
+      deps: {
+        ...baseParams.deps,
+        runPermissionModePromptLoopFn: vi.fn(async () => {
+          runtimeEventHandler?.(canonicalRuntimeEvent({
+            kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 1,
+            turnId: 'host-turn-1', startedBy: 'provider',
+          }));
+          runtimeEventHandler?.(canonicalRuntimeEvent({
+            kind: 'tool-call', sessionId: 'session-1', emittedAtMs: 2,
+            turnId: 'host-turn-1', toolCallId: 'edit-1', toolName: 'Edit',
+            input: { file_path: 'src/real-wire.ts', old_string: 'before', new_string: 'after' },
+          }));
+          runtimeEventHandler?.(canonicalRuntimeEvent({
+            kind: 'tool-result', sessionId: 'session-1', emittedAtMs: 3,
+            turnId: 'host-turn-1', toolCallId: 'edit-1', output: { status: 'completed' },
+          }));
+          runtimeEventHandler?.(canonicalRuntimeEvent({
+            kind: 'turn-complete', sessionId: 'session-1', emittedAtMs: 4,
+            turnId: 'host-turn-1', agentTurnId: 'provider-turn-1',
+          }));
+        }),
+      },
+    };
+
+    await runSessionLoopLifecycle(params);
+
+    expect(baseParams.session.enqueueAgentMessageCommitted).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        type: 'tool-call',
+        name: 'Diff',
+        input: expect.objectContaining({
+          files: [expect.objectContaining({
+            file_path: 'src/real-wire.ts',
+            oldText: 'before',
+            newText: 'after',
+            provider: 'codex',
+            provider_turn_id: 'provider-turn-1',
+          })],
+          _happier: expect.objectContaining({
+            turnId: 'host-turn-1',
+            provider: 'codex',
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        localId: expect.stringMatching(/^turn-diff-.*:tool-call$/),
+      }),
     );
   });
 

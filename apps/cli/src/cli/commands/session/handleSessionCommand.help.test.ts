@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
+import { findCompiledActionCliCommand } from '@/cli/actions/compiledCommands';
+import { renderActionCliCommandHelp } from '@/cli/actions/commandHelp';
 import { handleSessionCommand } from './handleSessionCommand';
 import { SESSION_HELP_LINES } from './shared/sessionCommandUsage';
+
+function compiledHelp(path: readonly string[]): string {
+  const command = findCompiledActionCliCommand(path);
+  if (!command) throw new Error(`Missing compiled command ${path.join(' ')}`);
+  return renderActionCliCommandHelp(command);
+}
 
 describe('handleSessionCommand help output', () => {
   it('lists the direct session control subcommands and run subcommands', async () => {
@@ -11,29 +19,25 @@ describe('handleSessionCommand help output', () => {
     try {
       await handleSessionCommand(['--help']);
 
-      expect(output.text()).toContain(SESSION_HELP_LINES.list);
+      expect(output.text()).toContain('happier session list');
       expect(output.text()).toContain('happier resume [<session-id-or-prefix>]');
-      expect(output.text()).toContain('happier session status <session-id-or-prefix-or-tag> [--live] [--json]');
+      expect(output.text()).toContain(compiledHelp(['session', 'status']).split('\n')[0]);
       expect(output.text()).toContain(SESSION_HELP_LINES.create);
       expect(output.text()).toContain('happier session create [options]\n\nOptions:\n  [--path <path>]');
-      expect(output.text()).toContain(SESSION_HELP_LINES.send);
-      expect(output.text()).toContain(SESSION_HELP_LINES.wait);
-      expect(output.text()).toContain(SESSION_HELP_LINES.stop);
-      expect(output.text()).toContain('happier session set-title <session-id-or-prefix-or-tag> <title> [--json]');
-      expect(output.text()).toContain('happier session set-permission-mode <session-id-or-prefix-or-tag> <mode> [--json]');
-      expect(output.text()).toContain(SESSION_HELP_LINES.setModel);
-      expect(output.text()).toContain('happier session archive <session-id-or-prefix-or-tag> [--json]');
-      expect(output.text()).toContain('happier session unarchive <session-id-or-prefix-or-tag> [--json]');
+      // Migrated leaves are listed from the compiled descriptor, not the
+      // dedicated usage table, so help and the parser cannot drift apart.
+      for (const leaf of ['send', 'wait', 'stop', 'set-title', 'set-permission-mode', 'set-model', 'archive', 'unarchive']) {
+        expect(output.text()).toContain(compiledHelp(['session', leaf]).split('\n')[0]);
+      }
       expect(output.text()).toContain(SESSION_HELP_LINES.history);
       expect(output.text()).toContain('happier session actions list [--json]');
       expect(output.text()).toContain('happier session actions describe <action-id> [--json]');
       expect(output.text()).toContain(SESSION_HELP_LINES.actionsExecute);
-      expect(output.text()).toContain('happier session run start <session-id-or-prefix-or-tag> --intent <review|plan|delegate|task|voice_agent|memory_hints|scm_commit_message|scm_diff_summary> --agent <agent-id> [--instructions <text>] [--permission-mode <mode>] [--retention <ephemeral|resumable>] [--run-class <bounded|long_lived>] [--io-mode <request_response|streaming>] [--json]');
-      expect(output.text()).toContain('happier session run list <session-id-or-prefix-or-tag> [--agent <agent-id>] [--status <running|succeeded|failed|cancelled|timeout>] [--limit <count>] [--json]');
-      expect(output.text()).toContain('happier session run send <session-id-or-prefix-or-tag> <run-id> <message> [--resume] [--json]');
-      expect(output.text()).toContain('happier session run stop <session-id-or-prefix-or-tag> <run-id> [--json]');
+      for (const leaf of ['start', 'list', 'send', 'stop', 'wait']) {
+        expect(output.text()).toContain(compiledHelp(['session', 'run', leaf]).split('\n')[0]);
+      }
+      expect(output.text()).toContain('deprecated: use "happier send <session> <message> --run <run>"');
       expect(output.text()).toContain('happier session run action <session-id-or-prefix-or-tag> <run-id> <action-id> [--input-json <json>] [--json]');
-      expect(output.text()).toContain('happier session run wait <session-id-or-prefix-or-tag> <run-id> [--timeout <seconds>] [--json]');
     } finally {
       output.restore();
     }
@@ -66,18 +70,18 @@ describe('handleSessionCommand help output', () => {
   });
 
   it.each([
-    ['list', SESSION_HELP_LINES.list],
-    ['status', 'happier session status <session-id-or-prefix-or-tag> [--live] [--json]'],
+    ['list', 'happier session list'],
+    ['status', compiledHelp(['session', 'status'])],
     ['create', SESSION_HELP_LINES.create],
-    ['send', SESSION_HELP_LINES.send],
-    ['wait', SESSION_HELP_LINES.wait],
-    ['stop', SESSION_HELP_LINES.stop],
-    ['archive', 'happier session archive <session-id-or-prefix-or-tag> [--json]'],
-    ['unarchive', 'happier session unarchive <session-id-or-prefix-or-tag> [--json]'],
+    ['send', compiledHelp(['session', 'send'])],
+    ['wait', compiledHelp(['session', 'wait'])],
+    ['stop', compiledHelp(['session', 'stop'])],
+    ['archive', compiledHelp(['session', 'archive'])],
+    ['unarchive', compiledHelp(['session', 'unarchive'])],
     ['history', SESSION_HELP_LINES.history],
-    ['set-title', 'happier session set-title <session-id-or-prefix-or-tag> <title> [--json]'],
-    ['set-permission-mode', 'happier session set-permission-mode <session-id-or-prefix-or-tag> <mode> [--json]'],
-    ['set-model', SESSION_HELP_LINES.setModel],
+    ['set-title', compiledHelp(['session', 'set-title'])],
+    ['set-permission-mode', compiledHelp(['session', 'set-permission-mode'])],
+    ['set-model', compiledHelp(['session', 'set-model'])],
   ] as const)('prints usage for `%s --help` without prompting for credentials', async (subcommand, expectedUsage) => {
     const output = captureConsoleText();
     const readCredentialsFn = vi.fn(async () => {
@@ -100,26 +104,16 @@ describe('handleSessionCommand help output', () => {
     [['actions', 'list', '--help'], 'happier session actions list [--json]'],
     [['actions', 'describe', '--help'], 'happier session actions describe <action-id> [--json]'],
     [['actions', 'execute', '--help'], SESSION_HELP_LINES.actionsExecute],
-    [['run', '--help'], SESSION_HELP_LINES.runStart],
-    [['run', 'start', '--help'], SESSION_HELP_LINES.runStart],
-    [['run', 'list', '--help'], SESSION_HELP_LINES.runList],
-    [['run', 'get', '--help'], 'happier session run get <session-id-or-prefix-or-tag> <run-id> [--include-structured] [--json]'],
-    [['run', 'send', '--help'], 'happier session run send <session-id-or-prefix-or-tag> <run-id> <message> [--resume] [--json]'],
-    [['run', 'stop', '--help'], 'happier session run stop <session-id-or-prefix-or-tag> <run-id> [--json]'],
     [['run', 'action', '--help'], 'happier session run action <session-id-or-prefix-or-tag> <run-id> <action-id> [--input-json <json>] [--json]'],
-    [['run', 'wait', '--help'], 'happier session run wait <session-id-or-prefix-or-tag> <run-id> [--timeout <seconds>] [--json]'],
-    [['run', 'stream-start', '--help'], 'happier session run stream-start <session-id-or-prefix-or-tag> <run-id> <message> [--resume] [--json]'],
-    [['run', 'stream-read', '--help'], 'happier session run stream-read <session-id-or-prefix-or-tag> <run-id> <stream-id> --cursor <n> [--max-events <n>] [--json]'],
-    [['run', 'stream-cancel', '--help'], 'happier session run stream-cancel <session-id-or-prefix-or-tag> <run-id> <stream-id> [--json]'],
     [['review', '--help'], 'happier session review start <session-id-or-prefix-or-tag> --engines <id1,id2> --instructions <text> [--json]'],
     [['review', 'start', '--help'], 'happier session review start <session-id-or-prefix-or-tag> --engines <id1,id2> --instructions <text> [--json]'],
-    [['plan', '--help'], 'happier session plan start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--json]'],
-    [['plan', 'start', '--help'], 'happier session plan start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--json]'],
+    [['plan', '--help'], SESSION_HELP_LINES.planStart],
+    [['plan', 'start', '--help'], SESSION_HELP_LINES.planStart],
     [['delegate', '--help'], SESSION_HELP_LINES.delegateStart],
     [['delegate', 'start', '--help'], SESSION_HELP_LINES.delegateStart],
-    [['voice-agent', '--help'], 'happier session voice-agent start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--json]'],
-    [['voice-agent', 'start', '--help'], 'happier session voice-agent start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--json]'],
-    [['voice_agent', 'start', '--help'], 'happier session voice-agent start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--json]'],
+    [['voice-agent', '--help'], SESSION_HELP_LINES.voiceAgentStart],
+    [['voice-agent', 'start', '--help'], SESSION_HELP_LINES.voiceAgentStart],
+    [['voice_agent', 'start', '--help'], SESSION_HELP_LINES.voiceAgentStart],
   ] as const)('prints usage for nested `%s` without prompting for credentials', async (argv, expectedUsage) => {
     const output = captureConsoleText();
     const readCredentialsFn = vi.fn(async () => {
@@ -132,6 +126,43 @@ describe('handleSessionCommand help output', () => {
       expect(output.text()).toContain(expectedUsage);
       expect(output.text()).not.toContain('Not authenticated');
       expect(readCredentialsFn).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+    }
+  });
+
+  it.each([
+    ['send'],
+    ['start'],
+    ['list'],
+    ['get'],
+    ['stop'],
+    ['wait'],
+    ['stream-start'],
+    ['stream-read'],
+    ['stream-cancel'],
+  ] as const)('renders `session run %s --help` from its compiled descriptor', async (leaf) => {
+    const output = captureConsoleText();
+    const readCredentialsFn = vi.fn(async () => {
+      throw new Error('readCredentialsFn should not be called for session help');
+    });
+    try {
+      await handleSessionCommand(['run', leaf, '--help'], { readCredentialsFn });
+      expect(output.text().trimEnd()).toBe(compiledHelp(['session', 'run', leaf]).trimEnd());
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('builds `session run --help` from the dedicated workflow and every compiled run leaf', async () => {
+    const output = captureConsoleText();
+    try {
+      await handleSessionCommand(['run', '--help']);
+      expect(output.text()).toContain(SESSION_HELP_LINES.runAction);
+      for (const leaf of ['send', 'start', 'list', 'get', 'stop', 'wait', 'stream-start', 'stream-read', 'stream-cancel']) {
+        expect(output.text()).toContain(compiledHelp(['session', 'run', leaf]).split('\n')[0]);
+      }
     } finally {
       output.restore();
     }

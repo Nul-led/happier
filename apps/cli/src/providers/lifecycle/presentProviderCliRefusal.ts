@@ -16,6 +16,7 @@ const ERROR_SUMMARIES = {
   provider_incompatible_with_agent: 'The Provider is incompatible with this Agent.',
   provider_compatibility_unverified: 'Provider compatibility has not been confirmed.',
   provider_secret_missing: 'The Provider credential is missing.',
+  provider_secret_unavailable: 'The Provider credential is temporarily unavailable.',
   provider_credential_transport_unavailable: 'The Provider credential format is unsupported.',
   provider_endpoint_unreachable: 'The Provider endpoint is unreachable.',
   provider_endpoint_unavailable: 'The Provider endpoint is unavailable.',

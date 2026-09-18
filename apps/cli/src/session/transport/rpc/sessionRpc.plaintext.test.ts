@@ -9,7 +9,9 @@ let configureNextSocket: ((socket: FakeSocket) => void) | null = null;
 class FakeSocket {
   private handlers = new Map<string, Array<(...args: any[]) => void>>();
   public emitted: Array<{ event: string; data: any }> = [];
+  public onEmit: (() => void) | null = null;
   public connectError: Error | null = null;
+  public disconnectAfterConnect = false;
   public emitError: Error | null = null;
   public ackMode: 'sync' | 'never' = 'sync';
   public disconnectCalls = 0;
@@ -36,6 +38,10 @@ class FakeSocket {
     return this.handlers.get(event)?.length ?? 0;
   }
 
+  trigger(event: string, ...args: any[]) {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
+  }
+
   connect() {
     if (this.connectError) {
       for (const handler of this.handlers.get('connect_error') ?? []) {
@@ -46,6 +52,9 @@ class FakeSocket {
     for (const handler of this.handlers.get('connect') ?? []) {
       handler();
     }
+    if (this.disconnectAfterConnect) {
+      this.trigger('disconnect', 'transport close');
+    }
     return this;
   }
 
@@ -54,6 +63,7 @@ class FakeSocket {
       throw this.emitError;
     }
     this.emitted.push({ event, data });
+    this.onEmit?.();
     if (this.ackMode === 'never') {
       return this;
     }
@@ -83,6 +93,8 @@ vi.mock('@/api/session/sockets', () => ({
   }),
 }));
 
+import { callSessionRpc, readSessionRpcRequestDisposition } from './sessionRpc';
+
 describe('callSessionRpc (plaintext sessions)', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -94,8 +106,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
 
   it('uses a user-scoped caller socket for one-shot runtime RPC calls', async () => {
     const sockets = await import('@/api/session/sockets');
-    const { callSessionRpc } = await import('./sessionRpc');
-
     await callSessionRpc({
       token: 't',
       sessionId: 'sess_1',
@@ -111,7 +121,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
 
   it('sends plaintext params and returns plaintext results when mode=plain', async () => {
     nextRpcAck = null;
-    const { callSessionRpc } = await import('./sessionRpc');
     const req = { a: 1 };
     const res = await callSessionRpc({
       token: 't',
@@ -123,10 +132,12 @@ describe('callSessionRpc (plaintext sessions)', () => {
     });
 
     expect(res).toEqual({ echoed: req });
+    expect(nextSocket?.emitted[0]?.data.requestId).toEqual(expect.any(String));
     expect(nextSocket?.disconnectCalls).toBe(1);
     expect(nextSocket?.closeCalls).toBe(1);
     expect(nextSocket?.listenerCount('connect')).toBe(0);
     expect(nextSocket?.listenerCount('connect_error')).toBe(0);
+    expect(nextSocket?.listenerCount('disconnect')).toBe(0);
   });
 
   it('throws RpcError with rpcErrorCode when the RPC response includes errorCode', async () => {
@@ -136,7 +147,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
       errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
     };
 
-    const { callSessionRpc } = await import('./sessionRpc');
     await expect(
       callSessionRpc({
         token: 't',
@@ -152,7 +162,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
   });
 
   it('closes the socket when connection fails before the RPC emit', async () => {
-    const { callSessionRpc, readSessionRpcRequestDisposition } = await import('./sessionRpc');
     configureNextSocket = (socket) => {
       socket.connectError = new Error('connect failed');
     };
@@ -175,7 +184,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
   });
 
   it('closes the socket when emit throws synchronously', async () => {
-    const { callSessionRpc, readSessionRpcRequestDisposition } = await import('./sessionRpc');
     configureNextSocket = (socket) => {
       socket.emitError = new Error('emit failed');
     };
@@ -197,7 +205,6 @@ describe('callSessionRpc (plaintext sessions)', () => {
 
   it('closes the socket when the RPC ack times out', async () => {
     vi.useFakeTimers();
-    const { callSessionRpc, readSessionRpcRequestDisposition } = await import('./sessionRpc');
     configureNextSocket = (socket) => {
       socket.ackMode = 'never';
     };
@@ -216,6 +223,92 @@ describe('callSessionRpc (plaintext sessions)', () => {
     const error = await errorPromise;
     expect(error).toMatchObject({ message: 'RPC call timeout' });
     expect(readSessionRpcRequestDisposition(error)).toBe('outcomeUnknown');
+    expect(nextSocket?.disconnectCalls).toBe(1);
+    expect(nextSocket?.closeCalls).toBe(1);
+  });
+
+  it('lets caller-lifecycle RPCs wait without a competing local ack timeout', async () => {
+    vi.useFakeTimers();
+    const abort = new AbortController();
+    configureNextSocket = (socket) => {
+      socket.ackMode = 'never';
+    };
+    const promise = callSessionRpc({
+      token: 't',
+      sessionId: 'sess_1',
+      mode: 'plain',
+      method: 'sess_1:execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+      signal: abort.signal,
+      ctx: null,
+    });
+    const errorPromise = promise.catch((caught: unknown) => caught);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(nextSocket?.disconnectCalls).toBe(0);
+    expect(nextSocket?.emitted[0]?.data).not.toHaveProperty('timeoutMs');
+
+    abort.abort();
+    const error = await errorPromise;
+    expect(error).toMatchObject({ name: 'AbortError' });
+    expect(readSessionRpcRequestDisposition(error)).toBe('outcomeUnknown');
+    expect(nextSocket?.disconnectCalls).toBe(1);
+    expect(nextSocket?.closeCalls).toBe(1);
+  });
+
+  it('settles an emitted RPC as outcome-unknown when its socket disconnects before acknowledgement', async () => {
+    let resolveEmitted = () => {};
+    const emitted = new Promise<void>((resolve) => {
+      resolveEmitted = resolve;
+    });
+    configureNextSocket = (socket) => {
+      socket.ackMode = 'never';
+      socket.onEmit = resolveEmitted;
+    };
+    const promise = callSessionRpc({
+      token: 't',
+      sessionId: 'sess_1',
+      mode: 'plain',
+      method: 'sess_1:execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+      ctx: null,
+    });
+
+    await emitted;
+    nextSocket?.trigger('disconnect', 'transport close');
+    const error = await promise.catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ message: 'RPC socket disconnected before acknowledgement' });
+    expect(readSessionRpcRequestDisposition(error)).toBe('outcomeUnknown');
+    expect(nextSocket?.disconnectCalls).toBe(1);
+    expect(nextSocket?.closeCalls).toBe(1);
+  });
+
+  it('settles a connect-then-disconnect race before emission even with no acknowledgement timeout', async () => {
+    const observationFallback = new AbortController();
+    configureNextSocket = (socket) => {
+      socket.ackMode = 'never';
+      socket.disconnectAfterConnect = true;
+    };
+
+    const promise = callSessionRpc({
+      token: 't',
+      sessionId: 'sess_1',
+      mode: 'plain',
+      method: 'sess_1:execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+      signal: observationFallback.signal,
+      ctx: null,
+    });
+    expect(nextSocket?.emitted).toHaveLength(0);
+    observationFallback.abort(new Error('test observation fallback'));
+
+    const error = await promise.catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ message: 'RPC socket disconnected before acknowledgement' });
+    expect(readSessionRpcRequestDisposition(error)).toBe('notSent');
+    expect(nextSocket?.emitted).toHaveLength(0);
     expect(nextSocket?.disconnectCalls).toBe(1);
     expect(nextSocket?.closeCalls).toBe(1);
   });

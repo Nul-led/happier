@@ -36,6 +36,11 @@ import { createWorkspaceSyncTargetAuthority } from '@/workspaces/sync/workspaceS
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import { createWorkspaceSyncRelationshipOwner } from '@/workspaces/sync/workspaceSyncRelationshipOwner';
 import type { WorkspaceSyncOwnedLocalAgent } from '@/workspaces/sync/workspaceSyncController';
+import type {
+  FiniteTransferMachineTunnel,
+  WorkspaceSyncMachineTunnel,
+  WorkspaceSyncMachineTunnelOpenInput,
+} from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import { startPeerMediationLoopbackServer } from '../mediation/loopback/server';
 import { createDaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
 import { createWorkspaceMachineCarrierTunnelOpen } from './workspaceMachineCarrierTunnelOpen';
@@ -344,7 +349,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
         getSettingsSnapshot,
         callMachineRpc,
         bootstrap: {
-          stagingDirectory: join(targetHome, 'daemon', 'workspace-sync', 'bootstrap'),
+          materializationDirectory: join(targetHome, 'daemon', 'workspace-sync', 'bootstrap'),
           rootOwnershipManager: targetRootOwnership,
         },
         openRootedAgent: async (request) => {
@@ -429,17 +434,28 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
           nowMs: () => nowMs,
         });
         const observedPaths: Array<'direct' | 'relay' | 'unknown'> = [];
-        const openMachineCarrierTunnel = async (
-          input: Parameters<typeof productionOpen>[0],
-        ) => {
-          const tunnel = await productionOpen(input).catch((error: unknown) => {
+        // The opener seam is flow-overloaded, so the observing wrapper keeps both signatures
+        // instead of collapsing to the last one and silently dropping the file-transfer flow.
+        async function openMachineCarrierTunnel(
+          input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'file_transfer' }>,
+        ): Promise<FiniteTransferMachineTunnel>;
+        async function openMachineCarrierTunnel(
+          input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>,
+        ): Promise<WorkspaceSyncMachineTunnel>;
+        async function openMachineCarrierTunnel(
+          input: WorkspaceSyncMachineTunnelOpenInput,
+        ): Promise<FiniteTransferMachineTunnel | WorkspaceSyncMachineTunnel> {
+          const tunnel = await (input.flow === 'file_transfer'
+            ? productionOpen(input)
+            : productionOpen(input)
+          ).catch((error: unknown) => {
             throw Object.assign(new Error(
               `Production machine opener failed: ${error instanceof Error ? error.message : String(error)}`,
             ), { code: 'peer_unavailable' });
           });
           observedPaths.push(tunnel.observedPath);
           return tunnel;
-        };
+        }
 
         const publishSettings = (settings: ActiveAccountSettingsSnapshot['settings']): void => {
           const previous = getSettingsSnapshot();

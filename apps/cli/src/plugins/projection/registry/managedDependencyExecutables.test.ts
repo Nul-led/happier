@@ -1,12 +1,39 @@
 import { describe, expect, it } from 'vitest';
 
-import { GH_INSTALLABLE_DESCRIPTOR } from '@happier-dev/protocol';
+import { GH_INSTALLABLE_DESCRIPTOR, PluginManagedDependencyContributionV2Schema } from '@happier-dev/protocol';
 
 import type { ResolvedInstallableContribution } from './types';
+import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from './sources/generatedBundledPluginManifests';
 import {
     resolveExecutableManagedDependenciesRegistry,
     selectExecutableManagedDependencies,
 } from './managedDependencyExecutables';
+
+/**
+ * The real bundled Antigravity declaration rather than a restatement of it: the
+ * pinned ACP server's published platform matrix is the fact under test.
+ */
+function readBundledAntigravityAcpServerContribution(): ResolvedInstallableContribution {
+    const locator = BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS
+        .find((candidate) => candidate.pluginId === 'happier.agent.antigravity');
+    if (!locator) throw new Error('Bundled Antigravity plugin locator is missing');
+    const manifest = locator.manifest as Readonly<{
+        contributes: Readonly<{ managedDependencies: readonly unknown[] }>;
+    }>;
+    const declaration = manifest.contributes.managedDependencies
+        .map((candidate) => PluginManagedDependencyContributionV2Schema.parse(candidate))
+        .find((candidate) => candidate.id === 'agy-acp-server');
+    if (!declaration) throw new Error('Bundled Antigravity ACP server dependency is missing');
+    return {
+        provenance: 'first_party',
+        source: { kind: 'bundled' },
+        pluginId: locator.pluginId,
+        manifestPath: locator.manifestPath,
+        daemonEntryPath: locator.daemonEntryPath,
+        sourceSpec: locator.sourceSpec,
+        definition: declaration,
+    };
+}
 
 describe('selectExecutableManagedDependencies', () => {
     it('projects a retained structural generation without a copied manifest digest', () => {
@@ -263,5 +290,117 @@ describe('selectExecutableManagedDependencies', () => {
         expect(unsupportedPlatform.descriptors).toEqual([]);
         expect(otherSourceKinds.descriptors).toEqual([]);
         expect(incomplete.descriptors).toEqual([]);
+    });
+});
+
+describe('pinned archive managed dependencies', () => {
+    const PUBLISHED_HOSTS = [
+        { targetKey: 'darwin-arm64', platform: 'darwin', architecture: 'arm64', executableSubpath: 'agy_acp_server.par' },
+        { targetKey: 'linux-x64', platform: 'linux', architecture: 'x64', executableSubpath: 'agy_acp_server.par' },
+        { targetKey: 'linux-arm64', platform: 'linux', architecture: 'arm64', executableSubpath: 'agy_acp_server.par' },
+        { targetKey: 'win32-x64', platform: 'win32', architecture: 'x64', executableSubpath: 'agy_acp_server.exe' },
+        { targetKey: 'win32-arm64', platform: 'win32', architecture: 'arm64', executableSubpath: 'agy_acp_server.exe' },
+    ] as const;
+
+    it('publishes the bundled Antigravity pinned ACP server through the canonical installables descriptor on every host it ships', () => {
+        const contribution = readBundledAntigravityAcpServerContribution();
+
+        for (const host of PUBLISHED_HOSTS) {
+            const registry = resolveExecutableManagedDependenciesRegistry([contribution], {
+                platform: host.platform,
+                architecture: host.architecture,
+            });
+
+            expect(registry.diagnostics).toEqual([]);
+            expect(registry.descriptors).toMatchObject([{
+                owner: {
+                    provenance: 'bundled_first_party_plugin',
+                    pluginId: 'happier.agent.antigravity',
+                },
+                descriptor: {
+                    id: 'dep.antigravity.agy-acp-server',
+                    key: 'dep.antigravity.agy-acp-server',
+                    capabilityId: 'dep.antigravity.agy-acp-server',
+                    display: { name: 'Antigravity ACP server' },
+                    source: { kind: 'pinned_archive', version: '1.1.1' },
+                    binary: {
+                        commands: ['agy_acp_server'],
+                        systemFirst: false,
+                        managedFallback: true,
+                    },
+                    defaultPolicy: {
+                        autoInstallWhenNeeded: true,
+                        autoUpdateMode: 'off',
+                    },
+                },
+            }]);
+            const source = registry.descriptors[0]?.descriptor.source;
+            expect(source?.kind === 'pinned_archive'
+                ? source.assetsByPlatform[host.targetKey]?.executableSubpath
+                : null).toBe(host.executableSubpath);
+        }
+    });
+
+    it('does not advertise a host the pinned source does not publish', () => {
+        const contribution = readBundledAntigravityAcpServerContribution();
+
+        expect(resolveExecutableManagedDependenciesRegistry([contribution], {
+            platform: 'darwin',
+            architecture: 'x64',
+        }).descriptors).toEqual([]);
+        expect(resolveExecutableManagedDependenciesRegistry([contribution], {
+            platform: 'freebsd',
+            architecture: 'x64',
+        }).descriptors).toEqual([]);
+    });
+
+    it('keeps an incomplete generic pinned archive out of the installables registry', () => {
+        const contribution = {
+            provenance: 'external',
+            source: { kind: 'path' },
+            pluginId: 'acme.pinned',
+            manifestPath: '/immutable/acme.pinned/.happier-plugin/plugin.json',
+            sourceSpec: {
+                kind: 'path',
+                locator: '/immutable/acme.pinned',
+                trustPolicy: 'local_trusted',
+                installPolicy: 'link',
+            },
+            definition: {
+                id: 'tool',
+                title: 'Acme pinned tool',
+                executable: 'acme-tool',
+                sources: [{
+                    kind: 'pinnedArchive',
+                    installId: 'dep.acme.tool',
+                    version: '3.2.1',
+                    assetsByPlatform: {
+                        'linux-x64': {
+                            archiveUrl: 'https://downloads.acme.test/acme-tool-3.2.1-linux-x64.zip',
+                            sha256: 'a'.repeat(64),
+                            executableSubpath: 'bin/acme-tool',
+                        },
+                    },
+                }],
+            },
+        } satisfies ResolvedInstallableContribution;
+
+        expect(resolveExecutableManagedDependenciesRegistry(
+            [contribution],
+            { platform: 'linux', architecture: 'x64' },
+        ).descriptors).toMatchObject([{
+            owner: { provenance: 'external_plugin', pluginId: 'acme.pinned' },
+            descriptor: { key: 'dep.acme.tool', capabilityId: 'dep.acme.tool' },
+        }]);
+        // The declaration publishes no Windows artifact, so no Windows host may claim one.
+        expect(resolveExecutableManagedDependenciesRegistry(
+            [contribution],
+            { platform: 'win32', architecture: 'x64' },
+        ).descriptors).toEqual([]);
+        // Provenance is incomplete without a manifest path, exactly as for every other managed source.
+        expect(resolveExecutableManagedDependenciesRegistry(
+            [{ ...contribution, manifestPath: undefined }],
+            { platform: 'linux', architecture: 'x64' },
+        ).descriptors).toEqual([]);
     });
 });

@@ -20,6 +20,10 @@ export type CoherentProjectionOutput = Readonly<{
   out: string;
 }>;
 
+export type ProjectionPublicationLease = Readonly<{
+  assertOwned: () => void;
+}>;
+
 export function writeFileAtomic(path: string, content: string): boolean {
   if (existsSync(path) && readFileSync(path, 'utf8') === content) return false;
   mkdirSync(dirname(path), { recursive: true });
@@ -37,6 +41,7 @@ export function writeFileAtomic(path: string, content: string): boolean {
 export function publishCoherentProjectionOutputs(
   rootDir: string,
   outputs: readonly CoherentProjectionOutput[],
+  publicationLease: ProjectionPublicationLease,
 ): void {
   const resolvedRootDir = resolve(rootDir);
   const changedOutputs = outputs.filter(({ outPath, out }) => (
@@ -56,6 +61,10 @@ export function publishCoherentProjectionOutputs(
       mkdirSync(dirname(stagedOutPath), { recursive: true });
       writeFileSync(stagedOutPath, out, 'utf8');
     }
+    // Derivation and staging may be lengthy. Fence the mounted-tree commit at
+    // the last owner-controlled boundary so a resumed stale publisher cannot
+    // replace the successor's projection after its lease was reclaimed.
+    publicationLease.assertOwned();
     publishStagedDirectoryMountedSync({
       stagedDir: stagingRoot,
       liveDir: resolvedRootDir,

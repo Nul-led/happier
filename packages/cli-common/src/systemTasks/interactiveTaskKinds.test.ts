@@ -1,8 +1,108 @@
 import { describe, expect, it } from 'vitest';
 
 import { createSystemTasksRunner } from './interactiveTaskKinds.js';
+import { SystemTaskExecutionError } from './runSystemTask.js';
 
 describe('createSystemTasksRunner', () => {
+  it('releases an ordinary pending prompt when cancellation is requested', async () => {
+    const runner = createSystemTasksRunner({
+      kinds: {
+        'test.prompt-cancel.v1': {
+          async run(ctx) {
+            await ctx.prompt({
+              kind: 'test.confirm.v1',
+              message: 'Continue?',
+              data: {},
+            });
+            return { continued: true };
+          },
+        },
+      },
+    });
+
+    await runner.start({ taskId: 'task-prompt-cancel', kind: 'test.prompt-cancel.v1', params: {} });
+    expect((await runner.poll({ taskId: 'task-prompt-cancel', cursor: 0 })).pendingPrompt).toMatchObject({
+      kind: 'test.confirm.v1',
+    });
+
+    await runner.cancel({ taskId: 'task-prompt-cancel' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(await runner.poll({ taskId: 'task-prompt-cancel', cursor: 0 })).toMatchObject({
+      pendingPrompt: null,
+      result: { ok: false, error: { code: 'cancelled' } },
+    });
+  });
+
+  it('retains an explicitly non-cancellable prompt after cancellation', async () => {
+    const runner = createSystemTasksRunner({
+      kinds: {
+        'test.prompt-finalize.v1': {
+          async run(ctx) {
+            const answer = await ctx.prompt({
+              kind: 'test.finalize.v1',
+              message: 'Finish the committed operation',
+              data: {},
+              nonCancellable: true,
+            }) as { committed?: boolean };
+            return { committed: answer.committed === true };
+          },
+        },
+      },
+    });
+
+    await runner.start({ taskId: 'task-prompt-finalize', kind: 'test.prompt-finalize.v1', params: {} });
+    await runner.cancel({ taskId: 'task-prompt-finalize' });
+    await Promise.resolve();
+    expect((await runner.poll({ taskId: 'task-prompt-finalize', cursor: 0 })).pendingPrompt).toMatchObject({
+      kind: 'test.finalize.v1',
+    });
+
+    await runner.respond({ taskId: 'task-prompt-finalize', answer: { committed: true } });
+    expect(await runner.poll({ taskId: 'task-prompt-finalize', cursor: 0 })).toMatchObject({
+      pendingPrompt: null,
+      result: { ok: true, data: { committed: true } },
+    });
+  });
+
+  it('delivers cancellation through the task context and publishes one terminal cancelled result', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const runner = createSystemTasksRunner({
+      kinds: {
+        'test.cancel.v1': {
+          async run(ctx) {
+            observedSignal = ctx.signal;
+            await new Promise<void>((resolve) => {
+              ctx.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            throw new SystemTaskExecutionError('cancelled', 'cancelled by owner');
+          },
+        },
+      },
+    });
+
+    await runner.start({ taskId: 'task-cancel', kind: 'test.cancel.v1', params: {} });
+    expect(observedSignal?.aborted).toBe(false);
+
+    await runner.cancel({ taskId: 'task-cancel' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(observedSignal?.aborted).toBe(true);
+    const terminal = await runner.poll({ taskId: 'task-cancel', cursor: 0 });
+    expect(terminal.result).toMatchObject({
+      ok: false,
+      error: { code: 'cancelled' },
+    });
+    expect(terminal.pendingPrompt).toBeNull();
+    await runner.cancel({ taskId: 'task-cancel' });
+    expect((await runner.poll({ taskId: 'task-cancel', cursor: 0 })).result).toMatchObject({
+      ok: false,
+      error: { code: 'cancelled' },
+    });
+  });
+
   it('emits deterministic event streams and blocks on typed prompts until answered', async () => {
     const runner = createSystemTasksRunner({
       now: (() => {
@@ -183,6 +283,48 @@ describe('createSystemTasksRunner', () => {
         nested: {
           keep: 'ok',
         },
+      },
+    });
+  });
+
+  it('strips embedded URL credentials from prompt and event data under ordinary keys', async () => {
+    const runner = createSystemTasksRunner({
+      kinds: {
+        'test.relay-prompt.v1': {
+          async run(ctx) {
+            ctx.emit({
+              type: 'step',
+              stepId: 'prepare',
+              message: 'Preparing',
+              data: { relayUrl: 'https://relay-operator:hunter2@relay.example.com/' },
+            });
+            await ctx.prompt({
+              kind: 'authRequest',
+              message: 'Approve this computer',
+              data: {
+                relayUrl: 'https://relay-operator:hunter2@relay.example.com/',
+                webappUrl: 'https://viewer@app.example.com/',
+                plainUrl: 'https://relay.example.com/path?to=a@b',
+                notAUrl: 'git@github.com:happier/happier.git',
+              },
+            });
+            return {};
+          },
+        },
+      },
+    });
+
+    await runner.start({ taskId: 'task-relay', kind: 'test.relay-prompt.v1', params: {} });
+    const snapshot = await runner.poll({ taskId: 'task-relay', cursor: 0 });
+
+    expect(snapshot.events[0]?.data).toEqual({ relayUrl: 'https://relay.example.com/' });
+    expect(snapshot.pendingPrompt).toEqual({
+      kind: 'authRequest',
+      data: {
+        relayUrl: 'https://relay.example.com/',
+        webappUrl: 'https://app.example.com/',
+        plainUrl: 'https://relay.example.com/path?to=a@b',
+        notAUrl: 'git@github.com:happier/happier.git',
       },
     });
   });

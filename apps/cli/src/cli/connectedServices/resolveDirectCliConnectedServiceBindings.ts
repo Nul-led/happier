@@ -1,5 +1,5 @@
 import type { AgentId } from '@happier-dev/agents';
-import type { AccountSettings, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import type { AccountSettings, ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
 import { resolveCliConnectedServicesLaunchBindings } from '@/cli/connectedServicesLaunchAuth';
@@ -18,7 +18,7 @@ export async function resolveDirectCliConnectedServiceBindings(params: Readonly<
   accountSettings: AccountSettings;
   authRaw: string | undefined;
   authJsonRaw: string | undefined;
-}>): Promise<ConnectedServiceBindingsV1 | null> {
+}>): Promise<ConnectedServiceBindingsV2 | null> {
   // The resolved Agent catalog owns declared Connected Service ids for every
   // installed Agent, bundled or externally contributed.
   const supportedServiceIds = resolveCatalogAgentConnectedAccountServiceIds(params.agentId);

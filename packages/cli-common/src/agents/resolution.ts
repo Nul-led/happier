@@ -1,7 +1,11 @@
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 
-import { AGENT_IDS, type AgentId, type BundledAgentId } from '@happier-dev/agents/agent-ids';
+import {
+  BUNDLED_AGENT_CONTRIBUTION_IDENTITIES,
+  isBundledAgentId,
+  type BundledAgentId,
+} from '@happier-dev/agents/agent-ids';
 import {
   getAgentCliRuntimeSpec,
   type AgentCliRuntimeSpec,
@@ -21,10 +25,33 @@ import { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
 
 export type AgentCliResolutionSource = 'override' | 'system' | 'managed';
 
+/**
+ * Request-scoped selection of the sources one resolution may consider.
+ *
+ * `default` is the ordinary product behavior: an explicit override wins, then
+ * the Agent's source preference decides between a system and a managed install.
+ *
+ * `managed_only` is a strict per-request policy for compositions that may run
+ * only the executable they installed and validated themselves — currently the
+ * temporary-computer Runner, whose activation-local Home must never launch an
+ * endpoint's override, system, or global installation. It is deliberately not a
+ * persisted `AgentCliSourcePreference` value: a preference is configurable
+ * through the environment, and the whole point of this policy is that the
+ * environment cannot widen it.
+ */
+export type AgentCliSourcePolicy = 'default' | 'managed_only';
+
 export type AgentCliCommandResolution = Readonly<{
   source: AgentCliResolutionSource;
   command: string;
 }>;
+
+export type AgentCliCommandResolutionOptions = Readonly<
+  {
+    processEnv?: NodeJS.ProcessEnv;
+    sourcePolicy?: AgentCliSourcePolicy;
+  } & RuntimeResolutionOptions
+>;
 
 export type AgentCliRuntimeDescriptor = Readonly<
   Omit<AgentCliRuntimeSpec, 'id'> & {
@@ -65,10 +92,6 @@ function readBackendCliSourcePreferenceMap(processEnv: NodeJS.ProcessEnv): Parti
   }
 }
 
-function isBuiltInAgentId(value: string): value is AgentId {
-  return (AGENT_IDS as readonly string[]).includes(value);
-}
-
 function getAgentCliRuntimeSpecForLookupId(agentId: AgentCliLookupId): AgentCliRuntimeDescriptor {
   if (legacyCustomAcpCompat.isLegacyCustomAcpAgentId(agentId)) {
     return legacyCustomAcpCompat.getLegacyCustomAcpAgentCliRuntimeSpec();
@@ -82,17 +105,28 @@ export function readBackendCliSourcePreferenceForAgent(
   processEnv: NodeJS.ProcessEnv = process.env,
 ): AgentCliSourcePreference {
   const preferences = readBackendCliSourcePreferenceMap(processEnv);
-  let targetKeyV2: string | null = null;
-  try {
-    targetKeyV2 = buildBackendTargetKeyV2({ kind: 'backend', backendId: agentId });
-  } catch {
-    targetKeyV2 = null;
-  }
-  const targetKey = isBuiltInAgentId(agentId)
-    ? buildBackendTargetKey({ kind: 'builtInAgent', agentId: agentId })
+  const bundledAgentId = isBundledAgentId(agentId) ? agentId : null;
+  const buildTargetKeyV2 = (target: Parameters<typeof buildBackendTargetKeyV2>[0]): string | null => {
+    try {
+      return buildBackendTargetKeyV2(target);
+    } catch {
+      return null;
+    }
+  };
+  // Persisted preferences are read, not rewritten, so every spelling a supported
+  // writer can produce must resolve: current clients emit the qualified Agent
+  // contribution key, released clients emit `backend:<agentId>`, and older ones
+  // emit the V1 built-in Agent key or the bare Agent id. Most specific first.
+  const qualifiedAgentTargetKeyV2 = bundledAgentId
+    ? buildTargetKeyV2({ kind: 'agent', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[bundledAgentId] })
+    : buildTargetKeyV2({ kind: 'backend', backendId: agentId });
+  const backendTargetKeyV2 = `backend:${agentId}`;
+  const targetKey = bundledAgentId
+    ? buildBackendTargetKey({ kind: 'builtInAgent', agentId: bundledAgentId })
     : null;
-  return (targetKeyV2 ? preferences[targetKeyV2] : undefined)
+  return (qualifiedAgentTargetKeyV2 ? preferences[qualifiedAgentTargetKeyV2] : undefined)
     ?? (targetKey ? preferences[targetKey] : undefined)
+    ?? preferences[backendTargetKeyV2]
     ?? preferences[agentId]
     ?? sourcePreferenceDefault;
 }
@@ -453,16 +487,25 @@ export function isAgentCliPathRunnable(
 
 export function resolveAgentCliCommand(
   agentId: AgentCliLookupId,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv } & RuntimeResolutionOptions> = {},
+  opts: AgentCliCommandResolutionOptions = {},
 ): AgentCliCommandResolution | null {
   return resolveAgentCliCommandForRuntime(getAgentCliRuntimeSpecForLookupId(agentId), opts);
 }
 
 export function resolveAgentCliCommandForRuntime(
   runtimeSpec: AgentCliRuntimeDescriptor,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv } & RuntimeResolutionOptions> = {},
+  opts: AgentCliCommandResolutionOptions = {},
 ): AgentCliCommandResolution | null {
   const processEnv = opts.processEnv ?? process.env;
+
+  if (opts.sourcePolicy === 'managed_only') {
+    const managedCommand = resolveAgentCliManagedCommand(runtimeSpec, processEnv);
+    if (managedCommand && isAgentCliPathRunnable(managedCommand, processEnv, opts)) {
+      return { source: 'managed', command: managedCommand };
+    }
+    return null;
+  }
+
   const rawOverride = readAgentCliOverrideForRuntime(runtimeSpec, processEnv);
   if (rawOverride) {
     const override = resolveAgentCliOverride(runtimeSpec, processEnv);

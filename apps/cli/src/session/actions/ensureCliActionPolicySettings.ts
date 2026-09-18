@@ -5,6 +5,9 @@ export async function ensureCliActionPolicySettings(credentials: StoredCredentia
   if (!credentials) return;
   await bootstrapAccountSettingsContext({
     credentials,
-    mode: 'fast',
+    // Policy is an admission input: a successful first fetch must publish before
+    // prepare/execute can continue. Blocking bootstrap still falls back to the
+    // existing cache/default contract when the settings service is unavailable.
+    mode: 'blocking',
   });
 }

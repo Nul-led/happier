@@ -13,7 +13,6 @@ type PendingInactiveSessionActivationResult =
   | Readonly<{
       status: 'not-needed';
       reason:
-        | 'active'
         | 'pending-resolved'
         | 'authorization-stale'
         | 'target-mismatch'
@@ -53,9 +52,9 @@ export async function activatePendingInactiveSession(params: Readonly<{
   ) {
     return { status: 'not-needed', reason: 'authorization-stale' };
   }
-  if (rawSession.active === true) {
-    return { status: 'not-needed', reason: 'active' };
-  }
+  // `active` is a relay projection, not runner liveness. After a daemon restart it can remain
+  // true while this machine tracks no consumer. The spawn owner below is the single authority:
+  // it adopts a serviceable runner and spawns only after proving one absent.
   const rejectTerminal = async (
     reason: Extract<PendingInactiveSessionActivationResult, { status: 'rejected' }>['reason'],
   ): Promise<PendingInactiveSessionActivationResult> => {
@@ -124,7 +123,6 @@ export async function activatePendingInactiveSession(params: Readonly<{
   ) {
     return { status: 'not-needed', reason: 'authorization-stale' };
   }
-  if (finalRawSession.active === true) return { status: 'not-needed', reason: 'active' };
   if (finalRawSession.archivedAt !== null && finalRawSession.archivedAt !== undefined) {
     return { status: 'not-needed', reason: 'authorization-stale' };
   }

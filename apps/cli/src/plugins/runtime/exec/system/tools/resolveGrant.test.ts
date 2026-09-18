@@ -129,4 +129,70 @@ describe('createPluginExecSystemToolResolver', () => {
             }],
         });
     });
+
+    /**
+     * Vendors publish Windows agent CLIs as `PATHEXT` shims (`droid.cmd`,
+     * `fx.cmd`, …) while every plugin manifest declares the bare executable
+     * name. Joining a PATH root with the bare name alone never finds those, so
+     * a Windows install the vendor recipe just performed stays undetected.
+     */
+    it('resolves a declared lookup name through the host PATHEXT shim list', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-windows-shim-'));
+        temporaryRoots.add(root);
+        const shim = join(root, 'droid.cmd');
+        await writeFile(shim, '@echo off\r\n', { mode: 0o755 });
+        // A decoy the default extension list would prefer over `.CMD`. It must
+        // lose, because this host's PATHEXT names only `.CMD` — which proves the
+        // user's PATHEXT reaches the resolver instead of a built-in default.
+        await writeFile(join(root, 'droid.bat'), '@echo off\r\n', { mode: 0o755 });
+
+        const resolver = createPluginExecSystemToolResolver({
+            definitions: [{
+                toolId: 'droid-cli',
+                displayName: 'Factory Droid CLI',
+                lookupNames: ['droid'],
+            }],
+            baseEnv: {
+                PATH: root,
+                PATHEXT: '.CMD',
+            },
+            platform: 'win32',
+            registerGrant() {},
+        });
+
+        await expect(resolver.resolve({
+            toolId: 'droid-cli',
+            purpose: 'Detect a vendor-installed Windows agent CLI',
+        })).resolves.toMatchObject({ executablePath: shim });
+    });
+
+    it('does not invent extension candidates on a POSIX host', async () => {
+        if (process.platform === 'win32') return;
+
+        const root = await mkdtemp(join(tmpdir(), 'happier-system-tool-posix-shim-'));
+        temporaryRoots.add(root);
+        await writeFile(join(root, 'droid.cmd'), '@echo off\r\n', { mode: 0o755 });
+
+        const resolver = createPluginExecSystemToolResolver({
+            definitions: [{
+                toolId: 'droid-cli',
+                displayName: 'Factory Droid CLI',
+                lookupNames: ['droid'],
+            }],
+            baseEnv: {
+                PATH: root,
+                PATHEXT: '.COM;.EXE;.BAT;.CMD',
+            },
+            platform: 'linux',
+            registerGrant() {},
+        });
+
+        const failure = await resolver.resolve({
+            toolId: 'droid-cli',
+            purpose: 'Keep POSIX resolution exact',
+        }).then(() => undefined, (error: unknown) => error);
+
+        expect(isPluginError(failure)).toBe(true);
+        expect(failure).toMatchObject({ code: 'plugin_exec_system_tool_unavailable' });
+    });
 });

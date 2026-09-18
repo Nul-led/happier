@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TmuxCommandResult, TmuxSpawnOptions } from '@/integrations/tmux';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 import { CLI_API_TOKEN_HANDOFF_ENV, withCliApiToken } from '@/auth/cliApiToken';
+import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
+import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 
 vi.mock('chalk', () => ({
   default: {
@@ -122,15 +124,39 @@ describe.sequential('startHappyHeadlessInTmux', () => {
 
   it('passes a selected API Token only to the Happier tmux continuation', async () => {
     process.env.HAPPIER_TOKEN = 'hap_v1_ambient_token_secret';
+    const selectedBearer = `hap_v1_123e4567-e89b-42d3-a456-426614174000_${'A'.repeat(43)}`;
     const { startHappyHeadlessInTmux } = await import('./startHeadlessSession');
 
-    await withCliApiToken('hap_v1_flag_token_secret', async () => {
+    await withCliApiToken(selectedBearer, async () => {
       await startHappyHeadlessInTmux([]);
     });
 
     const env = mockSpawnInTmux.mock.calls[0]?.[2] as Record<string, string> | undefined;
     expect(env?.HAPPIER_TOKEN).toBeUndefined();
-    expect(env?.[CLI_API_TOKEN_HANDOFF_ENV]).toBe('hap_v1_flag_token_secret');
+    expect(env?.[CLI_API_TOKEN_HANDOFF_ENV]).toBe(selectedBearer);
+  });
+
+  it('rejects a compound credential with a typed secret-free error before resolving or spawning a child', async () => {
+    const bearer = `hap_v1_123e4567-e89b-42d3-a456-426614174000_${'A'.repeat(43)}`;
+    const credential = formatAccountApiTokenCredentialV1({
+      bearer,
+      wrappingSecret: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
+      serverIdentityId: 'srv_tmux_home',
+      accountId: 'account-1',
+      contentPublicKey: encodeBase64(new Uint8Array(32).fill(9)),
+    });
+    const { startHappyHeadlessInTmux } = await import('./startHeadlessSession');
+
+    await withCliApiToken(credential, async () => {
+      await expect(startHappyHeadlessInTmux([], { output: 'silent' })).rejects.toMatchObject({
+        code: 'api_token_child_continuation_unsupported',
+      });
+    });
+
+    expect(mockResolveHeadlessTmuxAgentLaunchConfig).not.toHaveBeenCalled();
+    expect(mockSpawnInTmux).not.toHaveBeenCalled();
+    expect(output.text()).not.toContain(credential);
+    expect(output.text()).not.toContain(bearer);
   });
 
   it('suppresses human launch output when the caller owns machine-readable output', async () => {

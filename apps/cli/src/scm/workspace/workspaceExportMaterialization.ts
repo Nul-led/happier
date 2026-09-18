@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, readFile, rename, rm } from 'node:fs/promises';
+import { access, readFile, readdir, rename, rm, rmdir } from 'node:fs/promises';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 
 import type { ScmBackendRegistry } from '../registry';
@@ -60,6 +60,12 @@ export type WorkspaceExportMaterializationResult = Readonly<{
     custody: WorkspaceExportMaterializationCustody;
 }>;
 
+/** Bootstrap-admitted target object and consequence state, replayed at the destructive leaf. */
+export type WorkspaceTargetMaterializationFence = Readonly<{
+    state: 'missing' | 'empty' | 'nonempty';
+    identity: WorkspaceSyncRootObjectIdentityV1 | null;
+}>;
+
 async function readMaterializationReceipt(path: string): Promise<WorkspaceTargetMaterializationReceiptV1 | null> {
     const raw = await readFile(path, 'utf8').catch((error: unknown) => {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -118,6 +124,25 @@ async function assertObjectIdentity(
     }
 }
 
+async function assertTargetMaterializationFence(
+    targetPath: string,
+    fence: WorkspaceTargetMaterializationFence,
+): Promise<void> {
+    const actualIdentity = await readObjectIdentityOrAbsent(targetPath);
+    const identityMatches = fence.identity === null
+        ? actualIdentity === null
+        : actualIdentity !== null && workspaceSyncRootObjectIdentitiesEqual(actualIdentity, fence.identity);
+    if (!identityMatches) {
+        throw Object.assign(new Error('Workspace target replacement approval is stale'), { code: 'approval_stale' });
+    }
+    const actualState = actualIdentity === null
+        ? 'missing'
+        : (await readdir(targetPath)).length === 0 ? 'empty' : 'nonempty';
+    if (actualState !== fence.state) {
+        throw Object.assign(new Error('Workspace target replacement approval is stale'), { code: 'approval_stale' });
+    }
+}
+
 export async function prepareWorkspaceTargetMaterializationReceipt(input: Readonly<{
     targetPath: string;
     backupDirectoryPrefix: string;
@@ -172,11 +197,17 @@ export async function beginWorkspaceTargetMaterialization(input: Readonly<{
     receiptPath?: string;
     /** The target state observed by the bootstrap owner before it created an empty root. */
     originalTargetExists?: boolean;
-}>): Promise<Readonly<{
+    /** Exact root object and empty/non-empty consequence admitted by the bootstrap owner. */
+    targetFence?: WorkspaceTargetMaterializationFence;
+}>, dependencies: Readonly<{
+    /** Filesystem rename boundary injection used to prove the final empty-target race. */
+    replaceTarget?: typeof rename;
+}> = {}): Promise<Readonly<{
     previousTargetPath?: string;
     custody: WorkspaceExportMaterializationCustody;
 }>> {
     const targetExists = await pathExists(input.targetPath);
+    if (input.targetFence) await assertTargetMaterializationFence(input.targetPath, input.targetFence);
     const originalTargetExists = input.originalTargetExists ?? targetExists;
     let receipt = input.receiptPath
         ? await prepareWorkspaceTargetMaterializationReceipt({
@@ -200,13 +231,19 @@ export async function beginWorkspaceTargetMaterialization(input: Readonly<{
     const previousTargetPath = receipt.previousTargetName === null
         ? undefined
         : join(dirname(input.targetPath), receipt.previousTargetName);
+    if (input.targetFence) await assertTargetMaterializationFence(input.targetPath, input.targetFence);
     if (previousTargetPath) {
         if (!receipt.originalTargetIdentity || !receipt.expectedBackupIdentity) {
             throw materializationRecoveryError('Original target identity is unavailable');
         }
         await assertObjectIdentity(input.targetPath, receipt.originalTargetIdentity);
-        await rename(input.targetPath, previousTargetPath);
+        await (dependencies.replaceTarget ?? rename)(input.targetPath, previousTargetPath);
         await assertObjectIdentity(previousTargetPath, receipt.expectedBackupIdentity);
+        if (input.targetFence?.state === 'empty' && (await readdir(previousTargetPath)).length > 0) {
+            await rename(previousTargetPath, input.targetPath);
+            if (input.receiptPath) await rm(input.receiptPath, { force: true });
+            throw Object.assign(new Error('Workspace target replacement approval is stale'), { code: 'approval_stale' });
+        }
     } else if (targetExists) {
         // Bootstrap may have created an empty root in order to acquire and
         // fingerprint it. It was still absent at the operation boundary.
@@ -242,7 +279,16 @@ export async function beginWorkspaceTargetMaterialization(input: Readonly<{
                     throw materializationRecoveryError('Backup identity is unavailable');
                 }
                 await assertObjectIdentity(previousTargetPath, receipt.expectedBackupIdentity);
-                await rm(previousTargetPath, { recursive: true, force: true });
+                if (input.targetFence?.state === 'empty') {
+                    await rmdir(previousTargetPath).catch((error: unknown) => {
+                        if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+                            throw Object.assign(new Error('Workspace target replacement approval is stale'), { code: 'approval_stale' });
+                        }
+                        throw error;
+                    });
+                } else {
+                    await rm(previousTargetPath, { recursive: true, force: true });
+                }
             }
             if (input.receiptPath) await rm(input.receiptPath, { force: true });
             settled = true;
@@ -447,6 +493,7 @@ export async function materializeWorkspaceExportArtifactsWithScmWorkspace(params
     naming: WorkspaceExportMaterializationNaming;
     materializationReceiptPath?: string;
     originalTargetExists?: boolean;
+    targetFence?: WorkspaceTargetMaterializationFence;
     assertCanContinue?: () => Promise<void>;
 }>): Promise<WorkspaceExportMaterializationResult> {
     if (!params.registry) {
@@ -506,6 +553,7 @@ export async function materializeWorkspaceExportArtifactsWithScmWorkspace(params
             backupDirectoryPrefix: params.naming.backupDirectoryPrefix,
             ...(params.materializationReceiptPath ? { receiptPath: params.materializationReceiptPath } : {}),
             ...(params.originalTargetExists === undefined ? {} : { originalTargetExists: params.originalTargetExists }),
+            ...(params.targetFence ? { targetFence: params.targetFence } : {}),
         });
         await promoteStagedWorkspace({
             stagingRoot,

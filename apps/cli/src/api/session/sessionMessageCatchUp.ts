@@ -7,6 +7,7 @@ import {
 
 import { SessionMessageContentSchema, type Update } from '../types';
 import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
+import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
     createAuthenticationHttpStatusError,
     createHttpStatusError,
@@ -42,7 +43,7 @@ function isOptionalTimestampValid(value: unknown): boolean {
 function parseCatchUpPage(params: Readonly<{
     rawMessages: unknown;
     sessionId: string;
-}>): Readonly<{ updates: Update[]; highestSeq: number }> {
+}> & SessionStoredContentCryptoContext): Readonly<{ updates: Update[]; highestSeq: number }> {
     if (!Array.isArray(params.rawMessages)) {
         throw createSessionTranscriptStoredContentUnavailableError();
     }
@@ -71,6 +72,12 @@ function parseCatchUpPage(params: Readonly<{
             || (msg.localId !== undefined && msg.localId !== null && typeof msg.localId !== 'string')
             || (msg.sidechainId !== undefined && msg.sidechainId !== null && typeof msg.sidechainId !== 'string')
         ) {
+            throw createSessionTranscriptStoredContentUnavailableError();
+        }
+
+        try {
+            openSessionMessageContent({ ...params, content: parsedContent.data });
+        } catch {
             throw createSessionTranscriptStoredContentUnavailableError();
         }
 
@@ -125,10 +132,10 @@ export async function catchUpSessionMessagesAfterSeq(params: {
     sessionId: string;
     afterSeq: number;
     onUpdate: (update: Update) => void;
-}): Promise<void> {
+} & SessionStoredContentCryptoContext): Promise<void> {
     let cursor = Number.isFinite(params.afterSeq) && params.afterSeq >= 0 ? Math.floor(params.afterSeq) : 0;
     const serverUrl = resolveServerHttpBaseUrl();
-    for (let page = 0; page < 10; page++) {
+    while (true) {
         let response: AxiosResponse<unknown>;
         try {
             response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
@@ -171,11 +178,11 @@ export async function catchUpSessionMessagesAfterSeq(params: {
         if (Array.isArray(messages) && messages.length === 0) {
             return;
         }
-        const parsedPage = parseCatchUpPage({ rawMessages: messages, sessionId: params.sessionId });
+        const parsedPage = parseCatchUpPage({ ...params, rawMessages: messages });
         if (nextAfterSeq !== null && nextAfterSeq !== undefined && (
             typeof nextAfterSeq !== 'number'
             || !Number.isSafeInteger(nextAfterSeq)
-            || nextAfterSeq < 0
+            || nextAfterSeq <= cursor
         )) {
             throw createSessionTranscriptStoredContentUnavailableError();
         }
@@ -183,10 +190,10 @@ export async function catchUpSessionMessagesAfterSeq(params: {
         for (const update of parsedPage.updates) {
             params.onUpdate(update);
         }
-        cursor = Math.max(cursor, parsedPage.highestSeq);
-
-        if (typeof nextAfterSeq === 'number' && Number.isFinite(nextAfterSeq) && nextAfterSeq > cursor) {
-            cursor = nextAfterSeq;
+        if (typeof nextAfterSeq === 'number') {
+            // The server cursor is the final returned row, so progress is measured
+            // against the request cursor, not the page's highest returned sequence.
+            cursor = Math.max(nextAfterSeq, parsedPage.highestSeq);
             continue;
         }
         return;

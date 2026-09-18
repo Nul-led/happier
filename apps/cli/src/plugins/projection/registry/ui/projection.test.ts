@@ -8,12 +8,96 @@ import { PLUGIN_UI_HOST_API_VERSION_V1 } from '@happier-dev/protocol/plugins/ui'
 import { describe, expect, it } from 'vitest';
 
 import { buildPluginProjectionV2 } from '../projection/v2';
+import { projectPluginUiRendererAvailability, projectPluginUiRendererRef } from './projection';
 import type {
     ResolvedContributionRegistry,
     ResolvedOpenableContentViewerContribution,
     ResolvedUiViewV2Contribution,
 } from '../types';
 import type { StablePluginDeclarativeModel } from '@/plugins/runtime/invocation/services/declarativeModel';
+
+it('projects inline HTML source through the canonical renderer reference without an Artifact entry', () => {
+    expect(projectPluginUiRendererRef({
+        pluginId: 'com.acme.inline',
+        pluginVersion: '1.0.0',
+        provenance: 'external', source: { kind: 'path' },
+        identity: { pluginId: 'com.acme.inline', localId: 'inline' }, manifestPath: '/plugin/happier.plugin.json',
+        definition: { id: 'inline', kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' }, requiredHostMethods: ['context'] },
+    }, undefined)).toEqual({
+        rendererRef: { kind: 'hostedHtml', contributionId: 'inline', source: { kind: 'html', html: '<p>Hello</p>' }, requiredHostMethods: ['context'] },
+        registryRendererRef: { kind: 'hostedHtml', contributionId: 'inline' },
+    });
+});
+
+it('projects bundled and external inline HTML with identical public renderer semantics', () => {
+    const project = (pluginId: string, provenance: 'first_party' | 'external') => projectPluginUiRendererRef({
+        pluginId,
+        pluginVersion: '1.0.0',
+        provenance,
+        source: { kind: 'path' },
+        identity: { pluginId, localId: 'status' },
+        manifestPath: '/plugin/happier.plugin.json',
+        definition: {
+            id: 'status',
+            kind: 'hostedHtml',
+            source: { kind: 'html', html: '<p>Status</p>' },
+        },
+    }, undefined);
+
+    expect(project('built-in.review', 'first_party')).toEqual(project('com.acme.external', 'external'));
+});
+
+it('carries the declared hosted-HTML capability request to the mount that must enforce it', () => {
+    const requestedCapabilities = {
+        resources: [{ pluginId: 'com.acme.inline', localId: 'status' }],
+        networkOrigins: ['https://api.example.com'],
+    };
+    const projected = projectPluginUiRendererRef({
+        pluginId: 'com.acme.inline',
+        pluginVersion: '1.0.0',
+        provenance: 'external', source: { kind: 'path' },
+        identity: { pluginId: 'com.acme.inline', localId: 'inline' }, manifestPath: '/plugin/happier.plugin.json',
+        definition: {
+            id: 'inline',
+            kind: 'hostedHtml',
+            source: { kind: 'html', html: '<p>Hello</p>' },
+            requiredHostMethods: ['context'],
+            requestedCapabilities,
+        },
+    }, undefined);
+    expect(projected.rendererRef).toEqual({
+        kind: 'hostedHtml',
+        contributionId: 'inline',
+        source: { kind: 'html', html: '<p>Hello</p>' },
+        requiredHostMethods: ['context'],
+        requestedCapabilities,
+    });
+    // The registry reference stays a stable identity: declared authority is
+    // resolved at the mount, never cached as a placement fact.
+    expect(projected.registryRendererRef).toEqual({ kind: 'hostedHtml', contributionId: 'inline' });
+    // An Artifact-backed renderer has no by-value capability request to carry.
+    expect(projectPluginUiRendererRef({
+        pluginId: 'com.acme.inline',
+        pluginVersion: '1.0.0',
+        provenance: 'external', source: { kind: 'path' },
+        identity: { pluginId: 'com.acme.inline', localId: 'web' }, manifestPath: '/plugin/happier.plugin.json',
+        definition: { id: 'web', kind: 'hostedWeb', source: { kind: 'artifact', artifact: 'web' } },
+    }, undefined).rendererRef).not.toHaveProperty('requestedCapabilities');
+});
+
+it('reports admitted inline source availability without looking for an Artifact', () => {
+    expect(projectPluginUiRendererAvailability({
+        pluginId: 'com.acme.inline',
+        renderer: {
+            pluginId: 'com.acme.inline', provenance: 'external', source: { kind: 'path' },
+            identity: { pluginId: 'com.acme.inline', localId: 'inline' }, manifestPath: '/plugin/happier.plugin.json',
+            definition: { id: 'inline', kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' } },
+        },
+        declarativeModel: undefined,
+        registryRendererRef: { kind: 'hostedHtml', contributionId: 'inline' },
+        entriesById: {},
+    })).toEqual({ state: 'available', reason: 'available', diagnostics: [] });
+});
 
 function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry {
     return {
@@ -1815,5 +1899,70 @@ describe('plugin UI projection family', () => {
             },
         });
         expect(entry).not.toHaveProperty('bundle');
+    });
+});
+
+describe('embedded Session widget projection', () => {
+    const makeRegistry = (container: string) => {
+        const renderer = {
+            provenance: 'external',
+            source: { kind: 'path' },
+            pluginId: 'acme.review',
+            pluginVersion: '1.0.0',
+            identity: { pluginId: 'acme.review', localId: 'review-native' },
+            manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
+            definition: { id: 'review-native', kind: 'declarative', root: { kind: 'text', text: 'Review' } },
+        };
+        const view = {
+            provenance: 'external',
+            source: { kind: 'path' },
+            pluginId: 'acme.review',
+            pluginVersion: '1.0.0',
+            identity: { pluginId: 'acme.review', localId: 'review-status-widget' },
+            manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
+            definition: PluginUiViewV2Schema.parse({
+                id: 'review-status-widget',
+                container,
+                target: { kind: 'session' },
+                renderer: 'review-native',
+                title: 'Review status',
+            }),
+        };
+        return {
+            ...createEmptyResolvedContributionRegistry(),
+            uiRenderersV2: [renderer],
+            uiViewsV2: [view],
+        } as unknown as ResolvedContributionRegistry;
+    };
+
+    it('classifies a Registry inline role as an inline binding without a hardcoded role pair test', () => {
+        const entries = buildPluginProjectionV2({ registry: makeRegistry('sessionWidget'), generation: 9 })
+            .familiesById.pluginUi?.entriesById ?? {};
+        const entry = entries['surfacePlacement:acme.review:review-status-widget'];
+        expect(entry).toMatchObject({
+            contributionKind: 'surfacePlacement',
+            descriptorId: 'review-status-widget',
+            target: { kind: 'session' },
+            binding: expect.objectContaining({
+                kind: 'inline',
+                role: 'sessionWidget',
+                surface: { pluginId: 'acme.review', localId: 'review-status-widget' },
+                targetKind: 'session',
+                surfaceContextPlacement: 'sessionPane',
+            }),
+        });
+        // Destination-only projection metadata must stay absent for an inline role.
+        expect(entry).not.toHaveProperty('container');
+        expect(entry).not.toHaveProperty('rightSidebar');
+        expect(entry).not.toHaveProperty('headerActions');
+    });
+
+    it('keeps every incumbent authored inline role on the same classification branch', () => {
+        for (const container of ['sessionSubagentLaunch', 'sessionSubagentDetails'] as const) {
+            const entries = buildPluginProjectionV2({ registry: makeRegistry(container), generation: 9 })
+                .familiesById.pluginUi?.entriesById ?? {};
+            expect(entries['surfacePlacement:acme.review:review-status-widget'])
+                .toMatchObject({ binding: expect.objectContaining({ kind: 'inline', role: container }) });
+        }
     });
 });

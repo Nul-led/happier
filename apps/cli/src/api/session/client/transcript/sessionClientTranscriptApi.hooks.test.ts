@@ -18,7 +18,10 @@ function createTranscriptApi(params?: Readonly<{
     findPersistedSessionUserMessageAdmission?: Parameters<typeof createSessionClientTranscriptApi>[0]['findPersistedSessionUserMessageAdmission'];
 }>) {
     const enqueueCommittedTranscriptMessage = vi.fn(async () => ({ persisted: true, delivered: false }));
-    const admitSessionUserMessage = params?.admitSessionUserMessage ?? vi.fn(async () => undefined);
+    const admitSessionUserMessage = params?.admitSessionUserMessage ?? vi.fn(async ({ localId }) => ({
+        status: 'accepted' as const,
+        localId,
+    }));
     const socketEmit = vi.fn();
     const socketVolatileEmit = vi.fn();
     const usageObservationPublisher = {
@@ -203,13 +206,14 @@ describe('createSessionClientTranscriptApi hook dispatch', () => {
         const { api, enqueueCommittedTranscriptMessage } = createTranscriptApi();
 
         const result = await (api as unknown as {
-            enqueueSessionEventCommitted: (event: { type: 'ready' }) => Promise<{ persisted: boolean; delivered: boolean }>;
-        }).enqueueSessionEventCommitted({ type: 'ready' });
+            enqueueSessionEventCommitted: (event: { type: 'ready'; ownerActivityDelivery: 'home_required' }) => Promise<{ persisted: boolean; delivered: boolean }>;
+        }).enqueueSessionEventCommitted({ type: 'ready', ownerActivityDelivery: 'home_required' });
 
         expect(result).toEqual({ persisted: true, delivered: false });
         expect(enqueueCommittedTranscriptMessage).toHaveBeenCalledWith(expect.objectContaining({
             messageRole: 'event',
             sessionEventType: 'ready',
+            localId: expect.stringMatching(/^activity-ready-home_required:/),
             provenance: { kind: 'non_dependent', source: 'background' },
         }));
     });
@@ -395,6 +399,19 @@ describe('createSessionClientTranscriptApi hook dispatch', () => {
             }),
             composerAttachments: [],
         });
+    });
+
+    it.each([
+        { status: 'rejected' as const, code: 'session_input_unauthorized' as const },
+        { status: 'outcomeUnknown' as const, localId: 'local-disposition', code: 'admission_ack_lost' },
+    ])('exposes the canonical $status admission disposition without parsing error text', async (disposition) => {
+        const { api } = createTranscriptApi({
+            admitSessionUserMessage: vi.fn(async () => disposition),
+        });
+        const request = { text: 'initial work', localId: 'local-disposition' };
+
+        await expect(api.enqueueSessionUserMessageWithDisposition(request)).resolves.toEqual(disposition);
+        await expect(api.enqueueSessionUserMessage(request)).rejects.toMatchObject({ disposition });
     });
 
     it('retains abandonment cleanup custody when preparation created no workspace files', async () => {

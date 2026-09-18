@@ -1,4 +1,9 @@
 import {
+    ComposerContentHandleV1Schema,
+    MAX_COMPOSER_CONTENT_INSPECT_BYTES_V1,
+    PromptAssetExternalRefV1Schema,
+    PromptAssetScopeV1Schema,
+    PromptRegistryConfiguredSourceV1Schema,
     WorkspaceContentPolicyV1Schema,
     type ComposerContentHandleV1,
     type PromptAssetReadRequest,
@@ -7,8 +12,11 @@ import {
     type WorkspaceContentPolicyV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { z } from 'zod';
 
-import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
+import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
+
+import type { RpcHandlerRegistrar } from '../rpc/types';
 
 export type DirectTransferExportPrepareRequest =
     | Readonly<{
@@ -38,6 +46,41 @@ export type DirectTransferExportPrepareRequest =
         maxBytes: number;
     }>;
 
+const DirectTransferExportPrepareRequestSchema = z.discriminatedUnion('t', [
+    z.object({
+        t: z.literal('prompt_asset_download_v1'),
+        assetTypeId: z.string().min(1),
+        scope: asHostProtocolZod(PromptAssetScopeV1Schema),
+        directory: z.string().min(1).nullable().optional(),
+        externalRef: asHostProtocolZod(PromptAssetExternalRefV1Schema),
+    }).strict(),
+    z.object({
+        t: z.literal('prompt_registry_download_v1'),
+        sourceId: z.string().min(1),
+        itemId: z.string().min(1),
+        configuredSources: z.array(asHostProtocolZod(PromptRegistryConfiguredSourceV1Schema)).default([]),
+    }).strict(),
+    z.object({
+        t: z.literal('workspace_file_download_v1'),
+        workingDirectory: z.string().min(1),
+        path: z.string().min(1),
+        asZip: z.boolean(),
+    }).strict(),
+    z.object({
+        t: z.literal('workspace_sync_seed_v1'),
+        operationId: z.string().min(1),
+        sourceWorkspaceRefId: z.string().min(1),
+        targetMachineId: z.string().min(1),
+        contentPolicy: asHostProtocolZod(WorkspaceContentPolicyV1Schema),
+    }).strict(),
+    z.object({
+        t: z.literal('composer_media_stage_inspect_v1'),
+        handle: asHostProtocolZod(ComposerContentHandleV1Schema),
+        offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        maxBytes: z.number().int().positive().max(MAX_COMPOSER_CONTENT_INSPECT_BYTES_V1),
+    }).strict(),
+]);
+
 type DirectTransferExportPrepareResponse = Readonly<
     | {
         success: true;
@@ -61,7 +104,7 @@ type DirectTransferExportPrepareResponse = Readonly<
 >;
 
 export function registerMachineDirectTransferExportRpcHandlers(params: Readonly<{
-    rpcHandlerManager: RpcHandlerManager;
+    rpcHandlerManager: RpcHandlerRegistrar;
     prepareExportSession: (input: DirectTransferExportPrepareRequest) => Promise<Readonly<{
         transferId: string;
         expiresAt: number;
@@ -70,19 +113,14 @@ export function registerMachineDirectTransferExportRpcHandlers(params: Readonly<
         sizeBytes?: number;
         manifestHash?: string;
     }>>;
+    releaseExportSession?: (transferId: string) => Promise<void> | void;
 }>): void {
     params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE, async (data: unknown) => {
-        const request = data as DirectTransferExportPrepareRequest | null;
-        const validSeed = request?.t !== 'workspace_sync_seed_v1' || (
-            Object.keys(request).length === 5
-            && typeof request.operationId === 'string' && request.operationId.length > 0
-            && typeof request.sourceWorkspaceRefId === 'string' && request.sourceWorkspaceRefId.length > 0
-            && typeof request.targetMachineId === 'string' && request.targetMachineId.length > 0
-            && WorkspaceContentPolicyV1Schema.safeParse(request.contentPolicy).success
-        );
-        if (!request || typeof request !== 'object' || !validSeed) {
+        const parsed = DirectTransferExportPrepareRequestSchema.safeParse(data);
+        if (!parsed.success) {
             return { success: false, error: 'Invalid direct transfer export request' } satisfies DirectTransferExportPrepareResponse;
         }
+        const request: DirectTransferExportPrepareRequest = parsed.data;
 
         try {
             const prepared = await params.prepareExportSession(request);
@@ -97,4 +135,28 @@ export function registerMachineDirectTransferExportRpcHandlers(params: Readonly<
             } satisfies DirectTransferExportPrepareResponse;
         }
     });
+
+    if (params.releaseExportSession) {
+        params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE, async (data: unknown) => {
+            const transferId = data && typeof data === 'object'
+                ? (data as { transferId?: unknown }).transferId
+                : null;
+            if (
+                typeof transferId !== 'string'
+                || transferId.length === 0
+                || Object.keys(data as object).length !== 1
+            ) {
+                return { success: false, error: 'Invalid direct transfer export release request' } as const;
+            }
+            try {
+                await params.releaseExportSession?.(transferId);
+                return { success: true } as const;
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Direct transfer export release failed',
+                } as const;
+            }
+        });
+    }
 }

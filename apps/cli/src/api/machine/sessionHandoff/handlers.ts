@@ -100,10 +100,6 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   sessionOperationExclusion?: ExternalSessionOperationExclusionOwner;
   loadLocalSessionMetadata?: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
   loadSessionMetadata?: (sessionId: string) => Promise<Record<string, unknown> | null>;
-  savePreparedTargetLocalMetadata?: (input: Readonly<{
-    remoteSessionId: string;
-    exportMetadataOverlay: Record<string, unknown>;
-  }>) => Promise<void> | void;
   stopSessionForHandoff?: (sessionId: string) => Promise<'stopped' | 'already_inactive' | 'failed'>;
   spawnSessionForHandoff?: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   exportSessionBundle?: (metadata: Record<string, unknown>) => Promise<Readonly<{
@@ -124,7 +120,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   coordinateSessionHandoff?: (input: Readonly<{
     operationId: string;
     actionInput: unknown;
-    start: () => Promise<import('@happier-dev/protocol/actions').ActionExecuteResult>;
+    start: (privateActionInput: unknown) => Promise<import('@happier-dev/protocol/actions').ActionExecuteResult>;
     signal: AbortSignal;
     publishOwnerUpdate: (update: import('@/daemon/actionOperations').ActionOperationOwnerUpdate) => void;
   }>) => Promise<import('@happier-dev/protocol/actions').ActionExecuteResult>;
@@ -497,9 +493,13 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
             return await params.coordinateSessionHandoff!({
               operationId: typeof context?.actionRequestId === 'string' && context.actionRequestId.trim()
                 ? context.actionRequestId.trim()
-                : createUuid(),
+                : '',
               actionInput: input,
-              start: async () => await lifecycleExecutor.execute(actionId, input, context),
+              start: async (privateActionInput) => await lifecycleExecutor.execute(
+                actionId,
+                privateActionInput,
+                context,
+              ),
               signal: context?.signal ?? new AbortController().signal,
               publishOwnerUpdate: (update) => {
                 context?.operationOwnerUpdate?.update(update);

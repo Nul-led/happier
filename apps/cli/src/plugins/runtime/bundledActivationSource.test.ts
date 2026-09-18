@@ -281,6 +281,29 @@ describe('createBundledActivationSourceResolver', () => {
     })).toEqual([artifacts[0]]);
   });
 
+  it('materializes only the requested executable bundled plugin for a scoped runtime', () => {
+    const artifacts = [
+      {
+        packageName: '@happier-dev/plugins-codex',
+        record: { pluginId: 'happier.agent.codex' },
+      },
+      {
+        packageName: '@happier-dev/plugins-opencode',
+        record: { pluginId: 'happier.agent.opencode' },
+      },
+    ] as const;
+
+    expect(selectBundledExecutableImmutableArtifacts({
+      artifacts,
+      activationTargets: artifacts.map((artifact) => ({
+        pluginId: artifact.record.pluginId,
+        daemonEntryPath: artifact.packageName,
+        sourceSpec: { kind: 'bundled' },
+      })),
+      pluginIds: ['happier.agent.codex'],
+    })).toEqual([artifacts[0]]);
+  });
+
   it('retains every executable immutable generation when source activation excludes its overlay', () => {
     const artifacts = [
       {

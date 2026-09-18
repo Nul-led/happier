@@ -18,7 +18,7 @@ describe('cleanupAndShutdown', () => {
         vi.resetModules();
     });
 
-    it('drains background server work after stopping refresh loops and before teardown', async () => {
+    it('drains admitted work before stopping background loops or data transport', async () => {
         await withTempDir('happier-cleanup-shutdown-', async (homeDir) => {
             envScope.patch({
                 HAPPIER_HOME_DIR: homeDir,
@@ -89,10 +89,10 @@ describe('cleanupAndShutdown', () => {
 
             expect(beforeShutdown).toHaveBeenCalledTimes(1);
             expect(calls).toEqual([
+                'beforeShutdown',
                 'refreshLoopStop',
                 'quotaLoopStop',
                 'quotaLoopStopDone',
-                'beforeShutdown',
                 'directPeerStop',
                 'tailscaleStop',
                 'sshTunnelsStop',

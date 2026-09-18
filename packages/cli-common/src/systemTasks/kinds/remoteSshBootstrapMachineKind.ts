@@ -201,6 +201,7 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
   resolveHostTrust: (params: Readonly<{
     ssh: SystemTaskSshConnectionConfig;
     knownHostsMode: 'app' | 'system';
+    signal?: AbortSignal;
   }>) => Promise<RemoteHostTrustResolution>;
   installRemoteCli: (params: Readonly<{
     parsed: RemoteBootstrapMachineParams;
@@ -218,6 +219,7 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
     // never fabricates pairing material.
     pairing?: unknown;
     supportsTokenOnly?: boolean;
+    signal?: AbortSignal;
   }>) => Promise<void>;
   createHappierJsonExecutor?: (params: Readonly<{
     parsed: RemoteBootstrapMachineParams;
@@ -316,6 +318,7 @@ export function createRemoteSshBootstrapMachineTaskKind(
       const trustResolution = await deps.resolveHostTrust({
         ssh: parsedRemote.ssh,
         knownHostsMode,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
       const trust = trustResolution.status === 'prompt'
         ? normalizeRemoteHostTrustResolution(trustResolution)
@@ -603,6 +606,7 @@ export function createRemoteSshBootstrapMachineTaskKind(
                 ? { pairing: requestPayload.pairing }
                 : {}),
               ...(requestPayload.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+              signal: ctx.signal,
             });
           } catch (error) {
             if (

@@ -3,6 +3,7 @@ import type {
     ConnectedServiceAuthGroupMemberRuntimeState,
     ConnectedServiceAuthGroupPolicyV1,
 } from './selectConnectedServiceAuthGroupCandidate';
+import { isConnectedServiceQuotaObservationFresh } from '@happier-dev/protocol';
 
 function normalizeProfileId(value: string | null | undefined): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -21,7 +22,11 @@ function isQuotaSnapshotStale(input: Readonly<{
         && Number.isFinite(input.policy.probeIfSnapshotOlderThanMs)
             ? Math.max(0, Math.trunc(input.policy.probeIfSnapshotOlderThanMs))
             : input.quotaFreshnessMs;
-    return input.nowMs - capturedAtMs > probeIfSnapshotOlderThanMs;
+    return !isConnectedServiceQuotaObservationFresh({
+        observedAtMs: capturedAtMs,
+        nowMs: input.nowMs,
+        maxAgeMs: probeIfSnapshotOlderThanMs,
+    });
 }
 
 export function resolveConnectedServiceAuthGroupPreTurnQuotaProbeProfileIds(input: Readonly<{

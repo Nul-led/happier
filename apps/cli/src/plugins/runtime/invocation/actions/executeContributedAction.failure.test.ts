@@ -43,6 +43,7 @@ function mountedUiCaller() {
             id: 'dashboard',
             qualifiedId: 'acme.target/dashboard',
         },
+        immutableGenerationId: 'acme-target-generation-1',
         materialization: { machineId: 'machine-1', materializationId: 'materialization-1', pluginId: 'acme.target' },
         originSurface: 'ui' as const,
     };

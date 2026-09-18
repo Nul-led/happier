@@ -1,5 +1,4 @@
 import type {
-  AgentDispatchStructuredInputV1,
   AgentSessionRuntimeEvent,
   SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
@@ -8,7 +7,9 @@ import type { NormalizedRuntimeIdentityPublicationV1 } from '@/agent/runtime/eve
 import type {
   AgentSessionProviderBinding,
   AgentSessionRuntime,
+  AgentSessionInput,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 
 export type { RuntimeConfigUpdateOutcomeV1 };
 
@@ -66,7 +67,7 @@ export type RuntimeTurnPromptMeta = Readonly<{
   localId?: string | null;
   localIds?: readonly string[];
   /** Raw Composer attachments have been resolved away before a runtime sees this envelope. */
-  structuredInput?: AgentDispatchStructuredInputV1;
+  structuredInput?: AgentSessionInput['structuredInput'];
   modelId?: string | null;
   userMessageSeq?: number | null;
   userMessageSeqs?: readonly number[];
@@ -123,6 +124,14 @@ export function isRuntimeTurnFailureAlreadySurfaced(error: unknown): error is Ru
   );
 }
 
+export function readRuntimeTurnFailureAlreadySurfacedEvent(
+  error: unknown,
+): RuntimeTurnFailureAlreadySurfacedEvent | null {
+  return isRuntimeTurnFailureAlreadySurfaced(error)
+    ? error[RUNTIME_TURN_FAILURE_EVENT]
+    : null;
+}
+
 export type RuntimePermissionResponseOutcome = Readonly<{ delivered: true }>
   | Readonly<{
     delivered: false;
@@ -136,6 +145,8 @@ export type RuntimeTurnDisposeReason = NonNullable<
 >;
 
 export type RuntimeTurnOperations = Readonly<{
+  /** Existing native runtime scope, including plugin retirement; never a transport-request lifetime. */
+  getRuntimeLifetimeSignal?: () => AbortSignal | null;
   permissionCapability?: RuntimePermissionCapability;
   isProviderNativeCommand?: (prompt: string) => boolean;
   beginTurnLifecycle: () => void;
@@ -166,6 +177,7 @@ export type RuntimeTurnOperations = Readonly<{
   readActiveTurnPermissionWitness?: () => RuntimeActiveTurnPermissionWitness | null;
   /** Exact local input identity that admitted the currently active parent turn. */
   readActiveTurnInputId?: () => string | null;
+  readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
   readSessionIdentity: () => RuntimeTurnSessionIdentity;
   updateSessionRuntimeConfig: (update: RuntimeTurnConfigUpdate) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   resetOrDisposeRuntime: (

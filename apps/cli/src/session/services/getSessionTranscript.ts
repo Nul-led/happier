@@ -10,6 +10,7 @@ import { fetchTranscriptSemanticPage } from './transcript/fetchTranscriptSemanti
 import { projectExternalShareableTranscriptPage } from './transcript/projectExternalShareableTranscriptPage';
 import type { TranscriptDirection, TranscriptScope } from './transcript/semanticTranscriptItem';
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type GetSessionTranscriptErrorResult = Extract<SessionTranscriptGetResult, Readonly<{ ok: false }>>;
 
@@ -24,6 +25,9 @@ export type GetExternalShareableSessionTranscriptResult =
 
 type GetSessionTranscriptParams = Readonly<{
   credentials: StoredCredentials;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   idOrPrefix: string;
   limit?: number;
   cursor?: string | null;
@@ -39,9 +43,12 @@ type GetSessionTranscriptParams = Readonly<{
   includeStructuredPayload?: boolean;
   maxCharsPerMessage?: number | null;
   maxRawPayloadChars?: number | null;
+  /** Internal single-row mode used only by Session-list last-message previews. */
+  sessionListPreview?: true;
   projection?: 'externalShareableV1';
   callerPluginId?: string | null;
   signal?: AbortSignal;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
 function clampInt(value: unknown, params: Readonly<{ min: number; max: number; fallback: number }>): number {
@@ -95,7 +102,11 @@ export async function getSessionTranscript(
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
     ...(params.signal ? { signal: params.signal } : {}),
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
     return {
@@ -112,6 +123,9 @@ export async function getSessionTranscript(
       const limit = clampInt(params.limit, { min: 1, max: SESSION_TRANSCRIPT_GET_MAX_LIMIT, fallback: 20 });
       const rawPage = await fetchEncryptedTranscriptMessagesPage({
         token: params.credentials.token,
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         sessionId: sessionTarget.sessionId,
         limit: 100,
         afterSeq: cursorSeq,
@@ -193,11 +207,16 @@ export async function getSessionTranscript(
   try {
     const page = await fetchTranscriptSemanticPage({
       token: params.credentials.token,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
       sessionId: sessionTarget.sessionId,
-      ctx: sessionTarget.ctx,
+      contentContext: sessionTarget,
       limit,
-      rawPageLimit: includeRaw ? Math.min(50, Math.max(limit, 20)) : Math.min(100, Math.max(limit, 20)),
-      maxRawRowsToScan: Math.max(40, limit * 20),
+      rawPageLimit: params.sessionListPreview
+        ? 1
+        : includeRaw ? Math.min(50, Math.max(limit, 20)) : Math.min(100, Math.max(limit, 20)),
+      maxRawRowsToScan: params.sessionListPreview ? 1 : Math.max(40, limit * 20),
       direction: normalizeDirection(params.direction),
       cursor: params.cursor ?? null,
       scope: normalizeScope(params.scope, 'main'),

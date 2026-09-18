@@ -119,4 +119,47 @@ describe('rpcHandlers (direct transfer imports)', () => {
     });
     expect(abortImportSession).not.toHaveBeenCalled();
   });
+
+  it('fails closed before filesystem preparation for malformed or unknown import fields', async () => {
+    const mgr = createRpcHandlerManager();
+    const prepareImportSession = vi.fn(async () => {
+      throw new Error('prepare should not be called');
+    });
+    registerMachineRpcHandlers({
+      rpcHandlerManager: mgr as never,
+      handlers: {
+        spawnSession: async () => ({ type: 'error', errorCode: 'unknown', errorMessage: 'not implemented' }) as never,
+        stopSession: async () => true,
+        requestShutdown: () => {},
+        directTransferImport: {
+          prepareImportSession,
+          abortImportSession: async () => {},
+        },
+      },
+    });
+    const handler = mgr.handlers.get(RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE);
+
+    await expect(handler?.({
+      t: 'session_file_upload_v1',
+      workingDirectory: '/repo',
+      path: 'payload.bin',
+      sizeBytes: 4,
+      overwrite: true,
+      unexpected: true,
+    })).resolves.toEqual({
+      success: false,
+      error: 'Invalid direct transfer import request',
+    });
+    await expect(handler?.({
+      t: 'session_file_upload_v1',
+      workingDirectory: '',
+      path: 'payload.bin',
+      sizeBytes: 4,
+      overwrite: true,
+    })).resolves.toEqual({
+      success: false,
+      error: 'Invalid direct transfer import request',
+    });
+    expect(prepareImportSession).not.toHaveBeenCalled();
+  });
 });

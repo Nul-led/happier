@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import axios from 'axios';
 import fastify from 'fastify';
+import { Buffer } from 'node:buffer';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -20,6 +21,7 @@ const {
   readSettings,
   requestDaemonSignedRootActionExecution,
   resolveCurrentAccountMachineTarget,
+  resolveLiveDaemonControlTargetForServer,
 } = vi.hoisted(() => ({
   createCliActionExecutor: vi.fn(),
   ensureCliActionPolicySettings: vi.fn(),
@@ -30,6 +32,7 @@ const {
   readSettings: vi.fn(),
   requestDaemonSignedRootActionExecution: vi.fn(),
   resolveCurrentAccountMachineTarget: vi.fn(),
+  resolveLiveDaemonControlTargetForServer: vi.fn(),
 }));
 
 vi.mock('./createCliActionExecutor', () => ({
@@ -60,8 +63,18 @@ vi.mock('@/daemon/controlClient', () => ({
   requestDaemonSignedRootActionExecution,
 }));
 
+vi.mock('@/daemon/multiDaemon', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/daemon/multiDaemon')>(),
+  resolveLiveDaemonControlTargetForServer,
+}));
+
 const SYNTHETIC_API_TOKEN = 'hap_v1_11111111-1111-4111-8111-111111111111_' + 'A'.repeat(43);
 const exactSessionId = 'c123456789012345678901234';
+
+function syntheticAccountToken(accountId: string): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({ sub: accountId })}.signature`;
+}
 type MockActionResponse = Readonly<{
   statusCode: number;
   body: Readonly<Record<string, unknown>>;
@@ -100,13 +113,21 @@ async function handlePatActionRequest(request: IncomingMessage, response: import
     return;
   }
   try {
+    const requestBody = await readRequestBody(request);
     const result = fetch(new URL(request.url ?? '/', endpoint), {
       method: request.method,
       headers: requestHeaders(request),
-      body: await readRequestBody(request),
+      body: requestBody,
     });
     response.writeHead(result.statusCode, { 'content-type': 'application/json' });
-    response.end(JSON.stringify(result.body));
+    // The real external Action route echoes the request identity, including
+    // SDK-generated identities on mutating Actions.
+    const envelope: unknown = requestBody ? JSON.parse(requestBody) : null;
+    const requestId = envelope && typeof envelope === 'object' && 'requestId' in envelope
+      ? envelope.requestId : undefined;
+    response.end(JSON.stringify({ ...result.body,
+      ...(result.body.v === 1 && typeof requestId === 'string' ? { requestId } : {}),
+    }));
   } catch (error) {
     request.socket.destroy(error instanceof Error ? error : new Error(String(error)));
   }
@@ -190,6 +211,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
     lookupSessionsByTags.mockReset();
     readSettings.mockReset();
     requestDaemonSignedRootActionExecution.mockReset();
+    resolveLiveDaemonControlTargetForServer.mockReset();
     resolveCurrentAccountMachineTarget.mockReset();
     readSettings.mockResolvedValue({ machineId: 'machine-selected' });
     const legacySessionRouteUsed = () => Promise.reject(new Error('legacy_session_route_used'));
@@ -222,6 +244,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         encryption: null,
         credentialProvenance: 'stored_session',
       },
+      serverId: 'selected-home',
       serverApiUrl: selectedServerApiUrl,
     });
 
@@ -244,6 +267,40 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         }),
       }),
     );
+  });
+
+  it('binds approval-origin currentness to the exact executor credentials', async () => {
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    createCliActionExecutorFromCredentials({
+      credentials: {
+        token: syntheticAccountToken('account-1'),
+        encryption: null,
+        credentialProvenance: 'stored_session',
+      },
+      machineId: 'machine-1',
+      serverId: 'home-profile-1',
+      serverApiUrl: 'https://home.example.test',
+    });
+
+    const isApprovalExecutionOriginCurrent = createCliActionExecutor.mock.calls.at(-1)?.[0]
+      ?.isApprovalExecutionOriginCurrent;
+    expect(isApprovalExecutionOriginCurrent).toEqual(expect.any(Function));
+    await expect(isApprovalExecutionOriginCurrent?.({
+      origin: {
+        v: 1,
+        authority: 'account_automation',
+        surface: 'api',
+        caller: { kind: 'host' },
+        serverId: 'home-profile-1',
+        accountId: 'account-1',
+        principalId: 'account-1',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        machineId: 'machine-1',
+        target: { kind: 'machine', machineId: 'machine-1' },
+        actionId: 'machine.list',
+        requestId: 'request-1',
+      },
+    })).resolves.toBe(false);
   });
 
   it('routes only attested stored-session root clients through signed daemon control', async () => {
@@ -271,9 +328,93 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
     expect(requestDaemonSignedRootActionExecution).toHaveBeenCalledWith({
       actionId: 'machines.list',
       input: { limit: 10 },
-      targetMachineId: 'machine-local',
+      target: { kind: 'machine', machineId: 'machine-local' },
       actionRequestId: 'request-signed',
     }, {});
+  });
+
+  it('keeps present-user Actions on signed daemon control while PAT transport refuses them', async () => {
+    requestDaemonSignedRootActionExecution.mockResolvedValue({
+      ok: true,
+      result: { installed: true },
+    });
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const signedRoot = createCliActionExecutorFromCredentials({
+      credentials: {
+        token: 'signed-daemon-account-token',
+        encryption: null,
+        credentialProvenance: 'stored_session',
+      },
+      externalActionClient: true,
+    });
+
+    await expect(signedRoot.execute(
+      'plugins.install',
+      { source: '/workspace/plugin' },
+      { surface: 'cli', authority: 'present_user' },
+    )).resolves.toEqual({ ok: true, result: { installed: true } });
+    expect(requestDaemonSignedRootActionExecution).toHaveBeenCalledWith({
+      actionId: 'plugins.install',
+      input: { source: '/workspace/plugin' },
+    }, {});
+
+    const pat = createCliActionExecutorFromCredentials({
+      credentials: {
+        token: SYNTHETIC_API_TOKEN,
+        encryption: null,
+        credentialProvenance: 'api_token',
+      },
+      externalActionClient: true,
+    });
+    await expect(pat.execute(
+      'plugins.install',
+      { source: '/workspace/plugin' },
+      { surface: 'cli', authority: 'present_user' },
+    )).resolves.toEqual({ ok: false, errorCode: 'unsupported', error: 'unsupported' });
+  });
+
+  it('pins a fixed-Home stored-session root client to that Home daemon and fails closed when it is unavailable', async () => {
+    const daemonTarget = { pid: 42, httpPort: 4949, controlToken: 'control-home-b' };
+    resolveLiveDaemonControlTargetForServer.mockResolvedValueOnce(daemonTarget);
+    requestDaemonSignedRootActionExecution.mockResolvedValueOnce({
+      ok: true,
+      result: { actionSpecs: [] },
+    });
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const credentials = {
+      token: 'signed-daemon-account-token',
+      encryption: null,
+      credentialProvenance: 'stored_session' as const,
+    };
+    const executor = createCliActionExecutorFromCredentials({
+      credentials,
+      externalActionClient: true,
+      serverId: 'home-b',
+      serverApiUrl: 'https://home-b.example.test',
+    });
+
+    await expect(executor.execute(
+      'action.spec.search',
+      { limit: 10 },
+      { surface: 'cli' },
+    )).resolves.toEqual({ ok: true, result: { actionSpecs: [] } });
+    expect(resolveLiveDaemonControlTargetForServer).toHaveBeenCalledWith('home-b');
+    expect(requestDaemonSignedRootActionExecution).toHaveBeenCalledWith({
+      actionId: 'action.spec.search',
+      input: { limit: 10 },
+    }, { target: daemonTarget });
+
+    resolveLiveDaemonControlTargetForServer.mockResolvedValueOnce(null);
+    await expect(executor.execute(
+      'action.spec.get',
+      { actionId: 'session.status.get' },
+      { surface: 'cli' },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'daemon_unavailable',
+      error: 'daemon_unavailable',
+    });
+    expect(requestDaemonSignedRootActionExecution).toHaveBeenCalledTimes(1);
   });
 
   it('keeps an API Token on public HTTP even when a caller supplies a non-CLI surface', async () => {
@@ -430,11 +571,55 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
     });
   });
 
+  it('never selects the ambient configured machine for a fixed-Home PAT executor', async () => {
+    if (!patActionEndpoint) throw new Error('Expected PAT Action test endpoint.');
+    resolveCurrentAccountMachineTarget.mockResolvedValue({
+      kind: 'selected',
+      target: { machineId: 'machine-fixed-home', machineLabel: 'machine-fixed-home' },
+    });
+    const fetch = vi.fn<FetchLike>(() => apiSuccess('session.list', {
+      sessions: [],
+      nextCursor: null,
+      hasNext: false,
+    }));
+    installPatActionTransportMock(fetch);
+
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const executor = createCliActionExecutorFromCredentials({
+      credentials: {
+        token: SYNTHETIC_API_TOKEN,
+        encryption: null,
+        credentialProvenance: 'api_token',
+      },
+      serverId: 'fixed-home',
+      serverApiUrl: patActionEndpoint,
+    });
+
+    await expect(executor.execute('session.list', { limit: 1 }, { surface: 'cli' })).resolves.toEqual({
+      ok: true,
+      result: { sessions: [], nextCursor: null, hasNext: false },
+    });
+    expect(readSettings).not.toHaveBeenCalled();
+    expect(resolveCurrentAccountMachineTarget).toHaveBeenCalledWith({
+      token: SYNTHETIC_API_TOKEN,
+      serverHttpBaseUrl: patActionEndpoint,
+    });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      v: 1,
+      target: { kind: 'machine', machineId: 'machine-fixed-home' },
+      input: { limit: 1 },
+    });
+  });
+
   it('omits the target for a direct daemon Action endpoint without Account machine discovery', async () => {
     readSettings.mockResolvedValue({});
     resolveCurrentAccountMachineTarget.mockRejectedValue(new Error('account_machine_inventory_unavailable'));
     const receivedTargets: unknown[] = [];
+    const receivedBodies: unknown[] = [];
     const app = fastify();
+    app.addHook('preHandler', async (request) => {
+      receivedBodies.push(request.body);
+    });
     registerDaemonExternalActionRoute(app, {
       currentMachineId: 'machine-daemon-local',
       currentServerId: 'server-daemon-local',
@@ -452,6 +637,12 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
           result: { sessions: [], nextCursor: null, hasNext: false },
         }),
       },
+      resolvePatExecutor: () => ({
+        execute: async () => ({
+          ok: true as const,
+          result: { sessions: [], nextCursor: null, hasNext: false },
+        }),
+      }),
       resolveTarget: async ({ target, currentMachineId }) => {
         receivedTargets.push(target);
         return target ?? { kind: 'machine', machineId: currentMachineId };
@@ -487,10 +678,11 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         },
       });
 
-      await expect(executor.execute('session.list', { limit: 1 }, { surface: 'cli' })).resolves.toEqual({
+      await expect(executor.execute('session.list', {}, { surface: 'cli' })).resolves.toEqual({
         ok: true,
         result: { sessions: [], nextCursor: null, hasNext: false },
       });
+      expect(receivedBodies).toEqual([{ v: 1, input: {} }]);
       expect(resolveCurrentAccountMachineTarget).not.toHaveBeenCalled();
       expect(receivedTargets).toEqual([undefined]);
     } finally {
@@ -856,6 +1048,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       currentServerId: 'server-selected',
       verifyPat,
       executor: { execute },
+      resolvePatExecutor: () => ({ execute }),
       resolveTarget: async ({ target }) => target ?? null,
     });
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -931,15 +1124,12 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       { sessionId: errorCode === 'session_id_ambiguous' ? 'shared' : 'missing' },
       { surface: 'cli' },
     )).resolves.toEqual({
-      ok: true,
-      result: {
-        ok: false,
-        errorCode,
-        error: errorCode,
-        ...(errorCode === 'session_id_ambiguous'
-          ? { candidates: sessions.map((session) => session.id) }
-          : {}),
-      },
+      ok: false,
+      errorCode,
+      error: errorCode,
+      ...(errorCode === 'session_id_ambiguous'
+        ? { details: { candidates: sessions.map((session) => session.id) } }
+        : {}),
     });
 
     expect(fetch).toHaveBeenCalledTimes(2);

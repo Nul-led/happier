@@ -3,14 +3,16 @@ import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import type { FinishExecutionRun } from './executionRunFinishRun';
 import { settleExecutionRunController } from './settleExecutionRunController';
+import { readExecutionRunControllerHostBarrier } from '@/agent/executionRuns/controllers/failureSignal';
 
 export async function stopExecutionRun(args: Readonly<{
   runId: string;
-  runs: ReadonlyMap<string, ExecutionRunState>;
+  runs: Map<string, ExecutionRunState>;
   controllers: Map<string, ExecutionRunController>;
   voiceAgentManager: VoiceAgentManager;
   getNowMs: () => number;
   finishRun: FinishExecutionRun;
+  onPublicStateUpdated?: (runId: string) => void;
 }>): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
   const run = args.runs.get(args.runId);
   if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
@@ -18,6 +20,20 @@ export async function stopExecutionRun(args: Readonly<{
   const ctrl = args.controllers.get(args.runId);
   if (ctrl) {
     ctrl.cancelled = true;
+    if (ctrl.kind === 'backend' && ctrl.currentInputTurn) {
+      ctrl.lastInputTurn = { ...ctrl.currentInputTurn, state: 'cancelled' };
+      // Retain the exact interaction binding until controller settlement
+      // unregisters its responder and aborts the runtime's pending permissions.
+      // Native detached runtimes resolve the durable store through this field.
+      ctrl.currentInputTurn = undefined;
+      const occurrenceId = ctrl.inputTurnOccurrenceId ?? run.inputTurns?.occurrenceId;
+      if (occurrenceId) {
+        args.runs.set(args.runId, {
+          ...run,
+          inputTurns: { occurrenceId, last: ctrl.lastInputTurn },
+        });
+      }
+    }
     // Leaf cancellation is a best-effort notification, never a gate on host-owned
     // terminal truth: a plugin/backend cancel or Voice stop that throws or never
     // settles must not block the cancelled terminal publication below, the
@@ -25,8 +41,8 @@ export async function stopExecutionRun(args: Readonly<{
     // once through settleExecutionRunController in the finally block.
     void (async (): Promise<void> => {
       if (ctrl.kind === 'backend') {
-        if (ctrl.childSessionId) {
-          await ctrl.backend.cancel(ctrl.childSessionId);
+        if (ctrl.runtimeId) {
+          await ctrl.backend.cancel(ctrl.runtimeId);
         }
         return;
       }
@@ -50,6 +66,10 @@ export async function stopExecutionRun(args: Readonly<{
   };
 
   try {
+    if (ctrl?.kind === 'backend') {
+      const pendingWorkflowFacts = readExecutionRunControllerHostBarrier(ctrl);
+      if (pendingWorkflowFacts) await pendingWorkflowFacts;
+    }
     await args.finishRun(args.runId, { status: 'cancelled', summary: 'Cancelled', finishedAtMs }, { output });
   } finally {
     if (ctrl) {
@@ -58,6 +78,7 @@ export async function stopExecutionRun(args: Readonly<{
         controller: ctrl,
         controllers: args.controllers,
       });
+      args.onPublicStateUpdated?.(args.runId);
     }
   }
   return { ok: true };

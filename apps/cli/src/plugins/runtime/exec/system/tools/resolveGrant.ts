@@ -15,16 +15,21 @@ import {
     agentCliPathRequiresJavaScriptRuntime,
     resolveAgentCliJavaScriptRuntimeCommand,
 } from '@happier-dev/cli-common/agents/resolution';
+import { resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
 
 import {
     isPluginExecSystemToolSupportedOnHost,
     type PluginExecSystemToolDefinition,
     type PluginExecSystemToolGrantRecord,
+    type PluginExecSystemToolReadiness,
 } from './definitions';
 import {
+    createLegacySystemToolDiagnostic,
     createMissingSystemToolDiagnostic,
     createSystemToolDiagnostic,
+    createUnidentifiedSystemToolDiagnostic,
 } from './diagnostics';
+import { resolveSystemToolReadiness } from './readiness';
 import { isDeniedPathOnlyRuntimeName, normalizePathOnlyRuntimeName } from './runtimeDeny';
 
 function projectSystemToolDiagnostics(
@@ -46,6 +51,13 @@ export type CreatePluginExecSystemToolResolverParams = Readonly<{
     preferredPathAccess?: 'executable-only' | 'readable-javascript';
     registerGrant: (grant: PluginExecSystemToolGrantRecord) => void;
     now?: () => number;
+    /**
+     * Selects Windows executable-name resolution (`PATHEXT` shims); defaults to
+     * this process. It does not emulate any other platform behavior — `PATH`
+     * itself is still split with this process's delimiter — so it exists to make
+     * the Windows lookup branch testable, not to run a Windows host elsewhere.
+     */
+    platform?: NodeJS.Platform;
 }>;
 
 function createAbortError(): PluginError {
@@ -141,6 +153,7 @@ function normalizeLookupCandidates(
     definition: PluginExecSystemToolDefinition,
     request: SystemToolResolveRequestV1,
     env: Readonly<Record<string, string>>,
+    platform: NodeJS.Platform,
 ): readonly string[] {
     const candidates: string[] = [];
     const pushCandidate = (candidate: string) => {
@@ -152,6 +165,14 @@ function normalizeLookupCandidates(
         if (isAbsolute(lookupName)) {
             pushCandidate(lookupName);
             return;
+        }
+        // A manifest declares the bare executable name, but Windows installs the
+        // vendor CLI as a `PATHEXT` shim (`droid.cmd`, `fx.cmd`, …). Reuse the
+        // canonical Windows command resolver every other CLI call site already
+        // uses rather than re-deriving extension rules here.
+        if (platform === 'win32') {
+            const windowsPath = resolveWindowsCommandOnPath(lookupName, env);
+            if (windowsPath) pushCandidate(windowsPath);
         }
         const searchPath = env.PATH ?? '';
         const searchRoots = searchPath.split(delimiter).filter((entry) => entry.length > 0);
@@ -186,9 +207,33 @@ function classifySource(
     return definition.source ?? 'system';
 }
 
+function readCaseInsensitiveEnvValue(
+    env: Readonly<Record<string, string | undefined>> | undefined,
+    name: string,
+): string | undefined {
+    // Windows environment names are case-insensitive and Node may surface
+    // `Path`/`Pathext` rather than the uppercase spelling.
+    const direct = env?.[name];
+    if (typeof direct === 'string') return direct;
+    const lowered = name.toLowerCase();
+    for (const [key, value] of Object.entries(env ?? {})) {
+        if (key.toLowerCase() === lowered && typeof value === 'string') return value;
+    }
+    return undefined;
+}
+
+/**
+ * The lookup environment stays deliberately narrow so tool resolution cannot
+ * read ambient configuration. `PATHEXT` belongs with `PATH`: on Windows it is
+ * half of "which filenames count as this command", and dropping it silently
+ * pins every lookup to the default extension list instead of the user's.
+ */
 function buildSystemToolLookupEnv(baseEnv: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
+    const pathext = readCaseInsensitiveEnvValue(baseEnv, 'PATHEXT')
+        ?? readCaseInsensitiveEnvValue(process.env, 'PATHEXT');
     return Object.freeze({
-        PATH: baseEnv?.PATH ?? process.env.PATH ?? '',
+        PATH: readCaseInsensitiveEnvValue(baseEnv, 'PATH') ?? process.env.PATH ?? '',
+        ...(pathext === undefined ? {} : { PATHEXT: pathext }),
     });
 }
 
@@ -259,6 +304,9 @@ export function createPluginExecSystemToolResolver(params: CreatePluginExecSyste
                     })]),
                 });
             }
+            // Narrowed once for the nested resolution helpers below, which
+            // cannot rely on control-flow narrowing of the captured binding.
+            const tool = definition;
             if (!isPluginExecSystemToolSupportedOnHost(definition, process.platform)) {
                 throw new PluginError({
                     code: 'plugin_exec_system_tool_platform_unsupported',
@@ -297,7 +345,174 @@ export function createPluginExecSystemToolResolver(params: CreatePluginExecSyste
                 });
             }
             validatePreferredCommand(definition, request);
-            const candidates = normalizeLookupCandidates(definition, request, env);
+            const lookupPlatform = params.platform ?? process.platform;
+            const candidates = normalizeLookupCandidates(
+                definition,
+                request,
+                env,
+                lookupPlatform,
+            );
+
+            async function resolveRunnableLaunch(candidate: string) {
+                const isCanonicalReadableJavaScriptPath = (
+                    params.preferredPathAccess === 'readable-javascript'
+                    && request.preferredPath?.trim() === candidate
+                    && await isReadableJavaScriptFile(candidate)
+                );
+                if (!(await isExecutableFile(candidate) || isCanonicalReadableJavaScriptPath)) {
+                    return null;
+                }
+                return isCanonicalReadableJavaScriptPath
+                    ? resolveCanonicalAgentCliJavaScriptLaunch(
+                        candidate,
+                        tool.defaultArgs,
+                        params.baseEnv,
+                    )
+                    : Object.freeze({
+                        executablePath: candidate,
+                        args: Object.freeze([...(tool.defaultArgs ?? [])]),
+                    });
+            }
+
+            function issueGrant(
+                candidate: string,
+                launch: Readonly<{ executablePath: string; args: readonly string[] }>,
+            ): SystemToolLaunchGrantV1 {
+                const issuedAt = params.now?.() ?? Date.now();
+                const expiresAt = tool.expiresInMs === undefined || tool.expiresInMs === null
+                    ? null
+                    : issuedAt + Math.max(0, tool.expiresInMs);
+                const grant: PluginExecSystemToolGrantRecord = Object.freeze({
+                    kind: 'system-tool',
+                    grantId: createGrantId({
+                        toolId: tool.toolId,
+                        executablePath: launch.executablePath,
+                        issuedAt,
+                    }),
+                    toolId: tool.toolId,
+                    executablePath: launch.executablePath,
+                    expiresAt,
+                });
+                params.registerGrant(grant);
+                return Object.freeze({
+                    grantId: grant.grantId,
+                    toolId: tool.toolId,
+                    displayName: tool.displayName,
+                    source: classifySource(tool, request, candidate),
+                    executablePath: candidate,
+                    launch: Object.freeze({
+                        kind: 'binary',
+                        executablePath: launch.executablePath,
+                        cwd: request.cwd,
+                        args: launch.args,
+                        env: Object.freeze({
+                            PATH: '',
+                            ...(tool.env ?? {}),
+                        }),
+                    }),
+                    ...(tool.allowedArguments ? {
+                        allowedArguments: Object.freeze([...tool.allowedArguments]),
+                    } : {}),
+                    expiresAt,
+                });
+            }
+
+            /**
+             * Capability-based selection for tools that declare a readiness
+             * probe. Runnable candidates are classified by observed command
+             * behavior (ACP fingerprint plus command surface), never by version
+             * output. Superseded executable names only inform the legacy
+             * diagnostic; they are never granted or launched.
+             */
+            async function resolveWithReadiness(
+                readiness: PluginExecSystemToolReadiness,
+            ): Promise<SystemToolLaunchGrantV1 | null> {
+                const preferredTrim = typeof request.preferredPath === 'string'
+                    ? request.preferredPath.trim()
+                    : '';
+                const explicit = preferredTrim.length > 0;
+                const scoped = explicit ? [preferredTrim] : candidates;
+                const runnable: string[] = [];
+                for (const candidate of scoped) {
+                    assertNotAborted(request.signal);
+                    if (!isAbsolute(candidate)) {
+                        continue;
+                    }
+                    if (isDeniedPathOnlyRuntimeName(candidate)) {
+                        throw createDeniedSystemToolError({
+                            definition: tool,
+                            executablePath: candidate,
+                        });
+                    }
+                    if (await resolveRunnableLaunch(candidate)) {
+                        runnable.push(candidate);
+                    }
+                }
+                const runnableLegacy: string[] = [];
+                for (const name of readiness.legacyExecutableNames) {
+                    assertNotAborted(request.signal);
+                    if (isAbsolute(name)) {
+                        if (await resolveRunnableLaunch(name)) runnableLegacy.push(name);
+                        continue;
+                    }
+                    if (lookupPlatform === 'win32') {
+                        const windowsPath = resolveWindowsCommandOnPath(name, env);
+                        if (windowsPath && await resolveRunnableLaunch(windowsPath)) {
+                            runnableLegacy.push(windowsPath);
+                        }
+                    }
+                    for (const root of env.PATH.split(delimiter).filter((entry) => entry.length > 0)) {
+                        const joined = join(root, name);
+                        if (await resolveRunnableLaunch(joined)) runnableLegacy.push(joined);
+                    }
+                }
+                assertNotAborted(request.signal);
+                const verdict = await resolveSystemToolReadiness({
+                    toolId: request.toolId,
+                    readiness,
+                    candidates: runnable,
+                    explicitCandidate: explicit,
+                    legacyCandidates: runnableLegacy,
+                    cwd: request.cwd ?? process.cwd(),
+                    env: { ...process.env },
+                });
+                assertNotAborted(request.signal);
+                if (verdict.kind === 'selected') {
+                    const launch = await resolveRunnableLaunch(verdict.executablePath);
+                    if (launch) return issueGrant(verdict.executablePath, launch);
+                    return null;
+                }
+                if (verdict.kind === 'legacy') {
+                    throw new PluginError({
+                        code: 'plugin_exec_system_tool_legacy',
+                        message: `${tool.displayName}: legacy runtime detected at ${verdict.observedPath}. ${readiness.legacyGuidance}`,
+                        diagnostics: projectSystemToolDiagnostics([createLegacySystemToolDiagnostic({
+                            toolId: tool.toolId,
+                            displayName: tool.displayName,
+                            observedPath: verdict.observedPath,
+                            guidance: readiness.legacyGuidance,
+                        })]),
+                    });
+                }
+                if (verdict.kind === 'unidentified') {
+                    throw new PluginError({
+                        code: 'plugin_exec_system_tool_unidentified',
+                        message: `${tool.displayName}: could not identify the runtime at ${verdict.observedPath} through an ACP initialize probe. ${readiness.unidentifiedGuidance}`,
+                        diagnostics: projectSystemToolDiagnostics([createUnidentifiedSystemToolDiagnostic({
+                            toolId: tool.toolId,
+                            displayName: tool.displayName,
+                            observedPath: verdict.observedPath,
+                            guidance: readiness.unidentifiedGuidance,
+                        })]),
+                    });
+                }
+                return null;
+            }
+
+            if (tool.readiness) {
+                const granted = await resolveWithReadiness(tool.readiness);
+                if (granted) return granted;
+            }
 
             for (const candidate of candidates) {
                 assertNotAborted(request.signal);
@@ -310,62 +525,12 @@ export function createPluginExecSystemToolResolver(params: CreatePluginExecSyste
                         executablePath: candidate,
                     });
                 }
-                const isCanonicalReadableJavaScriptPath = (
-                    params.preferredPathAccess === 'readable-javascript'
-                    && request.preferredPath?.trim() === candidate
-                    && await isReadableJavaScriptFile(candidate)
-                );
-                if (await isExecutableFile(candidate) || isCanonicalReadableJavaScriptPath) {
-                    assertNotAborted(request.signal);
-                    const launch = isCanonicalReadableJavaScriptPath
-                        ? resolveCanonicalAgentCliJavaScriptLaunch(
-                            candidate,
-                            definition.defaultArgs,
-                            params.baseEnv,
-                        )
-                        : Object.freeze({
-                            executablePath: candidate,
-                            args: Object.freeze([...(definition.defaultArgs ?? [])]),
-                        });
-                    if (!launch) continue;
-                    const issuedAt = params.now?.() ?? Date.now();
-                    const expiresAt = definition.expiresInMs === undefined || definition.expiresInMs === null
-                        ? null
-                        : issuedAt + Math.max(0, definition.expiresInMs);
-                    const grant: PluginExecSystemToolGrantRecord = Object.freeze({
-                        kind: 'system-tool',
-                        grantId: createGrantId({
-                            toolId: definition.toolId,
-                            executablePath: launch.executablePath,
-                            issuedAt,
-                        }),
-                        toolId: definition.toolId,
-                        executablePath: launch.executablePath,
-                        expiresAt,
-                    });
-                    params.registerGrant(grant);
-                    return Object.freeze({
-                        grantId: grant.grantId,
-                        toolId: definition.toolId,
-                        displayName: definition.displayName,
-                        source: classifySource(definition, request, candidate),
-                        executablePath: candidate,
-                        launch: Object.freeze({
-                            kind: 'binary',
-                            executablePath: launch.executablePath,
-                            cwd: request.cwd,
-                            args: launch.args,
-                            env: Object.freeze({
-                                PATH: '',
-                                ...(definition.env ?? {}),
-                            }),
-                        }),
-                        ...(definition.allowedArguments ? {
-                            allowedArguments: Object.freeze([...definition.allowedArguments]),
-                        } : {}),
-                        expiresAt,
-                    });
+                assertNotAborted(request.signal);
+                const launch = await resolveRunnableLaunch(candidate);
+                if (!launch) {
+                    continue;
                 }
+                return issueGrant(candidate, launch);
             }
 
             assertNotAborted(request.signal);

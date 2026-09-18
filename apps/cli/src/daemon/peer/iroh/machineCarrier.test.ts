@@ -141,6 +141,8 @@ describe('machine/1 carrier lifecycle', () => {
             'MACHINE_CARRIER_ROUTE_MISMATCH_CODE',
             'MACHINE_CARRIER_UNAVAILABLE_CODE',
             'MachineCarrierError',
+            'awaitMachineCarrierControlPlane',
+            'awaitMachineCarrierTunnelOpen',
             'machineCarrierRouteMismatchError',
             'machineCarrierUnavailableError',
             'verifyMachineCarrierHandshakeV1',

@@ -1,35 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 
 function createMockResolvedContributionRegistry(params?: Readonly<{
-  actions?: readonly unknown[];
-}>): {
-  generationId: string;
-  agents: [];
-  actions: readonly unknown[];
-  resources: [];
-  activationTargets: [];
-  actionsById: Map<never, never>;
-  resourcesById: Map<never, never>;
-  catalogEntriesById: {};
-  agentDefinitionsById: Map<never, never>;
-  pluginDiagnosticsByPluginId: {};
-} {
+  actions?: ResolvedContributionRegistry['actions'];
+}>): ResolvedContributionRegistry {
   return {
-    generationId: 'registry:test',
     agents: [],
-        actions: params?.actions ?? [],
+    actions: params?.actions ?? [],
     resources: [],
     activationTargets: [],
     actionsById: new Map<never, never>(),
     resourcesById: new Map<never, never>(),
-        catalogEntriesById: {},
+    catalogEntriesById: {},
     agentDefinitionsById: new Map<never, never>(),
     pluginDiagnosticsByPluginId: {},
   };
 }
 
 const { getResolvedContributionRegistry } = vi.hoisted(() => ({
-  getResolvedContributionRegistry: vi.fn(() => createMockResolvedContributionRegistry()),
+  getResolvedContributionRegistry: vi.fn<() => ResolvedContributionRegistry>(() => ({
+    agents: [],
+    actions: [],
+    resources: [],
+    activationTargets: [],
+    actionsById: new Map(),
+    resourcesById: new Map(),
+    catalogEntriesById: {},
+    agentDefinitionsById: new Map(),
+    pluginDiagnosticsByPluginId: {},
+  })),
 }));
 const { readDaemonPluginCatalog } = vi.hoisted(() => ({
   readDaemonPluginCatalog: vi.fn(async () => ({
@@ -38,13 +37,24 @@ const { readDaemonPluginCatalog } = vi.hoisted(() => ({
   })),
 }));
 
-const resolveSessionTransportContext = vi.fn();
-const updateSessionMetadataWithRetry = vi.fn();
-const createCliActionExecutor = vi.fn(() => ({
+const {
+  resolveSessionTransportContext,
+  updateSessionMetadataWithRetry,
+  createCliActionExecutorFromCredentials,
   execute,
+} = vi.hoisted(() => {
+  const execute = vi.fn();
+  return {
+    resolveSessionTransportContext: vi.fn(),
+    updateSessionMetadataWithRetry: vi.fn(),
+    createCliActionExecutorFromCredentials: vi.fn(() => ({ execute })),
+    execute,
+  };
+});
+const { callSessionRpc, ensureCliActionPolicySettings } = vi.hoisted(() => ({
+  callSessionRpc: vi.fn(),
+  ensureCliActionPolicySettings: vi.fn(async () => undefined),
 }));
-const execute = vi.fn();
-const callSessionRpc = vi.fn();
 
 vi.mock('@/session/services/resolveSessionTransportContext', () => ({
   resolveSessionTransportContext,
@@ -54,8 +64,12 @@ vi.mock('@/session/metadata/updateSessionMetadataWithRetry', () => ({
   updateSessionMetadataWithRetry,
 }));
 
-vi.mock('@/session/actions/createCliActionExecutor', () => ({
-  createCliActionExecutor,
+vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
+  createCliActionExecutorFromCredentials,
+}));
+
+vi.mock('@/session/actions/ensureCliActionPolicySettings', () => ({
+  ensureCliActionPolicySettings,
 }));
 
 vi.mock('@/plugins/projection/registry/createResolvedContributionRegistry', () => ({
@@ -70,6 +84,15 @@ vi.mock('@/session/transport/rpc/sessionRpc', () => ({
   callSessionRpc,
 }));
 
+import { callBuiltInHappierTool } from './callBuiltInHappierTool';
+import { configuration } from '@/configuration';
+import { accountSettingsParse } from '@happier-dev/protocol';
+import {
+  commitActiveAccountSettingsSnapshot,
+  resetActiveAccountSettingsSnapshotForTests,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+
 const env = process.env;
 
 function expectActionDisabled(result: unknown): void {
@@ -83,9 +106,12 @@ function expectActionDisabled(result: unknown): void {
 describe('callBuiltInHappierTool', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    createCliActionExecutor.mockReturnValue({
+    execute.mockResolvedValue({ ok: true, result: { started: true } });
+    createCliActionExecutorFromCredentials.mockReturnValue({
       execute,
     });
+    ensureCliActionPolicySettings.mockResolvedValue(undefined);
+    resetActiveAccountSettingsSnapshotForTests();
     process.env = { ...env };
     delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     readDaemonPluginCatalog.mockResolvedValue({
@@ -119,10 +145,10 @@ describe('callBuiltInHappierTool', () => {
       },
     });
 
-    expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
+    expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith(expect.objectContaining({
       credentials: { token: 'token', encryption: null },
-      mode: 'plain',
-      ctx: null,
+      serverId: configuration.activeServerId,
+      serverApiUrl: configuration.apiServerUrl,
     }));
   });
 
@@ -190,7 +216,7 @@ describe('callBuiltInHappierTool', () => {
       ctx: null,
       timeoutMs: expect.any(Number),
     });
-    expect(createCliActionExecutor).not.toHaveBeenCalled();
+    expect(createCliActionExecutorFromCredentials).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -223,7 +249,7 @@ describe('callBuiltInHappierTool', () => {
 
     expect(result).toEqual({ ok: false, errorCode: 'causal_permission_authority_invalid', error: 'causal_permission_authority_invalid' });
     expect(callSessionRpc).toHaveBeenCalledOnce();
-    expect(createCliActionExecutor).not.toHaveBeenCalled();
+    expect(createCliActionExecutorFromCredentials).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -294,16 +320,11 @@ describe('callBuiltInHappierTool', () => {
     });
     expect(execute).toHaveBeenCalledWith(
       'action.options.resolve',
-      { optionsSourceId: 'session.modes.available' },
+      { optionsSourceId: 'session.modes.available', sessionId: 'sess-1' },
       expect.objectContaining({ surface: 'cli', defaultSessionId: 'sess-1' }),
     );
-    expect(createCliActionExecutor).toHaveBeenCalledWith(expect.objectContaining({
-      token: 'token',
-      sessionId: 'sess-1',
-      rawSession: {
-        id: 'sess-1',
-        metadata: { summary: { text: 'Old title' } },
-      },
+    expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: expect.objectContaining({ token: 'token' }),
     }));
   });
 
@@ -377,7 +398,7 @@ describe('callBuiltInHappierTool', () => {
     expect(updateSessionMetadataWithRetry).not.toHaveBeenCalled();
   });
 
-  it('rejects action_execute when the action is disabled on the CLI surface', async () => {
+  it('does not let process environment settings retarget a credential-scoped CLI action', async () => {
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
       actions: {
@@ -396,8 +417,70 @@ describe('callBuiltInHappierTool', () => {
       },
     });
 
-    expectActionDisabled(result);
+    expect(result).toEqual({ ok: true, result: { started: true } });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('uses the credential-scoped Account policy for direct tool admission', async () => {
+    const credentials = {
+      token: 'token',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    ensureCliActionPolicySettings.mockImplementation(async () => {
+      commitActiveAccountSettingsSnapshot({
+        source: 'network',
+        settings: accountSettingsParse({
+          actionsSettingsV1: {
+            v: 1,
+            actions: {
+              'subagents.plan.start': { disabledSurfaces: ['cli'] },
+            },
+          },
+        }),
+        settingsVersion: 1,
+        loadedAtMs: 1,
+        settingsSecretsReadKeys: [],
+        scopeKey: resolveAccountSettingsScopeKeyForToken(credentials.token),
+      });
+    });
+
+    const direct = await callBuiltInHappierTool({
+      credentials,
+      sessionId: 'sess-1',
+      toolName: 'execution_run_start',
+      args: {
+        intent: 'plan',
+        backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        instructions: 'Plan this change.',
+      },
+    });
+    expectActionDisabled(direct);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('uses the post-bootstrap provider decision instead of a stale raw environment snapshot', async () => {
+    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+      v: 1,
+      actions: {
+        'subagents.plan.start': { disabledSurfaces: ['cli'] },
+      },
+    });
+    ensureCliActionPolicySettings.mockImplementationOnce(async () => {
+      delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+    });
+
+    const result = await callBuiltInHappierTool({
+      credentials: { token: 'token', encryption: null },
+      sessionId: 'sess-1',
+      toolName: 'action_execute',
+      args: {
+        actionId: 'subagents.plan.start',
+        input: { backendTargetKeys: ['agent:codex'], instructions: 'Plan this change.' },
+      },
+    });
+
+    expect(result).toEqual({ ok: true, result: { started: true } });
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it('rejects action-backed MCP-only tools on the CLI surface', async () => {

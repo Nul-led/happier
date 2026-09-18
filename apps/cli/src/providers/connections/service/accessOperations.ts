@@ -19,7 +19,7 @@ import {
   parseProviderError,
   readSettings,
   replaceSettings,
-  savedSecretExists,
+  requireSavedSecretReferenceReady,
 } from './settings';
 import type {
   ProviderConnectionCreateInput,
@@ -172,8 +172,15 @@ export function createProviderAccessOperations(context: ProviderConnectionServic
             connectionId: input.connectionId, machineId: input.machineId,
           });
         }
-        if (input.savedSecretId !== null && !savedSecretExists(rawWithPreparedSecret, input.savedSecretId)) {
-          throw createProviderErrorV1('provider_secret_missing', { connectionId: input.connectionId, machineId: input.machineId });
+        if (input.savedSecretId !== null) {
+          requireSavedSecretReferenceReady({
+            rawAccountSettings: rawWithPreparedSecret,
+            savedSecretId: input.savedSecretId,
+            savedSecretResources: snapshot.savedSecretResources,
+            savedSecretCatalogState: snapshot.savedSecretCatalogState,
+            connectionId: input.connectionId,
+            machineId: input.machineId,
+          });
         }
         return replaceSettings(rawWithPreparedSecret, bindProviderConnectionSecret({
           settings, connectionId: input.connectionId,

@@ -1,8 +1,16 @@
 import type {
   ExecutionRunListRequest,
+  ExecutionRunInputTurnV1,
   ExecutionRunPublicState,
+  ExecutionRunResultContractV1,
   SessionInputCausalPermissionAuthorityV1,
+  StructuredQuestionAnswersV1,
 } from '@happier-dev/protocol';
+
+export type ExecutionRunObservedInputTurn = Readonly<{
+  occurrenceId: string;
+  turn: ExecutionRunInputTurnV1;
+}>;
 
 import type {
   ExecutionRunActionParams,
@@ -14,6 +22,7 @@ import type {
 import type { ExecutionRunUserTranscriptDirective } from '@happier-dev/protocol';
 import type { ExecutionRunParentSessionPermissionResponseTarget } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
 import type { RuntimePermissionResponseOutcome } from './executionRunHostRuntime';
+import type { ExecutionRunPermissionRequestStore } from './executionRunPermissionResponseTarget';
 
 export type ExecutionRunPermissionResponseBridgeResult =
   | Readonly<{ ok: true; delivery: RuntimePermissionResponseOutcome }>
@@ -33,7 +42,12 @@ export interface ExecutionRunHostBridgeContract {
   getRunningCount(): number;
   getStructuredMeta(runId: string): { kind: string; payload: unknown } | null;
   getLatestToolResult(runId: string): unknown | null;
-  waitForTerminal(runId: string): Promise<void>;
+  waitForTerminal(runId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
+  waitForInputTurn(
+    runId: string,
+    localInputId: string,
+    signal?: AbortSignal,
+  ): Promise<ExecutionRunObservedInputTurn | null>;
   getPublic(runId: string): ExecutionRunPublicState | null;
   listPublic(): readonly ExecutionRunPublicState[];
   listPublicForRequest(
@@ -49,7 +63,13 @@ export interface ExecutionRunHostBridgeContract {
       message: string;
       resume?: boolean;
       delivery?: unknown;
+      localInputId?: string;
+      resultContract?: ExecutionRunResultContractV1;
+      structuredInput?: import('@happier-dev/protocol').HappierStructuredInputV1;
       causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+      signal?: AbortSignal;
+      /** Host-private exact-input interaction target; never an RPC field. */
+      permissionRequestStore?: ExecutionRunPermissionRequestStore;
     }>,
   ): Promise<{ ok: boolean; errorCode?: string; error?: string }>;
   ensure(
@@ -100,6 +120,12 @@ export interface ExecutionRunHostBridgeContract {
       responseTarget?: ExecutionRunParentSessionPermissionResponseTarget | null;
     }>,
   ): Promise<ExecutionRunPermissionResponseBridgeResult>;
+  completePermissionRequest(
+    runId: string,
+    params:
+      | Readonly<{ requestId: string; approved: boolean }>
+      | Readonly<{ requestId: string; answers: StructuredQuestionAnswersV1 }>,
+  ): Promise<Readonly<{ ok: true } | { ok: false; errorCode: string; error: string }>>;
   applyAction(
     runId: string,
     params: ExecutionRunActionParams,

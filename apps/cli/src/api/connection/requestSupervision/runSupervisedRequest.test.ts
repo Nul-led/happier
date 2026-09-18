@@ -1,12 +1,70 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ManagedConnectionSupervisor, ManagedConnectionState, ReadinessProbeResult } from '@happier-dev/connection-supervisor';
+import {
+  createManagedConnectionSupervisor,
+  DEFAULT_MANAGED_CONNECTION_POLICY,
+  type ManagedConnectionSupervisor,
+  type ManagedConnectionState,
+  type ManagedConnectionTransport,
+  type ReadinessProbeResult,
+} from '@happier-dev/connection-supervisor';
 
 import { HttpStatusError, readHttpStatus } from '@/api/client/httpStatusError';
 
 import { assertManagedConnectionReadyForRequest } from './assertManagedConnectionReadyForRequest';
-import { reportRequestOutcomeToSupervisor } from './reportRequestOutcomeToSupervisor';
+import { handleRequestAuthenticationFailure, reportRequestOutcomeToSupervisor } from './reportRequestOutcomeToSupervisor';
 import { runSupervisedRequest } from './runSupervisedRequest';
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function createTransportHarness(): {
+  transport: ManagedConnectionTransport;
+  emitDisconnect: () => void;
+} {
+  const connectedListeners = new Set<() => void>();
+  const disconnectedListeners = new Set<(event: { reason?: string }) => void>();
+  const errorListeners = new Set<(error: unknown) => void>();
+  let connected = false;
+  return {
+    transport: {
+      connect: vi.fn(async () => {
+        connected = true;
+        for (const listener of connectedListeners) listener();
+      }),
+      disconnect: vi.fn(async () => {
+        connected = false;
+      }),
+      destroy: vi.fn(async () => {
+        connected = false;
+      }),
+      isConnected: () => connected,
+      onConnected: (listener) => {
+        connectedListeners.add(listener);
+        return () => connectedListeners.delete(listener);
+      },
+      onDisconnected: (listener) => {
+        disconnectedListeners.add(listener);
+        return () => disconnectedListeners.delete(listener);
+      },
+      onError: (listener) => {
+        errorListeners.add(listener);
+        return () => errorListeners.delete(listener);
+      },
+    },
+    emitDisconnect: () => {
+      connected = false;
+      for (const listener of disconnectedListeners) listener({ reason: 'transport closed' });
+    },
+  };
+}
 
 function createState(overrides: Partial<ManagedConnectionState> = {}): ManagedConnectionState {
   return {
@@ -32,6 +90,57 @@ function createSupervisor(state: ManagedConnectionState = createState()): Manage
 }
 
 describe('request supervision', () => {
+  it('does not let a deferred auth failure from an older connection poison its replacement', async () => {
+    vi.useFakeTimers();
+    const firstTransport = createTransportHarness();
+    const secondTransport = createTransportHarness();
+    const transports = [firstTransport, secondTransport];
+    const supervisor = createManagedConnectionSupervisor({
+      ...DEFAULT_MANAGED_CONNECTION_POLICY,
+      createTransport: () => {
+        const next = transports.shift();
+        if (!next) throw new Error('missing transport');
+        return next.transport;
+      },
+      probeReadiness: async () => ({ status: 'ready' }),
+      initialFastRetryDelayMs: 1,
+      maxFastRetries: 1,
+      backoffMinMs: 1,
+      backoffMaxMs: 1,
+      jitterRatio: 0,
+    });
+    try {
+      await supervisor.start();
+      expect(supervisor.getState().phase).toBe('online');
+      const scope = supervisor.captureProbeReportScope?.();
+      const request = createDeferred<void>();
+      const completion = request.promise.catch((error: unknown) => {
+        handleRequestAuthenticationFailure({
+          supervisor,
+          error,
+          hadAuth: true,
+          scope,
+        });
+      });
+
+      firstTransport.emitDisconnect();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(supervisor.getState().phase).toBe('online');
+
+      request.reject(new HttpStatusError(401, 'expired token'));
+      await completion;
+      await Promise.resolve();
+
+      expect(supervisor.getState()).toEqual(expect.objectContaining({
+        phase: 'online',
+        lastErrorMessage: null,
+      }));
+    } finally {
+      await supervisor.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('fails fast when the managed connection is already auth_failed', async () => {
     const supervisor = createSupervisor(createState({ phase: 'auth_failed', reason: 'auth_invalid' }));
 
@@ -259,6 +368,7 @@ describe('request supervision', () => {
         supervisor?: ManagedConnectionSupervisor | null;
         error?: unknown;
         hadAuth: boolean;
+        scope: ReturnType<NonNullable<ManagedConnectionSupervisor['captureProbeReportScope']>> | undefined;
       }>) => boolean;
     };
     expect(typeof supervisionModule.handleRequestAuthenticationFailure).toBe('function');
@@ -271,6 +381,7 @@ describe('request supervision', () => {
       supervisor,
       error: authError,
       hadAuth: true,
+      scope: supervisor.captureProbeReportScope?.(),
     })).toBe(true);
     expect(supervisor.reportProbeResult).toHaveBeenCalledWith({
       status: 'auth_failed',
@@ -282,6 +393,7 @@ describe('request supervision', () => {
       supervisor: null,
       error: authError,
       hadAuth: true,
+      scope: undefined,
     })).toThrow(authError);
   });
 });

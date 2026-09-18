@@ -10,6 +10,9 @@ import { updateSessionMetadataForTarget } from './updateSessionMetadataForTarget
 
 export async function setSessionTitle(params: Readonly<{
   credentials: StoredCredentials;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   idOrPrefix: string;
   title: string | null;
   currentness?: SessionMetadataMutationCurrentness;
@@ -18,6 +21,9 @@ export async function setSessionTitle(params: Readonly<{
   if (params.title === null) {
     return await updateSessionMetadataForTarget({
       credentials: params.credentials,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
       idOrPrefix: params.idOrPrefix,
       updater: (metadata) => clearSessionStateFieldFromMetadata(metadata, 'display.title'),
       currentness: params.currentness,
@@ -25,6 +31,9 @@ export async function setSessionTitle(params: Readonly<{
   }
   return await updateSessionStateFieldForTarget({
     credentials: params.credentials,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
     idOrPrefix: params.idOrPrefix,
     fieldId: 'display.title',
     value: {

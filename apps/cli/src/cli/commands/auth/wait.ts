@@ -188,7 +188,19 @@ async function completeClaimedCredentialHandoff(params: Readonly<{
   }
 }
 
-export async function handleAuthWait(argsRaw: string[]): Promise<void> {
+function waitForPollInterval(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  });
+}
+
+export async function handleAuthWait(argsRaw: string[], signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const args = await applyServerSelectionFromArgs(argsRaw);
 
   const json = args.includes('--json');
@@ -226,7 +238,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
     ? selectedTarget
     : await resolveCliHomeTarget({ kind: 'https_url', url: configuration.apiServerUrl });
   const acquired = target.descriptor
-    ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport)
+    ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport, signal)
     : {
         ok: true as const,
         runtime: {
@@ -245,11 +257,12 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
 
   try {
     if (target.descriptor) {
-      const initialSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin });
+      const initialSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin, ...(signal ? { signal } : {}) });
       verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: initialSnapshot });
     }
     while (true) {
-    const statusData = await readTerminalAuthRequestStatus({ runtime: acquired.runtime, publicKey: state.publicKey });
+    signal?.throwIfAborted();
+    const statusData = await readTerminalAuthRequestStatus({ runtime: acquired.runtime, publicKey: state.publicKey, ...(signal ? { signal } : {}) });
     const status = isRecord(statusData) ? statusData.status : undefined;
     if (status === 'not_found') {
       console.error('Authentication request expired. Run `happier auth request --json` again.');
@@ -261,9 +274,10 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         runtime: acquired.runtime,
         publicKey: state.publicKey,
         claimSecret: state.claimSecret,
+        ...(signal ? { signal } : {}),
       });
       if (!isRecord(claimData) || claimData.state !== 'authorized') {
-        await new Promise((r) => setTimeout(r, pollIntervalMs));
+        await waitForPollInterval(pollIntervalMs, signal);
         continue;
       }
       const claimedServerIdentityId = normalizeServerIdentityIdCapability(claimData.serverIdentityId);
@@ -285,6 +299,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         const authenticatedSnapshot = await fetchServerFeaturesSnapshot({
           serverUrl: acquired.runtime.runtimeOrigin,
           token,
+          ...(signal ? { signal } : {}),
         });
         verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: authenticatedSnapshot });
       }
@@ -318,7 +333,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
       return;
     }
 
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    await waitForPollInterval(pollIntervalMs, signal);
     }
   } finally {
     await acquired.close();

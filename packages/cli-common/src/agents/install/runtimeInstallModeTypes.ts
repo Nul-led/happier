@@ -8,6 +8,7 @@ export type RuntimeInstallModeHandlerParams = Readonly<{
     plan: AgentCliInstallPlan;
     env: NodeJS.ProcessEnv;
     lifecycleContext: RuntimeInstallLifecycleContext;
+    signal?: AbortSignal;
     deps: ManagedInstallDeps;
     spawn: typeof import('node:child_process').spawnSync;
 }>;

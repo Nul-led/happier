@@ -202,6 +202,15 @@ export async function resolveConnectedServiceSwitchContinuity(
   agentId: CatalogAgentId,
   params: ConnectedServiceSwitchContinuityParams,
 ): Promise<ConnectedServiceSwitchContinuityResult> {
+  // Team resource authority is revision-bound and must be rematerialized from
+  // the canonical V2 selection. It is never projected into the Agent's legacy
+  // native/connected hot-apply transition vocabulary.
+  if (
+    params.previousBinding?.source === 'team_resource'
+    || params.nextBinding.source === 'team_resource'
+  ) {
+    return { mode: 'restart_same_home' };
+  }
   const current = await readCurrentCatalogHook(agentId, (entry) => Object.freeze({
     capability: entry.connectedAccountSwitchContinuity ?? null,
     serviceIds: entry.connectedAccountServiceIds ?? Object.freeze([]),

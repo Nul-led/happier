@@ -16,11 +16,18 @@ export type WorkspaceSyncMachineTunnelOpenInput =
       operationId: string;
     }>);
 
-export type WorkspaceSyncMachineTunnel = Readonly<{
+type MachineTunnelLifecycle = Readonly<{
   localPort: number;
-  localCapability: string;
   observedPath: 'direct' | 'relay' | 'unknown';
   close(): Promise<void>;
+}>;
+
+export type FiniteTransferMachineTunnel = MachineTunnelLifecycle & Readonly<{
+  localCapability?: never;
+}>;
+
+export type WorkspaceSyncMachineTunnel = MachineTunnelLifecycle & Readonly<{
+  localCapability: string;
 }>;
 
 /**
@@ -28,9 +35,10 @@ export type WorkspaceSyncMachineTunnel = Readonly<{
  * per-stream loopback port. Lane 08 connects raw Mutagen bytes to that port;
  * it never handles QUIC, grants, handshakes, routing, or fallback selection.
  */
-export type WorkspaceSyncMachineTunnelOpen = (
-  input: WorkspaceSyncMachineTunnelOpenInput,
-) => Promise<WorkspaceSyncMachineTunnel>;
+export type WorkspaceSyncMachineTunnelOpen = {
+  (input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'file_transfer' }>): Promise<FiniteTransferMachineTunnel>;
+  (input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>): Promise<WorkspaceSyncMachineTunnel>;
+};
 
 export type WorkspaceSyncMachineTunnelConnection = Readonly<{
   stream: Socket;

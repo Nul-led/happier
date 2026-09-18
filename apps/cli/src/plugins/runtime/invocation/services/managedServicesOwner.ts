@@ -7,6 +7,7 @@ import type {
     AgentProviderBindingMaterializationV1,
 } from '@happier-dev/protocol';
 import {
+    AgentProviderBindingMaterializationV1Schema,
     managedServiceEndpointHostPolicyForMode,
     normalizeProviderOriginRelativePathSyntax,
     normalizeProviderPublicHeaders,
@@ -2346,6 +2347,8 @@ type ManagedServiceSemanticEntry = {
 
 export type ManagedProviderExplicitStartOperationOutcome = Readonly<{
     status: 'running';
+    /** Host-private endpoint authority retained by the semantic operation. */
+    projection: ManagedProviderEndpointAccessProjection;
 }>;
 
 export type ManagedProviderExplicitStartOperationResult =
@@ -2362,7 +2365,12 @@ export type ManagedProviderExplicitStartOperationInput = Readonly<{
     contributionQualifiedId: string;
     generation: string;
     purposeBindingsEqualityKey: string;
+    /** Bounds only this caller's joined projection, never the shared operation. */
+    signal?: AbortSignal;
     isCurrent(): boolean;
+    lifecycleKind?: 'publicExplicitStart' | 'providerBroker';
+    /** Re-enters the durable authority for the retained semantic claim. */
+    revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
     establish(input: Readonly<{
         signal: AbortSignal;
         release(): Promise<void>;
@@ -2377,6 +2385,8 @@ type ManagedProviderExplicitStartOperationEntry = {
     readonly generation: string;
     readonly purposeBindingsEqualityKey: string;
     readonly isCurrent: () => boolean;
+    readonly lifecycleKind: 'publicExplicitStart' | 'providerBroker';
+    revalidateRetainedCurrentness: ((signal?: AbortSignal) => Promise<boolean>) | null;
     readonly abort: AbortController;
     establishment: Promise<ManagedProviderExplicitStartOperationOutcome>;
     terminal: boolean;
@@ -2386,6 +2396,61 @@ type ManagedProviderExplicitStartOperationEntry = {
 type ManagedServicesSemanticEntry =
     | ManagedServiceSemanticEntry
     | ManagedProviderExplicitStartOperationEntry;
+
+function projectManagedProviderExplicitStartJoin(
+    outcome: ManagedProviderExplicitStartOperationOutcome,
+    input: Pick<ManagedProviderExplicitStartOperationInput, 'signal' | 'isCurrent'>,
+): ManagedProviderExplicitStartOperationOutcome {
+    const lifetime = new AbortController();
+    let active = true;
+    const readsJoinCurrent = (): boolean => (
+        active
+        && !lifetime.signal.aborted
+        && !input.signal?.aborted
+        && readsCurrent(input.isCurrent)
+        && readsCurrent(outcome.projection.isCurrent)
+    );
+    const unavailable = (): never => fail(
+        'plugin_managed_service_unavailable',
+        'Managed Provider explicit-start endpoint access is unavailable',
+    );
+    const projection = Object.freeze({
+        access: Object.freeze({
+            endpointUrl(endpointTemplateId: string): string | null {
+                return readsJoinCurrent()
+                    ? outcome.projection.access.endpointUrl(endpointTemplateId)
+                    : null;
+            },
+            async request(
+                request: ManagedServiceRequest & Readonly<{ timeoutMs: number }>,
+            ): Promise<ManagedServiceResponse> {
+                if (!readsJoinCurrent()) return unavailable();
+                const signals = [
+                    lifetime.signal,
+                    input.signal,
+                    request.signal,
+                ].filter((candidate): candidate is AbortSignal => (
+                    candidate !== undefined
+                ));
+                return await outcome.projection.access.request({
+                    ...request,
+                    signal: signals.length === 1
+                        ? signals[0]!
+                        : AbortSignal.any(signals),
+                });
+            },
+        }),
+        isCurrent: readsJoinCurrent,
+        cleanup() {
+            if (!active) return;
+            active = false;
+            lifetime.abort(
+                'Managed Provider explicit-start endpoint join retired',
+            );
+        },
+    });
+    return Object.freeze({ status: 'running', projection });
+}
 
 function isManagedServiceSemanticEntry(
     entry: ManagedServicesSemanticEntry,
@@ -2538,13 +2603,22 @@ export function createManagedServicesOwner(input: Readonly<{
     runManagedProviderExplicitStart(
         input: ManagedProviderExplicitStartOperationInput,
     ): Promise<ManagedProviderExplicitStartOperationResult>;
+    retireManagedProviderExplicitStart(input: Readonly<{
+        operationId: string;
+        pluginId: string;
+        contributionQualifiedId: string;
+    }>): Promise<boolean>;
+    revalidateManagedProviderExplicitStarts(signal?: AbortSignal): Promise<number>;
+    retireManagedProviderExplicitStarts(
+        lifecycleKind: 'publicExplicitStart' | 'providerBroker',
+    ): Promise<number>;
     materializeManagedProviderAgentBinding(input: Readonly<{
         service: ManagedServiceHandle;
         projection: ManagedProviderEndpointAccessProjection;
         endpointTemplateId: string;
         materialize(input: Readonly<{
             endpointUrl: string;
-            credentialPlaceholder: string;
+            credentialPlaceholder: string | null;
         }>): Promise<unknown>;
     }>): Promise<Readonly<{
         materialization: AgentProviderBindingMaterializationV1;
@@ -2762,10 +2836,17 @@ export function createManagedServicesOwner(input: Readonly<{
                     'Managed Provider explicit-start operation retired',
                 );
             }
-            await entry.establishment.catch(() => undefined);
+            const established = await entry.establishment.catch(() => null);
             const results = await Promise.allSettled(
-                managedServiceEntriesForExplicitStartOperation(entry)
-                    .map(retireEntry),
+                [
+                    ...(established
+                        ? [Promise.resolve(
+                            established.projection.cleanup(),
+                        )]
+                        : []),
+                    ...managedServiceEntriesForExplicitStartOperation(entry)
+                        .map(retireEntry),
+                ],
             );
             const failures = results.flatMap((result) => (
                 result.status === 'rejected' ? [result.reason] : []
@@ -3451,7 +3532,10 @@ export function createManagedServicesOwner(input: Readonly<{
             ) {
                 return Object.freeze({ status: 'unavailable' as const });
             }
-            if (!readsCurrent(operationInput.isCurrent)) {
+            if (
+                operationInput.signal?.aborted
+                || !readsCurrent(operationInput.isCurrent)
+            ) {
                 return Object.freeze({ status: 'not_current' as const });
             }
             const entryKey = managedProviderExplicitStartOperationEntryKey({
@@ -3519,7 +3603,13 @@ export function createManagedServicesOwner(input: Readonly<{
                     return !permanentRetirementStarted
                         && semanticEntries.get(entryKey) === existing
                         && readsCurrent(operationInput.isCurrent)
-                        ? Object.freeze({ status: 'established' as const, value })
+                        ? Object.freeze({
+                            status: 'established' as const,
+                            value: projectManagedProviderExplicitStartJoin(
+                                value,
+                                operationInput,
+                            ),
+                        })
                         : Object.freeze({ status: 'not_current' as const });
                 } catch (error) {
                     throw error;
@@ -3563,6 +3653,10 @@ export function createManagedServicesOwner(input: Readonly<{
                 generation,
                 purposeBindingsEqualityKey,
                 isCurrent: operationInput.isCurrent,
+                lifecycleKind:
+                    operationInput.lifecycleKind ?? 'publicExplicitStart',
+                revalidateRetainedCurrentness:
+                    operationInput.revalidateRetainedCurrentness ?? null,
                 abort,
                 establishment: Promise.resolve(null as never),
                 terminal: false,
@@ -3595,11 +3689,82 @@ export function createManagedServicesOwner(input: Readonly<{
                     && !entry.terminal
                     && semanticEntries.get(entryKey) === entry
                     && readsCurrent(operationInput.isCurrent)
-                    ? Object.freeze({ status: 'established' as const, value })
+                    ? Object.freeze({
+                        status: 'established' as const,
+                        value: projectManagedProviderExplicitStartJoin(
+                            value,
+                            operationInput,
+                        ),
+                    })
                     : Object.freeze({ status: 'not_current' as const });
             } catch (error) {
                 throw error;
             }
+        },
+        async retireManagedProviderExplicitStart({
+            operationId,
+            pluginId,
+            contributionQualifiedId,
+        }) {
+            const entry = semanticEntries.get(
+                managedProviderExplicitStartOperationEntryKey({
+                    operationId: operationId.trim(),
+                    pluginId: pluginId.trim(),
+                    contributionQualifiedId:
+                        contributionQualifiedId.trim(),
+                }),
+            );
+            if (!entry || isManagedServiceSemanticEntry(entry)) return false;
+            await retireExplicitStartOperation(entry);
+            return true;
+        },
+        async revalidateManagedProviderExplicitStarts(signal) {
+            signal?.throwIfAborted();
+            const candidates = [...semanticEntries.values()].filter(
+                (entry): entry is ManagedProviderExplicitStartOperationEntry => (
+                    !isManagedServiceSemanticEntry(entry)
+                    && !entry.terminal
+                    && entry.revalidateRetainedCurrentness !== null
+                ),
+            );
+            const results = await Promise.all(candidates.map(async (entry) => {
+                signal?.throwIfAborted();
+                let current = false;
+                try {
+                    const established = await entry.establishment;
+                    signal?.throwIfAborted();
+                    const retainedCurrent =
+                        established.projection.isCurrent() === true
+                        && await entry.revalidateRetainedCurrentness!(signal) === true;
+                    signal?.throwIfAborted();
+                    current = retainedCurrent;
+                } catch {
+                    signal?.throwIfAborted();
+                    current = false;
+                }
+                if (
+                    current
+                    || entry.terminal
+                    || semanticEntries.get(
+                        managedProviderExplicitStartOperationEntryKey(entry),
+                    ) !== entry
+                ) return false;
+                await retireExplicitStartOperation(entry);
+                return true;
+            }));
+            return results.filter(Boolean).length;
+        },
+        async retireManagedProviderExplicitStarts(lifecycleKind) {
+            const candidates = [...semanticEntries.values()].filter(
+                (entry): entry is ManagedProviderExplicitStartOperationEntry => (
+                    !isManagedServiceSemanticEntry(entry)
+                    && entry.lifecycleKind === lifecycleKind
+                ),
+            );
+            await Promise.all(candidates.map(async (entry) => {
+                await retireExplicitStartOperation(entry);
+            }));
+            return candidates.length;
         },
         bindSessionManagedServiceRequest(requestInput) {
             if (permanentRetirementStarted) return null;
@@ -3719,7 +3884,7 @@ export function createManagedServicesOwner(input: Readonly<{
                  * refusal and request bounding have a single owner.
                  */
                 async request(
-                    request: ManagedServiceRequest & Readonly<{ timeoutMs: number }>,
+                    request: ManagedServiceRequest,
                 ): Promise<ManagedServiceResponse> {
                     if (!readsAccessCurrent()) return unavailable();
                     let target: URL;
@@ -3794,15 +3959,41 @@ export function createManagedServicesOwner(input: Readonly<{
             );
             if (
                 !facts
-                || facts.clientAccess.kind === 'none'
-                || !credential
-                || !rawCredential
-                || !renderedCredential
                 || !endpointUrl
                 || !projection.isCurrent()
                 || !readsCurrent(facts.scope.isGenerationCurrent)
                 || !readsCurrent(facts.binding.isCurrent)
             ) return null;
+            if (facts.clientAccess.kind === 'none') {
+                const rawMaterialization = await materialize({
+                    endpointUrl,
+                    credentialPlaceholder: null,
+                });
+                if (
+                    endpointAccessByService.get(service) !== facts
+                    || !projection.isCurrent()
+                    || !readsCurrent(facts.scope.isGenerationCurrent)
+                    || !readsCurrent(facts.binding.isCurrent)
+                ) {
+                    return fail(
+                        'plugin_managed_service_unavailable',
+                        'Managed Provider authority changed during Agent materialization',
+                    );
+                }
+                return Object.freeze({
+                    materialization:
+                        AgentProviderBindingMaterializationV1Schema.parse(
+                            rawMaterialization,
+                        ),
+                    redactionValues: Object.freeze([]),
+                    transformLaunchEnvironment: (
+                        environment: Readonly<Record<string, string>>,
+                    ) => environment,
+                });
+            }
+            if (!credential || !rawCredential || !renderedCredential) {
+                return null;
+            }
             const credentialPlaceholder =
                 `happier_runner_provider_${randomBytes(32).toString('base64url')}`;
             const renderedCredentialPlaceholder =

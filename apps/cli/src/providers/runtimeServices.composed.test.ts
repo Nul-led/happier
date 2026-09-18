@@ -4,7 +4,6 @@ import {
   ProviderConnectionIdSchema,
   ProviderProbeRequestFingerprintV1Schema,
 } from '@happier-dev/protocol';
-import type { MachineProviderRpcServices } from '@/api/machine/rpcHandlers.providers';
 import { prepareRunnerDaemonPluginServices } from '@/agent/runtime/session/process/runnerDaemonPluginServices';
 import { decodeRunnerDaemonPluginServiceWireValueV1 } from '@/agent/runtime/session/process/agentRuntimeDaemonPluginServicesProtocol';
 import { createRunnerDaemonPluginServicesHost } from '@/daemon/agentRuntime/runnerDaemonPluginServicesHost';
@@ -17,7 +16,10 @@ import {
   type PublicProviderOperationRequests,
 } from '@/plugins/testkit/fixtures/public-provider-services/consumer';
 
-import { createRuntimeProviderOperationsProducer } from './runtimeServices';
+import {
+  createRuntimeProviderOperationsProducer,
+  type RuntimeProviderOperationsProducer,
+} from './runtimeServices';
 
 function reviewedMapping() {
   return {
@@ -132,7 +134,7 @@ function operationRequests(): PublicProviderOperationRequests {
   };
 }
 
-function createMachineServices(): MachineProviderRpcServices {
+function createMachineServices(): RuntimeProviderOperationsProducer['machineServices'] {
   return {
     probe: vi.fn(async () => ({
       status: 'success' as const,
@@ -188,6 +190,15 @@ function createMachineServices(): MachineProviderRpcServices {
       agentTargetKey: request.agentTargetKey,
       groups: [],
     })),
+    resolveTeamCredentialRequestPolicySupport: vi.fn(async () => ({
+      status: 'unavailable' as const,
+      reason: 'model_unavailable' as const,
+    })),
+    resolveTeamCredentialResourceTestCandidate: vi.fn(async () => ({
+      status: 'unavailable' as const,
+      reason: 'model_unavailable' as const,
+    })),
+    resolveTeamCredentialBrokerSourceSelection: vi.fn(async () => null),
     mutateModelSettings: vi.fn(async (request) => ({
       status: 'success' as const,
       action: request.action,

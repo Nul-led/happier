@@ -82,6 +82,7 @@ function accountStorageDependencies(postCalls: unknown[]): AccountPluginDataStor
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
         }),
         http: {
             async get(url: string) {

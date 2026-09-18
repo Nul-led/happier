@@ -5,6 +5,7 @@ import { buildScopedProcessEnv } from '@/utils/processEnv/buildScopedProcessEnv'
 import { finalizeSessionChildEnvironment } from '@/session/runtime/control/finalizeSessionChildEnvironment';
 import { selectTrustedSessionControlEnvironment } from '@/session/runtime/control/sessionControlEnvironment';
 import { resolveStackProcessKindOverrideForSessionSpawn } from '@/daemon/spawn/resolveStackProcessKindOverrideForSessionSpawn';
+import { buildCgroupSelfMigratingHappyCliLaunchSpec } from '../linux/buildCgroupSelfMigratingHappyCliLaunchSpec';
 
 type TmuxSpawnAgentId = CatalogAgentId | 'acp-catalog';
 
@@ -13,6 +14,7 @@ export function buildTmuxWindowEnv(
   extraEnv: Record<string, string>,
   platform: NodeJS.Platform = process.platform,
   unsetEnvKeys?: readonly string[],
+  enableCgroupSelfMigration = String(daemonEnv.HAPPIER_DAEMON_STARTUP_SOURCE ?? '').trim() === 'background-service',
 ): Record<string, string> {
   const essentialKeys = [
     'PATH',
@@ -26,6 +28,8 @@ export function buildTmuxWindowEnv(
     'TSX_TSCONFIG_PATH',
     'USER',
     'LOGNAME',
+    'DBUS_SESSION_BUS_ADDRESS',
+    'XDG_RUNTIME_DIR',
   ] as const;
 
   const allowedKeys = createAllowedEnvKeySet(essentialKeys, platform);
@@ -47,14 +51,13 @@ export function buildTmuxWindowEnv(
   return finalizeSessionChildEnvironment({
     environment: merged,
     canonicalSessionControlEnvironment: selectTrustedSessionControlEnvironment(extraEnv),
-    enableCgroupSelfMigration:
-      String(daemonEnv.HAPPIER_DAEMON_STARTUP_SOURCE ?? '').trim() === 'background-service',
+    enableCgroupSelfMigration,
     stackProcessKind:
       stackProcessKindOverride.HAPPIER_STACK_PROCESS_KIND === 'session' ? 'session' : null,
   }) as Record<string, string>;
 }
 
-export function buildTmuxSpawnConfig(params: {
+export async function buildTmuxSpawnConfig(params: {
   agent: TmuxSpawnAgentId;
   directory: string;
   extraEnv: Record<string, string>;
@@ -62,13 +65,13 @@ export function buildTmuxSpawnConfig(params: {
   unsetEnvKeys?: readonly string[];
   extraArgs?: string[];
   launchOptions?: HappyCliSubprocessLaunchOptions;
-}): {
+}): Promise<{
   commandTokens: string[];
   tmuxEnv: Record<string, string>;
   tmuxCommandEnv: Record<string, string>;
   directory: string;
   unsetEnvKeys: readonly string[];
-} {
+}> {
   const args = [
     params.agent,
     '--happy-starting-mode',
@@ -79,13 +82,27 @@ export function buildTmuxSpawnConfig(params: {
   ];
 
   const launchSpec = buildHappyCliSubprocessLaunchSpec(args, params.launchOptions);
-  const commandTokens = [launchSpec.filePath, ...launchSpec.args];
-
-  const tmuxEnv = buildTmuxWindowEnv(
+  const initialTmuxEnv = buildTmuxWindowEnv(
     process.env,
     { ...params.extraEnv, ...(launchSpec.env ?? {}) },
     process.platform,
     params.unsetEnvKeys,
+  );
+  const scopedLaunchSpec = process.platform === 'linux'
+    ? await buildCgroupSelfMigratingHappyCliLaunchSpec({ launchSpec, environment: initialTmuxEnv })
+    : null;
+  const effectiveLaunchSpec = scopedLaunchSpec ?? launchSpec;
+  const commandTokens = [effectiveLaunchSpec.filePath, ...effectiveLaunchSpec.args];
+  const ownsCgroupScope = scopedLaunchSpec?.env?.HAPPIER_DAEMON_SPAWN_SELF_MIGRATE_CGROUP === '';
+  const unsetEnvKeys = ownsCgroupScope
+    ? [...new Set([...(params.unsetEnvKeys ?? []), 'HAPPIER_DAEMON_SPAWN_SELF_MIGRATE_CGROUP'])]
+    : params.unsetEnvKeys ?? [];
+  const tmuxEnv = buildTmuxWindowEnv(
+    process.env,
+    { ...params.extraEnv, ...(effectiveLaunchSpec.env ?? {}) },
+    process.platform,
+    unsetEnvKeys,
+    ownsCgroupScope ? false : undefined,
   );
 
   const tmuxCommandEnv: Record<string, string> = { ...(params.tmuxCommandEnv ?? {}) };
@@ -99,6 +116,6 @@ export function buildTmuxSpawnConfig(params: {
     tmuxEnv,
     tmuxCommandEnv,
     directory: params.directory,
-    unsetEnvKeys: params.unsetEnvKeys ?? [],
+    unsetEnvKeys,
   };
 }

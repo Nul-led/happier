@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, AxiosHeaders } from 'axios';
 
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   FeaturesResponseSchema,
   QualifiedConnectedAccountCredentialSnapshotV4Schema,
   sealAccountScopedBlobCiphertext,
@@ -144,7 +144,7 @@ function createRefreshCoordinator(
       connectedServicesBindingsRaw: unknown;
     }>) => resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
       agentId: input.agentId,
-      bindings: ConnectedServiceBindingsV1Schema.parse(
+      bindings: ConnectedServiceBindingsV2IngressSchema.parse(
         input.connectedServicesBindingsRaw,
       ),
       contributions: getResolvedContributionRegistry(),
@@ -4506,7 +4506,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         connectedServicesBindingsRaw: unknown;
       }>) => resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
         agentId: input.agentId,
-        bindings: ConnectedServiceBindingsV1Schema.parse(
+        bindings: ConnectedServiceBindingsV2IngressSchema.parse(
           input.connectedServicesBindingsRaw,
         ),
         contributions,
@@ -4628,7 +4628,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       const contributions = getResolvedContributionRegistry();
       const validSnapshot = resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
         agentId: 'codex',
-        bindings: ConnectedServiceBindingsV1Schema.parse(connectedServicesBindingsRaw),
+        bindings: ConnectedServiceBindingsV2IngressSchema.parse(connectedServicesBindingsRaw),
         contributions,
       });
       expect(validSnapshot).not.toBeNull();

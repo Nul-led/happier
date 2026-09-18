@@ -175,6 +175,9 @@ function createRuntimeRegistry(
         activateContributionsOnDemand: async () => [],
         addRuntimeDisposable: (_pluginId, disposable) => disposable,
         createAgentInvocationServices: async () => createUnavailablePluginServices(),
+        resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
+            contributes.immutableGenerationIdsByPluginId?.[pluginId] ?? null
+        ),
         resolvePromptAssetBlocks: async () => [],
         resolveStructuredMessage: async () => {
             throw new Error('Structured-message resolution is unavailable in this fixture');
@@ -2143,6 +2146,7 @@ describe('daemon contribution registry projection rpc handler', () => {
                 placementBindings: ['composer.primary'],
             })],
             materializationIdsByPluginId: { 'acme.mounted': 'materialization-current' },
+            immutableGenerationIdsByPluginId: { 'acme.mounted': 'mounted-generation-current' },
             uiViewsV2: [{
                 provenance: 'external',
                 source: { kind: 'path' },
@@ -2160,7 +2164,12 @@ describe('daemon contribution registry projection rpc handler', () => {
                 },
             }],
         });
-        const runtimeRegistry = { ...createRuntimeRegistry(registry), generation: 7 };
+        let currentImmutableGenerationId: string | null = 'mounted-generation-current';
+        const runtimeRegistry = {
+            ...createRuntimeRegistry(registry),
+            generation: 7,
+            resolveCurrentPluginImmutableGenerationId: async () => currentImmutableGenerationId,
+        };
         const requestCurrentIntent = vi.fn(async ({ fingerprint }) => ({
             status: 'approved' as const,
             fingerprint,
@@ -2241,6 +2250,7 @@ describe('daemon contribution registry projection rpc handler', () => {
                         id: 'dashboard',
                         qualifiedId: 'acme.mounted/dashboard',
                     },
+                    immutableGenerationId: 'mounted-generation-current',
                     materialization: {
                         machineId: 'machine-1',
                         materializationId: 'materialization-current',
@@ -2258,6 +2268,9 @@ describe('daemon contribution registry projection rpc handler', () => {
             | undefined;
         const isMountedCallerCurrent = execution?.context?.isMountedCallerCurrent;
         if (!isMountedCallerCurrent) throw new Error('expected mounted-caller revalidation callback');
+        currentImmutableGenerationId = 'mounted-generation-replaced';
+        await expect(isMountedCallerCurrent()).resolves.toBe(false);
+        currentImmutableGenerationId = 'mounted-generation-current';
         currentMachineId = 'machine-2';
         await expect(isMountedCallerCurrent()).resolves.toBe(false);
     });
@@ -2371,6 +2384,10 @@ describe('daemon contribution registry projection rpc handler', () => {
                         accountId: 'account-a',
                     },
                 },
+                presentation: {
+                    connectedAccountLabel: null,
+                    machineDisplayName: null,
+                },
             },
         };
         const { handlers, registrar } = createRegistrar();
@@ -2387,25 +2404,26 @@ describe('daemon contribution registry projection rpc handler', () => {
         const handler = handlers.get(RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE);
         executePluginActionIfAvailableMock.mockReset();
 
+        const staleSelectedActionInputCarrier = {
+            ...selectedActionInputCarrier,
+            result: {
+                ...selectedActionInputCarrier.result,
+                selection: {
+                    ...selectedActionInputCarrier.result.selection,
+                    target: {
+                        ...selectedActionInputCarrier.result.selection.target,
+                        immutableGenerationId: 'mounted-generation-stale',
+                    },
+                },
+            },
+        };
         await expect(handler?.({
             machineId: 'machine-1',
             expectedGeneration: '7',
             qualifiedActionId: 'acme.mounted/connection/create',
             input: { kind: 'create' },
             executionSurface: 'ui',
-            selectedActionInputCarrier: {
-                ...selectedActionInputCarrier,
-                result: {
-                    ...selectedActionInputCarrier.result,
-                    selection: {
-                        ...selectedActionInputCarrier.result.selection,
-                        target: {
-                            ...selectedActionInputCarrier.result.selection.target,
-                            immutableGenerationId: 'mounted-generation-stale',
-                        },
-                    },
-                },
-            },
+            selectedActionInputCarrier: staleSelectedActionInputCarrier,
             invocation: {
                 kind: 'mountedPluginSurface',
                 mountedBinding: {
@@ -2526,6 +2544,88 @@ describe('daemon contribution registry projection rpc handler', () => {
             ok: false,
             code: 'plugin_mounted_caller_unavailable',
         });
+        expect(executePluginActionIfAvailableMock).not.toHaveBeenCalled();
+    });
+
+    it('derives client Action caller authority only from its current Action and materialization', async () => {
+        executePluginActionIfAvailableMock.mockReset();
+        executePluginActionIfAvailableMock.mockResolvedValue({
+            matched: true,
+            result: { ok: true, result: { rows: [] } },
+        });
+        const registry = createResolvedContributionRegistry({
+            agents: Object.freeze([]),
+            actions: [
+                createStructuredActionFixture({
+                    id: 'client-search',
+                    placementBindings: [],
+                    executionTarget: 'client',
+                }),
+                createStructuredActionFixture({ id: 'list', placementBindings: [] }),
+            ],
+            materializationIdsByPluginId: { 'acme.preview': 'materialization-current' },
+        });
+        const runtimeRegistry = { ...createRuntimeRegistry(registry), generation: 7 };
+        const { handlers, registrar } = createRegistrar();
+        const projectionModule = await import('./daemonContributionRegistryProjection');
+        projectionModule.registerDaemonContributionRegistryProjectionHandler(registrar as never, {
+            resolveRuntimeRegistry: async () => runtimeRegistry,
+            resolveGeneration: async () => 7,
+            resolveInstalledPackages: async () => [],
+            resolvePluginProjectionExecutionOriginContext: async () => ({
+                serverIdentityId: 'srv_action_fixture',
+                machineId: 'machine-1',
+            }),
+        });
+        const handler = handlers.get(RPC_METHODS.DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE);
+        const invocation = {
+            kind: 'clientPluginAction' as const,
+            clientActionBinding: {
+                contributionLocalId: 'client-search',
+                materializationRef: {
+                    machineId: 'machine-1',
+                    materializationId: 'materialization-current',
+                    pluginId: 'acme.preview',
+                },
+            },
+        };
+
+        await expect(handler?.({
+            machineId: 'machine-1',
+            expectedGeneration: '7',
+            qualifiedActionId: 'acme.preview/list',
+            executionSurface: 'ui',
+            invocation,
+        })).resolves.toEqual({ ok: true, result: { rows: [] } });
+        expect(executePluginActionIfAvailableMock).toHaveBeenCalledWith(expect.objectContaining({
+            context: expect.objectContaining({
+                caller: expect.objectContaining({
+                    kind: 'plugin',
+                    pluginId: 'acme.preview',
+                    contribution: {
+                        id: 'client-search',
+                        qualifiedId: 'acme.preview/client-search',
+                    },
+                    materialization: invocation.clientActionBinding.materializationRef,
+                }),
+                isMountedCallerCurrent: expect.any(Function),
+            }),
+        }));
+
+        executePluginActionIfAvailableMock.mockClear();
+        await expect(handler?.({
+            machineId: 'machine-1',
+            expectedGeneration: '7',
+            qualifiedActionId: 'acme.preview/list',
+            executionSurface: 'ui',
+            invocation: {
+                ...invocation,
+                clientActionBinding: {
+                    ...invocation.clientActionBinding,
+                    contributionLocalId: 'list',
+                },
+            },
+        })).resolves.toEqual({ ok: false, code: 'plugin_mounted_caller_unavailable' });
         expect(executePluginActionIfAvailableMock).not.toHaveBeenCalled();
     });
 

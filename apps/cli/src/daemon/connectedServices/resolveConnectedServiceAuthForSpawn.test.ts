@@ -13,7 +13,7 @@ import {
   sealAccountScopedBlobCiphertext,
   QualifiedConnectedAccountGroupV4Schema,
   QualifiedConnectedAccountListResponseV4Schema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceId,
   type ProviderAccountUsageRecordKeyV1,
   type ProviderAccountUsageSnapshotV1,
@@ -280,7 +280,7 @@ function createAppliedQualifiedPurposeBindingSnapshotResolver(
   agentId: Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['agentId'],
 ) {
   const contributions = getResolvedContributionRegistry();
-  return (bindings: ConnectedServiceBindingsV1) =>
+  return (bindings: ConnectedServiceBindingsV2) =>
     resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
       agentId,
       bindings,
@@ -418,7 +418,7 @@ async function createSpawnPreTurnSwitchScenario(input: Readonly<{
     updatedAt: 2,
     members: [
       {
-        v: 1 as const,
+        v: 2 as const,
         serviceId: 'openai-codex' as const,
         groupId: 'codex-main',
         profileId: 'primary',
@@ -1504,7 +1504,7 @@ describe('resolveConnectedServiceAuthForSpawn', () => {
     const common = {
       agentId: 'codex' as const,
       connectedServicesBindingsRaw: {
-        v: 1 as const,
+        v: 2 as const,
         bindingsByServiceId: {
           'openai-codex': {
             source: 'connected' as const,

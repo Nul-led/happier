@@ -20,6 +20,9 @@ const DOCTOR_CREDENTIAL_SEGMENTS = new Set([
   'authentication',
   'credential',
   'credentials',
+  'password',
+  'proof',
+  'recovery',
   'secret',
 ]);
 

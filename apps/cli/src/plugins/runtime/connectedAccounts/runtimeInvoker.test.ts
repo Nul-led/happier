@@ -127,6 +127,7 @@ function runtime(
 function createEstablishedInvoker(
     registeredRuntime: PluginConnectedAccountRuntime,
     isCurrent: () => boolean = () => true,
+    declaresRecoveryCredits = registeredRuntime.recoveryCredits !== undefined,
 ) {
     return createConnectedAccountHostRuntimeInvoker({
         resolveNetworkAddresses: testResolveNetworkAddresses,
@@ -134,7 +135,7 @@ function createEstablishedInvoker(
             ref: service,
             generation: 'generation-1',
             immutableGenerationId: 'artifact-1',
-            descriptor,
+            descriptor: { ...descriptor, ...(declaresRecoveryCredits ? { recoveryCredits: { supported: true as const } } : {}) },
             runtime: registeredRuntime,
             isCurrent,
         }),
@@ -192,6 +193,30 @@ function invokeEstablished(
 }
 
 describe('connected-account runtime invoker', () => {
+    it('consumes through the optional recovery facet under exact account context and fails closed without it', async () => {
+        const operation = { kind: 'recoveryCredits.consume', request: { idempotencyKey: 'key-1', providerCreditId: 'credit-1' } } as const;
+        const invoker = createEstablishedInvoker({
+            ...runtime(() => {}),
+            recoveryCredits: {
+                async read() { return { observedAtMs: 1, availableCount: 1, credits: [] }; },
+                async consume(request, context) {
+                    expect(context.account).toEqual({ service, accountId: 'account-a' });
+                    expect(request).toEqual(operation.request);
+                    return { status: 'consumed' };
+                },
+            },
+        });
+        await expect(invokeEstablished(invoker, operation)).resolves.toEqual({ status: 'consumed' });
+        await expect(invokeEstablished(createEstablishedInvoker(runtime(() => {})), operation)).resolves.toBeNull();
+        const undeclared = createEstablishedInvoker({
+            ...runtime(() => {}),
+            recoveryCredits: {
+                async read() { throw new Error('Undeclared read reached provider'); },
+                async consume() { throw new Error('Undeclared consume reached provider'); },
+            },
+        }, () => true, false);
+        await expect(invokeEstablished(undeclared, operation)).resolves.toBeNull();
+    });
     it('rejects an authentication callback when its generation retires during its await', async () => {
         let generationCurrent = true;
         let releaseCompletion!: () => void;

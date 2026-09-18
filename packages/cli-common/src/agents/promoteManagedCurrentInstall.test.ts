@@ -75,6 +75,28 @@ async function makeTempRoot(): Promise<string> {
 }
 
 describe('promoteManagedCurrentInstall', () => {
+  it('cancels while waiting for promotion and preserves the candidate and current install', async () => {
+    const { promoteManagedCurrentInstall } = await import('./promoteManagedCurrentInstall.js');
+    const root = await makeTempRoot();
+    await mkdir(join(root, 'next'));
+    await mkdir(join(root, 'current'));
+    await writeFile(join(root, 'next', 'payload'), 'next');
+    await writeFile(join(root, 'current', 'payload'), 'current');
+    await mkdir(join(root, '.lock'));
+    const lockPath = join(root, '.lock', 'install.lock');
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now(), updatedAtMs: Date.now(), token: 'other-owner' }));
+    const controller = new AbortController();
+    const reason = new Error('promotion canceled');
+    const result = promoteManagedCurrentInstall({
+      installRoot: root,
+      signal: controller.signal,
+      reportWarning: () => { controller.abort(reason); void rm(lockPath, { force: true }); },
+    });
+    await expect(result).rejects.toBe(reason);
+    await expect(readFile(join(root, 'current', 'payload'), 'utf8')).resolves.toBe('current');
+    await expect(readFile(join(root, 'next', 'payload'), 'utf8')).resolves.toBe('next');
+  });
+
   afterEach(async () => {
     failingRenameTargets.clear();
     filesystemFailureState.failCurrentRetirementOnce = false;

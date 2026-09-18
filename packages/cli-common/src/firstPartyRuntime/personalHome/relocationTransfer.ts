@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createPersonalHomePathProtection } from './protection.js';
-import { replacePersonalHomeFileDurably } from './durableFile.js';
+import { removePathDurably, replacePersonalHomeFileDurably } from './durableFile.js';
 
 const RECEIPT_VERSION = 1;
 const RECEIPT_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -20,7 +20,6 @@ export type PersonalHomeRelocationUpload = Readonly<{
   operationId: string;
   /** Opaque carrier locator. It is deliberately outside the Personal Home root. */
   uploadLocator: string;
-  uploadReceipt: string;
 }>;
 
 function assertOperationId(operationId: string): void {
@@ -58,11 +57,10 @@ export async function preparePersonalHomeRelocationUpload(params: Readonly<{
   await mkdir(root, { recursive: true, mode: 0o700 });
   await protect(root, 'directory');
   try {
-    const existing = parseReceipt(await readFile(receiptPath, 'utf8'), params.operationId);
+    parseReceipt(await readFile(receiptPath, 'utf8'), params.operationId);
     return {
       operationId: params.operationId,
       uploadLocator: archivePath.replaceAll('\\', '/'),
-      uploadReceipt: existing.uploadReceipt,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -87,20 +85,19 @@ export async function preparePersonalHomeRelocationUpload(params: Readonly<{
   return {
     operationId: params.operationId,
     uploadLocator: archivePath.replaceAll('\\', '/'),
-    uploadReceipt: receipt.uploadReceipt,
   };
 }
 
 export async function consumePersonalHomeRelocationUpload(params: Readonly<{
   operationId: string;
-  uploadReceipt: string;
   temporaryRoot?: string;
 }>): Promise<Readonly<{ archivePath: string }>> {
   assertOperationId(params.operationId);
-  if (!RECEIPT_TOKEN.test(params.uploadReceipt)) throw new Error('Invalid Personal Home relocation upload receipt.');
   const directory = operationDirectory(params.operationId, params.temporaryRoot ?? tmpdir());
-  const receipt = parseReceipt(await readFile(join(directory, 'receipt.json'), 'utf8'), params.operationId);
-  if (receipt.uploadReceipt !== params.uploadReceipt) throw new Error('Personal Home relocation upload receipt does not match the reserved transfer.');
+  // The receipt is deliberately destination-local. Its strict, operation-bound
+  // record proves that prepare durably reserved this exact transfer without
+  // exposing a reusable secret in CLI JSON or SSH argv.
+  parseReceipt(await readFile(join(directory, 'receipt.json'), 'utf8'), params.operationId);
   const archivePath = join(directory, 'bundle.tar');
   const info = await stat(archivePath);
   if (!info.isFile()) throw new Error('Personal Home relocation upload is not a regular file.');
@@ -112,7 +109,7 @@ export async function cleanupPersonalHomeRelocationUpload(params: Readonly<{
   temporaryRoot?: string;
 }>): Promise<void> {
   assertOperationId(params.operationId);
-  await rm(operationDirectory(params.operationId, params.temporaryRoot ?? tmpdir()), { recursive: true, force: true });
+  await removePathDurably(operationDirectory(params.operationId, params.temporaryRoot ?? tmpdir()));
 }
 
 /** Whether the exact operation still reserves destination-side temporary

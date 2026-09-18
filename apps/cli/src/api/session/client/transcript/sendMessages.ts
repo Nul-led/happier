@@ -54,9 +54,23 @@ export function prepareSessionEventMessageViaPort(
     messageRole: SessionMessageRole;
     sessionEventType: SessionEventType | undefined;
 }> {
+    const ownerActivityDelivery = event.type === 'ready'
+        ? event.ownerActivityDelivery ?? 'home_required'
+        : null;
+    const transcriptEvent = event.type === 'ready'
+        ? { ...event, ownerActivityDelivery: undefined }
+        : event;
     return {
-        payload: port.buildOutboundSessionMessagePayload(buildSessionEventContent(event, id)),
-        localId: randomUUID(),
+        payload: port.buildOutboundSessionMessagePayload(buildSessionEventContent(transcriptEvent, id)),
+        // Backward-compatible authenticated composition sideband: predecessor
+        // Homes already accept opaque local ids, while current Homes recognize
+        // this bounded prefix without adding a field to the strict v1 wire.
+        // Only sender absence is projected. A caller can never assert rich
+        // ownership and suppress the Home leg; that remains derived from the
+        // authenticated persistent runtime binding at the Activity owner.
+        localId: ownerActivityDelivery === 'home_required'
+            ? `activity-ready-home_required:${randomUUID()}`
+            : randomUUID(),
         messageRole: resolveSessionEventMessageRole(),
         sessionEventType: event.type === 'ready' ? 'ready' : undefined,
     };

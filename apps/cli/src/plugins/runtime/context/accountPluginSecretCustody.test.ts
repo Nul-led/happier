@@ -1,6 +1,9 @@
 import {
     accountSettingsParse,
+    formatSavedSecretCatalogReferenceV1,
     resolveAccountSettingsPluginSecret,
+    resolveAccountSettingsPluginSecretBinding,
+    sealSavedSecretResourceStoredContentV1,
 } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import { describe, expect, it, vi } from 'vitest';
@@ -44,6 +47,110 @@ vi.mock('@/persistence', () => ({
 }));
 
 describe('createAccountPluginSecretCustodyRouter', () => {
+    it('binds and materializes a current shared ref, rotates by revision, and fails terminally after revocation', async () => {
+        const resourceId = 'resource-plugin';
+        const sharedRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+        const resource = (revision: number, value: string) => ({
+            resourceId,
+            ownerAccountId: 'owner-a',
+            displayName: 'Shared plugin token',
+            kind: 'token' as const,
+            encryptionMode: 'plain' as const,
+            revision,
+            storedContent: sealSavedSecretResourceStoredContentV1({
+                resourceId,
+                mode: 'plain',
+                content: { v: 1, name: 'Shared plugin token', kind: 'token', value },
+            }),
+            materialStatus: 'ready' as const,
+        });
+        let snapshot: ActiveAccountSettingsSnapshot = {
+            source: 'network',
+            settings: accountSettingsParse({}),
+            settingsVersion: 4,
+            loadedAtMs: 1,
+            settingsSecretsReadKeys: [],
+            savedSecretResources: [resource(1, 'shared-v1')],
+            savedSecretCatalogState: 'ready',
+            scopeKey: 'account:a',
+        };
+        const router = createAccountPluginSecretCustodyRouter({
+            owner: {
+                readSnapshot: () => snapshot,
+                async updateOnce(input: Readonly<{
+                    expectedVersion: number;
+                    mutate(settings: Readonly<Record<string, unknown>>): Record<string, unknown>;
+                    assertCurrent(): void;
+                }>) {
+                    snapshot = {
+                        ...snapshot,
+                        settings: accountSettingsParse(input.mutate(snapshot.settings)),
+                        settingsVersion: snapshot.settingsVersion + 1,
+                    };
+                    return {
+                        status: 'applied' as const,
+                        version: snapshot.settingsVersion,
+                        settings: snapshot.settings,
+                    };
+                },
+            } as unknown as NonNullable<Parameters<typeof createAccountPluginSecretCustodyRouter>[0]>['owner'],
+        });
+
+        await expect(router.bindExisting({
+            pluginId: 'acme.example',
+            secretId: 'token',
+            savedSecretId: sharedRef,
+        })).resolves.toMatchObject({ revision: expect.stringMatching(/^account-secret-r1:/u) });
+        expect(resolveAccountSettingsPluginSecretBinding(snapshot.settings, {
+            pluginId: 'acme.example',
+            localId: 'token',
+        })?.savedSecretId).toBe(sharedRef);
+        expect(snapshot.settings.secrets).toEqual([]);
+
+        const custody = router.resolve({
+            pluginId: 'acme.example',
+            declaration: { id: 'token', custody: 'account' },
+        });
+        if (!custody) throw new Error('expected Account custody');
+        const first = await custody.status('token');
+        await expect(custody.get('token')).resolves.toEqual({
+            value: 'shared-v1',
+            revision: first.revision,
+        });
+
+        snapshot = { ...snapshot, savedSecretResources: [resource(2, 'shared-v2')] };
+        const rotated = await custody.status('token');
+        expect(rotated.revision).not.toBe(first.revision);
+        await expect(custody.get('token')).resolves.toEqual({
+            value: 'shared-v2',
+            revision: rotated.revision,
+        });
+
+        snapshot = { ...snapshot, savedSecretResources: [], savedSecretCatalogState: 'ready' };
+        await expect(custody.get('token')).rejects.toMatchObject({
+            code: 'plugin_secret_custody_unavailable',
+            details: { materialStatus: 'forbidden' },
+            retryable: false,
+        });
+        expect(JSON.stringify(await custody.status('token'))).not.toContain('shared-v2');
+
+        const replacement = await custody.set({ secretId: 'token', value: 'plugin-personal' });
+        expect(resolveAccountSettingsPluginSecret(snapshot.settings, {
+            pluginId: 'acme.example',
+            localId: 'token',
+        })).toMatchObject({
+            binding: { createdForBinding: true },
+            secret: { encryptedValue: { value: 'plugin-personal' } },
+        });
+        expect(snapshot.savedSecretResources).toEqual([]);
+        await custody.delete({ secretId: 'token', expectedRevision: replacement.revision });
+        expect(resolveAccountSettingsPluginSecretBinding(snapshot.settings, {
+            pluginId: 'acme.example',
+            localId: 'token',
+        })).toBeNull();
+        expect(snapshot.settings.secrets).toEqual([]);
+    });
+
     it('creates and binds a SavedSecret through one explicit Account Settings version', async () => {
         let snapshot: ActiveAccountSettingsSnapshot = {
             source: 'network',

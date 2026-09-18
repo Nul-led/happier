@@ -9,11 +9,14 @@ import {
   openAutomationSessionStartRequestEnvelopeV1,
   sealAccountScopedBlobCiphertext,
   serializeAutomationRunExecutionRecipeV1,
+  type AutomationAccountCurrentnessWitnessV1,
+  type AutomationV3WorkerResultDelivery,
 } from '@happier-dev/protocol';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers';
 
 import type { ClaimableRunPayload } from './automationRunExecutor';
+import type { AutomationV3ClaimedAutomation } from './automationTypes';
 import { abortAutomationRunForAuthoritativeCancellation } from './automationRunCancellation';
 
 type ExecuteClaimedRun = typeof import('./automationRunExecutor').executeClaimedRun;
@@ -22,6 +25,10 @@ type AutomationRunSucceed = AutomationRunClaimClient['succeedRun'];
 type ExecuteAutomationAction = NonNullable<Parameters<ExecuteClaimedRun>[0]['executeAction']>;
 type DispatchSessionServerStart = NonNullable<
   Parameters<ExecuteClaimedRun>[0]['dispatchSessionServerStart']
+>;
+type StrictClaimedRunPayload = Extract<
+  ClaimableRunPayload,
+  { protocol: 'v3'; automation: AutomationV3ClaimedAutomation }
 >;
 let executeClaimedRun: ExecuteClaimedRun;
 
@@ -65,9 +72,9 @@ function buildStrictClaimedRun(params: {
   recipe: unknown;
   runId?: string;
   cause?: unknown;
-  accountCurrentness?: unknown;
-  resultDelivery?: unknown;
-}): ClaimableRunPayload {
+  accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
+  resultDelivery?: AutomationV3WorkerResultDelivery | Readonly<{ kind: 'none' }>;
+}): StrictClaimedRunPayload {
   const cause = AutomationRunCauseSchema.parse(
     params.cause ?? { kind: 'manual' as const, invokedAt: 1_723_247_201_000 },
   );
@@ -81,6 +88,8 @@ function buildStrictClaimedRun(params: {
       id: params.runId ?? 'run-strict',
       automationId: 'automation-1',
       attempt: 1,
+      revision: 0,
+      recipeKind: 'legacy',
       executionInputEnvelope: serialized.serialized,
       triggerId: cause.kind === 'trigger' ? cause.triggerId : null,
       cause,
@@ -92,7 +101,7 @@ function buildStrictClaimedRun(params: {
       enabled: true,
     },
     accountCurrentness: params.accountCurrentness ?? CLAIM_CURRENTNESS,
-  } as ClaimableRunPayload;
+  };
 }
 
 function strictExistingSessionRecipe(params: {
@@ -120,6 +129,7 @@ function strictNewSessionRecipe(params: {
   prompt?: string;
   machineId?: string;
   templateEnvelope?: unknown;
+  triggerEvidence?: unknown;
 } = {}) {
   const machineId = params.machineId ?? 'machine-1';
   return {
@@ -130,7 +140,7 @@ function strictNewSessionRecipe(params: {
       t: 'plain' as const,
       v: { v: 1, prompt: params.prompt ?? 'create the strict Session' },
     },
-    triggerEvidence: null,
+    triggerEvidence: params.triggerEvidence ?? null,
     target: {
       kind: 'newSession' as const,
       spawn: {
@@ -612,7 +622,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
         ...buildStrictClaimedRun({ recipe: strictExistingSessionRecipe() }).run,
         executionInputEnvelope: '{"v":1}',
       },
-    } as ClaimableRunPayload;
+    } satisfies StrictClaimedRunPayload;
 
     await executeClaimedRun({
       token: 'token',
@@ -635,6 +645,131 @@ describe('executeClaimedRun (mcpSelection)', () => {
       accountCurrentness: CLAIM_CURRENTNESS,
       errorCode: 'invalid_template',
     }));
+  });
+
+  it('delegates a workflow claim to the origin-neutral coordinator with both frozen envelopes', async () => {
+    const claimClient = {
+      startRun: vi.fn(async () => START_CURRENTNESS),
+      heartbeatRun: vi.fn(async () => {}),
+      succeedRun: vi.fn(async () => {}),
+      failRun: vi.fn(async () => {}),
+    };
+    const coordinateWorkflowRun = vi.fn(async () => ({ state: 'succeeded' as const }));
+    const claimed = {
+      ...buildStrictClaimedRun({ recipe: strictExistingSessionRecipe() }),
+      run: {
+        ...buildStrictClaimedRun({ recipe: strictExistingSessionRecipe() }).run,
+        recipeKind: 'workflow-v2',
+        executionInputEnvelope: '{"t":"plain","v":{"definition":{},"source":{"kind":"automation","automationId":"automation-1"}}}',
+        automationEvidenceEnvelope: '{"t":"plain","v":{"event":{"id":"evt-1"}}}',
+      },
+    } satisfies StrictClaimedRunPayload;
+
+    await executeClaimedRun({
+      token: 'token',
+      machineId: 'machine-1',
+      claimClient,
+      spawnSession: vi.fn(),
+      heartbeatMs: 60_000,
+      leaseDurationMs: 120_000,
+      coordinateWorkflowRun,
+      claimed,
+    });
+
+    expect(coordinateWorkflowRun).toHaveBeenCalledWith({
+      runId: 'run-strict',
+      automationId: 'automation-1',
+      attempt: 1,
+      expectedRevision: claimed.run.revision,
+      accountCurrentness: CLAIM_CURRENTNESS,
+      definitionEnvelope: claimed.run.executionInputEnvelope,
+      automationEvidenceEnvelope: claimed.run.automationEvidenceEnvelope,
+      automationCause: claimed.run.cause,
+      registerAuthorizationCurrentnessCheck: expect.any(Function),
+      signal: expect.any(AbortSignal),
+    });
+    expect(claimClient.startRun).not.toHaveBeenCalled();
+    expect(claimClient.succeedRun).not.toHaveBeenCalled();
+    expect(claimClient.failRun).not.toHaveBeenCalled();
+  });
+
+  it('delegates a direct workflow claim to the same coordinator without fabricating an Automation', async () => {
+    const claimClient = {
+      startRun: vi.fn(async () => START_CURRENTNESS),
+      heartbeatRun: vi.fn(async () => {}),
+      succeedRun: vi.fn(async () => {}),
+      failRun: vi.fn(async () => {}),
+    };
+    const coordinateWorkflowRun = vi.fn(async () => ({ state: 'succeeded' as const }));
+    const claimed = {
+      protocol: 'v3',
+      run: {
+        id: 'run-direct', automationId: null, attempt: 1, revision: 3,
+        origin: { kind: 'direct' }, workflowAcceptedSnapshotEnvelope: 'accepted', triggerId: null,
+      },
+      automation: null,
+      accountCurrentness: CLAIM_CURRENTNESS,
+    } satisfies ClaimableRunPayload;
+
+    await executeClaimedRun({
+      token: 'token', machineId: 'machine-1', claimClient, spawnSession: vi.fn(),
+      heartbeatMs: 60_000, leaseDurationMs: 120_000, coordinateWorkflowRun, claimed,
+    });
+
+    expect(coordinateWorkflowRun).toHaveBeenCalledWith({
+      runId: 'run-direct', attempt: 1, expectedRevision: 3,
+      accountCurrentness: CLAIM_CURRENTNESS, acceptedEnvelope: 'accepted',
+      registerAuthorizationCurrentnessCheck: expect.any(Function),
+      signal: expect.any(AbortSignal),
+    });
+    expect(claimClient.startRun).not.toHaveBeenCalled();
+  });
+
+  it('aborts an active workflow through its incumbent lease heartbeat when accepted authority becomes stale', async () => {
+    vi.useFakeTimers();
+    try {
+      const claimClient = {
+        startRun: vi.fn(async () => START_CURRENTNESS),
+        heartbeatRun: vi.fn(async () => {}),
+        succeedRun: vi.fn(async () => {}),
+        failRun: vi.fn(async () => {}),
+      };
+      let observedAbortReason: unknown;
+      const coordinateWorkflowRun = vi.fn(async (claim: Readonly<{ signal?: AbortSignal }>) => {
+        const registerCurrentness = Reflect.get(claim, 'registerAuthorizationCurrentnessCheck');
+        expect(typeof registerCurrentness).toBe('function');
+        registerCurrentness(async () => false);
+        const signal = claim.signal;
+        if (!signal) throw new Error('Expected the claimed Workflow signal.');
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+        }
+        observedAbortReason = signal.reason;
+        return { state: 'interrupted' as const, reason: 'workflow_authorization_not_current' };
+      });
+      const claimed = {
+        protocol: 'v3',
+        run: {
+          id: 'run-direct-revoked', automationId: null, attempt: 1, revision: 3,
+          origin: { kind: 'direct' }, workflowAcceptedSnapshotEnvelope: 'accepted', triggerId: null,
+        },
+        automation: null,
+        accountCurrentness: CLAIM_CURRENTNESS,
+      } satisfies ClaimableRunPayload;
+
+      const execution = executeClaimedRun({
+        token: 'token', machineId: 'machine-1', claimClient, spawnSession: vi.fn(),
+        heartbeatMs: 1_000, leaseDurationMs: 30_000, coordinateWorkflowRun, claimed,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await execution;
+
+      expect(claimClient.heartbeatRun).toHaveBeenCalledOnce();
+      expect(observedAbortReason).toBe('workflow_authorization_not_current');
+      expect(claimClient.startRun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('terminalizes decrypted-invalid strict content under C without starting or invoking a target owner', async () => {
@@ -760,6 +895,61 @@ describe('executeClaimedRun (mcpSelection)', () => {
       accountCurrentness: START_CURRENTNESS,
       producedSessionId: 'session-created',
     });
+    expect(claimClient.failRun).not.toHaveBeenCalled();
+  });
+
+  it('leaves a strict new-Session final-result Run unsettled when its exact-input observation is cancelled', async () => {
+    waitForSessionInputResult.mockResolvedValue({
+      ok: false,
+      code: 'cancelled',
+    });
+    const claimClient = {
+      startRun: vi.fn(async () => START_CURRENTNESS),
+      heartbeatRun: vi.fn(async () => {}),
+      succeedRun: vi.fn(async () => {}),
+      failRun: vi.fn(async () => {}),
+    };
+
+    await executeClaimedRun({
+      token: 'token',
+      credentials: { token: 'token', encryption: null },
+      machineId: 'machine-1',
+      claimClient,
+      spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({
+        type: 'success',
+        sessionId: 'must-not-spawn',
+      })),
+      heartbeatMs: 60_000,
+      leaseDurationMs: 120_000,
+      dispatchSessionServerStart: vi.fn(async () => ({
+        type: 'success' as const,
+        disposition: 'created' as const,
+        sessionId: 'session-created',
+        executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+        organizationPlacement: { folderId: null, tagIds: [] },
+        initialInput: { status: 'accepted' as const, localId: 'automation:run:run-strict' },
+      })),
+      resolveAutomationAccountEncryption: vi.fn()
+        .mockResolvedValueOnce(availableCurrentness(CLAIM_CURRENTNESS))
+        .mockResolvedValueOnce(availableCurrentness(START_CURRENTNESS)),
+      claimed: buildStrictClaimedRun({
+        recipe: strictNewSessionRecipe({
+          triggerEvidence: { t: 'plain', v: finalResultConversationEvidence },
+        }),
+        cause: finalResultConversationCause,
+        resultDelivery: {
+          kind: 'finalResult',
+          accountId: 'account-1',
+          handoffId: 'automation-reply-handoff:run-strict',
+        },
+      }),
+    });
+
+    expect(waitForSessionInputResult).toHaveBeenCalledWith(expect.objectContaining({
+      idOrPrefix: 'session-created',
+      localId: 'automation:run:run-strict',
+    }));
+    expect(claimClient.succeedRun).not.toHaveBeenCalled();
     expect(claimClient.failRun).not.toHaveBeenCalled();
   });
 
@@ -1978,6 +2168,60 @@ describe('executeClaimedRun (mcpSelection)', () => {
     });
   });
 
+  it('still stops a known native execution Run when cancellation settlement reporting fails', async () => {
+    const cancellation = new AbortController();
+    const settlementError = new Error('dispatch settlement transport failed');
+    const claimClient = {
+      startRun: vi.fn(async () => START_CURRENTNESS),
+      heartbeatRun: vi.fn(async () => {}),
+      succeedRun: vi.fn(async () => {}),
+      failRun: vi.fn(async () => {}),
+      settleExecutionDispatch: vi.fn(async () => {
+        throw settlementError;
+      }),
+    };
+    const executeAction = vi.fn<ExecuteAutomationAction>(async (actionId) => {
+      if (actionId === 'execution.run.start') {
+        abortAutomationRunForAuthoritativeCancellation(cancellation);
+        return {
+          ok: true as const,
+          result: {
+            runId: 'native-run-after-report-failure',
+            callId: 'native-call-after-report-failure',
+            sidechainId: 'native-sidechain-after-report-failure',
+          },
+        };
+      }
+      return { ok: true as const, result: { ok: true as const } };
+    });
+
+    await expect(executeClaimedRun({
+      token: 'token',
+      machineId: 'machine-1',
+      claimClient,
+      spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'must-not-spawn' })),
+      heartbeatMs: 60_000,
+      leaseDurationMs: 120_000,
+      signal: cancellation.signal,
+      executeAction,
+      resolveAutomationAccountEncryption: vi.fn()
+        .mockResolvedValueOnce(availableCurrentness(CLAIM_CURRENTNESS))
+        .mockResolvedValueOnce(availableCurrentness(START_CURRENTNESS)),
+      claimed: buildStrictClaimedRun({ recipe: strictExecutionRunRecipe() }),
+    })).resolves.toBeUndefined();
+
+    expect(claimClient.settleExecutionDispatch).toHaveBeenCalledOnce();
+    expect(executeAction).toHaveBeenNthCalledWith(
+      2,
+      'execution.run.stop',
+      { sessionId: null, runId: 'native-run-after-report-failure' },
+      expect.objectContaining({
+        actionRequestId: 'automation-run:run-strict:stop',
+        executionRunTargetMachineId: 'machine-1',
+      }),
+    );
+  });
+
   it('does not infer a native Run from strict noRunCreated evidence after authoritative cancellation', async () => {
     const cancellation = new AbortController();
     const claimClient = {
@@ -2276,6 +2520,8 @@ describe('executeClaimedRun (mcpSelection)', () => {
         id: 'run-frozen',
         automationId: 'automation-1',
         attempt: 1,
+        revision: 0,
+        recipeKind: 'legacy',
         resultDelivery: { kind: 'none' },
         triggerId: null,
         cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
@@ -2346,6 +2592,8 @@ describe('executeClaimedRun (mcpSelection)', () => {
         id: 'run-frozen-settlement-fallback',
         automationId: 'automation-1',
         attempt: 1,
+        revision: 0,
+        recipeKind: 'legacy',
         resultDelivery: { kind: 'none' },
         triggerId: null,
         cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },

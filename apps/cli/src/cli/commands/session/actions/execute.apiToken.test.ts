@@ -92,7 +92,11 @@ describe('session actions execute with an API token', () => {
         { readCredentialsFn: async () => credentials },
       );
 
-      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({ credentials });
+      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({
+        credentials,
+        serverId: expect.any(String),
+        serverApiUrl: expect.any(String),
+      });
       expect(resolveSessionTarget).toHaveBeenCalledWith('e2ee-active-tag');
       expect(resolveSessionIdOrPrefix).not.toHaveBeenCalled();
       expect(ensureCliActionPolicySettings).not.toHaveBeenCalled();
@@ -104,6 +108,7 @@ describe('session actions execute with an API token', () => {
         {
           defaultSessionId: 'session_exact_123',
           surface: 'cli',
+          authority: 'present_user',
         },
       );
       expect(output.json()).toEqual({

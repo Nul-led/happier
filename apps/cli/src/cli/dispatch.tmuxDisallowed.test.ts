@@ -2,16 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 import type { ResolvedCommandContribution, ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
+import { CliApiTokenChildContinuationError } from '@/auth/cliApiToken';
 
 const startHappyHeadlessInTmux = vi.fn(async () => {});
-const runtimeLease = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(async () => {}) }));
+const contributionRegistry = vi.hoisted(() => ({ resolve: vi.fn() }));
 
 // TMUX launcher touches the host environment; treat it as a boundary and stub it in unit tests.
 vi.mock('@/integrations/tmux/startHeadlessSession', () => ({
   startHappyHeadlessInTmux,
 }));
-vi.mock('@/plugins/runtime/reload/runtimeLease', () => ({
-  acquireAuthoritativePluginRuntimeRegistryLease: runtimeLease.acquire,
+vi.mock('@/plugins/projection/registry/createResolvedContributionRegistry', () => ({
+  resolveMergedContributionRegistry: contributionRegistry.resolve,
 }));
 vi.mock('@/persistence', () => ({ readCredentials: vi.fn(async () => null) }));
 vi.mock('@/session/actions/createCliActionExecutor', () => ({ createCredentialedTargetActionCurrentIntent: vi.fn() }));
@@ -47,8 +48,7 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
     exitSpy.mockClear();
     startHappyHeadlessInTmux.mockClear();
     consoleErrorSpy.mockClear();
-    runtimeLease.acquire.mockReset();
-    runtimeLease.release.mockClear();
+    contributionRegistry.resolve.mockReset();
     if (originalTmux === undefined) delete process.env.TMUX;
     else process.env.TMUX = originalTmux;
   });
@@ -56,7 +56,7 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
   it('launches a required plugin command once and does not relaunch inside truthful tmux mode', async () => {
     const snapshot = pluginCommands('required');
     synchronizePluginCommandContributions(snapshot);
-    runtimeLease.acquire.mockResolvedValue({ registry: { contributes: snapshot }, release: runtimeLease.release });
+    contributionRegistry.resolve.mockResolvedValue(snapshot);
 
     await dispatchCli({
       args: ['notes', 'watch'], rawArgv: ['happier', 'notes', 'watch'], terminalRuntime: null,
@@ -80,7 +80,6 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
       log.mockRestore();
     }
     expect(startHappyHeadlessInTmux).not.toHaveBeenCalled();
-    expect(runtimeLease.release).toHaveBeenCalledTimes(2);
   });
 
   it('uses the real tmux environment to avoid required double-launch and reject forbidden commands', async () => {
@@ -88,21 +87,23 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
 
     const requiredSnapshot = pluginCommands('required');
     synchronizePluginCommandContributions(requiredSnapshot);
-    runtimeLease.acquire.mockResolvedValue({ registry: { contributes: requiredSnapshot }, release: runtimeLease.release });
-    await dispatchCli({
-      args: ['notes', 'watch'], rawArgv: ['happier', 'notes', 'watch'], terminalRuntime: null,
-    });
+    contributionRegistry.resolve.mockResolvedValue(requiredSnapshot);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await dispatchCli({
+        args: ['notes', 'watch', '--help'], rawArgv: ['happier', 'notes', 'watch', '--help'], terminalRuntime: null,
+      });
+    } finally {
+      log.mockRestore();
+    }
     expect(startHappyHeadlessInTmux).not.toHaveBeenCalled();
-    expect(runtimeLease.release).toHaveBeenCalledOnce();
 
     const forbiddenSnapshot = pluginCommands('forbidden');
     synchronizePluginCommandContributions(forbiddenSnapshot);
-    runtimeLease.release.mockClear();
     await expect(dispatchCli({
       args: ['notes', 'watch'], rawArgv: ['happier', 'notes', 'watch'], terminalRuntime: null,
     })).rejects.toThrow('process.exit(1)');
     expect(startHappyHeadlessInTmux).not.toHaveBeenCalled();
-    expect(runtimeLease.release).not.toHaveBeenCalled();
   });
 
   it('returns exactly one JSON envelope when a required tmux launch succeeds', async () => {
@@ -154,10 +155,39 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
     }
   });
 
+  it('preserves the typed compound-token continuation refusal at the root JSON boundary', async () => {
+    const snapshot = pluginCommands('required');
+    synchronizePluginCommandContributions(snapshot);
+    startHappyHeadlessInTmux.mockRejectedValueOnce(new CliApiTokenChildContinuationError());
+    const output = captureConsoleJsonOutput<{
+      ok: boolean;
+      kind: string;
+      error?: { code?: string; message?: string };
+    }>();
+    const previousExitCode = process.exitCode;
+    try {
+      await dispatchCli({
+        args: ['notes', 'watch', '--json'],
+        rawArgv: ['happier', 'notes', 'watch', '--json'],
+        terminalRuntime: null,
+      });
+      expect(output.logs).toHaveLength(1);
+      expect(output.json()).toMatchObject({
+        ok: false,
+        kind: 'cli_dispatch',
+        error: { code: 'api_token_child_continuation_unsupported' },
+      });
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it('keeps plugin command JSON output to one machine-readable stdout envelope', async () => {
     const snapshot = pluginCommands('inherit');
     synchronizePluginCommandContributions(snapshot);
-    runtimeLease.acquire.mockResolvedValue({ registry: { contributes: snapshot }, release: runtimeLease.release });
+    contributionRegistry.resolve.mockResolvedValue(snapshot);
     const output = captureConsoleJsonOutput<{ ok: boolean; kind: string; error?: { code?: string } }>();
     const previousExitCode = process.exitCode;
     try {
@@ -178,7 +208,7 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
   it('keeps plugin command help machine-readable when --json is requested', async () => {
     const snapshot = pluginCommands('inherit');
     synchronizePluginCommandContributions(snapshot);
-    runtimeLease.acquire.mockResolvedValue({ registry: { contributes: snapshot }, release: runtimeLease.release });
+    contributionRegistry.resolve.mockResolvedValue(snapshot);
     const output = captureConsoleJsonOutput();
     const previousExitCode = process.exitCode;
     try {
@@ -203,7 +233,7 @@ describe('dispatchCli --tmux disallowed controller commands', () => {
   it('keeps registry acquisition failures machine-readable in plugin JSON mode', async () => {
     const snapshot = pluginCommands('inherit');
     synchronizePluginCommandContributions(snapshot);
-    runtimeLease.acquire.mockRejectedValueOnce(new Error('registry unavailable'));
+    contributionRegistry.resolve.mockRejectedValueOnce(new Error('registry unavailable'));
     const output = captureConsoleJsonOutput();
     const previousExitCode = process.exitCode;
     try {

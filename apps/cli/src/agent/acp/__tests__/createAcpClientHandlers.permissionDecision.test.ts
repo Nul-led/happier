@@ -12,6 +12,39 @@ function createHandlerContext(): HandlerContext {
 }
 
 describe('createAcpClientHandlers permission pre-prompt decisions', () => {
+  it('surfaces a recoverable Workflow interaction capacity failure to the ACP turn owner', async () => {
+    const capacityError = Object.assign(
+      new Error('Workflow interaction exceeds durable capacity'),
+      { code: 'workflow_interaction_capacity_exceeded', recoverable: true as const },
+    );
+    const failTurn = vi.fn();
+    const handlerContext = createHandlerContext();
+    const client = createAcpClientHandlers({
+      onSessionUpdate: () => undefined,
+      transport: new DefaultTransport('test'),
+      emit: () => undefined,
+      permissionHandler: { handleToolCall: async () => { throw capacityError; } },
+      createHandlerContext: () => handlerContext,
+      getToolNameContext: () => ({ recentPromptHadChangeTitle: false, toolCallCountSincePrompt: 0 }),
+      getActiveSessionId: () => 'session-1',
+      cancel: vi.fn(async () => undefined),
+      emitPermissionResponse: vi.fn(async () => undefined),
+      clearTrackedToolCall: vi.fn(),
+      incrementToolCallCountSincePrompt: vi.fn(),
+      toolCalls: handlerContext.toolCalls,
+      lastSelectedPermissionOptionIdByToolCallId: new Map(),
+      failTurn,
+    });
+
+    await client.requestPermission({
+      sessionId: 'session-1',
+      toolCall: { toolCallId: 'tool-capacity', kind: 'write', toolName: 'Write' },
+      options: [{ optionId: 'deny', kind: 'reject_once', name: 'Deny' }],
+    } as never);
+
+    expect(failTurn).toHaveBeenCalledWith(capacityError);
+  });
+
   it('starts cancellation before publishing a denied permission response', async () => {
     const order: string[] = [];
     const handlerContext = createHandlerContext();

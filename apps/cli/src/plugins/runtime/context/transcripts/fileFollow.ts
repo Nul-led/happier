@@ -5,6 +5,7 @@ import type {
     AgentTranscriptFileFollowInput,
     AgentTranscriptFileFollowService,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { PluginExecutionScopeV1 } from '@happier-dev/protocol';
 
 import { createJsonlFollowController } from '@/api/session/fileBackedTranscripts/jsonl';
 import type {
@@ -29,7 +30,7 @@ type TranscriptFileFollowAccessRequest = Readonly<{
     path: string;
     pluginId?: string;
     runtimeId?: string;
-    sessionId?: string | null;
+    scope?: PluginExecutionScopeV1 | null;
 }>;
 
 type AuthorizedTranscriptFileFollowPath = Readonly<{
@@ -45,6 +46,7 @@ export function createPluginTranscriptFileFollowService(params?: Readonly<{
     pluginId?: string;
     runtimeId?: string;
     readSessionId?: () => string | null;
+    readScope?: () => PluginExecutionScopeV1 | null;
     allowedPaths?: readonly string[];
     allowedPathRoots?: readonly string[];
     canFollowPath?: PluginTranscriptFileFollowAccessPolicy;
@@ -99,7 +101,11 @@ export function createPluginTranscriptFileFollowService(params?: Readonly<{
                 filePath,
                 pluginId: params?.pluginId,
                 runtimeId: params?.runtimeId,
-                sessionId: params?.readSessionId?.() ?? null,
+                scope: params?.readScope?.()
+                    ?? (() => {
+                        const sessionId = params?.readSessionId?.() ?? null;
+                        return sessionId ? Object.freeze({ kind: 'session' as const, sessionId }) : null;
+                    })(),
                 allowedPaths,
                 allowedPathRoots,
                 canFollowPath: params?.canFollowPath,
@@ -291,7 +297,7 @@ async function resolveFollowFilePath(params: Readonly<{
     filePath: string;
     pluginId?: string;
     runtimeId?: string;
-    sessionId?: string | null;
+    scope?: PluginExecutionScopeV1 | null;
     allowedPaths: ReadonlySet<string>;
     allowedPathRoots: readonly string[];
     canFollowPath?: PluginTranscriptFileFollowAccessPolicy;
@@ -326,7 +332,7 @@ async function resolveFollowFilePath(params: Readonly<{
             path: params.filePath,
             pluginId: params.pluginId,
             runtimeId: params.runtimeId,
-            sessionId: params.sessionId ?? null,
+            scope: params.scope ?? null,
         });
         if (granted) {
             return Object.freeze({
@@ -339,7 +345,7 @@ async function resolveFollowFilePath(params: Readonly<{
         path: params.filePath,
         pluginId: params.pluginId,
         runtimeId: params.runtimeId,
-        sessionId: params.sessionId ?? null,
+        scope: params.scope ?? null,
     }) === true) {
         return Object.freeze({ filePath: realFilePath });
     }

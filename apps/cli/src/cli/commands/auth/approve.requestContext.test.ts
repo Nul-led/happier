@@ -52,7 +52,7 @@ describe('auth approve request pairing context', () => {
     return { terminalKeypair, pairingSecret, createdAtMs, expiresAtMs, envelope };
   }
 
-  it('approves using the pairing context from --request-json-file and seals a pairing-bound v3 response', async () => {
+  it.each([false, true])('approves a pairing-bound v3 response with unattended Team access explicitly selected: %s', async (authorizeUnattendedTeamAccess) => {
     const { terminalKeypair, pairingSecret, createdAtMs, expiresAtMs, envelope } = buildRequestEnvelope();
     const envelopePath = join(localHomeDir, 'remote-auth-request.json');
     await writeFile(envelopePath, JSON.stringify(envelope, null, 2), 'utf8');
@@ -85,6 +85,7 @@ describe('auth approve request pairing context', () => {
         envelope.publicKey,
         '--request-json-file',
         envelopePath,
+        ...(authorizeUnattendedTeamAccess ? ['--authorize-unattended-team-access'] : []),
       ]);
       expect(stdout.json<{ success: boolean }>()).toEqual({ success: true });
 
@@ -92,6 +93,11 @@ describe('auth approve request pairing context', () => {
       const body = postedBodies[0] ?? {};
       expect(body.publicKey).toBe(envelope.publicKey);
       expect(body.responseKind).toBe('tokenOnly');
+      if (authorizeUnattendedTeamAccess) {
+        expect(body.authorizeUnattendedTeamAccess).toBe(true);
+      } else {
+        expect(body).not.toHaveProperty('authorizeUnattendedTeamAccess');
+      }
       expect(typeof body.response).toBe('string');
       const opened = openTerminalProvisioningV3Response({
         payload: new Uint8Array(Buffer.from(String(body.response), 'base64')),

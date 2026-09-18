@@ -538,6 +538,37 @@ function syncCliBundledWorkspacePackagesForCompile(
   }
 }
 
+/**
+ * Settle the installed CLI workspace publication before a managed daemon build
+ * captures identities that include that publication. The later code builder
+ * deliberately repeats this same owner-local reconciliation while holding its
+ * consumer lock; with unchanged source inputs that pass is idempotent, while
+ * genuine intervening drift remains visible to the daemon support guards.
+ */
+export async function prepareCliBinaryArtifactWorkspacePublication({
+  repoRoot,
+  ensureWorkspacePackagesBuiltByName,
+}: Readonly<{
+  repoRoot: string;
+  ensureWorkspacePackagesBuiltByName?: EnsureWorkspacePackagesBuiltByName;
+}>): Promise<void> {
+  const cliDir = join(repoRoot, 'apps', 'cli');
+  const workspaceBundles = resolveWorkspaceBundlesFromPackageJson({
+    repoRoot,
+    hostPackageDir: cliDir,
+  });
+  await ensureBundledWorkspacePackagesBuilt({
+    repoRoot,
+    bundles: workspaceBundles.map(({ packageName, srcDir }) => ({ packageName, srcDir })),
+    ensureWorkspacePackagesBuiltByName,
+  });
+  await withWorkspaceBundleLock(() => {
+    syncCliBundledWorkspacePackagesForCompile(repoRoot, cliDir, workspaceBundles);
+  }, {
+    lockPath: resolveCliSharedDepsBuildLockPath(repoRoot),
+  });
+}
+
 async function prepareCliDistSnapshot({
   repoRoot,
   runCommand,

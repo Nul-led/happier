@@ -20,6 +20,9 @@ export type InteractiveSystemTaskPromptRequest = Readonly<{
   stepId?: string;
   message: string;
   data: SystemTaskJsonValue;
+  /** Retain prompt custody after task cancellation only when the owning operation has crossed
+   * an irreversible boundary and must finish converging to a stable result. */
+  nonCancellable?: true;
 }>;
 
 export type InteractiveSystemTaskContext = Readonly<{
@@ -45,6 +48,8 @@ type RunnerState = {
   result: SystemTaskResult | null;
   pendingPrompt: PromptEnvelope | null;
   resolvePrompt: ((answer: unknown) => void) | null;
+  rejectPrompt: ((error: SystemTaskExecutionError) => void) | null;
+  abortController: AbortController;
 };
 
 export function createSystemTasksRunner(params: Readonly<{
@@ -59,6 +64,7 @@ export function createSystemTasksRunner(params: Readonly<{
     pendingPrompt: PromptEnvelope | null;
   }>>;
   respond: (params: Readonly<{ taskId: string; answer: unknown }>) => Promise<void>;
+  cancel: (params: Readonly<{ taskId: string }>) => Promise<void>;
 }> {
   const now = params.now ?? (() => Date.now());
   const states = new Map<string, RunnerState>();
@@ -96,15 +102,22 @@ export function createSystemTasksRunner(params: Readonly<{
         result: null,
         pendingPrompt: null,
         resolvePrompt: null,
+        rejectPrompt: null,
+        abortController: new AbortController(),
       });
 
+      const state = readState(startParams.taskId);
       void kind.run({
         params: startParams.params,
+        signal: state.abortController.signal,
         emit: (event) => {
           appendEvent(startParams.taskId, event);
         },
         prompt: async (prompt) => {
           const state = readState(startParams.taskId);
+          if (state.abortController.signal.aborted && prompt.nonCancellable !== true) {
+            throw new SystemTaskExecutionError('cancelled', 'System task execution was cancelled.');
+          }
           state.pendingPrompt = {
             kind: prompt.kind,
             data: redactSensitiveSystemTaskJsonValue(prompt.data),
@@ -115,17 +128,32 @@ export function createSystemTasksRunner(params: Readonly<{
             message: prompt.message,
             data: buildPromptEventData(prompt),
           });
-          return await new Promise((resolve) => {
+          return await new Promise((resolve, reject) => {
             state.resolvePrompt = (answer) => {
               state.pendingPrompt = null;
               state.resolvePrompt = null;
+              state.rejectPrompt = null;
               resolve(answer);
             };
+            state.rejectPrompt = prompt.nonCancellable === true
+              ? null
+              : (error) => {
+                  state.pendingPrompt = null;
+                  state.resolvePrompt = null;
+                  state.rejectPrompt = null;
+                  reject(error);
+                };
+            if (state.abortController.signal.aborted) {
+              state.rejectPrompt?.(new SystemTaskExecutionError('cancelled', 'System task execution was cancelled.'));
+            }
           });
         },
       }).then(
         (data) => {
           const state = readState(startParams.taskId);
+          state.pendingPrompt = null;
+          state.resolvePrompt = null;
+          state.rejectPrompt = null;
           state.result = {
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
             taskId: startParams.taskId,
@@ -135,6 +163,9 @@ export function createSystemTasksRunner(params: Readonly<{
         },
         (error) => {
           const state = readState(startParams.taskId);
+          state.pendingPrompt = null;
+          state.resolvePrompt = null;
+          state.rejectPrompt = null;
           state.result = {
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
             taskId: startParams.taskId,
@@ -173,6 +204,12 @@ export function createSystemTasksRunner(params: Readonly<{
       state.resolvePrompt(respondParams.answer);
       await new Promise((resolve) => setTimeout(resolve, 0));
     },
+
+    async cancel(cancelParams) {
+      const state = readState(cancelParams.taskId);
+      state.abortController.abort();
+      state.rejectPrompt?.(new SystemTaskExecutionError('cancelled', 'System task execution was cancelled.'));
+    },
   };
 }
 
@@ -191,6 +228,33 @@ export function buildPromptEventData(prompt: InteractiveSystemTaskPromptRequest)
   };
 }
 
+/**
+ * A URL string with any `user:pass@` userinfo removed.
+ *
+ * Redaction below matches sensitive *key names*, but a URL carrying embedded credentials is the
+ * same class of secret under an ordinary key (`relayUrl`, `webappUrl`, `targetServerUrl`), and
+ * every producer of such a key would otherwise have to remember to strip it. Doing it here keeps
+ * one owner for "what is safe to publish as task data". Identity is unaffected: comparable-key
+ * derivation ignores userinfo, so a producer and its reader still resolve the same host.
+ */
+function stripUrlCredentials(value: string): string {
+  if (!value.includes('@') || !value.includes('://')) {
+    return value;
+  }
+  try {
+    const parsed = new URL(value);
+    if (!parsed.username && !parsed.password) {
+      return value;
+    }
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    // Unparseable here means unverifiable, so drop the whole userinfo segment rather than emit it.
+    return value.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/?#]*@/, '$1');
+  }
+}
+
 export function redactSensitiveSystemTaskJsonValue(value: unknown): SystemTaskJsonValue {
   if (value === null) {
     return value;
@@ -198,6 +262,7 @@ export function redactSensitiveSystemTaskJsonValue(value: unknown): SystemTaskJs
 
   switch (typeof value) {
     case 'string':
+      return stripUrlCredentials(value);
     case 'boolean':
       return value;
     case 'number':

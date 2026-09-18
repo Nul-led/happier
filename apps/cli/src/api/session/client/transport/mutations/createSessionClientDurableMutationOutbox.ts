@@ -1,3 +1,4 @@
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { logger } from '@/ui/logger';
 import {
     assertCommittedTranscriptAdmission,
@@ -164,6 +165,7 @@ type RegisteredSessionStateFieldDeliveryResult =
 
 type CreateGenericSessionClientDurableMutationOutboxParams = Readonly<{
     token: string;
+    serverUrl?: string;
     sessionId: string;
     persistenceContext?: SessionClientDurableMutationPersistenceContext;
     initialRegisteredSessionStateFieldMutations?: readonly RegisteredSessionStateFieldMutationV1[];
@@ -972,6 +974,7 @@ export type RuntimeSessionClientDurableMutationOutbox = Readonly<{
 
 export function createRuntimeSessionClientDurableMutationOutbox(params: Readonly<{
     token: string;
+    serverUrl?: string;
     sessionId: string;
     initialRegisteredSessionStateFieldMutations?: readonly RegisteredSessionStateFieldMutationV1[];
     flushOnReady?: boolean;
@@ -1088,6 +1091,7 @@ export type DaemonSessionClientDurableMutationOutbox = Readonly<{
 
 export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<{
     token: string;
+    serverUrl?: string;
     sessionId: string;
     getSocket: () => SessionClientDurableMutationSocket | null;
     requestReconnect: (reason: string) => void;
@@ -1165,6 +1169,7 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
 function createGenericSessionClientDurableMutationOutboxInstance(
     params: CreateGenericSessionClientDurableMutationOutboxParams,
 ): GenericSessionClientDurableMutationOutboxInstance {
+    const serverUrl = params.serverUrl ?? resolveServerHttpBaseUrl();
     let closed = false;
     let mutations: QueuedSessionClientDurableMutation[] = [];
     let inFlightMutations: QueuedSessionClientDurableMutation[] = [];
@@ -1686,11 +1691,11 @@ function createGenericSessionClientDurableMutationOutboxInstance(
 
     async function deliver(mutation: QueuedSessionClientDurableMutation): Promise<DurableMutationDeliveryOutcome> {
         if (mutation.kind === 'session_turn_mutation') {
-            const result = await deliverSessionTurnMutation({
+            const result = await runWithServerHttpBaseUrl(serverUrl, async () => deliverSessionTurnMutation({
                 token: params.token,
                 socket: params.getSocket(),
                 mutation: mutation.payload,
-            });
+            }));
             if (!result.delivered && result.reason === 'unsupported_capability' && 'diagnostic' in result) {
                 logUnsupportedSessionTurnMutationDiagnostic(result.diagnostic);
                 return { delivered: false, unsupportedCapability: true };
@@ -1708,12 +1713,12 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             if (overriddenDelivery !== undefined) {
                 return { delivered: overriddenDelivery };
             }
-            const result = await deliverTranscriptMessageMutation({
+            const result = await runWithServerHttpBaseUrl(serverUrl, async () => deliverTranscriptMessageMutation({
                 token: params.token,
                 socket: params.getSocket(),
                 connectionContract: sessionSyncPendingInputServerContractResult,
                 mutation: mutation.payload,
-            });
+            }));
             if (!result.delivered && result.reason === 'transcript_message_transport_unavailable') {
                 return { delivered: false, unsupportedCapability: true };
             }
@@ -1727,12 +1732,12 @@ function createGenericSessionClientDurableMutationOutboxInstance(
         }
         if (mutation.kind === 'voice_agent_transcript_turn') {
             params.onTranscriptMessageDeliveryAttempt?.(mutation.payload.user);
-            const user = await deliverTranscriptMessageMutation({
+            const user = await runWithServerHttpBaseUrl(serverUrl, async () => deliverTranscriptMessageMutation({
                 token: params.token,
                 socket: params.getSocket(),
                 connectionContract: sessionSyncPendingInputServerContractResult,
                 mutation: mutation.payload.user,
-            });
+            }));
             if (!user.delivered) {
                 return user.reason === 'transcript_message_transport_unavailable'
                     ? { delivered: false, unsupportedCapability: true }
@@ -1742,12 +1747,12 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                         : { delivered: false };
             }
             params.onTranscriptMessageDeliveryAttempt?.(mutation.payload.assistant);
-            const assistant = await deliverTranscriptMessageMutation({
+            const assistant = await runWithServerHttpBaseUrl(serverUrl, async () => deliverTranscriptMessageMutation({
                 token: params.token,
                 socket: params.getSocket(),
                 connectionContract: sessionSyncPendingInputServerContractResult,
                 mutation: mutation.payload.assistant,
-            });
+            }));
             if (!assistant.delivered && assistant.reason === 'transcript_message_transport_unavailable') {
                 return { delivered: false, unsupportedCapability: true };
             }
@@ -1805,11 +1810,11 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             return { delivered: result.delivered };
         }
         return {
-            delivered: await deliverSessionEndMutation({
+            delivered: await runWithServerHttpBaseUrl(serverUrl, async () => deliverSessionEndMutation({
                 token: params.token,
                 socket: params.getSocket(),
                 mutation: mutation.payload,
-            }),
+            })),
         };
     }
 

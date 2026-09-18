@@ -12,6 +12,7 @@ import {
 } from '../../api/registrationRightsHost';
 import type { PluginDaemonModuleNamespace } from '../../types';
 import {
+    DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS,
     normalizePositiveTimeoutMs,
     projectPluginFailureDiagnostic,
     projectPluginFailureText,
@@ -46,12 +47,11 @@ const EMPTY_REGISTRATIONS: readonly ContributionRuntimeRegistration[] = Object.f
 const EMPTY_VALIDATED_AGENT_FACTORIES = Object.freeze([]);
 const NOOP_DISPOSE = async (): Promise<void> => undefined;
 const DEFAULT_FAILED_ACTIVATION_CLEANUP_TIMEOUT_MS = 5_000;
-const ACTIVATION_DEADLINE_MS = 30_000;
 
 class ActivationDeadlineExceededError extends Error {
     constructor(pluginId: string) {
         super(
-            `Plugin '${pluginId}' activation timed out after ${ACTIVATION_DEADLINE_MS}ms; `
+            `Plugin '${pluginId}' activation timed out after ${DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS}ms; `
             + 'synchronous plugin work cannot be preempted by this asynchronous deadline',
         );
         this.name = 'ActivationDeadlineExceededError';
@@ -328,7 +328,7 @@ export async function activateContributionModule(params: Readonly<{
     // External Sessions companion validation, and retained-fact persistence.
     // Synchronous work cannot be preempted by an asynchronous deadline; this
     // bounds every asynchronous await of the transaction.
-    const activationDeadlineAt = Date.now() + ACTIVATION_DEADLINE_MS;
+    const activationDeadlineAt = Date.now() + DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS;
     const remainingActivationBudgetMs = (): number =>
         Math.max(0, activationDeadlineAt - Date.now());
     // Currentness guard for the transaction's retained-fact choke point.

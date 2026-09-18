@@ -5,6 +5,7 @@ import type {
     PluginContributionRef,
 } from '@happier-dev/plugin-sdk';
 import {
+  CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
   QualifiedConnectedAccountIdSchema,
   sameQualifiedConnectedAccountRef,
   type PluginConnectedAccountAuthenticationModeV2,
@@ -111,6 +112,8 @@ export type ConnectedAccountAttemptSettlementRequest = Readonly<{
     service: PluginContributionRef;
     accountId: string;
     authenticationModeId: string;
+    directExportContract?: typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 | null;
+    contributionContractVersion?: string;
     expectedCredentialRevision: string | null;
     expectedCredentialConfigurationRevision: string | null;
     expectedConfigurationRevision: string;
@@ -2096,6 +2099,11 @@ export function createConnectedAccountAuthenticationAttemptOwner(params: Readonl
             service: attempt.admission.service,
             accountId,
             authenticationModeId: attempt.admission.modeId,
+            directExportContract:
+                attempt.admission.descriptor.kind === 'manual'
+                    ? attempt.admission.descriptor.directExport?.contractVersion ?? null
+                    : null,
+            contributionContractVersion: attempt.admission.immutableGenerationId,
             expectedCredentialRevision: attempt.expectedCredentialRevision,
             expectedCredentialConfigurationRevision:
                 attempt.expectedCredentialConfigurationRevision,

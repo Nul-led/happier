@@ -13,6 +13,8 @@ describe('parseStrictPersonalHomeTaskFinalResult', () => {
     ['wrong-version', JSON.stringify({ ...valid, protocolVersion: 2 })],
     ['failure', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: 'task-1', ok: false, error: { code: 'x', message: 'x' } } })],
     ['missing-data', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: 'task-1', ok: true } })],
+    ['empty-task-id', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: '', ok: true, data: {} } })],
+    ['unknown-inner-key', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: 'task-1', ok: true, data: {}, extra: true } })],
   ])('rejects %s', (_name, text) => {
     expect(() => parseStrictPersonalHomeTaskFinalResult(text)).toThrow();
   });

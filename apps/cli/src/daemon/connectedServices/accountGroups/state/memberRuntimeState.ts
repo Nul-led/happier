@@ -1,5 +1,6 @@
 import {
   clearConnectedServiceAuthGroupMemberRuntimeBlockers,
+  compareConnectedServiceQuotaObservationRecency,
   type ConnectedServiceQuotaSnapshotV1,
 } from '@happier-dev/protocol';
 
@@ -78,9 +79,14 @@ function snapshotProvesRuntimeUsable(
 function isSnapshotNewerThanFailure(
   snapshot: ConnectedServiceAuthGroupQuotaSnapshot,
   state: ConnectedServiceAuthGroupMemberRuntimeState | null,
+  nowMs: number,
 ): boolean {
   const lastObservedAtMs = numberOrNull(state?.lastObservedAtMs);
-  return lastObservedAtMs === null || snapshot.capturedAtMs > lastObservedAtMs;
+  return lastObservedAtMs === null || compareConnectedServiceQuotaObservationRecency({
+    existingObservedAtMs: lastObservedAtMs,
+    incomingObservedAtMs: snapshot.capturedAtMs,
+    nowMs,
+  }) === 'incoming_newer';
 }
 
 export function projectConnectedServiceQuotaSnapshotToAuthGroupQuotaEvidence(
@@ -103,7 +109,7 @@ export function reconcileMemberRuntimeStateWithFreshQuotaEvidence(params: Readon
   void params.nowMs;
   const state = params.state;
   const quotaSnapshot = params.quotaSnapshot;
-  if (!state || !quotaSnapshot || !isSnapshotNewerThanFailure(quotaSnapshot, state)) return state;
+  if (!state || !quotaSnapshot || !isSnapshotNewerThanFailure(quotaSnapshot, state, params.nowMs)) return state;
   if (quotaSnapshot.planUnavailable) return state;
   if (
     params.authenticatedProbe

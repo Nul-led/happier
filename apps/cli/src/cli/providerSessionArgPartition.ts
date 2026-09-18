@@ -1,15 +1,25 @@
 import chalk from 'chalk';
 
 import type { AgentId } from '@happier-dev/agents';
-import { PERMISSION_INTENTS, parsePermissionIntentAlias } from '@happier-dev/agents';
+import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import {
   deserializeSessionCreationCorrespondenceV1,
   deserializeSessionModelSelectionV1,
   ProviderConnectionIdSchema,
+  MachinePoolSelectionOriginV1Schema,
+  readNonBlankOpaqueIdentifier,
   SessionCreationTagV1Schema,
   type SessionCreationCorrespondenceV1,
+  type MachinePoolSelectionOriginV1,
   type SessionModelSelectionV1,
+  SESSION_PERMISSION_INTENT_INPUTS,
+  SecretReferenceOverlayV1Schema,
+  type SecretReferenceOverlayV1,
 } from '@happier-dev/protocol';
+import {
+  SessionTeamCredentialBindingIntentsV1Schema,
+  type SessionTeamCredentialBindingIntentListV1,
+} from '@happier-dev/protocol/teams';
 
 import { isPermissionMode, type PermissionMode } from '@/api/types';
 import {
@@ -37,6 +47,8 @@ export interface ProviderSessionArgPartitionResult {
   readonly providerConnectionId: string | undefined;
   readonly modelUpdatedAt: number | undefined;
   readonly modelSelection: SessionModelSelectionV1 | undefined;
+  /** One-shot, value-free Saved Secret reference override for this launch. */
+  readonly secretReferenceOverlay: SecretReferenceOverlayV1 | undefined;
   readonly existingSessionId: string | undefined;
   readonly resume: string | undefined;
   readonly nativeForkSource: NativeForkSource | undefined;
@@ -44,8 +56,13 @@ export interface ProviderSessionArgPartitionResult {
   readonly sessionCreationTag: string | undefined;
   /** Daemon-to-runner immutable create-or-rejoin recipe; never provider passthrough. */
   readonly sessionCreationCorrespondence: SessionCreationCorrespondenceV1 | undefined;
+  /** Daemon-to-runner informational origin for a fresh Session create. */
+  readonly placementOrigin: MachinePoolSelectionOriginV1 | undefined;
   /** Daemon-to-runner mutable title for a fresh canonical Session create. */
   readonly initialTitle: string | undefined;
+  readonly initialAccessFilePath: string | undefined;
+  readonly primaryTeamId: string | null | undefined;
+  readonly teamCredentialBindings: SessionTeamCredentialBindingIntentListV1 | undefined;
   readonly startingMode: string | undefined;
   readonly directory: string | undefined;
   readonly providerArgs: string[];
@@ -68,9 +85,9 @@ const HELP_FLAGS = new Set(['-h', '--help']);
 const DEFAULT_VERSION_FLAGS = ['-v', '--version'] as const;
 
 const PERMISSION_MODE_EXAMPLES = [
-  '--permission-mode read-only',
+  '--permission-mode read_only',
+  '--permission-mode auto',
   '--permission-mode yolo',
-  '--permission-mode accept-edits',
 ] as const;
 
 function parsePermissionModeAlias(raw: string): PermissionMode | null {
@@ -121,6 +138,19 @@ function normalizeOptionalFlagValue(raw: unknown): string | undefined {
   return normalizeOptionalValue(raw);
 }
 
+/**
+ * The Agent minted its own resume id, so the runner reads it for presence and
+ * keeps every byte the daemon passed on the command line.
+ */
+function readOpaqueIdentifierValue(raw: unknown): string | undefined {
+  return readNonBlankOpaqueIdentifier(raw) ?? undefined;
+}
+
+function readOpaqueIdentifierFlagValue(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.startsWith('-')) return undefined;
+  return readOpaqueIdentifierValue(raw);
+}
+
 export function partitionProviderSessionArgs(
   opts: ProviderSessionArgPartitionOptions,
 ): ProviderSessionArgPartitionResult {
@@ -144,12 +174,17 @@ export function partitionProviderSessionArgs(
   let providerConnectionId: string | undefined;
   let modelUpdatedAt: number | undefined;
   let modelSelection: SessionModelSelectionV1 | undefined;
+  const secretReferenceOverlayBindings: Record<string, { ref: string; revision?: number }> = {};
   let existingSessionId: string | undefined;
   let resume: string | undefined;
   let nativeForkSource: NativeForkSource | undefined;
   let sessionCreationTag: string | undefined;
   let sessionCreationCorrespondence: SessionCreationCorrespondenceV1 | undefined;
+  let placementOrigin: MachinePoolSelectionOriginV1 | undefined;
   let initialTitle: string | undefined;
+  let initialAccessFilePath: string | undefined;
+  let primaryTeamId: string | null | undefined;
+  let teamCredentialBindings: SessionTeamCredentialBindingIntentListV1 | undefined;
   let startingMode: string | undefined;
   let directory: string | undefined;
   let helpRequested = false;
@@ -218,20 +253,56 @@ export function partitionProviderSessionArgs(
         console.error(chalk.red('Choose only one of --auth-json or --connected-services-json.'));
         process.exit(1);
       }
-      const raw = equalsValue ?? readRequiredNext(input, i, flag, 'ConnectedServiceBindingsV1 JSON');
+      const raw = equalsValue ?? readRequiredNext(input, i, flag, 'connected-service bindings JSON');
       if (equalsValue === undefined) i += 1;
-      connectedServicesAuthJsonRaw = normalizeOptionalValue(raw) ?? exitWithMissingValue(flag, 'ConnectedServiceBindingsV1 JSON');
+      connectedServicesAuthJsonRaw = normalizeOptionalValue(raw) ?? exitWithMissingValue(flag, 'connected-service bindings JSON');
+      continue;
+    }
+
+    if (flag === '--secret-ref') {
+      const raw = equalsValue ?? readRequiredNext(
+        input,
+        i,
+        '--secret-ref',
+        'NAME=<personal-ref> or NAME=<shared-resource-ref>@<revision>',
+      );
+      if (!equalsValue) i += 1;
+      const normalized = normalizeOptionalValue(raw)
+        ?? exitWithMissingValue(
+          '--secret-ref',
+          'NAME=<personal-ref> or NAME=<shared-resource-ref>@<revision>',
+        );
+      const separator = normalized.indexOf('=');
+      const name = separator === -1 ? '' : normalized.slice(0, separator);
+      const refAndRevision = separator === -1 ? '' : normalized.slice(separator + 1);
+      // `@` is not legal in a canonical Saved Secret reference, so the LAST
+      // one unambiguously introduces the optional resource revision.
+      const revisionSeparator = refAndRevision.lastIndexOf('@');
+      const ref = revisionSeparator === -1 ? refAndRevision : refAndRevision.slice(0, revisionSeparator);
+      const rawRevision = revisionSeparator === -1 ? null : refAndRevision.slice(revisionSeparator + 1);
+      if (!name || !ref || Object.prototype.hasOwnProperty.call(secretReferenceOverlayBindings, name)) {
+        console.error(chalk.red(
+          `Invalid --secret-ref value: ${normalized}. Expected one NAME=<personal-ref> or NAME=<shared-resource-ref>@<revision> per requirement.`,
+        ));
+        process.exit(1);
+      }
+      const revision = rawRevision === null ? undefined : Number(rawRevision);
+      if (revision !== undefined && (!Number.isSafeInteger(revision) || revision <= 0)) {
+        console.error(chalk.red(`Invalid --secret-ref revision: ${rawRevision}. Expected a positive integer.`));
+        process.exit(1);
+      }
+      secretReferenceOverlayBindings[name] = revision === undefined ? { ref } : { ref, revision };
       continue;
     }
 
     if (flag === '--permission-mode') {
-      const raw = equalsValue ?? readRequiredNext(input, i, '--permission-mode', PERMISSION_INTENTS.join('|'));
+      const raw = equalsValue ?? readRequiredNext(input, i, '--permission-mode', SESSION_PERMISSION_INTENT_INPUTS.join('|'));
       if (!equalsValue) i += 1;
       const parsed = parsePermissionModeAlias(raw);
       if (!parsed) {
         console.error(
           chalk.red(
-            `Invalid --permission-mode value: ${raw}. Valid values: ${PERMISSION_INTENTS.join(', ')}. Examples: ${PERMISSION_MODE_EXAMPLES.join(
+            `Invalid --permission-mode value: ${raw}. Valid values: ${SESSION_PERMISSION_INTENT_INPUTS.join(', ')}. Examples: ${PERMISSION_MODE_EXAMPLES.join(
               ' | ',
             )}`,
           ),
@@ -329,7 +400,7 @@ export function partitionProviderSessionArgs(
       const raw = equalsValue ?? input[i + 1];
       const hasValue = typeof raw === 'string' && !raw.startsWith('-');
       if (!equalsValue && hasValue) i += 1;
-      resume = equalsValue !== undefined ? normalizeOptionalValue(raw) : normalizeOptionalFlagValue(raw);
+      resume = equalsValue !== undefined ? readOpaqueIdentifierValue(raw) : readOpaqueIdentifierFlagValue(raw);
       if (opts.forwardResumeFlag) {
         if (equalsValue !== undefined) {
           providerArgs.push(arg);
@@ -405,6 +476,55 @@ export function partitionProviderSessionArgs(
       continue;
     }
 
+    if (flag === '--session-primary-team-id-v1') {
+      if (primaryTeamId !== undefined) {
+        console.error(chalk.red('--session-primary-team-id-v1 may only be provided once'));
+        process.exit(1);
+      }
+      const raw = equalsValue ?? readRequiredNext(input, i, flag, 'initial Team context');
+      if (!equalsValue) i += 1;
+      try {
+        const value: unknown = JSON.parse(raw);
+        if (value !== null && (typeof value !== 'string' || value.length === 0)) throw new Error('Invalid Team context');
+        primaryTeamId = value;
+      } catch {
+        console.error(chalk.red('Invalid --session-primary-team-id-v1 value'));
+        process.exit(1);
+      }
+      continue;
+    }
+
+    if (flag === '--session-initial-access-file-v1') {
+      if (initialAccessFilePath !== undefined) {
+        console.error(chalk.red('--session-initial-access-file-v1 may only be provided once'));
+        process.exit(1);
+      }
+      initialAccessFilePath = equalsValue ?? readRequiredNext(input, i, flag, 'protected initial access file');
+      if (!equalsValue) i += 1;
+      continue;
+    }
+
+    if (flag === '--session-team-credential-bindings-v1') {
+      if (teamCredentialBindings !== undefined) {
+        console.error(chalk.red('--session-team-credential-bindings-v1 may only be provided once'));
+        process.exit(1);
+      }
+      const raw = equalsValue ?? readRequiredNext(
+        input,
+        i,
+        flag,
+        'canonical Session Team credential bindings JSON',
+      );
+      if (!equalsValue) i += 1;
+      try {
+        teamCredentialBindings = SessionTeamCredentialBindingIntentsV1Schema.parse(JSON.parse(raw));
+      } catch {
+        console.error(chalk.red('Invalid --session-team-credential-bindings-v1 value'));
+        process.exit(1);
+      }
+      continue;
+    }
+
     if (flag === '--session-initial-title-v1') {
       if (initialTitle !== undefined) {
         console.error(chalk.red('--session-initial-title-v1 may only be provided once'));
@@ -418,6 +538,27 @@ export function partitionProviderSessionArgs(
         process.exit(1);
       }
       initialTitle = normalized;
+      continue;
+    }
+
+    if (flag === '--session-placement-origin-v1') {
+      if (placementOrigin !== undefined) {
+        console.error(chalk.red('--session-placement-origin-v1 may only be provided once'));
+        process.exit(1);
+      }
+      const raw = equalsValue ?? readRequiredNext(
+        input,
+        i,
+        '--session-placement-origin-v1',
+        'canonical Session placement origin JSON',
+      );
+      if (!equalsValue) i += 1;
+      try {
+        placementOrigin = MachinePoolSelectionOriginV1Schema.parse(JSON.parse(raw));
+      } catch {
+        console.error(chalk.red('Invalid --session-placement-origin-v1 value'));
+        process.exit(1);
+      }
       continue;
     }
 
@@ -472,6 +613,21 @@ export function partitionProviderSessionArgs(
     console.error(chalk.red('--session-initial-title-v1 is only valid for daemon-started runners'));
     process.exit(1);
   }
+  if (placementOrigin && startedBy !== 'daemon') {
+    console.error(chalk.red('--session-placement-origin-v1 is only valid for daemon-started runners'));
+    process.exit(1);
+  }
+  if (placementOrigin && existingSessionId) {
+    console.error(chalk.red('--session-placement-origin-v1 is only valid for fresh Session creation'));
+    process.exit(1);
+  }
+  if (
+    (initialAccessFilePath !== undefined || primaryTeamId !== undefined || teamCredentialBindings !== undefined)
+    && (startedBy !== 'daemon' || existingSessionId)
+  ) {
+    console.error(chalk.red('Initial Session access, Team context, and Team credential binding require fresh daemon startup'));
+    process.exit(1);
+  }
   if (
     sessionCreationCorrespondence
     && sessionCreationCorrespondence.sessionCreationTag !== sessionCreationTag
@@ -479,6 +635,20 @@ export function partitionProviderSessionArgs(
     console.error(chalk.red('--session-creation-correspondence-v1 requires its matching --session-creation-tag-v1'));
     process.exit(1);
   }
+  // The Protocol schema is the single validator for names, references and
+  // revisions; the CLI only shapes the flag into it.
+  const parsedSecretReferenceOverlay = Object.keys(secretReferenceOverlayBindings).length === 0
+    ? undefined
+    : SecretReferenceOverlayV1Schema.safeParse({ v: 1, bindings: secretReferenceOverlayBindings });
+  if (parsedSecretReferenceOverlay && !parsedSecretReferenceOverlay.success) {
+    console.error(chalk.red(
+      `Invalid --secret-ref selection: ${parsedSecretReferenceOverlay.error.issues[0]?.message ?? 'unsupported reference'}`,
+    ));
+    process.exit(1);
+  }
+  const secretReferenceOverlay = parsedSecretReferenceOverlay?.success
+    ? parsedSecretReferenceOverlay.data
+    : undefined;
   return {
     startedBy,
     refreshSettings,
@@ -493,12 +663,17 @@ export function partitionProviderSessionArgs(
     providerConnectionId,
     modelUpdatedAt,
     modelSelection,
+    secretReferenceOverlay,
     existingSessionId,
     resume,
     nativeForkSource,
     sessionCreationTag,
     sessionCreationCorrespondence,
+    placementOrigin,
     initialTitle,
+    initialAccessFilePath,
+    primaryTeamId,
+    teamCredentialBindings,
     startingMode,
     directory,
     providerArgs,

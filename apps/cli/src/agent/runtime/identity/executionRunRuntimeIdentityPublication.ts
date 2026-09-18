@@ -1,7 +1,6 @@
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import {
   type ExecutionRunHostRuntime,
-  type ExecutionRunHostRuntimeMessageHandler,
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { EngineAdapterResolution } from '@/agent/runtime/registry/engineRegistryTypes';
 import { createNormalizedRuntimeEventPublicationHub } from '@/agent/runtime/events/createNormalizedRuntimeEventPublicationHub';
@@ -34,16 +33,21 @@ export function withExecutionRunRuntimeIdentityPublication(params: Readonly<{
 
   return wrapExecutionRunHostRuntime({
     readPermissionCapability: () => params.runtime.permissionCapability,
+    readInteraction: () => params.runtime.interaction,
     readResumeSupport: (opts) => params.runtime.readResumeSupport(opts),
-    async provisionSession(opts) {
+    async provisionRuntime(opts) {
       hub.ensureUpstreamRegistered();
-      const started = await params.runtime.provisionSession(opts);
+      const started = await params.runtime.provisionRuntime(opts);
       hub.publishFallbackIdentity();
       return started;
     },
-    sendPrompt: (sessionId, prompt, meta) => params.runtime.sendPrompt(sessionId, prompt, meta),
-    readSendSteerPrompt: () => params.runtime.sendSteerPrompt,
-    cancel: (sessionId) => params.runtime.cancel(sessionId),
+    deliverInput: (runtimeId, input, context) => params.runtime.deliverInput(runtimeId, input, context),
+    readSteerInput: () => params.runtime.steerInput?.bind(params.runtime),
+    getRuntimeLifetimeSignal: () => params.runtime.getRuntimeLifetimeSignal(),
+    readSubscribeProviderInputOutcomes: () => params.runtime.subscribeProviderInputOutcomes?.bind(params.runtime),
+    readSubscribeRuntimeEvents: () => params.runtime.subscribeRuntimeEvents?.bind(params.runtime),
+    readActiveTurnAdmissionWitness: () => params.runtime.readActiveTurnAdmissionWitness?.bind(params.runtime),
+    cancel: (runtimeId) => params.runtime.cancel(runtimeId),
     subscribeMessages: (handler) => hub.subscribe(handler),
     readRespondToPermission: () => params.runtime.permissionCapability === 'responds'
       ? params.runtime.respondToPermission

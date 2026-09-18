@@ -13,6 +13,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
     AgentSessionProviderBindingV1Schema,
+    PortableRuntimeDescriptorV1Schema,
     ProviderBoundModelRefSchema,
     createProviderErrorV1,
 } from '@happier-dev/protocol';
@@ -20,11 +21,16 @@ import {
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registry/engineRegistryTypes';
 import type { AgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
+import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
+import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
+import { executeBoundedBackendRun } from './bounded/loop';
+import { createRetainedExecutionRunInputDelivery } from './pending/retainedExecutionRunInputDelivery';
 
 import {
     createNativeAgentExecutionRunHostRuntime,
     createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
+    type NativeAgentSessionContextLeaseFactory,
 } from './nativeAgentExecutionRun';
 import {
     composeNativeAgentSessionRuntimeContext,
@@ -123,7 +129,712 @@ const VOICE_INTERACTION_SESSION_CAPABILITIES: AgentSessionCapabilities = {
 };
 
 describe('createNativeAgentExecutionRunHostRuntime', () => {
-    it('keeps a native Session interaction alive across two complete Voice turns', async () => {
+    it('joins exact-turn durable interaction retirement before reporting native turn completion', async () => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const requests: Parameters<AgentSessionRuntime['send']>[0][] = [];
+        let sequence = 0;
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send(request) { requests.push(request); return { status: 'admitted' as const }; },
+            async cancel({ turnId }) { return { status: 'requested' as const, turnId }; },
+            watch(listener) { listeners.add(listener); return { dispose() { listeners.delete(listener); } }; },
+            async dispose() {},
+        }; } } };
+        const firstRetirement: { resolve: (() => void) | null } = { resolve: null };
+        let completedBodyPresent = true;
+        let retirementOrdinal = 0;
+        const createSessionContext = Object.assign(
+            ({ services, signal }: Parameters<NativeAgentSessionContextLeaseFactory>[0]) => (
+                createVoiceSessionContextLease({ services, signal, async dispose() {} })
+            ),
+            {
+                async onTurnTerminal() {
+                    retirementOrdinal += 1;
+                    if (retirementOrdinal === 1) {
+                        await new Promise<void>((resolve) => { firstRetirement.resolve = resolve; });
+                        completedBodyPresent = false;
+                        return;
+                    }
+                    throw Object.assign(
+                        new Error('Workflow interaction exceeds durable capacity'),
+                        { code: 'workflow_interaction_capacity_exceeded', recoverable: true as const },
+                    );
+                },
+            },
+        );
+        const host = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-cleanup', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'agent', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+            createSessionContext,
+        });
+        const emitTurn = (request: Parameters<AgentSessionRuntime['send']>[0]) => {
+            const events = [
+                { kind: 'input-accepted', inputIds: request.inputIds, delivery: request.delivery },
+                { kind: 'turn-start', turnId: request.delivery.turnId, startedBy: 'host' },
+                { kind: 'turn-complete', turnId: request.delivery.turnId },
+            ] satisfies UnsequencedSessionEvent<AgentSessionRuntimeEvent>[];
+            for (const event of events) {
+                for (const listener of listeners) listener({
+                    ...event, sequence: ++sequence, sessionId: 'session-parent', emittedAtMs: sequence,
+                });
+            }
+        };
+
+        try {
+            const { runtimeId } = await host.provisionRuntime();
+            await host.deliverInput(runtimeId, { text: 'first' }, { localId: 'input-first' });
+            const firstCompletion = host.waitForTurnCompletion!();
+            let firstSettled = false;
+            void firstCompletion.then(() => { firstSettled = true; });
+            emitTurn(requests[0]!);
+            await Promise.resolve();
+            expect(firstSettled).toBe(false);
+            expect(completedBodyPresent).toBe(true);
+            firstRetirement.resolve?.();
+            await firstCompletion;
+            expect(completedBodyPresent).toBe(false);
+
+            await host.deliverInput(runtimeId, { text: 'second' }, { localId: 'input-second' });
+            const secondCompletion = host.waitForTurnCompletion!();
+            emitTurn(requests[1]!);
+            await expect(secondCompletion).rejects.toMatchObject({
+                code: 'workflow_interaction_capacity_exceeded',
+                recoverable: true,
+            });
+        } finally {
+            firstRetirement.resolve?.();
+            await host.dispose();
+        }
+    });
+
+    it('does not mistake a retained Run send acknowledgement for provider input acceptance', async () => {
+        const requests: Parameters<AgentSessionRuntime['send']>[0][] = [];
+        const eventSource: { emit?: (event: AgentSessionRuntimeEvent) => void } = {};
+        const contextReader: { read?: () => AgentInvocationTurnAdmissionWitness | null } = {};
+        let rejectNext = false;
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send(request) {
+                requests.push(request);
+                return rejectNext
+                    ? { status: 'rejected' as const, retryable: true, diagnostic: { code: 'provider_busy', severity: 'error' as const } }
+                    : { status: 'admitted' as const };
+            },
+            async cancel({ turnId }) { return { status: 'requested' as const, turnId }; },
+            watch(handler) { eventSource.emit = handler; return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const host = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-pending', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+            createSessionContext: ({ services, signal, readActiveTurnAdmissionWitness }) => {
+                contextReader.read = readActiveTurnAdmissionWitness;
+                return createVoiceSessionContextLease({ services, signal, async dispose() {} });
+            },
+        });
+        const { runtimeId } = await host.provisionRuntime();
+        const controller: ExecutionRunBackendController = {
+            kind: 'backend', controllerOccurrenceId: 'native-agent-controller-1', backend: host, backendSupportsResume: false, runtimeId,
+            buffer: '', sidechainStreamBuffer: '', sidechainStreamKey: '', streamWriter: null,
+            cancelled: false, turnCount: 0, turnEpoch: 0, turnInFlight: false,
+            turnCancelReason: null, turnCancelEpoch: null, admittedLiveInterventions: [],
+            admittedLiveInterventionsSignal: null, lastMarkerWriteAtMs: 0,
+            terminalPromise: Promise.resolve(), resolveTerminal() {},
+        };
+        const delivery = createRetainedExecutionRunInputDelivery({
+            runId: 'run-pending', controller, authorizeProviderEffect: async () => ({ ok: true }),
+        });
+        const outcomes: unknown[] = [];
+        const runtimeEvents: AgentSessionRuntimeEvent[] = [];
+        host.subscribeRuntimeEvents?.((event) => runtimeEvents.push(event));
+        delivery.delivery.subscribeProviderInputOutcomes?.((outcome) => outcomes.push(outcome));
+        try {
+            const result = await delivery.delivery.deliver({
+                role: 'user', content: { type: 'text', text: 'Inspect this input' }, localId: 'pending-input',
+                authorAccountId: 'alice', inputAdmissionReceipt: null, pendingProviderAction: 'send',
+            });
+            expect(result).toEqual({ status: 'admitted' });
+            expect(requests[0]?.inputIds).toEqual(['pending-input']);
+            expect(delivery.readActiveTurnAdmissionWitness()?.turnId).toBe(requests[0]?.delivery.turnId);
+            expect(contextReader.read?.()?.inputId).toBe('pending-input');
+            expect(outcomes).toEqual([]);
+            eventSource.emit?.({
+                kind: 'input-accepted', sessionId: 'session-parent', sequence: 1, emittedAtMs: 1,
+                inputIds: ['pending-input'], delivery: requests[0]!.delivery,
+            });
+            expect(outcomes).toMatchObject([{
+                kind: 'accepted', localId: 'pending-input', providerTurnId: requests[0]!.delivery.turnId,
+            }]);
+            const turnId = requests[0]!.delivery.turnId;
+            expect(controller.currentInputTurn).toEqual({
+                turnId, inputIds: ['pending-input'], state: 'active',
+            });
+            expect(controller.turnInFlight).toBe(true);
+            eventSource.emit?.({ kind: 'turn-start', sessionId: 'session-parent', sequence: 2,
+                emittedAtMs: 2, turnId, startedBy: 'host' });
+            eventSource.emit?.({ kind: 'turn-complete', sessionId: 'session-parent', sequence: 3,
+                emittedAtMs: 3, turnId });
+            expect(runtimeEvents.map((event) => event.kind)).toEqual(['input-accepted', 'turn-start', 'turn-complete']);
+            expect(runtimeEvents.at(-1)).toMatchObject({ kind: 'turn-complete', turnId });
+            expect(controller.currentInputTurn).toBeUndefined();
+            expect(controller.lastInputTurn).toEqual({
+                turnId, inputIds: ['pending-input'], state: 'completed',
+            });
+            expect(controller.turnInFlight).toBe(false);
+            expect(controller.turnCount).toBe(1);
+            expect(contextReader.read?.()).toBeNull();
+            const retryInput = {
+                role: 'user' as const, content: { type: 'text' as const, text: 'Retry after refusal' },
+                localId: 'retry-input', authorAccountId: 'alice', inputAdmissionReceipt: null,
+                pendingProviderAction: 'send' as const,
+            };
+            rejectNext = true;
+            await delivery.delivery.deliver(retryInput);
+            expect(outcomes.at(-1)).toMatchObject({ kind: 'rejected_before_effect', localId: 'retry-input' });
+            rejectNext = false;
+            expect(await delivery.delivery.deliver(retryInput)).toEqual({ status: 'admitted' });
+            expect(requests.at(-1)?.inputIds).toEqual(['retry-input']);
+        } finally {
+            await host.dispose();
+        }
+    });
+
+    it('preserves resolved structured media and references at the retained native input boundary', async () => {
+        const requests: Parameters<AgentSessionRuntime['send']>[0][] = [];
+        const openRequests: AgentSessionOpenRequest[] = [];
+        const mcpServers = { custom: { command: '/managed/custom-mcp', args: ['--stdio'] } };
+        const runtime: AgentRuntime = { sessions: { async open(request) { openRequests.push(request); return {
+            async send(request) { requests.push(request); return { status: 'admitted' as const }; },
+            async cancel({ turnId }) { return { status: 'requested' as const, turnId }; },
+            watch() { return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const resolveStructuredInputForDispatch = vi.fn(async ({ input }: { input: { text: string; structuredInput?: unknown } }) => ({
+            text: `Resolved context\n\n${input.text}`,
+            structuredInput: { v: 1, resolvedComposerAttachments: [{ instanceId: 'review-1' }] },
+        }));
+        const createSessionContext = Object.assign(
+            ({ services, signal }: Parameters<NativeAgentSessionContextLeaseFactory>[0]) => ({
+                ...createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+                mcpServers,
+            }),
+            { resolveStructuredInputForDispatch },
+        ) satisfies NativeAgentSessionContextLeaseFactory;
+        const host = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-structured', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+            sessionCapabilities: { ...VOICE_INTERACTION_SESSION_CAPABILITIES, delivery: ['newTurn', 'steer'] },
+            createSessionContext,
+        });
+        const structuredInput = { v: 1, imageInputs: [{ type: 'local_image', path: '/repo/review.png' }] };
+        try {
+            const { runtimeId } = await host.provisionRuntime();
+            expect(openRequests[0]?.mcpServers).toEqual(mcpServers);
+            await host.deliverInput(runtimeId, { text: 'Review the image', structuredInput }, {
+                localId: 'input-with-media',
+            });
+            expect(resolveStructuredInputForDispatch).toHaveBeenCalledWith({
+                input: { text: 'Review the image', structuredInput },
+                localId: 'input-with-media',
+                signal: expect.any(AbortSignal),
+            });
+            expect(requests[0]?.input).toEqual({
+                text: 'Resolved context\n\nReview the image',
+                structuredInput: { v: 1, resolvedComposerAttachments: [{ instanceId: 'review-1' }] },
+            });
+        } finally {
+            await host.dispose();
+        }
+    });
+
+    it('rejects unsupported detached structured input before native provider admission', async () => {
+        const send = vi.fn<AgentSessionRuntime['send']>(async () => ({ status: 'admitted' }));
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            send,
+            async cancel({ turnId }) { return { status: 'requested' as const, turnId }; },
+            watch() { return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const unsupported = Object.assign(new Error('Attachment is unsupported'), {
+            code: 'composer_attachment_resolution_unavailable',
+            retryable: false,
+        });
+        const createSessionContext = Object.assign(
+            ({ services, signal }: Parameters<NativeAgentSessionContextLeaseFactory>[0]) => (
+                createVoiceSessionContextLease({ services, signal, async dispose() {} })
+            ),
+            { resolveStructuredInputForDispatch: vi.fn(async () => { throw unsupported; }) },
+        ) satisfies NativeAgentSessionContextLeaseFactory;
+        const host = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-unsupported', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'agent', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+            sessionCapabilities: { ...VOICE_INTERACTION_SESSION_CAPABILITIES, delivery: ['newTurn'] },
+            createSessionContext,
+        });
+        try {
+            const { runtimeId } = await host.provisionRuntime();
+            await expect(host.deliverInput(runtimeId, {
+                text: 'Review this', structuredInput: { v: 1, composerAttachments: [] },
+            }, { localId: 'workflow-input-unsupported' })).resolves.toMatchObject({
+                status: 'rejected',
+                diagnostic: { code: 'composer_attachment_resolution_unavailable' },
+                retryable: false,
+            });
+            expect(send).not.toHaveBeenCalled();
+        } finally {
+            await host.dispose();
+        }
+    });
+
+    it('initializes Run prompt context on its first accepted input and rebuilds it for a new provider occurrence', async () => {
+        const requests: Parameters<AgentSessionRuntime['send']>[0][] = [];
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        let sequence = 0;
+        let rejectNextInput = true;
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send(request) {
+                requests.push(request);
+                if (rejectNextInput) {
+                    rejectNextInput = false;
+                    return { status: 'rejected' as const, diagnostic: { code: 'provider_refused', severity: 'error' as const }, retryable: false };
+                }
+                for (const event of [
+                    { kind: 'input-accepted', inputIds: request.inputIds, delivery: request.delivery },
+                    { kind: 'turn-start', turnId: request.delivery.turnId, startedBy: 'host' },
+                    { kind: 'turn-complete', turnId: request.delivery.turnId },
+                ] satisfies UnsequencedSessionEvent<AgentSessionRuntimeEvent>[]) {
+                    for (const listener of listeners) listener({ ...event, sequence: ++sequence,
+                        sessionId: 'session-parent', emittedAtMs: sequence });
+                }
+                return { status: 'admitted' as const };
+            },
+            async cancel({ turnId }) { return { status: 'requested' as const, turnId }; },
+            watch(listener) { listeners.add(listener); return { dispose() { listeners.delete(listener); } }; },
+            async dispose() {},
+        }; } } };
+        for (const occurrence of ['create', 'resume']) {
+            const host = createNativeAgentSessionInteractionHostRuntime({
+                runtime,
+                lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                    localAgentId: 'default', isCurrent: () => true },
+                options: { cwd: '/repo', runId: 'run-context', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                    permissionMode: 'read_only', start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+                sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+                createSessionContext: ({ services, signal }) => createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+            });
+            const { runtimeId } = await host.provisionRuntime(occurrence === 'resume'
+                ? { resumeRuntimeId: 'provider-session-existing' }
+                : {});
+            const controller: ExecutionRunBackendController = {
+                kind: 'backend', controllerOccurrenceId: 'native-agent-controller-2', backend: host, backendSupportsResume: false, runtimeId,
+                buffer: '', sidechainStreamBuffer: '', sidechainStreamKey: '', streamWriter: null,
+                cancelled: false, turnCount: 0, turnEpoch: 0, turnInFlight: false,
+                turnCancelReason: null, turnCancelEpoch: null, admittedLiveInterventions: [],
+                admittedLiveInterventionsSignal: null, lastMarkerWriteAtMs: 0,
+                terminalPromise: Promise.resolve(), resolveTerminal() {},
+            };
+            let authorized = false;
+            const options = {
+                runId: 'run-context', controller, authorizeProviderEffect: async () => ({ ok: authorized }),
+                sessionRunContext: {
+                    kind: 'happier_session_run' as const, sessionId: 'session-parent',
+                    origin: { kind: 'session_discussion' as const, discussionId: 'discussion-1', messageIds: ['message-1'] },
+                    supportedReadActions: [
+                        'session.transcript.get',
+                        'session.discussion.read',
+                    ] as const,
+                },
+            };
+            const delivery = createRetainedExecutionRunInputDelivery(options);
+            const outcomes: unknown[] = [];
+            const unsubscribe = delivery.delivery.subscribeProviderInputOutcomes?.((outcome) => outcomes.push(outcome));
+            const firstInput = {
+                role: 'user' as const, content: { type: 'text' as const, text: 'First input' },
+                localId: `${occurrence}-first`, authorAccountId: 'alice', inputAdmissionReceipt: null,
+                pendingProviderAction: 'send' as const,
+            };
+            try {
+                expect((await delivery.delivery.deliver(firstInput)).status).toBe('rejected_before_effect');
+                authorized = true;
+                if (occurrence === 'create') {
+                    const rejectedInput = { ...firstInput, localId: 'create-rejected' };
+                    await delivery.delivery.deliver(rejectedInput);
+                    // The canonical outcome event, not the command result, proves refusal.
+                    expect(outcomes).toMatchObject([{ kind: 'rejected_before_effect', localId: rejectedInput.localId }]);
+                    expect(requests.at(-1)?.input.text).toContain('<happier_session_run>');
+                }
+                expect(await delivery.delivery.deliver(firstInput)).toEqual({ status: 'admitted' });
+                expect(requests.at(-1)?.input.text).toContain('<happier_session_run>');
+                expect(requests.at(-1)?.input.text).toContain('session-parent');
+                expect(requests.at(-1)?.input.text).toContain('discussion-1');
+                expect(requests.at(-1)?.input.text).toContain('session.transcript.get');
+                expect(requests.at(-1)?.input.text).toContain('session.discussion.read');
+                expect(requests.at(-1)?.input.text).not.toContain('session.discussion.post');
+                expect((await delivery.delivery.deliver({ ...firstInput, localId: `${occurrence}-second`,
+                    content: { type: 'text', text: 'Second input' } })).status).toBe('admitted');
+                expect(requests.at(-1)?.input.text).toContain('Second input');
+                expect(requests.at(-1)?.input.text).not.toContain('<happier_session_run>');
+            } finally {
+                unsubscribe?.();
+                await host.dispose();
+            }
+        }
+    });
+
+    it('projects the retained adapter choice and the declared Session capabilities', async () => {
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send() { return { status: 'admitted' as const }; },
+            async cancel({ turnId }: { turnId: string }) { return { status: 'requested' as const, turnId }; },
+            watch() { return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const retained = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-projection', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' } },
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+            createSessionContext: ({ services, signal }) => createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+        });
+        expect(retained.interaction).toEqual({
+            kind: 'retained_agent_session.v1',
+            capabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+        });
+
+        // A finite Session-derived Run is not interactive and must not project one.
+        const finite = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-finite', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'review', runClass: 'bounded', retentionPolicy: 'ephemeral' } },
+            supportsResume: false,
+            createSessionContext: ({ services, signal }) => createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+        });
+        expect(finite.interaction).toBeUndefined();
+        await retained.dispose();
+        await finite.dispose();
+    });
+
+    it.each([
+        { kind: 'create' as const, resumeRuntimeId: undefined },
+        { kind: 'resume' as const, resumeRuntimeId: 'provider-checkpoint-1' },
+    ])('carries the exact Session MCP binding through the public finite Run request on $kind', async ({
+        kind,
+        resumeRuntimeId,
+    }) => {
+        const opened: AgentSessionOpenRequest[] = [];
+        const mcpServers = Object.freeze({
+            review: Object.freeze({ command: '/managed/review-mcp', args: Object.freeze(['--stdio']) }),
+        });
+        const runtime: AgentRuntime = { sessions: { async open(request) {
+            opened.push(request);
+            return {
+                async send() { return { status: 'admitted' as const }; },
+                watch() { return { dispose() {} }; },
+                async dispose() {},
+            };
+        } } };
+        const host = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease: {
+                pluginId: 'acme.finite',
+                pluginVersion: '1.0.0',
+                agentId: 'acme.finite/default',
+                localAgentId: 'default',
+                isCurrent: () => true,
+            },
+            options: {
+                cwd: '/repo',
+                runId: `run-mcp-${kind}`,
+                scope: 'session_owned',
+                backendId: 'acme.finite/default',
+                permissionMode: 'read_only',
+                start: { intent: 'review', runClass: 'bounded', retentionPolicy: 'ephemeral' },
+            },
+            supportsResume: kind === 'resume',
+            createSessionContext: ({ services, signal }) => ({
+                ...createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+                mcpServers,
+            }),
+        });
+
+        await host.provisionRuntime(
+            resumeRuntimeId ? { resumeRuntimeId } : { initialPrompt: 'review the current change' },
+        );
+
+        expect(opened).toHaveLength(1);
+        expect(opened[0]).toMatchObject({
+            kind,
+            sessionId: 'session-parent',
+            cwd: '/repo',
+            mcpServers,
+            ...(resumeRuntimeId ? { providerSessionId: resumeRuntimeId } : {}),
+        });
+        await host.dispose();
+    });
+
+    it('exposes exact Session-context permission cleanup through the finite host runtime', async () => {
+        const abortPendingPermissionRequests = vi.fn(async () => undefined);
+        const createSessionContext = Object.assign(
+            ({ services, signal }: Parameters<NativeAgentSessionContextLeaseFactory>[0]) =>
+                createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+            { abortPendingPermissionRequests },
+        );
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send() { return { status: 'admitted' as const }; },
+            watch() { return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const host = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.finite', pluginVersion: '1.0.0', agentId: 'acme.finite/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-permission-cleanup', scope: 'session_owned', backendId: 'acme.finite/default',
+                permissionMode: 'default', start: { intent: 'delegate', runClass: 'bounded', ioMode: 'request_response', retentionPolicy: 'ephemeral' } },
+            supportsResume: false,
+            createSessionContext,
+        });
+
+        await host.abortPendingPermissionRequests?.('Execution run settled');
+
+        expect(abortPendingPermissionRequests).toHaveBeenCalledWith('Execution run settled');
+        await host.dispose();
+    });
+
+    it('prevents a finite Session-derived Run from publishing the parent Session work state', async () => {
+        const publishParentWorkState = vi.fn(async () => ({
+            status: 'applied' as const,
+            revision: 'parent-work-state-1',
+            sourceSequence: 1,
+        }));
+        let openedContext: AgentSessionRuntimeContext | null = null;
+        const runtime: AgentRuntime = { sessions: { async open(_request, context) {
+            openedContext = context;
+            return {
+                async send() { return { status: 'admitted' as const }; },
+                watch() { return { dispose() {} }; },
+                async dispose() {},
+            };
+        } } };
+        const host = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.finite', pluginVersion: '1.0.0', agentId: 'acme.finite/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-finite-work-state', scope: 'session_owned', backendId: 'acme.finite/default',
+                permissionMode: 'read_only', start: { intent: 'review', runClass: 'bounded', retentionPolicy: 'ephemeral' } },
+            supportsResume: false,
+            createSessionContext: ({ services, signal }) => {
+                const parent = createVoiceSessionContextLease({ services, signal, async dispose() {} });
+                return {
+                    ...parent,
+                    context: Object.freeze({
+                        ...parent.context,
+                        workState: Object.freeze({
+                            publisher: () => Object.freeze({ publish: publishParentWorkState }),
+                        }),
+                    }),
+                };
+            },
+        });
+
+        await host.provisionRuntime();
+        await host.deliverInput('run-finite-work-state', { text: 'inspect without parent publication' });
+        const publication = await openedContext!.workState.publisher('finite-run').publish({} as never);
+
+        expect(publication).toMatchObject({
+            status: 'unavailable',
+            diagnostic: { code: 'agent_run_session_projection_unavailable' },
+        });
+        expect(publishParentWorkState).not.toHaveBeenCalled();
+        await host.dispose();
+    });
+
+    it('normalizes one attached Run usage event for the Session and exact Workflow owners', async () => {
+        let publishRuntimeEvent: ((event: AgentSessionRuntimeEvent) => void) | null = null;
+        const publishUsage = vi.fn(async () => undefined);
+        const observeWorkflowUsage = vi.fn();
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send() { return { status: 'admitted' as const }; },
+            watch(listener) {
+                publishRuntimeEvent = listener;
+                return { dispose() {} };
+            },
+            async dispose() {},
+        }; } } };
+        const host = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.finite', pluginVersion: '1.0.0', agentId: 'acme.finite/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-usage', scope: 'session_owned', backendId: 'acme.finite/default',
+                permissionMode: 'read_only', start: {
+                    intent: 'review', runClass: 'bounded', retentionPolicy: 'ephemeral', observeWorkflowUsage,
+                } },
+            supportsResume: false,
+            createSessionContext: ({ services, signal }) => ({
+                ...createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+                usagePublisher: { provider: 'acme.finite/default', publish: publishUsage },
+            }),
+        });
+
+        await host.provisionRuntime();
+        await host.deliverInput('run-usage', { text: 'measure this run' });
+        publishRuntimeEvent!({
+            sequence: 1,
+            sessionId: 'session-parent',
+            emittedAtMs: 20,
+            turnId: 'run-usage-turn-1',
+            kind: 'usage-observed',
+            observationId: 'usage-attached-1',
+            source: 'provider',
+            scope: 'turn_delta',
+            modelId: 'model-a',
+            tokens: { input: 8, output: 4, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 12 },
+        });
+        await vi.waitFor(() => expect(publishUsage).toHaveBeenCalledOnce());
+        expect(publishUsage).toHaveBeenCalledWith(expect.objectContaining({
+            externalKey: 'usage-attached-1',
+            turnId: 'run-usage-turn-1',
+            observation: expect.objectContaining({
+                provider: 'acme.finite/default',
+                tokens: expect.objectContaining({ total: 12 }),
+            }),
+        }));
+        expect(observeWorkflowUsage).toHaveBeenCalledWith({
+            turnId: 'run-usage-turn-1',
+            observation: expect.objectContaining({
+                provider: 'acme.finite/default',
+                scope: 'turn_delta',
+                tokens: expect.objectContaining({ input: 8, output: 4 }),
+                availability: { inputTokens: true, outputTokens: true, reportedCostUsd: false },
+            }),
+        });
+        await host.dispose();
+    });
+
+    it('waits for native cancellation before admitting a bounded replacement', async () => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        let sequence = 0;
+        let activeTurnId: string | null = null;
+        let releaseCancellation!: () => void;
+        const cancellation = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+        let firstAdmitted!: () => void;
+        const admitted = new Promise<void>((resolve) => { firstAdmitted = resolve; });
+        const deliveries: string[] = [];
+        const publish = (event: UnsequencedSessionEvent<AgentSessionRuntimeEvent>) => {
+            for (const listener of listeners) listener({ ...event, sequence: ++sequence,
+                sessionId: 'session-parent', emittedAtMs: sequence } as AgentSessionRuntimeEvent);
+        };
+        // The external Agent boundary holds cancellation open until the test releases it.
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send(request) {
+                if (activeTurnId) throw new Error('Provider turn is still active');
+                activeTurnId = request.delivery.turnId;
+                deliveries.push(activeTurnId);
+                publish({ kind: 'input-accepted', inputIds: request.inputIds, delivery: request.delivery });
+                publish({ kind: 'turn-start', turnId: activeTurnId, startedBy: 'host' });
+                firstAdmitted();
+                if (deliveries.length > 1) {
+                    publish({ kind: 'turn-complete', turnId: activeTurnId });
+                    activeTurnId = null;
+                }
+                return { status: 'admitted' };
+            },
+            async cancel({ turnId }) {
+                await cancellation;
+                activeTurnId = null;
+                publish({ kind: 'turn-cancelled', turnId, cause: 'user' });
+                return { status: 'requested', turnId };
+            },
+            watch(listener) { listeners.add(listener); return { dispose() { listeners.delete(listener); } }; },
+            async dispose() {},
+        }; } } };
+        const host = createNativeAgentSessionInteractionHostRuntime({
+            runtime,
+            lease: { pluginId: 'acme.voice', pluginVersion: '1.0.0', agentId: 'acme.voice/agents/default',
+                localAgentId: 'default', isCurrent: () => true },
+            options: { cwd: '/repo', runId: 'run-interrupt', scope: 'session_owned', backendId: 'acme.voice/agents/default',
+                permissionMode: 'read_only', start: { intent: 'voice_agent' } },
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+            createSessionContext: ({ services, signal }) => createVoiceSessionContextLease({ services, signal, async dispose() {} }),
+        });
+        const { runtimeId } = await host.provisionRuntime();
+        const ctrl: ExecutionRunBackendController = {
+            kind: 'backend', controllerOccurrenceId: 'native-agent-controller-3', backend: host, backendSupportsResume: false, runtimeId,
+            buffer: '', sidechainStreamBuffer: '', sidechainStreamKey: '', streamWriter: null,
+            cancelled: false, turnCount: 0, turnEpoch: 0, turnInFlight: false,
+            turnCancelReason: null, turnCancelEpoch: null, admittedLiveInterventions: [],
+            admittedLiveInterventionsSignal: null, lastMarkerWriteAtMs: 0,
+            terminalPromise: Promise.resolve(), resolveTerminal() {},
+        };
+        const run = executeBoundedBackendRun({
+            runId: 'run-interrupt', callId: 'call-interrupt', sidechainId: 'side-interrupt', startedAtMs: 0,
+            params: { sessionId: 'session-parent', intent: 'memory_hints',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                instructions: 'initial', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+                runClass: 'bounded', ioMode: 'request_response' },
+            controllers: new Map([['run-interrupt', ctrl]]), sendAcp: async () => {},
+            parentProvider: 'acme.voice/agents/default', getNowMs: () => 1, boundedTimeoutMs: null,
+            finishRun: async () => {},
+        });
+        try {
+            await Promise.race([
+                admitted,
+                run.then(() => { throw new Error('Bounded run ended before native input admission'); }),
+            ]);
+            await new Promise<void>((resolve, reject) => {
+                ctrl.admittedLiveInterventions.push({ message: 'replacement', delivery: 'interrupt', resolve, reject });
+                ctrl.admittedLiveInterventionsSignal?.resolve();
+                ctrl.admittedLiveInterventionsSignal = null;
+            });
+            // Let the current dispatch drain while the provider still owns cancellation.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            expect(deliveries).toHaveLength(1);
+            releaseCancellation();
+            await run;
+            expect(deliveries).toHaveLength(2);
+        } finally {
+            releaseCancellation();
+            await host.dispose();
+        }
+    });
+
+    it.each([true, false])('keeps current-turn authority across retained Voice turns (startup authority: %s)', async (hasStartupAuthority) => {
+        const firstAuthority = {
+            kind: 'admittedSessionInputV1' as const,
+            admittedPermissionCeiling: 'read-only' as const,
+            sourceAuthority: {
+                kind: 'mediatedExternal' as const,
+                mediatorPluginId: 'acme.voice',
+                sourceRef: 'conversation-1',
+                sourceRevisionOrEpoch: '1',
+                admittedPermissionCeiling: 'read-only' as const,
+                remoteApprovalMaxScope: 'request' as const,
+            },
+        };
+        const secondAuthority = {
+            ...firstAuthority,
+            admittedPermissionCeiling: 'default' as const,
+            sourceAuthority: {
+                ...firstAuthority.sourceAuthority,
+                sourceRef: 'conversation-2',
+                sourceRevisionOrEpoch: '2',
+                admittedPermissionCeiling: 'default' as const,
+            },
+        };
         const nativeListeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
         let sequence = 0;
         let activeTurnId: string | null = null;
@@ -139,7 +850,9 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             const turnId = request.delivery.turnId;
             activeTurnId = turnId;
             publish({ kind: 'input-accepted', inputIds: request.inputIds, delivery: request.delivery });
-            publish({ kind: 'turn-start', turnId, startedBy: 'host' });
+            if (request.delivery.kind === 'newTurn') {
+                publish({ kind: 'turn-start', turnId, startedBy: 'host' });
+            }
             publish({ kind: 'message-delta', turnId, channel: 'assistant', text: `answer-${send.mock.calls.length}` });
             if (request.input.text !== 'wait for cancellation') {
                 publish({ kind: 'turn-complete', turnId });
@@ -200,15 +913,16 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-voice',
+                scope: 'session_owned',
                 backendId: 'acme.voice/agents/default',
-                causalPermissionAuthority: Object.freeze({
+                ...(hasStartupAuthority ? { causalPermissionAuthority: Object.freeze({
                     kind: 'admittedSessionInputV1' as const,
-                    admittedPermissionCeiling: 'read-only' as const,
-                }),
+                    admittedPermissionCeiling: 'yolo' as const,
+                }) } : {}),
                 permissionMode: 'read_only',
                 start: Object.freeze({ intent: 'voice_agent' as const }),
             }),
-            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
+            sessionCapabilities: { ...VOICE_INTERACTION_SESSION_CAPABILITIES, delivery: ['newTurn', 'steer'] },
             createSessionContext: ({ services, signal }) =>
                 createVoiceSessionContextLease({
                     services,
@@ -219,22 +933,36 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         const messages: AgentMessage[] = [];
         host.subscribeMessages((message) => messages.push(message));
 
-        await host.provisionSession();
-        await host.sendPrompt('run-voice', 'first');
+        await host.provisionRuntime();
+        await host.deliverInput('run-voice', { text: 'first' }, { causalPermissionAuthority: firstAuthority });
         await host.waitForTurnCompletion?.();
-        await host.sendPrompt('run-voice', 'second');
+        await host.deliverInput('run-voice', { text: 'second' }, { causalPermissionAuthority: secondAuthority });
         await host.waitForTurnCompletion?.();
 
         expect(send).toHaveBeenCalledTimes(2);
         expect(send.mock.calls.slice(0, 2).map(([request]) => request.causalPermissionAuthority)).toEqual([
-            { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
-            { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
+            firstAuthority,
+            secondAuthority,
         ]);
         expect(messages.filter((message) => message.type === 'model-output')).toEqual([
             { type: 'model-output', textDelta: 'answer-1' },
             { type: 'model-output', textDelta: 'answer-2' },
         ]);
-        await host.sendPrompt('run-voice', 'wait for cancellation');
+        await host.deliverInput('run-voice', { text: 'wait for cancellation' });
+        const steeredTurnId = activeTurnId;
+        expect(host.steerInput).toBeTypeOf('function');
+        await host.steerInput!('run-voice', { text: 'finish this turn' }, {
+            localId: 'voice-steer-input',
+            causalPermissionAuthority: secondAuthority,
+        });
+        await host.waitForTurnCompletion?.();
+        expect(send.mock.calls.at(-1)?.[0]).toMatchObject({
+            delivery: { kind: 'steer', turnId: steeredTurnId },
+            inputIds: ['voice-steer-input'],
+            causalPermissionAuthority: secondAuthority,
+        });
+        expect(cancel).not.toHaveBeenCalled();
+        await host.deliverInput('run-voice', { text: 'wait for cancellation' });
         await host.cancel('run-voice');
         await host.waitForTurnCompletion?.();
         expect(cancel).toHaveBeenCalledOnce();
@@ -283,6 +1011,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-voice-open-failure',
+                scope: 'session_owned',
                 backendId: 'acme.voice/agents/default',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'acme.session/assistant' }),
@@ -291,8 +1020,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             createSessionContext,
         });
 
-        await expect(host.provisionSession()).rejects.toBe(openFailure);
-        await expect(host.provisionSession()).rejects.toBe(openFailure);
+        await expect(host.provisionRuntime()).rejects.toBe(openFailure);
+        await expect(host.provisionRuntime()).rejects.toBe(openFailure);
         expect(open).toHaveBeenCalledOnce();
         expect(createSessionContext).toHaveBeenCalledOnce();
         expect(disposeSessionContext).toHaveBeenCalledOnce();
@@ -328,13 +1057,13 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 async createRuntime() { return runtime; },
             }),
             options: Object.freeze({
-                cwd: '/repo', runId: 'run-race', backendId: 'acme.voice/default', permissionMode: 'read_only',
+                cwd: '/repo', runId: 'run-race', scope: 'session_owned', backendId: 'acme.voice/default', permissionMode: 'read_only',
                 start: Object.freeze({ intent: 'voice_agent' as const }),
             }),
             sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
             createSessionContext: () => contextPromise,
         });
-        const provisioning = host.provisionSession();
+        const provisioning = host.provisionRuntime();
         await Promise.resolve();
         current = false;
         await host.dispose();
@@ -380,6 +1109,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-retired-open',
+                scope: 'session_owned',
                 backendId: 'acme.session-run/default',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'default' }),
@@ -393,8 +1123,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 }),
         });
 
-        await host.provisionSession();
-        const sending = host.sendPrompt('run-retired-open', 'must not be delivered');
+        await host.provisionRuntime();
+        const sending = host.deliverInput('run-retired-open', { text: 'must not be delivered' });
         await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
         current = false;
         resolveSession(Object.freeze({
@@ -451,6 +1181,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 cwd: '/repo',
                 runId: 'run-1',
                 backendId: 'deepsec',
+                scope: 'detached',
                 permissionMode: 'read_only',
                 start: Object.freeze({
                     profileId: 'happier.review.deepsec/repository-security-audit',
@@ -460,8 +1191,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         });
 
         const beforeAdmission = Date.now();
-        await host.provisionSession();
-        await host.sendPrompt('run-1', 'Audit this repository');
+        await host.provisionRuntime();
+        await host.deliverInput('run-1', { text: 'Audit this repository' });
 
         expect(open).toHaveBeenCalledOnce();
         expect(open.mock.calls[0]?.[0].profile).toEqual({
@@ -481,15 +1212,18 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         },
         {
             label: 'resume',
-            provision: { resumeSessionId: 'checkpoint-1' },
+            provision: { resumeRuntimeId: 'checkpoint-1' },
             initialPrompt: undefined,
         },
     ])('passes only the bounded launch environment to $label open requests', async ({ provision, initialPrompt }) => {
         vi.stubEnv('HAPPIER_EXECUTION_RUN_AMBIENT_ONLY', 'must-not-leak');
+        const currentAuthority = {
+            kind: 'admittedSessionInputV1' as const,
+            admittedPermissionCeiling: 'read-only' as const,
+        };
+        const send = vi.fn<AgentExecutionRunRuntime['send']>(async () => ({ status: 'admitted' }));
         const opened: AgentExecutionRunRuntime = Object.freeze({
-            async send() {
-                return Object.freeze({ status: 'admitted' as const });
-            },
+            send,
             async stop() {
                 return Object.freeze({ status: 'requested' as const });
             },
@@ -525,9 +1259,18 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-1',
+                scope: 'detached',
                 backendId: 'acme.sample.agent',
                 permissionMode: 'read_only',
-                start: Object.freeze({ profileId: 'review' }),
+                start: Object.freeze({
+                    profileId: 'review',
+                    localInputId: 'workflow-input-1',
+                    resultContract: { kind: 'text' as const },
+                }),
+                causalPermissionAuthority: {
+                    kind: 'admittedSessionInputV1' as const,
+                    admittedPermissionCeiling: 'yolo' as const,
+                },
                 isolation: Object.freeze({
                     env: Object.freeze({ ALLOWED_VALUE: 'bounded' }),
                     unsetEnvKeys: Object.freeze(['EXPLICITLY_UNSET']),
@@ -536,8 +1279,10 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: true,
         });
 
-        await host.provisionSession(provision);
-        if (initialPrompt) await host.sendPrompt('run-1', initialPrompt);
+        await host.provisionRuntime(provision);
+        await host.deliverInput('run-1', { text: initialPrompt ?? 'Resume review' }, {
+            causalPermissionAuthority: currentAuthority,
+        });
 
         expect(open).toHaveBeenCalledOnce();
         const request = open.mock.calls[0]?.[0];
@@ -550,6 +1295,14 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         expect(request?.launchEnvironment?.values).not.toHaveProperty(
             'HAPPIER_EXECUTION_RUN_AMBIENT_ONLY',
         );
+        if (provision) {
+            expect(send.mock.calls[0]?.[1]?.causalPermissionAuthority).toEqual(currentAuthority);
+        } else {
+            if (request?.kind !== 'create') throw new Error('expected create request');
+            expect(request?.causalPermissionAuthority).toEqual(currentAuthority);
+            expect(request?.localInputId).toBe('workflow-input-1');
+            expect(request?.resultContract).toEqual({ kind: 'text' });
+        }
         await host.dispose();
     });
 
@@ -600,8 +1353,14 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         const options: CreateCliExecutionRunBackendParams = Object.freeze({
             cwd: '/repo',
             runId: 'run-1',
+            scope: 'detached',
             backendId: 'codex',
             permissionMode: 'default',
+            runtimeDescriptorV1: PortableRuntimeDescriptorV1Schema.parse({
+                v: 1,
+                agentId: 'codex',
+                agent: { backendMode: 'acp' },
+            }),
             start: Object.freeze({ profileId: 'delegate' }),
             modelSelection,
             configuration,
@@ -626,12 +1385,13 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: true,
         });
 
-        await host.provisionSession({ resumeSessionId: 'checkpoint-1' });
+        await host.provisionRuntime({ resumeRuntimeId: 'checkpoint-1' });
 
         expect(open).toHaveBeenCalledWith(expect.objectContaining({
             modelSelection,
             configuration,
             providerBinding,
+            runtimeDescriptorV1: options.runtimeDescriptorV1,
         }), expect.anything());
         expect(open.mock.calls[0]?.[0]).not.toEqual(expect.objectContaining({
             connectedAccounts: expect.anything(),
@@ -661,6 +1421,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         }> = Object.freeze({
             cwd: '/repo',
             runId: 'run-provider-drift',
+            scope: 'detached',
             backendId: 'codex',
             permissionMode: 'default',
             start: Object.freeze({ profileId: 'delegate' }),
@@ -688,7 +1449,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
 
         expect(revalidateProviderBeforeOpen).not.toHaveBeenCalled();
         expect(open).not.toHaveBeenCalled();
-        await expect(host.provisionSession({ resumeSessionId: 'checkpoint-1' }))
+        await expect(host.provisionRuntime({ resumeRuntimeId: 'checkpoint-1' }))
             .rejects.toMatchObject({ message: 'provider_authorization_changed' });
         expect(revalidateProviderBeforeOpen).toHaveBeenCalledOnce();
         expect(open).not.toHaveBeenCalled();
@@ -715,6 +1476,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         const baseOptions = Object.freeze({
             cwd: '/repo',
             runId: 'run-provider-redaction',
+            scope: 'detached' as const,
             backendId: 'codex',
             permissionMode: 'default',
             start: Object.freeze({ profileId: 'delegate' }),
@@ -733,7 +1495,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: false,
         });
 
-        await expect(failingOpenHost.provisionSession({ initialPrompt: 'start' }))
+        await expect(failingOpenHost.provisionRuntime({ initialPrompt: 'start' }))
             .rejects.toThrow('open echoed [REDACTED]');
         await failingOpenHost.dispose();
 
@@ -770,8 +1532,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         const messages: AgentMessage[] = [];
         activeHost.subscribeMessages((message) => messages.push(message));
 
-        await activeHost.provisionSession({ initialPrompt: 'start' });
-        await expect(activeHost.sendPrompt('run-provider-redaction', 'again'))
+        await activeHost.provisionRuntime({ initialPrompt: 'start' });
+        await expect(activeHost.deliverInput('run-provider-redaction', { text: 'again' }))
             .rejects.toThrow('send echoed [REDACTED]');
         await expect(activeHost.cancel('run-provider-redaction'))
             .rejects.toThrow('stop echoed [REDACTED]');
@@ -818,13 +1580,13 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 async createRuntime() { return runtime; },
             }),
             options: Object.freeze({
-                cwd: '/repo', runId: 'run-invalid-event', backendId: 'acme.finite/default',
+                cwd: '/repo', runId: 'run-invalid-event', scope: 'detached', backendId: 'acme.finite/default',
                 permissionMode: 'read_only', start: Object.freeze({ profileId: 'default' }),
             }),
             supportsResume: false,
         });
 
-        await host.provisionSession({ initialPrompt: 'start' });
+        await host.provisionRuntime({ initialPrompt: 'start' });
         watchState.publish?.({
             sequence: 1,
             runId: 'run-invalid-event',
@@ -872,6 +1634,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-listener-isolation',
+                scope: 'detached',
                 backendId: 'acme.finite/agents/default',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'delegate' }),
@@ -886,7 +1649,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         });
         host.subscribeMessages((message) => messages.push(message));
 
-        await host.provisionSession({ initialPrompt: 'start' });
+        await host.provisionRuntime({ initialPrompt: 'start' });
         watchState.publish?.({
             sequence: 1,
             runId: 'run-listener-isolation',
@@ -931,6 +1694,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-1',
+                scope: 'detached',
                 backendId: 'acme.sample.agent',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'review' }),
@@ -938,8 +1702,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: false,
         });
 
-        await host.provisionSession();
-        const sendResult = host.sendPrompt('run-1', 'Review this').catch((error: unknown) => error);
+        await host.provisionRuntime();
+        const sendResult = host.deliverInput('run-1', { text: 'Review this' }).catch((error: unknown) => error);
         await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
         expect(open.mock.calls[0]?.[0]).not.toHaveProperty('launchEnvironment');
 
@@ -1002,6 +1766,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-1',
+                scope: 'detached',
                 backendId: 'acme.sample.agent',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'review' }),
@@ -1009,8 +1774,8 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: false,
         });
 
-        await host.provisionSession();
-        await host.sendPrompt('run-1', 'Review this');
+        await host.provisionRuntime();
+        await host.deliverInput('run-1', { text: 'Review this' });
         const completion = host.waitForTurnCompletion?.();
 
         await host.dispose();
@@ -1061,6 +1826,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-detached-1',
+                scope: 'detached',
                 backendId: 'acme.sample.agent',
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'review' }),
@@ -1068,14 +1834,14 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: false,
         });
 
-        await host.provisionSession({ initialPrompt: 'start' });
+        await host.provisionRuntime({ initialPrompt: 'start' });
 
         expect(open).toHaveBeenCalledOnce();
         expect(open.mock.calls[0]?.[1]).not.toHaveProperty('session');
         await host.dispose();
     });
 
-    it('carries the real Happier Session id on the Run context when the host scope has one', async () => {
+    it('does not fabricate Session context for an execution-only Agent when the host Run is Session-owned', async () => {
         const opened: AgentExecutionRunRuntime = Object.freeze({
             async send() {
                 return Object.freeze({ status: 'admitted' as const });
@@ -1115,6 +1881,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             options: Object.freeze({
                 cwd: '/repo',
                 runId: 'run-session-scoped-1',
+                scope: 'session_owned',
                 backendId: 'acme.sample.agent',
                 permissionMode: 'read_only',
                 happierSessionId: 'happier-session-1',
@@ -1123,11 +1890,14 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             supportsResume: false,
         });
 
-        await host.provisionSession({ initialPrompt: 'start' });
+        await host.provisionRuntime({ initialPrompt: 'start' });
 
         expect(open).toHaveBeenCalledOnce();
-        expect(open.mock.calls[0]?.[1].session).toEqual({ id: 'happier-session-1' });
-        expect(open.mock.calls[0]?.[1].session?.id).not.toBe('run-session-scoped-1');
+        expect(open.mock.calls[0]?.[1]).toMatchObject({
+            scope: { kind: 'execution_run', executionRunId: 'run-session-scoped-1' },
+            executionRun: { id: 'run-session-scoped-1' },
+        });
+        expect(open.mock.calls[0]?.[1]).not.toHaveProperty('session');
         await host.dispose();
     });
 });

@@ -7,10 +7,11 @@ export function buildAgentProbeCacheKey(params: Readonly<{
   backendTarget?: BackendTargetRefV1;
   variant?: string;
   connectedServiceSelection?: string | null;
+  profile?: string | null;
 }>): string {
   const normalizedCwd = String(params.cwd ?? '').trim();
   const targetKey = params.backendTarget ? buildBackendTargetKey(params.backendTarget) : 'none';
   // Always include agentId even when the probe is scoped to a backend target, so cache keys cannot
   // collide across agents that might eventually share target-key space (e.g. configured backends).
-  return `agent:${params.agentId}:target:${targetKey}:cwd:${normalizedCwd}:v:${params.variant ?? 'default'}:connected:${params.connectedServiceSelection ?? 'none'}`;
+  return `agent:${params.agentId}:target:${targetKey}:cwd:${normalizedCwd}:v:${params.variant ?? 'default'}:profile:${params.profile ?? 'none'}:connected:${params.connectedServiceSelection ?? 'none'}`;
 }

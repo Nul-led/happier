@@ -4,7 +4,7 @@ import type { FetchTranscriptRawPage } from '@/session/services/transcript/fetch
 
 import { fetchMemorySemanticTranscriptPage } from './fetchSemanticPage';
 
-const ctx = { encryptionKey: new Uint8Array([1]), encryptionVariant: 'legacy' as const };
+const contentContext = { mode: 'plain', ctx: null } as const;
 
 describe('fetchMemorySemanticTranscriptPage', () => {
   it('uses server-side user and agent role filtering for memory transcript pages', async () => {
@@ -36,7 +36,7 @@ describe('fetchMemorySemanticTranscriptPage', () => {
     const page = await fetchMemorySemanticTranscriptPage({
       token: 'token',
       sessionId: 'sess-1',
-      ctx,
+      contentContext,
       limit: 10,
       rawPageLimit: 10,
       maxRawRowsToScan: 20,
@@ -95,7 +95,7 @@ describe('fetchMemorySemanticTranscriptPage', () => {
     const page = await fetchMemorySemanticTranscriptPage({
       token: 'token',
       sessionId: 'sess-legacy',
-      ctx,
+      contentContext,
       limit: 10,
       rawPageLimit: 10,
       maxRawRowsToScan: 20,

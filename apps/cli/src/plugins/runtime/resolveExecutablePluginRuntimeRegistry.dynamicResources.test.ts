@@ -300,6 +300,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
                         signingKeyFingerprint: null,
                         contentKeyFingerprint: null,
                         updatedAt: 1,
+                        recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
                     }),
                     http: {
                         async get(url) {
@@ -469,6 +470,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
         }));
         try {
             runtime = await resolveExecutablePluginRuntimeRegistry({
@@ -864,6 +866,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
                 signingKeyFingerprint: null,
                 contentKeyFingerprint: null,
                 updatedAt: 1,
+                recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
             }),
             http: {
                 async get(url) {

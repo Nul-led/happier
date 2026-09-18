@@ -22,7 +22,9 @@ import {
   captureStderr,
   captureStdoutJsonOutput,
 } from '@/testkit/logger/captureOutput';
-import { CLI_API_TOKEN_HANDOFF_ENV } from '@/auth/cliApiToken';
+import { CLI_API_TOKEN_HANDOFF_ENV, resolveCliApiTokenForSdk } from '@/auth/cliApiToken';
+import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
+import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import packageJson from '../../package.json';
 
 import { dispatchCli } from './dispatch';
@@ -98,6 +100,47 @@ describe('dispatchCli API Token globals', () => {
       await vi.waitFor(() => expect(debugSpy).toHaveBeenCalled());
       expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(flagToken);
       expect(JSON.stringify(debugSpy.mock.calls)).toContain('<redacted>');
+    });
+  });
+
+  it('keeps a compound credential invocation-local for the SDK while dispatch exposes only its bearer generically', async () => {
+    await withTempDir('happier-cli-compound-token-', async (homeDir) => {
+      const bearer = `hap_v1_22222222-2222-4222-a222-222222222222_${encodeBase64(new Uint8Array(32).fill(11), 'base64url')}`;
+      const credential = formatAccountApiTokenCredentialV1({
+        bearer,
+        wrappingSecret: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
+        serverIdentityId: 'srv_dispatch_home',
+        accountId: 'account-1',
+        contentPublicKey: encodeBase64(new Uint8Array(32).fill(9)),
+      });
+      let observedCredentials: Awaited<ReturnType<typeof readStoredCredentials>> = null;
+      let observedSdkCredential = '';
+      (commandRegistry as Record<string, CommandHandler>)[probeCommand] = async () => {
+        observedCredentials = await readStoredCredentials();
+        observedSdkCredential = resolveCliApiTokenForSdk(bearer);
+      };
+      envScope.patch({
+        DEBUG: '1',
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_TOKEN: undefined,
+      });
+      reloadConfiguration();
+
+      await dispatchCli({
+        args: ['--api-token', credential, probeCommand],
+        rawArgv: ['happier', '--api-token', credential, probeCommand],
+        terminalRuntime: null,
+      });
+
+      expect(observedCredentials).toEqual({
+        token: bearer,
+        encryption: null,
+        credentialProvenance: 'api_token',
+      });
+      expect(observedSdkCredential).toBe(credential);
+      await vi.waitFor(() => expect(debugSpy).toHaveBeenCalled());
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(credential);
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(bearer);
     });
   });
 
@@ -285,6 +328,38 @@ describe('dispatchCli API Token globals', () => {
           credentialProvenance: 'stored_session',
         },
       ]);
+    });
+  });
+
+  it('does not treat a literal --help after the option terminator as credential-free', async () => {
+    await withTempDir('happier-cli-api-token-', async (homeDir) => {
+      const token = 'hap_v1_33333333-3333-4333-a333-333333333333_ccccccccccccccccccccccccccccccccccccccccccc';
+      let observedCredentials: Awaited<ReturnType<typeof readStoredCredentials>> = null;
+      (commandRegistry as Record<string, CommandHandler>)[probeCommand] = async () => {
+        observedCredentials = await readStoredCredentials();
+      };
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_TOKEN: token,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+      });
+      reloadConfiguration();
+
+      await dispatchCli({
+        args: [probeCommand, '--', '--help'],
+        rawArgv: ['happier', probeCommand, '--', '--help'],
+        terminalRuntime: null,
+      });
+
+      expect(observedCredentials).toEqual({
+        token,
+        encryption: null,
+        credentialProvenance: 'api_token',
+      });
     });
   });
 

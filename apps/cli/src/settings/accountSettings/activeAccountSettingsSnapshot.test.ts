@@ -8,6 +8,7 @@ import {
     getActiveAccountSettingsSnapshot,
     getActiveAccountSettingsSnapshotLifetimeToken,
     resolveActiveAccountSettingsSnapshotRevision,
+    resolveActiveSavedSecretCatalogCollisionState,
   resetActiveAccountSettingsSnapshotForTests,
     setActiveAccountSettingsSnapshot,
     subscribeActiveAccountSettingsSnapshot,
@@ -38,6 +39,34 @@ const configuredExternalSessionSourceRevisions = activeAccountSettingsSnapshot a
 describe('active account settings snapshot publication', () => {
   beforeEach(() => {
     resetActiveAccountSettingsSnapshotForTests();
+  });
+
+  it('projects collision state from the authoritative Account snapshot without mutating it', () => {
+    const next = {
+      ...snapshot({ scopeKey: 'scope-a', version: 1, timing: 'after_runtime_idle' }),
+      settings: accountSettingsParse({
+        secrets: [{
+          id: 'happier:shared-secret:v1:legacy-personal',
+          name: 'Legacy',
+          kind: 'token',
+          encryptedValue: { _isSecretValue: true, value: 'exact-value' },
+          createdAt: 1,
+          updatedAt: 7,
+        }],
+      }),
+    };
+    setActiveAccountSettingsSnapshot(next);
+
+    const active = getActiveAccountSettingsSnapshot();
+    if (!active) throw new Error('expected active snapshot');
+    expect(active).toBe(next);
+    expect(resolveActiveSavedSecretCatalogCollisionState(active)).toEqual({
+      status: 'migration_required',
+      collisions: [{
+        ref: 'happier:shared-secret:v1:legacy-personal',
+        expectedUpdatedAt: 7,
+      }],
+    });
   });
 
   it('keeps the same-scope accepted winner for equal and older commits without notifying', () => {
@@ -73,6 +102,34 @@ describe('active account settings snapshot publication', () => {
     unsubscribe();
   });
 
+  it('preserves the independent Saved Secret catalog across a newer same-Account Settings publication', () => {
+    const resourceDataKey = new Uint8Array(32).fill(23);
+    const previous = {
+      ...snapshot({ scopeKey: 'scope-a', version: 4, timing: 'after_runtime_idle' }),
+      savedSecretCatalogState: 'ready' as const,
+      savedSecretResources: [{
+        resourceId: 'resource-e2ee',
+        ownerAccountId: 'owner-account',
+        displayName: 'Shared API key',
+        kind: 'apiKey' as const,
+        encryptionMode: 'e2ee' as const,
+        revision: 7,
+        storedContent: { t: 'encrypted' as const, c: 'AA==' },
+        materialStatus: 'ready' as const,
+        resourceDataKey,
+      }],
+    };
+    setActiveAccountSettingsSnapshot(previous);
+
+    const committed = commitActiveAccountSettingsSnapshot(
+      snapshot({ scopeKey: 'scope-a', version: 5, timing: 'after_foreground_ready' }),
+    );
+
+    expect(committed.snapshot.savedSecretCatalogState).toBe('ready');
+    expect(committed.snapshot.savedSecretResources).toBe(previous.savedSecretResources);
+    expect([...resourceDataKey]).toEqual(new Array(32).fill(23));
+  });
+
     it('keeps a committed winner when a subscriber throws', () => {
         const next = snapshot({ scopeKey: 'scope-a', version: 1, timing: 'after_runtime_idle' });
         const unsubscribe = subscribeActiveAccountSettingsSnapshot(() => {
@@ -95,6 +152,29 @@ describe('active account settings snapshot publication', () => {
         expect(getActiveAccountSettingsSnapshot()).toBeNull();
         expect(listener).toHaveBeenCalledWith(previous, null);
         unsubscribe();
+    });
+
+    it('zeroes opened Saved Secret resource DEKs when the Account lifetime is revoked', () => {
+        const resourceDataKey = new Uint8Array(32).fill(23);
+        setActiveAccountSettingsSnapshot({
+            ...snapshot({ scopeKey: 'scope-a', version: 1, timing: 'after_runtime_idle' }),
+            savedSecretCatalogState: 'ready',
+            savedSecretResources: [{
+                resourceId: 'resource-e2ee',
+                ownerAccountId: 'owner-account',
+                displayName: 'Shared API key',
+                kind: 'apiKey',
+                encryptionMode: 'e2ee',
+                revision: 1,
+                storedContent: { t: 'encrypted', c: 'AA==' },
+                materialStatus: 'ready',
+                resourceDataKey,
+            }],
+        });
+
+        clearActiveAccountSettingsSnapshot();
+
+        expect([...resourceDataKey]).toEqual(new Array(32).fill(0));
     });
 
     it('advances the incumbent lifetime only when an Account enters, changes, or is revoked', () => {

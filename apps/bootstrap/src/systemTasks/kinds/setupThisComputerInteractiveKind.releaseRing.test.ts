@@ -16,7 +16,11 @@ vi.mock('@happier-dev/cli-common/systemTasks', async () => {
 
 import { createSystemTasksRunner } from '@happier-dev/cli-common/systemTasks';
 
+import { createLocalSetupRecipeExecutor } from './localSetupExecutor.js';
 import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
+
+/** The CLI acquisition the executor reports: managed install path, with the command it resolved. */
+const MANAGED_CLI = { provenance: 'managed', command: '/home/tester/.happier/bin/happier' } as const;
 
 async function waitForPendingPrompt(
     runner: ReturnType<typeof createSystemTasksRunner>,
@@ -89,6 +93,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                         ok: true,
                         data: {
                             authenticated: true,
+                            credentialState: 'valid',
+                            machineRegistrationState: 'server-confirmed',
                             machineId: 'machine-1',
                         },
                     };
@@ -107,7 +113,11 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         }));
 
         const kind = createSetupThisComputerInteractiveTaskKind({
-            ensureLocalHappierTools: async () => undefined,
+            createRecipeExecutor: createLocalSetupRecipeExecutor,
+            switchDefaultReleaseChannel: async () => undefined,
+            uninstallExistingDaemonServices: async () => undefined,
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            ensureLocalHappierTools: async () => MANAGED_CLI,
             readActiveRelayProfile: async () => ({
                 serverUrl: 'https://relay.example.test',
                 webappUrl: 'https://app.example.test',
@@ -126,6 +136,7 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 conflictingServices: [],
                 foreignHomeConflictingServices: [],
                 exactDefaultServiceExists: false,
+                exactDefaultServiceRunning: false,
                 shouldOfferDefaultReleaseChannelSwitch: false,
                 shouldPromptForManualRelayTakeover: true,
                 shouldPromptForServiceReplacement: false,
@@ -144,6 +155,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
             params: {
                 surface: 'desktop.ui',
                 target: 'thisComputer',
+                activeRelayUrl: 'https://relay.example.test',
+                activeWebappUrl: 'https://app.example.test',
                 channel: 'preview',
             },
         });
@@ -168,11 +181,6 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         expect(executorCalls).toEqual([
             {
                 releaseRing: 'preview',
-                args: ['auth', 'status', '--json'],
-                allowJsonFailure: true,
-            },
-            {
-                releaseRing: 'preview',
                 args: ['service', 'status', '--json'],
                 allowJsonFailure: true,
             },
@@ -180,6 +188,11 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 releaseRing: 'preview',
                 args: ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
                 allowJsonFailure: undefined,
+            },
+            {
+                releaseRing: 'preview',
+                args: ['auth', 'status', '--json'],
+                allowJsonFailure: true,
             },
             {
                 releaseRing: 'preview',
@@ -204,8 +217,11 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         const uninstallCalls: Array<{ releaseRing: unknown }> = [];
 
         const kind = createSetupThisComputerInteractiveTaskKind({
+            switchDefaultReleaseChannel: async () => undefined,
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
             ensureLocalHappierTools: async () => {
                 invocations.push('ensureLocalHappierTools');
+                return MANAGED_CLI;
             },
             readActiveRelayProfile: async () => ({
                 serverUrl: 'https://relay.example.test',
@@ -216,8 +232,12 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 configureRelay: async () => {
                     invocations.push('configureRelay');
                 },
+                // Already paired: valid credentials and a server-confirmed machine, so the recipe
+                // attempts no pairing. Pairing is covered by the pairing-approval tests.
                 readAuthStatus: async () => ({
                     authenticated: true,
+                    credentialState: 'valid' as const,
+                    machineRegistrationState: 'server-confirmed' as const,
                     machineId: 'machine-1',
                 }),
                 requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
@@ -254,6 +274,7 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 ],
                 foreignHomeConflictingServices: [],
                 exactDefaultServiceExists: true,
+                exactDefaultServiceRunning: false,
                 shouldOfferDefaultReleaseChannelSwitch: false,
                 shouldPromptForManualRelayTakeover: false,
                 shouldPromptForServiceReplacement: true,
@@ -277,6 +298,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
             params: {
                 surface: 'desktop.ui',
                 target: 'thisComputer',
+                activeRelayUrl: 'https://relay.example.test',
+                activeWebappUrl: 'https://app.example.test',
                 channel: 'preview',
             },
         });
@@ -314,7 +337,10 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
 
     it('reports the selected release-ring invoker in progress diagnostics', async () => {
         const kind = createSetupThisComputerInteractiveTaskKind({
-            ensureLocalHappierTools: async () => undefined,
+            switchDefaultReleaseChannel: async () => undefined,
+            uninstallExistingDaemonServices: async () => undefined,
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            ensureLocalHappierTools: async () => MANAGED_CLI,
             readActiveRelayProfile: async () => ({
                 serverUrl: 'https://relay.example.test',
                 webappUrl: 'https://app.example.test',
@@ -322,8 +348,12 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
             }),
             createRecipeExecutor: () => ({
                 configureRelay: async () => undefined,
+                // Already paired: valid credentials and a server-confirmed machine, so the recipe
+                // attempts no pairing. Pairing is covered by the pairing-approval tests.
                 readAuthStatus: async () => ({
                     authenticated: true,
+                    credentialState: 'valid' as const,
+                    machineRegistrationState: 'server-confirmed' as const,
                     machineId: 'machine-1',
                 }),
                 requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
@@ -347,6 +377,7 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 conflictingServices: [],
                 foreignHomeConflictingServices: [],
                 exactDefaultServiceExists: true,
+                exactDefaultServiceRunning: false,
                 shouldOfferDefaultReleaseChannelSwitch: false,
                 shouldPromptForManualRelayTakeover: false,
                 shouldPromptForServiceReplacement: false,
@@ -366,6 +397,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
             params: {
                 surface: 'desktop.ui',
                 target: 'thisComputer',
+                activeRelayUrl: 'https://relay.example.test',
+                activeWebappUrl: 'https://app.example.test',
                 channel: 'preview',
             },
         });

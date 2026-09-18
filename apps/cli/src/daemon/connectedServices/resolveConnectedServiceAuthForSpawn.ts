@@ -1,3 +1,4 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import {
   BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
   buildQualifiedPluginContributionKey,
@@ -32,8 +33,9 @@ import type { StoredCredentials } from '@/persistence';
 
 import {
   parseConnectedServiceBindingSelections,
+  ConnectedServicesBindingsIngressSchema,
   type ConnectedServiceBindingSelection,
-  type ConnectedServicesBindingsV1,
+  type ConnectedServicesBindingsV2,
 } from './parseConnectedServicesBindings';
 import {
   resolveConnectedServiceCredentialResolutions,
@@ -856,6 +858,13 @@ async function resolveCredentialBindings(params: Readonly<{
       continue;
     }
 
+    if (selection.kind === 'team_resource') {
+      // Direct material is opened by the launch-scoped purpose owner. It must
+      // never be translated into, or fetched through, the recipient's owned
+      // Account/Pool inventory.
+      continue;
+    }
+
     const group = await qualifiedAccountApi.readGroup({
       service: qualifiedService,
       groupId: selection.groupId,
@@ -1155,16 +1164,17 @@ function buildCurrentSpawnCredentialBindings(params: Readonly<{
   profileId: string;
   credentialRevision?: ConnectedServiceCredentialRevisionV1;
 }> {
-  return params.selections.map((selection) => {
+  return params.selections.flatMap((selection) => {
+    if (selection.kind === 'team_resource') return [];
     if (selection.kind === 'profile') {
       const credentialRevision = params.credentialRevisionsByServiceId.get(
         selection.serviceId,
       );
-      return {
+      return [{
         serviceId: selection.serviceId,
         profileId: selection.profileId,
         ...(credentialRevision ? { credentialRevision } : {}),
-      };
+      }];
     }
     const group = params.groupSelections.get(selection.serviceId);
     const profileId = group?.activeProfileId ?? selection.fallbackProfileId;
@@ -1173,11 +1183,11 @@ function buildCurrentSpawnCredentialBindings(params: Readonly<{
     }
     const credentialRevision = group?.credentialRevision
       ?? params.credentialRevisionsByServiceId.get(selection.serviceId);
-    return {
+    return [{
       serviceId: selection.serviceId,
       profileId,
       ...(credentialRevision ? { credentialRevision } : {}),
-    };
+    }];
   });
 }
 
@@ -1201,6 +1211,7 @@ function buildSelectionsByServiceIdForSpawn(params: Readonly<{
       });
       continue;
     }
+    if (selection.kind === 'team_resource') continue;
     const group = params.groupSelections.get(selection.serviceId);
     if (!group) continue;
     const credentialRevision = group.credentialRevision
@@ -1240,8 +1251,8 @@ function assertRequestAuthCredentialRevisions(input: Readonly<{
 function buildCanonicalConnectedServicesBindingsForSpawn(params: Readonly<{
   selections: ReadonlyArray<ConnectedServiceBindingSelection>;
   groupSelections: ReadonlyMap<ConnectedAccountServiceKey, ConnectedServiceResolvedGroupSelection>;
-}>): ConnectedServicesBindingsV1 {
-  const bindingsByServiceId: ConnectedServicesBindingsV1['bindingsByServiceId'] = {};
+}>): ConnectedServicesBindingsV2 {
+  const bindingsByServiceId: ConnectedServicesBindingsV2['bindingsByServiceId'] = {};
 
   for (const selection of params.selections) {
     if (selection.kind === 'profile') {
@@ -1250,6 +1261,21 @@ function buildCanonicalConnectedServicesBindingsForSpawn(params: Readonly<{
         selection: 'profile',
         profileId: selection.profileId,
       };
+      continue;
+    }
+    if (selection.kind === 'team_resource') {
+      bindingsByServiceId[selection.serviceId] = selection.deliveryMode === 'direct'
+        ? {
+            source: 'team_resource',
+            resourceId: selection.resourceId,
+            deliveryMode: 'direct',
+            disclosedMember: selection.disclosedMember,
+          }
+        : {
+            source: 'team_resource',
+            resourceId: selection.resourceId,
+            deliveryMode: 'brokered',
+          };
       continue;
     }
     const group = params.groupSelections.get(selection.serviceId);
@@ -1262,7 +1288,7 @@ function buildCanonicalConnectedServicesBindingsForSpawn(params: Readonly<{
   }
 
   return {
-    v: 1,
+    v: 2,
     bindingsByServiceId,
   };
 }
@@ -1377,7 +1403,7 @@ export async function resolveConnectedServiceAuthForSpawn(params: Readonly<{
   candidatePersistedSessionFile?: string | null;
   runtimeDescriptorV1?: RuntimeDescriptorV1;
   resolveQualifiedPurposeBindingSnapshot?: (
-    bindings: ConnectedServicesBindingsV1,
+    bindings: ConnectedServicesBindingsV2,
   ) => AgentSpawnQualifiedPurposeBindingSnapshot | null;
   activateQualifiedPurposeBindings?: (
     snapshot: AgentSpawnQualifiedPurposeBindingSnapshot,
@@ -1398,7 +1424,7 @@ export async function resolveConnectedServiceAuthForSpawn(params: Readonly<{
   env: Record<string, string>;
   cleanupOnFailure: (() => void | Promise<void>) | null;
   cleanupOnExit: (() => void | Promise<void>) | null;
-  connectedServicesBindings: ConnectedServicesBindingsV1;
+  connectedServicesBindings: ConnectedServicesBindingsV2;
   targetMaterializedRoot?: string | null;
   requestAuthMaterializedRoot?: string | null;
   diagnostics?: readonly ConnectedServicesMaterializationDiagnostic[];
@@ -1410,7 +1436,8 @@ export async function resolveConnectedServiceAuthForSpawn(params: Readonly<{
   }>;
   ongoingRuntimeRegistrationAllowed?: false;
 }> | null> {
-  const selections = parseConnectedServiceBindingSelections(params.connectedServicesBindingsRaw);
+  const admittedBindings = ConnectedServicesBindingsIngressSchema.parse(params.connectedServicesBindingsRaw);
+  const selections = parseConnectedServiceBindingSelections(admittedBindings);
   if (selections.length === 0) return null;
   const nowMs = (params.nowMs ?? (() => Date.now()))();
   let serverFeatures: CliServerFeaturesSnapshot | undefined;
@@ -1765,7 +1792,7 @@ async function assertSpawnResumeReachable(params: Readonly<{
   runtimeDescriptorV1?: RuntimeDescriptorV1;
 }>): Promise<void> {
   if (!params.resumeReachabilityRequired) return;
-  const vendorResumeId = typeof params.vendorResumeId === 'string' ? params.vendorResumeId.trim() : '';
+  const vendorResumeId = readNonBlankOpaqueIdentifier(params.vendorResumeId) ?? '';
   // No vendor resume reference => this is a fresh (non-resume) spawn; the continuity gate does not
   // apply (see the `vendorResumeId` param contract). A fresh spawn is never gated.
   if (!vendorResumeId) return;

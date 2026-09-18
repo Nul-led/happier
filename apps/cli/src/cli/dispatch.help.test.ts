@@ -23,7 +23,10 @@ vi.mock('@/cli/commandRegistry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/cli/commandRegistry')>();
   return {
     ...actual,
-    ensureMergedAgentCommandRegistryLoaded: ensureMergedAgentCommandRegistryLoadedSpy,
+    ensureMergedAgentCommandRegistryLoaded: async () => {
+      ensureMergedAgentCommandRegistryLoadedSpy();
+      await actual.ensureMergedAgentCommandRegistryLoaded();
+    },
   };
 });
 
@@ -68,6 +71,8 @@ describe('dispatchCli root help', () => {
     expect(ensureMergedAgentCommandRegistryLoadedSpy).toHaveBeenCalled();
     expect(output.logs).toContainEqual(expect.stringContaining('happier - AI CLI On the Go'));
     expect(output.logs).toContainEqual(expect.stringContaining('happier codex'));
+    expect(output.logs).toContainEqual(expect.stringContaining('happier credentials'));
+    expect(output.logs).toContainEqual(expect.stringContaining('happier secrets'));
     expect(output.logs).toContainEqual(expect.stringContaining('happier resume [<session-id-or-prefix>]'));
     expect(output.logs).toContainEqual(expect.stringContaining('happier --api-token <token>'));
     expect(output.logs).toContainEqual(expect.stringContaining('Create API Tokens in Settings'));

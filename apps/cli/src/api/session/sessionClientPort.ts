@@ -3,7 +3,6 @@ import type { ACPMessageData, ACPProvider, SessionEventMessage } from './session
 import type { AgentState, Metadata } from '../types';
 import type {
   LegacyHostSessionSystemRecord as SessionSystemRecord,
-  SessionSystemRecordNamespace,
   LegacyHostSessionSystemRecordUpsertRequest as SessionSystemRecordUpsertRequest,
   SessionTurnMutationV1,
   SessionPermissionMediationRecordIdentityV1,
@@ -40,6 +39,7 @@ export type MaterializeNextPendingResult =
     }
   | { type: 'no_pending' }
   | { type: 'retryable_transport'; retryAfterMs?: number }
+  | { type: 'unsupported'; code: 'session_input_target_update_required' }
   | { type: 'auth_failure' }
   | { type: 'deferred'; reason: 'supervisor_offline' | 'supervisor_auth_failed' | 'runtime_activity_active' | 'runtime_activity_unknown' };
 
@@ -98,13 +98,15 @@ export interface SessionClientPort {
 
   updateMetadata(updater: (metadata: Metadata) => Metadata): void | Promise<void>;
   updateAgentState(updater: (state: AgentState) => AgentState): void | Promise<void>;
+  /** Runtime-owned availability of the incumbent rich Activity alert sender. */
+  setOwnerActivityDelivery?(delivery: 'rich_sender' | 'home_required'): void;
   updateRuntimeActivityProjection?(projection: Readonly<{
     runtimeActivityState: 'active' | 'idle' | 'unknown';
     runtimeActivityActiveCount: number;
   }>): Promise<void>;
   upsertSessionSystemRecord?(request: SessionSystemRecordUpsertRequest): Promise<void>;
   fetchSessionSystemRecord?(params: Readonly<{
-    namespace: SessionSystemRecordNamespace;
+    namespace: SessionSystemRecord['namespace'];
     localId: string;
   }>): Promise<SessionSystemRecord | null>;
   readPermissionMediationRecord?(params: Readonly<{

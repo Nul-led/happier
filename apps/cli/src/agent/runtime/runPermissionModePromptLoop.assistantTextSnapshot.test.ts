@@ -101,6 +101,7 @@ describe('runPermissionModePromptLoop assistant text snapshots', () => {
       setCurrentPermissionMode: vi.fn(),
       setCurrentPermissionModeUpdatedAt: vi.fn(),
       formatPromptErrorMessage: (error) => String(error),
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     await vi.waitFor(() => {

@@ -4,7 +4,7 @@ import {
     PluginContributionIdentityV1Schema,
     qualifiedPurposeKey,
     type ConnectedAccountPurposeDeclarationV1,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type PluginContributionIdentityV1,
     type QualifiedConnectedAccountPurposeBindingV1,
     type QualifiedConnectedAccountPurposeV1,
@@ -24,6 +24,7 @@ import type {
 } from './ConnectedAccountRequestAuthSubjectRegistry';
 import {
     projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot,
+    type QualifiedPurposeTeamDirectMaterialOrigin,
 } from './firstPartyConnectedAccountRequestAuthAdapter';
 import type {
     ConnectedAccountPurposeAuthorizationScope,
@@ -78,6 +79,7 @@ export type AgentSpawnPurposeContributions = Readonly<{
 export type AgentSpawnQualifiedPurposeBindingSnapshot = Readonly<{
     purposes: readonly QualifiedConnectedAccountPurposeV1[];
     bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
+    directMaterialOrigins?: readonly QualifiedPurposeTeamDirectMaterialOrigin[];
     authorizedPurposes?: readonly ConnectedAccountPurposeAuthorizationScope[];
     fileMaterializationPurposes?: readonly ConnectedAccountPurposeAuthorizationScope[];
     requestAuthUses?: readonly QualifiedConnectedAccountRequestAuthUseV1[];
@@ -328,7 +330,7 @@ export function resolveQualifiedPurposeDeclarationSnapshotForAgentSpawn(
  */
 export function resolveQualifiedPurposeBindingsForAgentSpawn(input: Readonly<{
     agentId: string;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     contributions: AgentSpawnPurposeContributions;
 }>): readonly QualifiedConnectedAccountPurposeBindingV1[] {
     return resolveQualifiedPurposeBindingSnapshotForAgentSpawn(input)?.bindings
@@ -338,7 +340,7 @@ export function resolveQualifiedPurposeBindingsForAgentSpawn(input: Readonly<{
 export function resolveQualifiedRequestAuthPurposeBindingsForAgentSpawn(
     input: Readonly<{
         agentId: string;
-        bindings: ConnectedServiceBindingsV1;
+        bindings: ConnectedServiceBindingsV2;
         contributions: AgentSpawnPurposeContributions;
     }>,
 ): readonly QualifiedConnectedAccountPurposeBindingV1[] {
@@ -362,7 +364,7 @@ export function resolveQualifiedRequestAuthPurposeBindingsFromSnapshot(
 
 export function resolveQualifiedPurposeBindingSnapshotForAgentSpawn(input: Readonly<{
     agentId: string;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     contributions: AgentSpawnPurposeContributions;
 }>): AgentSpawnQualifiedPurposeBindingSnapshot | null {
     const declarations = resolveAgentSpawnPurposeDeclarations(input);

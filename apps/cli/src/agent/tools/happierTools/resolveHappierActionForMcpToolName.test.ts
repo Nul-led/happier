@@ -1,12 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { ActionsSettingsV1Schema } from '@happier-dev/protocol';
-
-import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { describe, expect, it } from 'vitest';
 
 import {
   resolveHappierActionForMcpToolName,
-  shouldSuppressProviderPermissionForHappierApproval,
+  resolveProviderPermissionForHappierAction,
 } from './resolveHappierActionForMcpToolName';
+import { buildHappierToolsShellBridgeCommand } from './runtime/buildHappierToolsShellBridgeCommand';
 
 describe('resolveHappierActionForMcpToolName', () => {
   it('maps first-party provider-prefixed MCP tool aliases to Happier action ids', () => {
@@ -31,62 +29,98 @@ describe('resolveHappierActionForMcpToolName', () => {
       input: {},
     })).toBeNull();
   });
+
 });
 
-describe('shouldSuppressProviderPermissionForHappierApproval', () => {
-  const envScope = createEnvKeyScope(['HAPPIER_ACTIONS_SETTINGS_V1']);
-
-  afterEach(() => {
-    envScope.restore();
-  });
-
-  it('suppresses provider prompts only when first-party Happier action approval is required', () => {
-    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
-      v: 1,
-      actions: {
-        'session.list': {
-          disabledSurfaces: [],
-          approvalRequiredSurfaces: ['agent'],
-        },
-      },
-    });
-
-    expect(shouldSuppressProviderPermissionForHappierApproval({
+describe('resolveProviderPermissionForHappierAction', () => {
+  it('delegates confirmation for every recognized Happier Action to the shared Action executor', () => {
+    expect(resolveProviderPermissionForHappierAction({
       toolName: 'mcp__happier__session_list',
       input: {},
-      surface: 'agent',
-    })).toEqual({ suppress: true, actionId: 'session.list' });
+      permissionMode: 'default',
+    })).toEqual({ decision: 'approved', actionId: 'session.list' });
 
-    expect(shouldSuppressProviderPermissionForHappierApproval({
+    expect(resolveProviderPermissionForHappierAction({
       toolName: 'mcp__happier__session_status_get',
       input: {},
-      surface: 'agent',
-    })).toEqual({ suppress: false, actionId: 'session.status.get' });
+      permissionMode: 'safe-yolo',
+    })).toEqual({ decision: 'approved', actionId: 'session.status.get' });
 
-    expect(shouldSuppressProviderPermissionForHappierApproval({
-      toolName: 'mcp__custom__session_list',
-      input: {},
-      surface: 'agent',
-    })).toEqual({ suppress: false, actionId: null });
-  });
+    expect(resolveProviderPermissionForHappierAction({
+      toolName: 'happier_action_execute',
+      input: { actionId: 'session.board.item.remove' },
+      permissionMode: 'default',
+    })).toEqual({ decision: 'approved', actionId: 'session.board.item.remove' });
 
-  it('does not suppress provider prompts for approval actions even when settings require approval', () => {
-    const rawActionsSettings: unknown = {
-      v: 1,
-      actions: {
-        'approval.request.create': {
-          approvalRequiredSurfaces: ['agent'],
-        },
-      },
-    };
-
-    expect(shouldSuppressProviderPermissionForHappierApproval({
+    expect(resolveProviderPermissionForHappierAction({
       toolName: 'mcp__happier__approval_request_create',
       input: {},
-      surface: 'agent',
-      accountSettings: {
-        actionsSettingsV1: ActionsSettingsV1Schema.parse(rawActionsSettings),
+      permissionMode: 'acceptEdits',
+    })).toEqual({ decision: 'approved', actionId: 'approval.request.create' });
+
+    expect(resolveProviderPermissionForHappierAction({
+      toolName: 'Bash',
+      input: {
+        command: buildHappierToolsShellBridgeCommand([
+          'call',
+          '--source',
+          'happier',
+          '--tool',
+          'action_execute',
+          '--args-json',
+          '{"actionId":"session.board.item.remove"}',
+          '--json',
+        ]),
       },
-    })).toEqual({ suppress: false, actionId: 'approval.request.create' });
+      permissionMode: 'default',
+    })).toEqual({ decision: 'approved', actionId: 'session.board.item.remove' });
+  });
+
+  it.each(['read-only', 'plan'] as const)(
+    'keeps the %s permission ceiling authoritative before Action confirmation',
+    (permissionMode) => {
+      expect(resolveProviderPermissionForHappierAction({
+        toolName: 'happier_action_execute',
+        input: { actionId: 'session.board.item.remove' },
+        permissionMode,
+      })).toEqual({ decision: 'denied', actionId: 'session.board.item.remove' });
+
+      expect(resolveProviderPermissionForHappierAction({
+        toolName: 'mcp__happier__session_board_get',
+        input: {},
+        permissionMode,
+      })).toEqual({ decision: 'approved', actionId: 'session.board.get' });
+
+      expect(resolveProviderPermissionForHappierAction({
+        toolName: 'Bash',
+        input: {
+          command: buildHappierToolsShellBridgeCommand([
+            'call',
+            '--source',
+            'happier',
+            '--tool',
+            'action_execute',
+            '--args-json',
+            '{"actionId":"session.board.item.remove"}',
+            '--json',
+          ]),
+        },
+        permissionMode,
+      })).toEqual({ decision: 'denied', actionId: 'session.board.item.remove' });
+    },
+  );
+
+  it('leaves unknown and non-Happier provider tools with the provider permission owner', () => {
+    expect(resolveProviderPermissionForHappierAction({
+      toolName: 'happier_action_execute',
+      input: { actionId: 'unknown.action' },
+      permissionMode: 'default',
+    })).toEqual({ decision: null, actionId: null });
+
+    expect(resolveProviderPermissionForHappierAction({
+      toolName: 'mcp__custom__session_list',
+      input: {},
+      permissionMode: 'default',
+    })).toEqual({ decision: null, actionId: null });
   });
 });

@@ -232,13 +232,13 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
           entry.lost = true;
           throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
         }
-        if (entry.owner.rootFingerprint === fingerprint) return;
         await withInventoryLock(async () => {
           const snapshot = await readSnapshot(entry.path);
           if (!snapshot?.record || !exactRecordOwner(snapshot.record, entry.owner, entry.processOwner)) {
             entry.lost = true;
             throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
           }
+          if (entry.owner.rootFingerprint === fingerprint) return;
           const boundOwner = { ...entry.owner, rootFingerprint: fingerprint } satisfies WorkspaceRootOwnership;
           await writeJsonAtomic(entry.path, { v: 2, ...boundOwner, processOwner: entry.processOwner } satisfies OwnershipRecordV2);
           entry.owner.rootFingerprint = fingerprint;

@@ -4,11 +4,14 @@ import { SocketAckError } from '@/session/transport/shared/socketAck';
 
 import {
     blockPendingQueueV2Delivery,
+    blockPendingExecutionRunDelivery,
+    enqueuePendingQueueV2MessageViaHttp,
     PendingQueueAcceptedSettlementError,
     isAcceptedPendingQueueV2DeliveryAckResponseLoss,
     listPendingQueueV2DeliveryStatusesFromServer,
     listPendingQueueV2ProviderDeliveryLocalIdsFromServer,
     materializeNextPendingQueueV2Message,
+    materializeNextPendingExecutionRunMessage,
     materializeNextPendingQueueV2MessageViaHttp,
     materializeNextPendingQueueV2MessageViaReleasedServerSocket,
     readAcceptedPendingQueueV2DeliveryRetryDirective,
@@ -16,6 +19,7 @@ import {
     readPendingQueueV2MessageContentByLocalIdFromServer,
     readPendingQueueV2ActivationEligibilityFromServer,
     resolveAcceptedPendingQueueV2Delivery,
+    resolveAcceptedPendingExecutionRunDelivery,
     settlePendingQueueV2Admission,
 } from './pendingQueueV2Transport';
 
@@ -38,6 +42,145 @@ describe('pendingQueueV2Transport', () => {
     beforeEach(() => {
         mockGet.mockReset();
         mockPost.mockReset();
+    });
+
+    it.each([
+        [403, 'session_access_authentication_required', false],
+        [503, 'session_access_authentication_unavailable', true],
+    ] as const)('preserves Pending enqueue Team-auth continuation %s/%s', async (status, code, retryable) => {
+        mockPost.mockRejectedValueOnce({ response: { status, data: { error: code } } });
+
+        await expect(enqueuePendingQueueV2MessageViaHttp({
+            token: 'token',
+            sessionId: 'session-1',
+            body: {
+                localId: 'input-1',
+                ciphertext: 'ciphertext',
+                requestedAction: { v: 1, kind: 'enqueue' },
+            },
+        })).rejects.toMatchObject({ code, status, retryable });
+    });
+
+    it('uses the caller-bound authorization for the exact pending enqueue request without a bearer fallback', async () => {
+        const body = {
+            localId: 'input-1',
+            content: { t: 'plain' as const, v: { role: 'user', content: { type: 'text', text: 'hello' } } },
+            requestedAction: { v: 1 as const, kind: 'steer_if_active' as const },
+        };
+        const resolveAuthorizationHeaders = vi.fn(() => ({ 'x-execution-proof': 'signed' }));
+        mockPost.mockResolvedValueOnce({ data: { didWrite: true } });
+
+        await expect(enqueuePendingQueueV2MessageViaHttp({
+            token: 'daemon-token-must-not-cross',
+            sessionId: 'session/with spaces',
+            body,
+            resolveAuthorizationHeaders,
+        })).resolves.toMatchObject({ didWrite: true });
+
+        expect(resolveAuthorizationHeaders).toHaveBeenCalledWith({
+            method: 'POST',
+            path: '/v2/sessions/session%2Fwith%20spaces/pending',
+            body,
+        });
+        const requestConfig = mockPost.mock.calls[0]?.[2] as { headers?: Record<string, string> } | undefined;
+        expect(requestConfig?.headers).toMatchObject({ 'x-execution-proof': 'signed' });
+        expect(requestConfig?.headers).not.toHaveProperty('Authorization');
+    });
+
+    it('claims only the exact execution-run socket resource and preserves its authenticated author', async () => {
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const socket = {
+            connected: true,
+            timeout: vi.fn(() => socket),
+            emitWithAck: vi.fn(async () => ({
+                v: 2, ok: true, didMaterialize: false,
+                recipient, sidechainId: 'sidechain-a', authorAccountId: null,
+                deliveryState: { mode: 'provider', unresolved: false },
+                pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 1,
+            })),
+        };
+        await expect(materializeNextPendingExecutionRunMessage({
+            socket: socket as never, sessionId: 'session-a', recipient,
+            sidechainId: 'sidechain-a', foregroundState: 'ready',
+            deliveryTiming: 'after_foreground_ready',
+        })).resolves.toMatchObject({ didMaterialize: false, recipient, sidechainId: 'sidechain-a', authorAccountId: null });
+        expect(socket.emitWithAck).toHaveBeenCalledWith('session-pending-execution-run-materialize-next-v2', {
+            v: 2, sessionId: 'session-a', recipient, sidechainId: 'sidechain-a',
+            foregroundState: 'ready', deliveryTiming: 'after_foreground_ready',
+        });
+        expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { recipient: { kind: 'execution_run', runId: 'run-b' }, sidechainId: 'sidechain-a' },
+        { recipient: { kind: 'execution_run', runId: 'run-a' }, sidechainId: 'sidechain-b' },
+        { recipient: { kind: 'execution_run', runId: 'run-a', label: 'forged' }, sidechainId: 'sidechain-a' },
+        {},
+    ])('rejects mismatched target acknowledgement without main or HTTP fallback: %j', async (echo) => {
+        const socket = {
+            connected: true,
+            timeout: vi.fn(() => socket),
+            emitWithAck: vi.fn(async () => ({
+                v: 2, ok: true, didMaterialize: false, authorAccountId: null,
+                deliveryState: { mode: 'provider', unresolved: false },
+                pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 1, ...echo,
+            })),
+        };
+        await expect(materializeNextPendingExecutionRunMessage({
+            socket: socket as never, sessionId: 'session-a',
+            recipient: { kind: 'execution_run', runId: 'run-a' },
+            sidechainId: 'sidechain-a', foregroundState: 'ready', deliveryTiming: 'after_foreground_ready',
+        })).rejects.toMatchObject({ classification: 'malformed_ack' });
+        expect(socket.emitWithAck).toHaveBeenCalledTimes(1);
+        expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('settles the exact target user anchor and rejects a different localId', async () => {
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const ack = {
+            v: 2, recipient, sidechainId: 'sidechain-a',
+            result: {
+                ok: true, didResolve: true,
+                pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 2,
+                message: {
+                    id: 'message-a', localId: 'input-a', seq: 8,
+                    content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } },
+                    createdAt: 1, updatedAt: 1,
+                },
+            },
+        };
+        const socket = {
+            connected: true, timeout: vi.fn(() => socket), emitWithAck: vi.fn(async () => ack),
+        };
+        const request = { socket: socket as never, sessionId: 'session-a', recipient, sidechainId: 'sidechain-a', localId: 'input-a' };
+        await expect(resolveAcceptedPendingExecutionRunDelivery(request)).resolves.toMatchObject({
+            didResolve: true, message: { localId: 'input-a', seq: 8 },
+        });
+        expect(socket.emitWithAck).toHaveBeenCalledWith('session-pending-execution-run-delivery-accepted-v2', {
+            v: 2, sessionId: 'session-a', recipient, sidechainId: 'sidechain-a', localId: 'input-a',
+        });
+        ack.result.message.localId = 'other-input';
+        await expect(resolveAcceptedPendingExecutionRunDelivery(request)).rejects.toThrow();
+        expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('blocks unavailable target input through the authenticated publisher without an Account fallback', async () => {
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        const socket = {
+            connected: true, timeout: vi.fn(() => socket),
+            emitWithAck: vi.fn(async () => ({
+                v: 2, recipient, localId: 'input-a',
+                result: { ok: true, didUpdate: true, pendingCount: 1, pendingBlockedCount: 1, pendingVersion: 2 },
+            })),
+        };
+        await expect(blockPendingExecutionRunDelivery({
+            socket: socket as never, sessionId: 'session-a', recipient, localId: 'input-a',
+            reason: 'session_input_target_unavailable',
+        })).resolves.toMatchObject({ didUpdate: true });
+        expect(socket.emitWithAck).toHaveBeenCalledWith('session-pending-execution-run-delivery-block-v2', {
+            v: 2, sessionId: 'session-a', recipient, localId: 'input-a', reason: 'session_input_target_unavailable',
+        });
+        expect(mockPost).not.toHaveBeenCalled();
     });
 
     it('reads one exact pending message content for durable admission rejoin', async () => {
@@ -1091,6 +1234,36 @@ describe('pendingQueueV2Transport', () => {
         ]);
     });
 
+    it('lists target delivery statuses from the exact run route and validates the recipient echo', async () => {
+        const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+        mockGet.mockResolvedValueOnce({
+            data: {
+                recipient,
+                pending: [{ localId: 'target-input', status: 'queued', deliveryState: 'blocked', deliveryBlockedReason: 'provider_rejected_before_acceptance' }],
+            },
+        });
+
+        await expect(listPendingQueueV2DeliveryStatusesFromServer({
+            token: 'token', sessionId: 'session-a', recipient,
+        })).resolves.toEqual([
+            { localId: 'target-input', status: 'blocked', deliveryStatus: { status: 'blocked', reason: 'provider_rejected_before_acceptance' } },
+        ]);
+        expect(mockGet).toHaveBeenCalledWith(
+            expect.stringContaining('/v2/sessions/session-a/execution-runs/run-a/pending'),
+            expect.objectContaining({
+                headers: expect.objectContaining({ Authorization: 'Bearer token' }),
+                timeout: 10_000,
+            }),
+        );
+
+        mockGet.mockResolvedValueOnce({
+            data: { recipient: { kind: 'execution_run', runId: 'run-b' }, pending: [] },
+        });
+        await expect(listPendingQueueV2DeliveryStatusesFromServer({
+            token: 'token', sessionId: 'session-a', recipient,
+        })).rejects.toThrow('Target pending status recipient mismatch');
+    });
+
     it('keeps whitespace-distinct opaque local ids separate in delivery status projection', async () => {
         mockGet.mockResolvedValueOnce({
             data: {
@@ -1181,7 +1354,7 @@ describe('pendingQueueV2Transport', () => {
         });
     });
 
-    it('admits only the exact queued user send-now Pending row for activation', async () => {
+    it('admits the exact queued user row for authorized activation without coupling delivery priority', async () => {
         mockGet.mockResolvedValueOnce({
             data: {
                 pending: [
@@ -1201,7 +1374,7 @@ describe('pendingQueueV2Transport', () => {
         mockGet.mockResolvedValueOnce({
             data: {
                 pending: [{
-                    localId: 'wrong-action',
+                    localId: 'authorized-enqueue',
                     messageRole: 'user',
                     requestedAction: { v: 1, kind: 'enqueue' },
                     deliveryStatus: { status: 'queued' },
@@ -1209,8 +1382,8 @@ describe('pendingQueueV2Transport', () => {
             },
         });
         await expect(readPendingQueueV2ActivationEligibilityFromServer({
-            token: 'token', sessionId: 'session-1', requestId: 'wrong-action',
-        })).resolves.toBe('ineligible');
+            token: 'token', sessionId: 'session-1', requestId: 'authorized-enqueue',
+        })).resolves.toBe('eligible');
 
         mockGet.mockResolvedValueOnce({ data: { pending: [] } });
         await expect(readPendingQueueV2ActivationEligibilityFromServer({

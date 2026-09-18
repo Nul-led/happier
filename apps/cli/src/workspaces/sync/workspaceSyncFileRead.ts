@@ -1,17 +1,27 @@
 import { createHash } from 'node:crypto';
-import { lstat, open, realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep, win32 } from 'node:path';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
   type ReadWorkspaceSyncFileResultV1,
 } from '@happier-dev/protocol';
-import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
+import { withConfinedWorkspaceSyncParent } from './workspaceSyncConfinedFileSystem';
+import {
+  runNativeConfinedWorkspaceSyncRead,
+  type RunNativeConfinedReadInput,
+} from './workspaceSyncNativeConfinedFileSystem';
 
 export type ReadWorkspaceSyncFileAtRootInput = Readonly<{
   rootPath: string;
   relativePath: string;
   expectedDigest?: string;
   maxBytes: number;
+  assertCurrentAuthority?: () => Promise<void>;
+}>;
+
+export type ReadWorkspaceSyncFileAtRootDependencies = Readonly<{
+  runNativeConfinedRead?: (input: RunNativeConfinedReadInput) => Promise<Awaited<ReturnType<typeof runNativeConfinedWorkspaceSyncRead>>>;
 }>;
 
 function unsafePath(message: string): Error {
@@ -25,20 +35,6 @@ function isMissing(error: unknown): boolean {
     && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-function validateRelativePath(value: string): string {
-  const trimmed = value.trim();
-  const pathParts = trimmed.split(/[\\/]+/u);
-  if (
-    !trimmed
-    || isAbsolute(trimmed)
-    || win32.isAbsolute(trimmed)
-    || pathParts.some((part) => part === '..')
-  ) {
-    throw unsafePath('workspace file path must be root-relative');
-  }
-  return trimmed;
-}
-
 function validateMaxBytes(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0 || value > WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES) {
     throw Object.assign(new Error('workspace file preview byte limit is invalid'), {
@@ -50,100 +46,99 @@ function validateMaxBytes(value: number): number {
 
 export async function readWorkspaceSyncFileAtRoot(
   input: ReadWorkspaceSyncFileAtRootInput,
+  dependencies: ReadWorkspaceSyncFileAtRootDependencies = {},
 ): Promise<ReadWorkspaceSyncFileResultV1> {
-  const relativePath = validateRelativePath(input.relativePath);
   const maxBytes = validateMaxBytes(input.maxBytes);
-  const canonicalRoot = await realpath(resolve(input.rootPath)).catch(() => {
-    throw unsafePath('workspace root is unavailable');
-  });
-  const candidate = resolve(canonicalRoot, relativePath);
-  const candidateRelative = relative(canonicalRoot, candidate);
-  if (
-    candidateRelative === ''
-    || candidateRelative === '..'
-    || candidateRelative.startsWith(`..${sep}`)
-    || isAbsolute(candidateRelative)
-    || !isCanonicalAbsolutePathInsideRoot(canonicalRoot, candidate)
-  ) {
-    throw unsafePath('workspace file path escapes or identifies the workspace root');
-  }
-
-  const entry = await lstat(candidate).catch((error: unknown) => {
-    if (isMissing(error)) return null;
-    throw error;
-  });
-  if (!entry) return { status: 'missing' };
-  if (entry.isSymbolicLink()) throw unsafePath('workspace file preview does not follow symlinks');
-
-  const canonicalCandidate = await realpath(candidate).catch((error: unknown) => {
-    if (isMissing(error)) return null;
-    throw error;
-  });
-  if (!canonicalCandidate) return { status: 'missing' };
-  if (!isCanonicalAbsolutePathInsideRoot(canonicalRoot, canonicalCandidate)) {
-    throw unsafePath('workspace file resolves outside its root');
-  }
-
-  const handle = await open(canonicalCandidate, 'r').catch((error: unknown) => {
-    if (isMissing(error)) return null;
-    throw error;
-  });
-  if (!handle) return { status: 'missing' };
-  try {
-    const before = await handle.stat();
-    if (!before.isFile()) {
-      throw Object.assign(new Error('workspace conflict entry is not a file'), {
-        code: 'workspace_file_unsupported',
-      });
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    const outcome = await (dependencies.runNativeConfinedRead ?? runNativeConfinedWorkspaceSyncRead)({
+      rootPath: input.rootPath,
+      relativePath: input.relativePath,
+      maxBytes,
+      ...(input.expectedDigest === undefined ? {} : { expectedDigest: input.expectedDigest }),
+      ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    });
+    if (outcome.status !== 'content') return outcome;
+    if (outcome.content.includes(0)) {
+      return { status: 'binary', digest: outcome.digest, size: outcome.size };
     }
-    if (before.size > maxBytes && input.expectedDigest === undefined) {
-      return { status: 'too_large', size: before.size };
-    }
-
-    const hash = createHash('sha1');
-    const retained: Buffer[] = [];
-    let retainedBytes = 0;
-    let offset = 0;
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    while (true) {
-      const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
-      if (bytesRead === 0) break;
-      const bytes = chunk.subarray(0, bytesRead);
-      hash.update(bytes);
-      if (retainedBytes <= maxBytes) {
-        const remaining = maxBytes + 1 - retainedBytes;
-        if (remaining > 0) {
-          const retainedChunk = Buffer.from(bytes.subarray(0, remaining));
-          retained.push(retainedChunk);
-          retainedBytes += retainedChunk.byteLength;
-        }
-      }
-      offset += bytesRead;
-    }
-    const after = await handle.stat();
-    const digest = hash.digest('hex');
-    if (
-      after.size !== before.size
-      || after.mtimeMs !== before.mtimeMs
-      || after.ino !== before.ino
-      || after.dev !== before.dev
-      || (input.expectedDigest !== undefined && digest !== input.expectedDigest)
-    ) {
-      return { status: 'changed', actualDigest: digest };
-    }
-    if (offset > maxBytes) {
-      return { status: 'too_large', size: offset, digest };
-    }
-
-    const bytes = Buffer.concat(retained, offset);
-    if (bytes.includes(0)) return { status: 'binary', digest, size: offset };
     try {
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      return { status: 'text', text, digest, size: offset };
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(outcome.content);
+      return { status: 'text', text, digest: outcome.digest, size: outcome.size };
     } catch {
-      return { status: 'binary', digest, size: offset };
+      return { status: 'binary', digest: outcome.digest, size: outcome.size };
     }
-  } finally {
-    await handle.close();
   }
+  return await withConfinedWorkspaceSyncParent({
+    rootPath: input.rootPath,
+    relativePath: input.relativePath,
+    ...(input.assertCurrentAuthority ? { assertCurrentAuthority: input.assertCurrentAuthority } : {}),
+    run: async ({ parentHandlePath, finalName }) => {
+      const openFlags = constants.O_RDONLY | constants.O_NOFOLLOW;
+      const handle = await open(resolve(parentHandlePath, finalName), openFlags).catch((error: unknown) => {
+        if (isMissing(error)) return null;
+        if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+          throw unsafePath('workspace file preview does not follow symlinks');
+        }
+        throw error;
+      });
+      if (!handle) return { status: 'missing' };
+      try {
+        const before = await handle.stat();
+        if (!before.isFile()) {
+          throw Object.assign(new Error('workspace conflict entry is not a file'), {
+            code: 'workspace_file_unsupported',
+          });
+        }
+        if (before.size > maxBytes && input.expectedDigest === undefined) {
+          return { status: 'too_large', size: before.size };
+        }
+
+        const hash = createHash('sha1');
+        const retained: Buffer[] = [];
+        let retainedBytes = 0;
+        let offset = 0;
+        const chunk = Buffer.allocUnsafe(64 * 1024);
+        while (true) {
+          const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
+          if (bytesRead === 0) break;
+          const bytes = chunk.subarray(0, bytesRead);
+          hash.update(bytes);
+          if (retainedBytes <= maxBytes) {
+            const remaining = maxBytes + 1 - retainedBytes;
+            if (remaining > 0) {
+              const retainedChunk = Buffer.from(bytes.subarray(0, remaining));
+              retained.push(retainedChunk);
+              retainedBytes += retainedChunk.byteLength;
+            }
+          }
+          offset += bytesRead;
+        }
+        const after = await handle.stat();
+        const digest = hash.digest('hex');
+        if (
+          after.size !== before.size
+          || after.mtimeMs !== before.mtimeMs
+          || after.ino !== before.ino
+          || after.dev !== before.dev
+          || (input.expectedDigest !== undefined && digest !== input.expectedDigest)
+        ) {
+          return { status: 'changed', actualDigest: digest };
+        }
+        if (offset > maxBytes) {
+          return { status: 'too_large', size: offset, digest };
+        }
+
+        const bytes = Buffer.concat(retained, offset);
+        if (bytes.includes(0)) return { status: 'binary', digest, size: offset };
+        try {
+          const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          return { status: 'text', text, digest, size: offset };
+        } catch {
+          return { status: 'binary', digest, size: offset };
+        }
+      } finally {
+        await handle.close();
+      }
+    },
+  });
 }

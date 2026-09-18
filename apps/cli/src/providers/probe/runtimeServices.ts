@@ -312,6 +312,7 @@ export function createRuntimeProviderServices(input: Readonly<{
   >;
   resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
   resolveContributedCatalogParsers?: ResolveContributedProviderCatalogParsers;
+  openTeamDirect?: Parameters<typeof createRuntimeProviderProbeAuthorizationPort>[0]['openTeamDirect'];
 }>): RuntimeProviderServices {
   const happyHomeDir = input.happyHomeDir ?? configuration.happyHomeDir;
   const resolveRegistry = input.resolveRegistry ?? (input.registry
@@ -352,6 +353,7 @@ export function createRuntimeProviderServices(input: Readonly<{
             input.resolveManagedPurposeBindingIntent,
         }
       : {}),
+    ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
   });
   const modelLoadAuthorization = createRuntimeProviderModelLoadAuthorizationPort({
     resolveRegistry,
@@ -360,6 +362,7 @@ export function createRuntimeProviderServices(input: Readonly<{
     ...(input.localCandidateUrlsByConnectionId
       ? { localCandidateUrlsByConnectionId: input.localCandidateUrlsByConnectionId }
       : {}),
+    ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
   });
   const catalogService = createProviderCatalogService({
     client,
@@ -381,6 +384,7 @@ export function createRuntimeProviderServices(input: Readonly<{
     resolveAddresses: input.resolveAddresses ?? (async (hostname) =>
       (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address)),
     client,
+    ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
   });
   const providerFeatureDisabled = (identity: Readonly<{ connectionId: string; machineId: string }>) => ({
     status: 'error' as const,

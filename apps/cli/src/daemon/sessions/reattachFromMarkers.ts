@@ -2,6 +2,8 @@ import { isPidPresent } from '@happier-dev/cli-common/process';
 import { logger } from '@/ui/logger';
 import type { StoredCredentials } from '@/persistence';
 import { parseOptionalBooleanEnv } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { hasActiveTerminalControlServiceabilityDescriptor } from '@/daemon/startup/terminalControlServiceabilityProjection';
 import {
   resolveCatalogAgentId,
   resolveCatalogAgentIdForCliSubcommand,
@@ -410,11 +412,10 @@ async function recoverMarkerlessDaemonSpawnedSessions(params: Readonly<{
       || (parsedRespawnDescriptor?.version === 2 && validatedRecoveredRespawn?.version !== 2)) {
       continue;
     }
-    const resolvedVendorResumeId = typeof spawnOptions?.resume === 'string' && spawnOptions.resume.trim().length > 0
-      ? spawnOptions.resume.trim()
-      : vendorResumeId
-        ?? parsedRespawnDescriptor?.vendorResumeId
-        ?? null;
+    const resolvedVendorResumeId = readNonBlankOpaqueIdentifier(spawnOptions?.resume)
+      ?? vendorResumeId
+      ?? parsedRespawnDescriptor?.vendorResumeId
+      ?? null;
     pidToTrackedSession.set(processInfo.pid, {
       startedBy: 'daemon',
       happySessionId,
@@ -642,7 +643,10 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
             attachmentId: attachmentState.info.attachmentId,
             handle: attachmentState.info.handle,
             terminalMode,
-            controlDescriptorAvailable: false,
+            controlDescriptorAvailable: hasActiveTerminalControlServiceabilityDescriptor({
+              terminal: marker.metadata?.terminal,
+              attachmentId: attachmentState.info.attachmentId,
+            }),
           });
           continue;
         }

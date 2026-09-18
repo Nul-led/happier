@@ -7,27 +7,37 @@ import {
 } from '@happier-dev/agents';
 import {
   readPendingLocalId,
-  requiresAuthenticatedMachineAdmissionForSessionInputV1,
+  requiresAuthenticatedMachineAdmissionForSessionInput,
   resolveLinkedExternalSessionAuthorityV1,
   SESSION_MESSAGE_PROVENANCE_META_KEY,
-  SessionInputRequestV1Schema,
-  SessionMessageProvenanceV1Schema,
+  SessionInputRequestSchema,
+  SessionMessageProvenanceSchema,
   stripSessionInputProtectedMeta,
   withSessionMessageModelSelectionV1,
   type ProviderErrorV1,
-  type SessionInputRequestV1,
-  type SessionMessageProvenanceV1,
+  type SessionInputRequest,
+  type SessionMessageProvenance,
   SessionInputAdmissionRejectionCodeV1Schema,
   SessionCreationCorrespondenceV1Schema,
   type SessionInputAdmissionRejectionCodeV1,
   type SessionInputAdmissionResultV1,
+  type SessionMessageSendResultV1,
   type SessionPendingEnqueueByMachineRequestV1,
+  type SessionPendingExecutionRunEnqueueByMachineRequestV2,
   type PendingRequestedActionV1,
+  type ParticipantRecipientV1,
+  normalizeParticipantRecipientRoutingIdentityV1,
+  withParticipantRecipientV1,
+  ExecutionRunGetResponseSchema,
+  ExecutionRunInputTurnV1Schema,
+  type ExecutionRunInputTurnV1,
+  type ExecutionRunPublicState,
 } from '@happier-dev/protocol';
 
 import { fetchEncryptedTranscriptPageAfterSeq } from '@/api/session/fetchEncryptedTranscriptWindow';
 import {
   enqueuePendingQueueV2MessageViaHttp,
+  enqueuePendingExecutionRunMessageViaHttp,
   listPendingQueueV2DeliveryStatusesFromServer,
   readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
   type PendingQueueDeliveryBlockedReason,
@@ -37,6 +47,7 @@ import {
   type TranscriptMessageLookupResult,
 } from '@/api/session/transcriptMessageLookup';
 import type { StoredCredentials } from '@/persistence';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
   detectSessionTurnActivity,
   isSessionAgentThreadTextUserMessage,
@@ -50,9 +61,13 @@ import { waitForIdleViaSocket } from '@/session/transport/socket/sessionSocketAg
 import {
   decryptSessionPayload,
   deriveSessionInputEqualityTagV1,
-  encryptSessionPayload,
+  sealSessionStoredContent,
   tryDecryptSessionOwnerMetadataView,
+  type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
+import { getExecutionRun } from '@/session/services/executionRuns';
+import { extractUsageObservationFromTokenCountMessage } from '@/usage/usageObservation';
+import { createExactTurnUsageAccumulator } from '@/usage/exactTurnUsage';
 import {
   detectSessionTurnLifecycleEvent,
   isBareSessionReadyEvent,
@@ -65,6 +80,7 @@ import {
   type SessionMessageModelSelectionInput,
 } from './resolveSessionMessageModel';
 import { requestInactiveSessionResume } from './requestInactiveSessionResume';
+import { buildImmutableSessionInputEqualityEnvelopeV1 } from './sessionInputEqualityEnvelope';
 import { decodeTranscriptBody } from './transcript/transcriptBodyDecoder';
 
 export type SendSessionMessageResult =
@@ -91,6 +107,8 @@ export type SendSessionMessageResult =
       message?: string;
       providerError?: ProviderErrorV1;
       admissionResult?: SessionInputAdmissionResultV1;
+      /** Proven terminal settlement for one exact admitted Execution Run input. */
+      settlementResult?: Extract<SessionMessageSendResultV1, { status: 'failed' | 'cancelled' }>;
     }>;
 
 /**
@@ -98,15 +116,22 @@ export type SendSessionMessageResult =
  * service returns the canonical final text and does not invent a
  * consumer-specific result ceiling.
  */
+export type SessionInputUsageV1 = Readonly<{
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+}>;
+
 export type SessionInputResultV1 =
   | Readonly<{ kind: 'pending' }>
-  | Readonly<{ kind: 'final_text'; text: string }>
+  | Readonly<{ kind: 'final_text'; text: string; usage?: SessionInputUsageV1 }>
   | Readonly<{
       kind: 'terminal_no_result';
       reason: 'missing_final_assistant_text';
+      usage?: SessionInputUsageV1;
     }>
-  | Readonly<{ kind: 'failed'; message: string }>
-  | Readonly<{ kind: 'cancelled'; message: string }>;
+  | Readonly<{ kind: 'failed'; message: string; usage?: SessionInputUsageV1 }>
+  | Readonly<{ kind: 'cancelled'; message: string; usage?: SessionInputUsageV1 }>;
 
 export type WaitForSessionInputResult =
   | Readonly<{
@@ -124,16 +149,39 @@ export type WaitForSessionInputResult =
         | 'unsupported'
         | 'encryption_material_unavailable'
         | 'invalid_local_id'
+        | 'cancelled'
         | 'result_read_failed';
       candidates?: string[];
     }>;
+
+export type SessionInputResultObservationV1 =
+  | Readonly<{ kind: 'no_deadline' }>
+  | Readonly<{ kind: 'absolute_deadline'; deadlineMs: number }>;
+
+type ResolveSessionMessageAuthorizationHeaders = (request: Readonly<{
+  method: string;
+  path: string;
+  body?: unknown;
+}>) => Readonly<Record<string, string>> | null;
 
 export type WaitForSessionInputResultParams = Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
   localId: string;
-  timeoutMs: number;
-}>;
+  signal?: AbortSignal;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+}> & (
+  | Readonly<{
+      /** Incumbent bounded observer contract retained for Automation V1. */
+      timeoutMs: number;
+      observation?: never;
+    }>
+  | Readonly<{
+      /** Workflow observers author either one absolute deadline or no deadline. */
+      observation: SessionInputResultObservationV1;
+      timeoutMs?: never;
+    }>
+);
 
 type SendSessionMessageParams = Readonly<{
   credentials: StoredCredentials;
@@ -142,6 +190,7 @@ type SendSessionMessageParams = Readonly<{
   wait: boolean;
   timeoutMs: number;
   localId?: string;
+  recipient?: ParticipantRecipientV1;
   resumeInactiveSession?: boolean;
   permissionModeOverride?: string;
   modelSelectionInput?: SessionMessageModelSelectionInput;
@@ -149,6 +198,12 @@ type SendSessionMessageParams = Readonly<{
   /** Deployed CLI compatibility only; new action callers pass modelSelectionInput. */
   modelOverride?: string | null;
   signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
+  machineResumeTransport?: (
+    method: string,
+    request: unknown,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<unknown>;
   /**
    * Already-sanitized presentation/attachment metadata for this host-built
    * human input. Admission metadata is stripped and recreated below.
@@ -158,14 +213,15 @@ type SendSessionMessageParams = Readonly<{
   requestedAction?: PendingRequestedActionV1;
   /** Host-built protected facts. Never populated from caller-controlled message metadata. */
   inputAdmission?: Readonly<{
-    provenance: SessionMessageProvenanceV1;
-    request: SessionInputRequestV1;
+    provenance: SessionMessageProvenance;
+    request: SessionInputRequest;
   }>;
   /** Authenticated daemon transport. Machine-only assertions never fall back to Account admission. */
   machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
+    request: SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2,
     options?: Readonly<{ signal?: AbortSignal }>,
   ) => Promise<SessionInputAdmissionResultV1>;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
 type SendProtectedSessionMessageParams = SendSessionMessageParams & Readonly<{
@@ -287,35 +343,8 @@ function resolveProtectedInputTargetMachineId(params: Readonly<{
   return predecessorMachineId || null;
 }
 
-/**
- * Equality identifies immutable caller intent, not target-derived defaults.
- * Protected records therefore carry only caller-selected overrides; the
- * current target re-evaluates its Session policy/model when it admits them.
- */
-function buildImmutableSessionInputEqualityEnvelopeV1(params: Readonly<{
-  localId: string;
-  record: Readonly<{
-    role: 'user';
-    content: Readonly<{ type: 'text'; text: string }>;
-    meta: Record<string, unknown>;
-  }>;
-  pendingAdmissionMode?: 'continuation_if_no_queued_user_input';
-}>): Record<string, unknown> {
-  return {
-    v: 1,
-    kind: 'sessionInputRequest',
-    localId: params.localId,
-    // This is the same immutable plaintext record that would be persisted for
-    // a plain Session. It intentionally includes caller presentation metadata
-    // and the protected request facts, while target-derived defaults were
-    // already excluded when the record was built above.
-    content: { t: 'plain', v: params.record },
-    ...(params.pendingAdmissionMode ? { pendingAdmissionMode: params.pendingAdmissionMode } : {}),
-  };
-}
-
 function resolveCanonicalMessageSource(params: Readonly<{
-  protectedAdmission: Readonly<{ request: SessionInputRequestV1 }> | null;
+  protectedAdmission: Readonly<{ request: SessionInputRequest }> | null;
 }>): 'automation' | 'ui' {
   return params.protectedAdmission?.request.producer === 'automation'
     ? 'automation'
@@ -331,6 +360,7 @@ async function resolveCurrentTurnAfterSeqExclusive(params: Readonly<{
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
   }> | null;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<number> {
   const materializedSeq = Math.max(0, Math.trunc(params.materializedSeq));
   const fallbackAfterSeqExclusive = Math.max(0, materializedSeq - 1);
@@ -342,6 +372,9 @@ async function resolveCurrentTurnAfterSeqExclusive(params: Readonly<{
       sessionId: params.sessionId,
       afterSeq: Math.max(0, materializedSeq - windowSize),
       limit: windowSize + 1,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
     const orderedRows = [...rows].sort((a, b) => a.seq - b.seq);
     for (let index = orderedRows.length - 1; index >= 0; index -= 1) {
@@ -383,8 +416,18 @@ async function resolveCurrentTurnAfterSeqExclusive(params: Readonly<{
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.trunc(ms))));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, Math.max(1, Math.trunc(ms)));
+    function finish(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    }
+    signal?.addEventListener('abort', finish, { once: true });
+    if (signal?.aborted) finish();
+  });
 }
 
 function decryptTranscriptRowContent(params: Readonly<{
@@ -526,16 +569,21 @@ function turnActivityFromProjectedCurrentTurnStatus(
 }
 
 type AssistantTurnFailure =
-  | Readonly<{ kind: 'failed'; message: string }>
-  | Readonly<{ kind: 'cancelled'; message: string }>;
+  | Readonly<{ kind: 'failed'; message: string; usage?: SessionInputUsageV1 }>
+  | Readonly<{ kind: 'cancelled'; message: string; usage?: SessionInputUsageV1 }>;
 
 type AssistantTurnOutcome =
   | Readonly<{ kind: 'missing' }>
-  | Readonly<{ kind: 'completed'; finalAssistantText: string | null }>
+  | Readonly<{
+      kind: 'completed';
+      finalAssistantText: string | null;
+      usage?: SessionInputUsageV1;
+    }>
   | AssistantTurnFailure;
 
 const ASSISTANT_TURN_SCAN_PAGE_LIMIT = 100;
 const CURRENT_PROMPT_DELIVERY_POLL_MS = 250;
+const EXECUTION_RUN_INPUT_TURN_POLL_MS = 250;
 
 type CurrentPromptDeliveryOutcome =
   | Readonly<{ kind: 'missing' }>
@@ -550,6 +598,7 @@ async function readBlockedPromptDeliveryReason(params: Readonly<{
   token: string;
   sessionId: string;
   localId: string;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<PendingQueueDeliveryBlockedReason | null> {
   try {
     return (await readBlockedPendingQueueV2DeliveryByLocalIdFromServer(params))?.reason ?? null;
@@ -562,17 +611,22 @@ async function waitForCurrentPromptDelivery(params: Readonly<{
   token: string;
   sessionId: string;
   localId: string;
-  maxWaitMs: number;
+  deadlineMs: number | null;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<CurrentPromptDeliveryOutcome> {
-  const deadlineMs = Date.now() + Math.max(1, Math.trunc(params.maxWaitMs));
-
-  while (Date.now() <= deadlineMs) {
-    const remainingMs = deadlineMs - Date.now();
+  while (!params.signal?.aborted && (params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
+    const remainingMs = params.deadlineMs === null
+      ? CURRENT_PROMPT_DELIVERY_POLL_MS
+      : params.deadlineMs - Date.now();
     const materialized = await waitForTranscriptEncryptedMessageByLocalId({
       token: params.token,
       sessionId: params.sessionId,
       localId: params.localId,
       maxWaitMs: Math.max(1, Math.min(CURRENT_PROMPT_DELIVERY_POLL_MS, remainingMs)),
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
     if (materialized) {
       return { kind: 'materialized', message: materialized };
@@ -600,16 +654,41 @@ async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
   }> | null;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<Readonly<{
   failure: AssistantTurnFailure | null;
   sawCompletion: boolean;
   finalAssistantText: string | null;
+  usage?: SessionInputUsageV1;
 }>> {
   let afterSeq = Math.max(0, Math.trunc(params.materializedSeq) - 1);
   let currentUserSeq = Math.max(0, Math.trunc(params.materializedSeq));
   let observedAgentProgress = false;
   let sawCompletion = false;
   let finalAssistantText: string | null = null;
+  const exactTurnUsage = createExactTurnUsageAccumulator();
+
+  const addTurnUsage = (value: unknown): void => {
+    const row = asRecord(value);
+    const content = asRecord(row?.content) ?? row;
+    const data = asRecord(content?.data);
+    if (!content || !data || (data.type !== 'token_count' && data.type !== 'token-count')) return;
+    const provider = typeof content.agentId === 'string' && content.agentId.trim()
+      ? content.agentId
+      : typeof content.provider === 'string' && content.provider.trim()
+        ? content.provider
+        : content.type === 'codex'
+          ? 'codex'
+          : 'unknown';
+    const observation = extractUsageObservationFromTokenCountMessage({
+      provider,
+      body: data,
+      defaultScope: 'turn_delta',
+    });
+    if (observation) exactTurnUsage.observe(observation);
+  };
+
+  const currentUsage = (): SessionInputUsageV1 | undefined => exactTurnUsage.current();
 
   while (true) {
     const rows = await fetchEncryptedTranscriptPageAfterSeq({
@@ -617,6 +696,9 @@ async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
       sessionId: params.sessionId,
       afterSeq,
       limit: ASSISTANT_TURN_SCAN_PAGE_LIMIT,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
     const orderedRows = [...rows].sort((a, b) => a.seq - b.seq);
     const matchedCurrentUserSeq = orderedRows.find((row) => row.localId === params.localId)?.seq;
@@ -636,13 +718,21 @@ async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
       // starts another turn and must not become a fallback result for this
       // input when a legacy transcript lacks an explicit turn anchor.
       if (isSessionAgentThreadTextUserMessage(decrypted)) {
-        return { failure: null, sawCompletion, finalAssistantText };
+        const usage = currentUsage();
+        return { failure: null, sawCompletion, finalAssistantText, ...(usage ? { usage } : {}) };
       }
       const failure = readAssistantTurnFailure(decrypted);
       if (failure) {
-        return { failure, sawCompletion, finalAssistantText };
+        const usage = currentUsage();
+        return {
+          failure: usage ? { ...failure, usage } : failure,
+          sawCompletion,
+          finalAssistantText,
+          ...(usage ? { usage } : {}),
+        };
       }
       const decoded = decodeTranscriptBody(decrypted);
+      addTurnUsage(decrypted);
       if (decoded?.semanticRole === 'assistant' && decoded.sidechainId === undefined && decoded.text) {
         finalAssistantText = decoded.text;
       }
@@ -665,11 +755,13 @@ async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
     }
 
     if (orderedRows.length < ASSISTANT_TURN_SCAN_PAGE_LIMIT) {
-      return { failure: null, sawCompletion, finalAssistantText };
+      const usage = currentUsage();
+      return { failure: null, sawCompletion, finalAssistantText, ...(usage ? { usage } : {}) };
     }
     const lastRowSeq = orderedRows[orderedRows.length - 1]?.seq ?? null;
     if (!Number.isSafeInteger(lastRowSeq) || lastRowSeq <= afterSeq) {
-      return { failure: null, sawCompletion, finalAssistantText };
+      const usage = currentUsage();
+      return { failure: null, sawCompletion, finalAssistantText, ...(usage ? { usage } : {}) };
     }
     afterSeq = lastRowSeq;
   }
@@ -684,13 +776,18 @@ async function readAssistantTurnOutcomeAfterCurrentUserTurn(params: Readonly<{
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
   }> | null;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<AssistantTurnOutcome> {
   const scan = await scanAssistantTurnAfterCurrentUserTurn(params);
   if (scan.failure) {
     return scan.failure;
   }
   return scan.sawCompletion
-    ? { kind: 'completed', finalAssistantText: scan.finalAssistantText }
+    ? {
+        kind: 'completed',
+        finalAssistantText: scan.finalAssistantText,
+        ...(scan.usage ? { usage: scan.usage } : {}),
+      }
     : { kind: 'missing' };
 }
 
@@ -703,6 +800,7 @@ async function findAssistantFailureAfterCurrentUserTurn(params: Readonly<{
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
   }> | null;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<AssistantTurnFailure | null> {
   return (await scanAssistantTurnAfterCurrentUserTurn(params)).failure;
 }
@@ -716,12 +814,13 @@ async function waitForAssistantCompletionAfterCurrentUserTurn(params: Readonly<{
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
   }> | null;
-  maxWaitMs: number;
+  deadlineMs: number | null;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<AssistantTurnOutcome> {
-  const deadlineMs = Date.now() + Math.max(1, Math.trunc(params.maxWaitMs));
   let lastAttempt = false;
 
-  while (Date.now() <= deadlineMs) {
+  while (!params.signal?.aborted && (params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
     lastAttempt = true;
     try {
       const outcome = await readAssistantTurnOutcomeAfterCurrentUserTurn(params);
@@ -732,14 +831,14 @@ async function waitForAssistantCompletionAfterCurrentUserTurn(params: Readonly<{
       // Missing proof is not success. Keep polling until the caller's wait budget expires.
     }
 
-    const remainingMs = deadlineMs - Date.now();
-    if (remainingMs <= 0) {
+    const remainingMs = params.deadlineMs === null ? 100 : params.deadlineMs - Date.now();
+    if (params.deadlineMs !== null && remainingMs <= 0) {
       break;
     }
     await sleep(Math.min(100, remainingMs));
   }
 
-  if (!lastAttempt) {
+  if (!lastAttempt && !params.signal?.aborted) {
     return readAssistantTurnOutcomeAfterCurrentUserTurn(params).catch(() => ({ kind: 'missing' }));
   }
   return { kind: 'missing' };
@@ -753,9 +852,193 @@ function resultFromAssistantTurnOutcome(outcome: AssistantTurnOutcome): SessionI
     return outcome;
   }
   if (!outcome.finalAssistantText) {
-    return { kind: 'terminal_no_result', reason: 'missing_final_assistant_text' };
+    return {
+      kind: 'terminal_no_result',
+      reason: 'missing_final_assistant_text',
+      ...(outcome.usage ? { usage: outcome.usage } : {}),
+    };
   }
-  return { kind: 'final_text', text: outcome.finalAssistantText };
+  return {
+    kind: 'final_text',
+    text: outcome.finalAssistantText,
+    ...(outcome.usage ? { usage: outcome.usage } : {}),
+  };
+}
+
+/**
+ * Reads one admitted input's exact retained-runtime turn state from the run's
+ * public projection. The projection exposes only the current occurrence's
+ * current/last native turn witness, so a terminal state on a turn whose
+ * `inputIds` contain this exact localId is settle evidence; a sibling turn's
+ * terminal state (or the run's generic status) is never evidence for this
+ * input and returns null.
+ */
+function readExecutionRunInputTurnOutcome(params: Readonly<{
+  run: ExecutionRunPublicState;
+  localId: string;
+}>): ExecutionRunInputTurnV1['state'] | null {
+  const current = params.run.inputTurns?.current;
+  if (current?.inputIds.includes(params.localId)) {
+    return current.state;
+  }
+  const last = params.run.inputTurns?.last;
+  if (last?.inputIds.includes(params.localId)) {
+    return last.state;
+  }
+  return null;
+}
+
+async function readExecutionRunInputTranscriptOutcome(params: Readonly<{
+  token: string;
+  sessionId: string;
+  localId: string;
+  sidechainId: string;
+  materializedSeq: number;
+  ctx: Readonly<{
+    encryptionKey: Uint8Array;
+    encryptionVariant: 'legacy' | 'dataKey';
+  }> | null;
+  deadlineMs: number;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
+}>): Promise<ExecutionRunInputTurnV1['state'] | null> {
+  let afterSeq = Math.max(0, Math.trunc(params.materializedSeq) - 1);
+  while (true) {
+    if (params.signal?.aborted) return null;
+    const remainingMs = params.deadlineMs - Date.now();
+    if (remainingMs <= 0) return null;
+    const rows = await fetchEncryptedTranscriptPageAfterSeq({
+      token: params.token,
+      sessionId: params.sessionId,
+      afterSeq,
+      limit: ASSISTANT_TURN_SCAN_PAGE_LIMIT,
+      timeoutMs: Math.max(1, Math.trunc(remainingMs)),
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
+    });
+    const orderedRows = [...rows].sort((left, right) => left.seq - right.seq);
+    for (const row of orderedRows) {
+      if (row.seq <= params.materializedSeq) continue;
+      const decrypted = decryptTranscriptRowContent({ content: row.content, ctx: params.ctx });
+      const decoded = decodeTranscriptBody(decrypted);
+      if (decoded?.sidechainId !== params.sidechainId) continue;
+      const record = asRecord(decrypted);
+      const meta = asRecord(record?.meta);
+      const inputTurn = ExecutionRunInputTurnV1Schema.safeParse(meta?.happierExecutionRunInputTurnV1);
+      if (!inputTurn.success || !inputTurn.data.inputIds.includes(params.localId)) continue;
+      const failure = readAssistantTurnFailure(decrypted);
+      if (failure?.kind === 'failed') return 'failed';
+      if (failure?.kind === 'cancelled') return 'cancelled';
+      if (isAssistantTurnCompletionProof(decrypted)) return 'completed';
+    }
+    if (orderedRows.length < ASSISTANT_TURN_SCAN_PAGE_LIMIT) return null;
+    const lastSeq = orderedRows[orderedRows.length - 1]?.seq;
+    if (!Number.isSafeInteger(lastSeq) || (lastSeq ?? 0) <= afterSeq) return null;
+    afterSeq = lastSeq!;
+  }
+}
+
+/**
+ * Observes one admitted Execution Run input's exact retained-runtime turn by
+ * its durable `(sessionId, runId, localId)` identity through the existing run
+ * read owner. Completion means that exact turn completed, failed, or was
+ * cancelled — never parent-Session idle, a sibling target's queue, or the
+ * run's generic terminal status. Missing, unavailable, or unmatchable run
+ * evidence is not success: polling continues until the wait budget expires and
+ * the caller then reports the existing typed outcome-unknown result. The wait
+ * never retries or cancels the admitted input itself.
+ */
+async function waitForExecutionRunInputTurnOutcome(params: Readonly<{
+  credentials: StoredCredentials;
+  crypto: SessionStoredContentCryptoContext;
+  sessionId: string;
+  runId: string;
+  localId: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
+}>): Promise<ExecutionRunInputTurnV1['state'] | 'observation_cancelled' | null> {
+  const deadlineMs = Date.now() + Math.max(1, Math.trunc(params.timeoutMs));
+  // The accepted transcript anchor is shared Session storage, but Pending
+  // status is target-scoped. Do not call the main Pending reader here: a
+  // nested wait must never borrow main-Session blocked/settled evidence.
+  const materialized = await waitForTranscriptEncryptedMessageByLocalId({
+    token: params.credentials.token,
+    sessionId: params.sessionId,
+    localId: params.localId,
+    maxWaitMs: Math.max(1, deadlineMs - Date.now()),
+    ...(params.signal ? { signal: params.signal } : {}),
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
+  });
+  if (params.signal?.aborted) return 'observation_cancelled';
+  if (!materialized) return null;
+  while (true) {
+    if (params.signal?.aborted) return 'observation_cancelled';
+    let turnState: ExecutionRunInputTurnV1['state'] | null = null;
+    try {
+      if (params.resolveAuthorizationHeaders) {
+        turnState = materialized.sidechainId
+          ? await readExecutionRunInputTranscriptOutcome({
+              token: params.credentials.token,
+              sessionId: params.sessionId,
+              localId: params.localId,
+              sidechainId: materialized.sidechainId,
+              materializedSeq: materialized.seq,
+              ctx: params.crypto.ctx,
+              deadlineMs,
+              ...(params.signal ? { signal: params.signal } : {}),
+              resolveAuthorizationHeaders: params.resolveAuthorizationHeaders,
+            })
+          : null;
+      } else {
+        const readResult = await getExecutionRun({
+        ...params.crypto,
+        token: params.credentials.token,
+        sessionId: params.sessionId,
+        request: { runId: params.runId },
+        ...(params.signal ? { signal: params.signal } : {}),
+        });
+        if (readResult.ok) {
+          const parsed = ExecutionRunGetResponseSchema.safeParse(readResult.data);
+          if (parsed.success) {
+            turnState = readExecutionRunInputTurnOutcome({ run: parsed.data.run, localId: params.localId });
+            if (
+              turnState === null
+              && materialized.sidechainId === parsed.data.run.sidechainId
+            ) {
+              turnState = await readExecutionRunInputTranscriptOutcome({
+                token: params.credentials.token,
+                sessionId: params.sessionId,
+                localId: params.localId,
+                sidechainId: parsed.data.run.sidechainId,
+                materializedSeq: materialized.seq,
+                ctx: params.crypto.ctx,
+                deadlineMs,
+                ...(params.signal ? { signal: params.signal } : {}),
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      if (params.signal?.aborted) return 'observation_cancelled';
+      // A missing or unavailable run projection is not success. Keep polling
+      // until the caller's wait budget expires.
+    }
+    if (params.signal?.aborted) return 'observation_cancelled';
+    if (turnState === 'completed' || turnState === 'failed' || turnState === 'cancelled') {
+      return turnState;
+    }
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      return null;
+    }
+    await sleep(Math.min(EXECUTION_RUN_INPUT_TURN_POLL_MS, remainingMs), params.signal);
+  }
 }
 
 /**
@@ -770,16 +1053,20 @@ export async function waitForSessionInputResult(
   if (localId === null) {
     return { ok: false, code: 'invalid_local_id' };
   }
-  const timeoutMs = Number.isFinite(params.timeoutMs)
-    ? Math.max(1, Math.trunc(params.timeoutMs))
-    : 1;
-  const deadlineMs = Date.now() + timeoutMs;
-  const remainingTimeoutMs = () => Math.max(1, deadlineMs - Date.now());
+  const observation = params.observation;
+  const deadlineMs = observation !== undefined
+    ? observation.kind === 'absolute_deadline'
+      ? observation.deadlineMs
+      : null
+    : Date.now() + (Number.isFinite(params.timeoutMs)
+        ? Math.max(1, Math.trunc(params.timeoutMs))
+        : 1);
 
   try {
     const sessionTarget = await resolveSessionTransportContext({
       credentials: params.credentials,
       idOrPrefix: params.idOrPrefix,
+      ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
     });
     if (!sessionTarget.ok) {
       return {
@@ -793,7 +1080,8 @@ export async function waitForSessionInputResult(
       token: params.credentials.token,
       sessionId: sessionTarget.sessionId,
       localId,
-      maxWaitMs: remainingTimeoutMs(),
+      deadlineMs,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     if (promptDelivery.kind === 'blocked') {
       return {
@@ -821,7 +1109,8 @@ export async function waitForSessionInputResult(
       localId,
       materializedSeq: promptDelivery.message.seq,
       ctx: sessionTarget.ctx,
-      maxWaitMs: remainingTimeoutMs(),
+      deadlineMs,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     return {
       ok: true,
@@ -830,6 +1119,7 @@ export async function waitForSessionInputResult(
       result: resultFromAssistantTurnOutcome(outcome),
     };
   } catch {
+    if (params.signal?.aborted) return { ok: false, code: 'cancelled' };
     return { ok: false, code: 'result_read_failed' };
   }
 }
@@ -848,6 +1138,10 @@ export async function sendSessionMessage(
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   const cancelledAfterResolution = cancelledBeforeAdmission(params.signal, params.inputAdmission !== undefined);
   if (cancelledAfterResolution) return cancelledAfterResolution;
@@ -879,6 +1173,14 @@ export async function sendSessionMessage(
     throw new Error('Pending localId must not be blank');
   }
   const localId = readPendingLocalId(params.localId) ?? randomUUID();
+  const recipient = params.recipient === undefined
+    ? undefined : normalizeParticipantRecipientRoutingIdentityV1(params.recipient);
+  const executionRunRecipient = recipient?.kind === 'execution_run' ? recipient : undefined;
+  if (executionRunRecipient) {
+    if (params.pendingAdmissionMode) {
+      return { ok: false, code: 'admission_rejected', admissionResult: { status: 'rejected', code: 'session_input_invalid' } };
+    }
+  }
   const decryptedMetadata = tryDecryptSessionOwnerMetadataView({
     credentials: params.credentials,
     rawSession: sessionTarget.rawSession,
@@ -909,11 +1211,11 @@ export async function sendSessionMessage(
   }
   const protectedAdmission = params.inputAdmission
     ? {
-        provenance: SessionMessageProvenanceV1Schema.parse(params.inputAdmission.provenance),
-        request: SessionInputRequestV1Schema.parse(params.inputAdmission.request),
+        provenance: SessionMessageProvenanceSchema.parse(params.inputAdmission.provenance),
+        request: SessionInputRequestSchema.parse(params.inputAdmission.request),
       }
     : null;
-  const shouldProjectTargetDefaults = protectedAdmission === null;
+  const shouldProjectTargetDefaults = protectedAdmission === null && executionRunRecipient === undefined;
   const hasExplicitPermissionMode = typeof params.permissionModeOverride === 'string'
     && params.permissionModeOverride.trim().length > 0;
   const hasExplicitModelSelection = params.modelSelectionInput !== undefined
@@ -933,15 +1235,16 @@ export async function sendSessionMessage(
           : params.modelOverride !== undefined
             ? { legacyModelOverride: params.modelOverride }
             : {}),
-        // A protected structured override is caller intent. Its timestamp is
-        // transport identity, not a fresh target-default resolution.
-        nowMs: protectedAdmission !== null && params.modelSelectionInput !== undefined
+        // A structured override under a caller-supplied localId is part of one
+        // retryable transport identity. Keep that authored payload stable;
+        // sends whose identity is minted here retain a meaningful timestamp.
+        nowMs: params.localId !== undefined && params.modelSelectionInput !== undefined
           ? 0
           : Date.now(),
       })
     : { modelId: '', selection: null };
   const machineOnlyAdmission = protectedAdmission
-    ? requiresAuthenticatedMachineAdmissionForSessionInputV1(protectedAdmission.request)
+    ? requiresAuthenticatedMachineAdmissionForSessionInput(protectedAdmission.request)
     : false;
   const callerMeta = stripSessionInputProtectedMeta(params.messageMeta);
   delete callerMeta[SESSION_MESSAGE_PROVENANCE_META_KEY];
@@ -965,9 +1268,9 @@ export async function sendSessionMessage(
   const record = {
     role: 'user',
     content: { type: 'text', text: params.message },
-    meta: modelResolution.selection
+    meta: withParticipantRecipientV1(modelResolution.selection
       ? withSessionMessageModelSelectionV1(baseMeta, modelResolution.selection)
-      : baseMeta,
+      : baseMeta, recipient),
   } as const;
 
   const requestedAction: PendingRequestedActionV1 = params.requestedAction
@@ -995,16 +1298,16 @@ export async function sendSessionMessage(
       }
     : undefined;
 
-  const content =
-    sessionTarget.mode === 'plain'
-      ? ({ t: 'plain', v: record } as const)
-      : ({
-          t: 'encrypted',
-          c: encryptSessionPayload({
-            ctx: sessionTarget.ctx,
-            payload: record,
-          }),
-        } as const);
+  const content = sealSessionStoredContent({
+    ...sessionTarget,
+    payload: record,
+    // Protected E2EE machine admission carries the purpose-separated equality
+    // tag above, so its ciphertext remains randomized. Routes without that
+    // equality evidence retain byte-stable ciphertext for Pending replay.
+    ...(requestEqualityEvidenceV1
+      ? {}
+      : { idempotencyKey: `session-input:v1:${sessionId}:${localId}` }),
+  });
 
   let enqueueResult: Awaited<ReturnType<typeof enqueuePendingQueueV2MessageViaHttp>>;
   let admissionResult: SessionInputAdmissionResultV1 | undefined;
@@ -1036,14 +1339,14 @@ export async function sendSessionMessage(
       }
       machineAdmissionInvoked = true;
       const machineAdmissionRequest = {
-        v: 1,
+        ...(executionRunRecipient ? { v: 2 as const, recipient: executionRunRecipient } : { v: 1 as const }),
         sessionId,
         targetMachineId,
         localId,
         content,
         requestedAction,
         ...(requestEqualityEvidenceV1 ? { requestEqualityEvidenceV1 } : {}),
-      } satisfies SessionPendingEnqueueByMachineRequestV1;
+      } satisfies SessionPendingEnqueueByMachineRequestV1 | SessionPendingExecutionRunEnqueueByMachineRequestV2;
       const result = params.signal
         ? await params.machineAdmissionTransport(machineAdmissionRequest, { signal: params.signal })
         : await params.machineAdmissionTransport(machineAdmissionRequest);
@@ -1076,11 +1379,14 @@ export async function sendSessionMessage(
         };
       }
       let terminal = false;
-      if (result.status === 'alreadyAccepted') {
+      if (result.status === 'alreadyAccepted' && !executionRunRecipient) {
         try {
           const pendingStatuses = await listPendingQueueV2DeliveryStatusesFromServer({
             token: params.credentials.token,
             sessionId,
+            ...(params.resolveAuthorizationHeaders
+              ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+              : {}),
           });
           terminal = !pendingStatuses.some((entry) => entry.localId === localId);
         } catch {
@@ -1102,6 +1408,22 @@ export async function sendSessionMessage(
         terminal,
         suppressed: false,
       };
+    } else if (executionRunRecipient) {
+      const targetMachineId = resolveProtectedInputTargetMachineId({
+        decryptedMetadata,
+        rawSession: sessionTarget.rawSession as Readonly<Record<string, unknown>>,
+      });
+      if (!targetMachineId) {
+        return { ok: false, code: 'admission_rejected', admissionResult: { status: 'rejected', code: 'session_input_target_update_required' } };
+      }
+      enqueueResult = await enqueuePendingExecutionRunMessageViaHttp({
+        token: params.credentials.token, sessionId, recipient: executionRunRecipient,
+        body: { v: 1, localId, targetMachineId, content, messageRole: 'user', requestedAction },
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
     } else {
       enqueueResult = await enqueuePendingQueueV2MessageViaHttp({
         token: params.credentials.token,
@@ -1122,27 +1444,26 @@ export async function sendSessionMessage(
               requestedAction,
               ...(params.pendingAdmissionMode ? { deliveryMode: params.pendingAdmissionMode } : {}),
             },
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         ...(params.signal ? { signal: params.signal } : {}),
       });
     }
   } catch (error) {
     const status = readHttpResponseStatus(error);
+    const exactAdmissionRejectionCode = readHttpAdmissionRejectionCode(error);
     const admissionRejectionCode = status !== null && !machineAdmissionInvoked
-      ? readProvenPreWriteHttpAdmissionRejectionCode(error, status)
+      ? executionRunRecipient && (status === 404 || status === 405 || status === 501)
+        ? exactAdmissionRejectionCode ?? 'session_input_target_update_required'
+        : readProvenPreWriteHttpAdmissionRejectionCode(error, status)
       : null;
     if (admissionRejectionCode !== null) {
       return {
         ok: false,
         code: 'admission_rejected',
         message: `Pending enqueue was rejected before admission (HTTP ${status})`,
-        ...(protectedAdmission
-          ? {
-              admissionResult: {
-                status: 'rejected' as const,
-                code: admissionRejectionCode,
-              },
-            }
-          : {}),
+        admissionResult: { status: 'rejected', code: admissionRejectionCode },
       };
     }
     const errorMessage = error instanceof Error ? error.message : String(error ?? '');
@@ -1152,9 +1473,7 @@ export async function sendSessionMessage(
       message: status !== null
         ? `Pending enqueue acknowledgement was not confirmed (HTTP ${status})`
         : errorMessage || 'Pending enqueue acknowledgement was not confirmed',
-      ...(protectedAdmission
-        ? {
-            admissionResult: machineAdmissionInvoked
+      admissionResult: machineAdmissionInvoked
               ? {
                   status: 'outcomeUnknown' as const,
                   localId,
@@ -1163,8 +1482,6 @@ export async function sendSessionMessage(
               : params.signal?.aborted
                 ? { status: 'outcomeUnknown' as const, localId, code: 'account_admission_cancelled_after_request' }
                 : { status: 'outcomeUnknown' as const, localId, code: 'account_admission_acknowledgement_failed' },
-          }
-        : {}),
     };
   }
 
@@ -1173,19 +1490,11 @@ export async function sendSessionMessage(
       ok: false,
       code: 'timeout',
       message: 'Pending enqueue returned an invalid admission acknowledgement',
-      ...(protectedAdmission
-        ? {
-            admissionResult: {
-              status: 'outcomeUnknown' as const,
-              localId,
-              code: 'account_admission_result_malformed',
-            },
-          }
-        : {}),
+      admissionResult: { status: 'outcomeUnknown', localId, code: 'account_admission_result_malformed' },
     };
   }
 
-  if (protectedAdmission && !admissionResult) {
+  if (!admissionResult) {
     admissionResult = {
       status: enqueueResult.didWrite === false ? 'alreadyAccepted' : 'accepted',
       localId,
@@ -1203,7 +1512,11 @@ export async function sendSessionMessage(
     };
   }
 
-  if (enqueueResult?.terminal === true) {
+  const terminalAdmissionReplay = enqueueResult?.terminal === true;
+  // A replay whose exact Pending row is already gone has reached a terminal
+  // owner state. Resuming an inactive parent Session cannot redeliver that
+  // exact input and would create an unrelated lifecycle effect on retry.
+  if (terminalAdmissionReplay) {
     return {
       ok: true,
       sessionId,
@@ -1214,7 +1527,7 @@ export async function sendSessionMessage(
     };
   }
 
-  if (sessionTarget.rawSession.active !== true && params.resumeInactiveSession !== false) {
+  if (!executionRunRecipient && sessionTarget.rawSession.active !== true && params.resumeInactiveSession !== false) {
     const resumeResult = await requestInactiveSessionResume({
       credentials: params.credentials,
       sessionId,
@@ -1224,6 +1537,10 @@ export async function sendSessionMessage(
         ? decryptedMetadata as Record<string, unknown>
         : {},
       timeoutMs: params.timeoutMs,
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.machineResumeTransport
+        ? { machineRpcTransport: params.machineResumeTransport }
+        : {}),
     });
     if (!resumeResult.ok) {
       return {
@@ -1239,6 +1556,7 @@ export async function sendSessionMessage(
         sessionId,
         localId,
         waited: false,
+        ...(terminalAdmissionReplay ? { terminal: true } : {}),
         ...(admissionResult ? { admissionResult } : {}),
       };
     }
@@ -1254,6 +1572,66 @@ export async function sendSessionMessage(
     };
   }
 
+  if (executionRunRecipient) {
+    // The exact-turn observation shares the Session's already-resolved
+    // encryption context; it never re-resolves transport or falls back to
+    // main-Session reads. The target Run owns turn settlement through its
+    // public input-turn projection, so a parent Session's idle state cannot
+    // settle a nested turn.
+    const crypto: SessionStoredContentCryptoContext = sessionTarget.mode === 'plain'
+      ? { mode: 'plain', ctx: null }
+      : { mode: 'e2ee', ctx: sessionTarget.ctx };
+    const turnOutcome = await waitForExecutionRunInputTurnOutcome({
+      credentials: params.credentials,
+      crypto,
+      sessionId,
+      runId: executionRunRecipient.runId,
+      localId,
+      timeoutMs: params.timeoutMs,
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
+    });
+    if (turnOutcome === 'observation_cancelled') {
+      return {
+        ok: false,
+        code: 'cancelled',
+        message: 'Execution Run turn observation was cancelled after admission',
+        ...(admissionResult ? { admissionResult } : {}),
+      };
+    }
+    if (turnOutcome === 'completed') {
+      return {
+        ok: true,
+        sessionId,
+        localId,
+        waited: true,
+        ...(admissionResult ? { admissionResult } : {}),
+      };
+    }
+    if (turnOutcome === 'failed' || turnOutcome === 'cancelled') {
+      // A proven exact-turn failure is a wait outcome, not an admission
+      // result. No admissionResult is attached so a known failed/cancelled
+      // turn can never be projected as an accepted input.
+      return {
+        ok: false,
+        code: 'wait_failed',
+        message: turnOutcome === 'failed'
+          ? 'Execution Run turn failed'
+          : 'Execution Run turn cancelled',
+        settlementResult: turnOutcome === 'failed'
+          ? { status: 'failed', localId, code: 'session_input_turn_failed' }
+          : { status: 'cancelled', localId, code: 'session_input_turn_cancelled' },
+      };
+    }
+    return {
+      ok: false,
+      code: 'wait_failed',
+      admissionResult: { status: 'outcomeUnknown', localId, code: 'session_input_turn_outcome_unknown' },
+    };
+  }
+
   const deadlineMs = Date.now() + params.timeoutMs;
   const remainingTimeoutMs = () => Math.max(1, deadlineMs - Date.now());
   let waitSessionSnapshot = sessionTarget.rawSession;
@@ -1264,14 +1642,21 @@ export async function sendSessionMessage(
       token: params.credentials.token,
       sessionId,
       localId,
-      maxWaitMs: remainingTimeoutMs(),
+      deadlineMs,
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
     if (promptDelivery.kind === 'blocked') {
       return {
         ok: false,
         code: 'wait_failed',
         message: formatBlockedPromptDeliveryFailure(promptDelivery.reason),
-        ...(admissionResult ? { admissionResult } : {}),
+        // The canonical queue proved that this input cannot reach the runtime.
+        // Preserve that evidence through Action output instead of reporting
+        // the earlier enqueue acknowledgement as a successful delivery.
+        admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' },
       };
     }
     if (promptDelivery.kind === 'missing') {
@@ -1284,12 +1669,39 @@ export async function sendSessionMessage(
     const materialized = promptDelivery.message;
     const currentUserCreatedAt = readNonnegativeInteger(materialized.createdAt);
 
+    if (params.resolveAuthorizationHeaders) {
+      const assistantTurnOutcome = await waitForAssistantCompletionAfterCurrentUserTurn({
+        token: params.credentials.token,
+        sessionId,
+        localId,
+        materializedSeq: materialized.seq,
+        ctx: sessionTarget.ctx,
+        deadlineMs,
+        ...(params.signal ? { signal: params.signal } : {}),
+        resolveAuthorizationHeaders: params.resolveAuthorizationHeaders,
+      });
+      if (assistantTurnOutcome.kind === 'failed' || assistantTurnOutcome.kind === 'cancelled') {
+        return {
+          ok: false,
+          code: 'wait_failed',
+          message: assistantTurnOutcome.message,
+          ...(admissionResult ? { admissionResult } : {}),
+        };
+      }
+      return assistantTurnOutcome.kind === 'completed'
+        ? { ok: true, sessionId, localId, waited: true, ...(admissionResult ? { admissionResult } : {}) }
+        : { ok: false, code: 'timeout', ...(admissionResult ? { admissionResult } : {}) };
+    }
+
     currentTurnAfterSeqExclusive = await resolveCurrentTurnAfterSeqExclusive({
       token: params.credentials.token,
       sessionId,
       localId,
       materializedSeq: materialized.seq,
       ctx: sessionTarget.ctx,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
 
     try {
@@ -1420,7 +1832,11 @@ export async function sendSessionMessage(
       localId,
       materializedSeq: materialized.seq,
       ctx: sessionTarget.ctx,
-      maxWaitMs: remainingTimeoutMs(),
+      deadlineMs,
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
     });
     if (assistantTurnOutcome.kind === 'failed' || assistantTurnOutcome.kind === 'cancelled') {
       return {

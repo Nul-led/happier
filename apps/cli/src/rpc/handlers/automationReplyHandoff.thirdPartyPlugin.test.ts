@@ -18,6 +18,7 @@ import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import type { ResolvedActionContribution } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 import { registerAutomationReplyHandoffRpcHandler } from './automationReplyHandoff';
 
@@ -70,13 +71,11 @@ const opaqueContext = {
 
 const result = { v: 1, kind: 'text', text: 'Summarized the latest change.' } as const;
 
-const plainCurrentness: AccountEncryptionCurrentnessResponse = {
+const plainCurrentness: AccountEncryptionCurrentnessResponse = createAccountEncryptionCurrentnessFixture({
   mode: 'plain',
   version: 7,
-  signingKeyFingerprint: null,
-  contentKeyFingerprint: null,
   updatedAt: 1,
-};
+});
 
 const admitInput = {
   automationId: correspondence.automationId,
@@ -148,11 +147,9 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
       },
       // The admitting host resolves the Account mode before it produces a body.
       resolveAccountId: async () => accountId,
-      resolveAccountEncryptionCurrentness: async () => ({
+      resolveAccountEncryptionCurrentness: async () => createAccountEncryptionCurrentnessFixture({
         mode: 'plain',
         version: 7,
-        signingKeyFingerprint: null,
-        contentKeyFingerprint: null,
         updatedAt: 1_700_000_000_000,
       }),
       resolveAccountEncryptionMaterial: async () => null,

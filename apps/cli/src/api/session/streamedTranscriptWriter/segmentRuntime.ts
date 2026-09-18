@@ -1,6 +1,12 @@
 import type { StreamedTranscriptSegmentKey, StreamedTranscriptSegmentKind } from './segmentKey';
 import type { LiveDeliveryState } from './liveDeliveryState';
 
+export type DurableCommitFailureIncident = {
+  firstError: Record<string, unknown>;
+  count: number;
+  suppressedCount: number;
+};
+
 export type StreamedTranscriptSegmentState = 'streaming' | 'complete' | 'interrupted';
 
 export type StreamedTranscriptSegmentRuntime = {
@@ -19,6 +25,8 @@ export type StreamedTranscriptSegmentRuntime = {
   lastCommittedTextVersion: number;
   lastCommittedState: StreamedTranscriptSegmentState | null;
   lastCommitFailedAtMs: number;
+  durableCommitFailure: DurableCommitFailureIncident | null;
+  durableRetryNotBeforeMs: number;
   liveDelivery: LiveDeliveryState;
   durableCheckpointTimer: ReturnType<typeof setTimeout> | null;
   liveSnapshotTimer: ReturnType<typeof setTimeout> | null;

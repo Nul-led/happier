@@ -115,6 +115,8 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
     happyHomeDir?: string;
     runnerAgentSessionRuntimeSource?:
         ResolveEngineRegistryParams['runnerAgentSessionRuntimeSource'];
+    prepareTeamCredentialProviderBinding?:
+        ResolveEngineRegistryParams['prepareTeamCredentialProviderBinding'];
 }>): Promise<EngineAdapterResolution | null> {
     const matchingRunnerSource =
         params.runnerAgentSessionRuntimeSource?.identity.backendId
@@ -160,6 +162,8 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
                 runnerRuntimeSource.prepareForSession,
             prepareNativeManagedProviderBinding:
                 runnerRuntimeSource.prepareManagedProviderBinding,
+            prepareNativeTeamCredentialProviderBinding:
+                runnerRuntimeSource.prepareTeamCredentialProviderBinding,
             createNativeAgentInvocationServices:
                 runnerRuntimeSource.createInvocationServices,
             authorizeNativeAgentNewTurn:
@@ -189,7 +193,12 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
             nativeAgentRuntimeIdentity:
                 runnerRuntimeSource.identity,
         }
-        : {};
+        : params.prepareTeamCredentialProviderBinding
+            ? {
+                prepareNativeTeamCredentialProviderBinding:
+                    params.prepareTeamCredentialProviderBinding,
+            }
+            : {};
 
     const runtimeRegistry = params.runtimeRegistry;
     if (!runtimeRegistry && !runnerRuntimeSource) {

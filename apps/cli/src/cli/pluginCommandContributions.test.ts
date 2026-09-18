@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  ResolvedActionContribution,
   ResolvedCommandContribution,
   ResolvedContributionRegistry,
 } from '@/plugins/projection/registry/types';
@@ -78,13 +79,40 @@ function command(params: Readonly<{
   };
 }
 
-function registry(commands: readonly ResolvedCommandContribution[]): ResolvedContributionRegistry {
+function action(params: Readonly<{
+  pluginId: string;
+  id?: string;
+  inputSchema: unknown;
+  inputHints?: unknown;
+}>): ResolvedActionContribution {
+  return {
+    provenance: 'external',
+    source: { kind: 'path' },
+    pluginId: params.pluginId,
+    definition: {
+      kindVersion: 1,
+      id: params.id ?? 'run',
+      title: 'Run',
+      safety: 'safe',
+      placements: [],
+      surfaces: {},
+      sideEffectClass: 'write',
+      inputSchema: params.inputSchema,
+      ...(params.inputHints ? { inputHints: params.inputHints } : {}),
+    },
+  } as unknown as ResolvedActionContribution;
+}
+
+function registry(
+  commands: readonly ResolvedCommandContribution[],
+  actions: readonly ResolvedActionContribution[] = [],
+): ResolvedContributionRegistry {
   return {
     uiViewsV2: [],
     uiRenderersV2: [],
     uiTranslationsV2: [],
     agents: [],
-        actions: [],
+    actions,
     tools: [],
     commands,
     resources: [],
@@ -93,9 +121,9 @@ function registry(commands: readonly ResolvedCommandContribution[]): ResolvedCon
     toolsById: new Map(),
     commandsById: new Map(commands.map((entry) => [`${entry.pluginId}/${entry.definition.id}`, entry])),
     resourcesById: new Map(),
-        catalogEntriesById: {},
+    catalogEntriesById: {},
     agentDefinitionsById: new Map(),
-        pluginDiagnosticsByPluginId: {},
+    pluginDiagnosticsByPluginId: {},
   };
 }
 
@@ -170,6 +198,38 @@ describe('resolvePluginCommandProjection', () => {
     ]);
   });
 
+  it('fences both sides of a command leaf/subtree collision instead of letting longest-path dispatch shadow one', () => {
+    const projection = resolvePluginCommandProjection({
+      registry: registry([
+        command({ pluginId: 'acme.notes', id: 'notes-root', path: ['notes'] }),
+        command({ pluginId: 'acme.notes', id: 'notes-add', path: ['notes', 'add'] }),
+        command({ pluginId: 'acme.tasks', id: 'tasks-list', path: ['tasks', 'list'] }),
+      ]),
+      reservedRoots: new Set(),
+    });
+
+    expect(projection.commands).toEqual([
+      expect.objectContaining({
+        qualifiedId: 'acme.notes/notes-root',
+        status: 'ambiguous',
+        unavailableCode: 'plugin_command_path_ambiguous',
+      }),
+      expect.objectContaining({
+        qualifiedId: 'acme.notes/notes-add',
+        status: 'ambiguous',
+        unavailableCode: 'plugin_command_path_ambiguous',
+      }),
+      expect.objectContaining({
+        qualifiedId: 'acme.tasks/tasks-list',
+        status: 'available',
+      }),
+    ]);
+    expect(projection.roots).toEqual(['notes', 'tasks']);
+    expect(projection.rootHelpEntries).toEqual([
+      expect.objectContaining({ command: 'tasks' }),
+    ]);
+  });
+
   it('evaluates known command facts and fails missing availability facts closed', () => {
     const conditional = command({ pluginId: 'acme.notes', id: 'sync', path: ['notes', 'sync'] });
     const projection = resolvePluginCommandProjection({
@@ -237,24 +297,24 @@ describe('resolvePluginCommandProjection', () => {
 });
 
 describe('plugin command completion snapshot', () => {
-  it('derives qualified path candidates from the command registry snapshot and removes stale paths', () => {
+  it('derives qualified path candidates from the command registry snapshot and removes stale paths', async () => {
     synchronizePluginCommandContributions(registry([
       command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] }),
       command({ pluginId: 'acme.notes', id: 'archive', path: ['notes', 'archive'] }),
     ]));
 
-    expect(resolveCommandCompletionCandidates(['notes', 'a'])).toEqual(['add', 'archive']);
-    expect(resolveCommandCompletionCandidates(['notes', 'add', ''])).toEqual(['--help', '--input', '--json']);
-    expect(resolveCommandCompletionCandidates(['notes', 'add', '-'])).toEqual(['--help', '--input', '--json']);
+    expect(await resolveCommandCompletionCandidates(['notes', 'a'])).toEqual(['add', 'archive']);
+    expect(await resolveCommandCompletionCandidates(['notes', 'add', ''])).toEqual(['--help', '--input', '--json']);
+    expect(await resolveCommandCompletionCandidates(['notes', 'add', '-'])).toEqual(['--help', '--input', '--json']);
 
     synchronizePluginCommandContributions(registry([
       command({ pluginId: 'acme.tasks', id: 'list', path: ['tasks', 'list'] }),
     ]));
-    expect(resolveCommandCompletionCandidates(['notes', 'a'])).toEqual([]);
-    expect(resolveCommandCompletionCandidates(['tasks', 'l'])).toEqual(['list']);
+    expect(await resolveCommandCompletionCandidates(['notes', 'a'])).toEqual([]);
+    expect(await resolveCommandCompletionCandidates(['tasks', 'l'])).toEqual(['list']);
   });
 
-  it('projects exact inherit, required, and forbidden tmux modes from the same command snapshot', () => {
+  it('projects exact inherit, required, and forbidden tmux modes from the same command snapshot', async () => {
     synchronizePluginCommandContributions(registry([
       command({ pluginId: 'acme.notes', id: 'read', path: ['notes', 'read'] }),
       command({ pluginId: 'acme.notes', id: 'watch', path: ['notes', 'watch'], tmux: 'required' }),
@@ -269,7 +329,71 @@ describe('plugin command completion snapshot', () => {
       command({ pluginId: 'acme.beta', id: 'dupe', path: ['shared', 'run'], tmux: 'required' }),
     ]));
     expect(resolvePluginCommandTmuxMode(['shared', 'run'])).toBe('forbidden');
-    expect(resolveCommandCompletionCandidates(['shared', 'r'])).toEqual([]);
+    expect(await resolveCommandCompletionCandidates(['shared', 'r'])).toEqual([]);
+  });
+
+  it('uses the command path rather than Action field values when enforcing tmux mode', () => {
+    const notes = command({ pluginId: 'acme.notes', id: 'watch', path: ['notes', 'watch'], tmux: 'required' });
+    synchronizePluginCommandContributions(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    })]));
+
+    expect(resolvePluginCommandTmuxMode(['notes', 'watch', '--value', 'hello'])).toBe('required');
+  });
+
+  it('resolves contributed Action field choices through the canonical injected options resolver', async () => {
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    synchronizePluginCommandContributions(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          agent: { type: 'string', enum: ['careful'] },
+        },
+        additionalProperties: false,
+      },
+      inputHints: {
+        fields: [{ path: 'agent', title: 'Agent', optionsSourceId: 'execution.backends.enabled' }],
+      },
+    })]));
+    const resolveDynamicOptions = vi.fn(async () => ['codex', 'claude']);
+
+    const candidates = await resolveCommandCompletionCandidates(
+      ['notes', 'add', '--session-id', 'session_1', '--agent', 'co'],
+      { resolveDynamicOptions },
+    );
+
+    expect(candidates).toContain('codex');
+    expect(candidates).not.toContain('claude');
+    expect(resolveDynamicOptions).toHaveBeenCalledWith({
+      actionId: 'acme.notes/run',
+      fieldPath: 'agent',
+      optionsSourceId: 'execution.backends.enabled',
+      draftInput: { sessionId: 'session_1' },
+      query: 'co',
+      committedArgv: ['--session-id', 'session_1', '--agent'],
+      acceptsServerId: false,
+    });
+
+    resolveDynamicOptions.mockRejectedValueOnce(new Error('completion transport unavailable'));
+    expect(await resolveCommandCompletionCandidates(
+      ['notes', 'add', '--session-id', 'session_1', '--agent', 'ca'],
+      { resolveDynamicOptions },
+    )).toEqual(['careful']);
+
+    resolveDynamicOptions.mockClear();
+    expect(await resolveCommandCompletionCandidates(
+      ['notes', 'add', '--', '--agent', 'co'],
+      { resolveDynamicOptions },
+    )).toEqual([]);
+    expect(resolveDynamicOptions).not.toHaveBeenCalled();
   });
 });
 
@@ -350,6 +474,33 @@ describe('handlePluginCommandCliCommand help', () => {
     }
     expect(runtimeLeaseMock.acquire).not.toHaveBeenCalled();
   });
+
+  it('renders leaf help from the command path even when input flags precede --help', async () => {
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    daemonCommandMock.resolveRegistry.mockResolvedValue(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    })]));
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await handlePluginCommandCliCommand('notes', {
+        args: ['notes', 'add', '--value', 'hello', '--help'],
+        rawArgv: ['happier', 'notes', 'add', '--value', 'hello', '--help'],
+        terminalRuntime: null,
+      });
+      expect(String(output.mock.calls.at(-1)?.[0])).toContain('Command: acme.notes/add');
+      expect(String(output.mock.calls.at(-1)?.[0])).toContain('[--value]');
+      expect(String(output.mock.calls.at(-1)?.[0])).toContain('[--input-json <json>]');
+      expect(String(output.mock.calls.at(-1)?.[0])).toContain('Alias: --input <json>');
+    } finally {
+      output.mockRestore();
+    }
+  });
 });
 
 describe('plugin command host registry synchronization', () => {
@@ -389,6 +540,7 @@ describe('plugin command host registry synchronization', () => {
         actionId: 'happier.bundled.notes/execute-add-action',
         input: { value: 'hello' },
         surface: 'cli',
+        authority: 'present_user',
       });
       expect(runtimeLeaseMock.acquire).not.toHaveBeenCalled();
       expect(output).toHaveBeenCalledWith(
@@ -399,6 +551,134 @@ describe('plugin command host registry synchronization', () => {
       output.mockRestore();
       process.exitCode = previousExitCode;
     }
+  });
+
+  it('uses the canonical Action schema as the sole semantic input authority', async () => {
+    daemonCommandMock.execute.mockReset();
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    const commandWithStaleArguments = {
+      ...notes,
+      definition: {
+        ...notes.definition,
+        arguments: {
+          type: 'object' as const,
+          properties: { legacyValue: { type: 'string' as const } },
+          required: ['legacyValue'],
+          additionalProperties: false,
+        },
+      },
+    } satisfies ResolvedCommandContribution;
+    const contributionRegistry = registry([commandWithStaleArguments], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    })]);
+    daemonCommandMock.resolveRegistry.mockResolvedValue(contributionRegistry);
+    daemonCommandMock.execute.mockResolvedValue({ matched: true, result: { ok: true, result: { stored: true } } });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await handlePluginCommandCliCommand('notes', {
+        args: ['notes', 'add', '--value', 'hello'],
+        rawArgv: ['happier', 'notes', 'add', '--value', 'hello'],
+        terminalRuntime: null,
+      });
+    } finally {
+      output.mockRestore();
+    }
+
+    expect(daemonCommandMock.execute).toHaveBeenCalledWith(expect.objectContaining({ input: { value: 'hello' } }));
+  });
+
+  it('validates whole-input JSON against the canonical Action schema before daemon execution', async () => {
+    daemonCommandMock.execute.mockReset();
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    daemonCommandMock.resolveRegistry.mockResolvedValue(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    })]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
+    try {
+      await handlePluginCommandCliCommand('notes', {
+        args: ['notes', 'add', '--input', '{}'],
+        rawArgv: ['happier', 'notes', 'add', '--input', '{}'],
+        terminalRuntime: null,
+      });
+    } finally {
+      error.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+
+    expect(daemonCommandMock.execute).not.toHaveBeenCalled();
+  });
+
+  it('projects canonical Action input away from plugin CLI-owned flags', async () => {
+    daemonCommandMock.execute.mockReset();
+    daemonCommandMock.execute.mockResolvedValue({ matched: true, result: { ok: true, result: null } });
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    daemonCommandMock.resolveRegistry.mockResolvedValue(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: {
+        type: 'object',
+        properties: { input: { type: 'string' } },
+        additionalProperties: false,
+      },
+    })]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
+    try {
+      await handlePluginCommandCliCommand('notes', {
+        args: ['notes', 'add', '--action-input', 'not-a-transport-flag'],
+        rawArgv: ['happier', 'notes', 'add', '--action-input', 'not-a-transport-flag'],
+        terminalRuntime: null,
+      });
+    } finally {
+      error.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+
+    expect(daemonCommandMock.execute).toHaveBeenCalledOnce();
+    expect(daemonCommandMock.execute).toHaveBeenCalledWith({
+      actionId: 'acme.notes/run',
+      input: { input: 'not-a-transport-flag' },
+      surface: 'cli',
+      authority: 'present_user',
+    });
+  });
+
+  it('does not interpret help or output flags after the option terminator', async () => {
+    daemonCommandMock.execute.mockReset();
+    const notes = command({ pluginId: 'acme.notes', id: 'add', path: ['notes', 'add'] });
+    daemonCommandMock.resolveRegistry.mockResolvedValue(registry([notes], [action({
+      pluginId: 'acme.notes',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    })]));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
+    try {
+      await handlePluginCommandCliCommand('notes', {
+        args: ['notes', 'add', '--', '--help'],
+        rawArgv: ['happier', 'notes', 'add', '--', '--help'],
+        terminalRuntime: null,
+      });
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+
+    expect(log).not.toHaveBeenCalled();
+    expect(daemonCommandMock.execute).not.toHaveBeenCalled();
   });
 
   it('adds and removes one real root surface and makes retained stale handlers fail closed', async () => {

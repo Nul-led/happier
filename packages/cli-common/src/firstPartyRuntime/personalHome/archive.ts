@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants as bufferConstants } from 'node:buffer';
 import { createReadStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, lstat, writeFile, rm, open, stat, statfs, type FileHandle } from 'node:fs/promises';
@@ -10,6 +10,7 @@ import {
   assertAllowedPersonalHomeBackupDirectoryPath,
   assertAllowedPersonalHomeBackupPath,
   assertNonCollidingPersonalHomeBackupPaths,
+  comparePersonalHomeBackupArtifactNames,
   isAllowedPersonalHomeBackupDirectoryPath,
   normalizePersonalHomeBackupDirectoryPath,
   parsePersonalHomeBackupManifest,
@@ -46,21 +47,28 @@ export async function createPersonalHomeArchive(params: Readonly<{ stagingDir: s
       names.push(name);
     }
   }
-  names.sort();
+  names.sort(comparePersonalHomeBackupArtifactNames);
   const manifestIndex = names.indexOf('manifest.json');
   if (manifestIndex < 0) throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup manifest is missing from staging');
   names.splice(manifestIndex, 1);
   names.unshift('manifest.json');
-  const temporary = `${output}.tmp-${process.pid}-${randomUUID()}`;
+  const privateOutputDirectory = await mkdtemp(`${output}.tmp-`);
+  const temporary = join(privateOutputDirectory, 'archive.tar');
   try {
+    // Protect the containing directory before creating an authority-bearing file. In particular,
+    // Windows must not expose an empty file that another user can open before its ACL is applied.
+    await protect(privateOutputDirectory, 'directory');
+    const emptyArchive = await open(temporary, 'wx', 0o600);
+    await emptyArchive.close();
+    await protect(temporary, 'file');
     // All file names are explicit, so directory recursion is disabled: naming a directory together
     // with its descendants makes node-tar emit duplicate Directory entries.
-    await tar.create({ cwd: staging, file: temporary, portable: true, noMtime: true, follow: false, noDirRecurse: true }, names);
-    const sha256 = await sha256File(temporary); await protect(temporary, 'file');
+    await tar.create({ cwd: staging, file: temporary, mode: 0o600, portable: true, noMtime: true, follow: false, noDirRecurse: true }, names);
+    const sha256 = await sha256File(temporary);
     await verifyPersonalHomeArchive(temporary);
     await publishPersonalHomeFileNoClobberDurably(temporary, output);
     return { path: output, sha256, archiveBytes: (await stat(output)).size };
-  } catch (error) { await rm(temporary, { force: true }).catch(() => undefined); throw error; }
+  } finally { await rm(privateOutputDirectory, { recursive: true, force: true }); }
 }
 
 type ArchiveEntry = { path: string; type: 'File' | 'OldFile' | 'Directory'; declaredSize: number; actualSize: number; sha256?: string; manifestBytes?: Buffer };
@@ -409,7 +417,7 @@ async function walk(root: string): Promise<Array<Readonly<{ path: string; direct
   const out: Array<Readonly<{ path: string; directory: boolean }>> = [];
   async function visit(dir: string): Promise<void> {
     const { readdir } = await import('node:fs/promises');
-    for (const name of (await readdir(dir)).sort()) {
+    for (const name of (await readdir(dir)).sort(comparePersonalHomeBackupArtifactNames)) {
       const path = join(dir, name); const info = await lstat(path);
       if (info.isSymbolicLink() || (info.isFile() && info.nlink > 1)) throw new Error(`Unsupported link in backup: ${path}`);
       if (info.isDirectory()) { out.push({ path, directory: true }); await visit(path); } else if (info.isFile()) out.push({ path, directory: false }); else throw new Error(`Unsupported file type in backup: ${path}`);

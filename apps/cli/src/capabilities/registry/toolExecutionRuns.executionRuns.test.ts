@@ -124,6 +124,7 @@ describe('executionRunsCapability', () => {
 
     expect(result.protocolVersion).toBe(2);
     expect(result.features).toEqual({ detachedScope: true, startAndWait: true });
+    expect((result as { intents?: readonly string[] }).intents).toContain('agent');
   });
 
   afterEach(() => {

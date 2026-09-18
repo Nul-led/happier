@@ -3,7 +3,7 @@ export type SessionControlJsonEnvelope =
   | Readonly<{ v: 1; ok: false; kind: string; error: unknown }>;
 
 export function wantsJson(argv: readonly string[]): boolean {
-  return argv.includes('--json');
+  return argvBeforeOptionTerminator(argv).includes('--json');
 }
 
 async function writeLineAndWaitForStdout(line: string): Promise<void> {
@@ -69,3 +69,4 @@ export async function printJsonEnvelope(
   // IMPORTANT: stdout must be JSON only in --json mode (no extra logs).
   await writeJsonStdout({ v: 1, ...payload });
 }
+import { argvBeforeOptionTerminator } from '@/cli/commands/shared/argvFlags';

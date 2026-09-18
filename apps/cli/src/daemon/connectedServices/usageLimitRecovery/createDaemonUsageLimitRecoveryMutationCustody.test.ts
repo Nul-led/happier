@@ -134,6 +134,7 @@ describe('createDaemonSessionMutationCustody', () => {
         signingKeyFingerprint: null,
         contentKeyFingerprint: null,
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
       },
     }));
     const custody = createDaemonSessionMutationCustody({
@@ -190,6 +191,7 @@ describe('createDaemonSessionMutationCustody', () => {
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
           },
         }
       : {
@@ -267,6 +269,7 @@ describe('createDaemonSessionMutationCustody', () => {
           signingKeyFingerprint: null,
           contentKeyFingerprint: null,
           updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
         },
       }),
     });
@@ -415,6 +418,7 @@ describe('createDaemonSessionMutationCustody', () => {
           signingKeyFingerprint: 'signing-key',
           contentKeyFingerprint: 'content-key',
           updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'available' as const },
         },
       }),
     });

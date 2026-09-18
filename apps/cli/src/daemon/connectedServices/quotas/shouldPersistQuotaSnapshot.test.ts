@@ -78,4 +78,28 @@ describe('shouldPersistQuotaSnapshot', () => {
       minFreshnessMs: 5_000,
     })).toEqual({ persist: true, reason: 'refresh_marker_clearing' });
   });
+
+  it('lets a current observation replace a future-dated persisted snapshot', async () => {
+    const mod = await import('./shouldPersistQuotaSnapshot').catch(() => null);
+    expect(mod?.shouldPersistQuotaSnapshot).toBeTypeOf('function');
+    if (!mod) return;
+
+    const nowMs = 1_000_000;
+    expect(mod.shouldPersistQuotaSnapshot({
+      previous: {
+        fingerprint: 'poisoned',
+        fetchedAt: nowMs + 60_000,
+        staleAfterMs: 300_000,
+        status: 'ok',
+      },
+      next: {
+        fingerprint: 'current',
+        fetchedAt: nowMs,
+        staleAfterMs: 300_000,
+        status: 'ok',
+      },
+      nowMs,
+      minFreshnessMs: 60_000,
+    })).toEqual({ persist: true, reason: 'clock_recovered' });
+  });
 });

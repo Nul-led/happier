@@ -969,6 +969,8 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     let remoteCliInstalled = false;
     let installCalls = 0;
     let authRequestCalls = 0;
+    let remoteEnrollmentSignal: AbortSignal | undefined;
+    let approvalInput: unknown;
     const forwarded: Array<Record<string, unknown>> = [];
     const pairing = { secretB64Url: 'pairing-secret-b64url', createdAtMs: 123, expiresAtMs: 456 };
     const kind = createRemoteSshBootstrapMachineTaskKind({
@@ -977,7 +979,9 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
         remoteCliInstalled = true;
         installCalls += 1;
       },
-      approveLocalAuthRequest: async ({ publicKey, homeServerIdentityId, pairing: forwardedPairing, supportsTokenOnly }) => {
+      approveLocalAuthRequest: async (input) => {
+        approvalInput = input;
+        const { publicKey, homeServerIdentityId, pairing: forwardedPairing, supportsTokenOnly } = input;
         forwarded.push({ publicKey, homeServerIdentityId, pairing: forwardedPairing, supportsTokenOnly });
       },
       remoteEnrollment: {
@@ -987,7 +991,10 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
           pairing,
         },
         resultData: { machineId: 'machine-remote-pairing' },
-        onRun: () => { authRequestCalls += 1; },
+        onRun: (params) => {
+          authRequestCalls += 1;
+          remoteEnrollmentSignal = params.signal;
+        },
       },
       runRemoteCommand: async ({ label, data }) => {
         if (label === 'server.configure') {
@@ -1039,6 +1046,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     expect(forwarded).toEqual([
       { publicKey: 'pub-key', homeServerIdentityId: 'srv_home_identity', pairing, supportsTokenOnly: true },
     ]);
+    expect(approvalInput).toEqual(expect.objectContaining({ signal: remoteEnrollmentSignal }));
   });
 
   it('prompts for SSH passwords without leaking the password into emitted prompt events', async () => {

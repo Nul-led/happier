@@ -4,6 +4,7 @@ import {
   COMPOSER_REFERENCE_MENTION_KIND_V1,
   ComposerAttachmentInputV1Schema,
   ComposerAttachmentResolveRequestV1,
+  ComposerAttachmentResolveRequestV2,
   ComposerAttachmentResolveResultV1Schema,
   MENTION_BOUNDS,
   MENTION_KIND_V1,
@@ -25,6 +26,7 @@ import {
   type HappierStructuredInputV1,
   type MentionRefV1,
   type PluginContributionIdentityV1,
+  type PluginExecutionScopeV1,
   type ResolvedComposerAttachmentDispatchV1,
   type SessionMediaItemV1,
   type StructuredInputDispatchContextV1,
@@ -90,7 +92,9 @@ export class StructuredInputComposerReferenceUnavailableError extends Error {
 export type StructuredInputComposerAttachmentResolver = Readonly<{
   resolve(input: Readonly<{
     attachment: PluginContributionIdentityV1;
-    request: ComposerAttachmentResolveRequestV1<ComposerAttachmentValueV1>;
+    request:
+      | ComposerAttachmentResolveRequestV1<ComposerAttachmentValueV1>
+      | ComposerAttachmentResolveRequestV2<ComposerAttachmentValueV1>;
     signal: AbortSignal;
   }>): Promise<ComposerAttachmentResolveResultV1>;
 }>;
@@ -131,7 +135,8 @@ export class StructuredInputComposerAttachmentUnavailableError
 
 type StructuredInputSessionMediaProjectionErrorCode =
   | 'session_media_reference_invalid'
-  | 'session_media_video_unsupported';
+  | 'session_media_video_unsupported'
+  | 'session_media_scope_unavailable';
 
 /**
  * SessionMedia is durable and renderable independently of Agent input support.
@@ -567,14 +572,14 @@ function nonReadyComposerAttachmentResolutionError(
 async function resolveComposerAttachments(params: Readonly<{
   attachments: readonly ComposerAttachmentInputV1[];
   resolver?: StructuredInputComposerAttachmentResolver;
-  sessionId?: string;
+  scope?: PluginExecutionScopeV1;
   localId?: string;
   signal?: AbortSignal;
 }>): Promise<ResolvedComposerAttachmentProjection> {
   if (params.attachments.length === 0) {
     return Object.freeze({ attachments: Object.freeze([]), contextEntries: Object.freeze([]) });
   }
-  if (!params.resolver || !params.sessionId || !params.localId || !params.signal) {
+  if (!params.resolver || !params.scope || !params.localId || !params.signal) {
     throw new StructuredInputComposerAttachmentUnavailableError();
   }
 
@@ -585,7 +590,9 @@ async function resolveComposerAttachments(params: Readonly<{
     const result = await params.resolver.resolve({
       attachment: group.attachment,
       request: Object.freeze({
-        sessionId: params.sessionId,
+        ...(params.scope.kind === 'session'
+          ? { sessionId: params.scope.sessionId }
+          : { scope: params.scope }),
         localId: params.localId,
         attachments: Object.freeze(group.attachments.map((attachment) => Object.freeze({
           instanceId: attachment.instanceId,
@@ -655,11 +662,18 @@ function sessionMediaProjectionError(
 function projectSessionMediaImageInputs(params: Readonly<{
   attachments: readonly ComposerAttachmentInputV1[];
   sessionMedia: readonly SessionMediaItemV1[];
+  scope?: PluginExecutionScopeV1;
 }>): readonly Record<string, unknown>[] {
   const referencedMediaIds = params.attachments.flatMap((attachment) => (
     attachment.content?.kind === 'sessionMedia' ? [attachment.content.mediaId] : []
   ));
   if (referencedMediaIds.length === 0) return Object.freeze([]);
+  if (params.scope?.kind !== 'session') {
+    throw sessionMediaProjectionError(
+      'session_media_scope_unavailable',
+      'Composer SessionMedia requires an exact Happier Session scope',
+    );
+  }
 
   const referencedIds = new Set<string>();
   for (const mediaId of referencedMediaIds) {
@@ -753,7 +767,7 @@ export async function resolveStructuredInputProviderDispatchContext(params: Read
     signal: AbortSignal;
   }>;
   composerAttachments?: Readonly<{
-    sessionId: string;
+    scope: PluginExecutionScopeV1;
     localId: string;
     resolve: StructuredInputComposerAttachmentResolver['resolve'];
     signal: AbortSignal;
@@ -776,6 +790,7 @@ export async function resolveStructuredInputProviderDispatchContext(params: Read
   const sessionMediaImageInputs = projectSessionMediaImageInputs({
     attachments,
     sessionMedia: params.sessionMedia ?? [],
+    ...(params.composerAttachments ? { scope: params.composerAttachments.scope } : {}),
   });
   const sources = readStructuredInputMentionSourcesV1(envelope);
   const catalogs = params.catalogs ?? {};
@@ -820,7 +835,7 @@ export async function resolveStructuredInputProviderDispatchContext(params: Read
             resolver: Object.freeze({
               resolve: params.composerAttachments.resolve,
             }),
-            sessionId: params.composerAttachments.sessionId,
+            scope: params.composerAttachments.scope,
             localId: params.composerAttachments.localId,
             signal: params.composerAttachments.signal,
           }

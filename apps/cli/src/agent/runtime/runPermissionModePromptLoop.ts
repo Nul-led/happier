@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   readPendingLocalId,
   AgentSessionRuntimeEventSchema,
+  normalizeStrictJsonValue,
   readStructuredInputMentionSourcesV1,
   renderSessionInputContextPromptV1,
   validatePluginHookPayloadV1,
@@ -14,6 +15,7 @@ import {
   type ComposerAttachmentResolveResultV1,
   type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ACPProvider } from '@/api/session/sessionMessageTypes';
@@ -90,6 +92,7 @@ import {
 } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
 import { logger } from '@/ui/logger';
 import type { AgentCompositionToolSelection } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
+import type { SessionFollowPreparedContext as RuntimeSessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 
 export type ComposerAttachmentDispatchResolver = (input: Readonly<{
   sessionId: string;
@@ -97,6 +100,30 @@ export type ComposerAttachmentDispatchResolver = (input: Readonly<{
   request: ComposerAttachmentResolveRequestV1<ComposerAttachmentValueV1>;
   signal: AbortSignal;
 }>) => Promise<ComposerAttachmentResolveResultV1>;
+
+export function projectSessionComposerAttachmentDispatchInput(
+  input: Parameters<StructuredInputComposerAttachmentResolver['resolve']>[0],
+  sessionId: string,
+): Parameters<ComposerAttachmentDispatchResolver>[0] {
+  const request = 'scope' in input.request
+    ? (() => {
+        if (input.request.scope.kind !== 'session' || input.request.scope.sessionId !== sessionId) {
+          throw new StructuredInputComposerAttachmentUnavailableError();
+        }
+        return Object.freeze({
+          sessionId,
+          localId: input.request.localId,
+          attachments: input.request.attachments,
+        });
+      })()
+    : input.request;
+  return Object.freeze({
+    sessionId,
+    attachment: input.attachment,
+    request,
+    signal: input.signal,
+  });
+}
 
 export type PermissionModePromptLoopTurnOperations = RuntimeTurnOperations & Readonly<{
   supportsInFlightSteer?: () => boolean;
@@ -111,6 +138,11 @@ export type PermissionModePromptLoopTurnOperations = RuntimeTurnOperations & Rea
   listSkills?: () => Promise<unknown>;
   resolveComposerReference?: StructuredInputComposerReferenceResolver['resolve'];
   shouldResumeAfterPermissionModeChange?: () => boolean;
+  prepareSessionFollowContext?: (input: Readonly<{
+    signal: AbortSignal;
+    /** Final required provider prompt before optional Follow blocks are admitted. */
+    requiredPrompt: string;
+  }>) => Promise<RuntimeSessionFollowPreparedContext | null>;
 }>;
 
 export type PromptLoopOverrideSynchronizer = Readonly<{
@@ -310,6 +342,7 @@ function hasQueuedPromptDeliveryIdentity(identity: QueuedPromptDeliveryIdentity)
 }
 
 function confirmLocallyConsumedPrompt(session: ApiSessionClient, message: PermissionModeQueuedPrompt): void {
+  if (message.hostContextOnly) return;
   const identity = readQueuedPromptDeliveryIdentity(message);
   if (!hasQueuedPromptDeliveryIdentity(identity)) return;
   session.confirmUserMessageLocallyConsumed?.(identity);
@@ -322,6 +355,7 @@ function observeLocalSpecialCommandSettlement(params: Readonly<{
     | Readonly<{ kind: 'accepted' }>
     | Readonly<{ kind: 'rejected_before_effect'; diagnosticMessage: string }>;
 }>): void {
+  if (params.message.hostContextOnly) return;
   const identity = readQueuedPromptDeliveryIdentity(params.message);
   if (identity.localIds.length !== 1) return;
   const localId = identity.localIds[0]!;
@@ -441,6 +475,7 @@ async function observePreTurnFailureSettlement(params: Readonly<{
   message: PermissionModeQueuedPrompt;
   error: PreTurnFailure;
 }>): Promise<void> {
+  if (params.message.hostContextOnly) return;
   const identity = readQueuedPromptDeliveryIdentity(params.message);
   if (identity.localIds.length === 0) return;
   const reason = params.error.reason
@@ -478,6 +513,7 @@ function isQueuedPromptAlreadyLocallyConsumed(
   message: PermissionModeQueuedPrompt,
   mode?: QueuedPermissionModeMessage['mode'],
 ): boolean {
+  if (message.hostContextOnly) return false;
   if (!isLocalSpecialCommandPrompt(message, mode)) return false;
   const hasUserMessageLocalConsumption = session.hasUserMessageLocalConsumption;
   if (typeof hasUserMessageLocalConsumption !== 'function') return false;
@@ -700,11 +736,10 @@ export async function runPermissionModePromptLoop(opts: {
     selection: ProviderBoundModelRef;
   }>) => void;
   /**
-   * Registers the replay-seed effect against the same exact localId settled by the host's
-   * canonical provider-input outcome normalizer. Absent means this runtime's send resolves at
-   * provider acceptance and the loop settles inline.
+   * Registers replay/Follow effects against the exact localId settled by the host's canonical
+   * provider-input outcome normalizer. Transport send completion is never provider acceptance.
    */
-  registerProviderAcceptedEffect?: (
+  registerProviderAcceptedEffect: (
     localId: string,
     onAccepted: (() => void) | null,
   ) => void;
@@ -730,6 +765,12 @@ export async function runPermissionModePromptLoop(opts: {
   let activeCheckpointMessageId: string | null = null;
   let activeCheckpointTurnId: string | null = null;
   let activeCheckpointFinalStatus: 'completed' | 'aborted' | 'interrupted' | 'unknown' = 'unknown';
+  let checkpointLifecycleTail: Promise<void> = Promise.resolve();
+  const enqueueCheckpointHook = (fn: (() => void | Promise<void>) | undefined): Promise<void> => {
+    const pending = checkpointLifecycleTail.then(() => runCheckpointHook(fn));
+    checkpointLifecycleTail = pending;
+    return pending;
+  };
   let snapshotFreshForNextPromptBoundary = false;
   const pendingQueueDrainMaxPopPerWake = Math.max(
     1,
@@ -786,7 +827,7 @@ export async function runPermissionModePromptLoop(opts: {
         const turnId = readCheckpointTurnId(message);
         if (message.type === 'task_started' && turnId) {
           activeCheckpointTurnId = turnId;
-          void runCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({ messageId, turnId }));
+          void enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({ messageId, turnId }));
           return;
         }
         if (
@@ -802,7 +843,8 @@ export async function runPermissionModePromptLoop(opts: {
     }
   })();
 
-  const normalizedResumeId = typeof opts.initialResumeId === 'string' ? opts.initialResumeId.trim() : '';
+  // Opaque Agent identity: used for presence here and reported verbatim.
+  const normalizedResumeId = readNonBlankOpaqueIdentifier(opts.initialResumeId) ?? '';
   let nextSessionIsFresh = normalizedResumeId.length === 0;
   let announceInitialResume = normalizedResumeId.length > 0;
   let strictInitialResumePending = opts.strictInitialResume === true && normalizedResumeId.length > 0;
@@ -1395,14 +1437,13 @@ export async function runPermissionModePromptLoop(opts: {
           && localIds.length === 1
           && localId !== null
             ? {
-                sessionId: opts.session.sessionId,
+                scope: { kind: 'session' as const, sessionId: opts.session.sessionId },
                 localId,
                 resolve: async (input: Parameters<StructuredInputComposerAttachmentResolver['resolve']>[0]) => {
                   try {
-                    return await opts.resolveComposerAttachmentForDispatch!({
-                      sessionId: opts.session.sessionId,
-                      ...input,
-                    });
+                    return await opts.resolveComposerAttachmentForDispatch!(
+                      projectSessionComposerAttachmentDispatchInput(input, opts.session.sessionId),
+                    );
                   } catch (error) {
                     if (isAbortLikeError(error)) throw error;
                     if (error instanceof StructuredInputComposerAttachmentResolutionError) {
@@ -1448,18 +1489,41 @@ export async function runPermissionModePromptLoop(opts: {
             );
           },
         });
-        // The provider parses its own command grammar from the first characters of
-        // this text, so only an unattributed native command is dispatched verbatim.
-        // Attributed input takes the canonical composed path so provenance cannot vanish.
-        const dispatchPrompt = dispatchProviderNativeCommandVerbatim
+        // Follow is host context for this already-admitted input. Collect it at the final
+        // composition boundary so no queue reservation or pseudo-message can advance its
+        // frontier before the provider accepts the real input.
+        const requiredDispatchPrompt = dispatchProviderNativeCommandVerbatim
           ? message.message.text
           : renderSessionInputContextPromptV1({
               provenanceBlock: message.message.inputContextBlock ?? '',
               ...resolvedDispatchContext.promptContext,
               transformedUserText: transformedDispatchPrompt,
             });
+        const requiredProviderContextForBudget = resolvedDispatchContext.structuredInput
+          ? `${requiredDispatchPrompt}\n${JSON.stringify(resolvedDispatchContext.structuredInput)}`
+          : requiredDispatchPrompt;
+        const preparedSessionFollowContext = message.message.hostContextOnly?.prepared ?? (dispatchProviderNativeCommandVerbatim
+          || !localId
+          ? null
+          : await opts.runtime.prepareSessionFollowContext?.({
+              signal: dispatchAbortSignal,
+              requiredPrompt: requiredProviderContextForBudget,
+            }) ?? null);
+        // The provider parses its own command grammar from the first characters of
+        // this text, so only an unattributed native command is dispatched verbatim.
+        // Attributed input takes the canonical composed path so provenance cannot vanish.
+        const dispatchPrompt = dispatchProviderNativeCommandVerbatim
+          ? requiredDispatchPrompt
+          : renderSessionInputContextPromptV1({
+              provenanceBlock: message.message.inputContextBlock ?? '',
+              ...resolvedDispatchContext.promptContext,
+              ...(preparedSessionFollowContext
+                ? { sessionFollowUpdates: preparedSessionFollowContext.updates }
+                : {}),
+              transformedUserText: transformedDispatchPrompt,
+            });
 
-        await runCheckpointHook(() => opts.checkpointLifecycle?.onBeforePromptDispatch?.({
+        await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onBeforePromptDispatch?.({
           messageId: currentCheckpointMessageId!,
           prompt: dispatchPrompt,
         }));
@@ -1477,7 +1541,7 @@ export async function runPermissionModePromptLoop(opts: {
           ...(userMessageSeq === null ? {} : { userMessageSeq }),
           ...(userMessageSeqs.length === 0 ? {} : { userMessageSeqs }),
           ...(resolvedStructuredInput
-            ? { structuredInput: resolvedStructuredInput }
+            ? { structuredInput: normalizeStrictJsonValue(resolvedStructuredInput) }
             : {}),
           ...(message.message.causalPermissionAuthority
             ? { causalPermissionAuthority: message.message.causalPermissionAuthority }
@@ -1499,13 +1563,21 @@ export async function runPermissionModePromptLoop(opts: {
         opts.runtime.beginTurnLifecycle();
         beganTurn = true;
         startActiveTurnPendingPump();
-        const waitsForExactProviderAcceptance = Boolean(
-          localId && opts.registerProviderAcceptedEffect,
-        );
-        if (localId && opts.registerProviderAcceptedEffect) {
+        const acknowledgeSessionFollowAccepted = (): void => {
+          if (!preparedSessionFollowContext || !localId) return;
+          preparedSessionFollowContext.acknowledgeAccepted(message.message.hostContextOnly
+            ? { kind: 'context_only_wake', eventLocalId: localId }
+            : { kind: 'admitted_input', localInputId: localId, userMessageSeq });
+        };
+        if (localId) {
           opts.registerProviderAcceptedEffect(
             localId,
-            pendingReplaySeedSettlement ? confirmProviderAccepted : null,
+            pendingReplaySeedSettlement || preparedSessionFollowContext
+              ? () => {
+                  if (pendingReplaySeedSettlement) confirmProviderAccepted();
+                  acknowledgeSessionFollowAccepted();
+                }
+              : null,
           );
         }
         // Invoking the runtime is the effect boundary. From here onward a thrown transport or
@@ -1519,17 +1591,8 @@ export async function runPermissionModePromptLoop(opts: {
         // turn-in-flight state is allowed to start the Pending pump.
         startActiveTurnPendingPump();
         await providerSend;
-        // A runtime with the exact outcome seam can return at transport custody before the
-        // provider decides whether it accepted the injected prompt. For that runtime only the
-        // host's localId-correlated acceptance may retire the seed; legacy sends still resolve
-        // at acceptance.
-        if (!waitsForExactProviderAcceptance) {
-          confirmProviderAccepted();
-        }
-        // Ordinary turns settle here, so the next prompt reads a retired seed with the
-        // ordering unchanged. Native strict-resume acceptance is intentionally later:
-        // transport custody proves only the replay seed, while the provider's completion
-        // boundary proves whether the requested native identity actually resumed.
+        // Provider transport custody alone cannot settle replay or Follow effects. The
+        // mandatory localId-correlated delivery outcome port owns that exact decision.
         await drainReplaySeedSettlement();
       };
       if (
@@ -1637,7 +1700,7 @@ export async function runPermissionModePromptLoop(opts: {
       if (beganTurn) {
         if (currentCheckpointMessageId && !activeCheckpointTurnId) {
           activeCheckpointTurnId = currentCheckpointMessageId;
-          await runCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({
+          await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnStarted?.({
             messageId: currentCheckpointMessageId!,
             turnId: activeCheckpointTurnId!,
           }));
@@ -1645,13 +1708,13 @@ export async function runPermissionModePromptLoop(opts: {
         if (currentCheckpointMessageId && activeCheckpointTurnId) {
           const checkpointMessageId = currentCheckpointMessageId;
           const checkpointTurnId = activeCheckpointTurnId;
-          await runCheckpointHook(() => opts.checkpointLifecycle?.onTurnFinal?.({
+          await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnFinal?.({
             messageId: checkpointMessageId,
             turnId: checkpointTurnId,
             status: activeCheckpointFinalStatus,
           }));
         } else if (currentCheckpointMessageId) {
-          await runCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
+          await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
             messageId: currentCheckpointMessageId!,
           }));
         }
@@ -1669,7 +1732,7 @@ export async function runPermissionModePromptLoop(opts: {
         completeAssistantTextSnapshotTurnScope(opts.session, assistantTextSnapshotScope);
       } else if (handledPreTurnFailure) {
         if (currentCheckpointMessageId) {
-          await runCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
+          await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
             messageId: currentCheckpointMessageId!,
           }));
         }
@@ -1688,6 +1751,6 @@ export async function runPermissionModePromptLoop(opts: {
   } finally {
     resetAssistantTextSnapshotTurnScope(opts.session, 'session_end');
     unsubscribeCheckpointRuntimeMessages();
-    await runCheckpointHook(() => opts.checkpointLifecycle?.onSessionEnd?.());
+    await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onSessionEnd?.());
   }
 }

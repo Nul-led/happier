@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from './ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
 import {
@@ -37,6 +37,10 @@ function quotaSnapshot(input: Readonly<{
 }
 
 describe('ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('stores runtime quota snapshots per service/group/profile and exposes candidate runtime state', () => {
     const store = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
 
@@ -471,5 +475,28 @@ describe('ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore', () => {
       maxAgeMs: 10_000,
       currentQuotaSnapshot,
     })).toBeNull();
+  });
+
+  it('replaces a retained future-dated snapshot with a current observation', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const store = new ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore();
+
+    store.recordProfileSnapshot({
+      serviceId: 'openai-codex',
+      profileId: 'primary',
+      snapshot: quotaSnapshot({ profileId: 'primary', fetchedAt: 100_000, utilizationPct: 100 }),
+    });
+    store.recordProfileSnapshot({
+      serviceId: 'openai-codex',
+      profileId: 'primary',
+      snapshot: quotaSnapshot({ profileId: 'primary', fetchedAt: 10_000, utilizationPct: 10 }),
+    });
+
+    expect(store.getSnapshot({
+      serviceId: 'openai-codex',
+      groupId: 'main',
+      profileId: 'primary',
+    })).toMatchObject({ fetchedAt: 10_000 });
   });
 });

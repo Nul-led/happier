@@ -158,7 +158,7 @@ describe('happier session create (action executor)', () => {
           title: 'My title',
           initialInput: { text: 'Hello' },
         },
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -221,7 +221,7 @@ describe('happier session create (action executor)', () => {
       expect(execute).toHaveBeenLastCalledWith(
         'session.wait.idle',
         { sessionId: 'sess-wait', timeoutSeconds: 300 },
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       );
       expect(output.json()).toEqual({
         v: 1,
@@ -343,7 +343,7 @@ describe('happier session create (action executor)', () => {
         2,
         'transcript.follow',
         expect.objectContaining({ sessionId: 'sess-follow', cursor: '0' }),
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       );
     } finally {
       output.restore();
@@ -440,7 +440,7 @@ describe('happier session create (action executor)', () => {
         3,
         'transcript.unfollow',
         { sessionId: 'sess-follow-failure', leaseId: expect.any(String) },
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       );
       expect(output.logs.map((line) => JSON.parse(line))).toEqual([
         {
@@ -507,7 +507,7 @@ describe('happier session create (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'session.spawn_new',
         expect.objectContaining({ permissionMode: 'read-only' }),
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
       expect(output.json()).toMatchObject({ ok: true, kind: 'session_create' });
     } finally {
@@ -569,7 +569,7 @@ describe('happier session create (action executor)', () => {
             identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
           },
         },
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
     } finally {
       output.restore();
@@ -603,7 +603,7 @@ describe('happier session create (action executor)', () => {
             identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
           },
         },
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
     } finally {
       output.restore();
@@ -640,21 +640,21 @@ describe('happier session create (action executor)', () => {
         1,
         'sessions.spawn.connected_services.list',
         { agentId: 'codex', includeUnavailable: false },
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       );
       expect(execute).toHaveBeenNthCalledWith(
         2,
         'session.spawn_new',
         expect.objectContaining({
           connectedServices: {
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
               'happier.agent.codex/openai-codex': { source: 'connected', selection: 'group', groupId: 'team' },
               'happier.agent.codex/openai': { source: 'native' },
             },
           },
         }),
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
     } finally {
       output.restore();
@@ -689,7 +689,7 @@ describe('happier session create (action executor)', () => {
           },
           title: 'My title',
         },
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
     } finally {
       output.restore();
@@ -803,7 +803,7 @@ describe('happier session create (action executor)', () => {
         expect.objectContaining({
           directory: '/tmp/hstack-invoked-cwd',
         }),
-        { surface: 'cli', defaultSessionId: null, actionRequestId: expect.any(String) },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: expect.any(String) },
       );
     } finally {
       output.restore();

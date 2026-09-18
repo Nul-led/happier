@@ -49,8 +49,15 @@ export function buildMachineResumeRequest(
     ...(spawnNonce ? { spawnNonce } : {}),
     ...(options.resume ? { resume: options.resume } : {}),
     ...(options.runtimeDescriptorV1 ? { runtimeDescriptorV1: options.runtimeDescriptorV1 } : {}),
+    ...(options.sessionCreationTag ? { sessionCreationTag: options.sessionCreationTag } : {}),
+    ...(options.sessionCreationCorrespondence
+      ? { sessionCreationCorrespondence: options.sessionCreationCorrespondence }
+      : {}),
     ...(options.environmentVariables ? { environmentVariables: options.environmentVariables } : {}),
     ...(options.profileId ? { profileId: options.profileId } : {}),
+    ...(options.secretReferenceOverlay
+      ? { secretReferenceOverlay: options.secretReferenceOverlay }
+      : {}),
     ...(options.terminal ? { terminal: options.terminal } : {}),
     ...(options.connectedServices ? { connectedServices: options.connectedServices } : {}),
     ...(typeof options.connectedServicesUpdatedAt === 'number'
@@ -114,6 +121,11 @@ export async function requestInactiveSessionResume(params: Readonly<{
   timeoutMs?: number;
   signal?: AbortSignal;
   waitForReady?: boolean;
+  machineRpcTransport?: (
+    method: string,
+    request: unknown,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<unknown>;
 }>): Promise<InactiveSessionResumeResult> {
   const archivedAt = (params.rawSession as { archivedAt?: unknown }).archivedAt;
   if (archivedAt !== null && archivedAt !== undefined) {
@@ -175,16 +187,24 @@ export async function requestInactiveSessionResume(params: Readonly<{
     : undefined;
 
   try {
-    const response = await callMachineRpc({
-      credentials: params.credentials,
-      machineId,
-      method: options.modelSelection?.ref.providerConnectionId != null
-        ? RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE
-        : RPC_METHODS.SPAWN_HAPPY_SESSION,
-      request: buildMachineResumeRequest(options, params.sessionId, readinessSpawnNonce),
-      ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
-      ...(params.signal ? { signal: params.signal } : {}),
-    });
+    const method = options.modelSelection?.ref.providerConnectionId != null
+      ? RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE
+      : RPC_METHODS.SPAWN_HAPPY_SESSION;
+    const request = buildMachineResumeRequest(options, params.sessionId, readinessSpawnNonce);
+    const response = params.machineRpcTransport
+      ? await params.machineRpcTransport(
+          method,
+          request,
+          params.signal ? { signal: params.signal } : undefined,
+        )
+      : await callMachineRpc({
+          credentials: params.credentials,
+          machineId,
+          method,
+          request,
+          ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+          ...(params.signal ? { signal: params.signal } : {}),
+        });
     const responseSessionId = response && typeof response === 'object'
       ? readNonEmptyString((response as { sessionId?: unknown }).sessionId)
       : null;

@@ -26,6 +26,11 @@ function readNonEmptyEnv(processEnv: NodeJS.ProcessEnv, name: string): string | 
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function readNonEmptyOpaqueEnv(processEnv: NodeJS.ProcessEnv, name: string): string | null {
+  const raw = processEnv[name];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
 function extractTemplateVarNames(value: string): string[] {
   const out: string[] = [];
   const re = /\$\{([^}:]+)(?::[-=][^}]*)?\}/g;
@@ -96,7 +101,7 @@ export async function buildProfileEnvOverlay(params: Readonly<{
   const foregroundSatisfiedSecretRequirementNames: string[] = [];
 
   for (const req of secretRequirements) {
-    const fromEnv = readNonEmptyEnv(params.processEnv, req.name);
+    const fromEnv = readNonEmptyOpaqueEnv(params.processEnv, req.name);
     if (fromEnv) {
       overlayRaw[req.name] = fromEnv;
       foregroundSatisfiedSecretRequirementNames.push(req.name);
@@ -113,11 +118,11 @@ export async function buildProfileEnvOverlay(params: Readonly<{
     const shouldPrompt = typeof params.promptSecretFn === 'function';
     if (shouldPrompt) {
       const entered = await params.promptSecretFn(`${req.name}: `);
-      const normalized = typeof entered === 'string' ? entered.trim() : '';
-      if (!normalized) {
+      const exactValue = typeof entered === 'string' ? entered : '';
+      if (exactValue.length === 0) {
         throw new Error(`Missing required secret value for ${req.name}.`);
       }
-      overlayRaw[req.name] = normalized;
+      overlayRaw[req.name] = exactValue;
       foregroundSatisfiedSecretRequirementNames.push(req.name);
       continue;
     }
@@ -163,9 +168,18 @@ export function expandProfileEnvOverlay(params: Readonly<{
       .filter((requirement) => requirement.required === true)
       .map((requirement) => requirement.name),
   );
+  const requiredSecretEnvNames = new Set<string>(
+    (params.profile.envVarRequirements ?? [])
+      .filter((requirement) => (
+        requirement.required === true
+        && (requirement.kind ?? 'secret') === 'secret'
+      ))
+      .map((requirement) => requirement.name),
+  );
   const missingRequired = [...requiredEnvNames].filter((name) => {
     const value = sourceEnv[name];
-    return typeof value !== 'string' || value.trim().length === 0;
+    return typeof value !== 'string'
+      || (requiredSecretEnvNames.has(name) ? value.length === 0 : value.trim().length === 0);
   });
   if (missingRequired.length > 0) {
     throw new Error(

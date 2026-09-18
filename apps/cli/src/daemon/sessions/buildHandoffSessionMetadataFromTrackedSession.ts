@@ -10,6 +10,7 @@ import type { TrackedSession } from '../types';
 import { resolveConcreteBackendTargetRefV2 } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
 import {
     ExternalSessionsSourceSchema,
+    readNonBlankOpaqueIdentifier,
     readRuntimeDescriptorV1FromMetadata,
 } from '@happier-dev/protocol';
 
@@ -74,20 +75,10 @@ export async function buildHandoffSessionMetadataFromTrackedSession(params: Read
     trackedSession: TrackedSession;
     machineId?: string;
     fallbackHomeDir?: string;
-    localExportMetadataOverlay?: Record<string, unknown> | null;
 }>): Promise<SessionHandoffLocalMetadataSource | null> {
-    const localExportMetadataOverlay = asMetadataRecord(params.localExportMetadataOverlay);
-    const baseMetadata =
+    const metadata =
         asMetadataRecord(params.trackedSession.happySessionMetadataFromLocalWebhook)
         ?? resolveTrackedSessionFallbackMetadata(params);
-    const metadata = baseMetadata
-        ? {
-            ...baseMetadata,
-            ...(localExportMetadataOverlay ?? {}),
-        }
-        : localExportMetadataOverlay
-            ? { ...localExportMetadataOverlay }
-            : null;
     if (!metadata) {
         return null;
     }
@@ -95,8 +86,10 @@ export async function buildHandoffSessionMetadataFromTrackedSession(params: Read
     let runtimeLocalMetadata: SessionHandoffRuntimeLocalMetadata = {
         ...(pickSessionHandoffRuntimeLocalMetadata(metadata) ?? {}),
     };
-    const vendorResumeId = normalizeOptionalString(params.trackedSession.vendorResumeId)
-        ?? normalizeOptionalString(params.trackedSession.spawnOptions?.resume)
+    // The successor host hands this id back to the Agent that minted it, so the
+    // handoff carries its exact bytes and only decides present-vs-absent.
+    const vendorResumeId = readNonBlankOpaqueIdentifier(params.trackedSession.vendorResumeId)
+        ?? readNonBlankOpaqueIdentifier(params.trackedSession.spawnOptions?.resume)
         ?? '';
     if (!vendorResumeId) {
         return createSessionHandoffMetadataSplit({

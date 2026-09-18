@@ -1,6 +1,6 @@
 import {
-  ConnectedServiceBindingsV1Schema,
-  type ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2IngressSchema,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceMaterializationIdentityV1,
 } from '@happier-dev/protocol';
 
@@ -8,7 +8,7 @@ import { generateConnectedServiceMaterializationIdentityV1 } from '@/daemon/conn
 import { shouldResolveConnectedServiceAuthForSpawn } from '@/daemon/connectedServices/shouldResolveConnectedServiceAuthForSpawn';
 
 export type ConnectedServiceChildLaunchPatch = Readonly<{
-  connectedServices?: ConnectedServiceBindingsV1;
+  connectedServices?: ConnectedServiceBindingsV2;
   connectedServicesUpdatedAt?: number;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1;
 } & Record<string, unknown>>;
@@ -30,8 +30,8 @@ export type ConnectedServiceChildLaunchContext = Readonly<{
   metadata: ConnectedServiceChildLaunchPatch;
 }>;
 
-function readNonEmptyConnectedServices(value: unknown): ConnectedServiceBindingsV1 | null {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(value);
+function readNonEmptyConnectedServices(value: unknown): ConnectedServiceBindingsV2 | null {
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
   if (!parsed.success) return null;
   return Object.keys(parsed.data.bindingsByServiceId).length > 0 ? parsed.data : null;
 }

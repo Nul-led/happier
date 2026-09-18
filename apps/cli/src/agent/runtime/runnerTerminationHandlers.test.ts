@@ -278,4 +278,29 @@ describe('registerRunnerTerminationHandlers', () => {
     await expect(Promise.race([handlers.whenTerminated, Promise.resolve('nope')])).resolves.toBe('nope');
     expect(exit).not.toHaveBeenCalled();
   });
+
+  it('leaves process listeners and exit to an external lifecycle owner', async () => {
+    const fakeProcess = createFakeProcess();
+    const exit = vi.fn();
+    const onTerminate = vi.fn(async () => undefined);
+
+    const handlers = registerRunnerTerminationHandlers({
+      process: fakeProcess,
+      exit,
+      onTerminate,
+      processLifecycleOwnership: 'caller',
+    });
+
+    expect(fakeProcess.listenerCount('SIGTERM')).toBe(0);
+    expect(fakeProcess.listenerCount('SIGINT')).toBe(0);
+    expect(fakeProcess.listenerCount('unhandledRejection')).toBe(0);
+    expect(fakeProcess.listenerCount('uncaughtException')).toBe(0);
+
+    handlers.requestTermination({ kind: 'killSession' });
+    await expect(handlers.whenTerminated).resolves.toEqual(
+      expect.objectContaining({ event: { kind: 'killSession' } }),
+    );
+    expect(onTerminate).toHaveBeenCalledOnce();
+    expect(exit).not.toHaveBeenCalled();
+  });
 });

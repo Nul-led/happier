@@ -14,6 +14,7 @@ import {
 import {
     normalizePluginUiDestinationBindingV1,
     normalizePluginUiInlineSurfaceBindingV1,
+    isPluginUiAuthoredViewInlineSurfaceRoleV1,
     isPluginUiSurfaceBindingPotentiallySupportedOnPlatformV1,
     normalizePluginSessionHeaderActionDescriptorV1,
     normalizePluginUiSemanticCommandV1,
@@ -810,11 +811,15 @@ function projectSurfaceAvailability<TEntry extends Readonly<Record<string, unkno
     });
 }
 
+/**
+ * Destination versus inline is a property of the one Surface Registry row, not
+ * of a role list maintained here. Asking the Registry keeps this projection
+ * from becoming a second role authority when a row is added.
+ */
 function isDestinationUiViewDefinition(
     definition: ResolvedUiViewV2Contribution['definition'],
 ): definition is PluginUiViewDestinationBindingV2 {
-    return definition.container !== 'sessionSubagentLaunch'
-        && definition.container !== 'sessionSubagentDetails';
+    return !isPluginUiAuthoredViewInlineSurfaceRoleV1(definition.container);
 }
 
 function generatedViewDisplay(view: ResolvedUiViewV2Contribution): Readonly<Record<string, unknown>> {
@@ -919,12 +924,18 @@ export function projectPluginUiRendererRef(
             kind: 'reactNative' as const,
             contributionId: renderer.definition.id,
         })
-        : renderer.definition.kind === 'hostedWeb'
+        : renderer.definition.kind === 'hostedWeb' || renderer.definition.kind === 'hostedHtml'
             ? Object.freeze({
-                kind: 'hostedWeb' as const,
+                kind: renderer.definition.kind,
                 contributionId: renderer.definition.id,
                 source: renderer.definition.source,
                 requiredHostMethods,
+                // Only a by-value document declares requested capabilities, and
+                // the mount alone enforces them. Carrying the declaration here
+                // keeps one owner: the projection never resolves or narrows it.
+                ...(renderer.definition.kind === 'hostedHtml' && renderer.definition.requestedCapabilities !== undefined
+                    ? { requestedCapabilities: renderer.definition.requestedCapabilities }
+                    : {}),
             })
             : Object.freeze({
                 kind: 'declarative' as const,
@@ -936,9 +947,9 @@ export function projectPluginUiRendererRef(
             });
     return Object.freeze({
         rendererRef,
-        registryRendererRef: renderer.definition.kind === 'hostedWeb'
+        registryRendererRef: renderer.definition.kind === 'hostedWeb' || renderer.definition.kind === 'hostedHtml'
             ? Object.freeze({
-                kind: 'hostedWeb' as const,
+                kind: renderer.definition.kind,
                 contributionId: renderer.definition.id,
             })
             : rendererRef,
@@ -959,6 +970,11 @@ export function projectPluginUiRendererAvailability<
     reason: string;
     diagnostics: readonly string[];
 }> {
+    if (params.renderer.definition.kind === 'hostedHtml') {
+        // The admitted source is carried by value. Platform/frame support is
+        // decided by the mounted UI runtime, not an invented Artifact entry.
+        return Object.freeze({ state: 'available', reason: 'available', diagnostics: Object.freeze([]) });
+    }
     if (params.renderer.definition.kind === 'declarative') {
         return params.declarativeModel?.visible === true
             ? Object.freeze({
@@ -1163,8 +1179,7 @@ function projectGeneratedUiViews(
         const availableRendererIds = (registry.uiRenderersV2 ?? [])
             .filter((renderer) => renderer.pluginId === pluginId)
             .map((renderer) => renderer.definition.id);
-        const binding = view.definition.container === 'sessionSubagentLaunch'
-            || view.definition.container === 'sessionSubagentDetails'
+        const binding = isPluginUiAuthoredViewInlineSurfaceRoleV1(view.definition.container)
             ? normalizePluginUiInlineSurfaceBindingV1({
                 pluginId,
                 surfaceId: descriptorId,
@@ -1182,7 +1197,13 @@ function projectGeneratedUiViews(
                 availableRendererIds,
                 container: view.definition.container,
                 target: view.definition.target,
-                instancePolicy: view.definition.instancePolicy,
+                // Parsed destination declarations carry this field. A few
+                // host-owned registry fixtures construct the same accepted
+                // input shape before parsing, where omission means the
+                // canonical singleton default rather than an invalid view.
+                instancePolicy: 'instancePolicy' in view.definition
+                    ? view.definition.instancePolicy
+                    : 'singleton',
             });
         if (!binding) continue;
         const destinationPlatformCandidate = hostRuntime?.reactNativeBundles?.hostRuntime?.platform;

@@ -1,10 +1,10 @@
 import {
   AcpConfigOptionOverridesV1Schema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   ExternalActionRequestIdV1Schema,
   SessionMcpSelectionV1Schema,
   type AcpConfigOptionOverridesV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type SessionMcpSelectionV1,
   type SpawnConfigOptionValue,
 } from '@happier-dev/protocol';
@@ -35,7 +35,7 @@ export type SessionCreateSpawnRequest = Readonly<{
   configOptions?: Readonly<Record<string, SpawnConfigOptionValue>>;
   profileId?: string;
   environmentVariables?: Readonly<Record<string, string>>;
-  connectedServices?: ConnectedServiceBindingsV1;
+  connectedServices?: ConnectedServiceBindingsV2;
   mcpSelection?: SessionMcpSelectionV1;
   transcriptStorage?: 'persisted' | 'direct';
   terminal?: Readonly<Record<string, unknown>>;
@@ -284,7 +284,7 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
     const flag = authJsonRaw ? '--auth-json' : '--connected-services-json';
     const parsed = parseJsonFlagValue(connectedServicesRaw, flag);
     try {
-      return ConnectedServiceBindingsV1Schema.parse(parsed);
+      return ConnectedServiceBindingsV2IngressSchema.parse(parsed);
     } catch {
       throw new Error(`Invalid ${flag}.`);
     }

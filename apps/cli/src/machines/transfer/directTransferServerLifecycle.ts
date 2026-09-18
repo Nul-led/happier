@@ -63,6 +63,7 @@ export type DirectTransferServerLifecycle = Readonly<{
     fetchFn?: typeof fetch;
     now?: () => number;
     timeoutMs?: number;
+    signal?: AbortSignal;
   }>) => Promise<TransferPayloadFileResult>;
   clearPublishedTransfer: (transferId: string) => void;
   stop: () => Promise<void>;

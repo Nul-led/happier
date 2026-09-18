@@ -5,13 +5,20 @@ import { createRpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { AgentState, Metadata, PermissionMode, Session } from '@/api/types';
-import type { V2SessionListResponse, V2SessionRecord } from '@happier-dev/protocol';
+import type {
+    AccountEncryptionCurrentnessResponse,
+    SessionCurrentProjectionRecordV1,
+    V2SessionListResponse,
+    V2SessionRecord,
+} from '@happier-dev/protocol';
 
 import { createTestMetadata } from './sessionMetadata';
 
 type RecordLike = Record<string, unknown>;
 export type SessionRecordFixture = V2SessionRecord;
 export type SessionListResponseFixture = V2SessionListResponse;
+export type AccountEncryptionCurrentnessFixture = AccountEncryptionCurrentnessResponse;
+export type CurrentSessionProjectionRecordFixture = SessionCurrentProjectionRecordV1;
 export type PlainSessionFixture = Extract<Session, { encryptionMode: 'plain' }>;
 export type MutableApiSessionClientFixture<TMetadata extends Record<string, unknown> = Metadata> = ApiSessionClient & {
     updateMetadata: (updater: (current: TMetadata | null) => TMetadata | null) => void;
@@ -243,6 +250,45 @@ export function createSessionRecordFixture(
         pendingVersion: 0,
         dataEncryptionKey: null,
         ...rest,
+    };
+}
+
+export function createCurrentSessionProjectionRecordFixture(
+    overrides: Partial<CurrentSessionProjectionRecordFixture>
+        & Pick<CurrentSessionProjectionRecordFixture, 'id' | 'effectiveAccess'>,
+): CurrentSessionProjectionRecordFixture {
+    return {
+        ...createSessionRecordFixture(overrides),
+        responsibleAccountId: null,
+        responsibleAccount: null,
+        ...overrides,
+    };
+}
+
+/**
+ * The `/v1/account/encryption/currentness` boundary response.
+ *
+ * Typed against the Protocol schema the CLI actually parses, so a required field added by the
+ * Account-encryption owner fails this fixture at compile time instead of turning every test that
+ * hand-rolled the object literal red at runtime.
+ */
+export function createAccountEncryptionCurrentnessFixture(
+    overrides: Partial<AccountEncryptionCurrentnessFixture> = {},
+): AccountEncryptionCurrentnessFixture {
+    const mode = overrides.mode ?? 'plain';
+
+    return {
+        mode,
+        version: 0,
+        signingKeyFingerprint: null,
+        contentKeyFingerprint: null,
+        updatedAt: 0,
+        // A plain Account holds no client Account data-encryption material at all, so its
+        // recipient envelope is unavailable for that reason rather than through a failure.
+        recipientEnvelopeReadiness: mode === 'plain'
+            ? { status: 'unavailable', reason: 'plain_account' }
+            : { status: 'available' },
+        ...overrides,
     };
 }
 

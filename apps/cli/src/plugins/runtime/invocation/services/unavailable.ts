@@ -673,6 +673,9 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                     correlationId: seed.correlationId,
                     surface: seed.surface,
                     ...(seed.caller ? { caller: seed.caller } : {}),
+                    ...(seed.externalActionContext
+                        ? { externalActionContext: seed.externalActionContext }
+                        : {}),
                     ...(seed.resolveCurrentPluginMaterializationRef
                         ? {
                             resolveCurrentPluginMaterializationRef:
@@ -686,6 +689,13 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                         ? { isMountedCallerCurrent: seed.isMountedCallerCurrent }
                         : {}),
                     ...(seed.session ? { session: seed.session } : {}),
+                    ...(seed.sessionListAccess ? { sessionListAccess: seed.sessionListAccess } : {}),
+                    // The Agent-placed Action path derives its caller permission mode and
+                    // causal authority from this exact active-turn witness. Omitting it
+                    // silently strips both and makes every Agent Action fail closed.
+                    ...(seed.readActiveTurnAdmissionWitness
+                        ? { readActiveTurnAdmissionWitness: seed.readActiveTurnAdmissionWitness }
+                        : {}),
                     signal: seed.signal,
                     isGenerationCurrent: seed.isGenerationCurrent,
                     ...(seed.bypassActionInterception === true

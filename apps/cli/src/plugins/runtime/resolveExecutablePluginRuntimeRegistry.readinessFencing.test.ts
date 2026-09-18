@@ -1,16 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { readPluginManifest } from '@/plugins/manifest/read';
+import { loadInstalledPlugins } from '@/plugins/discovery/load/installed';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
 import { seedCurrentLocalPathPluginFixture } from '@/plugins/store/registry/currentState.testkit';
 
 import { hasBlockingPluginReloadDiagnostic } from './reload/controller';
+import { executeContributedAction } from './invocation/actions/executeContributedAction';
 import {
     type PluginRuntimeActivationRegistryLease,
     resolveExecutablePluginRuntimeRegistry,
@@ -19,11 +21,14 @@ import {
 const PLUGIN_ID = 'acme.readiness-fencing';
 
 async function seedFixture(options?: Readonly<{
-    /** Adds one generation-long background service that settles as soon as it starts. */
+    /** Adds one finite background service and an independent Action. */
     settlingBackgroundService?: boolean;
-}>): Promise<Readonly<{ happyHomeDir: string; pluginRoot: string }>> {
+    /** Makes activation cleanup observable outside the loaded module graph. */
+    activationCleanup?: boolean;
+}>): Promise<Readonly<{ happyHomeDir: string; pluginRoot: string; cleanupMarkerPath: string }>> {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-readiness-fencing-home-'));
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-readiness-fencing-plugin-'));
+    const cleanupMarkerPath = join(pluginRoot, 'activation-cleaned');
     await mkdir(join(pluginRoot, '.happier-plugin'), { recursive: true });
     await writeFile(join(pluginRoot, '.happier-plugin', 'plugin.json'), JSON.stringify({
         schemaVersion: 2,
@@ -45,15 +50,25 @@ async function seedFixture(options?: Readonly<{
                 scope: 'agent',
             }],
             ...(options?.settlingBackgroundService
-                ? { backgroundServices: [{ id: 'watcher' }] }
+                ? {
+                    backgroundServices: [{ id: 'watcher' }],
+                    actions: [{
+                        id: 'status', title: 'Status', scopes: ['global'], surfaces: ['cli'],
+                        execution: { target: 'daemon' }, dangerLevel: 'safe',
+                        placementBindings: ['primary'],
+                    }],
+                }
                 : {}),
         },
     }), 'utf8');
     await writeFile(
         join(pluginRoot, 'daemon.mjs'),
-        'export function activate(api) { api.hooks.register("resolve-prerequisites", async () => ({ decision: "abstain" }));'
+        'let completed = false; export function activate(api) { api.hooks.register("resolve-prerequisites", async () => ({ decision: "abstain" }));'
         + (options?.settlingBackgroundService
-            ? ' api.backgroundServices.register("watcher", async () => {});'
+            ? ' api.backgroundServices.register("watcher", async () => { completed = true; }); api.actions.register("status", async () => ({ completed }));'
+            : '')
+        + (options?.activationCleanup
+            ? ` return async () => { const { appendFile } = await import("node:fs/promises"); await appendFile(${JSON.stringify(cleanupMarkerPath)}, "cleaned\\n", "utf8"); };`
             : '')
         + ' }\n',
         'utf8',
@@ -64,7 +79,7 @@ async function seedFixture(options?: Readonly<{
         pluginId: PLUGIN_ID,
         manifestVersion: '1.0.0',
     });
-    return Object.freeze({ happyHomeDir, pluginRoot });
+    return Object.freeze({ happyHomeDir, pluginRoot, cleanupMarkerPath });
 }
 
 async function resolveFixtureRuntimeInputs(happyHomeDir: string) {
@@ -76,37 +91,13 @@ async function resolveFixtureRuntimeInputs(happyHomeDir: string) {
     if (!generationAuthority || !admitted) {
         throw new Error('Expected the admitted immutable fixture generation');
     }
-    const manifestPath = join(admitted.rootPath, ...admitted.record.manifestRelativePath.split('/'));
-    const immutableManifest = await readPluginManifest({
-        sourceProvenance: 'registryCustodied',
-        manifestPath,
-        manifestAuthority: 'external',
-        enforceEngineCompatibility: true,
-    });
-    if (!immutableManifest.ok) {
-        throw new Error(immutableManifest.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
-    }
-    const sourceSpec = {
-        kind: 'path' as const,
-        locator: admitted.rootPath,
-        trustPolicy: 'local_trusted' as const,
-        installPolicy: 'link' as const,
-        resolvedVersion: '1.0.0',
-    };
     return Object.freeze({
         generationAuthority,
-        contributes: createResolvedContributionRegistry({
-            activationTargets: [{
-                provenance: 'external',
-                source: { kind: 'path' },
-                pluginId: PLUGIN_ID,
-                manifestPath,
-                daemonEntryPath: join(admitted.rootPath, 'daemon.mjs'),
-                sourceSpec,
-                activationEvents: ['startup'],
-                manifest: immutableManifest.manifest,
-            }],
-        }),
+        contributes: createResolvedContributionRegistry(projectLoadedPluginContributes({
+            loadResult: await loadInstalledPlugins({ happyHomeDir }),
+            provenance: 'external',
+            existingAgentIds: new Set(),
+        })),
     });
 }
 
@@ -175,14 +166,50 @@ describe('executable plugin readiness fencing', () => {
             await rm(fixture.pluginRoot, { recursive: true, force: true });
         }
     }, 60_000);
-    // A generation-long background service that stops while its generation is
-    // still current is the same terminal activation failure the cold-start path
-    // isolates — it is simply observed by the background-service owner instead
-    // of by a readiness step. It must reach the same fence, because the reader
-    // that decides whether a plugin's applied generation may still authorize an
-    // effect reads the registry's final-policy currentness, not the activation
-    // fact.
-    it('fences a live plugin whose generation-long background service settles unexpectedly', async () => {
+
+    it('settles a failed readiness participant activation component before returning from the fence', async () => {
+        const fixture = await seedFixture({ activationCleanup: true });
+        let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
+        const runtimeDisposableCalls: string[] = [];
+
+        try {
+            const inputs = await resolveFixtureRuntimeInputs(fixture.happyHomeDir);
+            runtime = await resolveExecutablePluginRuntimeRegistry({
+                happyHomeDir: fixture.happyHomeDir,
+                contributes: inputs.contributes,
+                generationAuthority: inputs.generationAuthority,
+            });
+            runtime.addRuntimeDisposable?.(PLUGIN_ID, Object.freeze({
+                dispose: async () => { runtimeDisposableCalls.push('disposed'); },
+            }));
+            const handler = (runtime.hookHandlersByHookId.get('agent.resolvePrerequisites') ?? [])
+                .find((entry) => entry.pluginId === PLUGIN_ID);
+            if (!handler) throw new Error('Expected the activated fixture hook handler');
+
+            await runtime.recordPluginActivationFailure?.(
+                PLUGIN_ID,
+                'cold-start primary Agent runtime construction failed: runtime rejected',
+            );
+
+            await expect(handler.handler(undefined, {}))
+                .rejects.toThrow(`Plugin '${PLUGIN_ID}' hook handler is no longer active`);
+            expect(await readFile(fixture.cleanupMarkerPath, 'utf8')).toBe('cleaned\n');
+            expect(runtimeDisposableCalls).toEqual(['disposed']);
+            expect(
+                runtime.retainActivationRegistryComponentsExcluding?.(new Set()) ?? [],
+            ).toEqual([]);
+
+            await runtime.dispose();
+            expect(await readFile(fixture.cleanupMarkerPath, 'utf8')).toBe('cleaned\n');
+            expect(runtimeDisposableCalls).toEqual(['disposed']);
+            runtime = null;
+        } finally {
+            await runtime?.dispose();
+            await rm(fixture.happyHomeDir, { recursive: true, force: true });
+            await rm(fixture.pluginRoot, { recursive: true, force: true });
+        }
+    }, 60_000);
+    it('keeps independent Actions available after a background service normally completes', async () => {
         const fixture = await seedFixture({ settlingBackgroundService: true });
         let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
 
@@ -202,26 +229,25 @@ describe('executable plugin readiness fencing', () => {
             if (!handler) throw new Error('Expected the activated fixture hook handler');
 
             const active = runtime;
+            const invokeStatus = () => executeContributedAction({
+                runtimeRegistry: active,
+                actionId: `${PLUGIN_ID}/status`,
+                input: {},
+                context: { surface: 'cli' },
+            });
+            await expect(invokeStatus()).resolves.toMatchObject({
+                matched: true, result: { ok: true, result: { completed: false } },
+            });
             active.startAdoptedBackgroundServices?.();
-            await vi.waitFor(() => {
-                expect(active.activatedPluginIds.has(PLUGIN_ID)).toBe(false);
-            }, { timeout: 10_000 });
-
-            // Applied-generation truth is the reader the final-policy owners use.
-            // Leaving it asserting a stale applied generation is the fail-open.
-            await vi.waitFor(() => {
-                expect(active.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
-                    .toBe(false);
-                expect(
-                    active.pluginFinalPolicyCurrentGenerationsById
-                        ?.get(PLUGIN_ID)
-                        ?.appliedImmutableGenerationId,
-                ).toBeNull();
-            }, { timeout: 10_000 });
-            // Genuinely fenced, not merely unadvertised: the retired generation
-            // refuses its own registered handler without calling plugin code.
-            await expect(handler.handler(undefined, {}))
-                .rejects.toThrow(`Plugin '${PLUGIN_ID}' hook handler is no longer active`);
+            // Drain the finite runner and its settlement callbacks before invoking again.
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await expect(invokeStatus()).resolves.toMatchObject({
+                matched: true, result: { ok: true, result: { completed: true } },
+            });
+            expect(active.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
+            expect(active.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied).toBe(true);
+            await expect(handler.handler({}, {}))
+                .resolves.toEqual({ decision: 'abstain' });
         } finally {
             await runtime?.dispose();
             await rm(fixture.happyHomeDir, { recursive: true, force: true });

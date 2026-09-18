@@ -41,6 +41,7 @@ export function buildTurnChangeSetDiffInput(params: Readonly<{
                 protocol: params.protocol,
                 rawToolName: params.rawToolName,
             }),
+            ...(bounded.truncatedFileCount > 0 ? { confidence: 'best_effort' as const } : {}),
             ...(bounded.truncatedFileCount > 0 ? { turnDiffTruncatedFileCount: bounded.truncatedFileCount } : {}),
         },
     };

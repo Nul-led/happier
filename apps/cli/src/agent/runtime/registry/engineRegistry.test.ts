@@ -314,6 +314,7 @@ describe('resolveCliEngineRegistry', () => {
             engineAdapter: { runtimeCore: expect.any(Object) },
         });
         const derivedRun = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+            scope: 'detached',
             cwd: pluginRoot,
             backendId: 'acme-acp',
             permissionMode: 'read_only',

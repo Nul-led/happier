@@ -266,6 +266,7 @@ describe('first-party native Agent production dispatch', () => {
                     const primary = definition.primary;
                     if (primary === 'executionRuns') {
                         const runtime = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+                            scope: 'detached',
                             backendId: agentId,
                             cwd: happyHomeDir,
                             permissionMode: 'read_only',
@@ -275,10 +276,10 @@ describe('first-party native Agent production dispatch', () => {
                                 intent: 'review',
                             },
                         });
-                        await expect(runtime.provisionSession({
+                        await expect(runtime.provisionRuntime({
                             initialPrompt: `Prove native ${agentId} dispatch`,
                         }), agentId).resolves.toEqual({
-                            sessionId: `native-dispatch-${agentId}`,
+                            runtimeId: `native-dispatch-${agentId}`,
                         });
                         await runtime.dispose();
                         continue;

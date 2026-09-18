@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
+import tweetnacl from 'tweetnacl';
+import { decodeBase64, decrypt, encodeBase64, encrypt, getRandomBytes } from '@/api/encryption';
 
+const socketHandlers = new Map<string, () => void>();
 const socket = {
-  connect: vi.fn(),
+  connect: vi.fn(() => socketHandlers.get('connect')?.()),
+  on: vi.fn((event: string, handler: () => void) => { socketHandlers.set(event, handler); }),
+  off: vi.fn((event: string) => { socketHandlers.delete(event); }),
   disconnect: vi.fn(),
   close: vi.fn(),
   emit: vi.fn(),
@@ -10,9 +14,6 @@ const socket = {
 const axiosGet = vi.hoisted(() => vi.fn());
 
 vi.mock('@/api/session/sockets', () => ({ createUserScopedSocket: vi.fn(() => socket) }));
-vi.mock('@/session/transport/socket/waitForSocketConnect', () => ({
-  waitForSocketConnect: vi.fn(async () => undefined),
-}));
 vi.mock('axios', () => ({
   default: {
     get: (...args: unknown[]) => axiosGet(...args),
@@ -32,10 +33,62 @@ import {
   TerminalStreamReadResponseSchema,
   decodeTerminalStreamBytesFrame,
   encodeTerminalStreamBytes,
+  sealEncryptedDataKeyEnvelopeV1,
+  deriveAccountMachineKeyFromRecoverySecret,
+  deriveBoxPublicKeyFromSeed,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
+  EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
+  verifyExternalActionMachineRequestV1,
+  verifyExternalActionMachineRpcRequestV1,
+  computeRunnerMachineContentKeyFingerprintV1,
+  signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
-import { callMachineRpc, readMachineRpcRequestDisposition } from './machineRpc';
+import { callExactMachineRpc, callMachineRpc, readMachineRpcRequestDisposition } from './machineRpc';
+import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
+import { createUserScopedSocket } from '@/api/session/sockets';
+
+/** Account content material exactly as the CLI persists it: a box seed plus its own public key. */
+function accountDataKeyCredentials(seedByte: number) {
+  const machineKey = new Uint8Array(32).fill(seedByte);
+  return {
+    token: 'account-token',
+    encryption: {
+      type: 'dataKey' as const,
+      publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+      machineKey,
+    },
+  };
+}
+
+function legacyCredentials(seedByte: number) {
+  return {
+    token: 'account-token',
+    encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(seedByte) },
+  };
+}
+
+/** What a Machine actually publishes: its content key sealed to an Account content public key. */
+function publishedMachineDataEncryptionKey(params: Readonly<{
+  contentKey: Uint8Array;
+  recipientPublicKey: Uint8Array;
+}>): string {
+  return encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+    dataKey: params.contentKey,
+    recipientPublicKey: params.recipientPublicKey,
+    randomBytes: getRandomBytes,
+  }));
+}
+
+function openedWith(key: Uint8Array, encoded: unknown): unknown {
+  try {
+    return decrypt(key, 'dataKey', decodeBase64(String(encoded), 'base64'));
+  } catch {
+    return null;
+  }
+}
 
 describe('callMachineRpc', () => {
   beforeEach(() => {
@@ -44,24 +97,115 @@ describe('callMachineRpc', () => {
       data: {
         machine: {
           id: 'machine-session',
-          dataEncryptionKey: 'encrypted-machine-key',
+          dataEncryptionKey: undefined,
         },
       },
     });
   });
 
-  it('encrypts and sends one account-scoped call to only the requested machine', async () => {
-    const machineKey = new Uint8Array(32).fill(3);
-    const credentials = {
-      token: 'account-token',
-      encryption: { type: 'dataKey' as const, publicKey: machineKey, machineKey },
+  it('keeps exact Machine projection requests on the captured Home', async () => {
+    axiosGet.mockResolvedValue({ data: { machine: { id: 'machine-session',
+      dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+    } } });
+    socket.emit.mockImplementation((_event, _payload, ack) => ack({ ok: true, result: { generation: 1 } }));
+    await expect(callExactMachineRpc({ credentials: { token: 'account-token', encryption: null }, machineId: 'machine-session',
+      serverUrl: 'https://captured.example.test', method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+      request: { machineId: 'machine-session' },
+    })).resolves.toEqual({ generation: 1 });
+    expect(axiosGet).toHaveBeenCalledWith('https://captured.example.test/v1/machines/machine-session', expect.any(Object));
+    expect(createUserScopedSocket).toHaveBeenCalledWith({ token: 'account-token', serverUrl: 'https://captured.example.test' });
+  });
+
+  it.each([
+    'session.board.item.upsert',
+    'session.follow.sources.set',
+  ] as const)('carries a fresh exact-request Machine signature for external %s socket RPC', async (effectActionId) => {
+    const keyPair = tweetnacl.sign.keyPair();
+    const target = { kind: 'session' as const, sessionId: 'session-one' };
+    const authorization = {
+      v: 1 as const,
+      token: 'home-invocation-proof',
+      binding: {
+        serverIdentityId: 'home-one', accountId: 'account-one', principalId: 'account-one',
+        credentialId: '11111111-1111-4111-8111-111111111111', machineId: 'machine-caller',
+        actionId: effectActionId, requestId: 'outer-request',
+        requestEnvelopeDigest: 'A'.repeat(43), target,
+      },
     };
+    axiosGet.mockResolvedValue({ data: { machine: { id: 'machine-session',
+      dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+    } } });
+    socket.emit.mockImplementation((_event, payload, ack) => {
+      expect(payload.requestId).toEqual(expect.any(String));
+      expect(payload.externalActionExecution).toMatchObject({
+        authorization,
+        effectActionId,
+        target,
+        installationId: 'installation-one',
+      });
+      expect(verifyExternalActionMachineRpcRequestV1({
+        authorizationToken: authorization.token,
+        effectActionId,
+        target,
+        installationId: 'installation-one',
+        event: SOCKET_RPC_EVENTS.CALL,
+        method: payload.method,
+        requestId: payload.requestId,
+        params: payload.params,
+        publicKey: keyPair.publicKey,
+        signature: payload.externalActionExecution.machineSignature,
+      })).toBe(true);
+      ack({ ok: true, result: { generation: 1 } });
+    });
+    await expect(callExactMachineRpc({
+      credentials: { token: 'daemon-token', encryption: null },
+      machineId: 'machine-session',
+      method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+      request: { machineId: 'machine-session' },
+      externalAction: {
+        context: { externalActionExecutionAuthorization: authorization, externalActionTarget: target },
+        effectActionId,
+        installationId: 'installation-one',
+        privateKey: keyPair.secretKey,
+      },
+    })).resolves.toEqual({ generation: 1 });
+    const machineLookup = axiosGet.mock.calls.at(-1);
+    expect(machineLookup?.[1]?.headers?.Authorization).toBeUndefined();
+    expect(machineLookup?.[1]?.headers?.[EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER]).toBe(authorization.token);
+    expect(verifyExternalActionMachineRequestV1({
+      authorizationToken: authorization.token,
+      effectActionId,
+      target,
+      installationId: 'installation-one',
+      requestId: authorization.binding.requestId,
+      method: 'GET',
+      path: '/v1/machines/machine-session',
+      publicKey: keyPair.publicKey,
+      signature: machineLookup?.[1]?.headers?.[EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER],
+    })).toBe(true);
+  });
+
+  it('encrypts and sends one account-scoped call to only the requested machine', async () => {
+    const credentials = accountDataKeyCredentials(3);
+    const machineKey = credentials.encryption.machineKey;
+    axiosGet.mockResolvedValue({
+      data: {
+        machine: {
+          id: 'machine-session',
+          dataEncryptionKey: publishedMachineDataEncryptionKey({
+            contentKey: machineKey,
+            recipientPublicKey: credentials.encryption.publicKey,
+          }),
+        },
+      },
+    });
     socket.emit.mockImplementation((_event, payload, callback) => {
       expect(payload.method).toBe('machine-session:spawn-happy-session');
       expect(payload.authorization).toEqual({
         kind: 'session.write',
         sessionId: 'session-1',
       });
+      expect(payload.requestId).toEqual(expect.any(String));
       expect(decrypt(machineKey, 'dataKey', decodeBase64(payload.params, 'base64'))).toEqual({ sessionId: 'session-1' });
       callback({
         ok: true,
@@ -84,7 +228,19 @@ describe('callMachineRpc', () => {
   });
 
   it('round-trips a bounded terminal base64 frame byte-exactly through the encrypted JSON socket envelope', async () => {
-    const machineKey = new Uint8Array(32).fill(7);
+    const credentials = accountDataKeyCredentials(7);
+    const machineKey = credentials.encryption.machineKey;
+    axiosGet.mockResolvedValue({
+      data: {
+        machine: {
+          id: 'machine-session',
+          dataEncryptionKey: publishedMachineDataEncryptionKey({
+            contentKey: machineKey,
+            recipientPublicKey: credentials.encryption.publicKey,
+          }),
+        },
+      },
+    });
     const bytes = new Uint8Array(TERMINAL_STREAM_MAX_FRAME_DECODED_BYTES);
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = index % 256;
@@ -134,10 +290,7 @@ describe('callMachineRpc', () => {
     });
 
     const result = TerminalStreamReadResponseSchema.parse(await callMachineRpc({
-      credentials: {
-        token: 'account-token',
-        encryption: { type: 'dataKey' as const, publicKey: machineKey, machineKey },
-      },
+      credentials,
       machineId: 'machine-session',
       method: RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES,
       request,
@@ -151,6 +304,405 @@ describe('callMachineRpc', () => {
     if (!frame || frame.t !== 'bytes') throw new Error('expected terminal bytes frame');
     expect(frame.data).toHaveLength(TERMINAL_STREAM_MAX_ENCODED_BYTES);
     expect(decodeTerminalStreamBytesFrame(frame)).toEqual(bytes);
+  });
+
+  /**
+   * The published envelope names the Machine's own content key. An ordinary
+   * Machine seals the Account-wide machine key into it, so both readings agree
+   * there — a Machine published with its own scoped key is where deriving the
+   * Account key instead would encrypt for the wrong reader.
+   */
+  describe('published machine content key', () => {
+    it('opens the published envelope and uses that scoped key, not account-wide material', async () => {
+      const credentials = accountDataKeyCredentials(11);
+      const machineKey = credentials.encryption.machineKey;
+      const scopedMachineKey = new Uint8Array(32).fill(29);
+      axiosGet.mockResolvedValue({
+        data: {
+          machine: {
+            id: 'machine-scoped',
+            dataEncryptionKey: publishedMachineDataEncryptionKey({
+              contentKey: scopedMachineKey,
+              recipientPublicKey: credentials.encryption.publicKey,
+            }),
+          },
+        },
+      });
+      const receiver = new RpcHandlerManager({
+        scopePrefix: 'machine-scoped',
+        encryptionMode: 'e2ee',
+        encryptionKey: scopedMachineKey,
+        encryptionVariant: 'dataKey',
+        logger: () => {},
+      });
+      receiver.registerHandler('prepare-source-key', async (request) => {
+        expect(request).toEqual({ sourceKey: 'source-dek' });
+        return { ok: true };
+      });
+      socket.emit.mockImplementation(async (_event, payload, callback) => {
+        expect(openedWith(scopedMachineKey, payload.params)).toEqual({ sourceKey: 'source-dek' });
+        // The Account-wide machine key must not open what the scoped key sealed.
+        expect(openedWith(machineKey, payload.params)).toBeNull();
+        callback({
+          ok: true,
+          result: await receiver.handleRequest(payload),
+        });
+      });
+
+      await expect(callExactMachineRpc({
+        credentials,
+        machineId: 'machine-scoped',
+        expectedEncryptionMode: 'e2ee',
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        timeoutMs: 100,
+      })).resolves.toEqual({ ok: true });
+      expect(socket.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a substituted plain marker before emitting an explicitly encrypted exact call', async () => {
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: 'machine-scoped',
+        dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+      } } });
+      socket.emit.mockImplementation((_event, _payload, callback) => callback({ ok: true, result: { ok: true } }));
+      const error = await callExactMachineRpc({
+        credentials: accountDataKeyCredentials(11), machineId: 'machine-scoped',
+        expectedEncryptionMode: 'e2ee', method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' }, timeoutMs: 100,
+      }).catch((thrown) => thrown);
+      expect(error).toMatchObject({ code: 'machine_content_key_unavailable' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.emit).not.toHaveBeenCalled();
+      expect(socket.connect).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: 'revoked', currentness: { revokedAt: 1234 } },
+      { name: 'replaced', currentness: { replacedByMachineId: 'runner-successor' } },
+    ])('rejects a $name exact target before encrypting private material', async ({ currentness }) => {
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: 'runner-stale',
+        dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+        ...currentness,
+      } } });
+
+      const error = await callExactMachineRpc({
+        credentials: { token: 'plain-token', encryption: null },
+        machineId: 'runner-stale',
+        requireCurrentMachine: true,
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+
+      expect(error).toMatchObject({ code: 'machine_target_not_current' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.connect).not.toHaveBeenCalled();
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('rejects a substituted exact Machine projection before private RPC emission', async () => {
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: 'runner-substituted',
+        dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+      } } });
+
+      const error = await callExactMachineRpc({
+        credentials: { token: 'plain-token', encryption: null },
+        machineId: 'runner-expected',
+        requireCurrentMachine: true,
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+
+      expect(error).toMatchObject({
+        message: expect.stringContaining('runner-expected was not returned'),
+      });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.connect).not.toHaveBeenCalled();
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('rejects a persistent Machine before emitting a Runner-only private RPC', async () => {
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: 'machine-persistent',
+        kind: 'persistent',
+        dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+      } } });
+
+      const error = await callExactMachineRpc({
+        credentials: { token: 'plain-token', encryption: null },
+        machineId: 'machine-persistent',
+        requiredMachineKind: 'ephemeral_session_runner',
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+
+      expect(error).toMatchObject({ code: 'machine_kind_mismatch' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.connect).not.toHaveBeenCalled();
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('requires the creator-signed exact Runner Machine tuple before emitting private RPC', async () => {
+      const credentials = legacyCredentials(31);
+      const scopedMachineKey = new Uint8Array(32).fill(37);
+      const signing = tweetnacl.sign.keyPair.fromSeed(credentials.encryption.secret);
+      const bindingPayload = {
+        v: 1 as const,
+        purpose: 'happier.ephemeral-runner.machine-content-key' as const,
+        homeServerIdentityId: 'home-one',
+        activationId: '11111111-1111-4111-8111-111111111111',
+        creatorAccountId: 'account-one',
+        machineId: 'runner-one',
+        installationId: 'runner-installation',
+        machineContentKeyFingerprint:
+          computeRunnerMachineContentKeyFingerprintV1(scopedMachineKey),
+      };
+      const binding = signRunnerMachineContentKeyBindingV1({
+        payload: bindingPayload,
+        accountSigningPublicKey: signing.publicKey,
+        accountSigningSecretKey: signing.secretKey,
+      });
+      const machine = {
+        id: 'runner-one',
+        kind: 'ephemeral_session_runner',
+        installationId: 'runner-installation',
+        dataEncryptionKey: publishedMachineDataEncryptionKey({
+          contentKey: scopedMachineKey,
+          recipientPublicKey: deriveBoxPublicKeyFromSeed(
+            deriveAccountMachineKeyFromRecoverySecret(credentials.encryption.secret),
+          ),
+        }),
+        runnerContentKeyBinding: binding,
+      };
+      axiosGet.mockResolvedValue({ data: { machine } });
+      socket.emit.mockImplementation((_event, _payload, callback) =>
+        callback({
+          ok: true,
+          result: encodeBase64(encrypt(scopedMachineKey, 'dataKey', { installed: true })),
+        }));
+
+      await expect(callExactMachineRpc({
+        credentials,
+        machineId: 'runner-one',
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        expectedEncryptionMode: 'e2ee',
+        expectedRunnerMachineContentKeyBinding: {
+          homeServerIdentityId: bindingPayload.homeServerIdentityId,
+          creatorAccountId: bindingPayload.creatorAccountId,
+          machineId: bindingPayload.machineId,
+        },
+        timeoutMs: 100,
+      })).resolves.toEqual({ installed: true });
+      expect(socket.emit).toHaveBeenCalledOnce();
+
+      vi.clearAllMocks();
+      axiosGet.mockResolvedValue({
+        data: { machine: { ...machine, installationId: 'substituted-installation' } },
+      });
+      const error = await callExactMachineRpc({
+        credentials,
+        machineId: 'runner-one',
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        expectedEncryptionMode: 'e2ee',
+        expectedRunnerMachineContentKeyBinding: {
+          homeServerIdentityId: bindingPayload.homeServerIdentityId,
+          creatorAccountId: bindingPayload.creatorAccountId,
+          machineId: bindingPayload.machineId,
+        },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+      expect(error).toMatchObject({ code: 'machine_content_key_unavailable' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.connect).not.toHaveBeenCalled();
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('does not accept a Home-supplied Runner signer for DataKey credentials', async () => {
+      const credentials = accountDataKeyCredentials(31);
+      const scopedMachineKey = new Uint8Array(32).fill(37);
+      const untrustedSigning = tweetnacl.sign.keyPair();
+      const bindingPayload = {
+        v: 1 as const,
+        purpose: 'happier.ephemeral-runner.machine-content-key' as const,
+        homeServerIdentityId: 'home-one',
+        activationId: '11111111-1111-4111-8111-111111111111',
+        creatorAccountId: 'account-one',
+        machineId: 'runner-one',
+        installationId: 'runner-installation',
+        machineContentKeyFingerprint:
+          computeRunnerMachineContentKeyFingerprintV1(scopedMachineKey),
+      };
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: bindingPayload.machineId,
+        kind: 'ephemeral_session_runner',
+        installationId: bindingPayload.installationId,
+        dataEncryptionKey: publishedMachineDataEncryptionKey({
+          contentKey: scopedMachineKey,
+          recipientPublicKey: credentials.encryption.publicKey,
+        }),
+        runnerContentKeyBinding: signRunnerMachineContentKeyBindingV1({
+          payload: bindingPayload,
+          accountSigningPublicKey: untrustedSigning.publicKey,
+          accountSigningSecretKey: untrustedSigning.secretKey,
+        }),
+      } } });
+
+      const error = await callExactMachineRpc({
+        credentials,
+        machineId: bindingPayload.machineId,
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        expectedEncryptionMode: 'e2ee',
+        expectedRunnerMachineContentKeyBinding: {
+          homeServerIdentityId: bindingPayload.homeServerIdentityId,
+          creatorAccountId: bindingPayload.creatorAccountId,
+          machineId: bindingPayload.machineId,
+        },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+      expect(error).toMatchObject({ code: 'machine_content_key_unavailable' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.connect).not.toHaveBeenCalled();
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a present envelope cannot be opened with account material', async () => {
+      const credentials = accountDataKeyCredentials(11);
+      const unrelatedAccount = accountDataKeyCredentials(23);
+      axiosGet.mockResolvedValue({
+        data: {
+          machine: {
+            id: 'machine-foreign',
+            dataEncryptionKey: publishedMachineDataEncryptionKey({
+              contentKey: new Uint8Array(32).fill(29),
+              recipientPublicKey: unrelatedAccount.encryption.publicKey,
+            }),
+          },
+        },
+      });
+
+      const error = await callMachineRpc({
+        credentials,
+        machineId: 'machine-foreign',
+        method: 'prepare-source-key',
+        request: { sourceKey: 'source-dek' },
+        timeoutMs: 100,
+      }).catch((thrown) => thrown);
+
+      expect(String((error as Error).message)).toContain('machine-foreign');
+      // An unopenable present envelope is never downgraded to the absent case.
+      expect(socket.emit).not.toHaveBeenCalled();
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+    });
+
+    it.each(['', '   ', {}, 42])('rejects malformed-present envelope %j before sending', async (published) => {
+      axiosGet.mockResolvedValue({ data: { machine: { id: 'machine-scoped', dataEncryptionKey: published } } });
+      const error = await callMachineRpc({
+        credentials: accountDataKeyCredentials(11),
+        machineId: 'machine-scoped', method: 'status', request: { secret: 'private' }, timeoutMs: 100,
+      }).catch((thrown) => thrown);
+      expect(error).toMatchObject({ code: 'machine_content_key_unavailable' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('rejects noncanonical encoding of an otherwise valid scoped envelope before sending', async () => {
+      const credentials = accountDataKeyCredentials(11);
+      const envelope = publishedMachineDataEncryptionKey({
+        contentKey: new Uint8Array(32).fill(29),
+        recipientPublicKey: credentials.encryption.publicKey,
+      });
+      axiosGet.mockResolvedValue({ data: { machine: { id: 'machine-scoped', dataEncryptionKey: `!${envelope}` } } });
+      const error = await callExactMachineRpc({
+        credentials,
+        machineId: 'machine-scoped', method: 'status', request: { secret: 'private' }, timeoutMs: 100,
+      }).catch((thrown) => thrown);
+      expect(error).toMatchObject({ code: 'machine_content_key_unavailable' });
+      expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+      expect(socket.emit).not.toHaveBeenCalled();
+    });
+
+    it('opens a selected scoped envelope with recovery-secret credentials through the real receiver', async () => {
+      const secret = new Uint8Array(32).fill(19);
+      const machineKey = deriveAccountMachineKeyFromRecoverySecret(secret);
+      const scopedMachineKey = new Uint8Array(32).fill(29);
+      axiosGet.mockResolvedValue({ data: { machine: {
+        id: 'machine-scoped',
+        dataEncryptionKey: publishedMachineDataEncryptionKey({
+          contentKey: scopedMachineKey,
+          recipientPublicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+        }),
+      } } });
+      const receiver = new RpcHandlerManager({
+        scopePrefix: 'machine-scoped', encryptionMode: 'e2ee',
+        encryptionKey: scopedMachineKey, encryptionVariant: 'dataKey', logger: () => {},
+      });
+      receiver.registerHandler('status', async (request) => ({ received: request }));
+      socket.emit.mockImplementation(async (_event, payload, callback) => {
+        callback({ ok: true, result: await receiver.handleRequest(payload) });
+      });
+      await expect(callMachineRpc({
+        credentials: { token: 'account-token', encryption: { type: 'legacy', secret } },
+        machineId: 'machine-scoped', method: 'status', request: { ping: true }, timeoutMs: 100,
+      })).resolves.toEqual({ received: { ping: true } });
+    });
+
+    it('keeps released account-key behavior for a machine that published no envelope', async () => {
+      const credentials = accountDataKeyCredentials(5);
+      const machineKey = credentials.encryption.machineKey;
+      axiosGet.mockResolvedValue({
+        data: { machine: { id: 'machine-historical' } },
+      });
+      socket.emit.mockImplementation((_event, payload, callback) => {
+        expect(openedWith(machineKey, payload.params)).toEqual({ ping: true });
+        callback({
+          ok: true,
+          result: encodeBase64(encrypt(machineKey, 'dataKey', { status: 'running' })),
+        });
+      });
+
+      await expect(callMachineRpc({
+        credentials,
+        machineId: 'machine-historical',
+        method: 'status',
+        request: { ping: true },
+        timeoutMs: 100,
+      })).resolves.toEqual({ status: 'running' });
+    });
+
+    it('keeps released legacy-secret behavior', async () => {
+      const secret = new Uint8Array(32).fill(9);
+      const credentials = {
+        token: 'account-token',
+        encryption: { type: 'legacy' as const, secret },
+      };
+      axiosGet.mockResolvedValue({
+        data: { machine: { id: 'machine-legacy' } },
+      });
+      socket.emit.mockImplementation((_event, payload, callback) => {
+        expect(decrypt(secret, 'legacy', decodeBase64(String(payload.params), 'base64')))
+          .toEqual({ ping: true });
+        callback({
+          ok: true,
+          result: encodeBase64(encrypt(secret, 'legacy', { status: 'running' })),
+        });
+      });
+
+      await expect(callMachineRpc({
+        credentials,
+        machineId: 'machine-legacy',
+        method: 'status',
+        request: { ping: true },
+        timeoutMs: 100,
+      })).resolves.toEqual({ status: 'running' });
+    });
   });
 
   it('sends plaintext RPC for a marker-backed machine with token-only credentials', async () => {
@@ -231,6 +783,123 @@ describe('callMachineRpc', () => {
     expect(readMachineRpcRequestDisposition(afterEmission)).toBe('outcomeUnknown');
   });
 
+  it('keeps caller-lifecycle machine RPC acknowledgement open until cancellation', async () => {
+    vi.useFakeTimers();
+    axiosGet.mockResolvedValueOnce({
+      data: {
+        machine: {
+          id: 'machine-plain',
+          dataEncryptionKey: encodeBase64(
+            new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null })),
+            'base64',
+          ),
+        },
+      },
+    });
+    socket.emit.mockImplementationOnce(() => undefined);
+    const abort = new AbortController();
+    const promise = callMachineRpc({
+      credentials: { token: 'plain-token', encryption: null },
+      machineId: 'machine-plain',
+      method: 'execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+      signal: abort.signal,
+    });
+    const errorPromise = promise.catch((error) => error);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.disconnect).not.toHaveBeenCalled();
+    const callPayload = socket.emit.mock.calls.find(([event]) => event === SOCKET_RPC_EVENTS.CALL)?.[1];
+    expect(callPayload).not.toHaveProperty('timeoutMs');
+
+    abort.abort();
+    const error = await errorPromise;
+    expect(error).toMatchObject({ name: 'AbortError' });
+    expect(readMachineRpcRequestDisposition(error)).toBe('outcomeUnknown');
+    expect(socket.disconnect).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it('settles an emitted machine RPC when its socket disconnects before acknowledgement', async () => {
+    axiosGet.mockResolvedValueOnce({
+      data: {
+        machine: {
+          id: 'machine-plain',
+          dataEncryptionKey: encodeBase64(
+            new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null })),
+            'base64',
+          ),
+        },
+      },
+    });
+    let resolveEmitted = () => {};
+    const emitted = new Promise<void>((resolve) => {
+      resolveEmitted = resolve;
+    });
+    socket.emit.mockImplementationOnce(() => {
+      resolveEmitted();
+      return undefined;
+    });
+    const promise = callMachineRpc({
+      credentials: { token: 'plain-token', encryption: null },
+      machineId: 'machine-plain',
+      method: 'execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+    });
+
+    await emitted;
+    socketHandlers.get('disconnect')?.();
+    const error = await promise.catch((caught) => caught);
+    expect(error).toMatchObject({ message: 'Machine RPC socket disconnected before acknowledgement' });
+    expect(readMachineRpcRequestDisposition(error)).toBe('outcomeUnknown');
+    expect(socket.disconnect).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+
+  it('settles a connect-then-disconnect race before emission even with no acknowledgement timeout', async () => {
+    axiosGet.mockResolvedValueOnce({
+      data: {
+        machine: {
+          id: 'machine-plain',
+          dataEncryptionKey: encodeBase64(
+            new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null })),
+            'base64',
+          ),
+        },
+      },
+    });
+    let resolveConnected = () => {};
+    const connected = new Promise<void>((resolve) => {
+      resolveConnected = resolve;
+    });
+    socket.connect.mockImplementationOnce(() => {
+      socketHandlers.get('connect')?.();
+      socketHandlers.get('disconnect')?.();
+      resolveConnected();
+    });
+    const observationFallback = new AbortController();
+    const promise = callMachineRpc({
+      credentials: { token: 'plain-token', encryption: null },
+      machineId: 'machine-plain',
+      method: 'execution.run.wait',
+      request: { runId: 'run_1' },
+      timeoutMs: null,
+      signal: observationFallback.signal,
+    });
+
+    await connected;
+    observationFallback.abort(new Error('test observation fallback'));
+    const error = await promise.catch((caught) => caught);
+    expect(error).toMatchObject({ message: 'Machine RPC socket disconnected before acknowledgement' });
+    expect(readMachineRpcRequestDisposition(error)).toBe('notSent');
+    expect(socket.emit).not.toHaveBeenCalled();
+    expect(socket.disconnect).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+
   /**
    * A user who replaces a machine keeps the Sessions the previous one hosted.
    * Nothing re-homes those rows, so a CLI/MCP send or resume still addresses the
@@ -293,6 +962,36 @@ describe('callMachineRpc', () => {
         expect.stringMatching(/\/v1\/machines$/),
         expect.stringMatching(/\/v1\/machines\/machine-new$/),
       ]);
+    });
+
+    /**
+     * Delivering source key material is addressed to ONE verified machine. A
+     * replacement is a different machine with different authority, so silently
+     * re-addressing the delivery would hand the material to a target the caller
+     * never authorized.
+     */
+    it('never redirects an exact-machine call to a replacement', async () => {
+      mockServerReads([
+        { id: 'machine-old', replacedByMachineId: 'machine-new' },
+        { id: 'machine-new', replacedByMachineId: null },
+      ]);
+      socket.emit.mockImplementation((_event, _payload, callback) => callback(unreachable()));
+
+      await expect(callExactMachineRpc({
+        credentials,
+        machineId: 'machine-old',
+        method: 'status',
+        request: { ping: true },
+        timeoutMs: 100,
+      })).rejects.toMatchObject({
+        message: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
+        rpcErrorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
+      });
+
+      expect(socket.emit).toHaveBeenCalledTimes(1);
+      expect(socket.emit.mock.calls[0]?.[1]?.method).toBe('machine-old:status');
+      // The replacement chain is never even read for an exact-machine call.
+      expect(axiosGet).toHaveBeenCalledTimes(1);
     });
 
     it('surfaces the original error unchanged when the machine has no successor', async () => {

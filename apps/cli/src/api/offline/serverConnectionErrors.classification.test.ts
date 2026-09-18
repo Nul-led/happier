@@ -23,6 +23,7 @@ describe('serverConnectionErrors classification helpers', () => {
   it('trims and uppercases transport error codes', () => {
     expect(readNormalizedErrorCode({ code: ' etimedout ' })).toBe('ETIMEDOUT');
     expect(readNormalizedErrorCode({ code: 'ECONNRESET' })).toBe('ECONNRESET');
+    expect(readNormalizedErrorCode({ cause: { code: ' econnreset ' } })).toBe('ECONNRESET');
     expect(readNormalizedErrorCode(new Error('missing code'))).toBe(null);
   });
 });

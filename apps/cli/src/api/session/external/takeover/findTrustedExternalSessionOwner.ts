@@ -1,5 +1,5 @@
 import { resolveVendorResumeIdFromSessionMetadata } from '@happier-dev/agents';
-import type { ExternalSessionsAgentId } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, type ExternalSessionsAgentId } from '@happier-dev/protocol';
 
 import type { DaemonSessionMarker } from '@/daemon/sessionRegistry';
 
@@ -19,8 +19,11 @@ export function findTrustedExternalSessionOwner(params: Readonly<{
   agentId: ExternalSessionsAgentId;
   remoteSessionId: string;
 }>): DaemonSessionMarker | null {
-  const remoteSessionId = String(params.remoteSessionId ?? '').trim();
-  if (!remoteSessionId) return null;
+  // The Agent minted this id and the marker persists it verbatim through
+  // `resolveVendorResumeIdFromSessionMetadata`. Presence is the only judgement
+  // here; re-canonicalizing the query would stop it matching its own owner.
+  const remoteSessionId = readNonBlankOpaqueIdentifier(params.remoteSessionId);
+  if (remoteSessionId === null) return null;
 
   const candidates = params.markers
     .filter((marker) => Number.isFinite(marker.pid) && marker.pid > 0)

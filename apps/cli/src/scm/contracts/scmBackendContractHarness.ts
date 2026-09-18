@@ -5,7 +5,7 @@ import {
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { resolveScmBackendCapabilities } from '../capabilities/resolveScmBackendCapabilities';
+import { resolveScmBackendCapabilities } from '@happier-dev/protocol/scm';
 import type { ScmBackend, ScmBackendContext } from '../types';
 import {
     assertGroupedCapabilities,

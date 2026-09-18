@@ -24,6 +24,7 @@ describe('buildExecutionRunConfiguration', () => {
                     reasoning_effort: { value: 'high', updatedAt: 7 },
                 },
             },
+            acpSessionModeId: 'plan',
             permissionMode: 'read_only',
             updatedAtMs: 11,
         })).toEqual({
@@ -33,7 +34,7 @@ describe('buildExecutionRunConfiguration', () => {
                 modelId: 'gpt-5.1-codex',
             },
             configuration: {
-                mode: { value: null, updatedAtMs: 0 },
+                mode: { value: 'plan', updatedAtMs: 11 },
                 model: { value: 'gpt-5.1-codex', updatedAtMs: 11 },
                 permissionIntent: { value: 'read-only', updatedAtMs: 11 },
                 options: {

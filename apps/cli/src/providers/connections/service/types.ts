@@ -25,6 +25,10 @@ import type {
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import type { ProviderOperationLifetime } from '@/providers/operationLifetime';
 import type { ResolveManagedProviderPurposeBindingIntent } from '@/providers/managed/resolvePurposeBindingSnapshot';
+import type {
+  SavedSecretCatalogResourceInputV1,
+  SavedSecretCatalogState,
+} from '@/settings/secrets/savedSecretCatalog';
 
 type DescribeSuccess = Extract<DaemonProviderConnectionsDescribeResponseV1, { status: 'success' }>;
 
@@ -86,6 +90,8 @@ export type ProviderConnectionServiceSnapshot = Readonly<{
    */
   registry: ProviderContributionRegistryView;
   registryGeneration?: string;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
+  savedSecretCatalogState?: SavedSecretCatalogState;
 }>;
 
 export type ProviderConnectionRegistryProjection = Readonly<{

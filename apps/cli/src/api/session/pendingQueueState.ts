@@ -1,3 +1,5 @@
+import { ExecutionRunIdSchema } from '@happier-dev/protocol/sessions';
+
 export type KnownPendingQueueState = Readonly<{
     known: true;
     pendingCount: number;
@@ -39,6 +41,19 @@ export function readKnownPendingQueueState(value: unknown): KnownPendingQueueSta
         pendingBlockedCount: Math.min(pendingBlockedCount, pendingCount),
         pendingVersion,
     };
+}
+
+export function readPendingExecutionRunIds(value: unknown): readonly string[] | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const candidates = (value as Record<string, unknown>).pendingExecutionRunIds;
+    if (!Array.isArray(candidates)) return null;
+    const runIds = new Set<string>();
+    for (const candidate of candidates) {
+        const parsed = ExecutionRunIdSchema.safeParse(candidate);
+        if (!parsed.success) return null;
+        runIds.add(parsed.data);
+    }
+    return [...runIds];
 }
 
 export function countMaterializablePendingRows(state: PendingQueueState): number {

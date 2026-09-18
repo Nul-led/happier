@@ -2,11 +2,14 @@ import type { PermissionMode } from '@/api/types';
 import type { StoredCredentials } from '@/persistence';
 import type { AccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
+import type { SessionAttachSecret } from '@/agent/runtime/sessionAttach';
 import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
   AcpConfigOptionOverridesV1Schema,
+    AgentExecutionTargetV1Schema,
     AgentSessionStartupInstructionsV1Schema,
     BackendTargetRefV2Schema,
+    MachinePoolSelectionOriginV1Schema,
     buildBackendTargetKeyV2,
     normalizeBackendTargetRefV2InputToV2,
     resolveSessionModelSelectionInputRefV1,
@@ -14,24 +17,43 @@ import {
     SessionModelSelectionV1Schema,
     SessionCreationCorrespondenceV1Schema,
     SessionCreationTagV1Schema,
+    SessionInitialAccessDraftV1Schema,
+    SessionSpawnNewInputV2Schema,
     type BackendTargetRefV2Input,
     type AcpConfigOptionOverridesV1,
     type AgentSessionStartupInstructionsV1,
+    type MachinePoolSelectionOriginV1,
     type SessionCreationCorrespondenceV1,
     type SessionCreationTagV1,
     type SessionModelSelectionV1,
+    type SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import {
+    SessionTeamCredentialBindingIntentsV1Schema,
+    type SessionTeamCredentialBindingIntentListV1,
+} from '@happier-dev/protocol/teams';
 import { normalizeUnsetEnvKeys } from '@/utils/processEnv/buildScopedProcessEnv';
 import {
   NativeForkSourceSchema,
   type NativeForkSource,
 } from '@/session/shared/spawnSessionContract';
+import {
+  bindAgentCliLaunchSpec,
+  type BoundAgentCliLaunchSpec,
+} from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 
 export type PluginSessionBindingInput = Readonly<{
     credentials: StoredCredentials;
+    /** Host-private exact managed Agent launch admitted before Session construction. */
+    agentCliLaunch?: BoundAgentCliLaunchSpec;
     sessionCreationTag?: SessionCreationTagV1;
     sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
+    placementOrigin?: MachinePoolSelectionOriginV1;
     initialTitle?: string;
+    initialAccess?: SessionInitialAccessDraftV1;
+    primaryTeamId?: string | null;
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
     bootstrap: Readonly<{
         workingDirectory?: string;
         target?: BackendTargetRefV2Input;
@@ -44,6 +66,7 @@ export type PluginSessionBindingInput = Readonly<{
   resume: Readonly<{
         existingSessionId?: string;
         sessionAttachFilePath?: string;
+        sessionAttachSecret?: SessionAttachSecret;
         resumeSessionId?: string;
   }>;
   nativeForkSource?: NativeForkSource;
@@ -84,7 +107,11 @@ export type PluginHostSessionRuntimeOptions = Readonly<{
     credentials: StoredCredentials;
     sessionCreationTag?: SessionCreationTagV1;
     sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
+    placementOrigin?: MachinePoolSelectionOriginV1;
     initialTitle?: string;
+    initialAccess?: SessionInitialAccessDraftV1;
+    primaryTeamId?: string | null;
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
     directory?: string;
     backendTarget?: BackendTargetRefV2Input;
     startedBy?: 'daemon' | 'terminal';
@@ -191,6 +218,32 @@ function readStringArray(value: unknown): readonly string[] | undefined {
     return entries.length > 0 ? entries : undefined;
 }
 
+function readBoundAgentCliLaunchSpec(value: unknown): BoundAgentCliLaunchSpec | undefined {
+    if (value === undefined) return undefined;
+    if (!isRecord(value) || !isRecord(value.spec)) {
+        throw new Error('Invalid bound Agent CLI launch');
+    }
+    const localAgentId = readOptionalString(value.localAgentId);
+    const source = value.spec.source;
+    const resolvedPath = readOptionalString(value.spec.resolvedPath);
+    const command = readOptionalString(value.spec.command);
+    const args = value.spec.args;
+    if (
+        !localAgentId
+        || (source !== 'override' && source !== 'system' && source !== 'managed')
+        || !resolvedPath
+        || !command
+        || !Array.isArray(args)
+        || args.some((entry) => typeof entry !== 'string')
+    ) {
+        throw new Error('Invalid bound Agent CLI launch');
+    }
+    return bindAgentCliLaunchSpec({
+        localAgentId,
+        spec: { source, resolvedPath, command, args },
+    });
+}
+
 function readNativeForkSource(value: unknown): NativeForkSource | undefined {
     if (value === undefined) return undefined;
     const parsed = NativeForkSourceSchema.safeParse(value);
@@ -200,7 +253,22 @@ function readNativeForkSource(value: unknown): NativeForkSource | undefined {
     return parsed.data;
 }
 
+function readSessionAttachSecret(value: unknown): SessionAttachSecret | undefined {
+    if (!isRecord(value)) return undefined;
+    if (value.encryptionMode === 'plain') return value as SessionAttachSecret;
+    if (
+        value.encryptionMode === 'e2ee'
+        && value.encryptionKey instanceof Uint8Array
+        && (value.encryptionVariant === 'legacy' || value.encryptionVariant === 'dataKey')
+    ) return value as SessionAttachSecret;
+    return undefined;
+}
+
 function readBackendTargetKey(value: unknown): string | null {
+    const agentTarget = AgentExecutionTargetV1Schema.safeParse(value);
+    if (agentTarget.success) {
+        return buildBackendTargetKeyV2(agentTarget.data);
+    }
     const parsed = BackendTargetRefV2Schema.safeParse(normalizeBackendTargetRefV2InputToV2(value));
     return parsed.success ? buildBackendTargetKeyV2(parsed.data) : null;
 }
@@ -260,8 +328,28 @@ export function buildPluginSessionBindingInput(raw: unknown): PluginSessionBindi
     }
 
     const modelSelection = readModelSelection(raw);
+    const agentCliLaunch = readBoundAgentCliLaunchSpec(raw.agentCliLaunch);
     const nativeForkSource = readNativeForkSource(raw.nativeForkSource);
     const initialTitle = readOptionalString(raw.initialTitle);
+    const placementOrigin = raw.placementOrigin === undefined
+        ? undefined
+        : MachinePoolSelectionOriginV1Schema.parse(raw.placementOrigin);
+    const initialAccess = raw.initialAccess === undefined
+        ? undefined
+        : SessionInitialAccessDraftV1Schema.parse(raw.initialAccess);
+    const primaryTeamId = SessionSpawnNewInputV2Schema.shape.primaryTeamId.parse(raw.primaryTeamId);
+    const teamCredentialBindings = raw.teamCredentialBindings === undefined
+        ? undefined
+        : SessionTeamCredentialBindingIntentsV1Schema.parse(raw.teamCredentialBindings);
+    if (
+        (initialAccess !== undefined
+            || primaryTeamId !== undefined
+            || teamCredentialBindings !== undefined)
+        && (readOptionalString(raw.existingSessionId) || readOptionalString(raw.sessionAttachFilePath))
+        && !(teamCredentialBindings !== undefined && raw.allowAttachedTeamCredentialBinding === true)
+    ) {
+        throw new Error('Initial access and Team context require fresh Session creation');
+    }
     const parsedSessionCreationTag = raw.sessionCreationTag === undefined
         ? null
         : SessionCreationTagV1Schema.safeParse(raw.sessionCreationTag);
@@ -304,6 +392,7 @@ export function buildPluginSessionBindingInput(raw: unknown): PluginSessionBindi
 
     return Object.freeze({
         credentials,
+        ...(agentCliLaunch ? { agentCliLaunch } : {}),
         ...(parsedSessionCreationTag?.success
             ? { sessionCreationTag: parsedSessionCreationTag.data }
             : {}),
@@ -311,6 +400,10 @@ export function buildPluginSessionBindingInput(raw: unknown): PluginSessionBindi
             ? { sessionCreationCorrespondence: parsedSessionCreationCorrespondence.data }
             : {}),
         ...(initialTitle ? { initialTitle } : {}),
+        ...(placementOrigin !== undefined ? { placementOrigin } : {}),
+        ...(initialAccess !== undefined ? { initialAccess } : {}),
+        ...(primaryTeamId !== undefined ? { primaryTeamId } : {}),
+        ...(teamCredentialBindings !== undefined ? { teamCredentialBindings } : {}),
         bootstrap: Object.freeze({
             ...(readOptionalString(raw.directory) ? { workingDirectory: readOptionalString(raw.directory) } : {}),
             ...(isRecord(raw.backendTarget) ? { target: raw.backendTarget as BackendTargetRefV2Input } : {}),
@@ -336,7 +429,13 @@ export function buildPluginSessionBindingInput(raw: unknown): PluginSessionBindi
         resume: Object.freeze({
             ...(readOptionalString(raw.existingSessionId) ? { existingSessionId: readOptionalString(raw.existingSessionId) } : {}),
             ...(readOptionalString(raw.sessionAttachFilePath) ? { sessionAttachFilePath: readOptionalString(raw.sessionAttachFilePath) } : {}),
-            ...(readOptionalString(raw.resume) ? { resumeSessionId: readOptionalString(raw.resume) } : {}),
+            ...(readSessionAttachSecret(raw.sessionAttachSecret)
+                ? { sessionAttachSecret: readSessionAttachSecret(raw.sessionAttachSecret)! }
+                : {}),
+            // Agent-issued and opaque: carried without renormalization.
+            ...(readNonBlankOpaqueIdentifier(raw.resume)
+                ? { resumeSessionId: readNonBlankOpaqueIdentifier(raw.resume)! }
+                : {}),
         }),
         ...(nativeForkSource ? { nativeForkSource } : {}),
         ...(parsedStartupInstructions?.success
@@ -389,6 +488,12 @@ export function buildPluginHostSessionRuntimeOptions(
             ? { sessionCreationCorrespondence: input.sessionCreationCorrespondence }
             : {}),
         ...(input.initialTitle ? { initialTitle: input.initialTitle } : {}),
+        ...(input.placementOrigin !== undefined ? { placementOrigin: input.placementOrigin } : {}),
+        ...(input.initialAccess !== undefined ? { initialAccess: input.initialAccess } : {}),
+        ...(input.primaryTeamId !== undefined ? { primaryTeamId: input.primaryTeamId } : {}),
+        ...(input.teamCredentialBindings !== undefined
+            ? { teamCredentialBindings: input.teamCredentialBindings }
+            : {}),
         ...(typeof input.bootstrap.workingDirectory === 'string' ? { directory: input.bootstrap.workingDirectory } : {}),
         ...(input.bootstrap.target ? { backendTarget: input.bootstrap.target } : {}),
         ...(input.bootstrap.source ? { startedBy: input.bootstrap.source } : {}),
@@ -410,6 +515,7 @@ export function buildPluginHostSessionRuntimeOptions(
             : {}),
         ...(input.resume.existingSessionId ? { existingSessionId: input.resume.existingSessionId } : {}),
         ...(input.resume.sessionAttachFilePath ? { sessionAttachFilePath: input.resume.sessionAttachFilePath } : {}),
+        ...(input.resume.sessionAttachSecret ? { sessionAttachSecret: input.resume.sessionAttachSecret } : {}),
         ...(input.resume.resumeSessionId ? { resume: input.resume.resumeSessionId } : {}),
         ...(input.bootstrap.accountSettingsContext !== undefined
             ? { accountSettingsContext: input.bootstrap.accountSettingsContext }

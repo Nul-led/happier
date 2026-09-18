@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { RequestError } from '@agentclientprotocol/sdk';
+import { WebSocketServer } from 'ws';
 
 const psListState = vi.hoisted(() => ({
   actual: null as null | (() => Promise<unknown[]>),
@@ -20,10 +23,16 @@ import type {
   AgentAcpModel,
   AgentAcpRuntimeDefinition,
   AgentAcpRuntimeOptions,
+  AgentExecutionRunEvent,
   AgentSessionOpenRequest,
   AgentSessionRuntimeEvent,
+  AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { ExecService } from '@happier-dev/plugin-sdk/exec';
+import { createGeminiAgentRuntime } from '../../../../../../../packages/plugins/gemini/src/agent/runtime/factory';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
+import { parsePluginManifest } from '@happier-dev/plugin-sdk/manifest';
+import { PluginAgentContributionV2Schema } from '@happier-dev/protocol';
 import {
   AgentRuntimeJsonValueV1Schema,
   AgentSessionProviderCheckpointMaxJsonBytesV1,
@@ -46,12 +55,18 @@ import { writeAcpTestAgentScript } from '@/agent/acp/testkit/subprocessHarness';
 import { requestAcpHistoryExtension } from '@/agent/acp/history/acpHistoryExtensionMethods';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { waitForCondition } from '@/testkit/async/waitFor';
+import { withCursorEmptyResponseFailure } from '../../../../../../../packages/plugins/cursor/src/agent/runtime/emptyResponse';
+import { buildAcpModelSuffixOptionControls } from '../definition/modelSuffixOption';
+import { PLUGIN_MANIFEST as ANTIGRAVITY_PLUGIN_MANIFEST } from '../../../../../../../packages/plugins/antigravity/src/manifest';
 
 import {
+  createPublicAcpExecutionRun,
   createPublicAcpSession,
   createPublicAcpSessionFromAwaitableAdapter,
   type PublicAcpComposerDependencies,
 } from './createPublicAcpSession';
+
+const OPAQUE_HISTORY_FORK_PROVIDER_SESSION_ID = '  provider\nses/AB+cd==  ';
 
 afterEach(() => {
   if (psListState.actual) psListState.mock.mockImplementation(psListState.actual);
@@ -91,9 +106,36 @@ function writePublicComposerAgent(dir: string): string {
     dir,
     fileName: 'public-composer-agent.mjs',
     source: `
+      import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
       const decoder = new TextDecoder();
       let buffer = '';
       const scenario = process.env.PUBLIC_ACP_SCENARIO || 'completed';
+      if (scenario.startsWith('gemini-overlay')) {
+        const cliHome = process.env.GEMINI_CLI_HOME;
+        const settingsPath = cliHome && join(cliHome, '.gemini', 'settings.json');
+        writeFileSync(process.env.GEMINI_CAPTURE, JSON.stringify({
+          home: process.env.HOME ?? null,
+          cliHome: cliHome ?? null,
+          xdgHome: process.env.XDG_CONFIG_HOME ?? null,
+          settings: settingsPath && existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, 'utf8')) : null,
+          authExists: Boolean(cliHome && existsSync(join(cliHome, '.gemini', 'oauth_creds.json'))),
+          dropped: process.env.DROP_ME ?? null,
+          vertex: process.env.GOOGLE_GENAI_USE_VERTEXAI ?? null,
+        }));
+      }
+      if (scenario.startsWith('native-mcp-overlay')) {
+        const configRoot = process.env.XDG_CONFIG_HOME;
+        const configPath = configRoot && join(configRoot, 'fixture-agent', 'mcp_config.json');
+        writeFileSync(process.env.NATIVE_MCP_CAPTURE, JSON.stringify({
+          configRoot: configRoot ?? null,
+          config: configPath && existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : null,
+          linkedSetting: configRoot && existsSync(join(configRoot, 'fixture-agent', 'settings.json'))
+            ? readFileSync(join(configRoot, 'fixture-agent', 'settings.json'), 'utf8')
+            : null,
+          dropped: process.env.DROP_ME ?? null,
+        }));
+      }
       let extensionPrompt = null;
       let extensionSession = null;
       let permissionPrompt = null;
@@ -184,13 +226,31 @@ function writePublicComposerAgent(dir: string): string {
             ok(permissionPrompt, { stopReason: 'end_turn' });
             permissionPrompt = null;
           } else if (request.method === 'initialize') {
+            if (scenario === 'gemini-overlay-fail' || scenario === 'native-mcp-overlay-fail') {
+              send({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'fixture initialization rejected' } });
+              continue;
+            }
             lifecycleMethods.push('initialize');
             initializeMetadata = request.params.clientCapabilities?._meta ?? null;
             ok(request.id, {
               protocolVersion: 1,
-              agentCapabilities: scenario === 'media'
+              agentCapabilities: scenario === 'media' || scenario === 'structured-steer'
                 ? { promptCapabilities: { image: true } }
-                : {},
+                : scenario === 'capabilities'
+                  ? {
+                      loadSession: true,
+                      sessionCapabilities: { list: {}, fork: {}, close: {}, delete: {} },
+                    }
+                  : scenario === 'session-open-capabilities'
+                    ? {
+                        loadSession: true,
+                        sessionCapabilities: { fork: {} },
+                      }
+                    : scenario.startsWith('history-fork')
+                      || scenario === 'resume-replay'
+                      || scenario.startsWith('resume-extension-notification')
+                      ? { loadSession: true }
+                      : {},
               _meta: scenario === 'auth-dynamic'
                 ? { defaultAuthMethodId: 'cursor_login', providerOnly: 'bounded' }
                 : scenario === 'auth-dynamic-large'
@@ -220,7 +280,7 @@ function writePublicComposerAgent(dir: string): string {
               continue;
             }
             openedMcpServers = request.params.mcpServers;
-            ok(request.id, scenario === 'provider-models'
+            ok(request.id, scenario === 'provider-models' || scenario === 'provider-models-context'
               ? {
                   sessionId: 'provider-created',
                   models: {
@@ -229,6 +289,9 @@ function writePublicComposerAgent(dir: string): string {
                       {
                         modelId: 'provider-current',
                         name: 'Provider current',
+                        ...(scenario === 'provider-models-context'
+                          ? { contextWindowTokens: 200000 }
+                          : {}),
                         _meta: {
                           supportsReasoningEffort: true,
                           reasoningEffort: 'high',
@@ -243,6 +306,36 @@ function writePublicComposerAgent(dir: string): string {
                     ],
                   },
                 }
+              : scenario === 'projected-config-models'
+                ? {
+                    sessionId: 'provider-created',
+                    configOptions: [{
+                      id: 'model',
+                      name: 'Model',
+                      type: 'select',
+                      currentValue: 'model-a',
+                      options: [
+                        { value: 'model-a', name: 'Model A' },
+                        { value: 'model-b', name: 'Model B' },
+                      ],
+                    }],
+                  }
+              : scenario === 'projected-config-model-options'
+                ? {
+                    sessionId: 'provider-created',
+                    configOptions: [{
+                      id: 'model',
+                      name: 'Model',
+                      type: 'select',
+                      currentValue: 'gpt-high',
+                      options: [
+                        { value: 'gpt-low', name: 'GPT Low' },
+                        { value: 'gpt-high', name: 'GPT High' },
+                        { value: 'gpt-low-priority', name: 'GPT Low Fast' },
+                        { value: 'gpt-high-priority', name: 'GPT High Fast' },
+                      ],
+                    }],
+                  }
               : { sessionId: 'provider-created' });
           } else if (request.method === 'session/set_model') {
             selectedModelRequest = request.params;
@@ -280,7 +373,35 @@ function writePublicComposerAgent(dir: string): string {
           } else if (request.method === 'session/set_config_option') {
             selectedOptions[request.params.configId] = request.params.value;
             if (request.params.configId === 'model') selectedModel = request.params.value;
-            ok(request.id, { configOptions: [] });
+            ok(request.id, scenario === 'projected-config-models'
+              ? {
+                  configOptions: [{
+                    id: 'model',
+                    name: 'Model',
+                    type: 'select',
+                    currentValue: selectedModel,
+                    options: [
+                      { value: 'model-a', name: 'Model A' },
+                      { value: 'model-b', name: 'Model B' },
+                    ],
+                  }],
+                }
+              : scenario === 'projected-config-model-options'
+                ? {
+                    configOptions: [{
+                      id: 'model',
+                      name: 'Model',
+                      type: 'select',
+                      currentValue: selectedModel,
+                      options: [
+                        { value: 'gpt-low', name: 'GPT Low' },
+                        { value: 'gpt-high', name: 'GPT High' },
+                        { value: 'gpt-low-priority', name: 'GPT Low Fast' },
+                        { value: 'gpt-high-priority', name: 'GPT High Fast' },
+                      ],
+                    }],
+                  }
+              : { configOptions: [] });
           } else if (request.method === 'session/set_mode') {
             if (scenario === 'configuration-update-concurrent' && request.params.modeId === 'slow-old') {
               setTimeout(() => {
@@ -310,9 +431,48 @@ function writePublicComposerAgent(dir: string): string {
               userUpdate(request.params.sessionId, 'replayed user message');
               update(request.params.sessionId, 'replayed assistant message');
             }
+            if (scenario.startsWith('resume-extension-notification')) {
+              send({
+                jsonrpc: '2.0',
+                method: 'x.ai/session/update',
+                params: {
+                  sessionId: request.params.sessionId,
+                  update: { sessionUpdate: 'goal_updated', goal_id: 'goal-1', objective: 'Ship' },
+                },
+              });
+              send({
+                jsonrpc: '2.0',
+                method: 'x.ai/session/update',
+                params: {
+                  sessionId: 'foreign-session',
+                  update: { sessionUpdate: 'goal_updated', goal_id: 'foreign-goal', objective: 'Ignore' },
+                },
+              });
+              if (scenario === 'resume-extension-notification-failed') {
+                send({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'resume rejected' } });
+                continue;
+              }
+              if (scenario === 'resume-extension-notification-delayed') {
+                setTimeout(() => ok(request.id, {}), 100);
+                continue;
+              }
+            }
             ok(request.id, {});
           } else if (request.method === 'session/fork') {
             ok(request.id, { sessionId: 'provider-forked' });
+          } else if (request.method === 'session/list') {
+            ok(request.id, {
+              sessions: [{
+                sessionId: ' provider\\nsession ',
+                cwd: request.params.cwd,
+                title: 'Provider session',
+                updatedAt: '2026-09-13T08:30:00.000Z',
+              }],
+              nextCursor: request.params.cursor === ' page\\n1 ' ? ' page\\n2 ' : null,
+            });
+          } else if (request.method === 'session/close' || request.method === 'session/delete') {
+            lifecycleMethods.push({ method: request.method, sessionId: request.params.sessionId });
+            ok(request.id, {});
           } else if (
             request.method === 'x.ai/session/fork'
             && scenario === 'history-fork-legacy'
@@ -388,7 +548,7 @@ function writePublicComposerAgent(dir: string): string {
               ok(request.id, { stopReason: 'end_turn' });
             } else if (scenario === 'completed') {
               update(sessionId, 'hello from ACP');
-              ok(request.id, { stopReason: 'end_turn' });
+              setTimeout(() => ok(request.id, { stopReason: 'end_turn' }), 100);
             } else if (scenario === 'history-prompts') {
               historyPromptCount += 1;
               userUpdate(
@@ -530,6 +690,25 @@ function writePublicComposerAgent(dir: string): string {
                   ],
                 },
               });
+            } else if (scenario === 'structured-steer') {
+              permissionAfterSteerPromptCount += 1;
+              if (permissionAfterSteerPromptCount === 1) {
+                continue;
+              }
+              update(sessionId, JSON.stringify(request.params.prompt));
+              ok(request.id, { stopReason: 'end_turn' });
+            } else if (scenario === 'runtime-observations') {
+              updateRaw(sessionId, {
+                sessionUpdate: 'agent_thought_chunk',
+                content: { type: 'text', text: 'reasoning trace' },
+              });
+              updateRaw(sessionId, {
+                sessionUpdate: 'usage_update',
+                used: 21,
+                size: 200000,
+              });
+              update(sessionId, 'final answer');
+              ok(request.id, { stopReason: 'end_turn' });
             } else if (scenario === 'grok-interject') {
               grokInterjectPromptCount += 1;
               if (grokInterjectPromptCount === 1) {
@@ -586,7 +765,11 @@ function writePublicComposerAgent(dir: string): string {
                 },
               });
               ok(request.id, { stopReason: 'end_turn' });
-            } else if (scenario === 'configuration-update' || scenario === 'configuration-update-concurrent') {
+            } else if (
+              scenario === 'configuration-update'
+              || scenario === 'configuration-update-concurrent'
+              || scenario === 'projected-config-models'
+            ) {
               update(sessionId, JSON.stringify({ selectedMode, selectedModel, selectedOptions }));
               ok(request.id, { stopReason: 'end_turn' });
             } else if (scenario === 'auth' || scenario === 'auth-dynamic') {
@@ -875,6 +1058,40 @@ function createHistoryDefinition(): AgentAcpRuntimeDefinition {
 }
 
 describe('createPublicAcpSession', () => {
+  it('projects ACP uncertainty through an Execution Run without creating a Session identity', async () => {
+    await withTempDir('happier-public-acp-execution-run-', async (dir) => {
+      const fixture = createFixture(dir, 'completed');
+      const run = await createPublicAcpExecutionRun({
+        kind: 'create',
+        runId: 'execution-run-1',
+        cwd: dir,
+        profile: { pluginId: 'acme.plugin', localId: 'acme-agent' },
+        localInputId: 'execution-input-1',
+        input: { text: 'hello' },
+      }, fixture.options, fixture.dependencies);
+      const events: AgentExecutionRunEvent[] = [];
+      const subscription = run.watch((event) => { events.push(event); });
+      try {
+        await vi.waitFor(() => {
+          expect(
+            events.some((event) => event.kind === 'run-failed'),
+            JSON.stringify(events),
+          ).toBe(true);
+        });
+        expect(events.map((event) => event.kind)).toContain('checkpoint');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'run-failed',
+          diagnostic: expect.objectContaining({ code: 'acp_input_custody_unknown' }),
+        }));
+        expect(events.every((event) => event.runId === 'execution-run-1')).toBe(true);
+        expect(events.every((event) => !('sessionId' in event))).toBe(true);
+      } finally {
+        subscription.dispose();
+        await run.dispose();
+      }
+    });
+  });
+
   it('uses the host-owned launch resolver for Account-configured ACP without invoking public system-tool resolution', async () => {
     await withTempDir('happier-public-acp-host-launch-', async (dir) => {
       const fixture = createFixture(dir, 'completed');
@@ -927,6 +1144,118 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it('preserves ACP session capability evidence through Cursor output diagnostics', async () => {
+    await withTempDir('happier-cursor-acp-capabilities-', async (dir) => {
+      const fixture = createFixture(dir, 'capabilities');
+      const composed = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-cursor-capabilities',
+        cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      const session = withCursorEmptyResponseFailure(composed);
+      try {
+        expect(session.runtimeCapabilities?.sessionCapabilities).toMatchObject({
+          sessionListing: 'supported',
+          sessionFork: { conversation: 'supported', protocol: 'acp' },
+        });
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
+  it('exposes negotiated list, close, and delete through the public ACP runtime', async () => {
+    await withTempDir('happier-public-acp-lifecycle-', async (dir) => {
+      const fixture = createFixture(dir, 'capabilities');
+      const session = await createPublicAcpSession({
+        kind: 'create', sessionId: 'host-lifecycle', cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      try {
+        await expect(session.listSessions({ cwd: dir, cursor: ' page\n1 ' }))
+          .resolves.toEqual({
+            sessions: [{
+              sessionId: ' provider\nsession ',
+              cwd: dir,
+              title: 'Provider session',
+              updatedAt: '2026-09-13T08:30:00.000Z',
+            }],
+            nextCursor: ' page\n2 ',
+          });
+        await expect(session.closeSession(' provider\nsession ')).resolves.toBeUndefined();
+        await expect(session.deleteSession(' provider\nsession ')).resolves.toBeUndefined();
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
+  it('fails closed when ACP does not advertise optional listing or fork capabilities', async () => {
+    await withTempDir('happier-public-acp-capabilities-closed-', async (dir) => {
+      const fixture = createFixture(dir, 'completed');
+      const session = await createPublicAcpSession({
+        kind: 'create', sessionId: 'host-capabilities-closed', cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      try {
+        expect(session.runtimeCapabilities?.sessionCapabilities).toMatchObject({
+          sessionListing: 'unsupported',
+          sessionFork: {
+            conversation: 'unsupported',
+            fromMessage: 'unsupported',
+          },
+        });
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
+  it('projects ACP reasoning and usage observations through the canonical runtime event stream', async () => {
+    await withTempDir('happier-public-acp-runtime-observations-', async (dir) => {
+      const fixture = createFixture(dir, 'runtime-observations');
+      const session = await createPublicAcpSession({
+        kind: 'create', sessionId: 'host-runtime-observations', cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      const events: AgentSessionRuntimeEvent[] = [];
+      const subscription = session.watch((event) => { events.push(event); });
+      try {
+        await session.send({
+          inputIds: ['input-runtime-observations'],
+          input: { text: 'observe' },
+          delivery: { kind: 'newTurn', turnId: 'turn-runtime-observations' },
+        });
+        await collectUntil(events, 'turn-complete');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'message-delta',
+          turnId: 'turn-runtime-observations',
+          channel: 'reasoning',
+          text: 'reasoning trace',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'usage-observed',
+          turnId: 'turn-runtime-observations',
+          source: 'acp-usage-update',
+          scope: 'session_cumulative',
+          tokens: {
+            input: 0,
+            output: 0,
+            reasoning: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 21,
+          },
+          context: expect.objectContaining({
+            usedTokens: 21,
+            windowTokens: 200_000,
+            source: 'provider_turn',
+          }),
+        }));
+      } finally {
+        subscription.dispose();
+        await session.dispose();
+      }
+    });
+  });
+
   it('transforms the raw ACP session/prompt request at the provider dispatch boundary', async () => {
     await withTempDir('happier-public-acp-request-transform-', async (dir) => {
       const fixture = createFixture(dir, 'request-transform');
@@ -955,12 +1284,6 @@ describe('createPublicAcpSession', () => {
       const events: AgentSessionRuntimeEvent[] = [];
       const subscription = session.watch((event) => { events.push(event); });
       try {
-        expect(session.runtimeCapabilities?.sessionCapabilities).toMatchObject({
-          sessionFork: {
-            conversation: 'supported',
-            protocol: 'acp',
-          },
-        });
         await expect(session.send({
           inputIds: ['input-request-transform'],
           input: { text: 'original prompt' },
@@ -1317,6 +1640,30 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it('preserves the provider model context window in the host model snapshot', async () => {
+    await withTempDir('happier-public-acp-model-context-', async (dir) => {
+      const fixture = createFixture(dir, 'provider-models-context');
+      const session = await createPublicAcpSession({
+        kind: 'create', sessionId: 'host-provider-model-context', cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      try {
+        expect(fixture.readModels()).toEqual({
+          currentModelId: 'provider-current',
+          models: [
+            {
+              id: 'provider-current',
+              name: 'Provider current',
+              contextWindowTokens: 200_000,
+            },
+            { id: 'stale-host', name: 'Stale host' },
+          ],
+        });
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
   it('applies inherited fork model options after the model without publishing the provider default first', async () => {
     await withTempDir('happier-public-acp-initial-fork-options-', async (dir) => {
       const fixture = createFixture(dir, 'history-fork-provider-models-initial');
@@ -1401,6 +1748,60 @@ describe('createPublicAcpSession', () => {
         expect(
           fixture.readModelPublications().filter((publication) => publication.models !== null),
         ).toEqual([fixture.readModels()]);
+      } finally {
+        await session.dispose();
+      }
+    });
+  });
+
+  it('composes multiple projected model options before applying initial execution configuration', async () => {
+    await withTempDir('happier-public-acp-projected-model-options-', async (dir) => {
+      const fixture = createFixture(dir, 'projected-config-model-options');
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-projected-model-options',
+        cwd: dir,
+        configuration: {
+          mode: { value: null, updatedAtMs: 1 },
+          model: { value: 'gpt', updatedAtMs: 1 },
+          permissionIntent: { value: null, updatedAtMs: 1 },
+          options: {
+            reasoning_effort: { value: 'low', updatedAtMs: 1 },
+            service_tier: { value: 'priority', updatedAtMs: 1 },
+          },
+        },
+      }, {
+        ...fixture.options,
+        definition: {
+          mcp: { policy: 'drop' },
+          modelConfigOptionId: 'model',
+          models: buildAcpModelSuffixOptionControls({
+            id: 'reasoning_effort',
+            name: 'Reasoning effort',
+            values: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+            ],
+            trailingOption: {
+              id: 'service_tier',
+              name: 'Speed',
+              defaultValue: { value: 'standard', name: 'Standard' },
+              values: [{ segment: 'priority', value: 'priority', name: 'Fast' }],
+            },
+          }),
+        },
+      }, fixture.dependencies);
+      try {
+        expect(fixture.readModels()).toMatchObject({
+          currentModelId: 'gpt',
+          models: [{
+            id: 'gpt',
+            modelOptions: [
+              { id: 'reasoning_effort', currentValue: 'low' },
+              { id: 'service_tier', currentValue: 'priority' },
+            ],
+          }],
+        });
       } finally {
         await session.dispose();
       }
@@ -1774,6 +2175,179 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it.each([
+    { fail: false },
+    { fail: true },
+  ])('delivers declared native Session MCP config through real ACP launch (failure=$fail)', async ({ fail }) => {
+    await withTempDir('happier-public-acp-native-mcp-', async (dir) => {
+      const sourceHome = path.join(dir, 'source');
+      const sourceConfigRoot = path.join(sourceHome, '.config');
+      const sourceAgentDir = path.join(sourceConfigRoot, 'fixture-agent');
+      await mkdir(sourceAgentDir, { recursive: true });
+      const originalConfig = { version: 3, mcpServers: { userTool: { command: 'user-tool' } } };
+      await writeFile(path.join(sourceAgentDir, 'mcp_config.json'), JSON.stringify(originalConfig));
+      await writeFile(path.join(sourceAgentDir, 'settings.json'), 'user-settings');
+      const capturePath = path.join(dir, 'native-mcp-launch.json');
+      const fixture = createFixture(dir, fail ? 'native-mcp-overlay-fail' : 'native-mcp-overlay');
+      if (fixture.options.transport.kind !== 'stdio') {
+        throw new Error('Expected the public ACP fixture to use stdio transport');
+      }
+      const options = {
+        ...fixture.options,
+        definition: {
+          mcp: {
+            policy: 'drop' as const,
+            nativeSessionConfig: {
+              configRootEnvKey: { posix: 'XDG_CONFIG_HOME', win32: 'APPDATA' },
+              homeRelativeConfigRoot: { posix: ['.config'], win32: ['AppData', 'Roaming'] },
+              directory: 'fixture-agent',
+              fileName: 'mcp_config.json',
+              serversKey: 'mcpServers',
+              serverEntryConstants: { transport: 'stdio' },
+            },
+          },
+        },
+      } satisfies AgentAcpRuntimeOptions;
+      const opening = createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'native-mcp-overlay',
+        cwd: dir,
+        launchEnvironment: {
+          values: {
+            HOME: sourceHome,
+            XDG_CONFIG_HOME: sourceConfigRoot,
+            NATIVE_MCP_CAPTURE: capturePath,
+          },
+          unset: ['DROP_ME'],
+        },
+      }, options, {
+        ...fixture.dependencies,
+        mcpServers: { happier: { command: '/opt/happier-mcp', args: ['bridge'] } },
+      });
+
+      const readCapture = () => JSON.parse(readFileSync(capturePath, 'utf8')) as Readonly<{
+        configRoot: string | null;
+        config: Readonly<{ version: number; mcpServers: Readonly<Record<string, unknown>> }> | null;
+        linkedSetting: string | null;
+        dropped: string | null;
+      }>;
+
+      if (fail) {
+        await expect(opening).rejects.toThrow('fixture initialization rejected');
+        const capture = readCapture();
+        expect(capture.configRoot).toBeTruthy();
+        expect(existsSync(capture.configRoot!)).toBe(false);
+      } else {
+        const session = await opening;
+        const capture = readCapture();
+        try {
+          expect(capture.configRoot).toBeTruthy();
+          expect(capture.configRoot).not.toBe(sourceConfigRoot);
+          expect(capture.dropped).toBeNull();
+          expect(capture.linkedSetting).toBe('user-settings');
+          expect(capture.config).toEqual({
+            version: 3,
+            mcpServers: {
+              userTool: { command: 'user-tool', env: { XDG_CONFIG_HOME: sourceConfigRoot } },
+              happier: {
+                command: '/opt/happier-mcp',
+                args: ['bridge'],
+                env: { XDG_CONFIG_HOME: sourceConfigRoot },
+                transport: 'stdio',
+              },
+            },
+          });
+        } finally {
+          await session.dispose();
+          await session.dispose();
+        }
+        expect(existsSync(capture.configRoot!)).toBe(false);
+      }
+      expect(JSON.parse(readFileSync(path.join(sourceAgentDir, 'mcp_config.json'), 'utf8')))
+        .toEqual(originalConfig);
+    });
+  });
+
+  it.each([
+    { unset: [], fail: false },
+    { unset: ['HOME'], fail: false },
+    { unset: ['GEMINI_CLI_HOME', 'XDG_CONFIG_HOME'], fail: false },
+    { unset: [], fail: true },
+  ])('keeps Gemini native home isolation through real ACP launch ($unset, failure=$fail)', async ({ unset, fail }) => {
+    await withTempDir('happier-public-acp-gemini-', async (dir) => {
+      const sourceHome = path.join(dir, 'source');
+      const sourceSettings = path.join(sourceHome, '.gemini', 'settings.json');
+      await mkdir(path.dirname(sourceSettings), { recursive: true });
+      const originalSettings = { theme: 'dark', mcpServers: { unwanted: { command: 'unwanted-mcp' } } };
+      await writeFile(sourceSettings, JSON.stringify(originalSettings));
+      await writeFile(path.join(sourceHome, '.gemini', 'oauth_creds.json'), '{"fixture":true}');
+      const capturePath = path.join(dir, 'launch.json');
+      const fixture = createFixture(dir, fail ? 'gemini-overlay-fail' : 'gemini-overlay');
+      const resolved = await fixture.resolve();
+      fixture.resolve.mockResolvedValue({
+        ...resolved,
+        toolId: 'gemini-cli',
+        launch: { ...resolved.launch, env: { ...resolved.launch.env, DROP_ME: 'remove-this' } },
+      });
+      let shapedHome: string | undefined;
+      // The help command is an OS boundary; factory, shaping, composer and ACP subprocess remain real.
+      const run: ExecService['run'] = async (request) => {
+        shapedHome = request.env?.GEMINI_CLI_HOME;
+        return {
+          termination: { observed: { kind: 'exit', exitCode: 0 }, requestedBy: { kind: 'none' } },
+          stdout: new TextEncoder().encode('--acp'), stderr: new Uint8Array(),
+          stdoutTruncated: false, stderrTruncated: false,
+        };
+      };
+      const signal = new AbortController().signal;
+      const runtime = await createGeminiAgentRuntime({
+        plugin: { id: 'gemini', version: '0.0.0' }, agent: { id: 'gemini' }, signal,
+      });
+      // This fixture supplies only capabilities the native factory consumes, with the real host composer.
+      const context = {
+        signal,
+        services: { exec: { run } },
+        protocols: { acp: { open: (request: AgentSessionOpenRequest, options: AgentAcpRuntimeOptions) =>
+          createPublicAcpSession(request, options, fixture.dependencies) } },
+      } as unknown as AgentSessionRuntimeContext;
+      if (!runtime.sessions) throw new Error('Gemini must expose sessions');
+      const values: Record<string, string> = {
+        HOME: sourceHome, GEMINI_CLI_HOME: sourceHome, XDG_CONFIG_HOME: path.join(sourceHome, '.config'),
+        HAPPIER_GEMINI_ACP_AUTH_METHOD: 'vertex-ai', GOOGLE_CLOUD_PROJECT: 'fixture-project',
+        GOOGLE_CLOUD_LOCATION: 'fixture-location', GEMINI_CAPTURE: capturePath,
+      };
+      for (const key of unset) delete values[key];
+      const opening = runtime.sessions.open({
+        kind: 'create', sessionId: 'gemini-overlay', cwd: dir,
+        launchEnvironment: {
+          values,
+          unset: [...unset, 'DROP_ME', 'GOOGLE_GENAI_USE_VERTEXAI'],
+        },
+      }, context);
+      if (fail) {
+        await expect(opening).rejects.toThrow('fixture initialization rejected');
+        expect(shapedHome).toBeTruthy();
+        expect(existsSync(shapedHome!)).toBe(false);
+      } else {
+        const session = await opening;
+        try {
+          expect(shapedHome).toBeTruthy();
+          expect(shapedHome).not.toBe(sourceHome);
+          expect(JSON.parse(readFileSync(capturePath, 'utf8'))).toEqual({
+            home: shapedHome, cliHome: shapedHome, xdgHome: path.join(shapedHome!, '.config'),
+            settings: { theme: 'dark' }, authExists: false, dropped: null, vertex: '1',
+          });
+          expect(existsSync(shapedHome!)).toBe(true);
+        } finally {
+          await session.dispose();
+          await session.dispose();
+        }
+        expect(existsSync(shapedHome!)).toBe(false);
+      }
+      expect(JSON.parse(readFileSync(sourceSettings, 'utf8'))).toEqual(originalSettings);
+    });
+  });
+
   it('composes VB4 launch environment, model, MCP, and plugin-owned static ACP policy', async () => {
     await withTempDir('happier-public-acp-vb4-', async (dir) => {
       const fixture = createFixture(dir, 'vb4');
@@ -1862,6 +2436,82 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it('opens the Antigravity declarative ACP transport with its native MCP servers', async () => {
+    await withTempDir('happier-public-acp-antigravity-mcp-', async (dir) => {
+      const fixture = createFixture(dir, 'vb4');
+      const parsedManifest = parsePluginManifest(ANTIGRAVITY_PLUGIN_MANIFEST);
+      if (!parsedManifest.ok) {
+        throw new Error('Expected the Antigravity plugin manifest fixture to parse');
+      }
+      const agent = PluginAgentContributionV2Schema.parse(
+        parsedManifest.manifest.contributes.agents[0],
+      );
+      if (!('runtime' in agent) || agent.runtime.kind !== 'acp') {
+        throw new Error('Expected the Antigravity plugin to declare an ACP runtime');
+      }
+      if (!agent.runtime.definition?.mcp) {
+        throw new Error('Expected the Antigravity ACP runtime to declare an MCP policy');
+      }
+      const runtimeOptions: AgentAcpRuntimeOptions = Object.freeze({
+        transport: agent.runtime.transport,
+        definition: Object.freeze({ mcp: agent.runtime.definition.mcp }),
+      });
+      const release = vi.fn();
+      const resolveManagedDependency = vi.fn(async () => ({
+        command: process.execPath,
+        args: [writePublicComposerAgent(dir)],
+        env: { PUBLIC_ACP_SCENARIO: 'vb4' },
+        release,
+      }));
+      const events: AgentSessionRuntimeEvent[] = [];
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-antigravity-mcp',
+        cwd: dir,
+      }, runtimeOptions, {
+        ...fixture.dependencies,
+        pluginId: parsedManifest.manifest.id,
+        agentId: agent.id,
+        mcpServers: {
+          happier: { command: 'happier-mcp', args: ['serve'] },
+        },
+        managedDependencies: { resolve: resolveManagedDependency },
+      });
+      const subscription = session.watch((event) => { events.push(event); });
+
+      try {
+        await session.send({
+          inputIds: ['input-antigravity-mcp'],
+          input: { text: 'report configuration' },
+          delivery: { kind: 'newTurn', turnId: 'turn-antigravity-mcp' },
+        });
+        await collectUntil(events, 'turn-complete');
+
+        expect('tools' in agent.capabilities ? agent.capabilities.tools : undefined)
+          .toEqual({ delivery: 'native_mcp' });
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'message-delta',
+          text: JSON.stringify({
+            auth: null,
+            keep: null,
+            dropped: null,
+            mcpServers: [{ name: 'happier', command: 'happier-mcp', args: ['serve'], env: [] }],
+            selectedModel: null,
+          }),
+        }));
+        expect(resolveManagedDependency).toHaveBeenCalledWith({
+          pluginId: ANTIGRAVITY_PLUGIN_MANIFEST.id,
+          dependencyId: 'agy-acp-server',
+          signal: fixture.dependencies.signal,
+        });
+      } finally {
+        subscription.dispose();
+        await session.dispose();
+      }
+      expect(release).toHaveBeenCalledOnce();
+    });
+  });
+
   it('applies newer native configuration fields through the canonical ACP session controls', async () => {
     await withTempDir('happier-public-acp-configuration-update-', async (dir) => {
       const fixture = createFixture(dir, 'configuration-update');
@@ -1927,6 +2577,124 @@ describe('createPublicAcpSession', () => {
               reviewDepth: 'thorough',
             },
           }),
+        }));
+      } finally {
+        subscription.dispose();
+        await session.dispose();
+      }
+    });
+  });
+
+  it('composes public model-state projection and provider identity resolution through configuration updates', async () => {
+    await withTempDir('happier-public-acp-projected-config-models-', async (dir) => {
+      const fixture = createFixture(dir, 'projected-config-models');
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-projected-config-models',
+        cwd: dir,
+        configuration: {
+          mode: { value: null, updatedAtMs: 1 },
+          model: { value: null, updatedAtMs: 1 },
+          permissionIntent: { value: null, updatedAtMs: 1 },
+          options: {},
+        },
+      }, {
+        ...fixture.options,
+        definition: {
+          modelConfigOptionId: 'model',
+          mcp: { policy: 'drop' },
+          models: {
+            projectModel: (_rawModel, normalizedModel) => normalizedModel,
+            projectModelState: ({ normalizedModelState }) => ({
+              currentModelId: `projected:${normalizedModelState.currentModelId}`,
+              availableModels: normalizedModelState.availableModels.map((model) => ({
+                ...model,
+                id: `projected:${model.id}`,
+              })),
+            }),
+            projectModelId: ({ modelId }) => `projected:${modelId}`,
+            resolveModelUpdate: ({ modelId }) => ({
+              modelId: modelId.replace(/^projected:/, ''),
+            }),
+          },
+        },
+      }, fixture.dependencies);
+      const events: AgentSessionRuntimeEvent[] = [];
+      const subscription = session.watch((event) => { events.push(event); });
+      try {
+        await expect(session.updateConfiguration?.({
+          mode: { value: null, updatedAtMs: 1 },
+          model: { value: 'projected:model-b', updatedAtMs: 2 },
+          permissionIntent: { value: null, updatedAtMs: 1 },
+          options: {},
+        })).resolves.toEqual({ status: 'applied', changed: ['model'] });
+        expect(fixture.readModels().currentModelId).toBe('projected:model-b');
+
+        await session.send({
+          inputIds: ['input-projected-config-models'],
+          input: { text: 'report configuration' },
+          delivery: { kind: 'newTurn', turnId: 'turn-projected-config-models' },
+        });
+        await collectUntil(events, 'turn-complete');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'message-delta',
+          text: JSON.stringify({
+            selectedMode: null,
+            selectedModel: 'model-b',
+            selectedOptions: { model: 'model-b' },
+          }),
+        }));
+      } finally {
+        subscription.dispose();
+        await session.dispose();
+      }
+    });
+  });
+
+  it.each([
+    ['default', null],
+    ['read-only', 'ask'],
+    ['safe-yolo', 'smart'],
+    ['yolo', 'bypass'],
+    ['plan', 'plan'],
+  ] as const)('maps initial permission intent %s to ACP mode %s before the first prompt', async (permissionIntent, expectedMode) => {
+    await withTempDir('happier-public-acp-permission-mode-', async (dir) => {
+      const fixture = createFixture(dir, 'configuration-update');
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: `host-permission-${permissionIntent}`,
+        cwd: dir,
+        configuration: {
+          mode: { value: null, updatedAtMs: 10 },
+          model: { value: null, updatedAtMs: 11 },
+          permissionIntent: { value: permissionIntent, updatedAtMs: 12 },
+          options: {},
+        },
+      }, {
+        ...fixture.options,
+        definition: {
+          mcp: { policy: 'drop' },
+          permissionModeMapping: {
+            default: null,
+            'read-only': 'ask',
+            'safe-yolo': 'smart',
+            yolo: 'bypass',
+            plan: 'plan',
+          },
+        },
+      }, fixture.dependencies);
+      const events: AgentSessionRuntimeEvent[] = [];
+      const subscription = session.watch((event) => { events.push(event); });
+      try {
+        await session.send({
+          inputIds: [`input-${permissionIntent}`],
+          input: { text: 'report configuration' },
+          delivery: { kind: 'newTurn', turnId: `turn-${permissionIntent}` },
+        });
+        await collectUntil(events, 'turn-complete');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'message-delta',
+          text: JSON.stringify({ selectedMode: expectedMode, selectedModel: null, selectedOptions: {} }),
         }));
       } finally {
         subscription.dispose();
@@ -2118,7 +2886,7 @@ describe('createPublicAcpSession', () => {
 
         expect(events.map((event) => event.kind)).toEqual([
           'provider-session-id',
-          'input-accepted',
+          'input-custody-unknown',
           'turn-start',
           'message-delta',
           'turn-complete',
@@ -2129,9 +2897,8 @@ describe('createPublicAcpSession', () => {
             providerSessionId: 'provider-created',
           }),
           expect.objectContaining({
-            kind: 'input-accepted',
+            kind: 'input-custody-unknown',
             inputIds: ['input-1'],
-            delivery: { kind: 'newTurn', turnId: 'turn-1' },
           }),
           expect.objectContaining({
             kind: 'message-delta',
@@ -2314,9 +3081,8 @@ describe('createPublicAcpSession', () => {
         );
         expect(completedEvents).toEqual(expect.arrayContaining([
           expect.objectContaining({
-            kind: 'input-accepted',
+            kind: 'input-custody-unknown',
             inputIds: ['input-follow-up'],
-            delivery: { kind: 'followUp', turnId: 'turn-follow-up' },
           }),
           expect.objectContaining({
             kind: 'turn-start',
@@ -2387,6 +3153,61 @@ describe('createPublicAcpSession', () => {
       } finally {
         hangingSubscription.dispose();
         await hanging.dispose();
+      }
+    });
+  });
+
+  it('preserves structured content when steering an active ACP turn', async () => {
+    await withTempDir('happier-public-acp-structured-steer-', async (dir) => {
+      const uploadDir = path.join(dir, '.happier', 'uploads', 'messages', 'steer');
+      const uploadPath = path.join(uploadDir, 'image.png');
+      const structuredUploadPath = '.happier/uploads/messages/steer/image.png';
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      await mkdir(uploadDir, { recursive: true });
+      await writeFile(uploadPath, bytes);
+      const fixture = createFixture(dir, 'structured-steer');
+      const session = await createPublicAcpSession({
+        kind: 'create', sessionId: 'host-structured-steer', cwd: dir,
+      }, fixture.options, fixture.dependencies);
+      const events: AgentSessionRuntimeEvent[] = [];
+      const subscription = session.watch((event) => { events.push(event); });
+      try {
+        await session.send({
+          inputIds: ['input-primary'],
+          input: { text: 'primary' },
+          delivery: { kind: 'newTurn', turnId: 'turn-primary' },
+        });
+        await session.send({
+          inputIds: ['input-structured-steer'],
+          input: {
+            text: 'look again',
+            structuredInput: {
+              v: 1,
+              imageInputs: [{
+                id: 'steer-image',
+                kind: 'localImage',
+                path: structuredUploadPath,
+                mimeType: 'image/png',
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+                sizeBytes: bytes.length,
+                provenance: { kind: 'sessionAttachmentUpload' },
+              }],
+            },
+          },
+          delivery: { kind: 'steer', turnId: 'turn-primary' },
+        });
+        await collectUntil(events, 'turn-complete');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'message-delta',
+          turnId: 'turn-primary',
+          text: JSON.stringify([
+            { type: 'text', text: 'look again' },
+            { type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' },
+          ]),
+        }));
+      } finally {
+        subscription.dispose();
+        await session.dispose();
       }
     });
   });
@@ -2599,7 +3420,7 @@ describe('createPublicAcpSession', () => {
     },
   ])('maps $name to the mature ACP session operation', async ({ request, providerSessionId }) => {
     await withTempDir('happier-public-acp-open-', async (dir) => {
-      const fixture = createFixture(dir, 'completed');
+      const fixture = createFixture(dir, 'session-open-capabilities');
       const session = await createPublicAcpSession(request(dir), fixture.options, fixture.dependencies);
       const events: AgentSessionRuntimeEvent[] = [];
       const subscription = session.watch((event) => { events.push(event); });
@@ -3158,6 +3979,72 @@ describe('createPublicAcpSession', () => {
     });
   });
 
+  it('commits exact-session extension observations emitted during resume only after the open succeeds', async () => {
+    await withTempDir('happier-public-acp-resume-extension-', async (dir) => {
+      const createNotificationOptions = (
+        fixture: ReturnType<typeof createFixture>,
+        observedGoalIds: string[],
+      ): AgentAcpRuntimeOptions => ({
+        ...fixture.options,
+        extensions: {
+          notifications: {
+            'x.ai/session/update': (params, context) => {
+              if (!params || typeof params !== 'object' || Array.isArray(params)) return;
+              const notification = params as Readonly<Record<string, unknown>>;
+              const update = notification.update;
+              if (
+                notification.sessionId !== context.providerSessionId
+                || !update
+                || typeof update !== 'object'
+                || Array.isArray(update)
+              ) return;
+              const goalId = (update as Readonly<Record<string, unknown>>).goal_id;
+              if (typeof goalId === 'string') observedGoalIds.push(goalId);
+            },
+          },
+        },
+      });
+
+      const successfulFixture = createFixture(dir, 'resume-extension-notification');
+      const successfulObservations: string[] = [];
+      const session = await createPublicAcpSession({
+        kind: 'resume',
+        sessionId: 'host-resume-extension',
+        providerSessionId: 'provider-resumed',
+        cwd: dir,
+      }, createNotificationOptions(successfulFixture, successfulObservations), successfulFixture.dependencies);
+      expect(successfulObservations).toEqual(['goal-1']);
+      await session.dispose();
+
+      const failedFixture = createFixture(dir, 'resume-extension-notification-failed');
+      const failedObservations: string[] = [];
+      await expect(createPublicAcpSession({
+        kind: 'resume',
+        sessionId: 'host-resume-extension-failed',
+        providerSessionId: 'provider-resumed',
+        cwd: dir,
+      }, createNotificationOptions(failedFixture, failedObservations), failedFixture.dependencies))
+        .rejects.toThrow('resume rejected');
+      expect(failedObservations).toEqual([]);
+
+      const abortedFixture = createFixture(dir, 'resume-extension-notification-delayed');
+      const abortedObservations: string[] = [];
+      const controller = new AbortController();
+      const opening = createPublicAcpSession({
+        kind: 'resume',
+        sessionId: 'host-resume-extension-aborted',
+        providerSessionId: 'provider-resumed',
+        cwd: dir,
+      }, createNotificationOptions(abortedFixture, abortedObservations), {
+        ...abortedFixture.dependencies,
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 20);
+      await expect(opening).rejects.toThrow();
+      expect(abortedObservations).toEqual([]);
+    });
+  });
+
   it('injects the canonical prompt id and accepts completion evidence only for the current provider session and turn', async () => {
     await withTempDir('happier-public-acp-completion-evidence-', async (dir) => {
       const fixture = createFixture(dir, 'extension-completion');
@@ -3313,12 +4200,19 @@ describe('createPublicAcpSession', () => {
           'input-custody-unknown',
           'turn-start',
           'message-delta',
+          'message-delta',
           'tool-call',
           'tool-result',
           'message-delta',
           'turn-complete',
         ]);
-        expect(events.filter((event) => event.kind === 'message-delta')).toEqual([
+        expect(events.filter((event) => event.kind === 'message-delta' && event.channel === 'reasoning')).toEqual([
+          expect.objectContaining({
+            turnId: 'turn-pre-response-turn',
+            text: 'checking',
+          }),
+        ]);
+        expect(events.filter((event) => event.kind === 'message-delta' && event.channel === 'assistant')).toEqual([
           expect.objectContaining({
             turnId: 'turn-pre-response-turn',
             text: 'assistant before prompt response',
@@ -3678,6 +4572,278 @@ describe('createPublicAcpSession', () => {
       await expect(session.cancel?.({ turnId: 'turn-before-abort', reason: 'user' }))
         .resolves.toMatchObject({ status: 'unavailable' });
       await session.dispose();
+    });
+  });
+
+  it.each([
+    {
+      name: 'preserves a non-blank opaque id byte-exactly',
+      forkedProviderSessionId: OPAQUE_HISTORY_FORK_PROVIDER_SESSION_ID,
+      accepted: true,
+    },
+    {
+      name: 'rejects a blank-only id',
+      forkedProviderSessionId: ' \n\t ',
+      accepted: false,
+    },
+  ] as const)('$name from an extension-backed ACP fork', async ({
+    forkedProviderSessionId,
+    accepted,
+  }) => {
+    await withTempDir('happier-public-acp-websocket-history-fork-', async (dir) => {
+      const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+      await new Promise<void>((resolve, reject) => {
+        server.once('listening', resolve);
+        server.once('error', reject);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected a TCP WebSocket address');
+      const loadedProviderSessionIds: string[] = [];
+      server.on('connection', (socket) => {
+        socket.on('message', (raw) => {
+          const request = JSON.parse(raw.toString()) as Readonly<{
+            id?: string | number;
+            method?: string;
+            params?: Readonly<{ sessionId?: string }>;
+          }>;
+          const send = (result: unknown) => socket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result,
+          }));
+          if (request.method === 'initialize') {
+            send({
+              protocolVersion: 1,
+              agentCapabilities: { loadSession: true },
+              authMethods: [],
+            });
+          } else if (request.method === 'x.ai/session/fork') {
+            send({ newSessionId: forkedProviderSessionId });
+          } else if (request.method === 'session/load') {
+            if (typeof request.params?.sessionId === 'string') {
+              loadedProviderSessionIds.push(request.params.sessionId);
+            }
+            send({});
+          } else if (request.id !== undefined) {
+            send({});
+          }
+        });
+      });
+
+      const fixture = createFixture(dir, 'completed');
+      let session: Awaited<ReturnType<typeof createPublicAcpSession>> | null = null;
+      try {
+        const opening = createPublicAcpSession({
+          kind: 'fork',
+          sessionId: 'host-websocket-history-child',
+          cwd: dir,
+          source: {
+            sessionId: 'host-parent',
+            providerSessionId: 'provider-parent',
+            cwd: '/source-workspace',
+          },
+        }, {
+          transport: {
+            kind: 'webSocket',
+            url: `ws://127.0.0.1:${address.port}/acp`,
+            timeouts: { initializeMs: 2_000, idleMs: 20, toolCallMs: 2_000 },
+          },
+          definition: createHistoryDefinition(),
+        }, fixture.dependencies);
+        if (!accepted) {
+          await expect(opening).rejects.toThrow(
+            'ACP history fork response did not include a valid provider session id',
+          );
+          expect(loadedProviderSessionIds).toEqual([]);
+          return;
+        }
+
+        session = await opening;
+        const events: AgentSessionRuntimeEvent[] = [];
+        const subscription = session.watch((event) => { events.push(event); });
+        try {
+          await collectUntil(events, 'provider-session-id');
+          expect(loadedProviderSessionIds).toEqual([forkedProviderSessionId]);
+          expect(loadedProviderSessionIds).not.toContain(forkedProviderSessionId.trim());
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'provider-session-id',
+            providerSessionId: forkedProviderSessionId,
+          }));
+          expect(events).not.toContainEqual(expect.objectContaining({
+            kind: 'provider-session-id',
+            providerSessionId: forkedProviderSessionId.trim(),
+          }));
+        } finally {
+          subscription.dispose();
+        }
+      } finally {
+        await session?.dispose();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+  });
+
+  it('opens a declared WebSocket ACP endpoint and disposes its owned connection once', async () => {
+    await withTempDir('happier-public-acp-websocket-', async (dir) => {
+      const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+      await new Promise<void>((resolve, reject) => {
+        server.once('listening', resolve);
+        server.once('error', reject);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected a TCP WebSocket address');
+      let closeCount = 0;
+      server.on('connection', (socket) => {
+        socket.on('close', () => { closeCount += 1; });
+        socket.on('message', (raw) => {
+          const request = JSON.parse(raw.toString()) as Readonly<{
+            id?: string | number;
+            method?: string;
+            params?: Readonly<{ sessionId?: string }>;
+          }>;
+          const send = (value: unknown) => socket.send(JSON.stringify(value));
+          if (request.method === 'initialize') {
+            send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+          } else if (request.method === 'session/new') {
+            send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'websocket-provider-session' } });
+          } else if (request.method === 'session/prompt') {
+            send({
+              jsonrpc: '2.0',
+              method: 'session/update',
+              params: {
+                sessionId: request.params?.sessionId,
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: 'websocket response' },
+                },
+              },
+            });
+            send({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } });
+          } else if (request.id !== undefined) {
+            send({ jsonrpc: '2.0', id: request.id, result: {} });
+          }
+        });
+      });
+
+      const fixture = createFixture(dir, 'completed');
+      let session: Awaited<ReturnType<typeof createPublicAcpSession>> | null = null;
+      try {
+        session = await createPublicAcpSession({
+          kind: 'create', sessionId: 'host-websocket', cwd: dir,
+        }, {
+          transport: {
+            kind: 'webSocket',
+            url: `ws://127.0.0.1:${address.port}/acp`,
+            timeouts: { initializeMs: 2_000, idleMs: 20, toolCallMs: 2_000 },
+          },
+        }, fixture.dependencies);
+        const events: AgentSessionRuntimeEvent[] = [];
+        const subscription = session.watch((event) => { events.push(event); });
+        try {
+          await expect(session.send({
+            inputIds: ['input-websocket'],
+            input: { text: 'hello websocket' },
+            delivery: { kind: 'newTurn', turnId: 'turn-websocket' },
+          })).resolves.toEqual({ status: 'admitted' });
+          await collectUntil(events, 'turn-complete');
+          expect(events).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'message-delta', text: 'websocket response' }),
+            expect.objectContaining({ kind: 'turn-complete', turnId: 'turn-websocket' }),
+          ]));
+        } finally {
+          subscription.dispose();
+        }
+        await session.dispose();
+        await session.dispose();
+        await waitForCondition(
+          () => closeCount === 1,
+          { timeoutMs: 2_000, intervalMs: 10, label: 'one WebSocket close' },
+        );
+      } finally {
+        await session?.dispose();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+  });
+
+  it('terminalizes an admitted turn and runtime when a declared TCP ACP connection is lost', async () => {
+    await withTempDir('happier-public-acp-tcp-loss-', async (dir) => {
+      const server = createServer((socket) => {
+        let buffer = '';
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk) => {
+          buffer += chunk;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const request = JSON.parse(line) as Readonly<{
+              id?: string | number;
+              method?: string;
+            }>;
+            const send = (value: unknown) => socket.write(`${JSON.stringify(value)}\n`);
+            if (request.method === 'initialize') {
+              send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+            } else if (request.method === 'session/new') {
+              send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'tcp-provider-session' } });
+            } else if (request.method === 'session/prompt') {
+              socket.destroy();
+            } else if (request.id !== undefined) {
+              send({ jsonrpc: '2.0', id: request.id, result: {} });
+            }
+          }
+        });
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.listen(0, '127.0.0.1', resolve);
+        server.once('error', reject);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected a TCP server address');
+
+      const fixture = createFixture(dir, 'completed');
+      let session: Awaited<ReturnType<typeof createPublicAcpSession>> | null = null;
+      try {
+        session = await createPublicAcpSession({
+          kind: 'create', sessionId: 'host-tcp', cwd: dir,
+        }, {
+          transport: {
+            kind: 'tcp',
+            host: '127.0.0.1',
+            port: address.port,
+            timeouts: { initializeMs: 2_000, idleMs: 20, toolCallMs: 2_000 },
+          },
+        }, fixture.dependencies);
+        const events: AgentSessionRuntimeEvent[] = [];
+        const subscription = session.watch((event) => { events.push(event); });
+        try {
+          await expect(session.send({
+            inputIds: ['input-tcp-loss'],
+            input: { text: 'disconnect now' },
+            delivery: { kind: 'newTurn', turnId: 'turn-tcp-loss' },
+          })).resolves.toEqual({ status: 'admitted' });
+          await collectUntil(events, 'runtime-ended');
+          expect(events.filter((event) => event.kind === 'turn-failed')).toHaveLength(1);
+          expect(events.filter((event) => event.kind === 'runtime-ended')).toEqual([
+            expect.objectContaining({
+              kind: 'runtime-ended',
+              cause: 'connectionLost',
+              retryable: true,
+              diagnostic: expect.objectContaining({ code: 'acp_connection_lost' }),
+            }),
+          ]);
+          await expect(session.send({
+            inputIds: ['input-after-tcp-loss'],
+            input: { text: 'must not remain pending' },
+            delivery: { kind: 'newTurn', turnId: 'turn-after-tcp-loss' },
+          })).resolves.toMatchObject({ status: 'unavailable' });
+        } finally {
+          subscription.dispose();
+        }
+      } finally {
+        await session?.dispose();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
   });
 });

@@ -66,6 +66,12 @@ export function registerRunnerTerminationHandlers(params: Readonly<{
   process: ProcessLike;
   exit: (code: number) => void;
   onTerminate: (event: RunnerTerminationEvent, outcome: RunnerTerminationOutcome) => void | Promise<void>;
+  /**
+   * A composition root that owns process close decisions can retain the
+   * canonical runtime termination path without installing a competing set of
+   * process listeners or exiting behind that owner's confirmation UI.
+   */
+  processLifecycleOwnership?: 'self' | 'caller';
   sessionExitReport?: RunnerTerminationSessionExitReportOptions | null;
   /**
    * Optional policy hook to decide whether an unhandled rejection should
@@ -112,7 +118,9 @@ export function registerRunnerTerminationHandlers(params: Readonly<{
       .catch(() => undefined)
       .finally(() => {
         resolveWhenTerminated({ event, outcome });
-        params.exit(outcome.exitCode);
+        if (params.processLifecycleOwnership !== 'caller') {
+          params.exit(outcome.exitCode);
+        }
       });
   };
 
@@ -133,15 +141,18 @@ export function registerRunnerTerminationHandlers(params: Readonly<{
   };
   const onUncaughtException = (error: unknown) => terminate({ kind: 'uncaughtException', error });
 
-  params.process.on('SIGTERM', onSigterm);
-  params.process.on('SIGINT', onSigint);
-  params.process.on('unhandledRejection', onUnhandledRejection);
-  params.process.on('uncaughtException', onUncaughtException);
+  if (params.processLifecycleOwnership !== 'caller') {
+    params.process.on('SIGTERM', onSigterm);
+    params.process.on('SIGINT', onSigint);
+    params.process.on('unhandledRejection', onUnhandledRejection);
+    params.process.on('uncaughtException', onUncaughtException);
+  }
 
   return {
     requestTermination: terminate,
     whenTerminated,
     dispose: () => {
+      if (params.processLifecycleOwnership === 'caller') return;
       params.process.removeListener('SIGTERM', onSigterm);
       params.process.removeListener('SIGINT', onSigint);
       params.process.removeListener('unhandledRejection', onUnhandledRejection);

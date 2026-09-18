@@ -47,7 +47,10 @@ type DatabaseMigrationReadTransaction = DaemonDatabaseMigrationReadTransaction;
 type DatabaseMigration = DaemonDatabaseMigration;
 type DatabaseIncumbentQueryFixture = DaemonDatabaseIncumbentQueryFixture;
 type DatabaseOpenOptions = Parameters<DaemonDatabaseService['database']>[1];
-type ActiveDatabaseTransaction = DatabaseTransaction & Readonly<{ end: () => void }>;
+type ActiveDatabaseTransaction = DatabaseTransaction & Readonly<{
+    assertCommittable: () => void;
+    end: () => void;
+}>;
 
 type NormalizedDatabaseOpenOptions = Readonly<{
     migrations: readonly DatabaseMigration[];
@@ -220,16 +223,90 @@ function assertParameters(params: readonly DatabaseValue[], maximumInputBytes: n
     }
 }
 
+const SQLITE_TABLE_SOURCE_CLAUSE_BOUNDARIES = new Set([
+    'SELECT', 'WHERE', 'ON', 'USING', 'SET', 'VALUES', 'RETURNING',
+    'GROUP', 'ORDER', 'HAVING', 'LIMIT', 'WINDOW', 'UNION', 'INTERSECT',
+    'EXCEPT',
+]);
+
+function followsTableSourceSeparator(source: string): boolean {
+    let cursor = source.length - 1;
+    const skipWhitespace = (): void => {
+        while (cursor >= 0 && /\s/u.test(source[cursor]!)) cursor -= 1;
+    };
+    const previousWord = (): Readonly<{ word: string; start: number }> | null => {
+        skipWhitespace();
+        const end = cursor + 1;
+        while (cursor >= 0 && /[A-Z0-9_]/iu.test(source[cursor]!)) cursor -= 1;
+        return end === cursor + 1
+            ? null
+            : { word: source.slice(cursor + 1, end).toUpperCase(), start: cursor + 1 };
+    };
+
+    skipWhitespace();
+    while (source[cursor] === '(') {
+        cursor -= 1;
+        skipWhitespace();
+    }
+    const direct = previousWord();
+    if (direct?.word === 'FROM' || direct?.word === 'JOIN') return true;
+    cursor = direct ? direct.start - 1 : cursor;
+    skipWhitespace();
+    if (source[cursor] !== ',') return false;
+    cursor -= 1;
+
+    let closedParentheses = 0;
+    while (cursor >= 0) {
+        skipWhitespace();
+        const character = source[cursor];
+        if (character === ')') {
+            closedParentheses += 1;
+            cursor -= 1;
+            continue;
+        }
+        if (character === '(') {
+            cursor -= 1;
+            if (closedParentheses > 0) {
+                closedParentheses -= 1;
+                continue;
+            }
+            const owner = previousWord();
+            if (owner?.word === 'FROM' || owner?.word === 'JOIN') return true;
+            // An unmatched parenthesis owned by a word is a function or
+            // expression argument, not a parenthesized table-source list.
+            if (owner) return false;
+            continue;
+        }
+        if (/[A-Z0-9_]/iu.test(character ?? '')) {
+            const token = previousWord();
+            if (!token) return false;
+            if (closedParentheses === 0) {
+                if (token.word === 'FROM' || token.word === 'JOIN') return true;
+                if (SQLITE_TABLE_SOURCE_CLAUSE_BOUNDARIES.has(token.word)) return false;
+            }
+            continue;
+        }
+        cursor -= 1;
+    }
+    return false;
+}
+
 /**
  * SQLite's Node/Bun sync adapters expose a prepared statement but not the
  * parser tail pointer. This is intentionally a one-statement boundary scan,
  * not a migration splitter: SQLite still parses the submitted source, while
  * this scan refuses any non-comment token after the first complete statement.
  */
-function stripCommentsAndValidateTail(sql: string): string {
+function stripCommentsAndValidateTail(sql: string): Readonly<{
+    stripped: string;
+    singleQuotedIdentifiers: readonly string[];
+}> {
     let state: 'plain' | 'single' | 'double' | 'backtick' | 'bracket' | 'lineComment' | 'blockComment' = 'plain';
     let sawTerminator = false;
     let stripped = '';
+    let singleQuotedToken = '';
+    let singleQuotedIdentifier = false;
+    const singleQuotedIdentifiers: string[] = [];
 
     for (let index = 0; index < sql.length; index += 1) {
         const character = sql[index]!;
@@ -256,9 +333,17 @@ function stripCommentsAndValidateTail(sql: string): string {
                 if (next === "'") {
                     index += 1;
                     stripped += ' ';
+                    singleQuotedToken += "'";
                 } else {
+                    if (singleQuotedIdentifier) {
+                        singleQuotedIdentifiers.push(singleQuotedToken);
+                    }
+                    singleQuotedToken = '';
+                    singleQuotedIdentifier = false;
                     state = 'plain';
                 }
+            } else {
+                singleQuotedToken += character;
             }
             continue;
         }
@@ -306,6 +391,12 @@ function stripCommentsAndValidateTail(sql: string): string {
         }
         if (character === "'") {
             state = 'single';
+            singleQuotedToken = '';
+            singleQuotedIdentifier = /(?:\b(?:FROM|JOIN|INTO|TABLE|REINDEX|ANALYZE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?|\.\s*)$/iu.test(stripped)
+                || /\bUPDATE(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+$/iu.test(stripped)
+                || /^\s*CREATE\s+(?:(?:UNIQUE\s+)?INDEX|(?:TEMP(?:ORARY)?\s+)?TRIGGER)\b[\s\S]*\bON\s*$/iu.test(stripped)
+                || /\bPRAGMA(?:_[A-Z0-9_]+)?\s*(?:[=(]|[A-Z0-9_]+\s*[=(])$/iu.test(stripped)
+                || followsTableSourceSeparator(stripped);
             stripped += ' ';
             continue;
         }
@@ -344,13 +435,36 @@ function stripCommentsAndValidateTail(sql: string): string {
     if (!stripped.trim()) {
         fail('daemon_database_sql_invalid', 'SQLite statement must not be empty');
     }
-    return stripped;
+    return Object.freeze({
+        stripped,
+        singleQuotedIdentifiers: Object.freeze(singleQuotedIdentifiers),
+    });
 }
 
 function firstSqlKeyword(stripped: string): string {
     const keyword = /[A-Za-z_][A-Za-z0-9_]*/u.exec(stripped)?.[0];
     if (!keyword) fail('daemon_database_sql_invalid', 'SQLite statement has no command keyword');
     return keyword.toUpperCase();
+}
+
+function containsReservedSchemaEnumerationPragma(source: string): boolean {
+    const pragmaIdentifier = /\bPRAGMA_TABLE_LIST\b/gu;
+    for (const match of source.matchAll(pragmaIdentifier)) {
+        const identifierStart = match.index;
+        if (identifierStart === undefined) continue;
+        const identifierEnd = identifierStart + match[0].length;
+        const followingSource = source
+            .slice(identifierEnd)
+            .replace(/^\s*(?:["`\]])?\s*/u, '');
+        if (followingSource.startsWith('(')) return true;
+
+        const precedingSource = source
+            .slice(0, identifierStart)
+            .replace(/["`\[]\s*$/u, '')
+            .replace(/(?:["`\[]?[A-Z_][A-Z0-9_]*["`\]]?\s*\.\s*)$/u, '');
+        if (followsTableSourceSeparator(precedingSource)) return true;
+    }
+    return false;
 }
 
 /**
@@ -446,13 +560,16 @@ function assertClassifiedPluginStatement(params: Readonly<{
     sql: string;
     mode: 'ordinary' | 'migration' | 'fixture';
     limits: PluginDaemonDatabaseLimits;
-}>): void {
+}>): Readonly<{ mayMutate: boolean; mutatesRows: boolean }> {
     if (Buffer.byteLength(params.sql, 'utf8') > params.limits.maximumInputBytes) {
         fail('daemon_database_input_too_large', 'SQLite statement input exceeds the daemon database limit');
     }
-    const stripped = stripCommentsAndValidateTail(params.sql);
+    const scanned = stripCommentsAndValidateTail(params.sql);
+    const { stripped } = scanned;
     const normalized = stripped.toUpperCase();
-    const executableSource = normalized.trim().replace(/^EXPLAIN(?:\s+QUERY\s+PLAN)?\s+/u, '');
+    const normalizedSource = normalized.trim();
+    const isExplain = /^EXPLAIN(?:\s+QUERY\s+PLAN)?\s+/u.test(normalizedSource);
+    const executableSource = normalizedSource.replace(/^EXPLAIN(?:\s+QUERY\s+PLAN)?\s+/u, '');
     const keyword = firstSqlKeyword(executableSource);
     const transactionControl = new Set([
         'BEGIN', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
@@ -476,12 +593,26 @@ function assertClassifiedPluginStatement(params: Readonly<{
         fail('daemon_database_statement_forbidden', 'SQLite statement accesses an unsupported schema or module');
     }
     if (/\b_HAPPIER_PLUGIN_SCHEMA\b/u.test(normalized)
-        || /\bSQLITE_(?:MASTER|SCHEMA|TEMP_MASTER|SEQUENCE|STAT[0-9]*)\b/u.test(normalized)) {
+        || /\bSQLITE_(?:MASTER|SCHEMA|TEMP_MASTER|SEQUENCE|STAT[0-9]*)\b/u.test(normalized)
+        || containsReservedSchemaEnumerationPragma(normalized)
+        || scanned.singleQuotedIdentifiers.some((identifier) => (
+            /^_HAPPIER_PLUGIN_SCHEMA$/iu.test(identifier)
+            || /^SQLITE_(?:MASTER|SCHEMA|TEMP_MASTER|SEQUENCE|STAT[0-9]*)$/iu.test(identifier)
+            || /^PRAGMA_TABLE_LIST$/iu.test(identifier)
+        ))) {
         fail('daemon_database_reserved_schema', 'SQLite host schema is not visible to plugins');
     }
     if (params.mode === 'fixture' && !isReadOnlyFixtureStatement(executableSource, keyword)) {
         fail('daemon_database_fixture_not_read_only', 'Incumbent query fixtures may execute only read-only SQLite statements');
     }
+    return Object.freeze({
+        mayMutate: !isExplain && !isReadOnlyFixtureStatement(executableSource, keyword),
+        mutatesRows: !isExplain && (keyword === 'INSERT'
+            || keyword === 'UPDATE'
+            || keyword === 'DELETE'
+            || keyword === 'REPLACE'
+            || (keyword === 'WITH' && !isReadOnlyFixtureStatement(executableSource, keyword))),
+    });
 }
 
 function cloneResultRows<TRow extends DatabaseRow>(
@@ -1039,6 +1170,14 @@ function createTransactionHandle(params: Readonly<{
     mode: 'ordinary' | 'migration' | 'fixture';
 }>): ActiveDatabaseTransaction {
     let active = true;
+    let rollbackOnly = false;
+    let rollbackOnlyError: unknown;
+    const markRollbackOnly = (mayMutate: boolean, error: unknown): void => {
+        if (mayMutate && !rollbackOnly) {
+            rollbackOnly = true;
+            rollbackOnlyError = error;
+        }
+    };
     const assertUsable = (operationSignal?: AbortSignal): void => {
         if (!active || params.entry.closed) {
             fail('daemon_database_transaction_ended', 'Plugin daemon database transaction is no longer active');
@@ -1051,15 +1190,28 @@ function createTransactionHandle(params: Readonly<{
         options?: DatabaseCancellation,
     ): Promise<readonly TRow[]> => {
         assertUsable(options?.signal);
-        assertClassifiedPluginStatement({ sql, mode: params.mode, limits: params.limits });
+        const classification = assertClassifiedPluginStatement({ sql, mode: params.mode, limits: params.limits });
         assertParameters(values, params.limits.maximumInputBytes, sql);
-        const rows = await params.worker.all(
-            sql,
-            values,
-            workerResultOptions(params.limits, params.requestOptionsFor(options?.signal)),
-        );
-        assertUsable(options?.signal);
-        return cloneResultRows<TRow>(rows);
+        try {
+            const result = await params.worker.allWithChanges(
+                sql,
+                values,
+                workerResultOptions(params.limits, params.requestOptionsFor(options?.signal)),
+            );
+            if (classification.mutatesRows) {
+                normalizeExecutionResult({ changes: result.changes }, params.limits.maximumAffectedRows);
+                params.entry.pageBytes = await assertDatabaseQuota(
+                    params.worker,
+                    params.limits,
+                    params.requestOptionsFor(options?.signal),
+                );
+            }
+            assertUsable(options?.signal);
+            return cloneResultRows<TRow>(result.rows);
+        } catch (error) {
+            markRollbackOnly(classification.mayMutate, error);
+            throw error;
+        }
     };
     const execute = async (
         sql: string,
@@ -1070,23 +1222,31 @@ function createTransactionHandle(params: Readonly<{
             fail('daemon_database_fixture_not_read_only', 'Incumbent query fixtures cannot execute SQLite mutations');
         }
         assertUsable(options?.signal);
-        assertClassifiedPluginStatement({ sql, mode: params.mode, limits: params.limits });
+        const classification = assertClassifiedPluginStatement({ sql, mode: params.mode, limits: params.limits });
         assertParameters(values, params.limits.maximumInputBytes, sql);
-        const result = normalizeExecutionResult(
-            await runStatement(params.worker, sql, values, params.requestOptionsFor(options?.signal)),
-            params.limits.maximumAffectedRows,
-        );
-        params.entry.pageBytes = await assertDatabaseQuota(
-            params.worker,
-            params.limits,
-            params.requestOptionsFor(options?.signal),
-        );
-        assertUsable(options?.signal);
-        return result;
+        try {
+            const result = normalizeExecutionResult(
+                await runStatement(params.worker, sql, values, params.requestOptionsFor(options?.signal)),
+                params.limits.maximumAffectedRows,
+            );
+            params.entry.pageBytes = await assertDatabaseQuota(
+                params.worker,
+                params.limits,
+                params.requestOptionsFor(options?.signal),
+            );
+            assertUsable(options?.signal);
+            return result;
+        } catch (error) {
+            markRollbackOnly(classification.mayMutate, error);
+            throw error;
+        }
     };
     const handle = Object.freeze({ query, execute });
     return Object.freeze({
         ...handle,
+        assertCommittable: () => {
+            if (rollbackOnly) throw rollbackOnlyError;
+        },
         end: () => { active = false; },
     });
 }
@@ -1133,12 +1293,14 @@ function createPublicDatabaseHandle(params: Readonly<{
                         requestOptionsFor: context.requestOptionsFor,
                         assertHostTransactionUsable: context.assertUsable,
                         mode: 'ordinary',
-                    }) as DatabaseTransaction & Readonly<{ end: () => void }>;
+                    });
                     try {
-                        return await databaseOperationContext.run(
+                        const result = await databaseOperationContext.run(
                             new Set([params.entry]),
                             async () => await operation(transaction),
                         );
+                        transaction.assertCommittable();
+                        return result;
                     } finally {
                         transaction.end();
                     }
@@ -1344,6 +1506,7 @@ export function createPluginDaemonDatabaseOwner(params: Readonly<{
                         await databaseOperationContext.run(new Set([entry]), async () => {
                             for (const migration of pending) {
                                 await migration.up(migrationTransaction);
+                                migrationTransaction.assertCommittable();
                                 assertOwnerUsable(options.signal);
                                 await runStatement(
                                     context.worker,

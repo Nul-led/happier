@@ -226,6 +226,7 @@ export function createStablePluginApprovalQueueOwner(
 
     return Object.freeze({
         bind(seed): ApprovalQueueService {
+            let actionInvocationSequence = 0;
             const execute = async (
                 actionId: 'approval.request.create' | 'approval.request.get' | 'approval.request.list',
                 input: unknown,
@@ -248,12 +249,22 @@ export function createStablePluginApprovalQueueOwner(
                 const actionCaller = requirePluginActionCaller(seed);
                 const boundInput = buildInput ? await buildInput(actionCaller) : input;
                 assertInvocationCurrent(seed, signal);
+                actionInvocationSequence += 1;
+                const actionRequestId = seed.externalActionContext?.actionRequestId
+                    ?? `${seed.correlationId}:${actionId}:${actionInvocationSequence}`;
                 const result = await executor.execute(actionId, boundInput, {
+                    ...(seed.externalActionContext ?? {}),
                     signal,
                     surface: 'plugin',
                     authority: 'account_automation',
                     actionCaller,
                     placement: null,
+                    actionRequestId,
+                    ...(seed.sessionListAccess
+                        ? { sessionListAccess: seed.sessionListAccess }
+                        : seed.session
+                            ? { sessionListAccess: 'current_session' as const }
+                            : {}),
                     defaultSessionId: seed.session?.id ?? null,
                 });
                 assertInvocationCurrent(seed, signal);

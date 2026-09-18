@@ -3,15 +3,25 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   getActionSpec,
   isActionSpecSurfacedOn,
+  normalizeServerIdentityIdCapability,
   PublicActionIdSchema,
+  accountSettingsParse,
   type ActionId,
 } from '@happier-dev/protocol';
 
-import type { StoredCredentials } from '@/persistence';
+import {
+  readStoredCredentialsForServerId,
+  sameStoredCredentials,
+  type StoredCredentials,
+} from '@/persistence';
 import { registerHappierMcpResources } from '@/mcp/resources/registerHappierMcpResources';
 import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
 import { createChangeTitleToolHandler } from '@/agent/tools/happierTools/createChangeTitleToolHandler';
-import { isActionEnabledByEnv, readActionsSettingsFromEnv } from '@/settings/actionsSettings';
+import { readActionsSettingsFromEnv } from '@/settings/actionsSettings';
+import {
+  createMcpActionEnablementWithServerFeatureAvailability,
+  createMcpActionSettingsProvider,
+} from '@/mcp/server/createMcpActionEnablement';
 import { registerHappierMcpBuiltInTools } from '@/mcp/server/registerHappierMcpBuiltInTools';
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
@@ -23,10 +33,15 @@ import {
 } from '@/daemon/controlClient';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import { createSessionFollowActionDeps, createSessionTrackedTargetCompatibilityDep } from '@/api/sessionFollowActionDeps';
+import { createSessionDiscussionActionDeps } from '@/session/discussions/sessionDiscussionActionDeps';
 import {
   resolveServerHttpBaseUrl,
   runWithServerHttpBaseUrl,
 } from '@/api/client/serverHttpBaseUrl';
+import { configuration } from '@/configuration';
+import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
@@ -41,6 +56,8 @@ function readSessionIdFromToolArgs(args: unknown): string | null {
 export function createExternalMcpServer(params: Readonly<{
   credentials: StoredCredentials;
   defaultSessionId?: string | null;
+  /** Current device Machine identity used by the existing durable approval replay owner. */
+  machineId?: string | null;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
   /**
    * `undefined` preserves the ordinary ambient daemon lifecycle owner. A
@@ -48,54 +65,115 @@ export function createExternalMcpServer(params: Readonly<{
    * daemon and must never fall back to another lifecycle scope.
    */
   daemonControlTarget?: DaemonControlRequestOptions['target'] | null;
+  /** Exact authenticated Home feature projection captured by the command owner. */
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Readonly<{ mcp: McpServer; toolNames: string[] }> {
   const serverHttpBaseUrl = resolveServerHttpBaseUrl();
+  const serverId = configuration.activeServerId;
+  const serverIdentityId = params.serverFeaturesSnapshot?.status === 'ready'
+    ? normalizeServerIdentityIdCapability(
+        params.serverFeaturesSnapshot.features.capabilities.serverIdentity?.serverIdentityId,
+      ) ?? null
+    : null;
   const toolSurface = 'mcp' as const;
   const usesApiToken = params.credentials.credentialProvenance === 'api_token';
+  const resolveServerFeaturesSnapshot = async () => await fetchServerFeaturesSnapshot({
+    serverUrl: serverHttpBaseUrl,
+    token: params.credentials.token,
+  });
   // A PAT has no Account E2EE material. Keep its MCP presentation narrowed to
   // Actions the public API can admit, then delegate their execution to the
   // daemon that owns the selected machine/Session. Plugin tools have no public
   // Action-id admission path yet, so do not advertise a local PAT bypass.
   const pluginToolCatalog = usesApiToken ? Object.freeze([]) : params.pluginToolCatalog;
+  const actionsSettings = readActionsSettingsFromEnv();
+  const isServerFeatureAvailable = createMcpActionEnablementWithServerFeatureAvailability({
+    actionSettingsProvider: createMcpActionSettingsProvider({
+      accountSettings: accountSettingsParse({ actionsSettingsV1: actionsSettings }),
+    }),
+    surface: toolSurface,
+    hasAuthenticatedRuntime: true,
+    readServerFeaturesSnapshot: () => params.serverFeaturesSnapshot,
+  });
   const isActionEnabled = (id: ActionId): boolean => (
     (!usesApiToken || PublicActionIdSchema.safeParse(id).success)
-    && isActionEnabledByEnv(id, { surface: toolSurface })
+    && isServerFeatureAvailable(id)
   );
 
-  let defaultSessionId: string | null = normalizeId(params.defaultSessionId) || null;
+  let defaultSessionAddress: Readonly<{ serverId: string; sessionId: string }> | null = (() => {
+    const sessionId = normalizeId(params.defaultSessionId);
+    return sessionId ? { serverId, sessionId } : null;
+  })();
   const executor = usesApiToken
     ? createCliActionExecutorFromCredentials({
         credentials: params.credentials,
+        serverId,
         serverApiUrl: serverHttpBaseUrl,
+        ...(params.machineId ? { machineId: params.machineId } : {}),
+        ...(serverIdentityId ? { serverIdentityId } : {}),
+        resolveServerFeaturesSnapshot,
       })
     : (() => {
         const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials);
         const cryptoContext = ctx
           ? { mode: 'e2ee' as const, ctx }
           : { mode: 'plain' as const, ctx: null };
+        const followDeps = createSessionFollowActionDeps({
+          token: params.credentials.token,
+          serverId,
+          serverHttpBaseUrl,
+          ...(serverIdentityId ? { serverIdentityId } : {}),
+          prepareSourceKeyAfterSet: createSessionFollowSourceKeyPreparationAfterSet({
+            credentials: params.credentials,
+            serverHttpBaseUrl,
+            ...(serverIdentityId ? { serverIdentityId } : {}),
+            resolveServerFeaturesSnapshot,
+          }),
+        });
         const { executor: baseExecutor } = createCliActionExecutorHarness(
           {
             ...cryptoContext,
             token: params.credentials.token,
             credentials: params.credentials,
+            serverId,
+            ...(serverIdentityId ? { serverIdentityId } : {}),
+            serverHttpBaseUrl,
             sessionId: 'cli-global',
           },
           {
             ...createAccountServerActionDeps({
               token: params.credentials.token,
+              credentials: params.credentials,
+              isCredentialCurrent: async () => sameStoredCredentials(
+                params.credentials,
+                await readStoredCredentialsForServerId(serverId).catch(() => null),
+              ),
+              serverId,
               serverHttpBaseUrl,
+              ...(serverIdentityId ? { serverIdentityId } : {}),
+              resolveServerFeaturesSnapshot,
             }),
-            sessionTargetPrimarySet: async ({ sessionId }) => {
+            ...followDeps,
+            ...createSessionDiscussionActionDeps({
+              credentials: params.credentials,
+              serverId,
+              serverHttpBaseUrl,
+              ...(serverIdentityId ? { serverIdentityId } : {}),
+              resolveServerFeaturesSnapshot,
+            }),
+            sessionTargetPrimarySet: async ({ sessionId, serverId: targetServerId }) => {
               const normalized = typeof sessionId === 'string' && sessionId.trim().length > 0 ? sessionId.trim() : null;
-              defaultSessionId = normalized;
-              return { ok: true, sessionId: normalized };
+              const normalizedServerId = normalizeId(targetServerId);
+              if (normalized && normalizedServerId !== serverId) {
+                return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+              }
+              defaultSessionAddress = normalized ? { serverId: normalizedServerId, sessionId: normalized } : null;
+              return { ok: true, sessionId: normalized, serverId: normalized ? normalizedServerId : null };
             },
-            sessionTargetTrackedSet: async ({ sessionIds }) => {
-              const trackedSessionIds = Array.isArray(sessionIds)
-                ? sessionIds.map((id) => String(id ?? '').trim()).filter(Boolean)
-                : [];
-              return { ok: true, sessionIds: trackedSessionIds };
-            },
+            ...createSessionTrackedTargetCompatibilityDep({
+              serverId,
+              replaceSessionVoiceInclusions: followDeps.replaceSessionVoiceInclusions,
+            }),
           },
         );
         const pinnedBaseExecutor = {
@@ -140,7 +218,6 @@ export function createExternalMcpServer(params: Readonly<{
     isActionEnabled,
   });
 
-  const actionsSettings = readActionsSettingsFromEnv();
   const actionToolBridge = createActionToolExecutorBridge({
     executor,
     isActionEnabled: (id) => {
@@ -150,6 +227,10 @@ export function createExternalMcpServer(params: Readonly<{
     surface: toolSurface,
     actionsSettings,
     pluginToolCatalog,
+    defaultSessionMachineId: params.machineId,
+    resolveSessionListAccess: (defaultSessionId) => (
+      defaultSessionAddress?.sessionId === defaultSessionId ? 'current_session' : undefined
+    ),
   });
 
   const { toolNames } = registerHappierMcpBuiltInTools(mcp as any, {
@@ -157,7 +238,7 @@ export function createExternalMcpServer(params: Readonly<{
     surface: toolSurface,
     actionsSettings,
     pluginToolCatalog,
-    resolveSessionId: (toolArgs) => readSessionIdFromToolArgs(toolArgs) ?? defaultSessionId ?? 'cli-global',
+    resolveSessionId: (toolArgs) => readSessionIdFromToolArgs(toolArgs) ?? defaultSessionAddress?.sessionId ?? 'cli-global',
     deps: {
       changeTitle: createChangeTitleToolHandler({
         executor,
@@ -167,7 +248,7 @@ export function createExternalMcpServer(params: Readonly<{
       resolveActionOptions: async (resolverArgs) =>
         await actionToolBridge.resolveActionOptions(
           resolverArgs,
-          readSessionIdFromToolArgs(resolverArgs) ?? defaultSessionId ?? 'cli-global',
+          readSessionIdFromToolArgs(resolverArgs) ?? defaultSessionAddress?.sessionId ?? 'cli-global',
         ),
       isActionEnabled: actionToolBridge.isActionEnabled,
     },

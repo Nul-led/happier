@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 
 import { resolveVendorResumeIdFromSessionMetadata } from '@happier-dev/agents';
 import {
+  readNonBlankOpaqueIdentifier,
   readRuntimeDescriptorV1,
   type ConnectedServiceMaterializationIdentityV1,
   type RuntimeDescriptorV1,
@@ -29,6 +30,11 @@ function normalizeOptionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
+/**
+ * Some Agents mint a resume id that is also a persisted session-file path. That
+ * secondary *path* reading is Happier-owned and keeps its own canonicalization;
+ * the identity it was derived from stays byte-exact.
+ */
 function normalizeOptionalAbsolutePath(value: unknown): string | null {
   const normalized = normalizeOptionalString(value);
   return normalized && isAbsolute(normalized) ? normalized : null;
@@ -62,10 +68,11 @@ export function resolveTrackedConnectedServiceVendorResumeId(input: Readonly<{
   vendorResumeId?: string | null;
 }>): string | null {
   const metadata = input.tracked?.happySessionMetadataFromLocalWebhook ?? null;
-  return normalizeOptionalString(input.tracked?.vendorResumeId)
-    ?? normalizeOptionalString(input.tracked?.spawnOptions?.resume)
+  // Opaque Agent identity: presence only, bytes preserved.
+  return readNonBlankOpaqueIdentifier(input.tracked?.vendorResumeId)
+    ?? readNonBlankOpaqueIdentifier(input.tracked?.spawnOptions?.resume)
     ?? resolveBuiltInVendorResumeId(input.agentId, metadata)
-    ?? normalizeOptionalString(input.vendorResumeId);
+    ?? readNonBlankOpaqueIdentifier(input.vendorResumeId);
 }
 
 function resolveTrackedConnectedServiceResumeContext(input: Readonly<{
@@ -79,10 +86,11 @@ function resolveTrackedConnectedServiceResumeContext(input: Readonly<{
   const persistedMetadata = input.persistedSessionMetadata ?? null;
   const trackedMetadataVendorResumeId = resolveBuiltInVendorResumeId(input.agentId, trackedMetadata);
   const persistedMetadataVendorResumeId = resolveBuiltInVendorResumeId(input.agentId, persistedMetadata);
-  const trackedVendorResumeId = normalizeOptionalString(input.tracked?.vendorResumeId);
-  const trackedSpawnResume = normalizeOptionalString(input.tracked?.spawnOptions?.resume);
+  // Opaque Agent identity: presence only, bytes preserved.
+  const trackedVendorResumeId = readNonBlankOpaqueIdentifier(input.tracked?.vendorResumeId);
+  const trackedSpawnResume = readNonBlankOpaqueIdentifier(input.tracked?.spawnOptions?.resume);
   const trackedSpawnResumeCandidate = normalizeOptionalAbsolutePath(trackedSpawnResume);
-  const explicitVendorResumeId = normalizeOptionalString(input.vendorResumeId);
+  const explicitVendorResumeId = readNonBlankOpaqueIdentifier(input.vendorResumeId);
   const explicitCandidatePersistedSessionFile = normalizeOptionalString(input.candidatePersistedSessionFile);
 
   if (trackedVendorResumeId) {

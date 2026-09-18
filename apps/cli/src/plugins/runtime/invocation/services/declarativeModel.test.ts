@@ -52,6 +52,20 @@ function expectPluginError(operation: () => unknown, code: string): void {
 }
 
 describe('stable declarative plugin model', () => {
+    it('projects host Action requests without borrowing the contributed Action inventory', () => {
+        const model = createStablePluginDeclarativeModel({
+            pluginId: 'com.acme.forms', generation: 'generation-7', actions: [], settings: [],
+            renderer: { id: 'send', kind: 'declarative', root: {
+                kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' },
+            } },
+        });
+        expect(model.root).toEqual({
+            kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' },
+            path: 'root', order: 0, enabled: true,
+        });
+        expect(model.declarativeInventory.actions).toEqual([]);
+        expect(PluginDeclarativeProjectedModelV1Schema.safeParse(model).success).toBe(true);
+    });
     it('normalizes fields and inert qualified actions in deterministic preorder', () => {
         const settings = createStablePluginSettingsModel({
             pluginId: 'com.acme.forms',

@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +45,31 @@ async function waitForPidFile(filePath: string, opts: { timeoutMs: number }): Pr
 }
 
 describe('killProcessTree', () => {
+  it('rejects Windows termination when the process survives the forced taskkill attempt', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');
+    const child = spawnInlineNodeTestProcess('setInterval(() => {}, 1000)');
+    const exited = once(child, 'exit');
+
+    try {
+      expect(isPidAlive(child.pid!)).toBe(true);
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+
+      await expect(killProcessTree(child, {
+        graceMs: 25,
+        // The OS adapter reports success without terminating the real process.
+        // This exercises Windows completion admission on non-Windows test hosts.
+        terminateWindowsTree: async () => undefined,
+      })).rejects.toMatchObject({ code: 'plugin_exec_termination_incomplete' });
+
+      expect(isPidAlive(child.pid!)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+      child.kill('SIGKILL');
+      await exited;
+    }
+  });
+
   it('delegates Windows subtree termination to the canonical taskkill boundary', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');

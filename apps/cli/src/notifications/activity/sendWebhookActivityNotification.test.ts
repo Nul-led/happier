@@ -65,6 +65,44 @@ function resolvesTo(...addresses: readonly string[]) {
 }
 
 describe('sendWebhookActivityNotificationAsync', () => {
+  it('projects a workflow update through the strict webhook arm without Session or private content', async () => {
+    const transport = createRecordingTransport({ status: 202 });
+
+    await sendWebhookActivityNotificationAsync({
+      channel: webhookChannel('https://hooks.example.test/happier'),
+      event: {
+        topic: 'workflow_run_update',
+        runId: 'run-42',
+        updateKind: 'outcome_uncertain',
+        reason: { code: 'continuation_unavailable' },
+      },
+      nowMs: () => 1_700_000_000_001,
+      network: {
+        resolveAddresses: resolvesTo('93.184.216.34'),
+        openPinnedStream: transport.openPinnedStream,
+      },
+    });
+
+    const payload = JSON.parse(Buffer.from(transport.requests[0]?.body ?? new Uint8Array()).toString('utf8'));
+    expect(payload).toEqual({
+      v: 1,
+      channelId: 'webhook-primary',
+      createdAt: 1_700_000_000_001,
+      topic: 'workflow_run_update',
+      content: {
+        title: 'Workflow outcome uncertain',
+        body: 'A workflow Run needs attention because its outcome is uncertain.',
+      },
+      workflowRun: {
+        runId: 'run-42',
+        updateKind: 'outcome_uncertain',
+        reason: { code: 'continuation_unavailable' },
+      },
+      navigation: { runId: 'run-42' },
+    });
+    expect(JSON.stringify(payload)).not.toContain('session');
+  });
+
   it('delivers a signed payload to a public HTTPS destination over the pinned transport', async () => {
     const transport = createRecordingTransport({ status: 202 });
 

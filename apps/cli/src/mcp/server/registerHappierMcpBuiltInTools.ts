@@ -2,6 +2,8 @@ import { listBuiltInHappierTools, type BuiltInHappierToolsSurface } from '@/agen
 import { dispatchBuiltInHappierTool } from '@/agent/tools/happierTools/dispatchBuiltInHappierTool';
 import {
     createPluginJsonSchemaZodObjectAdapter,
+    zodSchemaToJsonSchemaObject,
+    type ActionId,
     type ActionsSettingsV1,
     type ApprovalRequestOriginV1,
 } from '@happier-dev/protocol';
@@ -10,12 +12,61 @@ import type { HappierBuiltInToolDefinition } from '@/agent/tools/happierTools/ty
 import { z } from 'zod';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
 import { projectSessionBoundActionToolInputSchema } from '@/agent/tools/happierTools/actionToolContext';
+import { logger } from '@/ui/logger';
+
+const MCP_TOOL_PROGRESS_KEEPALIVE_INTERVAL_MS = 15_000;
 
 type ToolRegistrar = Readonly<{
     registerTool: (name: string, meta: unknown, handler: (args: unknown, extra?: unknown) => Promise<unknown>) => void;
 }>;
 
 type DispatchDeps = Parameters<typeof dispatchBuiltInHappierTool>[0]['deps'];
+
+type McpRequestHandlerExtra = Readonly<{
+    _meta?: Readonly<{ progressToken?: unknown }>;
+    signal?: AbortSignal;
+    sendNotification?: (notification: Readonly<{
+        method: 'notifications/progress';
+        params: Readonly<{ progressToken: string | number; progress: number }>;
+    }>) => Promise<void>;
+}>;
+
+function startMcpToolProgressKeepalive(extra: unknown): () => void {
+    const request = extra && typeof extra === 'object' ? extra as McpRequestHandlerExtra : null;
+    const progressToken = request?._meta?.progressToken;
+    const sendNotification = request?.sendNotification;
+    const signal = request?.signal;
+    if (
+        (typeof progressToken !== 'string' && typeof progressToken !== 'number')
+        || typeof sendNotification !== 'function'
+        || signal?.aborted === true
+    ) {
+        return () => undefined;
+    }
+
+    let progress = 0;
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        if (timer) clearInterval(timer);
+        signal?.removeEventListener('abort', stop);
+    };
+    timer = setInterval(() => {
+        progress += 1;
+        void sendNotification({
+            method: 'notifications/progress',
+            params: { progressToken, progress },
+        }).catch((error) => {
+            stop();
+            logger.debug('[happierMCP] Failed to send tool progress keepalive', error);
+        });
+    }, MCP_TOOL_PROGRESS_KEEPALIVE_INTERVAL_MS);
+    timer.unref?.();
+    signal?.addEventListener('abort', stop, { once: true });
+    return stop;
+}
 
 function buildSessionAgentApprovalOrigin(params: Readonly<{
     surface: BuiltInHappierToolsSurface;
@@ -60,7 +111,26 @@ function toMcpToolInputSchema(params: Readonly<{
 
 function toMcpToolObjectSchema(schema: unknown, field: 'inputSchema' | 'outputSchema'): z.ZodType {
     if (schema instanceof z.ZodType) {
-        return schema;
+        // Action schemas are executable parser contracts and can contain
+        // normalization transforms that the MCP SDK cannot render. Present
+        // the same canonical structural JSON Schema used by Action discovery
+        // through a non-transforming Zod object adapter. Validation delegates
+        // to the original schema, while dispatch retains the authoritative
+        // parse/normalization rather than receiving MCP-transformed input.
+        const jsonSchema = zodSchemaToJsonSchemaObject(schema, { target: 'draft-7' });
+        const adapter = z.object({}).passthrough().superRefine((value, ctx) => {
+            if (!schema.safeParse(value).success) {
+                ctx.addIssue({
+                    code: 'custom',
+                    message: `Value does not match the Action ${field}`,
+                });
+            }
+        });
+        adapter._zod.processJSONSchema = (_ctx, json) => {
+            Object.assign(json, jsonSchema);
+            json.type = 'object';
+        };
+        return adapter;
     }
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
         throw new Error(`Plugin tool ${field} must be a JSON Schema object`);
@@ -112,6 +182,7 @@ export function registerHappierMcpBuiltInTools(
         actionsSettings?: ActionsSettingsV1 | null;
         getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
         pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
+        requiredDirectActionIds?: readonly ActionId[];
         deps: DispatchDeps;
         resolveSessionId?: (toolArgs: unknown) => string;
     }>,
@@ -126,12 +197,14 @@ export function registerHappierMcpBuiltInTools(
         isActionEnabled,
         actionsSettings,
         pluginToolCatalog: params.pluginToolCatalog,
+        requiredDirectActionIds: params.requiredDirectActionIds,
     });
     const actionToolNameToId = createActionToolNameToIdMap({
         surface: params.surface,
         isActionEnabled,
         actionsSettings,
         pluginToolCatalog: params.pluginToolCatalog,
+        requiredDirectActionIds: params.requiredDirectActionIds,
     });
 
     for (const tool of enabledTools) {
@@ -157,6 +230,7 @@ export function registerHappierMcpBuiltInTools(
                 ...(pluginToolMcpMeta === undefined ? {} : { _meta: pluginToolMcpMeta }),
             },
             async (args: unknown, extra?: unknown) => {
+                const stopProgressKeepalive = startMcpToolProgressKeepalive(extra);
                 try {
                     const sessionId = params.resolveSessionId ? params.resolveSessionId(args) : params.sessionId;
                     const approvalOrigin = buildSessionAgentApprovalOrigin({
@@ -165,6 +239,10 @@ export function registerHappierMcpBuiltInTools(
                         toolName: tool.name,
                         extra,
                     });
+                    const rawRequestId = (extra as { requestId?: unknown } | null | undefined)?.requestId;
+                    const actionRequestId = typeof rawRequestId === 'string' || typeof rawRequestId === 'number'
+                        ? String(rawRequestId).trim()
+                        : '';
                     const currentActionsSettings = readActionsSettings();
                     const result = await dispatchBuiltInHappierTool({
                         toolName: tool.name,
@@ -175,7 +253,9 @@ export function registerHappierMcpBuiltInTools(
                         actionsSettings: currentActionsSettings,
                         getActionsSettings: readActionsSettings,
                         pluginToolCatalog: params.pluginToolCatalog,
+                        requiredDirectActionIds: params.requiredDirectActionIds,
                         ...(approvalOrigin ? { approvalOrigin } : {}),
+                        ...(actionRequestId ? { actionRequestId } : {}),
                         deps: params.deps,
                     });
 
@@ -210,6 +290,8 @@ export function registerHappierMcpBuiltInTools(
                         content: [{ type: 'text' as const, text: payload }],
                         isError: true as const,
                     };
+                } finally {
+                    stopProgressKeepalive();
                 }
             },
         );

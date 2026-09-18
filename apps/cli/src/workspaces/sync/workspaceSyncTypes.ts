@@ -4,7 +4,8 @@ import {
   type ReadWorkspaceSyncFileResultV1,
   type ReadWorkspaceSyncFileV1,
   type WorkspaceContentPolicyV1,
-  type WorkspaceSyncConflictListV1,
+  type WorkspaceSyncConflictPageRequestV1,
+  type WorkspaceSyncConflictPageV1,
   type WorkspaceSyncCopyOnceV1,
   type WorkspaceSyncRelationshipV1,
   type WorkspaceSyncStatusV1,
@@ -18,6 +19,8 @@ export type {
   ReadWorkspaceSyncFileV1,
   WorkspaceContentPolicyV1,
   WorkspaceSyncConflictListV1,
+  WorkspaceSyncConflictPageRequestV1,
+  WorkspaceSyncConflictPageV1,
   WorkspaceSyncConflictV1,
   WorkspaceSyncCopyOnceV1,
   WorkspaceSyncModeV1,
@@ -34,6 +37,8 @@ export type WorkspaceSyncRelationshipPreparation = Readonly<{
   transient: true;
   targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
   targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+  targetReplacementApprovalReceiptId?: string;
+  targetReplacementApprovalActionInput?: unknown;
 }>;
 
 /** Daemon-local lifecycle interface; wire shapes remain protocol-owned. */
@@ -47,8 +52,12 @@ export interface ManagedWorkspaceSync {
   pause(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   resume(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   terminate(relationshipId: string, signal?: AbortSignal): Promise<void>;
-  listConflicts(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1>;
-  deleteConflictLoser(request: DeleteWorkspaceSyncConflictLoserV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
+  listConflicts(request: WorkspaceSyncConflictPageRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictPageV1>;
+  deleteConflictLoser(
+    request: DeleteWorkspaceSyncConflictLoserV1,
+    signal: AbortSignal | undefined,
+    actionReceiptId: string,
+  ): Promise<WorkspaceSyncStatusV1>;
   readFile(request: ReadWorkspaceSyncFileV1, signal?: AbortSignal): Promise<ReadWorkspaceSyncFileResultV1>;
   withAuthorizedSourceSeedExport<T>(
     request: Readonly<{

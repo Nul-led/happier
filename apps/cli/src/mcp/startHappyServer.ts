@@ -3,27 +3,40 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { AddressInfo } from "node:net";
 import { logger } from "@/ui/logger";
 import { createHappierMcpServer } from "@/mcp/createHappierMcpServer";
-import { listBuiltInHappierTools } from "@/agent/tools/happierTools/listBuiltInHappierTools";
+import {
+    listAdmittedSessionRunReadActionIds,
+    listBuiltInHappierTools,
+} from "@/agent/tools/happierTools/listBuiltInHappierTools";
 import type { RpcHandlerManagerLike } from "@/api/rpc/types";
 import type { Metadata } from "@/api/types";
 import type { PermissionMode } from "@/api/types";
 import { configuration } from "@/configuration";
 import type { StoredCredentials } from '@/persistence';
 import type { AgentCompositionToolSelection } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
-import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
+import {
+    projectGenerationBoundExecutablePluginToolCatalog,
+    type ProjectedPluginToolCatalogEntry,
+} from '@/plugins/runtime/toolCatalog';
+import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import type { ExecutionRunServiceResult, WaitForExecutionRunResult } from "@/session/services/executionRuns";
 import type {
+    ActionId,
     AccountSettings,
+    ActionExecutorDeps,
     BackendTargetRefV2,
 } from '@happier-dev/protocol';
 import type { RuntimeActiveTurnPermissionWitness } from '@/agent/runtime/turns/runtimeTurnOperations';
 import {
-    createMcpActionEnablement,
+    createMcpActionEnablementWithServerFeatureAvailability,
     createMcpActionSettingsProvider,
 } from '@/mcp/server/createMcpActionEnablement';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { z } from 'zod';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import type { SessionClientServerBinding } from '@/api/session/client/transport/sessionClientTransport';
 
 const NativeAgentToolCallRequestV1Schema = z.strictObject({
     toolName: z.string().trim().min(1).max(256),
@@ -43,11 +56,17 @@ export type HappyMcpExecutionRunService = Readonly<{
 
 export type HappyMcpSessionClient = {
     sessionId: string;
+    getServerBinding(): SessionClientServerBinding;
     rpcHandlerManager: RpcHandlerManagerLike;
     updateMetadata(updater: (metadata: Metadata) => Metadata): void | Promise<void>;
     getMetadataSnapshot?(): Metadata | null;
     getPermissionMode?(): PermissionMode | null | undefined;
     getActiveTurnPermissionWitness?(): RuntimeActiveTurnPermissionWitness | null | undefined;
+    getRuntimeLifetimeSignal?(): AbortSignal | null | undefined;
+    getServerFeaturesSnapshot?(): CliServerFeaturesSnapshot | undefined;
+    getSessionActionConfirmationBinding?(): import('@/session/actions/approvals/sessionActionConfirmation').SessionActionConfirmationRuntimeBinding | null;
+    confirmSessionAction?: import('@/api/session/sessionClient').ApiSessionClient['confirmSessionAction'];
+    postAgentDiscussionMessage?: import('@/api/session/sessionClient').ApiSessionClient['postAgentDiscussionMessage'];
     getBackendTarget?(): BackendTargetRefV2 | null | undefined;
     getCurrentSessionLocation?(): Readonly<{
         path?: string | null;
@@ -59,9 +78,16 @@ export type HappyMcpSessionClient = {
 };
 
 type HappySessionToolRuntimeOptions = Readonly<{
+    sessionCredentials?: StoredCredentials | null;
     credentials?: StoredCredentials | null;
+    authorityScope?: 'account' | 'session';
+    sessionList?: ActionExecutorDeps['sessionList'];
+    actionsSettingsProvider?: RuntimeActionSettingsProvider;
     accountSettings?: AccountSettings | null;
     getAccountSettings?: (() => AccountSettings | null) | null;
+    requiredDirectActionIds?: readonly ActionId[];
+    /** Exact caller-owned registry lease for daemonless scoped runtimes. */
+    pluginRuntimeRegistryLease?: PluginRuntimeRegistryLease;
 }>;
 
 export function filterPluginToolsForActiveAgentComposition(
@@ -97,7 +123,7 @@ export function filterPluginToolsForActiveAgentComposition(
             expectedContributorImmutableGenerationId: immutableGenerationId,
         })];
     });
-    // The daemon catalog remains the sole current catalog for unmanaged tools.
+    // The supplied catalog remains the sole current catalog for unmanaged tools.
     // Managed selections use only the immutable snapshot admitted for this
     // turn; a missing/invalid binding fails closed instead of rereading a
     // replacement plugin after a reload.
@@ -109,7 +135,16 @@ export function filterPluginToolsForActiveAgentComposition(
 
 async function readCurrentPluginToolCatalog(
     client: HappyMcpSessionClient,
+    pluginRuntimeRegistryLease?: PluginRuntimeRegistryLease,
 ): Promise<readonly ProjectedPluginToolCatalogEntry[]> {
+    if (pluginRuntimeRegistryLease) {
+        return filterPluginToolsForActiveAgentComposition(
+            projectGenerationBoundExecutablePluginToolCatalog(
+                pluginRuntimeRegistryLease.registry,
+            ),
+            client.getActiveAgentCompositionToolSelection?.() ?? null,
+        );
+    }
     const daemonCatalog = await readDaemonPluginCatalog().catch(() => ({
         kind: 'unavailable' as const,
         code: 'daemon_unavailable',
@@ -126,6 +161,13 @@ export function registerHappierSessionAgentToolRpc(
     client: HappyMcpSessionClient,
     opts?: HappySessionToolRuntimeOptions,
 ): void {
+    const actionSettingsProvider = opts?.actionsSettingsProvider ?? createMcpActionSettingsProvider({
+        accountSettings: opts?.accountSettings ?? null,
+        getAccountSettings: opts?.getAccountSettings ?? null,
+        scopeKey: opts?.credentials
+            ? resolveAccountSettingsScopeKeyForToken(opts.credentials.token)
+            : null,
+    });
     client.rpcHandlerManager.registerHandler(
         SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
         async (raw) => {
@@ -138,10 +180,21 @@ export function registerHappierSessionAgentToolRpc(
                 };
             }
             const runtime = createHappierMcpServer(client, {
+                sessionCredentials: opts?.sessionCredentials ?? opts?.credentials ?? null,
                 credentials: opts?.credentials ?? null,
+                authorityScope: opts?.authorityScope ?? 'account',
+                ...(opts?.sessionList ? { sessionList: opts.sessionList } : {}),
+                actionsSettingsProvider: actionSettingsProvider,
                 accountSettings: opts?.accountSettings ?? null,
                 getAccountSettings: opts?.getAccountSettings ?? null,
-                pluginToolCatalog: await readCurrentPluginToolCatalog(client),
+                pluginToolCatalog: await readCurrentPluginToolCatalog(
+                    client,
+                    opts?.pluginRuntimeRegistryLease,
+                ),
+                ...(opts?.pluginRuntimeRegistryLease
+                    ? { pluginRuntimeRegistryLease: opts.pluginRuntimeRegistryLease }
+                    : {}),
+                requiredDirectActionIds: opts?.requiredDirectActionIds,
                 sessionInputVia: 'action',
             });
             try {
@@ -163,22 +216,33 @@ export async function startHappyServer(
 ) {
     // Do not eagerly construct an MCP server on startup; only snapshot the names.
     // Full server creation is done per request inside the handler.
-    const actionSettingsProvider = createMcpActionSettingsProvider({
+    const actionSettingsProvider = opts?.actionsSettingsProvider ?? createMcpActionSettingsProvider({
         accountSettings: opts?.accountSettings ?? null,
         getAccountSettings: opts?.getAccountSettings ?? null,
+        scopeKey: opts?.credentials
+            ? resolveAccountSettingsScopeKeyForToken(opts.credentials.token)
+            : null,
     });
-  const isActionEnabled = createMcpActionEnablement({
+    const isActionEnabled = createMcpActionEnablementWithServerFeatureAvailability({
         actionSettingsProvider,
         surface: 'agent',
-  });
-  const initialPluginToolCatalog = await readCurrentPluginToolCatalog(client);
-  const toolNamesSnapshot = listBuiltInHappierTools({
-    surface: 'agent',
-    isActionEnabled,
-    actionsSettings: actionSettingsProvider.getActionsSettings(),
-    pluginToolCatalog: initialPluginToolCatalog,
-  }).map((tool) => tool.name);
-  const keepAliveIntervalMs = configuration.mcpSseKeepAliveIntervalMs;
+        hasAuthenticatedRuntime: (opts?.credentials ?? null) !== null,
+        readServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.(),
+    });
+    const initialPluginToolCatalog = await readCurrentPluginToolCatalog(
+        client,
+        opts?.pluginRuntimeRegistryLease,
+    );
+    const toolsSnapshot = listBuiltInHappierTools({
+        surface: 'agent',
+        isActionEnabled,
+        actionsSettings: actionSettingsProvider.getActionsSettings(),
+        pluginToolCatalog: initialPluginToolCatalog,
+        requiredDirectActionIds: opts?.requiredDirectActionIds,
+    });
+    const toolNamesSnapshot = toolsSnapshot.map((tool) => tool.name);
+    const supportedSessionReadActions = listAdmittedSessionRunReadActionIds(toolsSnapshot);
+    const keepAliveIntervalMs = configuration.mcpSseKeepAliveIntervalMs;
 
     //
     // Create the HTTP server
@@ -197,10 +261,21 @@ export async function startHappyServer(
         // In newer MCP SDK versions, stateless transports are single-use; reusing
         // one transport across requests can surface as client-side "Error POSTing to endpoint".
         const { mcp } = createHappierMcpServer(client, {
+            sessionCredentials: opts?.sessionCredentials ?? opts?.credentials ?? null,
             credentials: opts?.credentials ?? null,
+            authorityScope: opts?.authorityScope ?? 'account',
+            ...(opts?.sessionList ? { sessionList: opts.sessionList } : {}),
+            actionsSettingsProvider: actionSettingsProvider,
             accountSettings: opts?.accountSettings ?? null,
             getAccountSettings: opts?.getAccountSettings ?? null,
-            pluginToolCatalog: await readCurrentPluginToolCatalog(client),
+            pluginToolCatalog: await readCurrentPluginToolCatalog(
+                client,
+                opts?.pluginRuntimeRegistryLease,
+            ),
+            ...(opts?.pluginRuntimeRegistryLease
+                ? { pluginRuntimeRegistryLease: opts.pluginRuntimeRegistryLease }
+                : {}),
+            requiredDirectActionIds: opts?.requiredDirectActionIds,
         });
 
         const transport = new StreamableHTTPServerTransport({
@@ -259,6 +334,7 @@ export async function startHappyServer(
     return {
         url: baseUrl.toString(),
         toolNames: toolNamesSnapshot,
+        supportedSessionReadActions,
         stop: () => {
             logger.debug('[happierMCP] Stopping server');
             server.close();

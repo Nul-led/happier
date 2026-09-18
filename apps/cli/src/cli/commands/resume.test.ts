@@ -992,6 +992,7 @@ describe('happier resume', () => {
           signingKeyFingerprint: null,
           contentKeyFingerprint: null,
           updatedAt: now,
+          recipientEnvelopeReadiness: { status: 'available' },
         }),
         fetchSessionByIdFn: async () => rawSession,
         readAccountSettingsFn: async () => accountSettingsParse({

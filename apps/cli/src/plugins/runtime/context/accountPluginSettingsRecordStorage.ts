@@ -2,7 +2,6 @@ import axios from 'axios';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import {
-    AccountEncryptionModeResponseSchema,
     openAccountScopedBlobCiphertext,
     PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
     PluginAccountSettingsMutationResponseV1Schema,
@@ -15,8 +14,12 @@ import {
 import { isPluginError, PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
+import { readAccountEncryptionModeOnce } from '@/api/client/accountEncryptionMode';
 import { readStoredCredentials, type Credentials, type StoredCredentials } from '@/persistence';
-import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import {
+    getActiveAccountSettingsSnapshot,
+    getActiveAccountSettingsSnapshotLifetimeToken,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { requireAccountSettingsEncryptionCredentials } from '@/settings/accountSettings/accountSettingsEncryptionMaterial';
 import { resolveAccountSettingsHttpBaseUrl } from '@/settings/accountSettings/resolveAccountSettingsHttpBaseUrl';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
@@ -28,6 +31,7 @@ import {
 
 import type {
     PluginAccountSettingsRecordAdapter,
+    PluginAccountSettingsRecordAccess,
     PluginAccountSettingsRecordRead,
     PluginAccountSettingsRecordWriteResult,
     StablePluginSettingsModel,
@@ -154,114 +158,117 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
     const randomBytes = params.randomBytes ?? ((length: number) => new Uint8Array(nodeRandomBytes(length)));
     const subscribeChanges = params.subscribeChanges ?? subscribePluginAccountSettingsWatchInvalidation;
 
-    async function currentCredentials(signal?: AbortSignal): Promise<StoredCredentials | null> {
-        signal?.throwIfAborted();
+    async function bindOperation(options?: Readonly<{ signal?: AbortSignal }>): Promise<PluginAccountSettingsRecordAccess> {
+        options?.signal?.throwIfAborted();
+        const lifetime = getActiveAccountSettingsSnapshotLifetimeToken();
+        const baseUrl = resolveBaseUrl();
         const credentials = await readCredentials();
-        signal?.throwIfAborted();
-        return credentials && isCurrentAccount(credentials) ? credentials : null;
-    }
+        options?.signal?.throwIfAborted();
 
-    function isStillCurrent(credentials: StoredCredentials, signal?: AbortSignal): boolean {
-        signal?.throwIfAborted();
-        return isCurrentAccount(credentials);
-    }
-
-    async function readRecord(
-        model: StablePluginSettingsModel,
-        options?: Readonly<{ signal?: AbortSignal }>,
-    ): Promise<PluginAccountSettingsRecordRead> {
-        const credentials = await currentCredentials(options?.signal);
-        if (!credentials) return unavailableRead();
-        try {
-            const response = await http.get(
-                `${resolveBaseUrl()}/v1/account/plugin-settings/${encodePluginId(model.identity.pluginId)}`,
-                requestConfig(credentials, options?.signal),
-            );
-            if (!isStillCurrent(credentials, options?.signal)) return unavailableRead();
-            if (response.status < 200 || response.status >= 300) return unavailableRead();
-            const modeResponse = await http.get(
-                `${resolveBaseUrl()}/v1/account/encryption`,
-                requestConfig(credentials, options?.signal),
-            );
-            if (!isStillCurrent(credentials, options?.signal)) return unavailableRead();
-            if (modeResponse.status < 200 || modeResponse.status >= 300) return unavailableRead();
-            const mode = AccountEncryptionModeResponseSchema.safeParse(modeResponse.data);
-            if (!mode.success) return unavailableRead();
-            return parseAccountRecordResponse(response.data, credentials, mode.data.mode);
-        } catch (error) {
-            options?.signal?.throwIfAborted();
-            void error;
-            return unavailableRead();
+        function isStillCurrent(signal?: AbortSignal): boolean {
+            signal?.throwIfAborted();
+            return credentials !== null
+                && lifetime === getActiveAccountSettingsSnapshotLifetimeToken()
+                && baseUrl === resolveBaseUrl()
+                && isCurrentAccount(credentials);
         }
-    }
 
-    async function writeRecord(
-        model: StablePluginSettingsModel,
-        request: Readonly<{
-            expectedRevision: number | 'absent';
-            values: Readonly<Record<string, JsonValue>>;
-        }>,
-        options?: Readonly<{ signal?: AbortSignal }>,
-    ): Promise<PluginAccountSettingsRecordWriteResult> {
-        const credentials = await currentCredentials(options?.signal);
-        if (!credentials) return unavailableWrite();
-        let values: ReturnType<typeof PluginAccountSettingsValuesV1Schema.parse>;
-        try {
-            values = PluginAccountSettingsValuesV1Schema.parse({ v: 1, values: request.values });
-        } catch {
-            throw accountSettingsRecordError('Account plugin settings values exceed their canonical record bounds');
+        async function readRecord(
+            model: StablePluginSettingsModel,
+            options?: Readonly<{ signal?: AbortSignal }>,
+        ): Promise<PluginAccountSettingsRecordRead> {
+            if (!credentials || !isStillCurrent(options?.signal)) return unavailableRead();
+            try {
+                const response = await http.get(
+                    `${baseUrl}/v1/account/plugin-settings/${encodePluginId(model.identity.pluginId)}`,
+                    requestConfig(credentials, options?.signal),
+                );
+                if (!isStillCurrent(options?.signal)) return unavailableRead();
+                if (response.status < 200 || response.status >= 300) return unavailableRead();
+                const mode = await readAccountEncryptionModeOnce({
+                    request: async () => await http.get(
+                        `${baseUrl}/v1/account/encryption`,
+                        requestConfig(credentials, options?.signal),
+                    ),
+                });
+                if (!isStillCurrent(options?.signal)) return unavailableRead();
+                if (mode.kind !== 'resolved') return unavailableRead();
+                return parseAccountRecordResponse(response.data, credentials, mode.mode);
+            } catch (error) {
+                options?.signal?.throwIfAborted();
+                void error;
+                return unavailableRead();
+            }
         }
-        let issued = false;
-        try {
-            const modeResponse = await http.get(
-                `${resolveBaseUrl()}/v1/account/encryption`,
-                requestConfig(credentials, options?.signal),
-            );
-            if (!isStillCurrent(credentials, options?.signal)) return unavailableWrite();
-            if (modeResponse.status < 200 || modeResponse.status >= 300) return unavailableWrite();
-            const mode = AccountEncryptionModeResponseSchema.safeParse(modeResponse.data);
-            if (!mode.success) return unavailableWrite();
-            const content = mode.data.mode === 'plain'
-                ? { t: 'plain' as const, v: values }
-                : {
-                    t: 'encrypted' as const,
-                    c: sealAccountScopedBlobCiphertext({
-                        kind: PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
-                        material: resolveMaterial(requireAccountSettingsEncryptionCredentials(credentials)),
-                        payload: values,
-                        randomBytes,
-                    }),
-                };
-            issued = true;
-            const response = await http.post(
-                `${resolveBaseUrl()}/v1/account/plugin-settings/${encodePluginId(model.identity.pluginId)}`,
-                { expectedRevision: request.expectedRevision, content },
-                requestConfig(credentials, options?.signal),
-            );
-            if (
-                response.status === 503
-                && PluginAccountSettingsStorageUnavailableV1Schema.safeParse(response.data).success
-            ) {
+
+        async function writeRecord(
+            model: StablePluginSettingsModel,
+            request: Readonly<{
+                expectedRevision: number | 'absent';
+                values: Readonly<Record<string, JsonValue>>;
+            }>,
+            options?: Readonly<{ signal?: AbortSignal }>,
+        ): Promise<PluginAccountSettingsRecordWriteResult> {
+            if (!credentials || !isStillCurrent(options?.signal)) return unavailableWrite();
+            let values: ReturnType<typeof PluginAccountSettingsValuesV1Schema.parse>;
+            try {
+                values = PluginAccountSettingsValuesV1Schema.parse({ v: 1, values: request.values });
+            } catch {
+                throw accountSettingsRecordError('Account plugin settings values exceed their canonical record bounds');
+            }
+            let issued = false;
+            try {
+                const mode = await readAccountEncryptionModeOnce({
+                    request: async () => await http.get(
+                        `${baseUrl}/v1/account/encryption`,
+                        requestConfig(credentials, options?.signal),
+                    ),
+                });
+                if (!isStillCurrent(options?.signal)) return unavailableWrite();
+                if (mode.kind !== 'resolved') return unavailableWrite();
+                const content = mode.mode === 'plain'
+                    ? { t: 'plain' as const, v: values }
+                    : {
+                        t: 'encrypted' as const,
+                        c: sealAccountScopedBlobCiphertext({
+                            kind: PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
+                            material: resolveMaterial(requireAccountSettingsEncryptionCredentials(credentials)),
+                            payload: values,
+                            randomBytes,
+                        }),
+                    };
+                issued = true;
+                const response = await http.post(
+                    `${baseUrl}/v1/account/plugin-settings/${encodePluginId(model.identity.pluginId)}`,
+                    { expectedRevision: request.expectedRevision, content },
+                    requestConfig(credentials, options?.signal),
+                );
+                if (
+                    response.status === 503
+                    && PluginAccountSettingsStorageUnavailableV1Schema.safeParse(response.data).success
+                ) {
+                    return unavailableWrite();
+                }
+                if (response.status < 200 || response.status >= 300) return outcomeUnknownWrite();
+                const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(response.data);
+                if (parsed.success) return parsed.data;
+                return outcomeUnknownWrite();
+            } catch (error) {
+                if (isPluginError(error)) throw error;
+                if (issued) return outcomeUnknownWrite();
+                options?.signal?.throwIfAborted();
                 return unavailableWrite();
             }
-            if (response.status < 200 || response.status >= 300) return outcomeUnknownWrite();
-            const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(response.data);
-            if (parsed.success) return parsed.data;
-            return outcomeUnknownWrite();
-        } catch (error) {
-            if (isPluginError(error)) throw error;
-            if (issued) return outcomeUnknownWrite();
-            options?.signal?.throwIfAborted();
-            return unavailableWrite();
         }
+
+        return Object.freeze({ readRecord, writeRecord });
     }
 
     return Object.freeze({
         isAvailable() {
             return getActiveAccountSettingsSnapshot() !== null;
         },
-        readRecord,
-        writeRecord,
+        bindOperation,
         watchRecord(model: StablePluginSettingsModel, listener: (hint: Readonly<{ revision?: number }>) => void) {
             return subscribeChanges((hint) => {
                 if (hint.kind === 'full') {

@@ -10,6 +10,12 @@ import { hasFlag, readCommandPositionals, readFlagValue, readRawFlagValue } from
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
 import { ExternalActionRequestIdV1Schema, getActionContextualDefaults, type ActionId } from '@happier-dev/protocol';
 import { ensureCliActionPolicySettings } from '@/session/actions/ensureCliActionPolicySettings';
+import { configuration } from '@/configuration';
+import {
+  resolveServerHttpBaseUrl,
+  runWithServerHttpBaseUrl,
+} from '@/api/client/serverHttpBaseUrl';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type CliActionExecutorLike = Pick<ReturnType<typeof createCliActionExecutor>, 'execute'>;
 type CliActionExecutorParams = Parameters<typeof createCliActionExecutor>[0];
@@ -89,6 +95,11 @@ export async function cmdSessionActionsExecute(
     process.exit(1);
   }
 
+  // Pin identity and transport together for the complete command. Session
+  // selectors and current-access projection negotiation must never drift to a
+  // subsequently selected ambient Home while this invocation is in flight.
+  const serverId = configuration.activeServerId;
+  const serverHttpBaseUrl = resolveServerHttpBaseUrl();
   const usesApiToken = credentials.credentialProvenance === 'api_token';
   let sessionId: string;
   let executor: CliActionExecutorLike;
@@ -96,7 +107,11 @@ export async function cmdSessionActionsExecute(
     // A PAT intentionally carries no Account E2EE material. Resolve only the
     // selector through the public Action transport, then let the daemon that
     // owns the Session execute the requested Action through that same adapter.
-    const patExecutor = createCliActionExecutorFromCredentials({ credentials });
+    const patExecutor = createCliActionExecutorFromCredentials({
+      credentials,
+      serverId,
+      serverApiUrl: serverHttpBaseUrl,
+    });
     const sessionTarget = await patExecutor.resolveSessionTarget(idOrPrefix);
     if (!sessionTarget.ok) {
       if (json) {
@@ -112,9 +127,23 @@ export async function cmdSessionActionsExecute(
     sessionId = sessionTarget.sessionId;
     executor = patExecutor;
   } else {
-    await ensureCliActionPolicySettings(credentials);
+    await runWithServerHttpBaseUrl(
+      serverHttpBaseUrl,
+      async () => await ensureCliActionPolicySettings(credentials),
+    );
 
-    const sessionTarget = await resolveSessionTransportContext({ credentials, idOrPrefix });
+    const serverFeaturesSnapshot = await fetchServerFeaturesSnapshot({
+      serverUrl: serverHttpBaseUrl,
+      token: credentials.token,
+    });
+    const sessionTarget = await runWithServerHttpBaseUrl(
+      serverHttpBaseUrl,
+      async () => await resolveSessionTransportContext({
+        credentials,
+        idOrPrefix,
+        serverFeaturesSnapshot,
+      }),
+    );
     if (!sessionTarget.ok) {
       if (json) {
         await printJsonEnvelope({
@@ -131,6 +160,8 @@ export async function cmdSessionActionsExecute(
       ? {
           token: credentials.token,
           credentials,
+          serverId,
+          serverHttpBaseUrl,
           sessionId,
           ctx: null,
           mode: 'plain',
@@ -139,6 +170,8 @@ export async function cmdSessionActionsExecute(
       : {
           token: credentials.token,
           credentials,
+          serverId,
+          serverHttpBaseUrl,
           sessionId,
           ctx: sessionTarget.ctx,
           mode: 'e2ee',
@@ -157,6 +190,7 @@ export async function cmdSessionActionsExecute(
     {
       defaultSessionId: sessionId,
       surface: 'cli',
+      authority: 'present_user',
       ...(effectiveActionRequestId ? { actionRequestId: effectiveActionRequestId } : {}),
       ...(resumeActionRequest ? { resumeActionRequest: true } : {}),
     },

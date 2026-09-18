@@ -137,7 +137,7 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
   execute(
     actionId: string,
     input: PluginWebhookActionInputV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{ signal?: AbortSignal; beforeHandlerInvocation: () => Promise<void> }>,
   ): Promise<PluginWebhookActionResultV1>;
   /** Test override; production uses the bounded V1 policy above. */
   handlerDeadlineMs?: number;
@@ -160,31 +160,18 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
       ...(params.signal ? { signal: params.signal } : {}),
     });
   }
-  let renewed: Awaited<ReturnType<PluginWebhookDeliveryWorkerTransportV1['renew']>>;
-  try {
-    renewed = await params.transport.renew({
-      deliveryId: params.claim.deliveryId,
-      target,
-      lease: { leaseId: params.claim.lease.leaseId, revision: params.claim.lease.revision },
-      transition: 'executionStarted',
-      ...(params.signal ? { signal: params.signal } : {}),
-    });
-  } catch {
-    if (params.signal?.aborted) return daemonStopped();
-    return { kind: 'unavailable', code: 'delivery_lease_unavailable' };
-  }
-  if (params.signal?.aborted) return daemonStopped();
-  if (renewed.kind !== 'renewed') return renewed;
   let lease = {
     leaseId: params.claim.lease.leaseId,
-    revision: renewed.revision,
-    expiresAtMs: renewed.expiresAtMs,
+    revision: params.claim.lease.revision,
+    expiresAtMs: params.claim.lease.expiresAtMs,
   };
+  let executionStarted = false;
   let stopRenewing = false;
   const renewalWindow: { wake: (() => void) | null } = { wake: null };
   let custodyFailure: Readonly<{ kind: 'leaseLost' | 'unavailable'; code?: string }> | null = null;
   const executionController = new AbortController();
-  const renewalLoop = (async () => {
+  let renewalLoop: Promise<void> | null = null;
+  const renewWhileExecuting = async () => {
     while (!stopRenewing) {
       const delayMs = Math.max(1, Math.floor((lease.expiresAtMs - Date.now()) / 2));
       await new Promise<void>((resolve) => {
@@ -225,29 +212,54 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
       }
       lease = { ...lease, revision: next.revision, expiresAtMs: next.expiresAtMs };
     }
-  })();
-  const handlerDeadlineMs = resolveHandlerDeadlineMsV1({
-    configuredMs: params.handlerDeadlineMs,
-    leaseExpiresAtMs: lease.expiresAtMs,
-    nowMs: Date.now(),
-  });
-  if (handlerDeadlineMs === null) {
-    stopRenewing = true;
-    renewalWindow.wake?.();
-    await renewalLoop;
-    return { kind: 'leaseLost' };
-  }
+  };
   const handlerDeadlineController = new AbortController();
   let handlerTimedOut = false;
-  const handlerDeadlineTimer = setTimeout(() => {
-    handlerTimedOut = true;
-    handlerDeadlineController.abort(new Error('plugin_webhook_handler_timeout'));
-  }, handlerDeadlineMs);
+  let handlerDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const handlerSignal = AbortSignal.any([
     executionController.signal,
     handlerDeadlineController.signal,
     ...(params.signal ? [params.signal] : []),
   ]);
+  const beforeHandlerInvocation = async (): Promise<void> => {
+    handlerSignal.throwIfAborted();
+    let renewed: Awaited<ReturnType<PluginWebhookDeliveryWorkerTransportV1['renew']>>;
+    try {
+      renewed = await params.transport.renew({
+        deliveryId: params.claim.deliveryId,
+        target,
+        lease: { leaseId: lease.leaseId, revision: lease.revision },
+        transition: 'executionStarted',
+        signal: handlerSignal,
+      });
+    } catch {
+      custodyFailure = params.signal?.aborted
+        ? daemonStopped()
+        : { kind: 'unavailable', code: 'delivery_lease_unavailable' };
+      throw new Error('plugin_webhook_execution_admission_unavailable');
+    }
+    if (renewed.kind !== 'renewed') {
+      custodyFailure = renewed;
+      throw new Error('plugin_webhook_execution_admission_refused');
+    }
+    lease = { ...lease, revision: renewed.revision, expiresAtMs: renewed.expiresAtMs };
+    executionStarted = true;
+    handlerSignal.throwIfAborted();
+    const handlerDeadlineMs = resolveHandlerDeadlineMsV1({
+      configuredMs: params.handlerDeadlineMs,
+      leaseExpiresAtMs: lease.expiresAtMs,
+      nowMs: Date.now(),
+    });
+    if (handlerDeadlineMs === null) {
+      custodyFailure = { kind: 'leaseLost' };
+      throw new Error('plugin_webhook_execution_lease_expired');
+    }
+    handlerDeadlineTimer = setTimeout(() => {
+      handlerTimedOut = true;
+      handlerDeadlineController.abort(new Error('plugin_webhook_handler_timeout'));
+    }, handlerDeadlineMs);
+    renewalLoop = renewWhileExecuting();
+  };
   let result: PluginWebhookActionResultV1;
   let automationAdmissionUnresolved: PluginWebhookAutomationAdmissionUnresolvedV1 | null = null;
   /**
@@ -264,13 +276,13 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
         endpoint: params.claim.endpoint,
         target,
       },
-      readLease: () => custodyFailure ? null : { leaseId: lease.leaseId, revision: lease.revision },
+      readLease: () => custodyFailure || !executionStarted ? null : { leaseId: lease.leaseId, revision: lease.revision },
       signal: handlerSignal,
     }, async () => {
       const actionResult = PluginWebhookActionResultV1Schema.parse(await params.execute(
         `${params.claim.endpoint.webhookContribution.pluginId}/${params.claim.endpoint.handlerActionLocalId}`,
         input,
-        { signal: handlerSignal },
+        { signal: handlerSignal, beforeHandlerInvocation },
       ));
       return {
         result: actionResult,
@@ -289,6 +301,9 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
     await renewalLoop;
   }
   if (params.signal?.aborted) return daemonStopped();
+  // Pre-effect unavailability is not a handler retry. Leave the unstarted
+  // claim with the server's existing lease-expiry/offline recovery owner.
+  if (!executionStarted) return custodyFailure ?? { kind: 'unavailable', code: 'handler_unavailable' };
   if (handlerTimedOut) {
     result = { kind: 'retry', code: 'handler_timeout' };
     automationAdmissionUnresolved = null;

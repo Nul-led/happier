@@ -85,10 +85,18 @@ export function resolveRuntimeAuthRecoveryResultDisposition(input: Readonly<{
     const additionalCandidates = input.additionalWaitCandidatesMs ?? [];
 
     if (switchResult.status === 'no_eligible_member' && switchResult.groupExhausted === true) {
+        const transientAlternative = Array.isArray(switchResult.excluded)
+            && switchResult.excluded.some((entry) => isRecord(entry) && entry.reason === 'credential_unavailable');
         const switchEvidenceCandidate = resolveEarliestFutureWaitCandidateMs([
             readNonNegativeNumber(switchResult.retryAtMs),
             readNonNegativeNumber(switchResult.resetsAtMs),
             ...readExcludedMemberRetryAtMsCandidates(switchResult),
+            // Retryable alternatives use the scheduler's bounded backoff, not the exhausted
+            // account's weekly reset or a second retry owner.
+            transientAlternative ? input.nowMs + Math.max(
+                GROUP_EXHAUSTED_WAIT_FLOOR_MS,
+                readNonNegativeNumber(input.unknownNoEligibleMemberBackoffMs) ?? 0,
+            ) : null,
         ], input.nowMs);
         const fallbackCandidate = resolveEarliestFutureWaitCandidateMs([
             input.classificationResetsAtMs,

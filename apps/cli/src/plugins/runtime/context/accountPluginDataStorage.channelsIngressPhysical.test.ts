@@ -62,6 +62,7 @@ function e2eeCurrentness() {
             snapshot.contentPublicKeyFingerprint,
         ),
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'available' as const },
     };
 }
 
@@ -433,6 +434,7 @@ describe('Channels C3 physical E2EE ingress batches', () => {
                     id: 'channel-poller',
                     qualifiedId: 'happier.channel.telegram/background/channel-poller',
                 },
+                immutableGenerationId: 'telegram-generation-1',
                 materialization: {
                     machineId: 'machine-1',
                     materializationId: 'telegram-install-1',

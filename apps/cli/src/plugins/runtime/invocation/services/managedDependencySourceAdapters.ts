@@ -9,6 +9,7 @@ import { PluginError } from '@happier-dev/plugin-sdk';
 import type { RuntimeInstallableAdapter } from '@/packagedRuntime/installables/registry';
 import type { InstallableDependencyDescriptor } from '@happier-dev/protocol/installables';
 import { getManagedPypiWheelAssetRuntimeInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/pypiWheelAsset';
+import { getPinnedArchiveRuntimeInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/pinnedArchive';
 import type {
     ManagedDependencySourceModelDependency,
     ManagedDependencySourceModelEntry,
@@ -57,6 +58,16 @@ function managedPypiWheelAssetPlatformKey(
     return `${platformName}-${architecture}`;
 }
 
+function pinnedArchivePlatformKey(platform: NodeJS.Platform, architecture: string): string {
+    if (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32') {
+        return fail('plugin_managed_dependency_platform_unsupported', 'Pinned archive platform is unsupported');
+    }
+    if (architecture !== 'arm64' && architecture !== 'x64') {
+        return fail('plugin_managed_dependency_architecture_unsupported', 'Pinned archive architecture is unsupported');
+    }
+    return `${platform}-${architecture}`;
+}
+
 export async function createProductionManagedDependencySourceAdapter(input: Readonly<{
     dependency: ManagedDependencySourceModelDependency;
     source: ManagedDependencySourceModelEntry;
@@ -65,6 +76,44 @@ export async function createProductionManagedDependencySourceAdapter(input: Read
     platform?: NodeJS.Platform;
     architecture?: string;
 }>): Promise<RuntimeInstallableAdapter> {
+    if (input.source.kind === 'pinnedArchive' && input.source.declaration.kind === 'pinnedArchive') {
+        const source = input.source.declaration;
+        const platform = input.platform ?? process.platform;
+        const architecture = input.architecture ?? process.arch;
+        const platformKey = pinnedArchivePlatformKey(platform, architecture);
+        const asset = source.assetsByPlatform[platformKey as keyof typeof source.assetsByPlatform];
+        if (!asset) {
+            return fail(
+                'plugin_managed_dependency_architecture_unsupported',
+                'Pinned archive does not declare this platform and architecture',
+            );
+        }
+        const descriptor = input.sourceInstallable;
+        const expectedSource = Object.freeze({
+            kind: 'pinned_archive' as const,
+            version: source.version,
+            assetsByPlatform: source.assetsByPlatform,
+        });
+        if (
+            !descriptor
+            || descriptor.id !== source.installId
+            || descriptor.key !== source.installId
+            || descriptor.capabilityId !== source.installId
+            || descriptor.binary.commands.length !== 1
+            || descriptor.binary.commands[0] !== input.dependency.definition.executable
+            || !isDeepStrictEqual(descriptor.source, expectedSource)
+        ) {
+            return fail(
+                'plugin_managed_dependency_source_invalid',
+                'Pinned archive source acquisition is unavailable',
+            );
+        }
+        return getPinnedArchiveRuntimeInstallableAdapter(descriptor, { platform, architecture })
+            ?? fail(
+                'plugin_managed_dependency_source_invalid',
+                'Pinned archive descriptor could not be adapted',
+            );
+    }
     if (
         input.source.kind === 'managedPypiWheelAsset'
         && input.source.declaration.kind === 'managedPypiWheelAsset'

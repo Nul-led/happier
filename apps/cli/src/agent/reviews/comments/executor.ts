@@ -6,6 +6,10 @@ import tweetnacl from 'tweetnacl';
 import {
     createReviewCommentPrincipalSigningInputV1,
     buildReviewCommentMutationEventEnvelopeV1,
+    buildReviewCommentPublicationTransportRequestV1,
+    openReviewCommentPublicationTransportResponseV1,
+    type ReviewCommentPublicationCryptoContextV1,
+    type ReviewCommentClaimPublicationDispatchRequestV1,
     decodeBase64,
     REVIEW_COMMENT_PRINCIPAL_HEADER_V1,
     ReviewCommentActionIdV1Schema,
@@ -20,7 +24,6 @@ import {
     type ReviewCommentPrincipalProofV1,
     type AccountScopedCryptoMaterial,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
-    validateReviewCommentPublicationClaimAgainstPlanV1,
 } from '@happier-dev/protocol';
 
 import { createHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
@@ -355,6 +358,21 @@ export function createCliReviewCommentActionExecutorFromCredentials(
         const parsedActionId = ReviewCommentActionIdV1Schema.parse(actionId);
         const parsedInput = asRecord(ReviewCommentActionInputSchemasV1[parsedActionId].parse(input));
         let requestInput = parsedInput;
+        let publicationContext: ReviewCommentPublicationCryptoContextV1 | null = null;
+        if (parsedActionId === 'reviews.comments.claimPublicationDispatch') {
+            const mode = await (params.resolveAccountEncryptionMode
+                ? params.resolveAccountEncryptionMode() : accountModeApi!.getAccountEncryptionMode());
+            if (mode === 'unknown') throw new Error('review_comment_encryption_mode_unavailable');
+            publicationContext = {
+                accountId: (params.resolveAccountId ?? resolveAccountIdFromToken)(params.credentials.token),
+                mode, material: mode === 'plain' ? null : resolveAccountScopedMaterial(params.credentials),
+            };
+            requestInput = asRecord(buildReviewCommentPublicationTransportRequestV1({
+                input: parsedInput as ReviewCommentClaimPublicationDispatchRequestV1,
+                context: publicationContext,
+                randomBytes: params.randomBytes ?? ((length) => nodeRandomBytes(length)),
+            }));
+        }
         if (isReviewCommentMutationAction(parsedActionId)) {
             const accountId = (params.resolveAccountId ?? resolveAccountIdFromToken)(params.credentials.token);
             const mode = await (params.resolveAccountEncryptionMode
@@ -409,13 +427,10 @@ export function createCliReviewCommentActionExecutorFromCredentials(
             ...(principalHeader ? { principalHeader } : {}),
             ...(options?.signal ? { signal: options.signal } : {}),
         });
-        const parsedOutput = ReviewCommentActionOutputSchemasV1[parsedActionId].parse(output);
-        return parsedActionId === 'reviews.comments.claimPublicationDispatch'
-            ? validateReviewCommentPublicationClaimAgainstPlanV1(
-                parsedInput as ReviewCommentPublicationPlanV1,
-                parsedOutput,
-            )
-            : parsedOutput;
+        if (publicationContext) return openReviewCommentPublicationTransportResponseV1({
+            plan: parsedInput as ReviewCommentPublicationPlanV1, context: publicationContext, response: output,
+        });
+        return ReviewCommentActionOutputSchemasV1[parsedActionId].parse(output);
     };
 }
 

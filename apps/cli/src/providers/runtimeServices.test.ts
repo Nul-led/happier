@@ -36,7 +36,7 @@ const providersEnabledFeatureGate = Object.freeze({
   isEnabled: (_featureId: 'providers') => true,
 });
 
-function createMachineServices(): MachineProviderRpcServices {
+function createMachineServices(): RuntimeProviderOperationsProducer['machineServices'] {
   return {
     probe: vi.fn(async () => ({
       status: 'success' as const,
@@ -84,6 +84,15 @@ function createMachineServices(): MachineProviderRpcServices {
       agentTargetKey: request.agentTargetKey,
       groups: [],
     })),
+    resolveTeamCredentialRequestPolicySupport: vi.fn(async () => ({
+      status: 'unavailable' as const,
+      reason: 'model_unavailable' as const,
+    })),
+    resolveTeamCredentialResourceTestCandidate: vi.fn(async () => ({
+      status: 'unavailable' as const,
+      reason: 'model_unavailable' as const,
+    })),
+    resolveTeamCredentialBrokerSourceSelection: vi.fn(async () => null),
     mutateModelSettings: vi.fn(async (request) => ({
       status: 'success' as const,
       action: request.action,

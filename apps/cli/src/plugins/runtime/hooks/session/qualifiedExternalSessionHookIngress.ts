@@ -15,6 +15,7 @@ import type {
 import {
     agentRoutingIdAddressesContributionIdentityV1,
     buildLinkedExternalSessionQualifiedIdentityV1,
+    readNonBlankOpaqueIdentifier,
     type ExternalAgentObservationLeafFactV1,
     type ExternalAgentObservationTargetV1,
     type LinkedExternalSessionQualifiedIdentityV1,
@@ -201,6 +202,23 @@ function normalizedId(value: string): string | null {
         : null;
 }
 
+/**
+ * The Agent minted the remote session id and is its only reader, so the host
+ * keeps the exact bytes the leaf resolved and only decides presence. The
+ * released `maxIdCodeUnits` ceiling therefore measures what is actually kept,
+ * not a trimmed projection of it.
+ *
+ * Happier-minted ids above (machine, agent, plugin, variant, event, generation)
+ * stay on `normalizedId`: those Happier canonicalizes.
+ */
+function boundedOpaqueRemoteSessionId(value: unknown): string | null {
+    const opaque = readNonBlankOpaqueIdentifier(value);
+    return opaque !== null
+        && opaque.length <= AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxIdCodeUnits
+        ? opaque
+        : null;
+}
+
 function principalScopeKey(input: Readonly<{
     installationIdentity: string;
     machineId: string;
@@ -337,12 +355,12 @@ function parseResolvedIdentity(value: unknown): Readonly<{
 }> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
+    const remoteSessionId = boundedOpaqueRemoteSessionId(record.remoteSessionId);
     if (
         Object.keys(record).some(
             (key) => !['source', 'remoteSessionId', 'linkData'].includes(key),
         )
-        || typeof record.remoteSessionId !== 'string'
-        || !normalizedId(record.remoteSessionId)
+        || remoteSessionId === null
     ) {
         return null;
     }
@@ -359,7 +377,7 @@ function parseResolvedIdentity(value: unknown): Readonly<{
     }
     return {
         source,
-        remoteSessionId: record.remoteSessionId.trim(),
+        remoteSessionId,
         linkData: Object.freeze({
             ...(linkData.data as Record<string, unknown>),
         }) as AgentExternalSessionLinkData,

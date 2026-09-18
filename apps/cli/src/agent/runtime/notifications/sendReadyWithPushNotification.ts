@@ -17,8 +17,11 @@ type PushSender = LiveActivityRemoteSenderCandidate & {
 type ReadyTranscriptSession = Pick<SessionClientPort, 'sessionId'>
   & Required<Pick<SessionClientPort, 'enqueueSessionEventCommitted'>>
 
-export async function enqueueReadySessionEventCommitted(session: ReadyTranscriptSession): Promise<void> {
-  const admission = await session.enqueueSessionEventCommitted({ type: 'ready' })
+export async function enqueueReadySessionEventCommitted(
+  session: ReadyTranscriptSession,
+  ownerActivityDelivery: 'rich_sender' | 'home_required' = 'home_required',
+): Promise<void> {
+  const admission = await session.enqueueSessionEventCommitted({ type: 'ready', ownerActivityDelivery })
   if (!admission.persisted) {
     throw Object.assign(
       new Error('Ready event was not admitted to durable transcript custody'),
@@ -60,7 +63,12 @@ export async function sendReadyWithPushNotification(opts: {
   loggerDebug?: (message: string, error: unknown) => void
   shouldSendPush?: () => boolean
 }): Promise<void> {
-  await enqueueReadySessionEventCommitted(opts.session)
+  const hasRichAlertSender = typeof opts.pushSender?.sendToAllDevicesAsync === 'function'
+    || typeof opts.pushSender?.sendToAllDevices === 'function'
+  await enqueueReadySessionEventCommitted(
+    opts.session,
+    hasRichAlertSender ? 'rich_sender' : 'home_required',
+  )
 
   try {
     const currentSettingsContext = resolveReadyNotificationSettingsContext({

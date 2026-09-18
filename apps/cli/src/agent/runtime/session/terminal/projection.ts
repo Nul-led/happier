@@ -13,7 +13,7 @@ import type {
     HostTerminalProviderSessionProjection,
     HostTerminalSubagentProjection,
 } from './contract';
-import type { SubagentStatusV1 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, type SubagentStatusV1 } from '@happier-dev/protocol';
 
 type TerminalProjectionSession = Readonly<{
     sessionId: string;
@@ -84,7 +84,9 @@ async function publishProviderSessionId(
     session: TerminalProjectionSession,
     projection: HostTerminalProviderSessionProjection,
 ): Promise<boolean> {
-    const providerSessionId = normalizeText(projection.providerSessionId);
+    // The Agent minted this id; Happier stores it and hands it straight back.
+    // Presence is the only judgement made here -- the bytes are identity.
+    const providerSessionId = readNonBlankOpaqueIdentifier(projection.providerSessionId);
     const metadataKey = normalizeText(projection.metadataKey);
     if (!providerSessionId || !metadataKey) {
         return false;

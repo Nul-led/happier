@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     createSessionSyncPendingInputServerContractController,
+    resolveMachineSessionInputAdmissionCapability,
     resolveSessionServerCapabilities,
 } from './sessionSyncPendingInputServerContract';
 
@@ -39,6 +40,33 @@ function createSocket() {
 }
 
 describe('Session server capability detection', () => {
+    it('publishes target Machine admission only for a cached Pending V3 server', () => {
+        expect(resolveMachineSessionInputAdmissionCapability(undefined)).toEqual({ protocolVersions: [1] });
+        expect(resolveMachineSessionInputAdmissionCapability({
+            status: 'error',
+            reason: 'network',
+        } as never)).toEqual({ protocolVersions: [1] });
+        expect(resolveMachineSessionInputAdmissionCapability({
+            status: 'ready',
+            features: currentFeatures({ pendingInput: { protocolVersion: 2 } }),
+        } as never)).toEqual({ protocolVersions: [1] });
+        expect(resolveMachineSessionInputAdmissionCapability({
+            status: 'ready',
+            features: currentFeatures({ pendingInput: { protocolVersion: 3 } }),
+        } as never)).toEqual({ protocolVersions: [1, 2] });
+        expect(resolveMachineSessionInputAdmissionCapability({
+            status: 'ready',
+            features: currentFeatures({ pendingInput: { protocolVersion: 4 } }),
+        } as never)).toEqual({ protocolVersions: [1, 2] });
+    });
+    it('retains the target-aware Pending epoch separately from main support', () => {
+        expect(resolveSessionServerCapabilities(currentFeatures({
+            pendingInput: { protocolVersion: 3 },
+        }))).toMatchObject({ pendingInput: 'v1', pendingInputProtocolVersion: 3 });
+        expect(resolveSessionServerCapabilities(currentFeatures({
+            pendingInput: { protocolVersion: 2 },
+        }))).toMatchObject({ pendingInput: 'v1', pendingInputProtocolVersion: 2 });
+    });
     it('detects Runtime Activity, Pending Input, and publisher authority independently', () => {
         expect(resolveSessionServerCapabilities(currentFeatures({
             runtimeActivity: { protocolVersion: 2 },
@@ -53,6 +81,7 @@ describe('Session server capability detection', () => {
         }))).toEqual({
             runtimeActivity: 'unsupported',
             pendingInput: 'v1',
+            pendingInputProtocolVersion: 1,
             publisherAuthority: 'v1',
         });
     });
@@ -84,6 +113,7 @@ describe('Session server capability detection', () => {
             machineId: 'machine',
         })).resolves.toEqual({
             mode: 'session_sync_v3_publisher_authority_check_v1',
+            pendingInputProtocolVersion: 1,
             runtimeActivity: 'v2',
             pendingInput: 'v1',
             publisherAuthority: 'v1',

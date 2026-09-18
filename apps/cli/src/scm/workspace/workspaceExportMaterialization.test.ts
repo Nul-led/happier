@@ -33,6 +33,29 @@ const naming = {
 } as const;
 const registry = createScmBackendRegistry([]);
 describe('workspace export materialization custody', () => {
+    it('fails closed when an admitted empty target becomes non-empty immediately before replacement', async () => {
+        const fixture = await mkdtemp(join(tmpdir(), 'workspace-export-target-fence-'));
+        try {
+            const target = join(fixture, 'target');
+            await mkdir(target);
+            const admittedIdentity = await readWorkspaceSyncRootObjectIdentity(target);
+            await expect(beginWorkspaceTargetMaterialization({
+                targetPath: target,
+                backupDirectoryPrefix: '.backup',
+                targetFence: { state: 'empty', identity: admittedIdentity },
+            }, {
+                replaceTarget: async (from, to) => {
+                    await writeFile(join(target, 'intervening.txt'), 'external');
+                    await rename(from, to);
+                },
+            })).rejects.toMatchObject({ code: 'approval_stale' });
+            await expect(readFile(join(target, 'intervening.txt'), 'utf8')).resolves.toBe('external');
+            await expect(readdir(fixture)).resolves.toEqual(['target']);
+        } finally {
+            await rm(fixture, { recursive: true, force: true });
+        }
+    });
+
     it('rejects an old partial receipt without touching either pathname', async () => {
         const fixture = await mkdtemp(join(tmpdir(), 'workspace-export-custody-partial-receipt-'));
         try {
@@ -229,7 +252,7 @@ describe('workspace export materialization custody', () => {
             await materialization.custody.bindPromotedTarget();
 
             // A user, IDE or SCM replaces the promoted tree at the same pathname.
-            await rm(target, { recursive: true, force: true });
+            await rename(target, join(fixture, 'detached-promoted'));
             await mkdir(target);
             await writeFile(join(target, 'user.txt'), 'unrelated');
 
@@ -259,7 +282,7 @@ describe('workspace export materialization custody', () => {
 
             const backupName = (await readdir(fixture)).find((name) => name.startsWith('.backup.'))!;
             const backupPath = join(fixture, backupName);
-            await rm(backupPath, { recursive: true, force: true });
+            await rename(backupPath, join(fixture, 'detached-backup'));
             await mkdir(backupPath);
             await writeFile(join(backupPath, 'user.txt'), 'unrelated');
 
@@ -286,7 +309,7 @@ describe('workspace export materialization custody', () => {
             await writeFile(join(target, 'new.txt'), 'new');
             await materialization.custody.bindPromotedTarget();
 
-            await rm(target, { recursive: true, force: true });
+            await rename(target, join(fixture, 'detached-promoted'));
             await mkdir(target);
             await writeFile(join(target, 'user.txt'), 'unrelated');
 
@@ -317,7 +340,7 @@ describe('workspace export materialization custody', () => {
             await writeFile(join(target, 'new.txt'), 'new');
             await materialization.custody.bindPromotedTarget();
 
-            await rm(target, { recursive: true, force: true });
+            await rename(target, join(fixture, 'detached-promoted'));
             await mkdir(target);
             await writeFile(join(target, 'user.txt'), 'unrelated');
 
@@ -422,7 +445,7 @@ describe('workspace export materialization custody', () => {
             await writeFile(join(target, 'new.txt'), 'new');
             await materialization.custody.bindPromotedTarget();
 
-            await rm(target, { recursive: true, force: true });
+            await rename(target, join(fixture, 'detached-promoted'));
             await mkdir(target);
             await writeFile(join(target, 'user.txt'), 'unrelated');
 
@@ -458,6 +481,7 @@ describe('workspace export materialization custody', () => {
         try {
             const source = join(fixture, 'source');
             const target = join(fixture, 'target');
+            const receiptPath = join(fixture, 'materialization.json');
             await mkdir(source);
             await mkdir(target);
             await writeFile(join(source, 'new.txt'), 'new');
@@ -472,11 +496,15 @@ describe('workspace export materialization custody', () => {
                 blobProvider: built.blobProvider,
                 registry,
                 naming,
+                materializationReceiptPath: receiptPath,
             });
 
+            expect((await readdir(fixture)).some((name) => name.startsWith('.backup.'))).toBe(true);
+            await expect(access(receiptPath)).resolves.toBeUndefined();
             await materialized.custody.commit();
             await expect(readFile(join(target, 'new.txt'), 'utf8')).resolves.toBe('new');
             expect((await readdir(fixture)).some((name) => name.startsWith('.backup.'))).toBe(false);
+            await expect(access(receiptPath)).rejects.toMatchObject({ code: 'ENOENT' });
         } finally {
             await rm(fixture, { recursive: true, force: true });
         }

@@ -149,7 +149,8 @@ function runtimeModelIdReadbackCanProveTarget(
   ): unknown => target.providerBinding === null
     ? null
     : {
-        connectionId: target.providerBinding.connectionId,
+        source: target.providerBinding.source
+          ?? { kind: 'account_provider_connection', connectionId: target.providerBinding.connectionId },
         materialization: target.providerBinding.materialization,
       };
   const metadataBasis = (

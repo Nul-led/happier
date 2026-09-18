@@ -12,6 +12,22 @@ vi.mock('@/cli/output/jsonEnvelope', () => ({ writeJsonStdout: vi.fn(async () =>
 import { handleAuthPairRemote } from './auth/pairRemote';
 
 describe('auth pair-remote Home enrollment', () => {
+  it('does not resolve or create a remote executor when the command is already cancelled', async () => {
+    const caller = new AbortController();
+    caller.abort();
+    const resolveHomeTarget = vi.fn();
+    const createEnrollmentExecutor = vi.fn();
+
+    await expect(handleAuthPairRemote(
+      ['--ssh', 'user@host', '--json', '--no-post-check'],
+      caller.signal,
+      { resolveHomeTarget, createEnrollmentExecutor },
+    )).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(resolveHomeTarget).not.toHaveBeenCalled();
+    expect(createEnrollmentExecutor).not.toHaveBeenCalled();
+  });
+
   it('pairs an Iroh-only Home through one streaming command and returns no bearer', async () => {
     const target = resolveHomeTargetFromDescriptor({
       descriptor: {
@@ -48,7 +64,11 @@ describe('auth pair-remote Home enrollment', () => {
       },
     };
 
-    await handleAuthPairRemote(['--ssh', 'user@host', '--home-descriptor-file', '-', '--json', '--no-post-check'], {
+    const caller = new AbortController();
+    await handleAuthPairRemote(
+      ['--ssh', 'user@host', '--home-descriptor-file', '-', '--json', '--no-post-check'],
+      caller.signal,
+      {
       resolveHomeTarget: async () => target,
       parseHomeTargetArgs: async (args) => ({
         target: { kind: 'descriptor', descriptor: target.descriptor!, authority: 'trusted_enrollment' },
@@ -56,13 +76,61 @@ describe('auth pair-remote Home enrollment', () => {
         rest: args.filter((entry) => entry !== '--home-descriptor-file' && entry !== '-'),
       }),
       createEnrollmentExecutor: () => executor,
-    });
+      },
+    );
 
     expect(seen).toEqual([expect.objectContaining({
       args: ['auth', 'enroll-remote', '--json-lines', '--home-target-stdin'],
     })]);
     expect(seen[0]?.input).toContain('srv_pair_remote_iroh');
-    expect(approveTerminalAuthRequest).toHaveBeenCalledWith(expect.objectContaining({ target }));
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith(expect.objectContaining({ target, signal: caller.signal }));
     expect(JSON.stringify(seen)).not.toContain('access-token');
+  });
+
+  it('propagates caller cancellation into the canonical SSH enrollment executor', async () => {
+    const target = resolveHomeTargetFromDescriptor({
+      descriptor: {
+        v: 1,
+        homeServerIdentityId: 'srv_pair_remote_abort',
+        canonicalServerUrl: 'https://home.example.test',
+        revision: 1,
+        endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+      },
+      authority: 'trusted_enrollment',
+    });
+    const caller = new AbortController();
+    let executorSignal: AbortSignal | undefined;
+    const executor: HappierJsonExecutor = {
+      runHappierJson: async () => { throw new Error('split JSON command not allowed'); },
+      runHappierText: async (_args, options) => {
+        executorSignal = options?.signal;
+        return await new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+        });
+      },
+    };
+
+    const pending = handleAuthPairRemote(
+      ['--ssh', 'user@host', '--home-descriptor-file', '-', '--json', '--no-post-check'],
+      caller.signal,
+      {
+        resolveHomeTarget: async () => target,
+        parseHomeTargetArgs: async (args) => ({
+          target: { kind: 'descriptor', descriptor: target.descriptor!, authority: 'trusted_enrollment' },
+          source: '--home-descriptor-file',
+          rest: args.filter((entry) => entry !== '--home-descriptor-file' && entry !== '-'),
+        }),
+        createEnrollmentExecutor: ({ signal }) => {
+          executorSignal = signal;
+          return executor;
+        },
+      },
+    );
+    await vi.waitFor(() => expect(executorSignal).toBeDefined());
+
+    caller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(executorSignal?.aborted).toBe(true);
   });
 });

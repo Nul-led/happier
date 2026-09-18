@@ -8,6 +8,51 @@ const CLI_DIST_BUILD_MANIFEST = '.build-manifest.json';
 const CLI_DIST_BUILD_MANIFEST_TOOL_VERSION = '2';
 const DEFAULT_MAX_FILES = 5_000;
 
+function canStartRegularExpression(source, slashIndex) {
+  let index = slashIndex - 1;
+  while (index >= 0 && /\s/.test(source[index])) index -= 1;
+  if (index < 0) return true;
+
+  if ('=([{,:;!?&|+-*%^~<>'.includes(source[index])) return true;
+  if (!/[A-Za-z0-9_$]/.test(source[index])) return false;
+
+  const end = index + 1;
+  while (index >= 0 && /[A-Za-z0-9_$]/.test(source[index])) index -= 1;
+  const previousWord = source.slice(index + 1, end);
+  return /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord);
+}
+
+function readRegularExpressionEnd(source, slashIndex) {
+  if (!canStartRegularExpression(source, slashIndex)) return null;
+
+  let index = slashIndex + 1;
+  let inCharacterClass = false;
+  while (index < source.length) {
+    if (source[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (source[index] === '[') {
+      inCharacterClass = true;
+      index += 1;
+      continue;
+    }
+    if (source[index] === ']' && inCharacterClass) {
+      inCharacterClass = false;
+      index += 1;
+      continue;
+    }
+    if (source[index] === '/' && !inCharacterClass) {
+      index += 1;
+      while (index < source.length && /[A-Za-z]/.test(source[index])) index += 1;
+      return index;
+    }
+    if (source[index] === '\n' || source[index] === '\r') return null;
+    index += 1;
+  }
+  return null;
+}
+
 function computeStringCommentSpans(source) {
   const text = String(source ?? '');
   const spans = [];
@@ -32,6 +77,15 @@ function computeStringCommentSpans(source) {
       index = Math.min(index + 2, text.length);
       spans.push([start, index]);
       continue;
+    }
+
+    if (character === '/') {
+      const regularExpressionEnd = readRegularExpressionEnd(text, index);
+      if (regularExpressionEnd !== null) {
+        spans.push([index, regularExpressionEnd]);
+        index = regularExpressionEnd;
+        continue;
+      }
     }
 
     if (character === "'" || character === '"') {

@@ -2,6 +2,7 @@ import {
   resolveAgentIdFromSessionMetadata,
   type HandoffExportSessionMetadataV1,
 } from '@happier-dev/agents';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import type { LinkedExternalSessionAuthorityV1 } from '@happier-dev/protocol';
 
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -94,9 +95,13 @@ export async function resolveSessionHandoffEligibility(input: Readonly<{
   }
 
   const storageMode: SessionStorageMode = externalSessionLinkAuthority.transcriptStorage;
+  // The Agent minted this id and Happier hands it straight back to that Agent,
+  // so presence is all this owner decides: the accepted value keeps its exact
+  // bytes. The host-owned `sessionAgentId` and `sourceMachineId` above are
+  // Happier-minted and keep their own canonicalization.
   const vendorHandoffId = typeof input.sessionProviderSessionId === 'string'
-    ? input.sessionProviderSessionId.trim()
-    : externalSessionLink?.remoteSessionId.trim() ?? '';
+    ? readNonBlankOpaqueIdentifier(input.sessionProviderSessionId)
+    : readNonBlankOpaqueIdentifier(externalSessionLink?.remoteSessionId);
   if (!vendorHandoffId) {
     return {
       eligible: false,

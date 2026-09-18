@@ -3,23 +3,31 @@ import {
     AgentLaunchEnvironmentV1Schema,
     AgentRuntimeJsonValueV1Schema,
 } from '@happier-dev/protocol/runtime';
-import { PluginContributionIdentityV1Schema } from '@happier-dev/protocol';
+import {
+    HappierStructuredInputV1Schema,
+    PluginContributionIdentityV1Schema,
+    renderSessionInputContextPromptV1,
+    type AccountSettings,
+    type SessionMcpSelectionV1,
+} from '@happier-dev/protocol';
 import type {
     AgentExecutionRunEvent,
     AgentExecutionRunOpenRequest,
     AgentExecutionRunRuntime,
     AgentExecutionRunRuntimeFactory,
+    AgentExecutionRunRuntimeContextV1,
+    AgentExecutionRunHostServicesV1,
+    AgentSessionExecutionRunRuntimeFactoryV1,
     AgentLaunchEnvironment,
     AgentRuntime,
     AgentRuntimeContext,
-    AgentSessionHostServices,
     AgentSessionInput,
     AgentSessionOpenRequest,
     AgentSessionRuntime,
     AgentSessionRuntimeContext,
     AgentSessionRuntimeEvent,
 } from '@happier-dev/plugin-sdk/agents/runtime';
-import { PluginError, type PluginServices } from '@happier-dev/plugin-sdk';
+import type { PluginServices } from '@happier-dev/plugin-sdk';
 import type { WorkStateService } from '@happier-dev/plugin-sdk/sessions/work-state';
 import { createExecutionRunHostBackendFromSessionRuntime } from '@happier-dev/plugin-sdk/host/registration';
 
@@ -27,24 +35,100 @@ import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registry/engineRegistryTypes';
 import type { AgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
-import { createPluginInvocationPresentation } from '@/plugins/runtime/invocation/services/interactions';
+import {
+    createPluginInteractionsService,
+    createPluginInvocationPresentation,
+} from '@/plugins/runtime/invocation/services/interactions';
+import {
+    createNativeAgentCurrentExecutionRunUiServices,
+} from '@/agent/runtime/registry/engineRegistry/nativeAgentSessionInteractions';
+import { createExecutionRunPermissionHandler } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
+import {
+    buildExecutionRunPermissionRequestEnvelope,
+    resolveExecutionRunPermissionInteractionMode,
+} from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
+import {
+    createRunScopedExecutionPermissionHandler,
+    readRunScopedExecutionProviderRequestId,
+} from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
+import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
 import { resolveNativeAgentSessionStateSharingPolicy } from '@/agent/runtime/registry/engineRegistry/stateSharingPolicy';
 import { createPublicAcpRuntimeProtocols } from '@/agent/acp/runtime/publicSession/createPublicAcpRuntimeProtocols';
-import { createNativeAgentSessionInteractionOperations } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
+import {
+    createNativeAgentSessionInteractionOperations,
+    toNativeAgentUsageObservation,
+} from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
+import type { UsageObservation } from '@/usage/usageObservation';
+import {
+    normalizeHostProviderInputOutcome,
+    type SessionProviderInputOutcome,
+} from '@/agent/runtime/session/input/providerInputOutcome';
 
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
+import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
+import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
+import type { HostCurrentSessionUiServices } from '@/agent/runtime/state/currentSessionUiTypes';
+import { createNativeAgentExecutionRunHostServices } from '@/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners';
+import type { PluginRuntimeAuthoritySnapshotV1 } from '@/plugins/runtime/lifecycle/activation/runtimeAuthority';
+import { readRuntimeTurnFailureAlreadySurfacedEvent } from '@/agent/runtime/turns/runtimeTurnOperations';
+import { resolveStructuredInputProviderDispatchContext } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
+import { createExecutionRunCodedError } from './errors';
+import {
+    isWorkflowInteractionCapacityError,
+    WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+} from '@/agent/permissions/interactionPersistenceError';
 
-export type NativeAgentSessionContextLeaseFactory = (params: Readonly<{
-    services: PluginServices;
-    signal: AbortSignal;
-}>) => Promise<Readonly<{
+type NativeAgentRunUsagePublisher = Readonly<{
+    provider: string;
+    publish(input: Readonly<{
+        observedAt: number;
+        observation: UsageObservation;
+        turnId: string | null;
+        externalKey: string;
+    }>): void | Promise<void>;
+}>;
+
+type NativeAgentSessionContextLease = Readonly<{
     context: AgentSessionRuntimeContext;
-    dispose(): Promise<void>;
-}>> | Readonly<{
-    context: AgentSessionRuntimeContext;
+    mcpServers?: AgentSessionOpenRequest['mcpServers'];
+    usagePublisher?: NativeAgentRunUsagePublisher;
     dispose(): Promise<void>;
 }>;
+
+export type NativeAgentSessionContextLeaseFactory = ((params: Readonly<{
+    services: PluginServices;
+    signal: AbortSignal;
+    readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+}>) => Promise<NativeAgentSessionContextLease> | NativeAgentSessionContextLease) & Readonly<{
+    bindInvocationServices?: (params: Readonly<{
+        services: PluginServices;
+        signal: AbortSignal;
+        readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+    }>) => Promise<PluginServices>;
+    respondToPermissionRequest?: (requestId: string, approved: boolean) => boolean;
+    abortPendingPermissionRequests?: (reason: string) => Promise<void>;
+    onTurnTerminal?: (turnId: string) => Promise<void>;
+    resolveStructuredInputForDispatch?: (params: Readonly<{
+        input: AgentSessionInput;
+        localId: string;
+        signal: AbortSignal;
+    }>) => Promise<AgentSessionInput>;
+}>;
+
+type NativeAgentExecutionRunContextLease = Readonly<{
+    context: AgentExecutionRunRuntimeContextV1;
+    dispose(): Promise<void>;
+}>;
+
+export type NativeAgentExecutionRunContextLeaseFactory = ((params: Readonly<{
+    services: PluginServices;
+    signal: AbortSignal;
+    readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+}>) => Promise<NativeAgentExecutionRunContextLease> | NativeAgentExecutionRunContextLease) & Pick<
+    NativeAgentSessionContextLeaseFactory,
+    'bindInvocationServices' | 'respondToPermissionRequest' | 'abortPendingPermissionRequests' | 'onTurnTerminal' | 'resolveStructuredInputForDispatch'
+>;
 
 export type NativeAgentRuntimeLeaseIdentity = Readonly<{
     pluginId: string;
@@ -55,68 +139,6 @@ export type NativeAgentRuntimeLeaseIdentity = Readonly<{
 }>;
 
 const RUN_SESSION_PROJECTION_UNAVAILABLE_CODE = 'agent_run_session_projection_unavailable';
-
-function runSessionProjectionUnavailable(): never {
-    throw new PluginError({
-        code: RUN_SESSION_PROJECTION_UNAVAILABLE_CODE,
-        message: 'Detached Agent Runs do not have Happier Session projection custody',
-    });
-}
-
-function createRunScopedSessionHostServices(signal: AbortSignal): AgentSessionHostServices {
-    const disposable = Object.freeze({ dispose() {} });
-    const assertActive = (): void => signal.throwIfAborted();
-    return Object.freeze({
-        features: Object.freeze({ isEnabled: () => false }),
-        // These two publications remain provider-local. There is deliberately
-        // no Session projection target for a detached finite Run.
-        models: Object.freeze({ bind: () => disposable }),
-        activeInput: Object.freeze({
-            bind: () => disposable,
-            publishStatus: () => undefined,
-        }),
-        sessionHooks: Object.freeze({
-            async startServer() { assertActive(); return runSessionProjectionUnavailable(); },
-            async resolveForwarderAssets() { assertActive(); return runSessionProjectionUnavailable(); },
-            async createPluginDir() { assertActive(); return runSessionProjectionUnavailable(); },
-            async disposePluginDir() { return runSessionProjectionUnavailable(); },
-            async publishProviderTranscript() { assertActive(); return runSessionProjectionUnavailable(); },
-        }),
-        transcripts: Object.freeze({
-            fileFollow: Object.freeze({
-                async follow() { assertActive(); return runSessionProjectionUnavailable(); },
-            }),
-            async publishSessionEvent() { assertActive(); return runSessionProjectionUnavailable(); },
-            async markSourceFactConsumed() { assertActive(); return runSessionProjectionUnavailable(); },
-        }),
-        accountUsage: Object.freeze({
-            async resolveSourceContext() { assertActive(); return null; },
-            async recordSnapshot() {
-                assertActive();
-                return { status: 'unavailable' as const, reason: 'session_scope_unavailable' as const };
-            },
-            async adoptProvisionalRecord() {
-                assertActive();
-                return { status: 'unavailable' as const, reason: 'session_scope_unavailable' as const };
-            },
-        }),
-        mcp: Object.freeze({
-            async resolveServers() { assertActive(); return Object.freeze([]); },
-        }),
-        workflowActivity: Object.freeze({
-            async publishHeadlines() { assertActive(); return runSessionProjectionUnavailable(); },
-        }),
-        toolExecution: Object.freeze({
-            async before() {
-                assertActive();
-                return { status: 'failed' as const, code: RUN_SESSION_PROJECTION_UNAVAILABLE_CODE };
-            },
-        }),
-        subagents: Object.freeze({
-            async observe() { assertActive(); return runSessionProjectionUnavailable(); },
-        }),
-    });
-}
 
 function createRunScopedWorkStateService(signal: AbortSignal): WorkStateService {
     return Object.freeze({
@@ -136,46 +158,280 @@ function createRunScopedWorkStateService(signal: AbortSignal): WorkStateService 
 }
 
 /**
- * Supplies only the transient Session-shaped provider context needed to derive
- * a finite Run. It has no ApiSessionClient and therefore cannot create a
- * Happier Session, Pending row, transcript, or Session projection.
+ * Owns the detached Run's one truthful interaction/permission binding. The
+ * context carries execution-run scope and only scope-neutral host services; it
+ * has no ApiSessionClient and cannot create a Happier Session, Pending row,
+ * transcript, or Session projection.
  */
-export function createNativeAgentRunScopedSessionContextLeaseFactory(params: Readonly<{
+export function createNativeAgentExecutionRunContextLeaseFactory(params: Readonly<{
     lease: NativeAgentRuntimeLeaseIdentity;
     runId: string;
+    controllerOccurrenceId: string;
+    callId: string;
+    sidechainId: string;
     resolveAcpHostLaunch?: Parameters<typeof createPublicAcpRuntimeProtocols>[0]['resolveHostLaunch'];
     transformAgentRequest?: Parameters<typeof createPublicAcpRuntimeProtocols>[0]['transformAgentRequest'];
-}>): NativeAgentSessionContextLeaseFactory {
+    runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null;
+    runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
+    directory: string;
+    machineId: string;
+    accountSettings: AccountSettings | null;
+    permissionMode: string;
+    start: ExecutionRunBackendStartContext;
+    causalPermissionAuthority?: CreateCliExecutionRunBackendParams['causalPermissionAuthority'];
+    getPermissionRequestStore?: CreateCliExecutionRunBackendParams['getPermissionRequestStore'];
+    mcpSelection?: SessionMcpSelectionV1;
+    happyHomeDir?: string;
+    createInvocationServices?: (params: Readonly<{
+        currentSession: HostCurrentSessionUiServices;
+        signal: AbortSignal;
+        readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+    }>) => Promise<PluginServices>;
+}>): NativeAgentExecutionRunContextLeaseFactory {
     const runId = readRequiredString(params.runId, 'a run id');
-    return ({ services, signal }) => {
-        const base = createNativeAgentInvocationContext({
-            lease: params.lease,
-            runId,
+    const callId = readRequiredString(params.callId, 'a call id');
+    const sidechainId = readRequiredString(params.sidechainId, 'a sidechain id');
+    const permissionHandler = createExecutionRunPermissionHandler({
+        permissionMode: params.permissionMode,
+        backendId: params.lease.agentId,
+        ...(Object.hasOwn(params, 'causalPermissionAuthority')
+            ? { causalPermissionAuthority: params.causalPermissionAuthority }
+            : {}),
+        publishPendingRequest: async ({ requestId, toolName, toolInput, turnId }) => {
+            const requestStore = params.getPermissionRequestStore?.() ?? null;
+            if (!requestStore) {
+                throw Object.assign(
+                    new Error('Execution-run permission interaction target is unavailable'),
+                    { code: 'execution_run_interaction_unavailable' },
+                );
+            }
+            const providerRequestId = readRunScopedExecutionProviderRequestId({
+                runId,
+                controllerOccurrenceId: params.controllerOccurrenceId,
+                requestId,
+            });
+            if (!providerRequestId) {
+                throw new Error('Execution-run permission request id does not belong to this run');
+            }
+            const envelope = buildExecutionRunPermissionRequestEnvelope({
+                sessionId: null,
+                runId,
+                callId,
+                sidechainId,
+                backendId: params.lease.agentId,
+                runtimeKind: 'native_agent_session',
+                permissionMode: params.permissionMode,
+                providerRequestId,
+                controllerOccurrenceId: params.controllerOccurrenceId,
+                providerPayload: toolInput,
+                toolName,
+                reason: toolName,
+            });
+            const publication = {
+                requestId,
+                toolName,
+                toolInput,
+                createdAt: envelope.createdAtMs,
+                source: 'execution_run',
+                ...(turnId ? { turnId } : {}),
+                responseTarget: envelope.responseTarget,
+                sidechainId,
+            };
+            if (requestStore.publishRequestAndWait) {
+                await requestStore.publishRequestAndWait(publication);
+            } else {
+                requestStore.publishRequest(publication);
+            }
+        },
+    });
+    const runPermissionScope = createRunScopedExecutionPermissionHandler({
+        runId,
+        controllerOccurrenceId: params.controllerOccurrenceId,
+        handler: permissionHandler,
+        readInteractionMode: () => {
+            const requestStore = params.getPermissionRequestStore?.() ?? null;
+            const { intent, runClass, ioMode, retentionPolicy } = params.start;
+            if (!intent || !runClass || !ioMode || !retentionPolicy) {
+                return 'interaction_unavailable';
+            }
+            return resolveExecutionRunPermissionInteractionMode({
+                intent,
+                runClass,
+                ioMode,
+                retentionPolicy,
+                permissionMode: params.permissionMode,
+                parentSessionId: null,
+                interactionTargetAvailable: requestStore !== null,
+                backendCapabilities: {
+                    canRespondToPermission: true,
+                    canSurfaceParentSessionPrompt: true,
+                    runtimeKind: 'native_agent_session',
+                    backendId: params.lease.agentId,
+                },
+            });
+        },
+        onPendingRequestAborted: async ({ requestId, reason }) => {
+            await params.getPermissionRequestStore?.()?.completeRequest?.({
+                requestId,
+                status: 'canceled',
+                decision: 'abort',
+                reason,
+            });
+        },
+    });
+    const bindInvocationServices = async ({
+        services,
+        signal,
+        readActiveTurnAdmissionWitness,
+    }: Readonly<{
+        services: PluginServices;
+        signal: AbortSignal;
+        readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+    }>): Promise<Readonly<{
+        services: PluginServices;
+        currentSession: HostCurrentSessionUiServices;
+    }>> => {
+        const currentSession = createNativeAgentCurrentExecutionRunUiServices({
+            permissionHandler: runPermissionScope.handler,
+            pluginId: params.lease.pluginId,
+            contributionId: params.lease.localAgentId,
+            runtimeId: `native-agent-run:${runId}`,
+            executionRunId: runId,
+            generationId: params.lease.pluginVersion,
+            isCurrent: params.lease.isCurrent,
             signal,
+            readActiveTurnAdmissionWitness,
+        });
+        const boundServices = params.createInvocationServices
+            ? await params.createInvocationServices({
+                currentSession,
+                signal,
+                ...(readActiveTurnAdmissionWitness ? { readActiveTurnAdmissionWitness } : {}),
+            })
+            : services;
+        return Object.freeze({ services: boundServices, currentSession });
+    };
+    const factory: NativeAgentExecutionRunContextLeaseFactory = async ({ services, signal, readActiveTurnAdmissionWitness }) => {
+        const bound = await bindInvocationServices({
             services,
-            invokedAtMs: Date.now(),
-            ...(params.resolveAcpHostLaunch || params.transformAgentRequest
-                ? {
-                    protocolOptions: {
-                        ...(params.resolveAcpHostLaunch ? { resolveHostLaunch: params.resolveAcpHostLaunch } : {}),
-                        ...(params.transformAgentRequest ? { transformAgentRequest: params.transformAgentRequest } : {}),
-                    },
-                }
-                : {}),
+            signal,
+            ...(readActiveTurnAdmissionWitness ? { readActiveTurnAdmissionWitness } : {}),
         });
-        const context: AgentSessionRuntimeContext = Object.freeze({
-            ...base,
-            session: Object.freeze({
-                id: runId,
-                services: createRunScopedSessionHostServices(signal),
-            }),
-            workState: createRunScopedWorkStateService(signal),
+        const executionRunServices = createNativeAgentExecutionRunHostServices({
+            signal,
+            executionRunId: runId,
+            directory: params.directory,
+            machineId: params.machineId,
+            accountSettings: params.accountSettings,
+            ...(params.mcpSelection ? { mcpSelection: params.mcpSelection } : {}),
+            runtimeRegistry: params.runtimeRegistry,
+            ...(params.runtimeAuthority ? { runtimeAuthority: params.runtimeAuthority } : {}),
+            pluginId: params.lease.pluginId,
+            agentId: params.lease.agentId,
+            ...(params.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : {}),
         });
+        let context: AgentExecutionRunRuntimeContextV1;
+        try {
+            const created = createNativeAgentInvocationContext({
+                lease: params.lease,
+                runId,
+                signal,
+                services: bound.services,
+                invokedAtMs: Date.now(),
+                currentSession: bound.currentSession,
+                executionRunServices,
+                ...(readActiveTurnAdmissionWitness ? { readActiveTurnAdmissionWitness } : {}),
+                ...(params.resolveAcpHostLaunch || params.transformAgentRequest
+                    ? {
+                        protocolOptions: {
+                            ...(params.resolveAcpHostLaunch ? { resolveHostLaunch: params.resolveAcpHostLaunch } : {}),
+                            ...(params.transformAgentRequest ? { transformAgentRequest: params.transformAgentRequest } : {}),
+                        },
+                    }
+                    : {}),
+            });
+            if (!('executionRun' in created)) {
+                throw new Error('Detached execution-run context was not constructed');
+            }
+            context = created;
+        } catch (error) {
+            try {
+                await executionRunServices.dispose();
+            } finally {
+                await runPermissionScope.dispose('Execution run context construction failed');
+            }
+            throw error;
+        }
         return Object.freeze({
             context,
-            async dispose() {},
+            async dispose() {
+                try {
+                    await executionRunServices.dispose();
+                } finally {
+                    await runPermissionScope.dispose('Execution run disposed');
+                }
+            },
         });
     };
+    Object.assign(factory, {
+        async resolveStructuredInputForDispatch(input: Readonly<{
+            input: AgentSessionInput;
+            localId: string;
+            signal: AbortSignal;
+        }>) {
+            const parsed = HappierStructuredInputV1Schema.safeParse(input.input.structuredInput);
+            if (!parsed.success) return input.input;
+            const envelope = parsed.data as Readonly<Record<string, unknown>>;
+            if (!Object.hasOwn(envelope, 'mentions') && !Object.hasOwn(envelope, 'composerAttachments')) {
+                return input.input;
+            }
+            const resolved = await resolveStructuredInputProviderDispatchContext({
+                structuredInput: parsed.data,
+                ...(params.runtimeRegistry?.composerReferences
+                    ? {
+                        composerReferences: {
+                            resolve: params.runtimeRegistry.composerReferences.resolve,
+                            signal: input.signal,
+                        },
+                    }
+                    : {}),
+                ...(params.runtimeRegistry?.composerAttachments
+                    ? {
+                        composerAttachments: {
+                            scope: { kind: 'execution_run', executionRunId: runId },
+                            localId: input.localId,
+                            resolve: params.runtimeRegistry.composerAttachments.resolveForDispatch,
+                            signal: input.signal,
+                        },
+                    }
+                    : {}),
+            });
+            return Object.freeze({
+                text: renderSessionInputContextPromptV1({
+                    ...resolved.promptContext,
+                    transformedUserText: input.input.text,
+                }),
+                ...(resolved.structuredInput ? { structuredInput: resolved.structuredInput } : {}),
+            });
+        },
+        async bindInvocationServices(input: Readonly<{
+            services: PluginServices;
+            signal: AbortSignal;
+            readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+        }>) {
+            return (await bindInvocationServices(input)).services;
+        },
+        respondToPermissionRequest(requestId: string, approved: boolean) {
+            return runPermissionScope.respondToPermissionRequest(requestId, approved);
+        },
+        async abortPendingPermissionRequests(reason: string) {
+            await runPermissionScope.dispose(reason);
+        },
+        async onTurnTerminal(turnId: string) {
+            await params.getPermissionRequestStore?.()?.retireCompletedRequestsForTurn?.(turnId);
+        },
+    });
+    return factory;
 }
 
 function diagnosticMessage(
@@ -278,6 +534,23 @@ function buildInput(prompt: string, structuredInput: unknown): AgentSessionInput
     });
 }
 
+function rejectStructuredInputBeforeProviderEffect(error: unknown) {
+    const candidate = error && typeof error === 'object'
+        ? error as Readonly<{ code?: unknown; message?: unknown; retryable?: unknown }>
+        : null;
+    return Object.freeze({
+        status: 'rejected' as const,
+        diagnostic: Object.freeze({
+            code: typeof candidate?.code === 'string'
+                ? candidate.code
+                : 'session_structured_input_resolution_unavailable',
+            ...(typeof candidate?.message === 'string' ? { message: candidate.message } : {}),
+            severity: 'error' as const,
+        }),
+        retryable: candidate?.retryable === true,
+    });
+}
+
 function readRequiredString(value: string | undefined, field: string): string {
     const normalized = value?.trim();
     if (!normalized) {
@@ -319,8 +592,6 @@ function buildLaunchEnvironment(
 function createNativeAgentInvocationContext(params: Readonly<{
     lease: NativeAgentRuntimeLeaseIdentity;
     runId: string;
-    /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
-    happierSessionId?: string;
     signal: AbortSignal;
     services: PluginServices;
     invokedAtMs: number;
@@ -328,8 +599,24 @@ function createNativeAgentInvocationContext(params: Readonly<{
         Parameters<typeof createPublicAcpRuntimeProtocols>[0],
         'resolveHostLaunch' | 'transformAgentRequest'
     >;
-}>): AgentRuntimeContext {
-    return Object.freeze({
+    currentSession?: Parameters<typeof createPluginInvocationPresentation>[0]['currentSession'];
+    readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+    executionRunServices?: AgentExecutionRunHostServicesV1;
+}>): AgentExecutionRunRuntimeContextV1 {
+    const interactions = params.currentSession
+        ? createPluginInteractionsService({
+            currentSession: params.currentSession,
+            signal: params.signal,
+            isGenerationCurrent: params.lease.isCurrent,
+            ...(params.readActiveTurnAdmissionWitness
+                ? { readActiveTurnAdmissionWitness: params.readActiveTurnAdmissionWitness }
+                : {}),
+        })
+        : null;
+    const services = interactions
+        ? Object.freeze({ ...params.services, interactions })
+        : params.services;
+    const base = Object.freeze({
         plugin: Object.freeze({ id: params.lease.pluginId, version: params.lease.pluginVersion }),
         contribution: Object.freeze({
             id: params.lease.localAgentId,
@@ -340,13 +627,10 @@ function createNativeAgentInvocationContext(params: Readonly<{
         }),
         surface: 'agent' as const,
         invokedAtMs: params.invokedAtMs,
-        // A detached execution-only Run has no Happier Session scope, so the
-        // context omits `session` instead of fabricating one from the run id.
-        ...(params.happierSessionId ? { session: Object.freeze({ id: params.happierSessionId }) } : {}),
         signal: params.signal,
-        services: params.services,
+        services,
         ui: createPluginInvocationPresentation({
-            currentSession: null,
+            currentSession: params.currentSession ?? null,
             signal: params.signal,
             isGenerationCurrent: params.lease.isCurrent,
         }),
@@ -356,25 +640,58 @@ function createNativeAgentInvocationContext(params: Readonly<{
             agentId: params.lease.agentId,
             signal: params.signal,
             isCurrent: params.lease.isCurrent,
-            services: params.services,
+            services,
+            ...(params.currentSession
+                ? { interactions: params.currentSession.interactions }
+                : {}),
             ...(params.protocolOptions ?? {}),
         }),
+    });
+    const unavailable = (): never => {
+        throw new Error('Detached execution-run host service is unavailable');
+    };
+    const executionRunServices = params.executionRunServices ?? Object.freeze({
+        features: Object.freeze({ isEnabled: () => false }),
+        hooks: Object.freeze({
+            startServer: unavailable,
+            resolveForwarderAssets: unavailable,
+            createPluginDir: unavailable,
+            disposePluginDir: unavailable,
+        }),
+        fileFollow: Object.freeze({ follow: unavailable }),
+        mcp: Object.freeze({ resolveServers: async () => Object.freeze([]) }),
+        toolExecution: Object.freeze({
+            async before(request: Parameters<AgentExecutionRunHostServicesV1['toolExecution']['before']>[0]) {
+                return Object.freeze({ status: 'continue' as const, input: request.input });
+            },
+        }),
+    });
+    return Object.freeze({
+        ...base,
+        scope: Object.freeze({ kind: 'execution_run' as const, executionRunId: params.runId }),
+        executionRun: Object.freeze({ id: params.runId, services: executionRunServices }),
     });
 }
 
 export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
     runtime: AgentRuntime;
+    /** Additive detached facet for a Session-primary Agent. */
+    executionRunContextV1?: AgentSessionExecutionRunRuntimeFactoryV1;
     lease: NativeAgentRuntimeLeaseIdentity;
     options: CreateCliExecutionRunBackendParams;
     supportsResume: boolean;
     generationSignal?: AbortSignal;
     services?: Promise<PluginServices>;
+    createExecutionRunContext?: NativeAgentExecutionRunContextLeaseFactory;
+    bindInvocationServices?: NativeAgentSessionContextLeaseFactory['bindInvocationServices'];
+    respondToPermissionRequest?: NativeAgentSessionContextLeaseFactory['respondToPermissionRequest'];
+    abortPendingPermissionRequests?: (reason: string) => Promise<void>;
+    resolveStructuredInputForDispatch?: NativeAgentSessionContextLeaseFactory['resolveStructuredInputForDispatch'];
 }>): ExecutionRunHostRuntime {
-    const executionRuns = params.runtime.executionRuns;
-    if (!executionRuns) {
+    const directExecutionRuns = params.runtime.executionRuns;
+    if (!params.executionRunContextV1 && !directExecutionRuns) {
         throw new Error(`Agent runtime '${params.lease.agentId}' does not support execution runs`);
     }
-    const openExecutionRun = executionRuns.open.bind(executionRuns);
     const runId = readRequiredString(params.options.runId, 'a run id');
     const profileId = readRequiredString(
         params.options.start?.profileId ?? params.options.start?.intent,
@@ -385,6 +702,9 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
     const boundedOpenInputs = Object.freeze({
         stateSharing: resolveNativeAgentSessionStateSharingPolicy(params.lease.agentId),
         ...(launchEnvironment ? { launchEnvironment } : {}),
+        ...(params.options.runtimeDescriptorV1
+            ? { runtimeDescriptorV1: params.options.runtimeDescriptorV1 }
+            : {}),
         ...(params.options.modelSelection
             ? { modelSelection: params.options.modelSelection }
             : {}),
@@ -408,11 +728,12 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
         params.services
         ?? Promise.resolve(createUnavailablePluginServices());
     const listeners = new Set<(message: AgentMessage) => void>();
-    let provisionPromise: Promise<Readonly<{ sessionId: string }>> | null = null;
+    let provisionPromise: Promise<Readonly<{ runtimeId: string }>> | null = null;
     let openRequest: AgentExecutionRunOpenRequest | null = null;
     let nativeRuntimePromise: Promise<AgentExecutionRunRuntime> | null = null;
     let nativeRuntime: AgentExecutionRunRuntime | null = null;
     let watchDisposable: { dispose(): void | Promise<void> } | null = null;
+    let executionRunContextLease: NativeAgentExecutionRunContextLease | null = null;
     let lastSequence = -1;
     let terminal = false;
     let disposed = false;
@@ -440,6 +761,12 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
                 // One host projection cannot interrupt terminal settlement or later listeners.
             }
         }
+    }
+
+    async function resolveInputForDispatch(input: AgentSessionInput, localId: string): Promise<AgentSessionInput> {
+        return params.resolveStructuredInputForDispatch
+            ? await params.resolveStructuredInputForDispatch({ input, localId, signal })
+            : input;
     }
 
     function failRuntime(message: string): void {
@@ -474,10 +801,10 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
             resolveTerminal();
         } else if (normalizedEvent.kind === 'run-failed') {
             terminal = true;
-            rejectTerminal(new Error(diagnosticMessage(
-                normalizedEvent.diagnostic,
-                sanitizeProviderDiagnosticText,
-            )));
+            rejectTerminal(createExecutionRunCodedError(
+                normalizedEvent.diagnostic?.code ?? 'agent_execution_run_failed',
+                diagnosticMessage(normalizedEvent.diagnostic, sanitizeProviderDiagnosticText),
+            ));
         }
     }
 
@@ -486,18 +813,23 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
         if (nativeRuntimePromise) return await nativeRuntimePromise;
         const invokedAtMs = Date.now();
         nativeRuntimePromise = (async () => {
-            const services = await servicesPromise;
+            const fallbackServices = await servicesPromise;
             assertUsable();
-            const context = createNativeAgentInvocationContext({
-                lease: params.lease,
-                runId,
-                ...(params.options.happierSessionId
-                    ? { happierSessionId: params.options.happierSessionId }
-                    : {}),
-                signal,
-                services,
-                invokedAtMs,
-            });
+            const context = params.createExecutionRunContext
+                ? (executionRunContextLease = await params.createExecutionRunContext({
+                    services: fallbackServices,
+                    signal,
+                })).context
+                : createNativeAgentInvocationContext({
+                    lease: params.lease,
+                    runId,
+                    signal,
+                    services: params.bindInvocationServices
+                        ? await params.bindInvocationServices({ services: fallbackServices, signal })
+                        : fallbackServices,
+                    invokedAtMs,
+                });
+            assertUsable();
             let providerCurrent: Awaited<ReturnType<NonNullable<
                 CreateCliExecutionRunBackendParams['revalidateProviderBeforeOpen']
             >>> | undefined;
@@ -515,7 +847,14 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
             assertUsable();
             let opened: AgentExecutionRunRuntime;
             try {
-                opened = await openExecutionRun(request, context);
+                if (params.executionRunContextV1) {
+                    if (!('executionRun' in context)) {
+                        throw new Error('Session-primary detached execution requires execution-run scope');
+                    }
+                    opened = await params.executionRunContextV1.open(request, context);
+                } else {
+                    opened = await directExecutionRuns!.open(request, context);
+                }
             } catch (error) {
                 throw sanitizeThrownError(error, sanitizeProviderDiagnosticText);
             }
@@ -533,14 +872,26 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
     }
 
     return Object.freeze({
-        permissionCapability: 'static' as const,
+        permissionCapability: params.respondToPermissionRequest ? 'responds' as const : 'static' as const,
+        ...(params.respondToPermissionRequest
+            ? {
+                async respondToPermission(requestId: string, approved: boolean) {
+                    return params.respondToPermissionRequest!(requestId, approved)
+                        ? { delivered: true as const }
+                        : { delivered: false as const, reason: 'unknown_request' as const };
+                },
+            }
+            : {}),
+        ...(params.abortPendingPermissionRequests
+            ? { abortPendingPermissionRequests: params.abortPendingPermissionRequests }
+            : {}),
         async readResumeSupport() {
             return params.supportsResume;
         },
-        async provisionSession(options) {
+        async provisionRuntime(options) {
             assertUsable();
             provisionPromise ??= (async () => {
-                if (options?.resumeSessionId) {
+                if (options?.resumeRuntimeId) {
                     if (!params.supportsResume) throw new Error('Backend does not support resume');
                     openRequest = Object.freeze({
                         kind: 'resume' as const,
@@ -548,32 +899,59 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
                         cwd: params.options.cwd,
                         profile,
                         ...boundedOpenInputs,
-                        checkpointId: options.resumeSessionId,
+                        checkpointId: options.resumeRuntimeId,
                     });
                     await openNative(openRequest);
                 } else if (options?.initialPrompt !== undefined) {
+                    const localId = params.options.start?.localInputId ?? `${runId}-initial-input`;
+                    const input = await resolveInputForDispatch(
+                        buildInput(
+                            options.initialPrompt,
+                            params.options.start?.structuredInput ?? params.options.start?.intentInput,
+                        ),
+                        localId,
+                    );
                     openRequest = Object.freeze({
                         kind: 'create' as const,
                         runId,
                         cwd: params.options.cwd,
                         profile,
                         ...boundedOpenInputs,
-                        input: buildInput(options.initialPrompt, params.options.start?.intentInput),
+                        input,
+                        ...(params.options.start?.localInputId
+                            ? { localInputId: params.options.start.localInputId }
+                            : {}),
+                        ...(params.options.start?.resultContract
+                            ? { resultContract: params.options.start.resultContract }
+                            : {}),
                     });
                     await openNative(openRequest);
                 }
-                return Object.freeze({ sessionId: runId });
+                return Object.freeze({ runtimeId: runId });
             })();
             return await provisionPromise;
         },
-        async sendPrompt(sessionId, prompt) {
+        getRuntimeLifetimeSignal: () => signal,
+        async deliverInput(runtimeId, admittedInput, meta) {
             assertUsable();
-            if (!provisionPromise || sessionId !== runId) {
-                throw new Error(`Native Agent execution run '${runId}' is not provisioned for session '${sessionId}'`);
+            if (!provisionPromise || runtimeId !== runId) {
+                throw new Error(`Native Agent execution run '${runId}' is not provisioned for runtime '${runtimeId}'`);
             }
             await provisionPromise;
             if (terminal) throw new Error(`Native Agent execution run '${runId}' has already terminated`);
-            const input = buildInput(prompt, params.options.start?.intentInput);
+            const localId = meta?.localId ?? params.options.start?.localInputId ?? `${runId}-input`;
+            const carriedInput = admittedInput.structuredInput === undefined
+                ? buildInput(
+                    admittedInput.text,
+                    params.options.start?.structuredInput ?? params.options.start?.intentInput,
+                )
+                : admittedInput;
+            let input: AgentSessionInput;
+            try {
+                input = await resolveInputForDispatch(carriedInput, localId);
+            } catch (error) {
+                return rejectStructuredInputBeforeProviderEffect(error);
+            }
             if (!nativeRuntimePromise) {
                 openRequest = Object.freeze({
                     kind: 'create' as const,
@@ -581,15 +959,31 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
                     cwd: params.options.cwd,
                     profile,
                     ...boundedOpenInputs,
+                    ...(meta?.causalPermissionAuthority
+                        ? { causalPermissionAuthority: meta.causalPermissionAuthority }
+                        : {}),
+                    ...(meta?.localId || params.options.start?.localInputId
+                        ? { localInputId: meta?.localId ?? params.options.start?.localInputId }
+                        : {}),
+                    ...(meta?.resultContract || params.options.start?.resultContract
+                        ? { resultContract: meta?.resultContract ?? params.options.start?.resultContract }
+                        : {}),
                     input,
                 });
                 await openNative(openRequest);
-                return;
+                return { status: 'admitted' as const };
             }
             const opened = await nativeRuntimePromise;
             let result: Awaited<ReturnType<AgentExecutionRunRuntime['send']>>;
             try {
-                result = await opened.send(input, { signal });
+                result = await opened.send(input, {
+                    signal,
+                    ...(meta?.localId ? { localInputId: meta.localId } : {}),
+                    ...(meta?.resultContract ? { resultContract: meta.resultContract } : {}),
+                    ...(meta?.causalPermissionAuthority
+                        ? { causalPermissionAuthority: meta.causalPermissionAuthority }
+                        : {}),
+                });
             } catch (error) {
                 throw sanitizeThrownError(error, sanitizeProviderDiagnosticText);
             }
@@ -599,10 +993,15 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
                     sanitizeProviderDiagnosticText,
                 ));
             }
+            // The execution-run-native surface has a deliberately looser
+            // refusal shape than Agent Session delivery. Non-admission was
+            // converted to an exception above, so expose only the proven
+            // admitted arm at this adapter boundary.
+            return { status: 'admitted' as const };
         },
-        async cancel(sessionId) {
+        async cancel(runtimeId) {
             assertUsable();
-            if (!provisionPromise || sessionId !== runId) return;
+            if (!provisionPromise || runtimeId !== runId) return;
             const opened = nativeRuntime ?? (nativeRuntimePromise ? await nativeRuntimePromise : null);
             if (!opened) return;
             let result: Awaited<ReturnType<AgentExecutionRunRuntime['stop']>>;
@@ -652,6 +1051,11 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
             }
             if (watch) {
                 void Promise.resolve().then(() => watch.dispose()).catch(() => undefined);
+            }
+            const contextLease = executionRunContextLease;
+            executionRunContextLease = null;
+            if (contextLease) {
+                void contextLease.dispose().catch(() => undefined);
             }
         },
     });
@@ -712,14 +1116,19 @@ export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly
                 }
                 let execution: AgentExecutionRunRuntime;
                 try {
+                    const runScopedContext: AgentSessionRuntimeContext = Object.freeze({
+                        ...sessionContext.context,
+                        // A finite child Run may reuse its parent's Session context
+                        // services, but it never owns the parent's published work state.
+                        workState: createRunScopedWorkStateService(executionContext.signal),
+                    });
                     execution = await createExecutionRunHostBackendFromSessionRuntime({
-                        request,
+                        request: sessionContext.mcpServers
+                            ? { ...request, mcpServers: sessionContext.mcpServers }
+                            : request,
                         sessionId: sessionContext.context.session.id,
                         openSession: async (sessionRequest) => {
-                            const opened = await sessions.open(
-                                sessionRequest,
-                                sessionContext.context,
-                            );
+                            const opened = await sessions.open(sessionRequest, runScopedContext);
                             const boundaryError = readBoundaryError();
                             if (boundaryError) {
                                 void Promise.resolve()
@@ -734,6 +1143,27 @@ export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly
                         readCheckpointId: (event) => event.kind === 'provider-session-id'
                             ? event.providerSessionId
                             : null,
+                        ...(sessionContext.usagePublisher || params.options.start?.observeWorkflowUsage ? {
+                            observeSessionUsage: (event: Extract<AgentSessionRuntimeEvent, { kind: 'usage-observed' }>) => {
+                                const publisher = sessionContext.usagePublisher;
+                                const observation = toNativeAgentUsageObservation(
+                                    event,
+                                    publisher?.provider ?? params.lease.agentId,
+                                );
+                                params.options.start?.observeWorkflowUsage?.({
+                                    turnId: event.turnId ?? null,
+                                    observation,
+                                });
+                                if (publisher) {
+                                    void Promise.resolve(publisher.publish({
+                                        observedAt: event.emittedAtMs,
+                                        observation,
+                                        turnId: event.turnId ?? null,
+                                        externalKey: event.observationId,
+                                    })).catch(() => undefined);
+                                }
+                            },
+                        } : {}),
                     });
                 } catch (error) {
                     try {
@@ -772,6 +1202,15 @@ export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly
         supportsResume: params.supportsResume,
         ...(params.generationSignal ? { generationSignal: params.generationSignal } : {}),
         ...(params.services ? { services: params.services } : {}),
+        ...(params.createSessionContext.respondToPermissionRequest
+            ? { respondToPermissionRequest: params.createSessionContext.respondToPermissionRequest }
+            : {}),
+        ...(params.createSessionContext.abortPendingPermissionRequests
+            ? { abortPendingPermissionRequests: params.createSessionContext.abortPendingPermissionRequests }
+            : {}),
+        ...(params.createSessionContext.resolveStructuredInputForDispatch
+            ? { resolveStructuredInputForDispatch: params.createSessionContext.resolveStructuredInputForDispatch }
+            : {}),
     });
 }
 
@@ -807,13 +1246,16 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
         : ownedAbortController.signal;
     const servicesPromise = params.services ?? Promise.resolve(createUnavailablePluginServices());
     const listeners = new Set<(message: AgentMessage) => void>();
+    const inputOutcomeListeners = new Set<(outcome: SessionProviderInputOutcome) => void>();
+    const runtimeEventListeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
     let operations: ReturnType<typeof createNativeAgentSessionInteractionOperations> | null = null;
     let unsubscribeEvents: (() => void) | null = null;
     let disposeSessionContext: (() => Promise<void>) | null = null;
     let openPromise: Promise<void> | null = null;
-    let provisionPromise: Promise<Readonly<{ sessionId: string }>> | null = null;
+    let provisionPromise: Promise<Readonly<{ runtimeId: string }>> | null = null;
     let disposed = false;
     let turnOrdinal = 0;
+    let pendingTurnTerminalSettlement: Promise<void> | null = null;
 
     const assertUsable = (): void => {
         if (disposed) throw new Error('Native Agent Session interaction is disposed');
@@ -837,7 +1279,11 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
         openPromise = (async () => {
             const services = await servicesPromise;
             assertUsable();
-            const sessionContext = await params.createSessionContext({ services, signal });
+            const sessionContext = await params.createSessionContext({
+                services,
+                signal,
+                readActiveTurnAdmissionWitness: () => operations?.readActiveTurnAdmissionWitness?.() ?? null,
+            });
             // Context acquisition can await plugin/daemon work. Re-check the
             // generation before invoking the provider so retirement cannot
             // trigger a native open side effect after this host is unusable.
@@ -852,8 +1298,12 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
             const common = {
                 sessionId: context.session.id,
                 cwd: params.options.cwd,
+                ...(sessionContext.mcpServers ? { mcpServers: sessionContext.mcpServers } : {}),
                 stateSharing: resolveNativeAgentSessionStateSharingPolicy(params.lease.agentId),
                 ...(launchEnvironment ? { launchEnvironment } : {}),
+                ...(params.options.runtimeDescriptorV1
+                    ? { runtimeDescriptorV1: params.options.runtimeDescriptorV1 }
+                    : {}),
                 ...(params.options.modelSelection ? { modelSelection: params.options.modelSelection } : {}),
                 ...(params.options.configuration ? { configuration: params.options.configuration } : {}),
                 ...(params.options.providerBinding ? { providerBinding: params.options.providerBinding } : {}),
@@ -875,8 +1325,28 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                         ? { initialConfiguration: params.options.configuration }
                         : {}),
                 });
+                operations.setOnPromptDeliveryOutcome((evidence) => {
+                    const outcome = normalizeHostProviderInputOutcome(evidence);
+                    if (!outcome) return;
+                    for (const listener of inputOutcomeListeners) listener(outcome);
+                });
                 unsubscribeEvents = operations.subscribeRuntimeEvents((event) => {
                     if ('type' in event) return;
+                    for (const listener of runtimeEventListeners) listener(event);
+                    if (
+                        event.kind === 'turn-complete'
+                        || event.kind === 'turn-failed'
+                        || event.kind === 'turn-cancelled'
+                    ) {
+                        const settlement = Promise.resolve(
+                            params.createSessionContext.onTurnTerminal?.(event.turnId),
+                        );
+                        pendingTurnTerminalSettlement = settlement;
+                        // The turn-completion waiter below owns propagation. Attach
+                        // an observer immediately so a synchronous persistence
+                        // rejection cannot become an unhandled promise first.
+                        void settlement.catch(() => undefined);
+                    }
                     const message = sessionEventToHostMessage(event, sanitize);
                     if (message) emit(message);
                 });
@@ -894,17 +1364,46 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
     };
 
     return Object.freeze({
-        permissionCapability: 'static' as const,
+        permissionCapability: params.createSessionContext.respondToPermissionRequest ? 'responds' as const : 'static' as const,
+        ...(params.createSessionContext.abortPendingPermissionRequests
+            ? { abortPendingPermissionRequests: params.createSessionContext.abortPendingPermissionRequests }
+            : {}),
+        ...(params.createSessionContext.respondToPermissionRequest
+            ? {
+                async respondToPermission(requestId: string, approved: boolean) {
+                    return params.createSessionContext.respondToPermissionRequest!(requestId, approved)
+                        ? { delivered: true as const }
+                        : { delivered: false as const, reason: 'unknown_request' as const };
+                },
+            }
+            : {}),
+        getRuntimeLifetimeSignal: () => signal,
+        readActiveTurnAdmissionWitness: () => operations?.readActiveTurnAdmissionWitness?.() ?? null,
+        subscribeProviderInputOutcomes(handler) {
+            inputOutcomeListeners.add(handler);
+            return () => inputOutcomeListeners.delete(handler);
+        },
+        subscribeRuntimeEvents(handler) {
+            runtimeEventListeners.add(handler);
+            return () => runtimeEventListeners.delete(handler);
+        },
+        // The exact adapter choice is the projection. A finite or native Execution
+        // Run adapter never carries it, so a transcript-only or reconstructed run
+        // cannot appear interactive.
+        interaction: Object.freeze({
+            kind: 'retained_agent_session.v1' as const,
+            capabilities: params.sessionCapabilities,
+        }),
         async readResumeSupport() {
             return supportsResume;
         },
-        async provisionSession(options) {
+        async provisionRuntime(options) {
             assertUsable();
             provisionPromise ??= (async () => {
-                if (options?.resumeSessionId && !supportsResume) {
+                if (options?.resumeRuntimeId && !supportsResume) {
                     throw new Error('Backend does not support resume');
                 }
-                await open(options?.resumeSessionId);
+                await open(options?.resumeRuntimeId);
                 if (options?.initialPrompt !== undefined) {
                     const turnId = `${runId}-turn-${++turnOrdinal}`;
                     operations!.beginTurnLifecycle();
@@ -916,33 +1415,71 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                             : {}),
                     });
                 }
-                return Object.freeze({ sessionId: runId });
+                return Object.freeze({ runtimeId: runId });
             })();
             return await provisionPromise;
         },
-        async sendPrompt(sessionId, prompt, meta) {
+        async deliverInput(runtimeId, input, meta) {
             assertUsable();
-            if (!provisionPromise || sessionId !== runId) {
-                throw new Error(`Native Agent Session interaction '${runId}' is not provisioned for '${sessionId}'`);
+            if (!provisionPromise || runtimeId !== runId) {
+                throw new Error(`Native Agent Session interaction '${runId}' is not provisioned for runtime '${runtimeId}'`);
             }
             await provisionPromise;
             await open();
-            const turnId = `${runId}-turn-${++turnOrdinal}`;
+            const inputOrdinal = ++turnOrdinal;
+            const localId = meta?.localId ?? `${runId}-input-${inputOrdinal}`;
+            let resolvedInput: AgentSessionInput;
+            try {
+                resolvedInput = params.createSessionContext.resolveStructuredInputForDispatch
+                    ? await params.createSessionContext.resolveStructuredInputForDispatch({ input, localId, signal })
+                    : input;
+            } catch (error) {
+                return rejectStructuredInputBeforeProviderEffect(error);
+            }
             operations!.beginTurnLifecycle();
-            await operations!.sendTurnPrompt(prompt, {
-                turnId,
-                localId: meta?.localInputId ?? `${runId}-input-${turnOrdinal}`,
-                ...(meta?.localInputIds ? { localIds: meta.localInputIds } : {}),
+            await operations!.sendTurnPrompt(resolvedInput.text, {
+                ...meta,
+                localId,
+                ...(resolvedInput.structuredInput === undefined ? {} : { structuredInput: resolvedInput.structuredInput }),
                 ...(meta?.userMessageSeq !== undefined ? { userMessageSeq: meta.userMessageSeq } : {}),
                 ...(meta?.userMessageSeqs ? { userMessageSeqs: meta.userMessageSeqs } : {}),
-                ...(params.options.causalPermissionAuthority
-                    ? { causalPermissionAuthority: params.options.causalPermissionAuthority }
+                ...(meta?.causalPermissionAuthority
+                    ? { causalPermissionAuthority: meta.causalPermissionAuthority }
                     : {}),
             });
+            return { status: 'admitted' as const };
         },
-        async cancel(sessionId) {
+        ...(params.sessionCapabilities.delivery.includes('steer') ? {
+            async steerInput(runtimeId: string, input: AgentSessionInput, meta?: Parameters<ExecutionRunHostRuntime['deliverInput']>[2]) {
+                assertUsable();
+                if (!provisionPromise || runtimeId !== runId || !operations) {
+                    throw new Error(`Native Agent Session interaction '${runId}' is not provisioned for runtime '${runtimeId}'`);
+                }
+                await provisionPromise;
+                const inputOrdinal = ++turnOrdinal;
+                const localId = meta?.localId ?? `${runId}-input-${inputOrdinal}`;
+                let resolvedInput: AgentSessionInput;
+                try {
+                    resolvedInput = params.createSessionContext.resolveStructuredInputForDispatch
+                        ? await params.createSessionContext.resolveStructuredInputForDispatch({ input, localId, signal })
+                        : input;
+                } catch (error) {
+                    return rejectStructuredInputBeforeProviderEffect(error);
+                }
+                await operations.steerInFlightTurn(resolvedInput.text, {
+                    ...meta,
+                    localId,
+                    ...(resolvedInput.structuredInput === undefined ? {} : { structuredInput: resolvedInput.structuredInput }),
+                    ...(meta?.userMessageSeq !== undefined ? { userMessageSeq: meta.userMessageSeq } : {}),
+                    ...(meta?.userMessageSeqs ? { userMessageSeqs: meta.userMessageSeqs } : {}),
+                    ...(meta?.causalPermissionAuthority ? { causalPermissionAuthority: meta.causalPermissionAuthority } : {}),
+                });
+                return { status: 'admitted' as const };
+            },
+        } : {}),
+        async cancel(runtimeId) {
             assertUsable();
-            if (!provisionPromise || sessionId !== runId || !operations) return;
+            if (!provisionPromise || runtimeId !== runId || !operations) return;
             await operations.cancelTurn();
         },
         subscribeMessages(handler) {
@@ -951,7 +1488,41 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
         },
         async waitForTurnCompletion(timeoutMs) {
             if (!operations) return;
-            await operations.waitForTurnCompletion({ timeoutMs: timeoutMs ?? null });
+            let completionError: unknown = null;
+            try {
+                await operations.waitForTurnCompletion({ timeoutMs: timeoutMs ?? null });
+            } catch (error) {
+                completionError = error;
+            }
+            const settlement = pendingTurnTerminalSettlement;
+            if (settlement) {
+                try {
+                    await settlement;
+                } catch (error) {
+                    if (!isWorkflowInteractionCapacityError(error)) throw error;
+                    throw Object.assign(
+                        createExecutionRunCodedError(
+                            WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+                            error.message,
+                        ),
+                        { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
+                    );
+                } finally {
+                    if (pendingTurnTerminalSettlement === settlement) {
+                        pendingTurnTerminalSettlement = null;
+                    }
+                }
+            }
+            if (!completionError) return;
+            const event = readRuntimeTurnFailureAlreadySurfacedEvent(completionError);
+            if (event?.diagnostic.code !== WORKFLOW_INTERACTION_CAPACITY_EXCEEDED) throw completionError;
+            throw Object.assign(
+                createExecutionRunCodedError(
+                    WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+                    event.diagnostic.message ?? WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+                ),
+                { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
+            );
         },
         async dispose() {
             if (disposed) return;
@@ -960,6 +1531,8 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
             unsubscribeEvents?.();
             unsubscribeEvents = null;
             listeners.clear();
+            inputOutcomeListeners.clear();
+            runtimeEventListeners.clear();
             try {
                 await operations?.resetOrDisposeRuntime('session_closed');
             } finally {

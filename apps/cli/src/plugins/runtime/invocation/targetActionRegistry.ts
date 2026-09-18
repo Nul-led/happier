@@ -47,6 +47,7 @@ import type {
 import { fingerprintPluginHostAccessRequest } from '../hostAccess/scope';
 import type {
     CreatePluginInvocationServices,
+    PluginExternalActionContext,
     PluginInvocationServiceBinding,
 } from './services/types';
 import { createPluginInvocationPresentation } from './services/interactions';
@@ -137,6 +138,8 @@ export type InvokeTargetActionParams = Readonly<{
     invocationSurface?: PluginInvocationSurface;
     /** Host-stamped provenance for a plugin-to-plugin edge. */
     caller?: PluginInvocationCaller;
+    /** Host-private external API authority; never projected into plugin context. */
+    externalActionContext?: PluginExternalActionContext;
     /**
      * Exact target-generation fact from an admitted targeted operation. It is
      * private Action-dispatch evidence, not a caller assertion or SDK input.
@@ -169,6 +172,8 @@ export type InvokeTargetActionParams = Readonly<{
     isApprovalRequiredByActionSettings?: () => boolean;
     /** Present only when the daemon operation runner already owns this invocation. */
     operationProgress?: TargetActionOperationProgressPort;
+    /** Host-private custody admission; never projected into plugin context. */
+    beforeHandlerInvocation?: () => Promise<void>;
 }>;
 
 export type TargetActionInvocationPreparation = Readonly<
@@ -505,6 +510,9 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     correlationId,
                     surface: invocation.surface,
                     ...(invocation.caller ? { caller: invocation.caller } : {}),
+                    ...(invocation.externalActionContext
+                        ? { externalActionContext: invocation.externalActionContext }
+                        : {}),
                     ...(invocation.selectedActionInputCarrier
                         ? { selectedActionInputCarrier: invocation.selectedActionInputCarrier }
                         : {}),
@@ -622,6 +630,18 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                             ...(presentationOwner ? { presentationOwner } : {}),
                         }),
                     });
+                    if (invocation.beforeHandlerInvocation) {
+                        await invocation.beforeHandlerInvocation();
+                        // The custody transition awaits transport. Retirement during that
+                        // wait still forbids the plugin effect, even if the server accepted
+                        // the transition and must now recover an ambiguous started lease.
+                        if (signal.aborted || lifetime.signal.aborted || !indexed.isCurrent()) {
+                            throw new PluginError({
+                                code: 'plugin_action_generation_retired',
+                                message: 'Plugin action retired during custody admission',
+                            });
+                        }
+                    }
                     actionHandlerInvocation = undefined;
                     return await registration.handler(input, context);
                 } finally {

@@ -10,6 +10,7 @@ export async function resolveAgentProbeVariant(params: Readonly<{
   probeKind?: PreflightSessionControlsProbeKind;
   backendTarget?: BackendTargetRefV1;
   accountSettings?: Readonly<Record<string, unknown>> | null;
+  env?: NodeJS.ProcessEnv;
 }>): Promise<string> {
   const configuredAcpVariant = await resolveConfiguredAcpProbeCacheVariant({
     agentId: params.agentId,
@@ -25,6 +26,7 @@ export async function resolveAgentProbeVariant(params: Readonly<{
     backendTarget: params.backendTarget,
     probeKind,
     accountSettings: params.accountSettings ?? null,
+    env: params.env,
   }) ?? null;
   return entryVariant ?? `${params.agentId}:default`;
 }

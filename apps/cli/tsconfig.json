@@ -8,7 +8,7 @@
       "es2022"
     ],
     "jsx": "react",
-    "rootDir": "src",
+    "rootDir": "../..",
     "outDir": "dist/.tsc",
     "declaration": true,
     "strict": true,

@@ -5,11 +5,14 @@ import type {
 } from '@/agent/catalog/types';
 import type { ExternalSessionExecutionSurface } from '@/session/external/providerOps';
 import type { AttachSurfaceV1, CheckpointSurfaceV1, ForkSurfaceV1, HandoffSurfaceV1 } from '@happier-dev/agents';
-import type { AccountSettings, AcpConfigOptionOverridesV1, BackendTargetRefV2Input, HostSemanticEventV1, ProviderBoundModelRef, ProviderErrorV1, SessionInputCausalPermissionAuthorityV1 } from '@happier-dev/protocol';
+import type { AccountSettings, AcpConfigOptionOverridesV1, BackendTargetRefV2Input, HostSemanticEventV1, PortableRuntimeDescriptorV1, ProviderBoundModelRef, ProviderErrorV1, SessionEnvOverlayV1, SessionInputCausalPermissionAuthorityV1, SessionRunPromptReadActionIdV1, TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import type {
     AgentSessionConfigurationSnapshot,
+    AgentSessionOpenRequest,
     AgentSessionProviderBinding,
 } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
+import type { ExecutionRunOccurrenceWitnessV1 } from '@/agent/runtime/bridges/executionRun/runOccurrenceWitness';
 import type {
     ResolvedAgentRuntimeContribution,
     ResolvedContributionProvenance,
@@ -18,10 +21,74 @@ import type {
 } from '@/plugins/projection/registry/types';
 import type { EngineAdapter, RuntimeCore } from '@happier-dev/agents';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
+import type { ExecutionRunRetainedInteractionScope } from '@/agent/runtime/bridges/executionRun/retainedInteractionEligibility';
 import type { ExecutionRunSessionStateTarget } from '@/agent/runtime/bridges/executionRun/sessionStateDelivery';
+import type { ExecutionRunPermissionRequestStoreProvider } from '@/agent/runtime/bridges/executionRun/executionRunPermissionResponseTarget';
 import type { HostSessionRuntimePlan } from '@/agent/runtime/session/loop/lifecycle';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
+import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import type { ComposerAttachmentDispatchResolver } from '@/agent/runtime/runPermissionModePromptLoop';
+import type { StructuredInputComposerReferenceResolver } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
+
+/**
+ * The exact Session-owned Execution Run a tool profile is being composed for.
+ *
+ * The parent Session stays the resource scope and keeps its configured server
+ * profile; permission mode, working location, runtime lifetime and turn
+ * authority come from this Run. `readCurrentRunOccurrence` projects the bridge's
+ * canonical controller entry and is deliberately read per tool call, so
+ * a resumed or replaced controller occurrence stops supplying authority without
+ * rebuilding the profile.
+ */
+export type NativeAgentSessionRunToolBindingRequest = Readonly<{
+    runId: string;
+    cwd: string;
+    /** This Run's runtime lifetime, not the parent Session's. */
+    signal: AbortSignal;
+    isCurrent: () => boolean;
+    getPermissionMode: () => string;
+    readActiveTurnAdmissionWitness: () => AgentInvocationTurnAdmissionWitness | null;
+    readCurrentRunOccurrence: (runId: string) => ExecutionRunOccurrenceWitnessV1 | null;
+}>;
+
+export type NativeAgentSessionRunToolBinding = Readonly<{
+    mcpServers?: AgentSessionOpenRequest['mcpServers'];
+    /** Exact Session read Actions advertised by this occurrence's tool profile. */
+    supportedSessionReadActions: readonly SessionRunPromptReadActionIdV1[];
+    /** Releases only this Run's binding; the parent Session bridge is untouched. */
+    dispose: () => void;
+}>;
+
+/** The parent Session's durable transcript writer, re-scoped to one Run sidechain. */
+export type NativeAgentSessionRunTranscriptTarget = Pick<ApiSessionClient,
+    | 'updateMetadata'
+    | 'enqueueAgentMessageCommitted'
+> & Readonly<{
+    sessionId: string;
+    requiresDurableTurnCompletionMarker: true;
+}>;
+
+/**
+ * Host-only Run scope supplied by the Execution Run bridge, which owns the
+ * controller occurrence registry and the Run's sidechain identity.
+ */
+export type ExecutionRunHostRunScopeBinding = Readonly<{
+    runId: string;
+    sidechainId: string;
+    readCurrentRunOccurrence: (runId: string) => ExecutionRunOccurrenceWitnessV1 | null;
+    /** Publishes the materialized profile onto this exact controller occurrence. */
+    publishSupportedSessionReadActions: (
+        actionIds: readonly SessionRunPromptReadActionIdV1[],
+        runtimeLifetimeSignal: AbortSignal,
+    ) => void;
+    /**
+     * The Run-sidechain-scoped transcript target. Custody is re-resolved on every
+     * write, so a superseded or missing controller refuses there instead of
+     * falling back to the parent Session's main transcript.
+     */
+    projectRunTranscriptSession: () => NativeAgentSessionRunTranscriptTarget;
+}>;
 
 export type NativeAgentSessionInteractionHostBinding = Readonly<{
     /** Parent Session custody used by the hidden retained Voice interaction. */
@@ -31,9 +98,47 @@ export type NativeAgentSessionInteractionHostBinding = Readonly<{
         | 'updateMetadata'
         | 'updateAgentState'
         | 'enqueueAgentMessageCommitted'
-    >;
+    > & Partial<Pick<ApiSessionClient,
+        | 'publishUsageObservation'
+        | 'enqueueSessionUserMessage'
+        | 'enqueueSessionUserMessageWithDisposition'
+        | 'bindExecutionRunPendingInput'
+        | 'subscribeExecutionRunPendingTarget'
+        | 'listExecutionRunPendingDeliveryStatuses'
+        | 'blockExecutionRunPendingDelivery'
+    >>;
     machineId: string;
     permissionHandler: Pick<ProviderEnforcedPermissionHandler, 'handleToolCall'>;
+    /** Exact owning Session's current structured-input catalogs. */
+    listSkills?: () => Promise<unknown>;
+    listVendorPlugins?: () => Promise<unknown>;
+    /** Exact owning Session's current-generation Composer contribution resolvers. */
+    resolveComposerReference?: StructuredInputComposerReferenceResolver['resolve'];
+    resolveComposerAttachmentForDispatch?: ComposerAttachmentDispatchResolver;
+    /** Parent hidden Voice Session's Account-Follow context seam. */
+    prepareAccountVoiceFollowContext?: (input: Readonly<{
+        executionRunId: string;
+        requiredPrompt: string;
+        signal: AbortSignal;
+    }>) => Promise<SessionFollowPreparedContext | null>;
+    /**
+     * Composes this parent Session's effective tool profile for one Session-owned
+     * Run through the existing Session MCP materialization owner. Absent for hosts
+     * that have no tool profile to inherit.
+     */
+    composeRunToolBinding?: (
+        request: NativeAgentSessionRunToolBindingRequest,
+    ) => Promise<NativeAgentSessionRunToolBinding>;
+    /** Opens an explicit Team selection, or the parent Session's current selection when omitted. */
+    prepareRunTeamCredentialProviderBinding?: (request: Readonly<{
+        runId: string;
+        selection?: TeamCredentialProviderModelSelectionV1;
+    }>) => Promise<Readonly<{
+        providerBinding: AgentSessionProviderBinding;
+        environmentOverlay: SessionEnvOverlayV1;
+        additionalRedactionValues: readonly string[];
+        cleanup(): void | Promise<void>;
+    }> | null>;
 }>;
 
 export type BackendExecutionSurfaces = Readonly<{
@@ -46,14 +151,22 @@ export type BackendExecutionSurfaces = Readonly<{
 }>;
 
 export type CreateCliExecutionRunBackendParams = Readonly<{
-    cwd: string;
+  cwd: string;
+  machineId?: string;
     runId?: string;
+    controllerOccurrenceId?: string;
+    callId?: string;
+    sidechainId?: string;
+    /** Host-authored ownership scope; detached Runs cannot consume parent Session services. */
+    scope: ExecutionRunRetainedInteractionScope;
+    getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
     backendId: string;
     backendTarget?: BackendTargetRefV2Input;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
     configuration?: AgentSessionConfigurationSnapshot;
+    runtimeDescriptorV1?: PortableRuntimeDescriptorV1;
     providerBinding?: AgentSessionProviderBinding;
     revalidateProviderBeforeOpen?: () => Promise<Readonly<
         { ok: true } | { ok: false; error: ProviderErrorV1 }
@@ -70,6 +183,12 @@ export type CreateCliExecutionRunBackendParams = Readonly<{
     happierSessionId?: string;
     /** Host-only Session service custody for retained multi-turn Voice. */
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
+    /**
+     * Host-only Session-owned Run scope from the Execution Run bridge. Present
+     * only for a Run owned by a Happier Session; detached Runs have no parent
+     * occurrence registry, sidechain, or inherited tool profile.
+     */
+    sessionOwnedRunScope?: ExecutionRunHostRunScopeBinding;
 }>;
 
 export type CliSessionRuntime = HostSessionRuntimePlan;

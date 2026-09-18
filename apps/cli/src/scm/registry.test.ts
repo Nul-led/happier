@@ -358,7 +358,7 @@ describe('scm backend registry selection', () => {
     });
 
     it('resolves live availability without mutating static declared support', async () => {
-        const module = await import('./capabilities/resolveScmBackendCapabilities').catch(() => null);
+        const module = await import('@happier-dev/protocol/scm').catch(() => null);
         expect(module).not.toBeNull();
         if (!module) return;
 
@@ -428,7 +428,7 @@ describe('scm backend registry selection', () => {
     });
 
     it('does not infer tool availability when live executable status is omitted', async () => {
-        const module = await import('./capabilities/resolveScmBackendCapabilities').catch(() => null);
+        const module = await import('@happier-dev/protocol/scm').catch(() => null);
         expect(module).not.toBeNull();
         if (!module) return;
 
@@ -470,7 +470,7 @@ describe('scm backend registry selection', () => {
     });
 
     it('treats missing repo mode as unavailable instead of live supported', async () => {
-        const module = await import('./capabilities/resolveScmBackendCapabilities').catch(() => null);
+        const module = await import('@happier-dev/protocol/scm').catch(() => null);
         expect(module).not.toBeNull();
         if (!module) return;
 

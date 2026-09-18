@@ -18,11 +18,8 @@ import {
   type PermissionResult,
 } from '@/agent/permissions/BasePermissionHandler';
 import type { ToolTraceProtocol } from '@/agent/tools/trace/toolTrace';
-import {
-  resolveHappierActionForMcpToolName,
-  shouldSuppressProviderPermissionForHappierApproval,
-} from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
-import type { AccountSettings, ActionId } from '@happier-dev/protocol';
+import { resolveProviderPermissionForHappierAction } from '@/agent/tools/happierTools/resolveHappierActionForMcpToolName';
+import type { AccountSettings } from '@happier-dev/protocol';
 import type { AcpPermissionCallContext } from '@/agent/acp/permissions/acpPermissionHandler';
 import {
   isSharedPermissionSafeToolName,
@@ -51,13 +48,6 @@ type HandlerOpts = Readonly<{
 }>;
 
 const DEFAULT_SAFE_TOOL_NAME_SEGMENTS = SHARED_PROVIDER_ENFORCED_SAFE_TOOL_NAME_SEGMENTS;
-
-const ALWAYS_AUTO_APPROVE_HAPPIER_ACTION_IDS = new Set<ActionId>([
-  'session.title.set',
-  'action.spec.search',
-  'action.spec.get',
-  'action.options.resolve',
-]);
 
 // Stored in the existing opaque request `source` field only for the host ACP
 // filesystem boundary, so a restarted handler can reconstruct the incumbent
@@ -185,21 +175,10 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
     }
   }
 
-  private isAlwaysAutoApprove(toolName: string, input: unknown): boolean {
+  private isAlwaysAutoApprove(toolName: string): boolean {
     if (isSharedPermissionSafeToolName(toolName)) return true;
-    const happierActionId = resolveHappierActionForMcpToolName({ toolName, input });
-    if (happierActionId && ALWAYS_AUTO_APPROVE_HAPPIER_ACTION_IDS.has(happierActionId)) return true;
     const normalized = toolName.trim().toLowerCase();
     return this.alwaysAutoApproveToolNameIncludes.some((name) => normalized === name.trim().toLowerCase());
-  }
-
-  private shouldSuppressForHappierActionApproval(toolName: string, input: unknown): boolean {
-    return shouldSuppressProviderPermissionForHappierApproval({
-      toolName,
-      input,
-      accountSettings: this.getAccountSettingsSnapshot(),
-      surface: 'agent',
-    }).suppress;
   }
 
   getImmediateDecision(
@@ -232,13 +211,21 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
     ) {
       return { decision: 'denied' };
     }
+    const happierActionPermission = resolveProviderPermissionForHappierAction({
+      toolName,
+      input,
+      permissionMode,
+    });
+    if (happierActionPermission.decision) {
+      // Happier Actions enforce their own enablement, authorization, and
+      // configurable confirmation. The provider layer only applies the
+      // effective permission-mode ceiling before delegating to that owner.
+      return { decision: happierActionPermission.decision };
+    }
     if (isFullAccessPermissionMode(permissionMode) && resolveAgentRequestKind(toolName) === 'permission') {
       return { decision: 'approved' };
     }
-    if (this.isAlwaysAutoApprove(toolName, input)) {
-      return { decision: 'approved' };
-    }
-    if (this.shouldSuppressForHappierActionApproval(toolName, input)) {
+    if (this.isAlwaysAutoApprove(toolName)) {
       return { decision: 'approved' };
     }
     return null;

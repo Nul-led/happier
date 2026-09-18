@@ -65,4 +65,31 @@ describe('createSessionClientUpdateRuntime', () => {
 
     expect(onPendingChangedDrainTrigger).toHaveBeenCalledWith(canonical);
   });
+
+  it('forwards an exact execution-run target hint with the canonical Pending state', () => {
+    const canonical = { known: true, pendingCount: 1, pendingBlockedCount: 0, pendingVersion: 6 } as const;
+    const onPendingChangedDrainTrigger = vi.fn();
+    const runtime = createRuntime({
+      getPendingQueueState: () => canonical,
+      onPendingChangedDrainTrigger,
+    });
+
+    runtime.handleUpdate({
+      id: 'target-pending-change', seq: 2, createdAt: 1_001,
+      body: {
+        t: 'pending-changed',
+        sid: 'session-1',
+        pendingCount: 1,
+        pendingBlockedCount: 0,
+        pendingVersion: 6,
+        recipient: { kind: 'execution_run', runId: 'run-1' },
+      },
+    } as Update, { source: 'user-scoped' });
+
+    expect(onPendingChangedDrainTrigger).toHaveBeenCalledWith(
+      canonical,
+      { kind: 'execution_run', runId: 'run-1' },
+      6,
+    );
+  });
 });

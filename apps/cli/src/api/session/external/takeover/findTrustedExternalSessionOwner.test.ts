@@ -45,6 +45,74 @@ describe('findTrustedExternalSessionOwner', () => {
         expect(marker?.pid).toBe(4242);
     });
 
+    it('matches the exact provider-minted bytes the marker persisted', () => {
+        // The Agent minted this id; the marker stores it verbatim through the
+        // canonical vendor resume-id reader. Surrounding whitespace, the
+        // embedded newline, `/`, `+` and `=` are part of the identity, so a
+        // takeover query that re-canonicalizes it can never find its owner.
+        const remoteSessionId = '  provider\nses/AB+cd==  ';
+        const marker = findTrustedExternalSessionOwner({
+            markers: [{
+                pid: 4444,
+                happySessionId: 'happy-opaque-1',
+                happyHomeDir: '/tmp/happy-home',
+                createdAt: 1,
+                updatedAt: 2,
+                flavor: 'ohMyPi',
+                metadata: {
+                    flavor: 'ohMyPi',
+                    ohMyPiSessionId: remoteSessionId,
+                },
+            }],
+            agentId: 'ohMyPi',
+            remoteSessionId,
+        });
+
+        expect(marker?.happySessionId).toBe('happy-opaque-1');
+    });
+
+    it('never matches a marker by a trimmed rewrite of the provider identity', () => {
+        const marker = findTrustedExternalSessionOwner({
+            markers: [{
+                pid: 4445,
+                happySessionId: 'happy-opaque-2',
+                happyHomeDir: '/tmp/happy-home',
+                createdAt: 1,
+                updatedAt: 2,
+                flavor: 'ohMyPi',
+                metadata: {
+                    flavor: 'ohMyPi',
+                    ohMyPiSessionId: 'provider\nses/AB+cd==',
+                },
+            }],
+            agentId: 'ohMyPi',
+            remoteSessionId: '  provider\nses/AB+cd==  ',
+        });
+
+        expect(marker).toBeNull();
+    });
+
+    it('fails closed on an all-whitespace remote session id', () => {
+        const marker = findTrustedExternalSessionOwner({
+            markers: [{
+                pid: 4446,
+                happySessionId: 'happy-opaque-3',
+                happyHomeDir: '/tmp/happy-home',
+                createdAt: 1,
+                updatedAt: 2,
+                flavor: 'ohMyPi',
+                metadata: {
+                    flavor: 'ohMyPi',
+                    ohMyPiSessionId: ' \n\t ',
+                },
+            }],
+            agentId: 'ohMyPi',
+            remoteSessionId: ' \n\t ',
+        });
+
+        expect(marker).toBeNull();
+    });
+
     it('ignores markers whose provider metadata resolves to a different vendor session id', () => {
         const marker = findTrustedExternalSessionOwner({
             markers: [{

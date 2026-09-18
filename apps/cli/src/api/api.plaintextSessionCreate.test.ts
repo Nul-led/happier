@@ -14,6 +14,13 @@ import { buildSessionMetadataEnvelopeFields } from '@/session/metadata/buildSess
 const mockPost = vi.fn();
 const mockGet = vi.fn();
 
+function serverFeaturesResponse(capabilities: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ features: {}, capabilities }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 vi.mock('axios', () => ({
   default: {
     post: (...args: any[]) => mockPost(...args),
@@ -59,6 +66,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         signingKeyFingerprint: null,
         contentKeyFingerprint: null,
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       },
     });
     vi.unstubAllGlobals();
@@ -73,12 +81,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : String((input as any)?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               accountStoredContentCompatibility: {
                 v: 1,
                 minimumProtocolVersion: 2,
@@ -90,9 +93,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
                 allowAccountOptOut: false,
                 defaultAccountMode: 'e2ee',
               },
-            },
-          }),
-        } as any;
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }) as any);
@@ -177,12 +178,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : String((input as any)?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               accountStoredContentCompatibility: {
                 v: 1,
                 minimumProtocolVersion: 2,
@@ -194,9 +190,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
                 allowAccountOptOut: true,
                 defaultAccountMode: 'e2ee',
               },
-            },
-          }),
-        } as any;
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }) as any);
@@ -209,6 +203,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         signingKeyFingerprint: null,
         contentKeyFingerprint: null,
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       },
     });
 
@@ -276,20 +271,13 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         ? input
         : String((input as { url?: unknown })?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               encryption: {
                 storagePolicy: 'plaintext_only',
                 allowAccountOptOut: false,
                 defaultAccountMode: 'plain',
               },
-            },
-          }),
-        };
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }));
@@ -318,12 +306,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
       token: 'token-test',
       encryption: null,
     };
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        features: {},
-        capabilities: {
+    vi.stubGlobal('fetch', vi.fn(async () => serverFeaturesResponse({
           accountStoredContentCompatibility: {
             v: 1,
             minimumProtocolVersion: 2,
@@ -335,8 +318,6 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
             allowAccountOptOut: false,
             defaultAccountMode: 'plain',
           },
-        },
-      }),
     })));
     mockPost.mockRejectedValueOnce({
       isAxiosError: true,
@@ -380,12 +361,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         ? input
         : String((input as { url?: unknown })?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               accountStoredContentCompatibility: {
                 v: 1,
                 minimumProtocolVersion: 2,
@@ -397,9 +373,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
                 allowAccountOptOut: false,
                 defaultAccountMode: 'e2ee',
               },
-            },
-          }),
-        };
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }));
@@ -543,12 +517,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         ? input
         : String((input as { url?: unknown })?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               accountStoredContentCompatibility: {
                 v: 1,
                 minimumProtocolVersion: 2,
@@ -560,9 +529,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
                 allowAccountOptOut: false,
                 defaultAccountMode: 'plain',
               },
-            },
-          }),
-        };
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }));
@@ -617,12 +584,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         ? input
         : String((input as { url?: unknown })?.url ?? input);
       if (url.endsWith('/v1/features')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            features: {},
-            capabilities: {
+        return serverFeaturesResponse({
               accountStoredContentCompatibility: {
                 v: 1,
                 minimumProtocolVersion: 2,
@@ -634,9 +596,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
                 allowAccountOptOut: false,
                 defaultAccountMode: 'e2ee',
               },
-            },
-          }),
-        };
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }));
@@ -649,6 +609,7 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
         signingKeyFingerprint: null,
         contentKeyFingerprint: 'content-fingerprint',
         updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'available' },
       },
     });
 

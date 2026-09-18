@@ -75,7 +75,28 @@ describe('createTerminalRuntimeProjectionHostService', () => {
         expect(service).not.toHaveProperty('transcripts');
     });
 
-    it('publishes provider session identity through session metadata', async () => {
+    it('publishes the Agent-issued session identity byte for byte through session metadata', async () => {
+        const { createTerminalRuntimeProjectionHostService } = await loadProjectionModule();
+        const fixture = createSessionFixture();
+        const service = createTerminalRuntimeProjectionHostService({
+            session: fixture.session,
+            subagents: createHostSubagentStore(),
+        });
+
+        // The Agent minted this id. Its surrounding whitespace, embedded newline
+        // and `/`, `+`, `=` bytes are identity; a trimmed or otherwise
+        // re-canonicalized value would not resume the Agent's conversation.
+        const opaqueProviderSessionId = '  provider\nses/AB+cd==  ';
+
+        await expect(service.publishProviderSessionId({
+            providerSessionId: opaqueProviderSessionId,
+            metadataKey: 'codexSessionId',
+        })).resolves.toBe(true);
+
+        expect(fixture.readMetadata().codexSessionId).toBe(opaqueProviderSessionId);
+    });
+
+    it('does not publish a blank provider session identity', async () => {
         const { createTerminalRuntimeProjectionHostService } = await loadProjectionModule();
         const fixture = createSessionFixture();
         const service = createTerminalRuntimeProjectionHostService({
@@ -84,13 +105,11 @@ describe('createTerminalRuntimeProjectionHostService', () => {
         });
 
         await expect(service.publishProviderSessionId({
-            providerSessionId: 'provider-session-1',
+            providerSessionId: '   ',
             metadataKey: 'codexSessionId',
-        })).resolves.toBe(true);
+        })).resolves.toBe(false);
 
-        expect(fixture.readMetadata()).toMatchObject({
-            codexSessionId: 'provider-session-1',
-        });
+        expect(fixture.readMetadata()).not.toHaveProperty('codexSessionId');
     });
 
     it('publishes terminal switch events for control state', async () => {

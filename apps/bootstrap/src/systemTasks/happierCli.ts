@@ -18,7 +18,7 @@ export function resolveLocalHappierCommand(params: Readonly<{
     processEnv,
     envVarNames: params.envVarNames ?? DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
   });
-  if (resolved) return resolved;
+  if (resolved) return resolved.command;
 
   return 'happier';
 }

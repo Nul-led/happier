@@ -54,6 +54,8 @@ type RouteSessionUsageLimitRecoveryControlParams = Readonly<{
   callLiveSessionRpc: () => Promise<unknown>;
   stageUsageLimitRecoveryMutation: StageUsageLimitRecoveryMutation;
   resolveAdapter?: ResolveSessionUsageLimitRecoveryControlAdapter;
+  readTemporaryThrottleRecovery?: (sessionId: string) => Readonly<{ issueFingerprint: string; armedAtMs: number }> | null;
+  cancelTemporaryThrottleRecovery?: (input: Readonly<{ sessionId: string; issueFingerprint?: string; armedAtMs?: number }>) => Promise<unknown> | unknown;
   retryTemporaryThrottleNow?: (input: Readonly<{
     sessionId: string;
   }>) => Promise<unknown> | unknown;
@@ -459,6 +461,9 @@ async function ensureLocalInactiveControlContext(
 export async function routeSessionUsageLimitRecoveryWaitResumeEnable(
   params: RouteSessionUsageLimitRecoveryWaitResumeEnableParams,
 ): Promise<unknown> {
+  if (isRetryableTemporaryThrottleIssue(params.rawSession) || parseRecoveryIntent(params.metadata ?? {})?.issueFingerprint.startsWith('temporary-throttle:')) {
+    return await routeSessionUsageLimitRecoveryCheckNow({ ...params, request: { sessionId: params.sessionId } });
+  }
   if (params.rawSession.active === true) {
     const liveResult = normalizeUsageLimitRecoveryOperationResult(await params.callLiveSessionRpc(), {
       sessionId: params.sessionId,
@@ -489,6 +494,24 @@ export async function routeSessionUsageLimitRecoveryWaitResumeEnable(
 export async function routeSessionUsageLimitRecoveryWaitResumeCancel(
   params: RouteSessionUsageLimitRecoveryWaitResumeCancelParams,
 ): Promise<unknown> {
+  if (params.request.issueFingerprint?.startsWith('temporary-throttle:') || isRetryableTemporaryThrottleIssue(params.rawSession)) {
+    const context = await ensureLocalInactiveControlContext(params);
+    if (!context.ok) return context.result;
+    const recovery = params.readTemporaryThrottleRecovery?.(params.sessionId);
+    if (!recovery || !params.cancelTemporaryThrottleRecovery) {
+      return stableError('session_usage_limit_recovery_control_inactive', params.sessionId);
+    }
+    const fingerprint = recovery.issueFingerprint.startsWith('temporary-throttle:')
+      ? recovery.issueFingerprint : `temporary-throttle:${recovery.issueFingerprint}`;
+    if (params.request.issueFingerprint !== fingerprint || params.request.armedAtMs !== recovery.armedAtMs) {
+      return stableError('session_usage_limit_recovery_control_issue_mismatch', params.sessionId);
+    }
+    const cancelled = await params.cancelTemporaryThrottleRecovery({
+      sessionId: params.sessionId, issueFingerprint: recovery.issueFingerprint, armedAtMs: recovery.armedAtMs,
+    });
+    if (!cancelled) return stableError('session_usage_limit_recovery_control_inactive', params.sessionId);
+    return buildUsageLimitRecoveryOperationSuccess({ sessionId: params.sessionId, status: 'cancelled' });
+  }
   if (params.rawSession.active === true) {
     const liveResult = normalizeUsageLimitRecoveryOperationResult(await params.callLiveSessionRpc(), {
       sessionId: params.sessionId,
@@ -553,7 +576,12 @@ export async function routeSessionUsageLimitRecoveryCheckNow(
 ): Promise<unknown> {
   const operation = params.request?.operation === 'consume_reset_credit' ? 'consume_reset_credit' : 'check_now';
 
-  if (operation === 'check_now' && params.retryTemporaryThrottleNow && isRetryableTemporaryThrottleIssue(params.rawSession)) {
+  if (isRetryableTemporaryThrottleIssue(params.rawSession) || parseRecoveryIntent(params.metadata ?? {})?.issueFingerprint.startsWith('temporary-throttle:')) {
+    const context = await ensureLocalInactiveControlContext(params);
+    if (!context.ok) return context.result;
+    if (operation !== 'check_now' || !params.retryTemporaryThrottleNow) {
+      return stableError('session_usage_limit_recovery_control_inactive', params.sessionId);
+    }
     return normalizeUsageLimitRecoveryOperationResult(
       await params.retryTemporaryThrottleNow({ sessionId: params.sessionId }),
       { sessionId: params.sessionId },

@@ -3,6 +3,7 @@ import type {
     SessionId,
 } from '@/agent/core/AgentMessage';
 import type { StartSessionResult } from '@/agent/core/AgentTypes';
+import type { ListSessionsResponse } from '@agentclientprotocol/sdk';
 
 export type AcpRuntimeTurnCompletedStopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests';
 
@@ -32,6 +33,9 @@ export interface CatalogAcpBackend {
     loadSession?(sessionId: SessionId): Promise<StartSessionResult>;
     loadSessionWithReplayCapture?(sessionId: SessionId): Promise<StartSessionResult & { replay: unknown[] }>;
     forkSession?(params: Readonly<{ sessionId: SessionId; cwd?: string }>): Promise<StartSessionResult>;
+    listSessions?(params?: Readonly<{ cwd?: string; cursor?: string }>): Promise<ListSessionsResponse>;
+    closeSession?(sessionId: SessionId): Promise<void>;
+    deleteSession?(sessionId: SessionId): Promise<void>;
     requestExtension?<Response = unknown, Params = unknown>(
         method: string,
         params?: Params,

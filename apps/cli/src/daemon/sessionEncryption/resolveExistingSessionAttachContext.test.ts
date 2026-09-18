@@ -37,6 +37,7 @@ import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedService
 
 import type { Credentials } from '@/persistence';
 import { resolveExistingSessionAttachContext } from './resolveExistingSessionAttachContext';
+import { configuration } from '@/configuration';
 
 function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
   let counter = 1;
@@ -51,9 +52,28 @@ function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
 }
 
 describe('resolveExistingSessionAttachContext', () => {
+  const originalClientEncryptionRequirement = configuration.clientEncryptionRequirement;
   afterEach(() => {
     vi.clearAllMocks();
     vi.mocked(resolveCurrentExternalSessionAgentIdentity).mockResolvedValue(null);
+    Object.assign(configuration, { clientEncryptionRequirement: originalClientEncryptionRequirement });
+  });
+
+  it('rejects a plaintext session before attaching when this client requires E2EE', async () => {
+    vi.mocked(fetchSessionByIdCompat).mockResolvedValueOnce(
+      createSessionRecordFixture({
+        id: 'sess_plain_blocked',
+        encryptionMode: 'plain',
+        metadata: JSON.stringify({ path: '/must-not-attach' }),
+        dataEncryptionKey: null,
+      }),
+    );
+    Object.assign(configuration, { clientEncryptionRequirement: 'require_e2ee' });
+    await expect(resolveExistingSessionAttachContext({
+      token: 't',
+      sessionId: 'sess_plain_blocked',
+      credentials: null,
+    })).resolves.toEqual({ ok: false, reason: 'clientE2eeRequired' });
   });
 
   it('returns a missing-session-id failure (and does not fetch) when sessionId is blank', async () => {
@@ -72,6 +92,7 @@ describe('resolveExistingSessionAttachContext', () => {
       createSessionRecordFixture({
         id: 'sess_plain',
         seq: 42,
+        pendingExecutionRunIds: ['run-offline', 'run-offline'],
         metadataVersion: 7,
         agentStateVersion: 3,
         encryptionMode: 'plain',
@@ -93,6 +114,7 @@ describe('resolveExistingSessionAttachContext', () => {
           metadataVersion: 7,
           agentState: { controlledByUser: true },
           agentStateVersion: 3,
+          pendingExecutionRunIds: ['run-offline'],
         },
       },
       vendorResumeId: 'vendor-plain-1',
@@ -623,6 +645,7 @@ describe('resolveExistingSessionAttachContext', () => {
       signingKeyFingerprint: 'signing-fingerprint',
       contentKeyFingerprint: 'content-fingerprint',
       updatedAt: 1,
+      recipientEnvelopeReadiness: { status: 'available' },
     });
     const seed = new Uint8Array(32).fill(11);
     const compatSecretKey = createHash('sha512').update(seed).digest().subarray(0, 32);
@@ -645,9 +668,11 @@ describe('resolveExistingSessionAttachContext', () => {
       },
     };
 
+    const ctx = resolveSessionEncryptionContextFromCredentials(credentials, { dataEncryptionKey: encryptedEnvelopeBase64 });
+    if (!ctx) throw new Error('Expected the fixture Session envelope to open');
     const metadataCiphertext = encryptStoredSessionPayload({
       mode: 'e2ee',
-      ctx: resolveSessionEncryptionContextFromCredentials(credentials, { dataEncryptionKey: encryptedEnvelopeBase64 }),
+      ctx,
       payload: {
         v: 1,
         agentPresentation: { agentId: 'codex' },

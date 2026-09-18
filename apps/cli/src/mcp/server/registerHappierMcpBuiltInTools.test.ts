@@ -1,10 +1,143 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActionsSettingsV1Schema } from '@happier-dev/protocol';
 import { z } from 'zod';
 
 import { registerHappierMcpBuiltInTools } from './registerHappierMcpBuiltInTools';
 
 describe('registerHappierMcpBuiltInTools', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('registers only MCP-presentable schemas for the complete built-in catalog', () => {
+    const registrations: Array<Readonly<{
+      name: string;
+      meta: { inputSchema?: z.ZodType; outputSchema?: z.ZodType };
+    }>> = [];
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, meta) => registrations.push({
+        name,
+        meta: meta as { inputSchema?: z.ZodType; outputSchema?: z.ZodType },
+      }),
+    }, {
+      sessionId: 'sess-1',
+      surface: 'mcp',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName: async () => ({ ok: true as const, result: {} }),
+      },
+    });
+
+    expect(registrations.length).toBeGreaterThan(0);
+    for (const registration of registrations) {
+      expect(() => registration.meta.inputSchema
+        ? z.toJSONSchema(registration.meta.inputSchema, { target: 'draft-7', io: 'input' })
+        : null, registration.name).not.toThrow();
+      expect(() => registration.meta.outputSchema
+        ? z.toJSONSchema(registration.meta.outputSchema, { target: 'draft-7', io: 'output' })
+        : null, registration.name).not.toThrow();
+    }
+  });
+
+  it('keeps Action normalization at canonical dispatch instead of applying it in MCP presentation', async () => {
+    const registered = new Map<string, {
+      meta: { inputSchema?: z.ZodType };
+      handler: (args: unknown) => Promise<unknown>;
+    }>();
+    const executeActionByToolName = vi.fn(async () => ({ ok: true as const, result: { status: 'updated' } }));
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, meta, handler) => registered.set(name, {
+        meta: meta as { inputSchema?: z.ZodType },
+        handler,
+      }),
+    }, {
+      sessionId: 'sess-1',
+      surface: 'mcp',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    const tool = registered.get('session_title_set');
+    if (!tool?.meta.inputSchema) throw new Error('Expected session_title_set to be registered');
+    const rawInput = { title: '  canonical title  ' };
+    const presented = tool.meta.inputSchema.safeParse(rawInput);
+    expect(presented.success).toBe(true);
+    if (!presented.success) throw new Error('Expected MCP presentation input to be valid');
+    expect(presented.data).toEqual(rawInput);
+    expect(tool.meta.inputSchema.safeParse({ title: '   ' }).success).toBe(false);
+
+    await tool.handler(rawInput);
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'session_title_set',
+      rawInput,
+      'sess-1',
+    );
+  });
+
+  it('projects read annotations onto concrete execution observation tools but not opaque action_execute', () => {
+    const registrations = new Map<string, Record<string, unknown>>();
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, meta) => registrations.set(name, meta as Record<string, unknown>),
+    }, {
+      sessionId: 'sess-1',
+      surface: 'agent',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName: async () => ({ ok: true as const, result: {} }),
+      },
+    });
+
+    for (const toolName of ['execution_run_list', 'execution_run_get', 'execution_run_wait']) {
+      expect(registrations.get(toolName)?.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
+    }
+    expect(registrations.get('action_execute')).not.toHaveProperty('annotations');
+  });
+
+  it('registers and executes only the Session reads promoted by the Run profile', async () => {
+    const registered = new Map<string, (args: unknown) => Promise<unknown>>();
+    const executeActionByToolName = vi.fn(async () => ({ ok: true as const, result: { messages: [] } }));
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, _meta, handler) => {
+        registered.set(name, handler as (args: unknown) => Promise<unknown>);
+      },
+    }, {
+      sessionId: 'sess-1',
+      surface: 'agent',
+      requiredDirectActionIds: ['session.transcript.get'],
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    expect(registered.has('session_transcript_get')).toBe(true);
+    expect(registered.has('session_discussion_post')).toBe(false);
+    await expect(registered.get('session_transcript_get')?.({ limit: 10 })).resolves.toMatchObject({
+      isError: false,
+    });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'session_transcript_get',
+      { limit: 10 },
+      'sess-1',
+      expect.objectContaining({
+        approvalOrigin: expect.objectContaining({
+          kind: 'transcript_tool_call',
+          sessionId: 'sess-1',
+          toolName: 'session_transcript_get',
+        }),
+      }),
+    );
+  });
+
   it('adapts the complete plugin tool presentation to the MCP SDK contract', async () => {
     const registered = new Map<string, {
       meta: unknown;
@@ -164,7 +297,7 @@ describe('registerHappierMcpBuiltInTools', () => {
       const input = { backendTargetKey: 'backend:codex', limit: 1 };
       expect(tool?.meta.inputSchema?.safeParse?.(input)?.success).toBe(true);
 
-      await expect(tool?.handler(input)).resolves.toEqual({
+      await expect(tool?.handler(input)).resolves.toMatchObject({
         content: [{ type: 'text', text: JSON.stringify({ args: input }) }],
         isError: false,
       });
@@ -211,6 +344,46 @@ describe('registerHappierMcpBuiltInTools', () => {
     expect(meta).toBeTruthy();
     expect(meta?.inputSchema?.safeParse?.({})?.success).toBe(true);
     expect(meta?.inputSchema?.safeParse?.({ sessionId: 'sess-2' })?.success).toBe(true);
+  });
+
+  it('preserves an exact execution-run recipient through the canonical MCP Action tool', async () => {
+    const handlers = new Map<string, (args: unknown, extra?: unknown) => Promise<unknown>>();
+    const executeActionByToolName = vi.fn(async () => ({
+      ok: true as const,
+      result: { status: 'accepted', localId: 'local-targeted-1' },
+    }));
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, _meta, handler) => {
+        handlers.set(name, handler as (args: unknown, extra?: unknown) => Promise<unknown>);
+      },
+    }, {
+      sessionId: 'sess-home-1',
+      surface: 'mcp',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    const handler = handlers.get('session_message_send');
+    if (!handler) throw new Error('Expected session_message_send to be registered');
+    const input = {
+      message: 'Inspect the exact run.',
+      recipient: { kind: 'execution_run', runId: 'run-9' },
+      wait: true,
+    };
+
+    await expect(handler(input, { requestId: 'mcp-targeted-1' })).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { status: 'accepted', localId: 'local-targeted-1' },
+    });
+    expect(executeActionByToolName).toHaveBeenCalledExactlyOnceWith(
+      'session_message_send',
+      input,
+      'sess-home-1',
+      { actionRequestId: 'mcp-targeted-1' },
+    );
   });
 
   it('does not let process action settings disable built-in MCP tools when no predicate is provided', () => {
@@ -286,6 +459,7 @@ describe('registerHappierMcpBuiltInTools', () => {
       { limit: 20, ignoredSecret: 'must-not-be-persisted-in-origin' },
       'sess-1',
       {
+        actionRequestId: 'jsonrpc-request-1',
         approvalOrigin: {
           kind: 'transcript_tool_call',
           sessionId: 'sess-1',
@@ -314,5 +488,78 @@ describe('registerHappierMcpBuiltInTools', () => {
     });
 
     expect(handlers.get('session_permission_respond')).toBeUndefined();
+  });
+
+  it('binds an external MCP JSON-RPC request id into the trusted approval origin', async () => {
+    const handlers = new Map<string, (args: unknown, extra?: unknown) => Promise<unknown>>();
+    const executeActionByToolName = vi.fn(async () => ({ ok: true as const, result: { sessions: [] } }));
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, _meta, handler) => {
+        handlers.set(name, handler as (args: unknown, extra?: unknown) => Promise<unknown>);
+      },
+    }, {
+      sessionId: 'sess-1',
+      surface: 'mcp',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    await handlers.get('session_list')?.({ limit: 20 }, { requestId: 42 });
+
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'session_list',
+      { limit: 20 },
+      'sess-1',
+      { actionRequestId: '42' },
+    );
+  });
+
+  it('keeps an active tool call alive with requested MCP progress notifications', async () => {
+    vi.useFakeTimers();
+    const handlers = new Map<string, (args: unknown, extra?: unknown) => Promise<unknown>>();
+    let completeAction!: (value: { ok: true; result: Record<string, never> }) => void;
+    const executeActionByToolName = vi.fn(() => new Promise<{ ok: true; result: Record<string, never> }>((resolve) => {
+      completeAction = resolve;
+    }));
+
+    registerHappierMcpBuiltInTools({
+      registerTool: (name, _meta, handler) => {
+        handlers.set(name, handler as (args: unknown, extra?: unknown) => Promise<unknown>);
+      },
+    }, {
+      sessionId: 'sess-1',
+      surface: 'mcp',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    const handler = handlers.get('session_list');
+    if (!handler) throw new Error('Expected session_list to be registered');
+    const sendNotification = vi.fn(async () => undefined);
+    const call = handler({}, {
+      _meta: { progressToken: 'progress-1' },
+      sendNotification,
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const notificationsAfterKeepaliveInterval = [...sendNotification.mock.calls];
+    completeAction({ ok: true, result: {} });
+    await call;
+
+    expect(notificationsAfterKeepaliveInterval).toContainEqual([{
+      method: 'notifications/progress',
+      params: {
+        progressToken: 'progress-1',
+        progress: 1,
+      },
+    }]);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
   });
 });

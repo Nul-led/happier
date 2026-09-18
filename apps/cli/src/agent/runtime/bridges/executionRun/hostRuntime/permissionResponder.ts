@@ -2,7 +2,7 @@ import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionR
 import { wrapExecutionRunHostRuntime } from './wrap';
 
 type PermissionHandlerResponder = Readonly<{
-  respondToPermissionRequest?: (requestId: string, approved: boolean) => void;
+  respondToPermissionRequest?: (requestId: string, approved: boolean) => boolean;
 }>;
 
 /**
@@ -26,16 +26,23 @@ export function withExecutionRunPermissionResponder(
 
   return wrapExecutionRunHostRuntime({
     readPermissionCapability: () => 'responds',
+    readInteraction: () => runtime.interaction,
     readResumeSupport: (opts) => runtime.readResumeSupport(opts),
-    provisionSession: (opts) => runtime.provisionSession(opts),
-    sendPrompt: (sessionId, prompt, meta) => runtime.sendPrompt(sessionId, prompt, meta),
-    readSendSteerPrompt: () => runtime.sendSteerPrompt,
-    cancel: (sessionId) => runtime.cancel(sessionId),
+    provisionRuntime: (opts) => runtime.provisionRuntime(opts),
+    deliverInput: (runtimeId, input, context) => runtime.deliverInput(runtimeId, input, context),
+    readSteerInput: () => runtime.steerInput?.bind(runtime),
+    getRuntimeLifetimeSignal: () => runtime.getRuntimeLifetimeSignal(),
+    readSubscribeProviderInputOutcomes: () => runtime.subscribeProviderInputOutcomes?.bind(runtime),
+    readSubscribeRuntimeEvents: () => runtime.subscribeRuntimeEvents?.bind(runtime),
+    readActiveTurnAdmissionWitness: () => runtime.readActiveTurnAdmissionWitness?.bind(runtime),
+    cancel: (runtimeId) => runtime.cancel(runtimeId),
     subscribeMessages: (handler) => runtime.subscribeMessages(handler),
     readRespondToPermission: () => async (requestId: string, approved: boolean) => {
-      responder(requestId, approved);
-      return { delivered: true as const };
+      return responder(requestId, approved)
+        ? { delivered: true as const }
+        : { delivered: false as const, reason: 'unknown_request' as const };
     },
+    readAbortPendingPermissionRequests: () => runtime.abortPendingPermissionRequests?.bind(runtime),
     readWaitForTurnCompletion: () => runtime.waitForTurnCompletion,
     readProbeTurnLiveness: () => runtime.probeTurnLiveness,
     dispose: () => runtime.dispose(),

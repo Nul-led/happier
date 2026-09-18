@@ -1,7 +1,7 @@
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type {
     ComposerAttachmentRuntime,
-    PluginInvocationContext,
+    PluginScopedInvocationContextV1,
 } from '@happier-dev/plugin-sdk';
 import {
     compilePluginJsonSchema,
@@ -11,6 +11,7 @@ import {
     ComposerAttachmentPrepareRequestV1Schema,
     ComposerAttachmentPrepareResultV1Schema,
     ComposerAttachmentResolveRequestV1Schema,
+    ComposerAttachmentResolveRequestV2Schema,
     ComposerAttachmentResolveResultV1Schema,
     isValidPluginJsonSchemaValue,
     readComposerAttachmentRuntimeRegistrationFieldsV1,
@@ -20,10 +21,12 @@ import {
     type ComposerAttachmentPrepareRequestV1,
     type ComposerAttachmentPrepareResultV1,
     type ComposerAttachmentResolveRequestV1,
+    type ComposerAttachmentResolveRequestV2,
     type ComposerAttachmentResolveResultV1,
     type PluginJsonSchemaV2,
     type PluginLocalizedStringV2,
     type PluginContributionIdentityV1,
+    type PluginExecutionScopeV1,
 } from '@happier-dev/protocol';
 
 import type { ContributionRuntimeRegistration } from '@/plugins/runtime/api/registrationRightsHost';
@@ -44,12 +47,12 @@ export type TargetComposerAttachmentInvocationContextFactory = (
     input: Readonly<{
         attachment: PluginContributionIdentityV1;
         generation: string;
-        sessionId: string;
+        scope: PluginExecutionScopeV1;
         signal: AbortSignal;
         isCurrent(): boolean;
     }>,
 ) => Readonly<{
-    context: PluginInvocationContext;
+    context: PluginScopedInvocationContextV1;
     complete(): void;
 }>;
 
@@ -186,6 +189,10 @@ function hasPhase(
     runtime: ComposerAttachmentRuntime,
     phase: TargetComposerAttachmentPhase,
 ): boolean {
+    if (phase === 'resolveForDispatch') {
+        return typeof runtime.resolveForDispatch === 'function'
+            || typeof runtime.resolveForDispatchV2 === 'function';
+    }
     return typeof runtime[phase] === 'function';
 }
 
@@ -261,7 +268,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
     }>): Promise<ComposerAttachmentPrepareResultV1>;
     resolveForDispatch(input: Readonly<{
         attachment: PluginContributionIdentityV1;
-        request: ComposerAttachmentResolveRequestV1;
+        request: ComposerAttachmentResolveRequestV1 | ComposerAttachmentResolveRequestV2;
         signal: AbortSignal;
     }>): Promise<ComposerAttachmentResolveResultV1>;
     afterMessageAccepted(input: Readonly<{
@@ -351,9 +358,12 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
     async function invoke<TResult>(paramsForCall: Readonly<{
         attachment: PluginContributionIdentityV1;
         phase: TargetComposerAttachmentPhase;
-        sessionId: string;
+        scope: PluginExecutionScopeV1;
         signal: AbortSignal;
-        operation(runtime: ComposerAttachmentRuntime, context: PluginInvocationContext): Promise<TResult>;
+        operation(
+            runtime: ComposerAttachmentRuntime,
+            context: PluginScopedInvocationContextV1,
+        ): Promise<TResult>;
     }>): Promise<TResult> {
         await ensureActivated(paramsForCall.attachment);
         const entry = find(paramsForCall.attachment);
@@ -384,7 +394,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             const createdInvocation = params.createInvocationContext({
                 attachment: paramsForCall.attachment,
                 generation: entry.generation,
-                sessionId: paramsForCall.sessionId,
+                scope: paramsForCall.scope,
                 signal,
                 isCurrent: () => !signal.aborted && isEntryCurrent(entry, lifecycle),
             });
@@ -530,10 +540,10 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
         },
         requires(input) {
             const declaration = findDeclaration(input.attachment);
-            return declaration !== null
-                && readComposerAttachmentRuntimeRegistrationFieldsV1(
-                    declaration.runtime,
-                ).includes(input.phase);
+            if (!declaration) return false;
+            const fields = readComposerAttachmentRuntimeRegistrationFieldsV1(declaration.runtime);
+            return fields.includes(input.phase)
+                || (input.phase === 'resolveForDispatch' && fields.includes('resolveForDispatchV2'));
         },
         async supports(input) {
             await ensureActivated(input.attachment);
@@ -549,13 +559,14 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             const result = await invoke({
                 attachment: input.attachment,
                 phase: 'prepareForSend',
-                sessionId: request.data.sessionId,
+                scope: { kind: 'session', sessionId: request.data.sessionId },
                 signal: input.signal,
                 operation: async (runtime, context) => {
                     const callback = runtime.prepareForSend;
                     if (!callback) {
                         throw callbackUnavailableError(input.attachment, 'prepareForSend');
                     }
+                    if (context.scope.kind !== 'session') throw invalidRequestError(input.attachment);
                     return await callback(request.data, context);
                 },
             });
@@ -571,19 +582,30 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             });
         },
         async resolveForDispatch(input) {
-            const request = ComposerAttachmentResolveRequestV1Schema.safeParse(input.request);
-            if (!request.success) throw invalidRequestError(input.attachment);
+            const requestV2 = ComposerAttachmentResolveRequestV2Schema.safeParse(input.request);
+            const requestV1 = ComposerAttachmentResolveRequestV1Schema.safeParse(input.request);
+            if (!requestV2.success && !requestV1.success) throw invalidRequestError(input.attachment);
+            const requestV1Data = requestV1.success ? requestV1.data : null;
+            const scope: PluginExecutionScopeV1 = requestV2.success
+                ? requestV2.data.scope
+                : { kind: 'session', sessionId: requestV1Data!.sessionId };
             const result = await invoke({
                 attachment: input.attachment,
                 phase: 'resolveForDispatch',
-                sessionId: request.data.sessionId,
+                scope,
                 signal: input.signal,
                 operation: async (runtime, context) => {
-                    const callback = runtime.resolveForDispatch;
-                    if (!callback) {
-                        throw callbackUnavailableError(input.attachment, 'resolveForDispatch');
+                    if (requestV2.success) {
+                        const callback = runtime.resolveForDispatchV2;
+                        if (!callback) throw callbackUnavailableError(input.attachment, 'resolveForDispatch');
+                        return await callback(requestV2.data, context);
                     }
-                    return await callback(request.data, context);
+                    const callback = runtime.resolveForDispatch;
+                    if (!callback) throw callbackUnavailableError(input.attachment, 'resolveForDispatch');
+                    if (!requestV1Data || context.scope.kind !== 'session') {
+                        throw invalidRequestError(input.attachment);
+                    }
+                    return await callback(requestV1Data, context);
                 },
             });
             const parsed = ComposerAttachmentResolveResultV1Schema.safeParse(result);
@@ -592,7 +614,9 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
                 ...parsed.data,
                 attachments: correlateOutcomes({
                     attachment: input.attachment,
-                    requested: request.data.attachments,
+                    requested: requestV2.success
+                        ? requestV2.data.attachments
+                        : requestV1Data!.attachments,
                     outcomes: parsed.data.attachments,
                 }),
             });
@@ -603,13 +627,14 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             const result = await invoke<unknown>({
                 attachment: input.attachment,
                 phase: 'afterMessageAccepted',
-                sessionId: event.data.sessionId,
+                scope: { kind: 'session', sessionId: event.data.sessionId },
                 signal: input.signal,
                 operation: async (runtime, context) => {
                     const callback = runtime.afterMessageAccepted;
                     if (!callback) {
                         throw callbackUnavailableError(input.attachment, 'afterMessageAccepted');
                     }
+                    if (context.scope.kind !== 'session') throw invalidRequestError(input.attachment);
                     return await callback(event.data, context);
                 },
             });

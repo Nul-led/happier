@@ -7,6 +7,7 @@ import {
   SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
 } from '@happier-dev/protocol/rpc';
 import { AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1 } from '@happier-dev/protocol';
+import { RpcError } from '@happier-dev/protocol/rpcErrors';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { decodeBase64, encodeBase64, encrypt, decrypt } from '@/api/encryption';
 import type { Socket } from 'socket.io-client';
@@ -284,6 +285,32 @@ describe('RpcHandlerManager.handleRequest (plaintext)', () => {
     expect(serializedLogData).toContain('"name":"Error"');
     expect(serializedLogData).toContain('"message":"handler failed"');
     expect(serializedLogData).toContain('"stack":"Error: handler failed');
+  });
+
+  it('projects only explicit protocol RPC error codes into the plaintext response', async () => {
+    const rpc = new RpcHandlerManager({
+      scopePrefix: 'sess_1',
+      encryptionMode: 'plain',
+      logger: () => {},
+    });
+    rpc.registerHandler('demo.typedFailure', async () => {
+      throw new RpcError('workspace root is unsafe', 'workspace_root_unsafe');
+    });
+    rpc.registerHandler('demo.filesystemFailure', async () => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+
+    await expect(rpc.handleRequest({
+      method: 'sess_1:demo.typedFailure',
+      params: {},
+    })).resolves.toEqual({
+      error: 'workspace root is unsafe',
+      errorCode: 'workspace_root_unsafe',
+    });
+    await expect(rpc.handleRequest({
+      method: 'sess_1:demo.filesystemFailure',
+      params: {},
+    })).resolves.toEqual({ error: 'permission denied' });
   });
 
   it('returns a method-not-found error object when handler is missing', async () => {

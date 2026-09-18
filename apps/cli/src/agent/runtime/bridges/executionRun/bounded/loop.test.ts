@@ -1,21 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
-import type { SessionId } from '@/agent/core/AgentMessage';
 import type { FinishExecutionRun } from '../executionRunFinishRun';
 import type { ExecutionRunHostRuntime } from '../executionRunHostRuntime';
+import type { ExecutionRunState } from '../executionRunTypes';
+import { finishExecutionRun } from '../finishExecutionRun';
+import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import { executeBoundedBackendRun } from './loop';
 
-function createController(backend: ExecutionRunHostRuntime, childSessionId: SessionId): ExecutionRunBackendController {
+function createController(backend: ExecutionRunHostRuntime, runtimeId: string): ExecutionRunBackendController {
   let resolveTerminal!: () => void;
   const terminalPromise = new Promise<void>((resolve) => {
     resolveTerminal = resolve;
   });
   return {
     kind: 'backend',
+    controllerOccurrenceId: `controller-${runtimeId}`,
     backend,
     backendSupportsResume: false,
-    childSessionId,
+    runtimeId,
     buffer: '',
     sidechainStreamBuffer: '',
     sidechainStreamKey: '',
@@ -26,8 +29,8 @@ function createController(backend: ExecutionRunHostRuntime, childSessionId: Sess
     turnInFlight: false,
     turnCancelReason: null,
     turnCancelEpoch: null,
-    pendingExternalMessages: [],
-    pendingExternalMessagesSignal: null,
+    admittedLiveInterventions: [],
+    admittedLiveInterventionsSignal: null,
     lastMarkerWriteAtMs: 0,
     terminalPromise,
     resolveTerminal,
@@ -39,10 +42,11 @@ function createRuntime(params: Partial<ExecutionRunHostRuntime>): ExecutionRunHo
         async readResumeSupport() {
             return false;
     },
-    async provisionSession() {
-      return { sessionId: 'child_session_1' };
+    async provisionRuntime() {
+      return { runtimeId: 'child_session_1' };
     },
-    async sendPrompt() {},
+    async deliverInput() { return { status: 'admitted' }; },
+    getRuntimeLifetimeSignal: () => new AbortController().signal,
     async cancel() {},
     subscribeMessages() {
       return () => {};
@@ -53,11 +57,286 @@ function createRuntime(params: Partial<ExecutionRunHostRuntime>): ExecutionRunHo
 }
 
 describe('executeBoundedBackendRun', () => {
-    it('preserves a structured review preflight failure as the canonical failed run result', async () => {
-      const childSessionId = 'child_session_review_preflight' as SessionId;
+    it('retains the exact initial Agent result after bounded controller settlement', async () => {
+      const runId = 'run-agent-result';
       let ctrl!: ExecutionRunBackendController;
       const runtime = createRuntime({
-        async sendPrompt() {
+        async deliverInput() {
+          ctrl.buffer = '{"changed":true}';
+          return { status: 'admitted' as const };
+        },
+        async waitForTurnCompletion() {},
+      });
+      ctrl = createController(runtime, 'child-agent-result');
+      const state: ExecutionRunState = {
+        runId, callId: 'call-agent-result', sidechainId: 'side-agent-result', sessionId: null, depth: 0,
+        intent: 'agent', backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, backendId: 'codex',
+        instructions: 'implement', permissionMode: 'workspace_write', retentionPolicy: 'ephemeral',
+        runClass: 'bounded', ioMode: 'request_response', status: 'running', startedAtMs: 0,
+      };
+      const runs = new Map([[runId, state]]);
+      await executeBoundedBackendRun({
+        runId, callId: state.callId, sidechainId: state.sidechainId, startedAtMs: 0,
+        params: {
+          ...state,
+          localInputId: 'workflow-input-1',
+          resultContract: {
+            kind: 'json',
+            schema: { type: 'object', properties: { changed: { type: 'boolean' } } },
+          },
+        },
+        runs,
+        controllers: new Map([[runId, ctrl]]),
+        sendAcp: async () => {}, parentProvider: 'codex', getNowMs: () => 1,
+        boundedTimeoutMs: null, finishRun: async () => {},
+      });
+      expect(runs.get(runId)?.inputTurns).toMatchObject({
+        last: {
+          inputIds: ['workflow-input-1'], state: 'completed',
+          result: { kind: 'json', value: { changed: true } },
+        },
+      });
+    });
+
+    it('does not resume an interrupted replacement after its job timed out', async () => {
+      let releaseCancel!: () => void;
+      const cancellation = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      const deliverInput = vi.fn(async () => ({ status: 'admitted' as const }));
+      const runtime = createRuntime({
+        deliverInput, cancel: () => cancellation,
+        waitForTurnCompletion: () => new Promise<void>(() => {}),
+      });
+      const ctrl = createController(runtime, 'child-timeout-replacement');
+      const runId = 'run-timeout-replacement';
+      const state: ExecutionRunState = {
+        runId, callId: 'call', sidechainId: 'side', sessionId: 'session-parent', depth: 0,
+        intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, backendId: 'codex',
+        instructions: 'review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+        runClass: 'bounded', ioMode: 'request_response', status: 'running', startedAtMs: 0,
+      };
+      const controllers = new Map([[runId, ctrl]]);
+      const runs = new Map([[runId, state]]);
+      ctrl.admittedLiveInterventions.push({ message: 'replacement', delivery: 'interrupt', resolve() {}, reject() {} });
+      const run = executeBoundedBackendRun({
+        runId, callId: 'call', sidechainId: 'side', startedAtMs: 0,
+        params: {
+          sessionId: 'session-parent', intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          instructions: 'review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+          runClass: 'bounded', ioMode: 'request_response',
+        },
+        controllers, sendAcp: async () => {},
+        parentProvider: 'codex', getNowMs: () => 1, boundedTimeoutMs: 1,
+        finishRun: async (id, next, toolResult, structuredMeta) => {
+          await finishExecutionRun({
+            runId: id, next, toolResult, structuredMeta, runs, controllers, budgetRegistry: null,
+            parentProvider: 'codex', sendAcp: async () => {}, terminalMarkerWritePromises: new Map(),
+            // Persistence is external; host terminalization remains real.
+            enqueueMarkerWrite: async () => {},
+          });
+        },
+      });
+      try {
+        await run;
+        expect(runs.get(runId)?.status).toBe('timeout');
+        releaseCancel();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(deliverInput).toHaveBeenCalledOnce();
+      } finally {
+        releaseCancel();
+      }
+    });
+
+    it('publishes timeout and retires host custody while provider cancellation never settles', async () => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}));
+      const runtime = createRuntime({
+        cancel,
+        waitForTurnCompletion: () => new Promise<void>(() => {}),
+      });
+      const runId = 'run-stalled-cancel';
+      const ctrl = createController(runtime, 'child-stalled-cancel');
+      const controllers = new Map([[runId, ctrl]]);
+      const state: ExecutionRunState = {
+        runId, callId: 'call-stalled-cancel', sidechainId: 'side-stalled-cancel',
+        sessionId: 'parent-session', depth: 0, intent: 'review',
+        backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, backendId: 'codex',
+        instructions: 'review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+        runClass: 'bounded', ioMode: 'request_response', status: 'running', startedAtMs: 0,
+      };
+      const runs = new Map([[runId, state]]);
+      const budgetRegistry = new ExecutionBudgetRegistry({ maxConcurrentExecutionRuns: 1, maxConcurrentOneShotTasks: null });
+      expect(budgetRegistry.tryAcquireExecutionRun(runId)).toBe(true);
+      let terminal = false;
+      void ctrl.terminalPromise.then(() => { terminal = true; });
+      const run = executeBoundedBackendRun({
+        ...state, params: state, controllers, parentProvider: 'codex', getNowMs: () => 10,
+        boundedTimeoutMs: 1, sendAcp: async () => {},
+        finishRun: async (id, next, toolResult, structuredMeta) => {
+          await finishExecutionRun({
+            runId: id, next, toolResult, structuredMeta, runs, controllers, budgetRegistry,
+            parentProvider: 'codex', sendAcp: async () => {}, terminalMarkerWritePromises: new Map(),
+            // Marker persistence is the external boundary; terminal state, budget
+            // release and controller settlement use their real owners.
+            enqueueMarkerWrite: async () => {},
+          });
+        },
+      });
+      await vi.waitFor(() => expect(runs.get(runId)?.status).toBe('timeout'));
+      await run;
+      expect(cancel).toHaveBeenCalledWith('child-stalled-cancel');
+      expect(terminal).toBe(true);
+      expect(controllers.has(runId)).toBe(false);
+      expect(budgetRegistry.tryAcquireExecutionRun('next-run')).toBe(true);
+    });
+
+    it('fails a refused typed input without waiting for a turn that was not admitted', async () => {
+      const waitForTurnCompletion = vi.fn(async () => undefined);
+      const runtime = createRuntime({
+        async deliverInput() {
+          return { status: 'rejected', diagnostic: { code: 'input_refused', severity: 'error' }, retryable: false };
+        },
+        waitForTurnCompletion,
+      });
+      const ctrl = createController(runtime, 'child-refused');
+      const finishRun = vi.fn<FinishExecutionRun>();
+      await executeBoundedBackendRun({
+        runId: 'run-refused', callId: 'call-refused', sidechainId: 'side-refused', startedAtMs: 0,
+        params: {
+          sessionId: 'session-parent', intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          instructions: 'review', permissionMode: 'read_only', retentionPolicy: 'ephemeral',
+          runClass: 'bounded', ioMode: 'request_response',
+        },
+        controllers: new Map([['run-refused', ctrl]]), sendAcp: async () => {},
+        parentProvider: 'codex', getNowMs: () => 1, boundedTimeoutMs: null, finishRun,
+      });
+      expect(waitForTurnCompletion).not.toHaveBeenCalled();
+      expect(finishRun).toHaveBeenCalledWith('run-refused',
+        expect.objectContaining({ status: 'failed', error: expect.objectContaining({ code: 'input_refused' }) }),
+        expect.anything());
+    });
+
+    it('classifies an untyped post-invocation steer throw as outcome unknown', async () => {
+      let completeTurn!: () => void;
+      const turnCompletion = new Promise<void>((resolve) => {
+        completeTurn = resolve;
+      });
+      let rejectSteer!: (error: Error) => void;
+      const steerRejected = new Promise<Error>((resolve) => {
+        rejectSteer = resolve;
+      });
+      const steerInput = vi.fn(async () => {
+        throw new Error('provider response stream disconnected');
+      });
+      const runtime = createRuntime({
+        steerInput,
+        waitForTurnCompletion: async () => await turnCompletion,
+      });
+      const ctrl = createController(runtime, 'child-ambiguous-steer');
+      ctrl.admittedLiveInterventions.push({
+        message: 'effectful steer',
+        delivery: 'steer_if_supported',
+        resolve() {},
+        reject: rejectSteer,
+      });
+      const execution = executeBoundedBackendRun({
+        runId: 'run-ambiguous-steer',
+        callId: 'call-ambiguous-steer',
+        sidechainId: 'side-ambiguous-steer',
+        startedAtMs: 0,
+        params: {
+          sessionId: null,
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          instructions: 'keep working',
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        controllers: new Map([['run-ambiguous-steer', ctrl]]),
+        sendAcp: async () => {},
+        parentProvider: 'codex',
+        getNowMs: () => 1,
+        boundedTimeoutMs: null,
+        finishRun: async () => {},
+      });
+
+      const error = await steerRejected;
+      expect(error).toMatchObject({
+        executionRunErrorCode: 'execution_run_send_outcome_unknown',
+      });
+      expect(ctrl.turnCancelReason).toBe('outcome_unknown');
+      expect(ctrl.turnCancelEpoch).toBe(ctrl.turnEpoch);
+      expect(steerInput).toHaveBeenCalledOnce();
+
+      completeTurn();
+      await execution;
+    });
+
+    it('allows retry after a typed pre-effect steer rejection', async () => {
+      let completeTurn!: () => void;
+      const turnCompletion = new Promise<void>((resolve) => {
+        completeTurn = resolve;
+      });
+      const steerInput = vi.fn()
+        .mockResolvedValueOnce({
+          status: 'rejected' as const,
+          diagnostic: { code: 'provider_busy', severity: 'error' as const },
+          retryable: true,
+        })
+        .mockResolvedValueOnce({ status: 'admitted' as const });
+      const runtime = createRuntime({
+        steerInput,
+        waitForTurnCompletion: async () => await turnCompletion,
+      });
+      const ctrl = createController(runtime, 'child-retryable-steer');
+      const enqueue = (message: string): Promise<Error | null> => new Promise((resolve) => {
+        ctrl.admittedLiveInterventions.push({
+          message,
+          delivery: 'steer_if_supported',
+          resolve: () => resolve(null),
+          reject: (error) => resolve(error),
+        });
+        ctrl.admittedLiveInterventionsSignal?.resolve();
+        ctrl.admittedLiveInterventionsSignal = null;
+      });
+      const first = enqueue('first attempt');
+      const execution = executeBoundedBackendRun({
+        runId: 'run-retryable-steer',
+        callId: 'call-retryable-steer',
+        sidechainId: 'side-retryable-steer',
+        startedAtMs: 0,
+        params: {
+          sessionId: null,
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          instructions: 'keep working',
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        controllers: new Map([['run-retryable-steer', ctrl]]),
+        sendAcp: async () => {},
+        parentProvider: 'codex',
+        getNowMs: () => 1,
+        boundedTimeoutMs: null,
+        finishRun: async () => {},
+      });
+
+      await expect(first).resolves.toMatchObject({ executionRunErrorCode: 'provider_busy' });
+      expect(ctrl.turnCancelReason).toBeNull();
+      await expect(enqueue('safe retry')).resolves.toBeNull();
+      expect(steerInput).toHaveBeenCalledTimes(2);
+
+      completeTurn();
+      await execution;
+    });
+
+    it('preserves a structured review preflight failure as the canonical failed run result', async () => {
+      const runtimeId = 'child_session_review_preflight';
+      let ctrl!: ExecutionRunBackendController;
+      const runtime = createRuntime({
+        async deliverInput() {
           ctrl.buffer = JSON.stringify({
             status: 'failed',
             error: { code: 'deepsec_confirmation_required' },
@@ -66,10 +345,11 @@ describe('executeBoundedBackendRun', () => {
             findings: [],
             warning: { status: 'requires_confirmation', costClass: 'expensive' },
           });
+          return { status: 'admitted' };
         },
         async waitForTurnCompletion() {},
       });
-      ctrl = createController(runtime, childSessionId);
+      ctrl = createController(runtime, runtimeId);
       const finishRun = vi.fn<FinishExecutionRun>();
 
       await executeBoundedBackendRun({
@@ -122,7 +402,7 @@ describe('executeBoundedBackendRun', () => {
     });
 
     it('keeps waiting past the bounded timeout when runtime liveness reports active work', async () => {
-    const childSessionId = 'child_session_liveness_active' as SessionId;
+    const runtimeId = 'child_session_liveness_active';
     let ctrl!: ExecutionRunBackendController;
     const probeTurnLiveness = vi.fn(async () => ({
       active: true,
@@ -130,8 +410,9 @@ describe('executeBoundedBackendRun', () => {
     }));
     const cancel = vi.fn(async () => {});
     const runtime = createRuntime({
-      async sendPrompt() {
+      async deliverInput() {
         ctrl.buffer = JSON.stringify({ findings: [], summary: 'ok' });
+        return { status: 'admitted' };
       },
       cancel,
       async waitForTurnCompletion() {
@@ -141,7 +422,7 @@ describe('executeBoundedBackendRun', () => {
       },
     });
     Object.assign(runtime, { probeTurnLiveness });
-    ctrl = createController(runtime, childSessionId);
+    ctrl = createController(runtime, runtimeId);
     const finishRun = vi.fn<FinishExecutionRun>();
 
     await executeBoundedBackendRun({
@@ -167,7 +448,7 @@ describe('executeBoundedBackendRun', () => {
       finishRun,
     });
 
-    expect(probeTurnLiveness).toHaveBeenCalledWith(childSessionId);
+    expect(probeTurnLiveness).toHaveBeenCalledWith(runtimeId);
     expect(cancel).not.toHaveBeenCalled();
         expect(finishRun).toHaveBeenCalledWith(
             'run_liveness_active_1',
@@ -180,7 +461,7 @@ describe('executeBoundedBackendRun', () => {
     });
 
     it('times out when the bounded wait elapses without backend liveness proof', async () => {
-        const childSessionId = 'child_session_no_liveness_proof' as SessionId;
+        const runtimeId = 'child_session_no_liveness_proof';
         const cancel = vi.fn(async () => {});
         const runtime = createRuntime({
             cancel,
@@ -188,7 +469,7 @@ describe('executeBoundedBackendRun', () => {
                 await new Promise<void>(() => {});
             },
         });
-        const ctrl = createController(runtime, childSessionId);
+        const ctrl = createController(runtime, runtimeId);
         const finishRun = vi.fn<FinishExecutionRun>();
         await executeBoundedBackendRun({
             runId: 'run_no_liveness_proof_1',
@@ -213,7 +494,7 @@ describe('executeBoundedBackendRun', () => {
             finishRun,
         });
 
-        expect(cancel).toHaveBeenCalledWith(childSessionId);
+        expect(cancel).toHaveBeenCalledWith(runtimeId);
         expect(finishRun).toHaveBeenCalledWith(
             'run_no_liveness_proof_1',
             expect.objectContaining({
@@ -231,7 +512,7 @@ describe('executeBoundedBackendRun', () => {
     });
 
     it('classifies typed provider wait timeouts as execution-run timeouts', async () => {
-    const childSessionId = 'child_session_typed_provider_timeout' as SessionId;
+    const runtimeId = 'child_session_typed_provider_timeout';
     const livenessProbe = { active: false, reason: 'provider_idle' };
     const providerTimeout = Object.assign(new Error('Timed out after 250ms'), {
       executionRunErrorCode: 'provider_inactivity_timeout',
@@ -244,7 +525,7 @@ describe('executeBoundedBackendRun', () => {
         throw providerTimeout;
       },
     });
-    const ctrl = createController(runtime, childSessionId);
+    const ctrl = createController(runtime, runtimeId);
     const finishRun = vi.fn<FinishExecutionRun>();
 
     await executeBoundedBackendRun({
@@ -270,7 +551,7 @@ describe('executeBoundedBackendRun', () => {
       finishRun,
     });
 
-    expect(cancel).toHaveBeenCalledWith(childSessionId);
+    expect(cancel).toHaveBeenCalledWith(runtimeId);
     expect(finishRun).toHaveBeenCalledWith(
       'run_typed_provider_timeout_1',
       expect.objectContaining({
@@ -289,7 +570,7 @@ describe('executeBoundedBackendRun', () => {
   });
 
   it('preserves a non-timeout typed controller failure in the terminal result', async () => {
-    const childSessionId = 'child_session_output_limit' as SessionId;
+    const runtimeId = 'child_session_output_limit';
     const outputLimit = Object.assign(new Error('Execution-run task output exceeded the configured limit.'), {
       executionRunErrorCode: 'execution_run_output_limit_exceeded',
     });
@@ -298,7 +579,7 @@ describe('executeBoundedBackendRun', () => {
         throw outputLimit;
       },
     });
-    const ctrl = createController(runtime, childSessionId);
+    const ctrl = createController(runtime, runtimeId);
     const finishRun = vi.fn<FinishExecutionRun>();
 
     await executeBoundedBackendRun({

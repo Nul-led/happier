@@ -3,6 +3,7 @@ import { isPermissionMode } from '@/api/types';
 import {
   resolveAgentIdFromSessionMetadata,
   resolveModelSelectionIntentFromSessionMetadata,
+  readSessionModelSelectionV2FromMetadata,
   resolveVendorResumeIdFromSessionMetadata,
 } from '@happier-dev/agents';
 import {
@@ -11,13 +12,16 @@ import {
 } from '@/agent/runtime/permissions/modeFromMetadata';
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   SessionMcpSelectionV1Schema,
   buildBackendTargetKeyV2,
+  readNonBlankOpaqueIdentifier,
   readRuntimeDescriptorV1FromMetadata,
+  sessionModelSelectionV2TeamBindingIntent,
   type ProviderBoundModelRef,
   type ConnectedServiceMaterializationIdentityV1,
-  type ConnectedServiceBindingsV1,
+  type SessionModelSelectionV2,
+  type ConnectedServiceBindingsV2,
   type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
@@ -31,9 +35,11 @@ import { readPersistedProviderResumeState } from '@/providers/lifecycle/readPers
 
 type SnapshotValue<T> = Readonly<{ value: T; updatedAt: number }>;
 
+type TeamResourceSessionModelSelection = Extract<SessionModelSelectionV2, { ref: { source: 'team_resource' } }>;
+
 export type SessionRuntimeSnapshot = Readonly<{
   sessionId: string | null;
-  connectedServices: ConnectedServiceBindingsV1 | null;
+  connectedServices: ConnectedServiceBindingsV2 | null;
   connectedServicesUpdatedAt: number | null;
   connectedServiceMaterializationIdentityV1: ConnectedServiceMaterializationIdentityV1 | null;
   mcpSelection: SessionMcpSelectionV1 | null;
@@ -41,6 +47,8 @@ export type SessionRuntimeSnapshot = Readonly<{
   permissionMode: SnapshotValue<PermissionMode> | null;
   agentModeId: SnapshotValue<string> | null;
   modelSelection: SnapshotValue<ProviderBoundModelRef | null> | null;
+  teamCredentialBindings: SpawnSessionOptions['teamCredentialBindings'] | null;
+  teamModelSelection: TeamResourceSessionModelSelection | null;
   vendorResumeId: Readonly<{ value: string; updatedAt: number | null }> | null;
 }>;
 
@@ -67,7 +75,7 @@ type CandidateSource = 'persisted' | 'tracked' | 'incoming';
 type TimestampedCandidate<T> = SnapshotValue<T> & Readonly<{ source: CandidateSource }>;
 type ConnectedServicesCandidate = Readonly<{
   source: CandidateSource;
-  value: ConnectedServiceBindingsV1;
+  value: ConnectedServiceBindingsV2;
   updatedAt: number | null;
 }>;
 type SpawnSessionOptionsWithConnectedServicesTimestamp = SpawnSessionOptions & {
@@ -110,8 +118,8 @@ function readAgentIdFromOptions(options: SpawnSessionOptions | null | undefined)
   return agentId || null;
 }
 
-function parseConnectedServices(value: unknown): ConnectedServiceBindingsV1 | null {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(value);
+function parseConnectedServices(value: unknown): ConnectedServiceBindingsV2 | null {
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
@@ -121,7 +129,7 @@ function parseMcpSelection(value: unknown): SessionMcpSelectionV1 | null {
   return parsed.success ? parsed.data : null;
 }
 
-function hasBoundConnectedService(value: ConnectedServiceBindingsV1 | null): value is ConnectedServiceBindingsV1 {
+function hasBoundConnectedService(value: ConnectedServiceBindingsV2 | null): value is ConnectedServiceBindingsV2 {
   return Boolean(value && Object.keys(value.bindingsByServiceId).length > 0);
 }
 
@@ -263,9 +271,29 @@ function readModelFromMetadata(
     : null;
 }
 
+// The persisted V2 selection is discriminated on `ref.source`, so narrow that
+// union exhaustively: a non-Team source must never reach the Team binding
+// projection, and a new source has to be classified here rather than defaulted.
+function readTeamResourceModelSelection(
+  metadata: Record<string, unknown> | null | undefined,
+): TeamResourceSessionModelSelection | null {
+  const selection = readSessionModelSelectionV2FromMetadata(metadata);
+  if (!selection) return null;
+  const ref = selection.ref;
+  switch (ref.source) {
+    case 'native':
+    case 'account_provider_connection':
+      return null;
+    case 'team_resource':
+      return { v: selection.v, updatedAt: selection.updatedAt, ref };
+  }
+}
+
+// A resume id is the Agent's own opaque session identity. This owner decides
+// presence and hands the bytes back exactly; it never re-canonicalizes them.
 function chooseExplicitVendorResumeId(params: ResolveSessionRuntimeSnapshotParams): string | null {
-  return normalizeNonEmptyString(params.incomingOptions.resume)
-    ?? normalizeNonEmptyString(params.trackedSpawnOptions?.resume);
+  return readNonBlankOpaqueIdentifier(params.incomingOptions.resume)
+    ?? readNonBlankOpaqueIdentifier(params.trackedSpawnOptions?.resume);
 }
 
 function chooseVendorResumeId(
@@ -288,9 +316,9 @@ function chooseVendorResumeId(
   // there is nothing left for it to decide, and one rule for every Agent is what
   // keeps this from being a second resume decision-maker.
   const observedVendorResumeId =
-    normalizeNonEmptyString(metadataVendorResumeId)
-    ?? normalizeNonEmptyString(params.persistedVendorResumeId)
-    ?? normalizeNonEmptyString(params.trackedVendorResumeId);
+    metadataVendorResumeId
+    ?? readNonBlankOpaqueIdentifier(params.persistedVendorResumeId)
+    ?? readNonBlankOpaqueIdentifier(params.trackedVendorResumeId);
   return observedVendorResumeId
     ? { value: observedVendorResumeId, updatedAt: null }
     : null;
@@ -364,6 +392,22 @@ function applySnapshotToSpawnOptions(
       delete next.modelSelection;
     }
   }
+  if (snapshot.teamCredentialBindings) {
+    next.teamCredentialBindings = snapshot.teamCredentialBindings;
+  } else {
+    delete next.teamCredentialBindings;
+  }
+  if (snapshot.teamModelSelection) {
+    next.modelSelection = {
+      v: 1,
+      ref: {
+        agentTargetKey: snapshot.teamModelSelection.ref.agentTargetKey,
+        providerConnectionId: null,
+        modelId: snapshot.teamModelSelection.ref.modelId,
+      },
+      updatedAt: snapshot.teamModelSelection.updatedAt,
+    };
+  }
 
   if (retainedLiveRuntimeOptions) {
     if (retainedLiveRuntimeOptions.modelSelection) {
@@ -426,6 +470,11 @@ export function resolveSessionRuntimeSnapshot(
       ? 'tracked'
       : 'incoming'
     : null;
+  // A retained live process keeps the Team envelope it launched with, so the
+  // persisted Team intent is read only for the ordinary resolution mode.
+  const persistedTeamModelSelection = retainedLiveRuntimeOptions
+    ? null
+    : readTeamResourceModelSelection(params.persistedMetadata);
   const snapshot: SessionRuntimeSnapshot = {
     sessionId: readSessionId(params.incomingOptions),
     connectedServices: connectedServices?.value ?? null,
@@ -453,6 +502,15 @@ export function resolveSessionRuntimeSnapshot(
         readModelFromOptions(params.trackedSpawnOptions, 'tracked'),
         readModelFromOptions(params.incomingOptions, 'incoming'),
       ]),
+    teamCredentialBindings: (() => {
+      if (retainedLiveRuntimeOptions) return retainedLiveRuntimeOptions.teamCredentialBindings ?? null;
+      if (!persistedTeamModelSelection) return null;
+      // Protocol owns how a V2 Team selection becomes a launch binding intent,
+      // including its route and Team identity; this owner only decides when.
+      const intent = sessionModelSelectionV2TeamBindingIntent(persistedTeamModelSelection);
+      return intent.resourceId === null ? null : [intent];
+    })(),
+    teamModelSelection: persistedTeamModelSelection,
     vendorResumeId: chooseVendorResumeId(params, explicitResumeId),
   };
 

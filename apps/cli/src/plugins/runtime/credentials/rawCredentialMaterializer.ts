@@ -16,8 +16,6 @@ import {
   PluginMachineMaterializationRefV1Schema,
   PluginPermissionSubjectV1Schema,
   QualifiedConnectedAccountRefSchema,
-  SavedSecretSchema,
-  decryptSecretValueWithKeysV1,
   deriveVoiceCredentialBindingIdentityV1,
   resolveAccountSettingsVoiceCredentialSource,
   type PluginContributionIdentityV1,
@@ -42,7 +40,7 @@ import {
   getActiveAccountSettingsSnapshotLifetimeToken,
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
-import { indexSavedSecretsByIdFromAccountSettings } from '@/settings/secrets/indexSavedSecretsById';
+import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
 import { evaluatePluginPermissionGrant } from '@/plugins/runtime/lifecycle/permissions/evaluatePluginPermissionGrant';
 import type { PluginPermissionGrantListReader } from '@/plugins/runtime/lifecycle/permissions/pluginPermissionGrantListReader';
 
@@ -169,7 +167,8 @@ type SelectedSource = Readonly<{
   expectedConnectedAccount: QualifiedConnectedAccountRef | null;
   savedSecretCustody: Readonly<{
     snapshot: ActiveAccountSettingsSnapshot;
-    secretId: string;
+    secretRef: string;
+    fingerprint: string;
     /** Opaque, source-neutral callback receipt; never carries secret material. */
     callbackCredentialRevision: ConnectedServiceCredentialRevisionV1;
   }> | null;
@@ -451,10 +450,10 @@ function selectedAuthorityDigest(
 
 function savedSecretCallbackCredentialRevision(input: Readonly<{
   selectedAuthorityDigest: ReturnType<typeof CredentialAccessSelectedAuthorityDigestSchema.parse>;
-  updatedAt: number;
+  fingerprint: string;
 }>): ConnectedServiceCredentialRevisionV1 {
   // Callback callers must be able to fence a reused raw-access object without
-  // learning the selected source, secret id, timestamp, or secret bytes.
+  // learning the selected source, secret id, catalog revision, or secret bytes.
   return ConnectedServiceCredentialRevisionV1Schema.parse(`csr_${digest(
     RAW_CREDENTIAL_CALLBACK_REVISION_DOMAIN,
     Object.freeze({ v: 1, ...input }),
@@ -495,13 +494,13 @@ async function selectedSourceFromSnapshot(
       candidate.kind === 'savedSecret'
     ));
     if (!source || source.kind !== 'savedSecret') throw unavailable();
-    const rawSecrets = (snapshot.settings as unknown as Readonly<Record<string, unknown>>).secrets;
-    const savedSecret = Array.isArray(rawSecrets)
-      ? rawSecrets.map((candidate) => SavedSecretSchema.safeParse(candidate))
-          .flatMap((parsed) => parsed.success ? [parsed.data] : [])
-          .find((candidate) => candidate.id === resolved.savedSecret?.secretId)
-      : undefined;
-    if (!savedSecret || !source.secretKinds.includes(savedSecret.kind)) throw unavailable();
+    const savedSecret = createSavedSecretMaterializerFromSnapshotV1(snapshot)
+      .inspect(resolved.savedSecret.secretId);
+    if (
+      savedSecret.status !== 'ready'
+      || savedSecret.kind === null
+      || !source.secretKinds.includes(savedSecret.kind)
+    ) throw unavailable();
     const selectedAuthority = selectedAuthorityDigest({
       source: 'savedSecret',
       accountSettingsScopeKey: snapshot.scopeKey ?? null,
@@ -515,10 +514,11 @@ async function selectedSourceFromSnapshot(
       expectedConnectedAccount: null,
       savedSecretCustody: Object.freeze({
         snapshot,
-        secretId: resolved.savedSecret.secretId,
+        secretRef: resolved.savedSecret.secretId,
+        fingerprint: savedSecret.fingerprint,
         callbackCredentialRevision: savedSecretCallbackCredentialRevision({
           selectedAuthorityDigest: selectedAuthority,
-          updatedAt: savedSecret.updatedAt,
+          fingerprint: savedSecret.fingerprint,
         }),
       }),
       selectedAuthorityDigest: selectedAuthority,
@@ -529,7 +529,8 @@ async function selectedSourceFromSnapshot(
         resolved.savedSecret.source,
         resolved.savedSecret.secretId,
         savedSecret.kind,
-        savedSecret.updatedAt,
+        savedSecret.source,
+        savedSecret.fingerprint,
       ].join('\0'),
     });
   }
@@ -732,21 +733,14 @@ async function materializeCurrentSavedSecret(input: Readonly<{
   ) {
     throw unavailable();
   }
-  const encryptedValue = indexSavedSecretsByIdFromAccountSettings(
-    current.savedSecretCustody.snapshot.settings,
-  ).get(current.savedSecretCustody.secretId);
-  if (!encryptedValue) throw unavailable();
-  let secret: string | null = null;
-  try {
-    secret = decryptSecretValueWithKeysV1(
-      encryptedValue,
-      current.savedSecretCustody.snapshot.settingsSecretsReadKeys,
-    );
-  } catch {
-    throw unavailable();
-  }
-  if (secret === null) throw unavailable();
-  return materializeSavedSecret(input.request, secret);
+  const resolved = createSavedSecretMaterializerFromSnapshotV1(
+    current.savedSecretCustody.snapshot,
+  ).recheck(
+    current.savedSecretCustody.secretRef,
+    current.savedSecretCustody.fingerprint,
+  );
+  if (resolved.status !== 'ready') throw unavailable();
+  return materializeSavedSecret(input.request, resolved.value);
 }
 
 type RawCredentialAuthorizationDependencies = Readonly<{

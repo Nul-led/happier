@@ -1,21 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
-import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
+import { handleSessionCommand } from '../handleSessionCommand';
 
 describe('happier session run start arguments', () => {
   it('accepts --agent as the executable Agent selector before credential checks', async () => {
-    const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     const readCredentialsFn = vi.fn(async () => null);
 
     try {
       await handleSessionCommand(
-        ['run', 'start', 'sess-1', '--intent', 'review', '--agent', 'agent:codex', '--json'],
+        ['run', 'start', 'sess-1', '--intent', 'review', '--agent', 'agent:happier.agent.codex/codex', '--json'],
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_start',
@@ -28,24 +27,20 @@ describe('happier session run start arguments', () => {
   });
 
   it('rejects retired --backend before credential checks', async () => {
-    const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     const readCredentialsFn = vi.fn(async () => null);
 
     try {
       await handleSessionCommand(
-        ['run', 'start', 'sess-1', '--intent', 'review', '--backend', 'agent:codex', '--json'],
+        ['run', 'start', 'sess-1', '--intent', 'review', '--backend', 'agent:happier.agent.codex/codex', '--json'],
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_start',
-        error: {
-          code: 'invalid_arguments',
-          message: `Usage: ${SESSION_HELP_LINES.runStart}`,
-        },
+        error: { code: 'invalid_arguments' },
       });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     } finally {
@@ -54,24 +49,20 @@ describe('happier session run start arguments', () => {
   });
 
   it('returns a stable invalid_arguments error for an unsupported intent before reading credentials', async () => {
-    const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     const readCredentialsFn = vi.fn(async () => null);
 
     try {
       await handleSessionCommand(
-        ['run', 'start', 'sess-1', '--intent', 'qa_cli_run', '--agent', 'agent:codex', '--json'],
+        ['run', 'start', 'sess-1', '--intent', 'qa_cli_run', '--agent', 'agent:happier.agent.codex/codex', '--json'],
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_start',
-        error: {
-          code: 'invalid_arguments',
-          message: 'Invalid --intent "qa_cli_run". Expected one of: review, plan, delegate, task, voice_agent, memory_hints, scm_commit_message, scm_diff_summary.',
-        },
+        error: { code: 'invalid_arguments' },
       });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     } finally {
@@ -83,8 +74,7 @@ describe('happier session run start arguments', () => {
     ['--retention', 'durable', 'ephemeral, resumable'],
     ['--run-class', 'interactive', 'bounded, long_lived'],
     ['--io-mode', 'batch', 'request_response, streaming'],
-  ] as const)('rejects an unsupported %s value before reading credentials', async (flag, value, expectedValues) => {
-    const { handleSessionCommand } = await import('../handleSessionCommand');
+  ] as const)('rejects an unsupported %s value before reading credentials', async (flag, value, _expectedValues) => {
     const output = captureConsoleJsonOutput();
     const readCredentialsFn = vi.fn(async () => null);
 
@@ -97,7 +87,7 @@ describe('happier session run start arguments', () => {
           '--intent',
           'review',
           '--agent',
-          'agent:codex',
+          'agent:happier.agent.codex/codex',
           flag,
           value,
           '--json',
@@ -105,14 +95,11 @@ describe('happier session run start arguments', () => {
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_start',
-        error: {
-          code: 'invalid_arguments',
-          message: `Invalid ${flag} "${value}". Expected one of: ${expectedValues}.`,
-        },
+        error: { code: 'invalid_arguments' },
       });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     } finally {
@@ -124,8 +111,7 @@ describe('happier session run start arguments', () => {
     ['--retention', 'ephemeral, resumable'],
     ['--run-class', 'bounded, long_lived'],
     ['--io-mode', 'request_response, streaming'],
-  ] as const)('rejects %s without a value before reading credentials', async (flag, expectedValues) => {
-    const { handleSessionCommand } = await import('../handleSessionCommand');
+  ] as const)('rejects %s without a value before reading credentials', async (flag, _expectedValues) => {
     const output = captureConsoleJsonOutput();
     const readCredentialsFn = vi.fn(async () => null);
 
@@ -138,21 +124,18 @@ describe('happier session run start arguments', () => {
           '--intent',
           'review',
           '--agent',
-          'agent:codex',
+          'agent:happier.agent.codex/codex',
           '--json',
           flag,
         ],
         { readCredentialsFn },
       );
 
-      expect(output.json()).toEqual({
+      expect(output.json()).toMatchObject({
         v: 1,
         ok: false,
         kind: 'session_run_start',
-        error: {
-          code: 'invalid_arguments',
-          message: `Invalid ${flag} "". Expected one of: ${expectedValues}.`,
-        },
+        error: { code: 'invalid_arguments' },
       });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     } finally {

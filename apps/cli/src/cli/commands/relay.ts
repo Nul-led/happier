@@ -16,7 +16,7 @@ function isArgumentUsageError(error: unknown): boolean {
     || /^Invalid /i.test(message);
 }
 
-export async function handleRelayCommand(args: string[]): Promise<void> {
+export async function handleRelayCommand(args: string[], signal?: AbortSignal): Promise<void> {
   const json = wantsJson(args);
   const subcommand = args[0];
   const kind = (() => {
@@ -34,6 +34,7 @@ export async function handleRelayCommand(args: string[]): Promise<void> {
 
     const handled = await runRelaySubcommand(subcommand, args, {
       selectionMutationMode: 'standalone',
+      ...(signal ? { signal } : {}),
     });
     if (handled) {
       return;
@@ -66,7 +67,7 @@ export async function handleRelayCliCommand(context: CommandContext): Promise<vo
   })();
 
   try {
-    await handleRelayCommand(args);
+    await handleRelayCommand(args, context.signal);
   } catch (error) {
     if (json) {
       const mapped = mapUnknownErrorToControlError(error);

@@ -736,7 +736,7 @@ describe('Voice account Plugin fetch credential binding', () => {
         const adapter = vi.fn(async (request: TestFetchRequest) => response(request));
         const credentialResolver: VoiceCredentialResolver = Object.freeze({
             resolveSelectedSource: () => ({ kind: 'savedSecret' as const }),
-            status: () => ({ available: true, source: 'account' as const }),
+            status: () => ({ available: true, source: 'account' as const, materialStatus: 'ready' as const }),
             async withSecret<T>(input: Readonly<{
                 identity: VoiceCredentialBindingIdentityV1;
                 recipientContractDigest?: string;

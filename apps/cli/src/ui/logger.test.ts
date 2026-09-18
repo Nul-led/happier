@@ -7,7 +7,7 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDirSync, removeTempDirSync } from '@/testkit/fs/tempDir';
 
 describe('logger.debugLargeJson', () => {
-    const envKeys = ['DEBUG', 'HAPPIER_HOME_DIR', 'HAPPIER_LOG_LEVEL', 'HAPPIER_DAEMON_LOG_KEEP_COUNT', 'HAPPIER_SESSION_LOG_KEEP_COUNT', 'HAPPIER_CRASHED_SESSION_LOG_KEEP_COUNT'] as const;
+    const envKeys = ['DEBUG', 'HAPPIER_HOME_DIR', 'HAPPIER_LOG_LEVEL', 'HAPPIER_DAEMON_LOG_KEEP_COUNT', 'HAPPIER_SESSION_LOG_KEEP_COUNT', 'HAPPIER_CRASHED_SESSION_LOG_KEEP_COUNT', 'DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING', 'HAPPIER_SERVER_URL'] as const;
     let envScope = createEnvKeyScope(envKeys);
     let tempDir: string;
 
@@ -21,6 +21,8 @@ describe('logger.debugLargeJson', () => {
             HAPPIER_DAEMON_LOG_KEEP_COUNT: undefined,
             HAPPIER_SESSION_LOG_KEEP_COUNT: undefined,
             HAPPIER_CRASHED_SESSION_LOG_KEEP_COUNT: undefined,
+            DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: undefined,
+            HAPPIER_SERVER_URL: undefined,
         });
         vi.resetModules();
     });
@@ -240,6 +242,35 @@ describe('logger.debugLargeJson', () => {
         expect(readFileSync(logPath, 'utf8')).toContain('[TEST] slow queue');
         expect(consoleSpy).not.toHaveBeenCalled();
         consoleSpy.mockRestore();
+    });
+
+    it('supports one scoped redacted local-only process logger and restores the prior logger', async () => {
+        process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING = '1';
+        process.env.HAPPIER_SERVER_URL = 'https://logs.example.test';
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+        const loggerModule = (await import('@/ui/logger')) as typeof import('@/ui/logger');
+        const priorLogger = loggerModule.logger;
+        const logPath = join(tempDir, 'runner', 'logs', 'runner.log');
+        const scopedLogger = new loggerModule.Logger({
+            logFilePath: logPath,
+            redactFileOutput: true,
+            allowDangerousRemoteLogging: false,
+            pruneCurrentProcessLogs: false,
+        });
+
+        const restore = loggerModule.bindProcessLogger(scopedLogger);
+        loggerModule.logger.infoFile(
+            '[RUNNER] startup failure',
+            'Authorization: Bearer runner-secret-token',
+        );
+        restore();
+
+        expect(readFileSync(logPath, 'utf8')).toContain('[RUNNER] startup failure');
+        expect(readFileSync(logPath, 'utf8')).toContain('[REDACTED]');
+        expect(readFileSync(logPath, 'utf8')).not.toContain('runner-secret-token');
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(loggerModule.logger).toBe(priorLogger);
+        fetchSpy.mockRestore();
     });
 
     it('durably records sanitized fatal errors without serializing argv or env fields', async () => {

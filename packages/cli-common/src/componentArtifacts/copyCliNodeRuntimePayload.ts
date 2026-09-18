@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { cp } from 'node:fs/promises';
+import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, type Dirent, type Stats } from 'node:fs';
+import { cp, lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
 
 import {
@@ -64,36 +64,95 @@ function resolveInstalledCliNodeRuntimeWorkspaceBundles(
   });
 }
 
+function orderedPhysicalTreeEntries(entries: Dirent[]): Dirent[] {
+  return entries.filter((entry) => entry.name !== 'node_modules')
+    .sort((left, right) => compareCliNodeRuntimePayloadEntryNames(left.name, right.name));
+}
+
+function appendPhysicalTreeEntry(
+  hash: ReturnType<typeof createHash>,
+  entryPath: string,
+  relativePath: string,
+  stats: Stats,
+): 'directory' | 'file' {
+  if (stats.isSymbolicLink()) {
+    throw new Error(`CLI workspace runtime package contains a symlink: ${entryPath}`);
+  }
+  if (stats.isDirectory()) {
+    hash.update(`dir\0${relativePath.replaceAll('\\', '/')}\0`);
+    return 'directory';
+  }
+  if (!stats.isFile()) {
+    throw new Error(`CLI workspace runtime package contains a non-file entry: ${entryPath}`);
+  }
+  return 'file';
+}
+
+function appendPhysicalFileContents(hash: ReturnType<typeof createHash>, relativePath: string, bytes: Buffer): void {
+  hash.update(`file\0${relativePath.replaceAll('\\', '/')}\0${bytes.byteLength}\0`);
+  hash.update(bytes);
+  hash.update('\0');
+}
+
 function hashPhysicalTree(
   hash: ReturnType<typeof createHash>,
   rootDir: string,
   relativeDir = '',
 ): void {
   const directoryPath = relativeDir ? join(rootDir, relativeDir) : rootDir;
-  const entries = readdirSync(directoryPath, { withFileTypes: true })
-    .filter((entry) => entry.name !== 'node_modules')
-    .sort((left, right) => compareCliNodeRuntimePayloadEntryNames(left.name, right.name));
+  const entries = orderedPhysicalTreeEntries(readdirSync(directoryPath, { withFileTypes: true }));
   for (const entry of entries) {
     const relativePath = relativeDir ? join(relativeDir, entry.name) : entry.name;
-    const normalizedPath = relativePath.replaceAll('\\', '/');
     const entryPath = join(rootDir, relativePath);
-    const stats = lstatSync(entryPath);
-    if (stats.isSymbolicLink()) {
-      throw new Error(`CLI workspace runtime package contains a symlink: ${entryPath}`);
-    }
-    if (stats.isDirectory()) {
-      hash.update(`dir\0${normalizedPath}\0`);
+    if (appendPhysicalTreeEntry(hash, entryPath, relativePath, lstatSync(entryPath)) === 'directory') {
       hashPhysicalTree(hash, rootDir, relativePath);
       continue;
     }
-    if (!stats.isFile()) {
-      throw new Error(`CLI workspace runtime package contains a non-file entry: ${entryPath}`);
-    }
-    const bytes = readFileSync(entryPath);
-    hash.update(`file\0${normalizedPath}\0${bytes.byteLength}\0`);
-    hash.update(bytes);
-    hash.update('\0');
+    appendPhysicalFileContents(hash, relativePath, readFileSync(entryPath));
   }
+}
+
+async function hashPhysicalTreeAsync(
+  hash: ReturnType<typeof createHash>,
+  rootDir: string,
+  relativeDir = '',
+): Promise<void> {
+  const directoryPath = relativeDir ? join(rootDir, relativeDir) : rootDir;
+  const entries = orderedPhysicalTreeEntries(await readdir(directoryPath, { withFileTypes: true }));
+  for (const entry of entries) {
+    const relativePath = relativeDir ? join(relativeDir, entry.name) : entry.name;
+    const entryPath = join(rootDir, relativePath);
+    if (appendPhysicalTreeEntry(hash, entryPath, relativePath, await lstat(entryPath)) === 'directory') {
+      await hashPhysicalTreeAsync(hash, rootDir, relativePath);
+      continue;
+    }
+    appendPhysicalFileContents(hash, relativePath, await readFile(entryPath));
+  }
+}
+
+function* workspaceRuntimeIdentityPackages(
+  hash: ReturnType<typeof createHash>,
+  workspaceBundles: ReadonlyArray<CliNodeRuntimeWorkspaceBundle>,
+): Generator<string> {
+  hash.update('happier:cli-node-workspace-runtime:v1\0');
+  for (const { packageName, srcDir } of workspaceBundles) {
+    if (!existsSync(srcDir)) {
+      throw new Error(`Missing installed CLI workspace runtime package: ${packageName} (${srcDir})`);
+    }
+    hash.update(`package\0${packageName}\0`);
+    yield srcDir;
+  }
+}
+
+function finishWorkspaceRuntimeIdentity(
+  hash: ReturnType<typeof createHash>,
+  workspaceBundles: ReadonlyArray<CliNodeRuntimeWorkspaceBundle>,
+): CliNodeWorkspaceRuntimeIdentity {
+  return {
+    fingerprint: hash.digest('hex'),
+    packageCount: workspaceBundles.length,
+    packageNames: workspaceBundles.map(({ packageName }) => packageName),
+  };
 }
 
 export function readCliNodeWorkspaceRuntimeIdentity({
@@ -110,23 +169,30 @@ export function readCliNodeWorkspaceRuntimeIdentity({
   return readCliNodeWorkspaceRuntimeIdentityFromBundles(workspaceBundles);
 }
 
+/** Observe the same physical identity without blocking a live host's service loop. */
+export async function readCliNodeWorkspaceRuntimeIdentityAsync({
+  repoRoot,
+  hostPackageDir,
+}: Readonly<{
+  repoRoot: string;
+  hostPackageDir?: string;
+}>): Promise<CliNodeWorkspaceRuntimeIdentity> {
+  const workspaceBundles = resolveInstalledCliNodeRuntimeWorkspaceBundles(repoRoot, hostPackageDir);
+  const hash = createHash('sha256');
+  for (const srcDir of workspaceRuntimeIdentityPackages(hash, workspaceBundles)) {
+    await hashPhysicalTreeAsync(hash, srcDir);
+  }
+  return finishWorkspaceRuntimeIdentity(hash, workspaceBundles);
+}
+
 function readCliNodeWorkspaceRuntimeIdentityFromBundles(
   workspaceBundles: ReadonlyArray<CliNodeRuntimeWorkspaceBundle>,
 ): CliNodeWorkspaceRuntimeIdentity {
   const hash = createHash('sha256');
-  hash.update('happier:cli-node-workspace-runtime:v1\0');
-  for (const { packageName, srcDir } of workspaceBundles) {
-    if (!existsSync(srcDir)) {
-      throw new Error(`Missing installed CLI workspace runtime package: ${packageName} (${srcDir})`);
-    }
-    hash.update(`package\0${packageName}\0`);
+  for (const srcDir of workspaceRuntimeIdentityPackages(hash, workspaceBundles)) {
     hashPhysicalTree(hash, srcDir);
   }
-  return {
-    fingerprint: hash.digest('hex'),
-    packageCount: workspaceBundles.length,
-    packageNames: workspaceBundles.map(({ packageName }) => packageName),
-  };
+  return finishWorkspaceRuntimeIdentity(hash, workspaceBundles);
 }
 
 function resolveRuntimeRootCliNodeWorkspaceBundles(

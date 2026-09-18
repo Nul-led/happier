@@ -5,7 +5,6 @@ import {
   type ResolvedActionOption,
 } from '@happier-dev/protocol';
 import { createActionToolNameToIdMap } from './actionToolCatalog';
-import type { ResolveActionOptionsInput } from './actionSpecDiscovery';
 import { normalizeExecutionRunToolResult } from './executionRunToolResult';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
@@ -24,6 +23,7 @@ type ActionExecutorLike = Readonly<{
       defaultSessionId: string;
       defaultSessionMachineId?: string | null;
       surface: 'mcp' | 'cli' | 'agent';
+      authority?: 'account_automation';
       approvalOrigin?: ApprovalRequestOriginV1 | null;
       callerPermissionMode?: string | null;
       causalPermissionAuthority?: unknown;
@@ -32,6 +32,7 @@ type ActionExecutorLike = Readonly<{
       actionsSettings?: ActionsSettingsV1 | null;
       actionRequestId?: string | null;
       expectedContributorImmutableGenerationId?: string;
+      sessionListAccess?: 'current_session';
     }>,
   ) => Promise<ActionExecutorResult>;
 }>;
@@ -51,8 +52,19 @@ type DynamicActionOptionsBridgeResult =
   | Readonly<{ ok: true; result: DynamicActionOptionsResult }>
   | Readonly<{ ok: false; errorCode: string; error: string; details?: unknown }>;
 
+export type ResolveActionOptionsInput = Readonly<{
+  actionId: ActionId | null;
+  fieldPath: string | null;
+  optionsSourceId: string | null;
+  sessionId: string | null;
+  limit: number | null;
+  query: string | null;
+}> & Readonly<Record<string, unknown>>;
+
 export type ActionToolExecutionOptions = Readonly<{
   approvalOrigin?: ApprovalRequestOriginV1 | null;
+  /** Host-stamped invocation identity; independent from descriptive transcript provenance. */
+  actionRequestId?: string | null;
 }>;
 
 function normalizeActionExecutorResult(result: ActionExecutorResult): ActionToolBridgeResult {
@@ -107,11 +119,13 @@ async function buildActionExecutorContext(params: Readonly<{
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
   actionsSettings?: ActionsSettingsV1 | null;
   expectedContributorImmutableGenerationId?: string;
+  sessionListAccess?: 'current_session';
 }>): Promise<Readonly<{
   defaultSessionId: string;
   defaultSessionMachineId?: string | null;
   surface: 'mcp' | 'cli' | 'agent';
   approvalOrigin?: ApprovalRequestOriginV1 | null;
+  authority?: 'account_automation';
   callerPermissionMode?: string | null;
   causalPermissionAuthority?: unknown;
   sessionInputSource?: unknown;
@@ -119,6 +133,7 @@ async function buildActionExecutorContext(params: Readonly<{
   actionsSettings?: ActionsSettingsV1 | null;
   actionRequestId?: string | null;
   expectedContributorImmutableGenerationId?: string;
+  sessionListAccess?: 'current_session';
 }>> {
   const callerPermissionMode = params.surface === 'agent' && params.resolveCallerPermissionMode
     ? await params.resolveCallerPermissionMode()
@@ -147,15 +162,25 @@ async function buildActionExecutorContext(params: Readonly<{
       ? params.getSessionAgentSpawnPolicyV1()
       : params.sessionAgentSpawnPolicyV1;
   const origin = params.options?.approvalOrigin;
-  const actionRequestId = origin
-    ? [origin.toolCallId, origin.mcpRequestId, origin.messageId, origin.parentMessageId]
-        .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
-        ?.trim() ?? null
-    : null;
+  const explicitActionRequestId = params.options?.actionRequestId;
+  const actionRequestId = typeof explicitActionRequestId === 'string'
+    && explicitActionRequestId.trim().length > 0
+    ? explicitActionRequestId.trim()
+    : origin
+      ? [origin.toolCallId, origin.mcpRequestId, origin.messageId, origin.parentMessageId]
+          .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          ?.trim() ?? null
+      : null;
   return {
     defaultSessionId: params.defaultSessionId,
     ...(params.defaultSessionMachineId ? { defaultSessionMachineId: params.defaultSessionMachineId } : {}),
     surface: params.surface,
+    ...(params.surface === 'agent' ? { authority: 'account_automation' as const } : {}),
+    ...(params.sessionListAccess
+      ? { sessionListAccess: params.sessionListAccess }
+      : params.surface === 'agent'
+        ? { sessionListAccess: 'current_session' as const }
+        : {}),
     ...(params.options?.approvalOrigin ? { approvalOrigin: params.options.approvalOrigin } : {}),
     ...(actionRequestId ? { actionRequestId } : {}),
     ...(callerPermissionMode ? { callerPermissionMode } : {}),
@@ -252,7 +277,10 @@ export function createActionToolExecutorBridge(params: Readonly<{
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
   registry?: ResolvedContributionRegistry;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
+  requiredDirectActionIds?: readonly ActionId[];
   defaultSessionMachineId?: string | null;
+  /** Exact host-owned Session corpus available to non-Agent tool surfaces. */
+  resolveSessionListAccess?: (defaultSessionId: string) => 'current_session' | undefined;
 }>): Readonly<{
   executeActionByToolName: (
     toolName: string,
@@ -272,6 +300,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
     actionsSettings: readActionsSettings(),
     registry: params.registry,
     pluginToolCatalog: params.pluginToolCatalog,
+    requiredDirectActionIds: params.requiredDirectActionIds,
   });
 
   return {
@@ -305,6 +334,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
             sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
             getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
             actionsSettings: readActionsSettings(),
+            sessionListAccess: params.resolveSessionListAccess?.(defaultSessionId),
             expectedContributorImmutableGenerationId:
               resolveExpectedContributorImmutableGenerationId({
                 actionId,
@@ -340,6 +370,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
           sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
           getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
           actionsSettings: readActionsSettings(),
+          sessionListAccess: params.resolveSessionListAccess?.(defaultSessionId),
           expectedContributorImmutableGenerationId:
             resolveExpectedContributorImmutableGenerationId({
               actionId,
@@ -370,7 +401,12 @@ export function createActionToolExecutorBridge(params: Readonly<{
       const result = await params.executor.execute(
         'action.options.resolve',
         input,
-        { defaultSessionId, surface, actionsSettings: readActionsSettings() },
+        {
+          defaultSessionId,
+          surface,
+          ...(surface === 'agent' ? { authority: 'account_automation' as const } : {}),
+          actionsSettings: readActionsSettings(),
+        },
       );
       if (!result.ok) {
         return {

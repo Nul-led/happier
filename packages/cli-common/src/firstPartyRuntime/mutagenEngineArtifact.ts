@@ -21,11 +21,11 @@ export const MUTAGEN_ENGINE_FORK_BRANCH = 'happier/external-stream-v1';
 /** Immutable commit on which the Happier fork implementation was based. */
 export const MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT = 'f5ed5c91fa6c934f5678393c56d00362d6443a1d';
 /** Exact committed fork bytes approved for the managed engine release. */
-export const MUTAGEN_ENGINE_FORK_RELEASE_COMMIT = '334d778e8c4bf055ad00e0f3991a8e5ed543950c';
+export const MUTAGEN_ENGINE_FORK_RELEASE_COMMIT = 'f02d01e88f2eeec5e4326a4739243b863f8cebbe';
 export const MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT = 'cd8069cf8b945dfa0d0f47d8685322c6f1e16e44';
 export const MUTAGEN_ENGINE_UPSTREAM_TAG = 'v0.18.1';
 /** Immutable first-party component policy version used for acquisition. */
-export const MUTAGEN_ENGINE_VERSION = '0.18.1-happier.8';
+export const MUTAGEN_ENGINE_VERSION = '0.18.1-happier.9';
 export const MUTAGEN_ENGINE_UPSTREAM_COMMIT = 'a225ae50aee3d7ebb59139203cb84e8a6a3ff4bf';
 export const MUTAGEN_ENGINE_GO_VERSION = '1.22.12';
 export const MUTAGEN_ENGINE_PROTOCOL_EPOCH = 'external-stream-v1';
@@ -135,7 +135,6 @@ export interface MutagenEngineDataLayout {
   readonly rootDir: string;
   readonly dataDir: string;
   readonly brokerDir: string;
-  readonly stagingDir: string;
 }
 
 export interface MutagenEngineReleaseAsset {
@@ -543,18 +542,17 @@ export function resolveMutagenEngineDataLayout(params: Readonly<{
   const rootDir = (pathModule ?? { resolve }).resolve(daemonDataRoot, 'workspace-sync', 'mutagen');
   const dataDir = (pathModule ?? { resolve }).resolve(rootDir, 'data');
   const brokerDir = (pathModule ?? { resolve }).resolve(rootDir, 'broker');
-  const stagingDir = (pathModule ?? { resolve }).resolve(rootDir, 'staging');
   const stackData = String(params.stackDevTargetMutagenDataDir ?? process.env.MUTAGEN_DATA_DIRECTORY ?? '').trim();
   if (stackData) {
     const normalizedStackData = resolvePathLike(stackData);
-    if ([rootDir, dataDir, brokerDir, stagingDir].some((candidate) => pathsOverlap(candidate, normalizedStackData))) {
+    if ([rootDir, dataDir, brokerDir].some((candidate) => pathsOverlap(candidate, normalizedStackData))) {
       throw new MutagenEngineArtifactError(
         'mutagen_engine_data_dir_conflict',
         `Managed Mutagen data must be isolated from the stack dev-target MUTAGEN_DATA_DIRECTORY (${normalizedStackData}).`,
       );
     }
   }
-  return Object.freeze({ rootDir, dataDir, brokerDir, stagingDir });
+  return Object.freeze({ rootDir, dataDir, brokerDir });
 }
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {

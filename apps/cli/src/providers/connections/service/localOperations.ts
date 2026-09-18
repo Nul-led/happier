@@ -21,7 +21,12 @@ import { createProviderOperationLifetime } from '@/providers/operationLifetime';
 import { addProviderContributionConnection } from './authoring';
 import { errorForProviderResolution, type ProviderConnectionServiceContext } from './context';
 import { bindProviderConnectionSecret, setProviderConnectionGrant } from './grants';
-import { readSettings, replaceSettings, savedSecretExists } from './settings';
+import {
+  parseProviderError,
+  readSettings,
+  replaceSettings,
+  requireSavedSecretReferenceReady,
+} from './settings';
 import type {
   ProviderConnectionServiceResult,
   ProviderConnectionView,
@@ -87,12 +92,27 @@ export function createProviderLocalOperations(context: ProviderConnectionService
     }
     const credential = contribution.definition.credential;
     if ((credential?.required === true && input.savedSecretId === null)
-      || (credential === undefined && input.savedSecretId !== null)
-      || (input.savedSecretId !== null && !savedSecretExists(snapshot.rawAccountSettings, input.savedSecretId))) {
+      || (credential === undefined && input.savedSecretId !== null)) {
       return { status: 'error', error: createProviderErrorV1(
         credential === undefined ? 'provider_credential_transport_unavailable' : 'provider_secret_missing',
         { connectionId: input.connectionId, machineId: input.machineId },
       ) };
+    }
+    if (input.savedSecretId !== null) {
+      try {
+        requireSavedSecretReferenceReady({
+          rawAccountSettings: snapshot.rawAccountSettings,
+          savedSecretId: input.savedSecretId,
+          savedSecretResources: snapshot.savedSecretResources,
+          savedSecretCatalogState: snapshot.savedSecretCatalogState,
+          connectionId: input.connectionId,
+          machineId: input.machineId,
+        });
+      } catch (error) {
+        const providerError = parseProviderError(error);
+        if (providerError) return { status: 'error', error: providerError };
+        throw error;
+      }
     }
 
     const matchedConnectionId = candidate.connection.status === 'matched'

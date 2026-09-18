@@ -34,6 +34,7 @@ describe('createSessionClientRecoveryRuntime startup catch-up ownership', () => 
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   function createRuntime(params: Readonly<{
@@ -41,11 +42,16 @@ describe('createSessionClientRecoveryRuntime startup catch-up ownership', () => 
     lastObservedSeq?: number;
     delays?: readonly number[];
     handleUpdate?: (update: any) => void;
+    accountChangesEnabled?: boolean;
+    reconcilePendingExecutionRunTarget?: (runId: string) => Promise<void>;
   }> = {}) {
     return createSessionClientRecoveryRuntime({
+      mode: 'plain',
+      ctx: null,
       startupMessageCatchUpRetryDelaysMs: params.delays ?? [300, 1_200],
       token: 'token',
       sessionId: 's1',
+      accountChangesEnabled: params.accountChangesEnabled ?? true,
       getClosed: () => false,
       getSessionConnectionSupervisor: () => null,
       getCurrentConnectionState: () => ({
@@ -70,6 +76,7 @@ describe('createSessionClientRecoveryRuntime startup catch-up ownership', () => 
       handleUpdate: params.handleUpdate ?? (() => {}),
       syncSessionSnapshotFromServer: async () => true,
       applyPendingQueueState: () => {},
+      reconcilePendingExecutionRunTarget: params.reconcilePendingExecutionRunTarget,
     });
   }
 
@@ -162,5 +169,59 @@ describe('createSessionClientRecoveryRuntime startup catch-up ownership', () => 
     await vi.advanceTimersByTimeAsync(10 * 60_000);
 
     expect(axiosGetMock.mock.calls.filter(([url]) => String(url).endsWith('/v2/changes'))).toHaveLength(2);
+  });
+
+  it('routes durable Pending recipient projection into exact Execution Run reconciliation', async () => {
+    axiosGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/v1/account/profile')) {
+        return { status: 200, data: { id: 'account-1' } };
+      }
+      if (url.endsWith('/v2/changes')) {
+        return {
+          status: 200,
+          data: {
+            changes: [{
+              cursor: 1,
+              kind: 'session',
+              entityId: 's1',
+              changedAt: 1,
+              hint: {
+                pendingCount: 1,
+                pendingVersion: 2,
+                pendingExecutionRunIds: ['run-offline'],
+              },
+            }],
+            nextCursor: 1,
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    });
+    const reconcilePendingExecutionRunTarget = vi.fn(async () => {});
+    const runtime = createRuntime({ reconcilePendingExecutionRunTarget });
+
+    await runtime.syncChangesOnConnect({ reason: 'connect' });
+
+    expect(reconcilePendingExecutionRunTarget).toHaveBeenCalledWith('run-offline');
+  });
+
+  it('recovers the exact Session transcript on scoped reconnect without Account profile or changes access', async () => {
+    vi.stubEnv('HAPPY_ENABLE_V2_CHANGES', '0');
+    axiosGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/v1/sessions/s1/messages')) {
+        return { status: 200, data: { messages: [
+          { id: 'm18', seq: 18, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Continue' } } } },
+        ] } };
+      }
+      return { status: 403, data: {} };
+    });
+    const updates: unknown[] = [];
+    const runtime = createRuntime({ accountChangesEnabled: false, lastObservedSeq: 17, handleUpdate: (update) => updates.push(update) });
+
+    await runtime.syncChangesOnConnect({ reason: 'reconnect' });
+
+    expect(axiosGetMock.mock.calls.map(([url]) => url)).toEqual([expect.stringContaining('/v1/sessions/s1/messages')]);
+    expect(axiosGetMock.mock.calls[0][1]).toMatchObject({ params: { afterSeq: 17 } });
+    expect(updates).toEqual([expect.objectContaining({ body: expect.objectContaining({ sid: 's1', message: expect.objectContaining({ id: 'm18' }) }) })]);
   });
 });

@@ -111,6 +111,34 @@ describe('createDaemonExternalActionTargetResolver', () => {
     expect(mocks.fetchAccountMachineReplacements).not.toHaveBeenCalled();
   });
 
+  it('uses the daemon exact-Home snapshot for collective Session target resolution', async () => {
+    const serverFeaturesSnapshot = {
+      status: 'unsupported' as const,
+      reason: 'endpoint_missing' as const,
+    };
+    const resolveServerFeaturesSnapshot = vi.fn(async () => serverFeaturesSnapshot);
+    mocks.fetchSessionById.mockResolvedValue(session('machine-local'));
+    const resolver = createDaemonExternalActionTargetResolver({
+      credentials: TOKEN_ONLY_CREDENTIALS,
+      serverApiUrl: 'https://home.example.test',
+      resolveServerFeaturesSnapshot,
+    });
+
+    await expect(resolver({
+      actionId: 'session.open',
+      target: { kind: 'session', sessionId: 'session-1' },
+      currentMachineId: 'machine-local',
+    })).resolves.toEqual({ kind: 'session', sessionId: 'session-1' });
+
+    expect(resolveServerFeaturesSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.fetchSessionById).toHaveBeenCalledWith({
+      token: 'daemon-token',
+      sessionId: 'session-1',
+      serverUrl: 'https://home.example.test',
+      serverFeaturesSnapshot,
+    });
+  });
+
   it('uses the encrypted Session metadata machine identity instead of a stale raw row projection', async () => {
     mocks.fetchSessionById.mockResolvedValue(encryptedSessionMetadata({
       machineId: 'machine-local',

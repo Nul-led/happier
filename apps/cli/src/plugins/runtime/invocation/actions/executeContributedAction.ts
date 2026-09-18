@@ -6,6 +6,7 @@ import {
 } from '@happier-dev/protocol/actions';
 import {
   projectPluginActionUnavailableOutcomeCode,
+  type ActionsSettingsV1,
   type JsonValue,
   type MessageActionAvailableSnapshotV1,
   type PluginMachineExecutionOriginV1,
@@ -30,6 +31,7 @@ import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/
 import type { ContributionPolicyFacts } from '@/plugins/runtime/policy/evaluate';
 import type { TargetActionCurrentIntentRequest, TargetActionCurrentIntentResult } from '@/plugins/runtime/invocation/actionExecutor';
 import type { TargetActionOperationProgressPort } from '@/plugins/runtime/invocation/targetActionRegistry';
+import type { PluginExternalActionContext } from '@/plugins/runtime/invocation/services/types';
 import {
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
@@ -322,6 +324,8 @@ export async function executeContributedAction(params: Readonly<{
   runtimeRegistry?: ResolvedExecutablePluginRuntimeRegistry;
   actionId: ActionId | string;
   input?: unknown;
+  /** Host-admitted settings snapshot; scoped runtimes must never consult ambient Account policy. */
+  actionsSettings?: ActionsSettingsV1;
   /** Host-private request from ActionsService.executeWithExecutionOrigin only. */
   captureExecutionOrigin?: true;
   /**
@@ -357,6 +361,8 @@ export async function executeContributedAction(params: Readonly<{
     originSurface?: PluginInvocationOriginSurface;
     /** Host-stamped caller provenance for plugin-to-plugin dispatch. */
     caller?: PluginInvocationCaller;
+    /** Host-private external API authority; never plugin-authored input. */
+    externalActionContext?: PluginExternalActionContext;
     /**
      * Request-scoped mounted-caller revalidation from the ingress daemon. The
      * target Action owner consumes it exactly before invoking its handler.
@@ -369,6 +375,8 @@ export async function executeContributedAction(params: Readonly<{
     signal?: AbortSignal;
     facts?: ContributionPolicyFacts;
     operationProgress?: TargetActionOperationProgressPort;
+    /** Host-owned custody transition after final admission, before plugin code. */
+    beforeHandlerInvocation?: () => Promise<void>;
     capturePreparedInvocation?: (
       invocation: PreparedContributedActionInvocation,
     ) => void;
@@ -446,7 +454,10 @@ export async function executeContributedAction(params: Readonly<{
     pluginId,
     action.definition.id,
   );
-  const actionSettingsProvider = createActionSettingsProvider();
+  const scopedActionsSettings = params.actionsSettings;
+  const actionSettingsProvider = scopedActionsSettings
+    ? { getActionsSettings: () => scopedActionsSettings }
+    : createActionSettingsProvider();
   if (
     contributedActionSettingsId !== null
     && !isActionEnabledByActionsSettings(
@@ -690,6 +701,9 @@ export async function executeContributedAction(params: Readonly<{
       surface: actionSurface,
       invocationSurface,
       ...(caller ? { caller } : {}),
+      ...(params.context.externalActionContext
+        ? { externalActionContext: params.context.externalActionContext }
+        : {}),
       ...(admittedTargetedOperation === undefined
         ? {}
         : {
@@ -710,6 +724,9 @@ export async function executeContributedAction(params: Readonly<{
       ...(params.context.facts ? { facts: params.context.facts } : {}),
       ...(params.context.operationProgress
         ? { operationProgress: params.context.operationProgress }
+        : {}),
+      ...(params.context.beforeHandlerInvocation
+        ? { beforeHandlerInvocation: params.context.beforeHandlerInvocation }
         : {}),
       ...(replayPlacement ? { replayPlacement } : {}),
       ...(params.expectedApprovalReplayPlacement === undefined

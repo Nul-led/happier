@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -493,12 +494,15 @@ describe('ApiSessionClient connection handling', () => {
     let originalArgv: string[];
     const createdClients: ApiSessionClient[] = [];
     const createClient = (token: string, session: any): ApiSessionClient => {
-        const client = new ApiSessionClient(token, session, {
-            credentials: {
-                token,
-                encryption: {
-                    type: 'legacy',
-                    secret: session.encryptionKey ?? new Uint8Array(32),
+        const client = createTestApiSessionClient(ApiSessionClient, token, session, {
+            metadataAuthority: {
+                kind: 'owner',
+                credentials: {
+                    token,
+                    encryption: {
+                        type: 'legacy',
+                        secret: session.encryptionKey ?? new Uint8Array(32),
+                    },
                 },
             },
         });
@@ -1990,13 +1994,19 @@ describe('ApiSessionClient connection handling', () => {
         await expect(waitPromise).resolves.toBe(true);
     });
 
-    it('waitForMetadataUpdate resolves false when user-scoped socket disconnects', async () => {
+    it('waitForMetadataUpdate stays subscribed across user-scoped disconnects', async () => {
         const client = createClient('fake-token', mockSession);
 
         const waitPromise = startMetadataWait(client);
 
-        triggerLastUserSocketLifecycleEvent('disconnect');
-        await expect(waitPromise).resolves.toBe(false);
+        mockUserSocket.trigger('disconnect', 'transport close');
+        emitMetadataWakeUpdate({
+            session: mockSession,
+            path: '/tmp/after-disconnect',
+            updateId: 'update-after-disconnect',
+            seq: 2,
+        });
+        await expect(waitPromise).resolves.toBe(true);
     });
 
     it('waitForMetadataUpdate does not miss fast user-scoped update-session wakeups', async () => {

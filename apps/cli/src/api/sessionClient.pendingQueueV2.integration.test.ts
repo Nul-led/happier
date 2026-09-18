@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { ManagedConnectionState, ManagedConnectionSupervisor } from '@happier-dev/connection-supervisor';
@@ -51,6 +52,7 @@ describe('ApiSessionClient pending queue V2 helpers', () => {
   let serverUrl = '';
   let pendingRows: PendingRow[] = [];
   let pendingListStatus: number = 200;
+  let pendingListError = 'auth failed';
   let pendingListRequestCount = 0;
   let discardRequestCount = 0;
   const discardStatusesByLocalId = new Map<string, number>();
@@ -73,12 +75,13 @@ describe('ApiSessionClient pending queue V2 helpers', () => {
       metadata: { path: '/tmp', host: 'localhost' },
       ...sessionOverrides,
     });
-    return new ApiSessionClient('test-token', session);
+    return createTestApiSessionClient(ApiSessionClient, 'test-token', session);
   }
 
   beforeEach(async () => {
     pendingRows = [];
     pendingListStatus = 200;
+    pendingListError = 'auth failed';
     pendingListRequestCount = 0;
     discardRequestCount = 0;
     discardStatusesByLocalId.clear();
@@ -91,7 +94,7 @@ describe('ApiSessionClient pending queue V2 helpers', () => {
         if (pendingListStatus !== 200) {
           res.statusCode = pendingListStatus;
           res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify({ error: 'auth failed' }));
+          res.end(JSON.stringify({ error: pendingListError }));
           return;
         }
         res.statusCode = 200;
@@ -198,6 +201,23 @@ describe('ApiSessionClient pending queue V2 helpers', () => {
     const client = await createClient();
 
     await expect(client.listPendingMessageQueueV2LocalIds()).rejects.toMatchObject({ response: { status: 500 } });
+    expect(supervisedInternals(client).currentConnectionState.phase).not.toBe('auth_failed');
+  });
+
+  it.each([
+    [403, 'session_access_authentication_required', false],
+    [503, 'session_access_authentication_unavailable', true],
+  ] as const)('preserves Pending Team-auth continuation %s/%s without invalidating the credential', async (status, code, retryable) => {
+    pendingListStatus = status;
+    pendingListError = code;
+    const client = await createClient();
+
+    await expect(client.listPendingMessageQueueV2LocalIds()).rejects.toMatchObject({
+      code,
+      status,
+      retryable,
+    });
+    expect(isAuthenticationError(await client.listPendingMessageQueueV2LocalIds().catch((error) => error))).toBe(false);
     expect(supervisedInternals(client).currentConnectionState.phase).not.toBe('auth_failed');
   });
 

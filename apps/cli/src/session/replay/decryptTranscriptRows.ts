@@ -7,12 +7,15 @@ export type DecryptedTranscriptRow = Readonly<{
   role: 'user' | 'agent';
   content: unknown;
   meta?: unknown;
+  /** Canonical server-projected author identity; retained as opaque data for bounded consumers. */
+  accountActor?: unknown;
 }>;
 
 type EncryptedRowLike = Readonly<{
   seq?: unknown;
   createdAt?: unknown;
   content?: unknown;
+  accountActor?: unknown;
 }>;
 
 export function decryptTranscriptRows(params: Readonly<{
@@ -49,6 +52,7 @@ export function decryptTranscriptRows(params: Readonly<{
         role,
         content: body,
         ...(meta !== undefined ? { meta } : {}),
+        ...(row.accountActor !== undefined ? { accountActor: row.accountActor } : {}),
       });
     } catch {
       // Best-effort: ignore undecipherable rows.

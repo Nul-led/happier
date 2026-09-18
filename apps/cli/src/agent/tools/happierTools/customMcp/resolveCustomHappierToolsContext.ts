@@ -4,9 +4,12 @@ import { resolveEffectiveMcpServersForDirectory } from '@/mcp/servers/resolveEff
 import {
   deriveSettingsSecretsKeyForCredentials,
   deriveSettingsSecretsReadKeysForCredentials,
-  indexSavedSecretsByIdFromAccountSettings,
 } from '@/mcp/servers/resolveMcpValueRefPlaintext';
 import { materializeMcpServerConfigRecord } from '@/mcp/servers/materializeMcpServerConfigRecord';
+import {
+  createSavedSecretMaterializerV1,
+  type SavedSecretCatalogResourceInputV1,
+} from '@/settings/secrets/savedSecretCatalog';
 
 export async function resolveCustomHappierToolsContext(params: Readonly<{
   credentials: StoredCredentials;
@@ -14,6 +17,7 @@ export async function resolveCustomHappierToolsContext(params: Readonly<{
   machineId: string;
   directory: string;
   processEnv?: NodeJS.ProcessEnv;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
 }>): Promise<Awaited<ReturnType<typeof materializeMcpServerConfigRecord>>> {
   const settings = readMcpServersSettingsFromAccountSettings(params.accountSettings);
   const resolved = resolveEffectiveMcpServersForDirectory({
@@ -21,10 +25,15 @@ export async function resolveCustomHappierToolsContext(params: Readonly<{
     machineId: params.machineId,
     directory: params.directory,
   });
-  const savedSecretsById = indexSavedSecretsByIdFromAccountSettings(params.accountSettings);
+  const savedSecretMaterializer = createSavedSecretMaterializerV1({
+    accountSettings: params.accountSettings,
+    settingsSecretsReadKeys: deriveSettingsSecretsReadKeysForCredentials(params.credentials),
+    resources: params.savedSecretResources,
+  });
   return await materializeMcpServerConfigRecord({
     resolved,
-    savedSecretsById,
+    savedSecretsById: new Map(),
+    savedSecretMaterializer,
     settingsSecretsKey: params.credentials.encryption
       ? deriveSettingsSecretsKeyForCredentials(params.credentials)
       : null,

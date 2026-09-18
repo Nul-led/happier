@@ -33,6 +33,8 @@ import type { ScopedSettingsService, SettingsSnapshot } from '@happier-dev/plugi
 
 import { resolvePluginInvocationLogTarget } from '@/cli/commands/pluginInvocationLogsMachine';
 import { readStoredCredentials } from '@/persistence';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { createAccountPluginSecretCustodyRouter } from '@/plugins/runtime/context/accountPluginSecretCustody';
 import { collectDeclaredPluginSecrets } from '@/plugins/runtime/context/declaredPluginSecrets';
 import { createAccountPluginSettingsRecordStorage } from '@/plugins/runtime/context/accountPluginSettingsRecordStorage';
@@ -45,6 +47,7 @@ import { createStablePluginEventsBroker } from '@/plugins/runtime/invocation/ser
 import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { resolveNotificationChannelSettingsContributions } from '@/plugins/settings/notificationChannelSettings';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
+import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import {
   callMachineRpc,
   readMachineRpcRequestDisposition,
@@ -590,6 +593,24 @@ async function accountSecretCustody(params: Readonly<{
     shouldCommit: () => !params.signal?.aborted,
   });
   assertCurrent(params.signal);
+  try {
+    const featureSnapshot = await fetchServerFeaturesSnapshot({
+      serverUrl: resolveServerHttpBaseUrl(),
+      token: credentials.token,
+      projection: 'authenticated',
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
+    await hydrateSavedSecretCatalog({
+      token: credentials.token,
+      serverFeatures: featureSnapshot.status === 'ready' ? featureSnapshot.features : null,
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
+  } catch {
+    // The catalog owner has already withdrawn opened shared material and
+    // published retryable unavailability. Personal plugin secrets remain
+    // administrable; shared bind/use will fail closed through the materializer.
+    assertCurrent(params.signal);
+  }
   const router = createAccountPluginSecretCustodyRouter();
   const custody = router.resolve({
     pluginId: params.pluginId,

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   AcpConfigOptionOverridesV1Schema,
+  readNonBlankOpaqueIdentifier,
   readRuntimeDescriptorV1,
   SessionMcpSelectionV1Schema,
   SessionModelSelectionV1Schema,
@@ -134,7 +135,13 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
     permissionMode: normalizeNonEmptyString(options.permissionMode),
     agentModeId: normalizeNonEmptyString(options.agentModeId),
     modelSelection: normalizeModelSelectionForFingerprint(options.modelSelection),
-    resume: normalizeNonEmptyString(options.resume),
+    // The Agent's own opaque session id: two requests that differ only in its
+    // whitespace name different sessions and must not share one spawn.
+    resume: readNonBlankOpaqueIdentifier(options.resume),
+    initialAccessHash: options.initialAccess === undefined
+      ? null
+      : sha256Hex(stableJsonStringify(options.initialAccess)),
+    primaryTeamId: options.primaryTeamId === undefined ? null : [options.primaryTeamId],
     pendingFirstInputHash: options.pendingFirstInput === undefined
       ? null
       : sha256Hex(stableJsonStringify(options.pendingFirstInput)),

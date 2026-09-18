@@ -1,5 +1,6 @@
 import * as z from 'zod';
 import {
+  ExecutionRunIdSchema,
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionOwnerMetadataEnvelopeV1Schema,
   SessionOwnerMetadataV1Schema,
@@ -12,6 +13,7 @@ type AttachSnapshotPayload = Readonly<{
   metadataVersion: number;
   agentState: Readonly<Record<string, unknown>> | null;
   agentStateVersion: number;
+  pendingExecutionRunIds?: readonly string[];
   metadataLayoutVersion?: typeof SESSION_METADATA_LAYOUT_VERSION_V1;
   ownerMetadata?: SessionOwnerMetadataV1;
   ownerMetadataEnvelope?: SessionOwnerMetadataEnvelopeV1;
@@ -54,6 +56,7 @@ const AttachSnapshotSchema = z.object({
   metadataVersion: z.number().int().nonnegative(),
   agentState: z.record(z.string(), z.unknown()).nullable(),
   agentStateVersion: z.number().int().nonnegative(),
+  pendingExecutionRunIds: z.array(ExecutionRunIdSchema).optional(),
   metadataLayoutVersion: z.literal(SESSION_METADATA_LAYOUT_VERSION_V1).optional(),
   ownerMetadata: SessionOwnerMetadataV1Schema.optional(),
   ownerMetadataEnvelope: SessionOwnerMetadataEnvelopeV1Schema.optional(),

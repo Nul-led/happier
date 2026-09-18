@@ -7,6 +7,7 @@ import { PluginError } from '@happier-dev/plugin-sdk';
 import {
     SESSION_PROVIDER_TRANSCRIPT_EVENT_ID_V1,
     SessionProviderTranscriptEventPayloadV1Schema,
+    type PluginExecutionScopeV1,
 } from '@happier-dev/protocol';
 
 import { configuration } from '@/configuration';
@@ -30,19 +31,34 @@ type AgentSessionHooksService = AgentSessionHostServices['sessionHooks'];
 type HostSessionHookLifecycle =
     | Readonly<{ kind: 'runner' }>
     | Readonly<{ kind: 'session'; sessionId: string }>;
-type HostSessionHookServerStartRequest =
-    Parameters<AgentSessionHooksService['startServer']>[0]
-    & Readonly<{
+type HostSessionHookServerStartRequest = Parameters<AgentSessionHooksService['startServer']>[0] & (
+    | Readonly<{
         providerId: string;
         sessionId: string;
         lifecycle?: HostSessionHookLifecycle;
-    }>;
+        scope?: never;
+    }>
+    | Readonly<{
+        providerId: string;
+        scope: Extract<PluginExecutionScopeV1, { kind: 'execution_run' }>;
+        sessionId?: never;
+        lifecycle?: never;
+    }>
+);
 type HostSessionHookPluginDirCreateRequest =
     Parameters<AgentSessionHooksService['createPluginDir']>[0]
-    & Readonly<{
-        providerId: string;
-        lifecycle?: HostSessionHookLifecycle;
-    }>;
+    & (
+        | Readonly<{
+            providerId: string;
+            lifecycle?: HostSessionHookLifecycle;
+            scope?: never;
+        }>
+        | Readonly<{
+            providerId: string;
+            scope: Extract<PluginExecutionScopeV1, { kind: 'execution_run' }>;
+            lifecycle?: never;
+        }>
+    );
 type HostSessionProviderTranscriptPublishRequest =
     Parameters<AgentSessionHooksService['publishProviderTranscript']>[0]
     & Readonly<{
@@ -74,7 +90,7 @@ export type CreateSessionHooksServiceParams = Readonly<{
 
 export type SessionHookTranscriptFileFollowGrantRequest = Readonly<{
     providerId: string;
-    sessionId: string;
+    scope: PluginExecutionScopeV1;
     providerSessionId: string;
     eventName: string;
     transcriptPath: string;
@@ -267,7 +283,9 @@ async function grantSessionHookTranscriptPath(params: Readonly<{
     if (!transcriptPath) return;
     await grant({
         providerId: params.request.providerId,
-        sessionId: params.request.sessionId,
+        scope: params.request.scope !== undefined
+            ? params.request.scope
+            : Object.freeze({ kind: 'session', sessionId: params.request.sessionId }),
         providerSessionId: params.providerSessionId,
         eventName,
         transcriptPath,
@@ -444,11 +462,10 @@ export function createSessionHooksService(
                 current: Awaited<ReturnType<typeof startSessionHookServerWithPersistedPortTakeover>> | null;
             } = { current: null };
             try {
-                const serverOptions = {
-                    session: {
-                        providerId: request.providerId,
-                        sessionId: request.sessionId,
-                    },
+            const serverOptions = {
+                    ...('scope' in request
+                        ? {}
+                        : { session: { providerId: request.providerId, sessionId: request.sessionId } }),
                     onSessionHook: request.onSessionHook
                         ? async (providerSessionId: string, data: SessionHookPayload) => {
                             try {

@@ -178,6 +178,30 @@ describe('createZellijTerminalHostAdapter', () => {
     }));
   });
 
+  it('gives startup a load-tolerant deadline without lengthening routine liveness probes', async () => {
+    const actions = createActions();
+    const adapter = createTestZellijAdapter({
+      zellijBinary: '/tools/zellij',
+      socketDir: '/tmp/zellij-sock',
+      actions,
+    });
+
+    const handle = await adapter.createOrAttachHost({
+      sessionName: 'session-a',
+      workingDirectory: '/workspace/project',
+      spawnArgv: ['/managed/node', 'claude_local_launcher.cjs'],
+      spawnEnv: {},
+      isolatedEnv: true,
+    });
+
+    expect(actions.attachCreateBackground).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+    expect(actions.runCommand).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+    expect(actions.listPanes).toHaveBeenNthCalledWith(1, expect.objectContaining({ timeoutMs: 60_000 }));
+
+    await adapter.evaluateLiveness(handle);
+    expect(actions.listPanes).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 5_000 }));
+  });
+
   it('uses zellij action paste plus a separate Enter for prompt delivery', async () => {
     const actions = createActions();
     const adapter = createTestZellijAdapter({
@@ -224,6 +248,47 @@ describe('createZellijTerminalHostAdapter', () => {
       paneId: 'terminal_42',
       timeoutMs: expect.any(Number),
     }));
+  });
+
+  it('preserves the scalable prompt budget for submission after a large paste', async () => {
+    const prompt = 'x'.repeat(128_000);
+    const sendEnter = vi.fn(async (_params: Parameters<ZellijActions['sendEnter']>[0]) => undefined);
+    const actions = createActions({ sendEnter });
+    const adapter = createTestZellijAdapter({
+      zellijBinary: '/tools/zellij',
+      socketDir: '/tmp/zellij-sock',
+      actions,
+      actionTimeoutMs: 5_000,
+      pasteMaxBytes: 256_000,
+    });
+
+    await expect(adapter.injectUserPrompt({
+      kind: 'zellij',
+      sessionName: 'session-a',
+      paneId: 'terminal_42',
+      socketDir: '/tmp/zellij-sock',
+      attachMetadata: {
+        attachStrategy: 'terminal_host',
+        topology: 'exclusive',
+        locality: 'same_machine',
+        maxClients: null,
+        requiresLocalAttachmentInfo: true,
+        liveProbe: 'required',
+      },
+    }, {
+      text: prompt,
+      multiline: false,
+      origin: { kind: 'ui_pending', nonce: 'nonce-large-prompt-budget' },
+      scheduling: {},
+    })).resolves.toMatchObject({ status: 'injected' });
+
+    expect(actions.pasteText).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: expect.any(Number),
+    }));
+    expect(actions.sendEnter).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: expect.any(Number),
+    }));
+    expect(sendEnter.mock.calls[0]?.[0]?.timeoutMs).toBeGreaterThan(5_000);
   });
 
   it('waits for a delayed pre-submit collapsed marker and settles once after Enter', async () => {

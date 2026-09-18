@@ -7,6 +7,8 @@ import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRi
 import {
   installVersionedPayload,
   prepareFirstPartyComponentPayloadFromGitHubRelease,
+  readInstalledVersionMarkersSync,
+  resolveFirstPartyInstallLayout,
   resolveInstalledFirstPartyComponentPaths,
   type FirstPartyComponentId,
   type PreparedFirstPartyComponentPayload,
@@ -30,7 +32,8 @@ export type RunHappierOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
   cwd?: string;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  /** `null` explicitly disables the process timeout after irreversible-operation admission. */
+  timeoutMs?: number | null;
   onStdoutChunk?: (text: string) => void;
   includeStdoutInError?: boolean;
   /** Ephemeral process input. Callers must keep credentials and durable secrets out. */
@@ -59,7 +62,7 @@ async function runCommandCapture(params: Readonly<{
   env: NodeJS.ProcessEnv;
   cwd?: string;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   input?: string;
   onStdoutChunk?: (text: string) => void;
 }>): Promise<CommandExecutionResult> {
@@ -114,17 +117,19 @@ async function runCommandCapture(params: Readonly<{
       params.signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanupAbortListener();
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-      rejectPromise(new Error(`Command timed out: ${params.command}`));
-    }, Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000);
+    if (params.timeoutMs !== null) {
+      timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanupAbortListener();
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+        rejectPromise(new Error(`Command timed out: ${params.command}`));
+      }, Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000);
+    }
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
@@ -249,16 +254,36 @@ function resolveRepoLocalFirstPartyCommandPath(params: Readonly<{
   return null;
 }
 
+/**
+ * Where a local first-party command came from.
+ *
+ * `managed` means this machine's install path actually produced it: the verified release payload
+ * (`prepareFirstPartyComponentPayloadFromGitHubRelease` -> `installVersionedPayload`) was promoted
+ * under the install root, which records `current.version` next to the payload it installed at
+ * `versions/<versionId>/`. Both the record and the binary it names must be present, because that
+ * install is the only thing release verification ever happened for. Everything else is `override`
+ * - an explicit env override, a repo-local checkout, or a binary that merely exists at
+ * `<installRoot>/current` with no install behind it: usable, never trusted for automatic pairing
+ * approval. Later same-user tampering with a recorded managed install is outside this boundary; a
+ * directory nothing ever installed into is not - no verification was performed there at all.
+ */
+export type LocalFirstPartyCommandProvenance = 'managed' | 'override';
+
+export type ResolvedLocalFirstPartyCommand = Readonly<{
+  command: string;
+  provenance: LocalFirstPartyCommandProvenance;
+}>;
+
 export function resolveExplicitOrInstalledLocalFirstPartyCommand(params: Readonly<{
   componentId: FirstPartyComponentId;
   processEnv: NodeJS.ProcessEnv;
   envVarNames?: readonly string[];
   releaseRing?: PublicReleaseRingId;
-}>): string | null {
+}>): ResolvedLocalFirstPartyCommand | null {
   for (const envVarName of params.envVarNames ?? []) {
     const explicit = String(params.processEnv[envVarName] ?? '').trim();
     if (explicit) {
-      return explicit;
+      return { command: explicit, provenance: 'override' };
     }
   }
 
@@ -267,22 +292,48 @@ export function resolveExplicitOrInstalledLocalFirstPartyCommand(params: Readonl
     processEnv: params.processEnv,
   });
   if (repoLocalPath) {
-    return repoLocalPath;
+    return { command: repoLocalPath, provenance: 'override' };
   }
 
   try {
-    const paths = resolveInstalledFirstPartyComponentPaths({
-      componentId: params.componentId,
-      processEnv: params.processEnv,
-      releaseRing: params.releaseRing,
-    });
-    if (existsSync(paths.binaryPath)) {
-      return paths.binaryPath;
-    }
+    return resolveInstalledLocalFirstPartyCommand(params);
   } catch {
     // ignore and continue to managed install acquisition
   }
 
+  return null;
+}
+
+/**
+ * The installed command under the install root, classified by whether an install actually recorded
+ * it. `promoteVersionedPayload` writes the payload to `versions/<versionId>` and only then writes
+ * the `current.version` marker, so a marker naming a version whose binary is present is the install
+ * path's own record of what it put there. A binary sitting at `<installRoot>/current` without that
+ * record was never acquired or verified here, so it resolves as `override`: still runnable, never
+ * automatically approved for pairing.
+ */
+function resolveInstalledLocalFirstPartyCommand(params: Readonly<{
+  componentId: FirstPartyComponentId;
+  processEnv: NodeJS.ProcessEnv;
+  releaseRing?: PublicReleaseRingId;
+}>): ResolvedLocalFirstPartyCommand | null {
+  const paths = resolveInstalledFirstPartyComponentPaths({
+    componentId: params.componentId,
+    processEnv: params.processEnv,
+    releaseRing: params.releaseRing,
+  });
+  const layout = resolveFirstPartyInstallLayout({
+    componentId: params.componentId,
+    processEnv: params.processEnv,
+    releaseRing: params.releaseRing,
+  });
+  const { currentVersionId } = readInstalledVersionMarkersSync(layout);
+  if (currentVersionId && paths.resolvedBinaryPath && existsSync(paths.resolvedBinaryPath)) {
+    return { command: paths.binaryPath, provenance: 'managed' };
+  }
+  if (existsSync(paths.binaryPath)) {
+    return { command: paths.binaryPath, provenance: 'override' };
+  }
   return null;
 }
 
@@ -302,7 +353,7 @@ export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
   const releaseRing = params.releaseRing ?? 'stable';
   const resolved = resolveExplicitOrInstalledLocalFirstPartyCommand(params);
   if (resolved) {
-    return resolved;
+    return resolved.command;
   }
 
   const deps: EnsureLocalFirstPartyCommandDeps = {
@@ -343,7 +394,7 @@ export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
     releaseRing,
   });
   if (installed) {
-    return installed;
+    return installed.command;
   }
 
   throw new SystemTaskExecutionError(
@@ -370,7 +421,7 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
       releaseRing,
     });
     if (resolved) {
-      return resolved;
+      return resolved.command;
     }
 
     if (!installPromise) {
@@ -390,7 +441,7 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
       releaseRing,
     });
     if (installed) {
-      return installed;
+      return installed.command;
     }
 
     throw new SystemTaskExecutionError(

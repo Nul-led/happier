@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   readSqliteMigrationCatalog,
   resolveInstalledPersonalHomeSqliteMigrationPaths,
+  resolvePersonalHomeRuntimeArtifactPaths,
   resolvePersonalHomeRuntimeLayout,
   resolveRelayRuntimeDefaults,
   type PersonalHomeRelocationDestinationOwner,
@@ -162,6 +163,23 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
       kind: 'system.noop.v1',
       status: 'completed',
     });
+  });
+
+  it('delivers adapter cancellation to the active task signal and returns its terminal cancelled result', async () => {
+    const adapter = getLiveSystemTasksRunnerAdapter();
+    const started = await adapter.start({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'system.noop.v1',
+        params: { delayMs: 60_000 },
+      },
+    });
+    const taskId = String((started as { taskId?: unknown }).taskId ?? '');
+
+    await adapter.cancel({ taskId });
+    const { result } = await waitForResult(adapter, taskId);
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'cancelled' } });
   });
 
   it('registers setup.thisComputer.v1 through the canonical CLI setup owner', async () => {
@@ -1144,6 +1162,7 @@ describe('relay runtime system tasks', () => {
         purpose: { kind: 'personal-home' as const, canonicalServerUrl: fixture.canonicalServerUrl },
       },
     };
+    const artifacts = resolvePersonalHomeRuntimeArtifactPaths(fixture.layout);
     const expectedPaths = [...new Set([
       fixture.layout.databasePath,
       `${fixture.layout.databasePath}-wal`,
@@ -1154,6 +1173,10 @@ describe('relay runtime system tasks', () => {
       fixture.layout.backupsDir,
       fixture.layout.derivedDataDir,
       fixture.layout.irohEndpointKeyPath,
+      artifacts.irohEndpointDescriptorPath,
+      artifacts.homeConnectionDescriptorPath,
+      artifacts.startupReceiptPath,
+      artifacts.updateRecoveryPath,
       path.resolve(fixture.layout.dataDir, '.operations', 'restore-journal.json'),
       path.resolve(fixture.layout.dataDir, '.operations', 'relocation-source.json'),
       path.resolve(fixture.layout.dataDir, '.operations', 'relocation-destination.json'),

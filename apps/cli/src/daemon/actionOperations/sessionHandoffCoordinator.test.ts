@@ -147,6 +147,9 @@ describe('tracked session handoff coordinator', () => {
     expect(workspaceSyncAdapter.prepare).not.toHaveBeenCalledWith(expect.objectContaining({
       sourceWorkspaceRefId: expect.anything(),
     }));
+    expect(deps.prepareTarget).not.toHaveBeenCalledWith(expect.objectContaining({
+      workspaceRootPath: expect.anything(),
+    }), expect.anything());
   });
 
   it('owns the full parent sequence and publishes the handoff id before settlement', async () => {
@@ -157,7 +160,10 @@ describe('tracked session handoff coordinator', () => {
       ...deps,
     });
 
-    expect(result).toMatchObject({ ok: true, result: { handoffId: 'handoff-1' } });
+    expect(result).toMatchObject({
+      ok: true,
+      result: { handoffId: 'handoff-1', workspace: { kind: 'none' } },
+    });
     expect(calls).toEqual(['prepare', 'resume', 'confirm', 'commit-target', 'cleanup-source']);
     expect(deps.publishOwnerUpdate).toHaveBeenCalledWith(expect.objectContaining({
       domainRef: { kind: 'handoff', id: 'handoff-1', targetMachineId: 'target-machine' },

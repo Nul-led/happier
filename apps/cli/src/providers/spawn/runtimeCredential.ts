@@ -8,8 +8,10 @@ import type { ProviderProbeCredential } from '../probe/client';
 
 import {
   resolveProviderCredentialPlaintext,
+  resolveProviderCredentialPlaintextAsync,
   type ProviderProbeHostCredentialReference,
 } from './credentials';
+import { TeamCredentialDirectMaterialOperationError } from '@/daemon/connectedServices/directMaterial/teamCredentialDirectMaterialClient';
 import { createProviderRedactionLease } from './redaction';
 
 export function renderProviderProbeCredential(
@@ -29,12 +31,19 @@ export async function resolveRuntimeProviderCredential(
   input: Readonly<{
     credentialRef: ProviderProbeHostCredentialReference;
     getAccountSettingsSnapshot: () => ActiveAccountSettingsSnapshot | null;
+    openTeamDirect?: Parameters<typeof resolveProviderCredentialPlaintextAsync>[0]['openTeamDirect'];
   }>,
 ) {
   let snapshot: ReturnType<typeof input.getAccountSettingsSnapshot>;
   try {
     snapshot = input.getAccountSettingsSnapshot();
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof TeamCredentialDirectMaterialOperationError
+      || (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw error;
+    }
     return {
       ok: false as const,
       error: createProviderErrorV1('provider_secret_missing', {
@@ -53,13 +62,23 @@ export async function resolveRuntimeProviderCredential(
     };
   }
   try {
-    const resolved = resolveProviderCredentialPlaintext({
-      reference: input.credentialRef.reference,
+    const common = {
       accountSettings: snapshot.settings,
+      savedSecretResources: snapshot.savedSecretResources,
       settingsSecretsReadKeys: snapshot.settingsSecretsReadKeys,
       connectionId: input.credentialRef.connectionId,
       machineId: input.credentialRef.machineId,
-    });
+    };
+    const resolved = input.credentialRef.reference.kind === 'team_direct'
+      ? await resolveProviderCredentialPlaintextAsync({
+          ...common,
+          reference: input.credentialRef.reference,
+          openTeamDirect: input.openTeamDirect,
+        })
+      : resolveProviderCredentialPlaintext({
+          ...common,
+          reference: input.credentialRef.reference,
+        });
     if (!resolved.ok) return resolved;
     if (resolved.credential.kind !== 'apiKey') {
       return {
@@ -82,10 +101,17 @@ export async function resolveRuntimeProviderCredential(
         credential,
         redact: redaction.redact,
         containsSensitiveValue: redaction.containsSensitiveValue,
+        createStreamingSanitizer: redaction.createStreamingSanitizer,
         close: redaction.close,
       }),
     };
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof TeamCredentialDirectMaterialOperationError
+      || (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw error;
+    }
     return {
       ok: false as const,
       error: createProviderErrorV1('provider_secret_missing', {

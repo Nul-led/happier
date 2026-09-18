@@ -84,26 +84,30 @@ describe('supported rollback window retention and pruning', () => {
         });
         let writeCount = 0;
         const adapter = {
-            async readRecord() {
-                return record;
-            },
-            async writeRecord(_model: unknown, request: unknown) {
-                writeCount += 1;
-                if (params.conflictValues) {
-                    record = Object.freeze({
-                        status: 'present' as const,
-                        revision: 9,
-                        values: Object.freeze({ ...params.conflictValues }),
-                    });
-                    return Object.freeze({ status: 'conflict' as const, revision: 9 });
-                }
-                const values = (request as { values: Readonly<Record<string, JsonValue>> }).values;
-                record = Object.freeze({
-                    status: 'present' as const,
-                    revision: record.revision + 1,
-                    values: Object.freeze({ ...values }),
-                });
-                return Object.freeze({ status: 'updated' as const, revision: record.revision });
+            async bindOperation() {
+                return {
+                    async readRecord() {
+                        return record;
+                    },
+                    async writeRecord(_model: unknown, request: unknown) {
+                        writeCount += 1;
+                        if (params.conflictValues) {
+                            record = Object.freeze({
+                                status: 'present' as const,
+                                revision: 9,
+                                values: Object.freeze({ ...params.conflictValues }),
+                            });
+                            return Object.freeze({ status: 'conflict' as const, revision: 9 });
+                        }
+                        const values = (request as { values: Readonly<Record<string, JsonValue>> }).values;
+                        record = Object.freeze({
+                            status: 'present' as const,
+                            revision: record.revision + 1,
+                            values: Object.freeze({ ...values }),
+                        });
+                        return Object.freeze({ status: 'updated' as const, revision: record.revision });
+                    },
+                };
             },
         };
         const host = createStablePluginSettingsHost({
@@ -160,11 +164,15 @@ describe('supported rollback window retention and pruning', () => {
         const host = createStablePluginSettingsHost({
             declarations: [{ pluginId: 'acme.plugin', contribution: declaration }],
             recordStore: createAccountSettingsBackedSettingsRecordStore({
-                async readRecord() {
-                    return Object.freeze({ status: 'present' as const, revision: 1, values: { theme: 'dark' } });
-                },
-                async writeRecord() {
-                    return Object.freeze({ status: 'updated' as const, revision: 2 });
+                async bindOperation() {
+                    return {
+                        async readRecord() {
+                            return Object.freeze({ status: 'present' as const, revision: 1, values: { theme: 'dark' } });
+                        },
+                        async writeRecord() {
+                            return Object.freeze({ status: 'updated' as const, revision: 2 });
+                        },
+                    };
                 },
             }),
             broker: createStablePluginEventsBroker(),
@@ -191,15 +199,19 @@ describe('supported rollback window retention and pruning', () => {
                 ],
             } }],
             recordStore: createAccountSettingsBackedSettingsRecordStore({
-                async readRecord() {
-                    return Object.freeze({
-                        status: 'present' as const,
-                        revision: 3,
-                        values: Object.freeze({ theme: 'dark', legacyMode: 'turbo' } as Readonly<Record<string, JsonValue>>),
-                    });
-                },
-                async writeRecord() {
-                    throw new Error('rollback read must not write');
+                async bindOperation() {
+                    return {
+                        async readRecord() {
+                            return Object.freeze({
+                                status: 'present' as const,
+                                revision: 3,
+                                values: Object.freeze({ theme: 'dark', legacyMode: 'turbo' } as Readonly<Record<string, JsonValue>>),
+                            });
+                        },
+                        async writeRecord() {
+                            throw new Error('rollback read must not write');
+                        },
+                    };
                 },
             }),
             broker: createStablePluginEventsBroker(),
@@ -374,6 +386,40 @@ function seed(current: () => boolean, controller = new AbortController()): Plugi
 }
 
 describe('stable typed settings foundation', () => {
+    it('preserves an issued Settings Action commit when its generation retires before settlement', async () => {
+        let current = true;
+        let values: Readonly<Record<string, JsonValue>> = {};
+        const model = createStablePluginSettingsModel({
+            pluginId: 'acme.plugin',
+            contribution: { ...declaration(), scope: 'account' },
+        });
+        const owner = createStablePluginSettingsOwner({
+            recordStore: createAccountSettingsBackedSettingsRecordStore({
+                async bindOperation() {
+                    return {
+                        async readRecord() { return { status: 'absent' }; },
+                        async writeRecord(_model, request) {
+                            values = request.values;
+                            current = false;
+                            return { status: 'updated', revision: 1 };
+                        },
+                    };
+                },
+            }),
+            broker: createStablePluginEventsBroker(),
+        });
+
+        await expect(owner.applyActionPatch({
+            model,
+            seed: seed(() => current),
+            contributionId: 'preferences',
+            allowedFieldIds: ['endpoint'],
+            expectedRevision: '0',
+            patch: { endpoint: 'https://settled.example' },
+        })).resolves.toMatchObject({ scope: { kind: 'account' }, revision: '1' });
+        expect(values).toEqual({ endpoint: 'https://settled.example' });
+    });
+
     it('applies a bounded contribution-scoped settings action patch atomically', async () => {
         let record: unknown | null = null;
         const recordStore = {
@@ -468,17 +514,21 @@ describe('stable typed settings foundation', () => {
             async updateSettings(): Promise<Readonly<Record<string, unknown>>> {
                 throw new Error('legacy Account Settings writer must not be called');
             },
-            async readRecord() {
-                return record;
-            },
-            async writeRecord(_model: unknown, request: unknown) {
-                writes.push(request);
-                record = Object.freeze({
-                    status: 'present' as const,
-                    revision: 8,
-                    values: Object.freeze({ codexBackendMode: 'appServer' }),
-                });
-                return Object.freeze({ status: 'updated' as const, revision: 8 });
+            async bindOperation() {
+                return {
+                    async readRecord() {
+                        return record;
+                    },
+                    async writeRecord(_model: unknown, request: unknown) {
+                        writes.push(request);
+                        record = Object.freeze({
+                            status: 'present' as const,
+                            revision: 8,
+                            values: Object.freeze({ codexBackendMode: 'appServer' }),
+                        });
+                        return Object.freeze({ status: 'updated' as const, revision: 8 });
+                    },
+                };
             },
         };
         const createRecordStore = () => createAccountSettingsBackedSettingsRecordStore(adapter);
@@ -550,6 +600,7 @@ describe('stable typed settings foundation', () => {
             values: Object.freeze({ codexBackendMode: 'appServer' }),
         });
         const subscribers = new Set<(hint: Readonly<{ revision: number }>) => void>();
+        const readRevisions: number[] = [];
         const adapter = {
             // Account plugin Settings must not read host preference roots after
             // the destination record becomes live.
@@ -557,22 +608,27 @@ describe('stable typed settings foundation', () => {
             async updateSettings(): Promise<Readonly<Record<string, unknown>>> {
                 throw new Error('legacy Account Settings writer must not be called');
             },
-            async readRecord() {
-                return record;
-            },
-            async writeRecord(_model: unknown, request: Readonly<{
-                expectedRevision: number | 'absent';
-                values: Readonly<Record<string, JsonValue>>;
-            }>) {
-                if (request.expectedRevision !== record.revision) {
-                    return Object.freeze({ status: 'conflict' as const, revision: record.revision });
-                }
-                record = Object.freeze({
-                    status: 'present' as const,
-                    revision: record.revision + 1,
-                    values: Object.freeze({ ...request.values }),
-                });
-                return Object.freeze({ status: 'updated' as const, revision: record.revision });
+            async bindOperation() {
+                return {
+                    async readRecord() {
+                        readRevisions.push(record.revision);
+                        return record;
+                    },
+                    async writeRecord(_model: unknown, request: Readonly<{
+                        expectedRevision: number | 'absent';
+                        values: Readonly<Record<string, JsonValue>>;
+                    }>) {
+                        if (request.expectedRevision !== record.revision) {
+                            return Object.freeze({ status: 'conflict' as const, revision: record.revision });
+                        }
+                        record = Object.freeze({
+                            status: 'present' as const,
+                            revision: record.revision + 1,
+                            values: Object.freeze({ ...request.values }),
+                        });
+                        return Object.freeze({ status: 'updated' as const, revision: record.revision });
+                    },
+                };
             },
             watchRecord(_model: unknown, listener: (hint: Readonly<{ revision: number }>) => void) {
                 subscribers.add(listener);
@@ -603,6 +659,7 @@ describe('stable typed settings foundation', () => {
         }).bind({ model, seed: seed(() => true) });
         const changes: unknown[] = [];
         const disposable = service.watch((change) => changes.push(change));
+        await vi.waitFor(() => expect(readRevisions).toEqual([1]));
 
         record = Object.freeze({
             status: 'present' as const,
@@ -640,11 +697,15 @@ describe('stable typed settings foundation', () => {
             { status: 'present' as const, revision: 4, values: { codexBackendMode: 'appServer' } },
         ];
         const adapter = {
-            async readRecord() {
-                return records.shift() ?? { status: 'unavailable' as const };
-            },
-            async writeRecord() {
-                return { status: 'outcomeUnknown' as const };
+            async bindOperation() {
+                return {
+                    async readRecord() {
+                        return records.shift() ?? { status: 'unavailable' as const };
+                    },
+                    async writeRecord() {
+                        return { status: 'outcomeUnknown' as const };
+                    },
+                };
             },
         };
         const model = createStablePluginSettingsModel({
@@ -675,11 +736,15 @@ describe('stable typed settings foundation', () => {
         });
 
         const oneShotAdapter = {
-            async readRecord() {
-                return { status: 'present' as const, revision: 4, values: { codexBackendMode: 'appServer' } };
-            },
-            async writeRecord() {
-                return { status: 'outcomeUnknown' as const };
+            async bindOperation() {
+                return {
+                    async readRecord() {
+                        return { status: 'present' as const, revision: 4, values: { codexBackendMode: 'appServer' } };
+                    },
+                    async writeRecord() {
+                        return { status: 'outcomeUnknown' as const };
+                    },
+                };
             },
         };
         const oneShotService = createStablePluginSettingsOwner({
@@ -697,18 +762,22 @@ describe('stable typed settings foundation', () => {
         const controller = new AbortController();
         let reads = 0;
         const adapter = {
-            async readRecord(_model: unknown, options?: { signal?: AbortSignal }) {
-                reads += 1;
-                if (reads === 1) {
-                    expect(options?.signal).toBe(controller.signal);
-                    return { status: 'present' as const, revision: 3, values: { codexBackendMode: 'acp' } };
-                }
-                expect(options?.signal).toBeUndefined();
-                return { status: 'present' as const, revision: 4, values: { codexBackendMode: 'appServer' } };
-            },
-            async writeRecord() {
-                controller.abort();
-                return { status: 'outcomeUnknown' as const };
+            async bindOperation() {
+                return {
+                    async readRecord(_model: unknown, options?: { signal?: AbortSignal }) {
+                        reads += 1;
+                        if (reads === 1) {
+                            expect(options?.signal).toBe(controller.signal);
+                            return { status: 'present' as const, revision: 3, values: { codexBackendMode: 'acp' } };
+                        }
+                        expect(options?.signal).toBeUndefined();
+                        return { status: 'present' as const, revision: 4, values: { codexBackendMode: 'appServer' } };
+                    },
+                    async writeRecord() {
+                        controller.abort();
+                        return { status: 'outcomeUnknown' as const };
+                    },
+                };
             },
         };
         const model = createStablePluginSettingsModel({

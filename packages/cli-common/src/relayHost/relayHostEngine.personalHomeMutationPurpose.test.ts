@@ -194,7 +194,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     });
   }
 
-  it('restart with an omitted purpose inherits the persisted Personal Home purpose and takes the Home operation lock', async () => {
+  it('restart with an omitted purpose inherits the persisted Personal Home purpose and takes the Home operation lock', { timeout: 30_000 }, async () => {
     const runtime = await createInstalledPersonalHomeRuntime({ withInitializedHome: true });
     const lockEvents: string[] = [];
     try {
@@ -232,12 +232,14 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
         operationId: 'system-task:relocation-guard',
         status: 'quarantined',
         bundleSha256: 'a'.repeat(64),
-        expectedHomeServerIdentityId: 'home-identity',
+        expectedHomeServerIdentityId: 'srv_home_1',
         expectedCanonicalServerUrl: CANONICAL_SERVER_URL,
         sourceDescriptorRevision: 4,
         homeServerIdentityId: 'srv_home_1',
-        canonicalServerUrl: CANONICAL_SERVER_URL,
-        minimumOuterRevisionExclusive: 4,
+        connectionDescriptor: {
+          v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: CANONICAL_SERVER_URL,
+          revision: 5, endpoints: [{ kind: 'https', url: CANONICAL_SERVER_URL }],
+        },
         authenticated: true,
         accountCount: 1,
         sessionCount: 0,
@@ -261,7 +263,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
         purpose: PERSONAL_HOME_PURPOSE,
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
       })).rejects.toMatchObject({
-        code: 'PERSONAL_HOME_RELOCATION_DESTINATION_ACTIVATION_BLOCKED',
+        code: 'operation_recovery_required',
       });
     } finally {
       await runtime.dispose();
@@ -397,6 +399,24 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     }
   }, 30_000);
 
+  it('rejects an unsafe persisted Home layout before uninstall mutates runtime state', async () => {
+    const runtime = await createInstalledPersonalHomeRuntime();
+    try {
+      mockLinuxHost(runtime.homeDir);
+      mockStoppedLocalHome();
+      const envPath = join(runtime.defaults.configDir, 'server.env');
+      const statePath = join(runtime.defaults.installRoot, 'self-host-state.json');
+      const stateBefore = await readFile(statePath, 'utf8');
+      const unsafeEnv = `${await readFile(envPath, 'utf8')}DATABASE_URL=file:${join(runtime.homeDir, 'outside-home.sqlite')}\n`;
+      await writeFile(envPath, unsafeEnv);
+      const engine = await createTestEngine();
+      await expect(engine.control({ target: { kind: 'local' }, mode: 'user', channel: 'preview', action: 'uninstall' }))
+        .rejects.toThrow('inside the canonical data root');
+      expect(await readFile(statePath, 'utf8')).toBe(stateBefore);
+      expect(await readFile(envPath, 'utf8')).toBe(unsafeEnv);
+    } finally { await runtime.dispose(); }
+  }, 30_000);
+
   it('safe uninstall preserves the Personal Home classification for an omitted-purpose reinstall', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
     const lockEvents: string[] = [];
@@ -406,7 +426,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       mockRecordingHomeLock(lockEvents);
       const serverBinaryPath = await writeLocalServerBinary(runtime.homeDir);
       const customDataDir = join(runtime.homeDir, 'custom-home-data');
-      const customDatabasePath = join(runtime.homeDir, 'custom-home-db', 'home.sqlite');
+      const customDatabasePath = join(customDataDir, 'database', 'home.sqlite');
       const customFilesDir = join(runtime.homeDir, 'custom-home-files');
       const customEnv = [
         'PORT=43123',

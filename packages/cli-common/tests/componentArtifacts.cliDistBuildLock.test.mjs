@@ -80,6 +80,18 @@ function writeCliProxyApiManagedRuntimeFixture(repoRoot, target) {
   return executablePath;
 }
 
+function materializeProcessCustodyRuntimeFromGoBuild(cmd, args) {
+  if (cmd !== 'go') return false;
+  const outputFlagIndex = args.indexOf('-o');
+  if (outputFlagIndex < 0 || outputFlagIndex === args.length - 1) {
+    throw new Error('process custody fixture expected go build -o <path>');
+  }
+  const executablePath = args[outputFlagIndex + 1];
+  mkdirSync(join(executablePath, '..'), { recursive: true });
+  writeFileSync(executablePath, 'signed process custody runtime\n', 'utf8');
+  return true;
+}
+
 function writeCliArtifactFixtures(repoRoot) {
   const cliDir = join(repoRoot, 'apps', 'cli');
   const cliScriptsDir = join(repoRoot, 'apps', 'cli', 'scripts');
@@ -250,11 +262,12 @@ test('buildCliBinaryArtifactPayload reuses the first completed dist build across
     const firstBuildRelease = new Promise((resolve) => {
       releaseFirstBuild = resolve;
     });
-    const runCalls = [];
+    const cliDistBuildCalls = [];
 
     const runCommand = async (cmd, args) => {
-      runCalls.push({ cmd, args });
-      assert.equal(runCalls.length, 1, 'concurrent artifact requests should not trigger a second CLI dist build');
+      if (materializeProcessCustodyRuntimeFromGoBuild(cmd, args)) return;
+      cliDistBuildCalls.push({ cmd, args });
+      assert.equal(cliDistBuildCalls.length, 1, 'concurrent artifact requests should not trigger a second CLI dist build');
       await firstBuildRelease;
       mkdirSync(cliDistDir, { recursive: true });
       const entrypoint = join(cliDistDir, 'index.mjs');
@@ -291,15 +304,15 @@ test('buildCliBinaryArtifactPayload reuses the first completed dist build across
       ensureWorkspacePackagesBuiltByName: admitExistingWorkspaceBundles,
     });
 
-    for (let attempts = 0; attempts < 20 && runCalls.length === 0; attempts += 1) {
+    for (let attempts = 0; attempts < 20 && cliDistBuildCalls.length === 0; attempts += 1) {
       await delay(10);
     }
-    assert.equal(runCalls.length, 1, 'the first artifact request should begin the shared CLI dist build');
+    assert.equal(cliDistBuildCalls.length, 1, 'the first artifact request should begin the shared CLI dist build');
     releaseFirstBuild();
 
     await Promise.all([first, second]);
 
-    assert.equal(runCalls.length, 1);
+    assert.equal(cliDistBuildCalls.length, 1);
     assert.equal(existsSync(join(payloadDirA, executableName)), true);
     assert.equal(existsSync(join(payloadDirB, executableName)), true);
     assert.equal(existsSync(join(payloadDirA, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs')), true);

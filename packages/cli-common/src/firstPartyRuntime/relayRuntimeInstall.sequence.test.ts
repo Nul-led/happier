@@ -605,12 +605,19 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
     }
   });
 
-  it('does not restore the previous runtime when the candidate applied Qualified Connected Accounts V4', async () => {
+  it.each([
+    ['20260725100000_activate_qualified_connected_accounts_v4', 0],
+    ['20260905220000_add_team_home_governance', 0],
+    ['20260905220000_add_team_home_governance', 1],
+    ['20260905235000_add_account_session_read_state', 0],
+    ['20260905235000_add_account_session_read_state', 1],
+    ['20260906160100_contract_session_data_key_envelopes', 0],
+    ['20260906160100_contract_session_data_key_envelopes', 1],
+  ])('does not restore the previous runtime across %s (ledger exit %s)', async (boundaryMigration, ledgerStatus) => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-irreversible-boundary-'));
     const serviceDefinitionPath = '/tmp/happier-relay-runtime.service';
     try {
       const payloadRoot = join(homeDir, 'payload');
-      const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
       const migrationsSourceDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', boundaryMigration);
       await mkdir(migrationsSourceDir, { recursive: true });
       await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- irreversible boundary\n', 'utf8');
@@ -650,7 +657,7 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
         skipHealthCheck: true,
         runMigrationAppliedCheckCommand: async ({ args }) => {
           expect(args).toEqual([`--is-migration-applied=${boundaryMigration}`]);
-          return { status: 0, signal: null };
+          return { status: ledgerStatus, signal: null };
         },
       })).rejects.toMatchObject({
         code: 'RELAY_RUNTIME_INSTALL_ROLLBACK_INCOMPLETE',

@@ -22,7 +22,7 @@ describe('action operation observation RPC handlers', () => {
     const store = createActionOperationStore();
     store.create({
       operationId: 'operation-1', actionId: 'session.fork', title: 'Fork',
-      scope: { accountId: 'account-1', machineId: 'machine-1' }, cancellation: 'unsupported',
+      scope: { accountId: 'account-1', machineId: 'machine-1' }, cancellation: 'unsupported', inputIdentity: '{}',
     });
     const handlers = createActionOperationRpcHandlers({
       store,

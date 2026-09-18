@@ -27,7 +27,7 @@ describe('CLI command-surface manifest', () => {
     await ensureMergedAgentCommandRegistryLoaded();
     const entries = listRootHelpCommands();
     const commands = entries.map((entry) => entry.command);
-    expect(commands.slice(0, 36)).toEqual([
+    expect(commands.slice(0, 37)).toEqual([
       null,
       'setup',
       'auth',
@@ -46,6 +46,7 @@ describe('CLI command-surface manifest', () => {
       'status',
       'service',
       'daemon',
+      'home',
       'machine',
       'machines',
       'actions',
@@ -65,7 +66,12 @@ describe('CLI command-surface manifest', () => {
       'resume',
       'server',
     ]);
-    expect(new Set(commands.slice(36))).toEqual(new Set([
+    expect(new Set(commands.slice(37))).toEqual(new Set([
+      'teams',
+      'identity',
+      'credentials',
+      'secrets',
+      'workflow',
       'claude',
       'opencode',
       'antigravity',
@@ -76,7 +82,7 @@ describe('CLI command-surface manifest', () => {
       'kilo',
       'kiro',
       'cursor',
-      'ohMyPi',
+      'ohmypi',
       'pi',
       'copilot',
       'coderabbit',
@@ -99,6 +105,14 @@ describe('CLI command-surface manifest', () => {
     expect(entries.find((entry) => entry.command === 'session')).toMatchObject({
       rootHelpLabel: 'happier session',
       rootHelpDescription: 'Manage sessions and execution runs',
+    });
+    expect(entries.find((entry) => entry.command === 'credentials')).toMatchObject({
+      rootHelpLabel: 'happier credentials',
+      rootHelpDescription: 'Manage Team credential resources and usage',
+    });
+    expect(entries.find((entry) => entry.command === 'secrets')).toMatchObject({
+      rootHelpLabel: 'happier secrets',
+      rootHelpDescription: 'Manage shared Saved Secrets',
     });
     expect(entries.find((entry) => entry.command === 'spawn')).toMatchObject({
       rootHelpLabel: 'happier spawn [options]',

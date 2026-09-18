@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TurnChangeSet } from '@happier-dev/protocol';
+import { mapCodexRolloutEventToActions } from '@happier-dev/plugins-codex/agent/rollout/projection/actions';
 
 import { buildTurnChangeSetDiffInput } from './buildTurnChangeSetDiffInput';
 import { NormalizedToolTurnChangeTracker } from './normalizedToolTurnChangeTracker';
@@ -11,7 +12,6 @@ describe('NormalizedToolTurnChangeTracker', () => {
             provider: 'claude',
             turnIdPrefix: 'claude-turn',
         });
-
         tracker.observeToolCall({
             callId: 'tool_write_1',
             toolName: 'Write',
@@ -60,6 +60,7 @@ describe('NormalizedToolTurnChangeTracker', () => {
             provider: 'claude',
             turnIdPrefix: 'claude-turn',
         });
+        tracker.beginTurn({ turnId: 'host-turn-1', agentTurnId: 'provider-turn-1' });
 
         tracker.observeToolCall({
             callId: 'tool_diff_1',
@@ -93,6 +94,8 @@ describe('NormalizedToolTurnChangeTracker', () => {
                 newText: 'after',
                 source: 'provider_tool',
                 confidence: 'exact',
+                agentTurnId: 'provider-turn-1',
+                providerMessageId: 'tool_diff_1',
             }),
         ]);
     });
@@ -257,6 +260,100 @@ describe('NormalizedToolTurnChangeTracker', () => {
                 filePath: 'src/alias.ts',
                 oldText: 'before',
                 newText: 'after',
+            }),
+        ]);
+    });
+
+    it('projects one raw Codex apply_patch envelope into exact Changed Files paths, kinds, and content', () => {
+        const tracker = new NormalizedToolTurnChangeTracker({
+            provider: 'codex',
+            turnIdPrefix: 'codex-turn',
+        });
+        tracker.beginTurn({ turnId: 'host-turn-patch', agentTurnId: 'codex-turn-patch' });
+
+        const [toolCall] = mapCodexRolloutEventToActions({
+            type: 'response_item',
+            payload: {
+                type: 'custom_tool_call',
+                name: 'apply_patch',
+                call_id: 'apply-patch-1',
+                input: [
+                    '*** Begin Patch',
+                    '*** Update File: src/updated.ts',
+                    '@@',
+                    '-before update',
+                    '+after update',
+                    '*** Add File: src/added.ts',
+                    '+added content',
+                    '*** Delete File: src/deleted.ts',
+                    '-deleted content',
+                    '*** Update File: src/old-name.ts',
+                    '*** Move to: src/new-name.ts',
+                    '@@',
+                    '-before rename',
+                    '+after rename',
+                    '*** End Patch',
+                ].join('\n'),
+            },
+        }, { debug: false });
+        expect(toolCall).toMatchObject({
+            type: 'tool-call',
+            callId: 'apply-patch-1',
+            name: 'Patch',
+        });
+        if (toolCall?.type !== 'tool-call') throw new Error('Expected canonical Patch tool call');
+
+        tracker.observeToolCall({
+            callId: toolCall.callId,
+            toolName: toolCall.name,
+            args: toolCall.input as Record<string, unknown>,
+            parentToolUseId: null,
+        });
+        tracker.observeToolResult({
+            callId: 'apply-patch-1',
+            isError: false,
+        });
+
+        expect(tracker.completeTurn({
+            sessionId: 'sess-patch',
+            status: 'completed',
+        })?.files).toEqual([
+            {
+                filePath: 'src/updated.ts',
+                previousFilePath: null,
+                changeKind: 'modified',
+                unifiedDiff: '@@\n-before update\n+after update',
+                oldText: 'before update',
+                newText: 'after update',
+                binary: undefined,
+                source: 'provider_tool',
+                confidence: 'exact',
+                provider: 'codex',
+                agentTurnId: 'codex-turn-patch',
+                providerMessageId: 'apply-patch-1',
+                description: null,
+            },
+            expect.objectContaining({
+                filePath: 'src/added.ts',
+                changeKind: 'added',
+                unifiedDiff: '+added content',
+                oldText: '',
+                newText: 'added content',
+            }),
+            expect.objectContaining({
+                filePath: 'src/deleted.ts',
+                changeKind: 'deleted',
+                unifiedDiff: '-deleted content',
+                oldText: 'deleted content',
+                newText: '',
+            }),
+            expect.objectContaining({
+                filePath: 'src/new-name.ts',
+                previousFilePath: 'src/old-name.ts',
+                changeKind: 'renamed',
+                unifiedDiff: '@@\n-before rename\n+after rename',
+                oldText: 'before rename',
+                newText: 'after rename',
             }),
         ]);
     });

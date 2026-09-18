@@ -24,10 +24,15 @@ export type CliAccountServiceSelection = Readonly<{
   advertisedMethods: CliAccountServiceAdvertisedMethods;
 }>;
 
+export type CliAccountServiceSelectionAuthority = Pick<
+  CliAccountServiceSelection,
+  'endpoint' | 'serverIdentityId' | 'canonicalServerUrl'
+>;
+
 export type CliAccountServiceRestrictedCredential = Readonly<{ token: string }>;
 
 export type CliAccountServiceAuthenticationOutcome =
-  | Readonly<{ kind: 'authenticated' }>
+  | Readonly<{ kind: 'authenticated'; credential: CliAccountServiceRestrictedCredential }>
   | Readonly<{ kind: 'cancelled' }>
   | Readonly<{ kind: 'timed_out' }>
   | Readonly<{ kind: 'failed'; error: unknown }>;
@@ -50,8 +55,8 @@ export class CliAccountServiceSessionError extends Error {
 }
 
 export type CliAccountServiceSessionOwner = Readonly<{
-  readSelection(): Promise<CliAccountServiceSelection | null>;
-  readCredential(service: CliAccountServiceSelection): Promise<CliAccountServiceRestrictedCredential | null>;
+  readSelection(): Promise<CliAccountServiceSelectionAuthority | null>;
+  readCredential(service: CliAccountServiceSelectionAuthority): Promise<CliAccountServiceRestrictedCredential | null>;
   selectService(service: CliAccountServiceSelection): Promise<CliAccountServiceSelection>;
   replaceCredential(input: Readonly<{
     service: CliAccountServiceSelection;
@@ -62,22 +67,22 @@ export type CliAccountServiceSessionOwner = Readonly<{
     service: CliAccountServiceSelection;
     timeoutMs: number;
     signal?: AbortSignal;
+    credentialCustody?: 'selected_service' | 'transient';
     acquireCredential(signal: AbortSignal): Promise<CliAccountServiceRestrictedCredential>;
   }>): Promise<CliAccountServiceAuthenticationOutcome>;
-  hasPendingAuthentication(): Promise<boolean>;
-  cancelPendingAuthentication(): Promise<boolean>;
   logout(): Promise<void>;
   clear(): Promise<void>;
 }>;
 
 type StoredCliAccountServiceSessionV1 = Readonly<{
   v: 1;
-  selectedService: CliAccountServiceSelection;
+  selectedService: CliAccountServiceSelectionAuthority;
   restrictedCredential: CliAccountServiceRestrictedCredential | null;
 }>;
 
 type PendingAuthentication = {
   readonly service: CliAccountServiceSelection;
+  readonly credentialCustody: 'selected_service' | 'transient';
   readonly controller: AbortController;
   readonly outcome: Promise<CliAccountServiceAuthenticationOutcome>;
   readonly resolve: (outcome: CliAccountServiceAuthenticationOutcome) => void;
@@ -186,6 +191,21 @@ function normalizeSelection(value: unknown): CliAccountServiceSelection | null {
   return { endpoint, serverIdentityId, canonicalServerUrl, advertisedMethods };
 }
 
+function normalizeSelectionAuthority(value: unknown): CliAccountServiceSelectionAuthority | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'endpoint',
+    'serverIdentityId',
+    'canonicalServerUrl',
+  ])) {
+    return null;
+  }
+  const endpoint = normalizeEndpoint(value.endpoint);
+  const canonicalServerUrl = normalizeEndpoint(value.canonicalServerUrl);
+  const serverIdentityId = normalizeServerIdentityIdCapability(value.serverIdentityId);
+  if (!endpoint || !canonicalServerUrl || !serverIdentityId) return null;
+  return { endpoint, serverIdentityId, canonicalServerUrl };
+}
+
 function normalizeCredential(value: unknown): CliAccountServiceRestrictedCredential | null {
   if (!isRecord(value) || !hasExactKeys(value, ['token'])) return null;
   if (typeof value.token !== 'string' || !value.token.trim()) return null;
@@ -197,20 +217,31 @@ function parseStoredRecord(value: unknown): StoredCliAccountServiceSessionV1 | n
     return null;
   }
   if (value.v !== 1) return null;
-  const selectedService = normalizeSelection(value.selectedService);
+  const selectedService = normalizeSelectionAuthority(value.selectedService);
   const restrictedCredential = value.restrictedCredential === null
     ? null
     : normalizeCredential(value.restrictedCredential);
   if (!selectedService || (value.restrictedCredential !== null && !restrictedCredential)) return null;
 
-  // Stored authority must already be canonical. Parsing never silently repairs
-  // endpoint, identity, or advertised-method bytes before granting credentials.
-  if (JSON.stringify(value.selectedService) !== JSON.stringify(selectedService)) return null;
   return { v: 1, selectedService, restrictedCredential };
 }
 
 function requireSelection(value: CliAccountServiceSelection): CliAccountServiceSelection {
   const normalized = normalizeSelection(value);
+  if (!normalized) throw new CliAccountServiceSessionError('account_service_invalid_selection');
+  return normalized;
+}
+
+function requireSelectionAuthority(
+  value: CliAccountServiceSelectionAuthority,
+): CliAccountServiceSelectionAuthority {
+  const normalized = isRecord(value)
+    ? normalizeSelectionAuthority({
+        endpoint: value.endpoint,
+        serverIdentityId: value.serverIdentityId,
+        canonicalServerUrl: value.canonicalServerUrl,
+      })
+    : null;
   if (!normalized) throw new CliAccountServiceSessionError('account_service_invalid_selection');
   return normalized;
 }
@@ -223,16 +254,9 @@ function requireCredential(
   return normalized;
 }
 
-function selectionsEqual(
-  left: CliAccountServiceSelection,
-  right: CliAccountServiceSelection,
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function selectionsHaveSameCredentialAuthority(
-  left: CliAccountServiceSelection,
-  right: CliAccountServiceSelection,
+  left: CliAccountServiceSelectionAuthority,
+  right: CliAccountServiceSelectionAuthority,
 ): boolean {
   return left.endpoint === right.endpoint
     && left.serverIdentityId === right.serverIdentityId
@@ -364,10 +388,12 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
       if (pendingAuthentication !== attempt) return;
       try {
         const credential = requireCredential(credentialInput);
-        const record = requireSelectedService(await readStoredRecord(), attempt.service);
-        await writeStoredRecord({ ...record, restrictedCredential: credential });
+        if (attempt.credentialCustody === 'selected_service') {
+          const record = requireSelectedService(await readStoredRecord(), attempt.service);
+          await writeStoredRecord({ ...record, restrictedCredential: credential });
+        }
         pendingAuthentication = null;
-        resolvePending(attempt, { kind: 'authenticated' });
+        resolvePending(attempt, { kind: 'authenticated', credential });
       } catch (error) {
         pendingAuthentication = null;
         resolvePending(attempt, { kind: 'failed', error });
@@ -392,7 +418,7 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
     },
 
     async readCredential(serviceInput) {
-      const service = requireSelection(serviceInput);
+      const service = requireSelectionAuthority(serviceInput);
       return await serialize(async () => {
         const record = await readStoredRecord();
         if (!record || !selectionsHaveSameCredentialAuthority(record.selectedService, service)) return null;
@@ -410,13 +436,24 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
           cancelPending({ kind: 'cancelled' });
           throw error;
         }
-        if (record && selectionsEqual(record.selectedService, service)) return record.selectedService;
         if (record && selectionsHaveSameCredentialAuthority(record.selectedService, service)) {
-          await writeStoredRecord({ ...record, selectedService: service });
+          await writeStoredRecord({ ...record, selectedService: {
+            endpoint: service.endpoint,
+            serverIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
+          } });
           return service;
         }
         cancelPending({ kind: 'cancelled' });
-        await writeStoredRecord({ v: 1, selectedService: service, restrictedCredential: null });
+        await writeStoredRecord({
+          v: 1,
+          selectedService: {
+            endpoint: service.endpoint,
+            serverIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
+          },
+          restrictedCredential: null,
+        });
         return service;
       });
     },
@@ -440,7 +477,13 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
       });
     },
 
-    async authenticate({ service: serviceInput, timeoutMs, signal, acquireCredential }) {
+    async authenticate({
+      service: serviceInput,
+      timeoutMs,
+      signal,
+      credentialCustody = 'selected_service',
+      acquireCredential,
+    }) {
       const service = requireSelection(serviceInput);
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
         throw new RangeError('Account Service authentication timeout must be a positive integer');
@@ -448,7 +491,9 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
       if (signal?.aborted) return { kind: 'cancelled' };
 
       const attempt = await serialize(async (): Promise<PendingAuthentication> => {
-        requireSelectedService(await readStoredRecord(), service);
+        if (credentialCustody === 'selected_service') {
+          requireSelectedService(await readStoredRecord(), service);
+        }
         cancelPending({ kind: 'cancelled' });
         const controller = new AbortController();
         let resolveOutcome!: (outcome: CliAccountServiceAuthenticationOutcome) => void;
@@ -457,6 +502,7 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
         });
         const next: PendingAuthentication = {
           service,
+          credentialCustody,
           controller,
           outcome,
           resolve: resolveOutcome,
@@ -489,14 +535,6 @@ export function createCliAccountServiceSessionOwner(input: Readonly<{
           async (error) => await completeAttemptWithFailure(attempt, error),
         );
       return await attempt.outcome;
-    },
-
-    async hasPendingAuthentication() {
-      return await serialize(async () => pendingAuthentication !== null);
-    },
-
-    async cancelPendingAuthentication() {
-      return await serialize(async () => cancelPending({ kind: 'cancelled' }));
     },
 
     async logout() {

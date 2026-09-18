@@ -31,6 +31,15 @@ async function disposePluginRuntimeRegistryBestEffort(params: CreateBeforeShutdo
     }
 }
 
+async function drainBackgroundServerWorkBestEffort(params: CreateBeforeShutdownDrainParams): Promise<void> {
+    if (!params.drainBackgroundServerWork) return;
+    try {
+        await params.drainBackgroundServerWork();
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Background server-work drain failed during shutdown (best-effort)', error);
+    }
+}
+
 export function createBeforeShutdownDrain(
     params: CreateBeforeShutdownDrainParams,
 ): () => Promise<void> {
@@ -39,17 +48,10 @@ export function createBeforeShutdownDrain(
     return async (): Promise<void> => {
         if (beforeShutdownOnce) return await beforeShutdownOnce;
         beforeShutdownOnce = (async () => {
-            if (params.drainBackgroundServerWork) {
-                try {
-                    await params.drainBackgroundServerWork();
-                } catch (error) {
-                    logger.debug('[DAEMON RUN] Background server-work drain failed during shutdown (best-effort)', error);
-                }
-            }
-
             const initialInFlightSpawns = params.pidToAwaiter.size;
             const hasPendingRpcRequests = params.getApiMachineForSessions() !== null;
             if (initialInFlightSpawns === 0 && !hasPendingRpcRequests) {
+                await drainBackgroundServerWorkBestEffort(params);
                 await disposePluginRuntimeRegistryBestEffort(params);
                 return;
             }
@@ -126,6 +128,7 @@ export function createBeforeShutdownDrain(
 
             const apiMachineForSessions = params.getApiMachineForSessions();
             if (!apiMachineForSessions) {
+                await drainBackgroundServerWorkBestEffort(params);
                 await disposePluginRuntimeRegistryBestEffort(params);
                 return;
             }
@@ -134,6 +137,7 @@ export function createBeforeShutdownDrain(
             const remainingRpcGraceMs = Math.max(0, params.shutdownSpawnDrainGraceMs - elapsedMs);
             if (remainingRpcGraceMs === 0) {
                 logger.warn('[DAEMON RUN] No shutdown grace budget left to drain pending RPC requests');
+                await drainBackgroundServerWorkBestEffort(params);
                 await disposePluginRuntimeRegistryBestEffort(params);
                 return;
             }
@@ -161,6 +165,7 @@ export function createBeforeShutdownDrain(
             if (rpcRequestsDrained) {
                 logger.debug('[DAEMON RUN] Pending RPC requests drained; proceeding with shutdown');
             }
+            await drainBackgroundServerWorkBestEffort(params);
             await disposePluginRuntimeRegistryBestEffort(params);
         })();
         return await beforeShutdownOnce;

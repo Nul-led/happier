@@ -14,7 +14,9 @@ import {
   createCanonicalPersonalHomeOperations,
   createCanonicalPersonalHomeRelocationDestinationOwner,
   materializePersonalHomeRelocationEndpointWithServerCommand,
+  resolveCanonicalPersonalHomeRuntimeLayout,
 } from '../firstPartyRuntime/personalHome/productionAdapters.js';
+import { resolvePersonalHomeRuntimeArtifactPaths } from '../firstPartyRuntime/personalHome/layout.js';
 import {
   readPersonalHomeStartupReadiness,
   removePersonalHomeStartupReadiness,
@@ -123,7 +125,6 @@ export function createLocalPersonalHomeHost(target: LocalPersonalHomeHostTarget)
   const releaseRing = normalizePublicReleaseRingId(target.channel) || 'stable';
   const runtimeParams = { target: { kind: 'local' as const }, channel: target.channel, mode };
   const defaults = resolveRelayRuntimeDefaults({ homeDir, mode, channel: releaseRing });
-  const readinessPath = join(defaults.dataDir, 'startup-receipt.json');
   const serverBinary = join(
     defaults.installRoot,
     'bin',
@@ -140,13 +141,16 @@ export function createLocalPersonalHomeHost(target: LocalPersonalHomeHostTarget)
     }
     return purpose;
   };
-  const attestActivatedHome = async () => await readPersonalHomeStartupReadiness({ path: readinessPath });
+  const resolveReadinessPath = async (): Promise<string> => resolvePersonalHomeRuntimeArtifactPaths(
+    await resolveCanonicalPersonalHomeRuntimeLayout({ homeDir, mode, channel: releaseRing }),
+  ).startupReceiptPath;
+  const attestActivatedHome = async () => await readPersonalHomeStartupReadiness({ path: await resolveReadinessPath() });
   const readServiceStatus = async () => {
     const service = (await engine.readStatus(runtimeParams)).service;
     return { running: service.active === true, quarantined: service.active === false && service.enabled === false };
   };
   const activate = async (): Promise<void> => {
-    await removePersonalHomeStartupReadiness(readinessPath);
+    await removePersonalHomeStartupReadiness(await resolveReadinessPath());
     await engine.control({ ...runtimeParams, action: 'activate' });
   };
   const quarantine = async (): Promise<void> => {
@@ -166,7 +170,7 @@ export function createLocalPersonalHomeHost(target: LocalPersonalHomeHostTarget)
       isRunning: async () => (await engine.readStatus(runtimeParams)).service.active === true,
       stop: async () => await engine.control({ ...runtimeParams, action: 'stop' }),
       start: async () => {
-        await removePersonalHomeStartupReadiness(readinessPath);
+        await removePersonalHomeStartupReadiness(await resolveReadinessPath());
         await engine.control({ ...runtimeParams, action: 'start' });
       },
       quarantine,

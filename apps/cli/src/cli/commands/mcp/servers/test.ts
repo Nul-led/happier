@@ -8,8 +8,8 @@ import { materializeMcpServerConfigRecord } from '@/mcp/servers/materializeMcpSe
 import {
   deriveSettingsSecretsKeyForCredentials,
   deriveSettingsSecretsReadKeysForCredentials,
-  indexSavedSecretsByIdFromAccountSettings,
 } from '@/mcp/servers/resolveMcpValueRefPlaintext';
+import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
 import { redactMcpServerProbeError } from '@/mcp/servers/redactMcpServerProbeError';
 import { loadFreshMcpAccountSettingsContext } from '../loadFreshMcpAccountSettingsContext';
 
@@ -54,15 +54,21 @@ export async function cmdMcpServersTest(
     if (!item) throw new Error(`MCP server not enabled for this target: ${server.name}`);
     if (item.enabled !== true) throw new Error(`MCP server disabled for this target: ${server.name}`);
 
-    const savedSecretsById = indexSavedSecretsByIdFromAccountSettings(ctx.settings);
     const settingsSecretsKey = credentials.encryption
       ? deriveSettingsSecretsKeyForCredentials(credentials)
       : null;
     const settingsSecretsReadKeys = deriveSettingsSecretsReadKeysForCredentials(credentials);
+    const savedSecretMaterializer = createSavedSecretMaterializerV1({
+      accountSettings: ctx.settings,
+      settingsSecretsReadKeys,
+      resources: ctx.savedSecretResources,
+      resourceCatalogState: ctx.savedSecretCatalogState,
+    });
 
     const materialized = await materializeMcpServerConfigRecord({
       resolved: { directory, strictMode: true, serversByName: { [server.name]: item } },
-      savedSecretsById,
+      savedSecretsById: new Map(),
+      savedSecretMaterializer,
       settingsSecretsKey,
       settingsSecretsReadKeys,
       processEnv: commandEnv,

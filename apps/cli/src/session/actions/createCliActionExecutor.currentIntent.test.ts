@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ARTIFACT_PLAIN_DATA_KEY_MARKER,
+  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   decodePlainArtifactStoredContent,
 } from '@happier-dev/protocol';
 import type { Credentials, StoredCredentials } from '@/persistence';
 
-const { mockGet, mockPost } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockFetchServerFeaturesSnapshot } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
+  mockFetchServerFeaturesSnapshot: vi.fn(),
 }));
 
 vi.mock('axios', () => ({
@@ -23,12 +25,31 @@ vi.mock('@/configuration', async () => {
   };
 });
 
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: (...args: unknown[]) =>
+    mockFetchServerFeaturesSnapshot(...args),
+}));
+
 import { createCredentialedTargetActionCurrentIntent } from './createCliActionExecutor';
 
 describe('credentialed target-action current-intent wiring', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
+    mockFetchServerFeaturesSnapshot.mockReset();
+    mockFetchServerFeaturesSnapshot.mockResolvedValue({
+      status: 'ready',
+      features: {
+        capabilities: {
+          accountStoredContentCompatibility: {
+            v: 1,
+            minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            declarationTransport: 'http-header-and-socket-auth-v1',
+          },
+        },
+      },
+    });
   });
 
   it('creates an encrypted durable request through the default credentialed requester', async () => {
@@ -37,7 +58,9 @@ describe('credentialed target-action current-intent wiring', () => {
       encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3, 4]) },
     };
     mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'target-approval-1' } });
-    mockGet.mockResolvedValue({ status: 404, data: null });
+    mockGet
+      .mockResolvedValueOnce({ status: 200, data: { mode: 'e2ee', updatedAt: 1 } })
+      .mockResolvedValue({ status: 404, data: null });
     const requester = createCredentialedTargetActionCurrentIntent(credentials);
     const abortController = new AbortController();
 

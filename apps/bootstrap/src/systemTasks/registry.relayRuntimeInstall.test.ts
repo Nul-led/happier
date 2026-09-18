@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { resolveRelayRuntimeDefaults } from '@happier-dev/cli-common/firstPartyRuntime';
 import { executeSystemTask } from '@happier-dev/cli-common/systemTasks';
@@ -27,7 +29,30 @@ describe('bootstrap relay-runtime registry composition', () => {
     const previousPath = process.env.PATH;
     const previousSystemctlLog = process.env.HAPPIER_TEST_SYSTEMCTL_LOG;
     const previousPlatform = process.platform;
+    let readinessIdentity: string | null = null;
+    let serviceDefinitionPath: string | null = null;
+    let receiptPort: number | null = null;
     const healthServer = createServer((_request, response) => {
+      if (readinessIdentity && serviceDefinitionPath && receiptPort !== null) {
+        const definition = readFileSync(serviceDefinitionPath, 'utf8');
+        const receiptPath = definition.match(/^Environment=HAPPIER_SERVER_STARTUP_RECEIPT_PATH=(.+)$/mu)?.[1]?.replace(/^"|"$/gu, '');
+        const nonce = definition.match(/^Environment=HAPPIER_SERVER_STARTUP_RECEIPT_NONCE=(.+)$/mu)?.[1]?.replace(/^"|"$/gu, '');
+        if (receiptPath && nonce) {
+          mkdirSync(dirname(receiptPath), { recursive: true });
+          writeFileSync(receiptPath, JSON.stringify({
+            nonce,
+            pid: process.pid,
+            host: '127.0.0.1',
+            port: receiptPort,
+            personalHomeReadiness: {
+              authenticated: true,
+              homeServerIdentityId: readinessIdentity,
+              accountCount: 1,
+              sessionCount: 0,
+            },
+          }));
+        }
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ status: 'ok', version: 'registry-proof' }));
     });
@@ -62,6 +87,7 @@ describe('bootstrap relay-runtime registry composition', () => {
       const port = address.port;
       await new Promise<void>((resolve, reject) => healthServer.close((error) => error ? reject(error) : resolve()));
       const canonicalServerUrl = `http://127.0.0.1:${port}`;
+      receiptPort = port;
       const defaults = resolveRelayRuntimeDefaults({
         platform: 'linux',
         mode: 'user',
@@ -81,8 +107,11 @@ describe('bootstrap relay-runtime registry composition', () => {
 
       const payloadRoot = join(homeDir, 'payload');
       const serverBinaryPath = join(payloadRoot, 'happier-server');
+      const migrationDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init');
       mkdirSync(payloadRoot, { recursive: true });
+      mkdirSync(migrationDir, { recursive: true });
       writeFileSync(serverBinaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      writeFileSync(join(migrationDir, 'migration.sql'), '-- fixture migration\n');
       chmodSync(serverBinaryPath, 0o755);
 
       const registry = createHsetupSystemTaskRegistry({
@@ -133,6 +162,21 @@ describe('bootstrap relay-runtime registry composition', () => {
       // A5: the seeded legacy public-origin line equal to the canonical loopback audience is
       // retired by the canonical installer and never re-added for a loopback-only Home.
       expect(installedEnv).not.toMatch(/^HAPPIER_PUBLIC_SERVER_URL=/gmu);
+
+      const identity = 'registry-proof-home';
+      readinessIdentity = identity;
+      serviceDefinitionPath = join(homeDir, '.config', 'systemd', 'user', 'happier-server.service');
+      mkdirSync(defaults.dataDir, { recursive: true });
+      const database = new DatabaseSync(join(defaults.dataDir, 'happier-server-light.sqlite'));
+      database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+      database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
+      database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', identity);
+      database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at, rolled_back_at) VALUES (?, ?, ?, NULL)').run(
+        '20200101000000_init',
+        createHash('sha256').update('-- fixture migration\n').digest('hex'),
+        '2026-09-08T00:00:00.000Z',
+      );
+      database.close();
 
       await new Promise<void>((resolve, reject) => {
         healthServer.once('error', reject);

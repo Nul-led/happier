@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  argvBeforeOptionTerminator,
   hasFlag,
   readCommandPositionals,
   readFlagValue,
@@ -10,6 +11,11 @@ import {
 } from './argvFlags';
 
 describe('long option parsing', () => {
+  it('exposes only pre-terminator bytes to global option consumers', () => {
+    expect(argvBeforeOptionTerminator(['session', 'send', '--json', '--', '--help', '--tmux']))
+      .toEqual(['session', 'send', '--json']);
+  });
+
   it.each([
     ['a separate value', ['command', '--ui', 'reactNative']],
     ['an equals-form value', ['command', '--ui=reactNative']],

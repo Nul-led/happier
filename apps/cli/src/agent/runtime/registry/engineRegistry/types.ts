@@ -101,6 +101,20 @@ export type RunnerAgentSessionRuntimeSource = Readonly<{
         ): Readonly<Record<string, string>>;
         cleanup: (() => void) | null;
     }> | null>;
+    prepareTeamCredentialProviderBinding?(params: Readonly<{
+        sessionId: string;
+        resourceId: string;
+        expectedResourceRevision: number;
+        agentTargetKey: string;
+        modelId: string;
+        consumer?: import('@happier-dev/protocol').ProviderBrokerConsumerV1;
+        signal: AbortSignal;
+    }>): Promise<Readonly<{
+        providerBinding: import('@happier-dev/plugin-sdk/agents/runtime').AgentSessionProviderBinding;
+        environmentOverlay: SessionEnvOverlayV1;
+        additionalRedactionValues: readonly string[];
+        cleanup?: () => void | Promise<void>;
+    }>>;
     createRuntime(params: Readonly<{
         signal: AbortSignal;
     }>): Promise<AgentRuntime>;
@@ -150,4 +164,12 @@ export type ResolveEngineRegistryParams = Readonly<{
     requireRunnerAgentSessionRuntimeSource?: boolean;
     /** Private admitted source. It constructs one real Agent runtime in this runner and is not a daemon proxy. */
     runnerAgentSessionRuntimeSource?: RunnerAgentSessionRuntimeSource | null;
+    /**
+     * Exact host-owned Team credential preparation for a direct, already
+     * generation-pinned plugin runtime. Standalone scoped hosts use this
+     * without manufacturing a daemon runner source.
+     */
+    prepareTeamCredentialProviderBinding?: NonNullable<
+        RunnerAgentSessionRuntimeSource['prepareTeamCredentialProviderBinding']
+    >;
 }>;

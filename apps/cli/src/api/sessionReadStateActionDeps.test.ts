@@ -1,0 +1,81 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fastify from 'fastify';
+
+import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
+import { createSessionReadStateActionDeps } from './sessionReadStateActionDeps';
+
+describe('Session read-state HTTP Action adapter', () => {
+  let app = fastify();
+  let restore = () => {};
+
+  beforeEach(() => {
+    app = fastify();
+    restore = installAxiosFastifyAdapter({ app, origin: 'http://read-state.test' });
+  });
+
+  afterEach(async () => {
+    restore();
+    await app.close();
+  });
+
+  it('requires the fixed endpoint and Home identity as one binding', () => {
+    const partial = { token: 'token', serverHttpBaseUrl: 'http://read-state.test' };
+    // @ts-expect-error -- Untyped callers can still attempt the incomplete runtime shape.
+    expect(() => createSessionReadStateActionDeps(partial)).toThrow('fixed_action_server_target_incomplete');
+  });
+
+  it('binds the exact Home, encodes the Session id, and carries only the route body', async () => {
+    app.post('/v2/sessions/:sessionId/read-state', async (request) => {
+      expect(request.params).toEqual({ sessionId: 'session/one' });
+      expect(request.body).toEqual({ state: 'unread' });
+      expect(request.headers.authorization).toBe('Bearer token');
+      return {
+        success: true,
+        state: 'unread',
+        lastViewedSessionSeq: 6,
+        didChange: true,
+      };
+    });
+    const deps = createSessionReadStateActionDeps({
+      token: 'token',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://read-state.test',
+    });
+    await expect(deps.sessionReadStateAction!({
+      actionId: 'session.read_state.set',
+      input: { sessionId: 'session/one', state: 'unread' },
+      context: { surface: 'cli', authority: 'present_user' },
+      serverId: 'home-a',
+    })).resolves.toEqual({
+      success: true,
+      state: 'unread',
+      lastViewedSessionSeq: 6,
+      didChange: true,
+    });
+  });
+
+  it('refuses a different selected Home before sending the bound credential', async () => {
+    let requests = 0;
+    app.post('/v2/sessions/:sessionId/read-state', async () => {
+      requests += 1;
+      return { success: true, state: 'read', lastViewedSessionSeq: 7, didChange: true };
+    });
+    const deps = createSessionReadStateActionDeps({
+      token: 'token',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://read-state.test',
+    });
+
+    await expect(deps.sessionReadStateAction!({
+      context: { surface: 'cli', authority: 'present_user' },
+      actionId: 'session.read_state.set',
+      serverId: 'home-b',
+      input: { sessionId: 'session-1', state: 'read' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'server_target_mismatch',
+      error: 'server_target_mismatch',
+    });
+    expect(requests).toBe(0);
+  });
+});

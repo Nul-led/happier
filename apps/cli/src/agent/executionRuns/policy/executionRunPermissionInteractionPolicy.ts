@@ -11,7 +11,8 @@ import { permissionMode as normalizePermissionMode } from './permissionMode';
 
 export type ExecutionRunPermissionInteractionMode =
   | 'deterministic'
-  | 'prompt_in_parent_session'
+  | 'prompt_in_execution_scope'
+  | 'interaction_unavailable'
   | 'fail_closed';
 
 export type ExecutionRunPermissionBackendCapabilities = Readonly<{
@@ -28,22 +29,27 @@ export type ExecutionRunPermissionInteractionContext = Readonly<{
   retentionPolicy: ExecutionRunRetentionPolicy;
   permissionMode: string;
   parentSessionId?: string | null;
+  interactionTargetAvailable?: boolean;
   backendCapabilities?: ExecutionRunPermissionBackendCapabilities | null;
 }>;
 
-export type ExecutionRunParentSessionPermissionResponseTarget = Readonly<{
+export type ExecutionRunPermissionResponseTarget = Readonly<{
   kind: 'execution_run_host_bridge';
-  sessionId: string;
+  sessionId: string | null;
   runId: string;
   callId: string;
   sidechainId: string;
   backendId: string;
   runtimeKind: string;
   providerRequestId: string;
+  controllerOccurrenceId?: string;
 }>;
 
-export type ExecutionRunParentSessionPermissionRequestEnvelope = Readonly<{
-  sessionId: string;
+/** @deprecated Compatibility name for existing Session-scoped consumers. */
+export type ExecutionRunParentSessionPermissionResponseTarget = ExecutionRunPermissionResponseTarget;
+
+export type ExecutionRunPermissionRequestEnvelope = Readonly<{
+  sessionId: string | null;
   runId: string;
   callId: string;
   sidechainId: string;
@@ -51,28 +57,24 @@ export type ExecutionRunParentSessionPermissionRequestEnvelope = Readonly<{
   runtimeKind: string;
   permissionMode: PermissionIntent;
   providerRequestId: string;
+  controllerOccurrenceId: string;
   providerMetadata: Readonly<Record<string, unknown>> | null;
   providerPayload: unknown;
   toolName: string;
   reason: string;
   createdAtMs: number;
-  responseTarget: ExecutionRunParentSessionPermissionResponseTarget;
+  responseTarget: ExecutionRunPermissionResponseTarget;
 }>;
+
+/** @deprecated Compatibility name for existing Session-scoped consumers. */
+export type ExecutionRunParentSessionPermissionRequestEnvelope = ExecutionRunPermissionRequestEnvelope;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
 function isPromptCapableIntent(intent: ExecutionRunIntent): boolean {
-  return intent === 'delegate' || intent === 'voice_agent';
-}
-
-function isSessionShapedRun(params: Readonly<{
-  runClass: ExecutionRunClass;
-  ioMode: ExecutionRunIoMode;
-  retentionPolicy: ExecutionRunRetentionPolicy;
-}>): boolean {
-  return params.runClass === 'long_lived' || params.ioMode === 'streaming' || params.retentionPolicy === 'resumable';
+  return intent === 'agent' || intent === 'delegate' || intent === 'voice_agent';
 }
 
 function readCapabilityFlag(
@@ -92,16 +94,16 @@ export function resolveExecutionRunPermissionInteractionMode(
     return 'deterministic';
   }
 
+  if (canonicalPermissionMode === 'safe-yolo') {
+    return 'deterministic';
+  }
+
   if (!isPromptCapableIntent(profile.intent)) {
     return 'deterministic';
   }
 
-  if (!isSessionShapedRun(context)) {
-    return 'deterministic';
-  }
-
-  if (!context.parentSessionId) {
-    return 'deterministic';
+  if (context.interactionTargetAvailable !== true && !context.parentSessionId) {
+    return 'interaction_unavailable';
   }
 
   if (
@@ -111,12 +113,12 @@ export function resolveExecutionRunPermissionInteractionMode(
     return 'fail_closed';
   }
 
-  return 'prompt_in_parent_session';
+  return 'prompt_in_execution_scope';
 }
 
-export function buildExecutionRunParentSessionPermissionRequestEnvelope(
+export function buildExecutionRunPermissionRequestEnvelope(
   params: Readonly<{
-    sessionId: string;
+    sessionId: string | null;
     runId: string;
     callId: string;
     sidechainId: string;
@@ -124,13 +126,14 @@ export function buildExecutionRunParentSessionPermissionRequestEnvelope(
     runtimeKind: string;
     permissionMode: string;
     providerRequestId: string;
+    controllerOccurrenceId: string;
     providerMetadata?: Readonly<Record<string, unknown>> | null;
     providerPayload: unknown;
     toolName: string;
     reason: string;
     createdAtMs?: number;
   }>,
-): ExecutionRunParentSessionPermissionRequestEnvelope {
+): ExecutionRunPermissionRequestEnvelope {
   const permissionMode = normalizePermissionMode(params.permissionMode);
   const createdAtMs = typeof params.createdAtMs === 'number' && Number.isFinite(params.createdAtMs) && params.createdAtMs >= 0
     ? Math.floor(params.createdAtMs)
@@ -145,6 +148,7 @@ export function buildExecutionRunParentSessionPermissionRequestEnvelope(
     runtimeKind: params.runtimeKind,
     permissionMode,
     providerRequestId: params.providerRequestId,
+    controllerOccurrenceId: params.controllerOccurrenceId,
     providerMetadata: params.providerMetadata ?? null,
     providerPayload: params.providerPayload,
     toolName: params.toolName,
@@ -159,13 +163,17 @@ export function buildExecutionRunParentSessionPermissionRequestEnvelope(
       backendId: params.backendId,
       runtimeKind: params.runtimeKind,
       providerRequestId: params.providerRequestId,
+      controllerOccurrenceId: params.controllerOccurrenceId,
     },
   };
 }
 
-export function readExecutionRunParentSessionPermissionResponseTarget(
+/** @deprecated Compatibility name for existing Session-scoped consumers. */
+export const buildExecutionRunParentSessionPermissionRequestEnvelope = buildExecutionRunPermissionRequestEnvelope;
+
+export function readExecutionRunPermissionResponseTarget(
   value: unknown,
-): ExecutionRunParentSessionPermissionResponseTarget | null {
+): ExecutionRunPermissionResponseTarget | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -175,16 +183,17 @@ export function readExecutionRunParentSessionPermissionResponseTarget(
     return null;
   }
 
-  const sessionId = readNonEmptyString(record.sessionId);
+  const sessionId = record.sessionId === null ? null : readNonEmptyString(record.sessionId);
   const runId = readNonEmptyString(record.runId);
   const callId = readNonEmptyString(record.callId);
   const sidechainId = readNonEmptyString(record.sidechainId);
   const backendId = readNonEmptyString(record.backendId);
   const runtimeKind = readNonEmptyString(record.runtimeKind);
   const providerRequestId = readNonEmptyString(record.providerRequestId);
+  const controllerOccurrenceId = readNonEmptyString(record.controllerOccurrenceId);
 
   if (
-    !sessionId
+    record.sessionId !== null && !sessionId
     || !runId
     || !callId
     || !sidechainId
@@ -204,5 +213,9 @@ export function readExecutionRunParentSessionPermissionResponseTarget(
     backendId,
     runtimeKind,
     providerRequestId,
+    ...(controllerOccurrenceId ? { controllerOccurrenceId } : {}),
   };
 }
+
+/** @deprecated Compatibility name for existing Session-scoped consumers. */
+export const readExecutionRunParentSessionPermissionResponseTarget = readExecutionRunPermissionResponseTarget;

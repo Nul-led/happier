@@ -1,14 +1,16 @@
 import {
   PROVIDER_ENDPOINT_SAFETY_LIMITS,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2Schema,
+  readBuiltInLegacyConnectedAccountServiceKeyIngress,
   assessProviderEndpoint,
   createProviderManagedRuntimeBindingEqualityKeyV1,
   createProviderErrorV1,
   ProviderErrorV1Schema,
   type AgentProviderBindingMaterializationV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceId,
   type ProviderErrorV1,
+  type PluginExecutionScopeV1,
   type QualifiedConnectedAccountPurposeBindingsV1,
 } from '@happier-dev/protocol';
 import type {
@@ -145,21 +147,30 @@ function isManagedProviderSpawnAuthorization(
 }
 
 export function filterSuppressedConnectedServiceBindings(input: Readonly<{
-  bindings: ConnectedServiceBindingsV1;
+  bindings: ConnectedServiceBindingsV2;
   suppressConnectedServiceIds: readonly ConnectedServiceId[];
 }>): Readonly<{
-  bindings: ConnectedServiceBindingsV1;
+  bindings: ConnectedServiceBindingsV2;
   suppressedServiceIds: readonly ConnectedServiceId[];
 }> {
-  const parsed = ConnectedServiceBindingsV1Schema.parse(input.bindings);
-  const suppressed = new Set(input.suppressConnectedServiceIds);
+  const parsed = ConnectedServiceBindingsV2Schema.parse(input.bindings);
+  const suppressionByServiceKey = new Map(
+    input.suppressConnectedServiceIds.flatMap((serviceId) => {
+      const serviceKey = readBuiltInLegacyConnectedAccountServiceKeyIngress(serviceId);
+      return serviceKey ? [[serviceKey, serviceId] as const] : [];
+    }),
+  );
   const suppressedServiceIds = Object.keys(parsed.bindingsByServiceId)
-    .filter((serviceId): serviceId is ConnectedServiceId => suppressed.has(serviceId as ConnectedServiceId));
+    .flatMap((serviceKey) => {
+      const serviceId = suppressionByServiceKey.get(serviceKey);
+      return serviceId ? [serviceId] : [];
+    });
   const bindingsByServiceId = Object.fromEntries(
-    Object.entries(parsed.bindingsByServiceId).filter(([serviceId]) => !suppressed.has(serviceId as ConnectedServiceId)),
+    Object.entries(parsed.bindingsByServiceId)
+      .filter(([serviceKey]) => !suppressionByServiceKey.has(serviceKey)),
   );
   return {
-    bindings: ConnectedServiceBindingsV1Schema.parse({ v: 1, bindingsByServiceId }),
+    bindings: ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId }),
     suppressedServiceIds: Object.freeze(suppressedServiceIds),
   };
 }
@@ -214,7 +225,7 @@ export type ProviderSpawnAuthorizationAttempt =
         deployment: ManagedProviderSpawnAuthorization['deployment'];
         materializeManagedEndpoint: (input: Readonly<{
           normalizedUrl: string;
-          downstreamBearer: string;
+          downstreamBearer: string | null;
         }>) => Promise<ProviderSpawnMaterializationResult>;
       }
     >;
@@ -230,6 +241,7 @@ type ProviderSpawnAuthorizationAttemptInput<TAuthorization extends ProviderSpawn
   }>) => Promise<AgentProviderBindingMaterializationV1>;
   materializationBaseDir: string;
   sessionId?: string;
+  scope?: PluginExecutionScopeV1;
   isCurrent?: () => boolean;
   isRetainedPolicyCurrent?: () => boolean;
   subscribeCurrentness?: (listener: () => void) => () => void;
@@ -340,7 +352,7 @@ export function createProviderSpawnAuthorizationAttempt<
       composed = await composeProviderBindingMaterialization({
         materialization: rawMaterialization,
         materializationBaseDir: input.materializationBaseDir,
-        sessionId: input.sessionId,
+        sessionId: input.scope?.kind === 'session' ? input.scope.sessionId : input.sessionId,
       });
       redactionLease.add(composed.additionalRedactionValues);
       return {
@@ -452,7 +464,12 @@ export function createProviderSpawnAuthorizationAttempt<
     materializeManagedEndpoint: async ({ normalizedUrl, downstreamBearer }) => {
       const current = await revalidate();
       if (!current.ok) return current;
-      if (!downstreamBearer) {
+      const runtimeCredentialTransport =
+        authorization.binding.runtimeCredentialTransport;
+      if (
+        (runtimeCredentialTransport === null && downstreamBearer !== null)
+        || (runtimeCredentialTransport !== null && !downstreamBearer)
+      ) {
         return {
           ok: false as const,
           error: createProviderErrorV1('provider_materialization_failed', {
@@ -491,11 +508,13 @@ export function createProviderSpawnAuthorizationAttempt<
       };
       return materialize({
         binding,
-        credential: {
-          kind: 'apiKey',
-          transport: authorization.binding.runtimeCredentialTransport,
-          value: downstreamBearer,
-        },
+        credential: runtimeCredentialTransport === null
+          ? { kind: 'none' }
+          : {
+              kind: 'apiKey',
+              transport: runtimeCredentialTransport,
+              value: downstreamBearer!,
+            },
       });
     },
   });
@@ -515,6 +534,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
   runtimeStateStore?: Pick<ProviderRuntimeStateStore, 'read'>;
   materializationBaseDir: string;
   sessionId?: string;
+  scope?: PluginExecutionScopeV1;
   resolveAddresses?: (hostname: string) => Promise<readonly string[]>;
   resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
   managedPurposeBindingSnapshot?: QualifiedConnectedAccountPurposeBindingsV1;
@@ -724,6 +744,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
           selection: input.selection,
           machineId: input.machineId,
           accountSettings: snapshot.settings,
+          savedSecretResources: snapshot.savedSecretResources,
           providerSettings,
           registry,
           dnsEvidenceByEndpointUrl,
@@ -750,6 +771,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
       agentTargetKey: input.agentTargetKey,
       agentId: input.agentId,
       accountSettings: snapshot.settings,
+      savedSecretResources: snapshot.savedSecretResources,
       providerSettings,
       registry,
       dnsEvidenceByEndpointUrl,
@@ -891,6 +913,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
         return resolveProviderCredentialPlaintext({
           reference: initial.authorization.credentialReference,
           accountSettings: snapshot.settings,
+          savedSecretResources: snapshot.savedSecretResources,
           settingsSecretsReadKeys: snapshot.settingsSecretsReadKeys,
           connectionId: initial.authorization.ticket.connectionId,
           machineId: input.machineId,
@@ -904,7 +927,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
         credential,
       }),
       materializationBaseDir: input.materializationBaseDir,
-      sessionId: input.sessionId,
+      ...(input.scope ? { scope: input.scope } : { sessionId: input.sessionId }),
       isCurrent: isManagedAuthorizationCurrent,
       isRetainedPolicyCurrent: isManagedRetainedAuthorizationCurrent,
       ...(input.subscribeAccountSettingsSnapshot

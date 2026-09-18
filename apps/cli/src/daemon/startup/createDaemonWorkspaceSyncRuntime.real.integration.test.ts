@@ -1,4 +1,20 @@
-import { AccountSettingsSchema } from '@happier-dev/protocol';
+import {
+  AccountSettingsSchema,
+  ActionApprovalRequestCreatedResultSchema,
+  ApprovalRequestSchema,
+  createActionExecutor,
+  type ActionExecutorDeps,
+  type ApprovalRequest,
+  type WorkspaceSyncConflictResolveActionInputV1,
+} from '@happier-dev/protocol';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import {
+  MUTAGEN_ENGINE_VERSION,
+  assertMutagenEngineArtifactPayload,
+  ensureInstalledFirstPartyComponent,
+  resolveMutagenEngineArtifactPaths,
+  resolveMutagenEngineArtifactTarget,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
@@ -7,10 +23,16 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { deleteWorkspaceSyncConflictLoserAtRoot } from '@/workspaces/sync/workspaceSyncConflicts';
+import {
+  registerMachineWorkspaceSyncRpcHandlers,
+  type MachineWorkspaceSyncRpcService,
+} from '@/api/machine/rpcHandlers.workspaceSync';
+import type { RpcHandler, RpcHandlerContext, RpcHandlerRegistrar } from '@/api/rpc/types';
 import { createWorkspaceRootOwnershipManager } from '@/workspaces/sync/workspaceSyncRootOwnership';
 import type { WorkspaceSyncSidecarProcess } from '@/workspaces/sync/workspaceSyncSidecarLifecycle';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
+import { createWorkspaceSyncConflictResolutionAuthorizer } from './createProductionDaemonWorkspaceSyncRuntime';
 import type {
   WorkspaceSyncPersistentModeV1,
   WorkspaceSyncRelationshipV1,
@@ -25,6 +47,7 @@ import {
 const managerPath = process.env.HAPPIER_MUTAGEN_LIVE_MANAGER_BIN;
 const agentPath = process.env.HAPPIER_MUTAGEN_LIVE_AGENT_BIN;
 const custodyPath = process.env.HAPPIER_PROCESS_CUSTODY_LIVE_BIN;
+const runInstalledArtifactIntegration = process.env.HAPPIER_RUN_MUTAGEN_INSTALLED_ARTIFACT_INTEGRATION === '1';
 const runPerformanceAcceptance = process.env.HAPPIER_RUN_WORKSPACE_SYNC_PERFORMANCE === '1';
 const performanceFileSizeBytes = Number.parseInt(
   process.env.HAPPIER_WORKSPACE_SYNC_PERFORMANCE_FILE_BYTES ?? String(1024 ** 3),
@@ -159,6 +182,45 @@ async function requireLiveBinaries(): Promise<{
   return verified;
 }
 
+async function acquireInstalledArtifactBinaries(homeDir: string): Promise<Readonly<{
+  manager: string;
+  agent: string;
+  custody: string;
+  targetTriple: string;
+}>> {
+  if (!custodyPath) {
+    throw new Error(
+      `installed Mutagen ${MUTAGEN_ENGINE_VERSION} integration requires HAPPIER_PROCESS_CUSTODY_LIVE_BIN`,
+    );
+  }
+  const custody = resolve(custodyPath);
+  await access(custody);
+  const targetTriple = resolveMutagenEngineArtifactTarget();
+  const processEnv = { ...process.env, HAPPIER_HOME_DIR: homeDir };
+  const validatePayload = (payloadRoot: string) => assertMutagenEngineArtifactPayload({
+    payloadRoot,
+    targetTriple,
+    engineVersion: MUTAGEN_ENGINE_VERSION,
+  });
+  const installed = await ensureInstalledFirstPartyComponent({
+    componentId: 'mutagen-engine',
+    channel: 'stable',
+    versionId: MUTAGEN_ENGINE_VERSION,
+    processEnv,
+    validatePayload,
+  });
+  const payloadRoot = installed.resolvedCurrentPath ?? installed.currentPath;
+  validatePayload(payloadRoot);
+  const artifactPaths = resolveMutagenEngineArtifactPaths(payloadRoot, targetTriple);
+  await Promise.all([access(artifactPaths.managerPath), access(artifactPaths.agentPath)]);
+  return {
+    manager: artifactPaths.managerPath,
+    agent: artifactPaths.agentPath,
+    custody,
+    targetTriple,
+  };
+}
+
 type ObservedContent = string | null;
 
 async function waitFor(
@@ -233,10 +295,212 @@ function liveRelationship(input: Readonly<{
   };
 }
 
+type LiveConflictApprovalAuthority = Readonly<{
+  assertAuthorized: ReturnType<typeof createWorkspaceSyncConflictResolutionAuthorizer>;
+  approvalsCreate: NonNullable<ActionExecutorDeps['approvalsCreate']>;
+  approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']>;
+  approvalsUpdate: NonNullable<ActionExecutorDeps['approvalsUpdate']>;
+}>;
+
+function createLiveConflictApprovalAuthority(artifactDirectory: string): LiveConflictApprovalAuthority {
+  let nextArtifactId = 1;
+  const artifactPath = (artifactId: string): string => {
+    if (!/^[A-Za-z0-9._-]+$/.test(artifactId)) throw new Error('Invalid live approval artifact id');
+    return join(artifactDirectory, `${artifactId}.json`);
+  };
+  const approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']> = async ({ artifactId }) => {
+    try {
+      const raw = await readFile(artifactPath(artifactId), 'utf8');
+      return ApprovalRequestSchema.parse(JSON.parse(raw));
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+  const persist = async (artifactId: string, request: ApprovalRequest): Promise<void> => {
+    await mkdir(artifactDirectory, { recursive: true });
+    await writeFile(artifactPath(artifactId), `${JSON.stringify(ApprovalRequestSchema.parse(request))}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  };
+  const authority: LiveConflictApprovalAuthority = {
+    approvalsCreate: async ({ request }) => {
+      const artifactId = `live-conflict-approval-${nextArtifactId++}`;
+      await persist(artifactId, request);
+      return { artifactId };
+    },
+    approvalsGet,
+    approvalsUpdate: async ({ artifactId, request }) => {
+      await persist(artifactId, request);
+      return { ok: true };
+    },
+    assertAuthorized: createWorkspaceSyncConflictResolutionAuthorizer({
+      approvalsGet,
+      serverId: 'server-1',
+    }),
+  };
+  return authority;
+}
+
+describe('workspace sync conflict Action persistence fixture', () => {
+  it('reopens the approved receipt from disk at the destructive execution boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hwsa-'));
+    const artifactDirectory = join(root, 'approval-artifacts');
+    const authority = createLiveConflictApprovalAuthority(artifactDirectory);
+    const actionInput: WorkspaceSyncConflictResolveActionInputV1 = {
+      controllerMachineId: 'local-machine',
+      request: {
+        relationshipId: 'relationship-1',
+        path: 'conflicted.txt',
+        keep: 'alpha',
+        expectedKind: 'file',
+        expectedDigest: 'a'.repeat(40),
+      },
+    };
+    let executedReceiptId: string | null = null;
+    try {
+      const workspaceSyncConflictResolve: NonNullable<
+        ActionExecutorDeps['workspaceSyncConflictResolve']
+      > = async ({ actionReceiptId, input }) => {
+        const reopenedAuthority = createLiveConflictApprovalAuthority(artifactDirectory);
+        await reopenedAuthority.assertAuthorized(actionReceiptId, input);
+        executedReceiptId = actionReceiptId;
+        return {
+          relationshipId: input.request.relationshipId,
+          controllerMachineId: input.controllerMachineId,
+          state: 'watching' as const,
+          alphaPath: '/alpha',
+          betaPath: '/beta',
+          mode: 'keep_both_in_sync' as const,
+          changedFiles: 0,
+          conflictCount: 0,
+          lastSuccessfulSyncAtMs: 1,
+        };
+      };
+      const executor = createActionExecutor({
+        workspaceSyncConflictResolve,
+        isActionApprovalRequired: () => false,
+        approvalsCreate: authority.approvalsCreate,
+        approvalsGet: authority.approvalsGet,
+        approvalsUpdate: authority.approvalsUpdate,
+        isApprovalExecutionOriginCurrent: async () => true,
+      } as unknown as ActionExecutorDeps);
+
+      const requested = await executor.execute('workspace.sync.conflict.resolve', actionInput, {
+        surface: 'ui',
+        authority: 'present_user',
+        serverId: 'server-1',
+        defaultSessionMachineId: actionInput.controllerMachineId,
+        actionRequestId: 'persisted-conflict-request',
+      });
+      const approvalRequest = requested.ok
+        ? ActionApprovalRequestCreatedResultSchema.safeParse(requested.result)
+        : null;
+      expect(approvalRequest?.success).toBe(true);
+      if (!approvalRequest?.success) throw new Error('Workspace conflict Action did not request approval');
+
+      const decided = await executor.execute('approval.request.decide', {
+        artifactId: approvalRequest.data.artifactId,
+        decision: 'approve',
+      }, {
+        surface: 'ui',
+        authority: 'present_user',
+        serverId: 'server-1',
+      });
+      expect(decided).toMatchObject({
+        ok: true,
+        result: { ok: true, status: 'executed', execution: { ok: true } },
+      });
+      expect(executedReceiptId).toBe(approvalRequest.data.artifactId);
+      await expect(authority.approvalsGet({
+        artifactId: approvalRequest.data.artifactId,
+        serverId: 'server-1',
+      })).resolves.toMatchObject({ status: 'executed', execution: { ok: true } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+async function resolveConflictThroughApprovedAction(
+  runtime: DaemonWorkspaceSyncRuntime,
+  approvalAuthority: LiveConflictApprovalAuthority,
+  actionInput: WorkspaceSyncConflictResolveActionInputV1,
+): Promise<void> {
+  const handlers = new Map<string, (raw: unknown, context?: RpcHandlerContext) => Promise<unknown>>();
+  const rpcHandlerManager = {
+    registerHandler: <TRequest, TResponse>(method: string, handler: RpcHandler<TRequest, TResponse>) => {
+      handlers.set(method, async (raw, context) => await handler(raw as TRequest, context));
+    },
+  } satisfies RpcHandlerRegistrar;
+  const unavailableTargetOperation = async (): Promise<never> => {
+    throw new Error('Unexpected target operation in local conflict Action test');
+  };
+  const service: MachineWorkspaceSyncRpcService = {
+    controller: runtime.managedWorkspaceSync,
+    relationshipOwner: {
+      setEnabled: async () => undefined,
+      stop: async () => undefined,
+    },
+    deleteConflictLoserAtTarget: unavailableTargetOperation,
+    readFileAtTarget: unavailableTargetOperation,
+    preflightHandoffTargetReplacement: unavailableTargetOperation,
+    prepareBootstrapAtTarget: unavailableTargetOperation,
+    releaseBootstrapAtTarget: unavailableTargetOperation,
+    inspectRetiredState: async () => ({ status: 'absent' }),
+    assertConflictResolutionAuthorized: approvalAuthority.assertAuthorized,
+  };
+  registerMachineWorkspaceSyncRpcHandlers({ rpcHandlerManager, service });
+  const conflictDelete = handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE);
+  if (!conflictDelete) throw new Error('Workspace conflict deletion RPC was not registered');
+
+  const executor = createActionExecutor({
+    workspaceSyncConflictResolve: async ({ actionReceiptId, input }: Parameters<NonNullable<ActionExecutorDeps['workspaceSyncConflictResolve']>>[0]) => await conflictDelete({
+      actionReceiptId,
+      actionInput: input,
+    }) as Awaited<ReturnType<DaemonWorkspaceSyncRuntime['managedWorkspaceSync']['flush']>>,
+    isActionApprovalRequired: () => false,
+    approvalsCreate: approvalAuthority.approvalsCreate,
+    approvalsGet: approvalAuthority.approvalsGet,
+    approvalsUpdate: approvalAuthority.approvalsUpdate,
+    isApprovalExecutionOriginCurrent: async () => true,
+  } as unknown as ActionExecutorDeps);
+
+  const requested = await executor.execute('workspace.sync.conflict.resolve', actionInput, {
+    surface: 'ui',
+    authority: 'present_user',
+    serverId: 'server-1',
+    defaultSessionMachineId: actionInput.controllerMachineId,
+    actionRequestId: 'live-conflict-request',
+  });
+  const approvalRequest = requested.ok
+    ? ActionApprovalRequestCreatedResultSchema.safeParse(requested.result)
+    : null;
+  if (!approvalRequest?.success) {
+    throw new Error(`Workspace conflict Action did not request approval: ${JSON.stringify(requested)}`);
+  }
+  const decided = await executor.execute('approval.request.decide', {
+    artifactId: approvalRequest.data.artifactId,
+    decision: 'approve',
+  }, {
+    surface: 'ui',
+    authority: 'present_user',
+    serverId: 'server-1',
+  });
+  const decision = decided.ok && decided.result !== null && typeof decided.result === 'object'
+    ? decided.result as Record<string, unknown>
+    : null;
+  if (!decision || decision.ok !== true || decision.status !== 'executed') {
+    throw new Error(`Workspace conflict Action approval did not execute: ${JSON.stringify(decided)}`);
+  }
+}
+
 async function startLiveRuntime(input: Readonly<{
   root: string;
   binaries: Readonly<{ manager: string; agent: string; custody: string }>;
   relationship: WorkspaceSyncRelationshipV1 | null;
+  conflictApprovalAuthority?: LiveConflictApprovalAuthority;
   onSidecarSpawned?: (process: WorkspaceSyncSidecarProcess) => void | Promise<void>;
 }>): Promise<DaemonWorkspaceSyncRuntime> {
   const alphaRoot = join(input.root, 'alpha');
@@ -249,7 +513,27 @@ async function startLiveRuntime(input: Readonly<{
   const snapshot = {
     source: 'network' as const,
     settings: AccountSettingsSchema.parse(
-      input.relationship ? { workspaceSyncRelationshipsV1: [input.relationship] } : {},
+      input.relationship
+        ? {
+            workspaceRefsV1: [
+              {
+                id: 'alpha-ref',
+                serverId: 'server-1',
+                machineId: 'local-machine',
+                rootPath: alphaRoot,
+                createdAtMs: 1,
+              },
+              {
+                id: 'beta-ref',
+                serverId: 'server-1',
+                machineId: 'local-machine',
+                rootPath: betaRoot,
+                createdAtMs: 1,
+              },
+            ],
+            workspaceSyncRelationshipsV1: [input.relationship],
+          }
+        : {},
     ),
     settingsVersion: 1,
     loadedAtMs: 1,
@@ -263,6 +547,8 @@ async function startLiveRuntime(input: Readonly<{
   const rootOwnershipManager = createWorkspaceRootOwnershipManager({
     lockDirectory: join(dataRoot, 'root-ownership'),
   });
+  const conflictApprovalAuthority = input.conflictApprovalAuthority
+    ?? createLiveConflictApprovalAuthority(join(dataRoot, 'approval-artifacts'));
 
   const peerIdentityEvents: string[] = [];
   const runtime = createDaemonWorkspaceSyncRuntime({
@@ -281,6 +567,9 @@ async function startLiveRuntime(input: Readonly<{
       if (!target || target.machineId !== request.targetMachineId) {
         throw Object.assign(new Error('Workspace sync conflict target is unavailable'), { code: 'peer_unavailable' });
       }
+      // Model the receiving daemon's final authorization check immediately
+      // before its confined mutation, using the same production authorizer.
+      await conflictApprovalAuthority.assertAuthorized(request.actionReceiptId, request.actionInput);
       await deleteWorkspaceSyncConflictLoserAtRoot({
         rootPath: target.rootPath,
         relativePath: request.path,
@@ -288,6 +577,7 @@ async function startLiveRuntime(input: Readonly<{
         ...(request.expectedDigest === undefined ? {} : { expectedDigest: request.expectedDigest }),
       });
     },
+    assertConflictResolutionAuthorized: conflictApprovalAuthority.assertAuthorized,
     createBroker: async (brokerInput) => {
       const validator = createWorkspaceSyncPeerIdentityValidator({
         resolveExecutable: () => input.binaries.custody,
@@ -336,7 +626,6 @@ async function startLiveRuntime(input: Readonly<{
       rootDir: join(dataRoot, 'mutagen'),
       dataDir: join(dataRoot, 'mutagen', 'data'),
       brokerDir: join(dataRoot, 'mutagen', 'broker'),
-      stagingDir: join(dataRoot, 'mutagen', 'staging'),
     }),
   });
 
@@ -359,6 +648,7 @@ async function withLiveRuntime(
     alphaRoot: string;
     betaRoot: string;
     root: string;
+    conflictApprovalAuthority: LiveConflictApprovalAuthority;
   }>) => Promise<void>,
 ): Promise<void> {
   // The per-stream broker endpoint also appends a UUID; keep the canonical
@@ -370,16 +660,19 @@ async function withLiveRuntime(
     const betaRoot = join(root, 'beta');
     await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
     await input.prepareRoots?.({ alphaRoot, betaRoot });
+    const conflictApprovalAuthority = createLiveConflictApprovalAuthority(join(root, 'approval-artifacts'));
     runtime = await startLiveRuntime({
       root,
       binaries: input.binaries,
       relationship: input.relationship,
+      conflictApprovalAuthority,
     });
     await run({
       runtime,
       root,
       alphaRoot,
       betaRoot,
+      conflictApprovalAuthority,
     });
   } finally {
     await runtime?.stop().catch(() => undefined);
@@ -387,7 +680,7 @@ async function withLiveRuntime(
   }
 }
 
-describe(
+describe.skipIf(runInstalledArtifactIntegration)(
   'daemon workspace sync runtime with source-built Mutagen processes',
   { timeout: 150_000 },
   () => {
@@ -563,7 +856,7 @@ describe(
       const binaries = await requireLiveBinaries();
       await withLiveRuntime(
         { binaries, relationship: liveRelationship({ relationshipId: 'live-two-way-mode', mode: 'keep_both_in_sync' }) },
-        async ({ runtime, alphaRoot, betaRoot }) => {
+        async ({ runtime, alphaRoot, betaRoot, conflictApprovalAuthority }) => {
           await writeFile(join(alphaRoot, 'shared.txt'), 'two-way alpha seed\n');
           await waitForContents(join(betaRoot, 'shared.txt'), 'two-way alpha seed\n');
 
@@ -577,7 +870,12 @@ describe(
           await writeFile(join(betaRoot, 'conflicted.txt'), 'beta divergent edit\n');
           await runtime.managedWorkspaceSync.flush('live-two-way-mode');
 
-          const conflicts = await runtime.managedWorkspaceSync.listConflicts('live-two-way-mode');
+          const conflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: 'live-two-way-mode',
+            limit: 100,
+          });
+          expect(conflicts.status).toBe('page');
+          if (conflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
           expect(conflicts.totalCount).toBeGreaterThanOrEqual(1);
           expect(conflicts.conflicts.some((entry) => entry.path.includes('conflicted.txt'))).toBe(true);
 
@@ -590,17 +888,64 @@ describe(
           expect(status?.state).toBe('conflicted');
 
           const conflict = conflicts.conflicts.find((entry) => entry.path.includes('conflicted.txt'))!;
-          await runtime.managedWorkspaceSync.deleteConflictLoser({
-            relationshipId: 'live-two-way-mode',
-            path: conflict.path,
-            keep: 'alpha',
-            expectedKind: conflict.beta.kind,
-            ...(conflict.beta.digest === undefined ? {} : { expectedDigest: conflict.beta.digest }),
+          if (conflict.beta.kind === 'unsupported') {
+            throw new Error('regular-file conflict unexpectedly reported as unsupported');
+          }
+          await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
+            controllerMachineId: 'local-machine',
+            request: {
+              relationshipId: 'live-two-way-mode',
+              path: conflict.path,
+              keep: 'alpha',
+              expectedKind: conflict.beta.kind,
+              ...(conflict.beta.digest === undefined ? {} : { expectedDigest: conflict.beta.digest }),
+            },
           });
           await waitForContents(join(betaRoot, 'conflicted.txt'), 'alpha divergent edit\n', 'resolved alpha conflict');
 
-          const resolvedConflicts = await runtime.managedWorkspaceSync.listConflicts('live-two-way-mode');
+          const resolvedConflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: 'live-two-way-mode',
+            limit: 100,
+          });
+          if (resolvedConflicts.status !== 'page') throw new Error('conflict cursor invalidated on initial page');
           expect(resolvedConflicts.conflicts.some((entry) => entry.path.includes('conflicted.txt'))).toBe(false);
+
+          // Exercise the opposite direction through the same public Action.
+          // Keeping beta deletes the controller-local alpha loser, so the
+          // controller itself must consume the approval receipt authority
+          // rather than relying only on the registered target RPC service.
+          await writeFile(join(alphaRoot, 'conflicted-beta.txt'), 'alpha losing edit\n');
+          await writeFile(join(betaRoot, 'conflicted-beta.txt'), 'beta winning edit\n');
+          await runtime.managedWorkspaceSync.flush('live-two-way-mode');
+
+          const betaWinningConflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: 'live-two-way-mode',
+            limit: 100,
+          });
+          if (betaWinningConflicts.status !== 'page') throw new Error('conflict cursor invalidated on beta-winning page');
+          const betaWinningConflict = betaWinningConflicts.conflicts.find((entry) => entry.path.includes('conflicted-beta.txt'));
+          expect(betaWinningConflict).toBeDefined();
+          if (!betaWinningConflict || betaWinningConflict.alpha.kind === 'unsupported') {
+            throw new Error('regular-file conflict unexpectedly reported as unsupported');
+          }
+          await resolveConflictThroughApprovedAction(runtime, conflictApprovalAuthority, {
+            controllerMachineId: 'local-machine',
+            request: {
+              relationshipId: 'live-two-way-mode',
+              path: betaWinningConflict.path,
+              keep: 'beta',
+              expectedKind: betaWinningConflict.alpha.kind,
+              ...(betaWinningConflict.alpha.digest === undefined ? {} : { expectedDigest: betaWinningConflict.alpha.digest }),
+            },
+          });
+          await waitForContents(join(alphaRoot, 'conflicted-beta.txt'), 'beta winning edit\n', 'resolved beta conflict');
+
+          const betaResolvedConflicts = await runtime.managedWorkspaceSync.listConflicts({
+            relationshipId: 'live-two-way-mode',
+            limit: 100,
+          });
+          if (betaResolvedConflicts.status !== 'page') throw new Error('conflict cursor invalidated after beta resolution');
+          expect(betaResolvedConflicts.conflicts.some((entry) => entry.path.includes('conflicted-beta.txt'))).toBe(false);
         },
       );
     });
@@ -681,5 +1026,63 @@ describe(
       }
     });
 
+  },
+);
+
+describe.skipIf(!runInstalledArtifactIntegration)(
+  `daemon workspace sync runtime with acquired Mutagen ${MUTAGEN_ENGINE_VERSION}`,
+  { timeout: 10 * 60_000 },
+  () => {
+    it('uses the validated installed manager and rooted agent for authenticated LIST and non-empty bidirectional bytes', async () => {
+      const installedHome = await realpath(await mkdtemp(join(tmpdir(), 'happier-mutagen-installed-real-')));
+      try {
+        const binaries = await acquireInstalledArtifactBinaries(installedHome);
+        await withLiveRuntime(
+          {
+            binaries,
+            relationship: liveRelationship({
+              relationshipId: 'live-installed-artifact-byte-path',
+              mode: 'keep_both_in_sync',
+            }),
+          },
+          async ({ runtime, alphaRoot, betaRoot }) => {
+            await expect(runtime.managedWorkspaceSync.list()).resolves.toEqual([
+              expect.objectContaining({
+                relationshipId: 'live-installed-artifact-byte-path',
+                mode: 'keep_both_in_sync',
+              }),
+            ]);
+
+            await writeFile(join(alphaRoot, 'installed-alpha-to-beta.txt'), 'installed alpha payload\n');
+            await waitForContents(
+              join(betaRoot, 'installed-alpha-to-beta.txt'),
+              'installed alpha payload\n',
+              'installed artifact alpha-to-beta bytes',
+            );
+
+            await writeFile(join(betaRoot, 'installed-beta-to-alpha.txt'), 'installed beta payload\n');
+            await waitForContents(
+              join(alphaRoot, 'installed-beta-to-alpha.txt'),
+              'installed beta payload\n',
+              'installed artifact beta-to-alpha bytes',
+            );
+          },
+        );
+      } catch (error) {
+        const target = (() => {
+          try {
+            return resolveMutagenEngineArtifactTarget();
+          } catch {
+            return `${process.platform}-${process.arch}`;
+          }
+        })();
+        throw new Error(
+          `Installed Mutagen ${MUTAGEN_ENGINE_VERSION} (${target}) failed the authenticated manager/rooted-agent byte corridor`,
+          { cause: error },
+        );
+      } finally {
+        await rm(installedHome, { recursive: true, force: true });
+      }
+    });
   },
 );

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { WorkspaceSyncCopyOnceV1Schema } from '@happier-dev/protocol';
+import {
+  WorkspaceSyncConflictPageRequestV1Schema,
+  WorkspaceSyncConflictV1Schema,
+  WorkspaceSyncCopyOnceV1Schema,
+} from '@happier-dev/protocol';
 
 import type { WorkspaceSyncMutagenAdapter, WorkspaceSyncResolvedRef } from './workspaceSyncController';
 import {
@@ -8,7 +12,8 @@ import {
   type MutagenSessionDefinition,
 } from './transport/workspaceSyncBrokerProtocol';
 import type {
-  WorkspaceSyncConflictListV1,
+  WorkspaceSyncConflictPageRequestV1,
+  WorkspaceSyncConflictPageV1,
   WorkspaceSyncConflictV1,
   WorkspaceSyncCopyOnceV1,
   WorkspaceSyncRelationshipV1,
@@ -38,6 +43,7 @@ type GenericSession = Readonly<{
   successfulCycles: number;
   conflictCount: number;
   lastError?: string;
+  lastErrorCode?: 'git_selection_unavailable';
 }>;
 type GenericSessionCandidate = Readonly<{ raw: unknown; generic: GenericSession }>;
 
@@ -95,6 +101,12 @@ function boundedString(value: unknown, name: string, max = 4096): string {
   if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value, 'utf8') > max) throw new Error(`Invalid generic Mutagen ${name}`);
   return value;
 }
+function boundedExactPath(value: unknown, name: string, max = 4096): string {
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > max) {
+    throw new Error(`Invalid generic Mutagen ${name}`);
+  }
+  return value;
+}
 function boundedCount(value: unknown, name: string): number {
   if (value === undefined) return 0;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) throw new Error(`Invalid generic Mutagen ${name}`);
@@ -116,13 +128,13 @@ function conflict(value: unknown): GenericConflict {
   const input = record(value, 'conflict');
   if (!Array.isArray(input.alphaChanges) || !Array.isArray(input.betaChanges)
     || input.alphaChanges.length > 1_000 || input.betaChanges.length > 1_000) throw new Error('Invalid generic Mutagen conflict changes');
-  return { root: boundedString(input.root, 'conflict.root'), alphaChanges: input.alphaChanges, betaChanges: input.betaChanges };
+  return { root: boundedExactPath(input.root, 'conflict.root'), alphaChanges: input.alphaChanges, betaChanges: input.betaChanges };
 }
 function session(value: unknown): GenericSession {
   const input = record(value, 'session');
   strictFields(input, [
     'identifier', 'name', 'labels', 'alpha', 'beta', 'mode', 'paused', 'status',
-    'successfulCycles', 'conflictCount', 'lastError',
+    'successfulCycles', 'conflictCount', 'lastError', 'lastErrorCode',
   ], 'session');
   const labelsInput = record(input.labels, 'session.labels');
   if (Object.keys(labelsInput).length > 16) throw new Error('Invalid generic Mutagen session labels');
@@ -137,6 +149,11 @@ function session(value: unknown): GenericSession {
     successfulCycles: boundedCount(input.successfulCycles, 'successfulCycles'),
     conflictCount: boundedCount(input.conflictCount, 'conflictCount'),
     ...(input.lastError === undefined ? {} : { lastError: boundedString(input.lastError, 'lastError') }),
+    ...(input.lastErrorCode === undefined
+      ? {}
+      : input.lastErrorCode === 'git_selection_unavailable'
+        ? { lastErrorCode: input.lastErrorCode }
+        : (() => { throw new Error('Invalid generic Mutagen lastErrorCode'); })()),
   };
 }
 
@@ -210,9 +227,12 @@ function entryFromChanges(changes: readonly unknown[]): WorkspaceSyncConflictV1[
   const last = changes.at(-1);
   if (!last) return { kind: 'missing' };
   const change = record(last, 'conflict change');
-  const rawEntry = change.new ?? change.old;
+  const rawEntry = Object.prototype.hasOwnProperty.call(change, 'new') ? change.new : change.old;
   if (rawEntry === null || rawEntry === undefined) return { kind: 'missing' };
   const input = record(rawEntry, 'conflict entry');
+  if (input.kind === 'untracked' || input.kind === 'problematic' || input.kind === 'unknown') {
+    return { kind: 'unsupported', sourceKind: input.kind };
+  }
   if (input.kind !== 'file' && input.kind !== 'directory' && input.kind !== 'symlink') throw new Error('Invalid generic Mutagen conflict entry kind');
   const digest = input.kind === 'file' && input.digest !== undefined ? boundedString(input.digest, 'conflict digest', 256) : undefined;
   return { kind: input.kind, ...(digest ? { digest } : {}) };
@@ -354,7 +374,9 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       relationshipId: operationId, controllerMachineId: definition.controllerMachineId, state,
       alphaPath: alpha.rootPath, betaPath: beta.rootPath, mode: 'mode' in definition ? definition.mode : 'copy_once',
       changedFiles: 0, conflictCount, lastSuccessfulSyncAtMs: this.lastSuccessfulSyncAtMs.get(operationId) ?? null,
-      ...(generic.lastError ? { errorCode: 'engine_error' } : {}),
+      ...(generic.lastErrorCode === 'git_selection_unavailable'
+        ? { errorCode: 'git_selection_unavailable' as const }
+        : generic.lastError ? { errorCode: 'engine_error' as const } : {}),
     };
   }
   private async reconcileRelationshipState(
@@ -371,6 +393,25 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       requestId: this.requestId(),
       sessionIdentifier: generic.identifier,
     }, signal), relationship, relationship.enabled ? 'first_cycle' : 'none');
+  }
+  private async projectMissingPausedRelationship(
+    relationship: WorkspaceSyncRelationshipV1,
+  ): Promise<WorkspaceSyncStatusV1> {
+    const [alpha, beta] = await Promise.all([
+      this.options.resolveWorkspaceRef(relationship.alphaWorkspaceRefId),
+      this.options.resolveWorkspaceRef(relationship.betaWorkspaceRefId),
+    ]);
+    return {
+      relationshipId: relationship.relationshipId,
+      controllerMachineId: relationship.controllerMachineId,
+      state: 'paused',
+      alphaPath: alpha?.rootPath ?? relationship.alphaWorkspaceRefId,
+      betaPath: beta?.rootPath ?? relationship.betaWorkspaceRefId,
+      mode: relationship.mode,
+      changedFiles: 0,
+      conflictCount: 0,
+      lastSuccessfulSyncAtMs: null,
+    };
   }
   async discoverCopyOnceRecoveries(signal?: AbortSignal): Promise<readonly WorkspaceSyncCopyOnceV1[]> {
     const value = await this.listAllSessions(signal);
@@ -409,6 +450,10 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     try {
       const existing = await this.findClaimedSession(relationship.relationshipId, signal);
       if (existing) {
+        if (!relationship.enabled) {
+          await this.terminateRuntimeSession(relationship.relationshipId, existing.generic.identifier, signal);
+          return await this.projectMissingPausedRelationship(relationship);
+        }
         try {
           return await this.reconcileRelationshipState(existing.raw, relationship, signal);
         } catch (error) {
@@ -420,6 +465,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
           throw runtimeMismatch(error);
         }
       }
+      if (!relationship.enabled) return await this.projectMissingPausedRelationship(relationship);
       return await this.reconcileRelationshipState(await this.options.send({
         t: 'create',
         requestId: this.requestId(),
@@ -460,6 +506,10 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
         await this.terminateRuntimeSession(id, generic.identifier, signal);
         continue;
       }
+      if (!definition.enabled) {
+        await this.terminateRuntimeSession(id, generic.identifier, signal);
+        continue;
+      }
       try {
         results.push(await this.reconcileRelationshipState(item.raw, definition, signal));
       } catch (error) {
@@ -479,8 +529,8 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     try {
       const existing = await this.findClaimedSession(operation.operationId, signal);
       if (existing) {
-        cleanupRequired = true;
         await this.project(existing.raw, operation, 'none');
+        cleanupRequired = true;
         if (existing.generic.successfulCycles > 0) {
           return await this.project(existing.raw, operation, 'operation');
         }
@@ -525,12 +575,14 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
           }
         } catch (cleanupError) {
           cleanupFailure = cleanupError;
-          if (operationError instanceof Error) {
-            Object.assign(operationError, { cleanupError });
-          }
         }
-        if (operationError === undefined && cleanupFailure !== undefined) {
-          throw Object.assign(new Error('Workspace copy completed but terminal cleanup is pending'), {
+        if (cleanupFailure !== undefined) {
+          throw Object.assign(new Error(
+            operationError === undefined
+              ? 'Workspace copy completed but terminal cleanup is pending'
+              : 'Workspace copy failed and terminal cleanup is pending',
+            operationError === undefined ? { cause: cleanupFailure } : { cause: operationError },
+          ), {
             code: 'indeterminate',
             cleanupError: cleanupFailure,
           });
@@ -603,45 +655,52 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     if (sessionIdentifier) await this.terminateRuntimeSession(relationshipId, sessionIdentifier, signal);
     this.definitions.delete(relationshipId);
   }
-  async listConflicts(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1> {
+  async listConflicts(request: WorkspaceSyncConflictPageRequestV1, signal?: AbortSignal): Promise<WorkspaceSyncConflictPageV1> {
+    const valid = WorkspaceSyncConflictPageRequestV1Schema.parse(request);
+    const relationshipId = valid.relationshipId;
     const sessionIdentifier = this.requireSessionIdentifier(relationshipId);
-    const conflicts: WorkspaceSyncConflictV1[] = [];
-    let cursor: string | undefined;
-    let totalCount: number | undefined;
-    let previousPath: string | undefined;
-    const seenCursors = new Set<string>();
-    while (true) {
-      const value = record(await this.options.send({
+    let raw: unknown;
+    try {
+      raw = await this.options.send({
         t: 'list_conflicts', requestId: this.requestId(), sessionIdentifier,
-        ...(cursor === undefined ? {} : { cursor }), limit: Math.min(100, 1_000 - conflicts.length),
-      }, signal), 'conflict list');
-      strictFields(value, ['totalCount', 'shownCount', 'truncatedCount', 'nextCursor', 'conflicts'], 'conflict list');
-      if (!Array.isArray(value.conflicts) || value.conflicts.length > 100) throw new Error('Invalid generic Mutagen conflict list');
-      const page = value.conflicts.map((item): WorkspaceSyncConflictV1 => {
-        const generic = conflict(item);
-        return { relationshipId, path: generic.root, alpha: entryFromChanges(generic.alphaChanges), beta: entryFromChanges(generic.betaChanges) };
-      });
-      const pageTotal = boundedCount(value.totalCount, 'totalCount');
-      const shownCount = boundedCount(value.shownCount, 'shownCount');
-      const truncatedCount = boundedCount(value.truncatedCount, 'truncatedCount');
-      if (shownCount !== page.length || (totalCount !== undefined && totalCount !== pageTotal)
-        || pageTotal < conflicts.length + shownCount || truncatedCount !== pageTotal - conflicts.length - shownCount) {
-        throw new Error('Invalid generic Mutagen conflict counts');
+        ...(valid.cursor === undefined ? {} : { cursor: valid.cursor }),
+        limit: valid.limit,
+      }, signal);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'cursor_invalidated') {
+        return { status: 'cursor_invalidated', relationshipId };
       }
-      for (const item of page) {
-        if (previousPath !== undefined && item.path <= previousPath) throw new Error('Invalid generic Mutagen conflict order');
-        previousPath = item.path;
-      }
-      totalCount = pageTotal;
-      conflicts.push(...page);
-      if (value.nextCursor === null || conflicts.length === 1_000) {
-        return { relationshipId, totalCount, shownCount: conflicts.length, truncatedCount: totalCount - conflicts.length, conflicts };
-      }
-      const nextCursor = boundedString(value.nextCursor, 'conflict nextCursor', 256);
-      if (page.length === 0 || seenCursors.has(nextCursor)) throw new Error('Invalid generic Mutagen conflict cursor');
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
+      throw error;
     }
+    const value = record(raw, 'conflict list');
+    strictFields(value, ['totalCount', 'shownCount', 'truncatedCount', 'nextCursor', 'conflicts'], 'conflict list');
+    if (!Array.isArray(value.conflicts) || value.conflicts.length > valid.limit) throw new Error('Invalid generic Mutagen conflict list');
+    const conflicts = value.conflicts.map((item): WorkspaceSyncConflictV1 => {
+      const generic = conflict(item);
+      return WorkspaceSyncConflictV1Schema.parse({
+        relationshipId,
+        path: generic.root,
+        alpha: entryFromChanges(generic.alphaChanges),
+        beta: entryFromChanges(generic.betaChanges),
+      });
+    });
+    const totalCount = boundedCount(value.totalCount, 'totalCount');
+    const shownCount = boundedCount(value.shownCount, 'shownCount');
+    const truncatedCount = boundedCount(value.truncatedCount, 'truncatedCount');
+    if (shownCount !== conflicts.length || totalCount < shownCount || truncatedCount > totalCount - shownCount) {
+      throw new Error('Invalid generic Mutagen conflict counts');
+    }
+    for (let index = 1; index < conflicts.length; index += 1) {
+      if (Buffer.compare(
+        Buffer.from(conflicts[index]!.path, 'utf8'),
+        Buffer.from(conflicts[index - 1]!.path, 'utf8'),
+      ) <= 0) throw new Error('Invalid generic Mutagen conflict order');
+    }
+    const nextCursor = value.nextCursor === null
+      ? null
+      : boundedString(value.nextCursor, 'conflict nextCursor', 256);
+    if (nextCursor !== null && conflicts.length === 0) throw new Error('Invalid generic Mutagen conflict cursor');
+    return { status: 'page', relationshipId, totalCount, nextCursor, conflicts };
   }
 }
 

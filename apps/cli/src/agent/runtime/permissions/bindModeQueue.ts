@@ -5,7 +5,7 @@ import {
   normalizePendingRequestedActionV1,
   readHappierStructuredInputV1FromMeta,
   readSessionInputCausalPermissionAuthorityV1,
-  readSessionMessageProvenanceV1,
+  resolveSessionInputPromptProvenanceV1,
   readSessionMessageModelSelectionV1,
   renderSessionInputContextBlockV1,
   renderSessionInputContextPromptV1,
@@ -32,6 +32,7 @@ import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
 } from '@/agent/runtime/permissions/queuedPrompt';
+import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 
 /**
  * Config change carried by a steered message that the backend must own BEFORE the text joins the
@@ -41,6 +42,17 @@ import type {
 export type SteerConfigDelta = Readonly<{
   permissionMode: PermissionMode;
 }>;
+
+// Completion metadata is transcript presentation, while its natural-language text is the entire
+// provider input contract. Any additional structured field keeps the ordinary isolated queue path.
+function isCompletionOnlyStructuredInput(
+  structuredInput: PermissionModeQueuedPrompt['structuredInput'],
+): boolean {
+  if (!structuredInput?.executionRunCompletion) return false;
+  return Object.keys(structuredInput).every(
+    (key) => key === 'v' || key === 'executionRunCompletion',
+  );
+}
 
 /**
  * Outcome of an in-flight config-delta application (lane Q):
@@ -99,10 +111,16 @@ export type InFlightSteerController = Readonly<{
     | Readonly<{ status: 'cancelled' }>
   >;
   /** Register a localId-correlated host effect consumed by canonical provider acceptance. */
-  registerProviderAcceptedEffect?: (
+  registerProviderAcceptedEffect: (
     localId: string,
     onAccepted: (() => void) | null,
   ) => void;
+  /** Collect destination-owned Follow context at the steer provider-effect boundary. */
+  prepareSessionFollowContext?: (input: Readonly<{
+    signal: AbortSignal;
+    /** Final required steer prompt before optional Follow blocks are admitted. */
+    requiredPrompt: string;
+  }>) => Promise<SessionFollowPreparedContext | null>;
   /**
    * Send additional user text to the in-flight turn.
    *
@@ -218,10 +236,9 @@ export function registerPermissionModeMessageQueueBinding(opts: {
     // the sole path that still reaches the compatibility reader below.
     const admittedStructuredInput = readAdmittedHappierStructuredInputV1FromMeta(message.meta);
     const causalPermissionAuthority = readSessionInputCausalPermissionAuthorityV1(message.meta);
-    const provenance = readSessionMessageProvenanceV1(message.meta);
-    const inputContextBlock = provenance
-      ? renderSessionInputContextBlockV1({ provenance })
-      : '';
+    const inputContextBlock = renderSessionInputContextBlockV1({
+      provenance: resolveSessionInputPromptProvenanceV1(message.meta),
+    });
     const queuedPromptIdentityFields = {
       ...(localIds.length === 0 ? {} : { localIds }),
       ...(userMessageSeq === null ? {} : { userMessageSeq, userMessageSeqs: [userMessageSeq] }),
@@ -422,6 +439,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
     // - the runtime is currently processing a turn,
     // - steering is supported,
     // - the message is not a non-steerable control command like /clear or /compact,
+    // - structured input is absent or contains only execution-run completion presentation metadata,
     // - and the message either does NOT alter permission mode, or the backend exposes the
     //   `applyConfigDeltaInFlight` capability (lane Q) so it can own the mode change mid-turn.
     //   Without the capability, ambient mode changes keep the queue path (handled by the main
@@ -433,7 +451,7 @@ export function registerPermissionModeMessageQueueBinding(opts: {
       (steer.canSteerPrompt?.() ?? steer.isTurnInFlight()) &&
       (steer.isProviderInputAdmitted?.() ?? true) &&
       !isNonSteerablePromptPayload(text) &&
-      !structuredInput &&
+      (!structuredInput || isCompletionOnlyStructuredInput(structuredInput)) &&
       !modelOverride &&
       (!didChangePermissionMode || typeof steer.applyConfigDeltaInFlight === 'function')
     );
@@ -593,8 +611,21 @@ export function registerPermissionModeMessageQueueBinding(opts: {
               }
               return;
             }
+            const requiredDispatchText = renderSessionInputContextPromptV1({
+              provenanceBlock: inputContextBlock,
+              transformedUserText: providerText,
+            });
+            const preparedSessionFollowContext = localId
+              ? await opts.inFlightSteer?.prepareSessionFollowContext?.({
+                  signal: messageBindingAbortSignal,
+                  requiredPrompt: requiredDispatchText,
+                }) ?? null
+              : null;
             const dispatchText = renderSessionInputContextPromptV1({
               provenanceBlock: inputContextBlock,
+              ...(preparedSessionFollowContext
+                ? { sessionFollowUpdates: preparedSessionFollowContext.updates }
+                : {}),
               transformedUserText: providerText,
             });
             const confirmProviderPromptAccepted = (): void => {
@@ -610,9 +641,18 @@ export function registerPermissionModeMessageQueueBinding(opts: {
               replaySeedSettlementSequence = replaySeedSettlement;
             };
             if (localId) {
-              steer.registerProviderAcceptedEffect?.(
+              steer.registerProviderAcceptedEffect(
                 localId,
-                settleReplaySeedOnProviderAcceptance ? confirmProviderPromptAccepted : null,
+                settleReplaySeedOnProviderAcceptance || preparedSessionFollowContext
+                  ? () => {
+                      if (settleReplaySeedOnProviderAcceptance) confirmProviderPromptAccepted();
+                      preparedSessionFollowContext?.acknowledgeAccepted({
+                        kind: 'admitted_input',
+                        localInputId: localId,
+                        userMessageSeq,
+                      });
+                    }
+                  : null,
               );
             }
             // Invoking the runtime is the provider-effect boundary. Any failure after this point

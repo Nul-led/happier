@@ -784,9 +784,12 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
         isMountedCallerCurrent: () => Promise<boolean>;
     }>
 > {
-    const binding = input.request.invocation?.kind === 'mountedPluginSurface'
-        ? input.request.invocation.mountedBinding
-        : undefined;
+    const invocation = input.request.invocation;
+    const binding = invocation?.kind === 'mountedPluginSurface'
+        ? invocation.mountedBinding
+        : invocation?.kind === 'clientPluginAction'
+            ? invocation.clientActionBinding
+            : undefined;
     if (!binding) return Object.freeze({ status: 'absent' as const });
     const contributes = input.registry.contributes;
 
@@ -797,8 +800,19 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
         return Object.freeze({ status: 'unavailable' as const });
     }
     const materialization = binding.materializationRef;
+    const immutableGenerationId = contributes.immutableGenerationIdsByPluginId?.[materialization.pluginId];
+    let currentImmutableGenerationId: string | null = null;
+    try {
+        currentImmutableGenerationId = await input.registry.resolveCurrentPluginImmutableGenerationId?.(
+            materialization.pluginId,
+        ) ?? null;
+    } catch {
+        return Object.freeze({ status: 'unavailable' as const });
+    }
     if (
         !machineContext
+        || !immutableGenerationId
+        || currentImmutableGenerationId !== immutableGenerationId
         || machineContext.machineId !== input.request.machineId
         || materialization.machineId !== machineContext.machineId
         || contributes.materializationIdsByPluginId?.[materialization.pluginId]
@@ -808,19 +822,45 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
     }
     const initialMachineContext = machineContext;
 
-    const mountedContribution = [
-        ...(contributes.uiViewsV2 ?? []),
-        ...(contributes.uiSettingsPagesV2 ?? []),
-        // Plugin manifest ingestion reserves local contribution IDs across
-        // families, so this exact pluginId/localId pair is unambiguous for a
-        // mounted app-shell Voice invocation too.
-        ...(contributes.voiceProviders ?? []),
-    ].find((entry) => (
-        entry.pluginId === materialization.pluginId
-        && entry.identity.pluginId === materialization.pluginId
-        && entry.identity.localId === binding.contributionLocalId
-    ));
-    if (!mountedContribution) return Object.freeze({ status: 'unavailable' as const });
+    let contributionIdentity: Readonly<{ pluginId: string; localId: string }> | null = null;
+    if (invocation?.kind === 'clientPluginAction') {
+        const mountedAction = contributes.actionsById?.get(buildQualifiedPluginContributionKey({
+            pluginId: materialization.pluginId,
+            localId: binding.contributionLocalId,
+        }));
+        if (!mountedAction || !mountedAction.pluginId || !('execution' in mountedAction.definition)) {
+            return Object.freeze({ status: 'unavailable' as const });
+        }
+        const execution = mountedAction.definition.execution;
+        if (
+            typeof execution !== 'object'
+            || execution === null
+            || !('target' in execution)
+            || execution.target !== 'client'
+        ) {
+            return Object.freeze({ status: 'unavailable' as const });
+        }
+        contributionIdentity = {
+            pluginId: mountedAction.pluginId,
+            localId: mountedAction.definition.id,
+        };
+    } else {
+        const mountedContribution = [
+            ...(contributes.uiViewsV2 ?? []),
+            ...(contributes.uiSettingsPagesV2 ?? []),
+            // Plugin manifest ingestion reserves local contribution IDs across
+            // families, so this exact pluginId/localId pair is unambiguous for a
+            // mounted app-shell Voice invocation too.
+            ...(contributes.voiceProviders ?? []),
+        ].find((entry) => (
+            entry.pluginId === materialization.pluginId
+            && entry.identity.pluginId === materialization.pluginId
+            && entry.identity.localId === binding.contributionLocalId
+        ));
+        if (!mountedContribution) return Object.freeze({ status: 'unavailable' as const });
+        contributionIdentity = mountedContribution.identity;
+    }
+    if (!contributionIdentity) return Object.freeze({ status: 'unavailable' as const });
 
     return Object.freeze({
         status: 'available' as const,
@@ -828,9 +868,10 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
             kind: 'plugin' as const,
             pluginId: materialization.pluginId,
             contribution: Object.freeze({
-                id: mountedContribution.identity.localId,
-                qualifiedId: buildQualifiedPluginContributionKey(mountedContribution.identity),
+                id: contributionIdentity.localId,
+                qualifiedId: buildQualifiedPluginContributionKey(contributionIdentity),
             }),
+            immutableGenerationId,
             materialization: Object.freeze({ ...materialization }),
             // Diagnostic provenance only. Target policy receives the independent
             // invocationSurface below.
@@ -844,10 +885,14 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
                 return false;
             }
             let liveMaterialization: typeof materialization | null = null;
+            let liveImmutableGenerationId: string | null = null;
             try {
                 liveMaterialization = input
                     .resolveCurrentPluginMaterializationRef?.(materialization.pluginId)
                     ?? null;
+                liveImmutableGenerationId = await input.registry.resolveCurrentPluginImmutableGenerationId?.(
+                    materialization.pluginId,
+                ) ?? null;
             } catch {
                 return false;
             }
@@ -857,6 +902,7 @@ async function deriveMountedPluginInvocationCaller(input: Readonly<{
                 && current.machineId === initialMachineContext.machineId
                 && current.machineId === input.request.machineId
                 && current.machineId === materialization.machineId
+                && liveImmutableGenerationId === immutableGenerationId
                 && arePluginMachineMaterializationRefsEqual(liveMaterialization, materialization);
         },
     });
@@ -888,9 +934,9 @@ function isHostPresentedActionInvocationAvailable(
     action: Readonly<{
         definition: Readonly<{ placementBindings?: readonly string[] }>;
     }> | undefined,
-    invocation: Exclude<
+    invocation: Extract<
         DaemonPluginStructuredMessageActionInvocationV1,
-        Readonly<{ kind: 'mountedPluginSurface' }>
+        Readonly<{ kind: 'hostPresentedComposer' | 'hostPresentedMessage' }>
     >,
 ): boolean {
     const bindings = action?.definition.placementBindings ?? [];

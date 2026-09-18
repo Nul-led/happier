@@ -10,6 +10,7 @@ import {
 } from '@/agent/runtime/createSessionMetadata';
 import { createStartupMetadataOverrides } from '@/agent/runtime/createStartupMetadataOverrides';
 import type { InitializeBackendRunSessionOptions } from '@/agent/runtime/initializeBackendRunSession';
+import type { Metadata } from '@/api/types';
 
 export type DeferredStartupMetadataPlan = Readonly<{
     initialMetadata: SessionMetadataResult['metadata'];
@@ -30,6 +31,7 @@ export function createDeferredStartupMetadataPlan(params: Readonly<{
     sessionModeUpdatedAt?: number;
     modelSelection?: SessionModelSelectionV1;
     launchControlMetadata: SessionLaunchControlMetadata;
+    augmentSessionMetadata?: (metadata: Metadata) => Metadata;
 }>): DeferredStartupMetadataPlan {
     const createMetadata = (machineId: string): SessionMetadataResult => createSessionMetadata({
         flavor: params.flavor,
@@ -47,6 +49,7 @@ export function createDeferredStartupMetadataPlan(params: Readonly<{
         modelSelectionIntent: params.modelSelection
             ? { v: 1, updatedAt: params.modelSelection.updatedAt, selection: params.modelSelection.ref }
             : undefined,
+        augmentMetadata: params.augmentSessionMetadata,
         launchControlMetadata: params.launchControlMetadata,
     });
 

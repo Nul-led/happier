@@ -1,11 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
+import type {
+  AgentExecutionRunEvent,
+  AgentExecutionRunRuntime,
+  AgentExecutionRunRuntimeContextV1,
+  AgentRuntime,
+} from '@happier-dev/plugin-sdk/agents/runtime';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import {
   createTestExecutionRunHostRuntime,
   type TestExecutionRunHostRuntime,
 } from '@/agent/runtime/bridges/executionRun/testkit';
+import {
+  createNativeAgentExecutionRunContextLeaseFactory,
+  createNativeAgentExecutionRunHostRuntime,
+} from './nativeAgentExecutionRun';
+import { observeWorkflowDetachedExecutionRunInput } from '@/daemon/workflows/stepExecution';
+import { createWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
+import { buildRunScopedExecutionPermissionRequestId } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
 
 const runtimeFactoryMock = vi.hoisted(() => ({
   createExecutionRunBridgeRuntime: vi.fn(),
@@ -30,6 +43,380 @@ describe('ExecutionRunHostBridge detached task scope', () => {
   beforeEach(() => {
     runtimeFactoryMock.createExecutionRunBridgeRuntime.mockReset();
     markerWriterMock.writeExecutionRunMarker.mockClear();
+  });
+
+  it('removes one aborted terminal observer without disturbing the run or its sibling observer', async () => {
+    const runtime = createTestExecutionRunHostRuntime({
+      onSendPrompt: async () => {},
+      onWaitForTurnCompletion: async () => {},
+    });
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockReturnValue(runtime);
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: process.cwd(),
+      sendAcp: async () => {},
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+      const abort = new AbortController();
+      const cancelledWait = manager.waitForTerminal(started.runId, { signal: abort.signal });
+      const siblingWait = manager.waitForTerminal(started.runId);
+
+      const cancellation = new Error('caller stopped observing');
+      abort.abort(cancellation);
+      await expect(cancelledWait).rejects.toBe(cancellation);
+      expect(manager.get(started.runId)?.status).toBe('running');
+
+      await expect(manager.stop(started.runId)).resolves.toEqual({ ok: true });
+      await expect(siblingWait).resolves.toBeUndefined();
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('projects the actual retained interaction for a live detached general Agent run', async () => {
+    const interaction = {
+      kind: 'retained_agent_session.v1' as const,
+      capabilities: { open: ['create' as const, 'resume' as const], delivery: ['newTurn' as const], cancel: true },
+    };
+    const runtime = {
+      ...createTestExecutionRunHostRuntime({
+        onSendPrompt: async () => {},
+        onWaitForTurnCompletion: async () => {},
+      }),
+      interaction,
+    };
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockReturnValue(runtime);
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: process.cwd(),
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        instructions: 'Keep this runtime retained.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+
+      expect(manager.getPublic(started.runId)?.interaction).toEqual(interaction);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('rebinds a reconstructed detached run permission target to the exact active continuation turn', async () => {
+    const secondTurnControl: { release: (() => void) | null } = { release: null };
+    let completionCount = 0;
+    const runtimeOptions: Array<Record<string, unknown>> = [];
+    const observedStores: unknown[] = [];
+    const runtime = createTestExecutionRunHostRuntime({
+      onSendPrompt: async () => {
+        const current = runtimeOptions[0]?.getPermissionRequestStore as (() => unknown) | undefined;
+        observedStores.push(current?.());
+      },
+      onWaitForTurnCompletion: async () => {
+        completionCount += 1;
+        if (completionCount === 1) return;
+        await new Promise<void>((resolve) => { secondTurnControl.release = resolve; });
+      },
+    });
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: Record<string, unknown>) => {
+      runtimeOptions.push(options);
+      return runtime;
+    });
+    const releaseA = vi.fn();
+    const releaseB = vi.fn();
+    const completeA = vi.fn(async () => true);
+    const completeB = vi.fn(async () => true);
+    let outstandingB: Record<string, unknown> | null = null;
+    const storeA = {
+      publishRequest: vi.fn(),
+      publishRequestAndWait: vi.fn(async () => undefined),
+      registerResponseTargetHandler: vi.fn(() => releaseA),
+      readOutstandingRequest: vi.fn(() => null),
+      completeRequest: completeA,
+    };
+    const storeB = {
+      publishRequest: vi.fn(),
+      publishRequestAndWait: vi.fn(async () => undefined),
+      registerResponseTargetHandler: vi.fn(() => releaseB),
+      readOutstandingRequest: vi.fn(() => outstandingB),
+      completeRequest: completeB,
+    };
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: process.cwd(),
+      sendAcp: async () => {},
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        instructions: 'Invocation A',
+        localInputId: 'workflow-input-a',
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+        getPermissionRequestStore: () => storeA as never,
+      });
+      await vi.waitFor(() => expect(releaseA).toHaveBeenCalledOnce());
+
+      await expect(manager.send(started.runId, {
+        message: 'Invocation B',
+        localInputId: 'workflow-input-b',
+        permissionRequestStore: storeB as never,
+      })).resolves.toEqual({ ok: true });
+      const internals = manager as unknown as {
+        controllers: Map<string, import('@/agent/executionRuns/controllers/types').ExecutionRunController>;
+      };
+      const controller = internals.controllers.get(started.runId);
+      const run = manager.get(started.runId);
+      if (!run || controller?.kind !== 'backend' || !controller.currentInputTurn) {
+        throw new Error('expected active detached continuation turn');
+      }
+      const permissionRequestId = buildRunScopedExecutionPermissionRequestId({
+        runId: run.runId,
+        controllerOccurrenceId: controller.controllerOccurrenceId,
+        providerRequestId: 'permission-b',
+      });
+      outstandingB = {
+        requestId: permissionRequestId,
+        toolName: 'AskUserQuestion',
+        kind: 'user_action',
+        toolInput: { questions: [{ question: 'Which branch?', options: [{ label: 'dev' }] }] },
+        createdAt: 2,
+        turnId: controller.currentInputTurn.turnId,
+        responseTarget: {
+          kind: 'execution_run_host_bridge',
+          sessionId: null,
+          runId: run.runId,
+          callId: run.callId,
+          sidechainId: run.sidechainId,
+          backendId: run.backendId,
+          runtimeKind: 'native_agent_session',
+          providerRequestId: 'permission-b',
+          controllerOccurrenceId: controller.controllerOccurrenceId,
+        },
+      };
+
+      await expect(manager.completePermissionRequest(started.runId, {
+        requestId: `${permissionRequestId}-mismatch`,
+        approved: true,
+      })).resolves.toMatchObject({ ok: false, errorCode: 'permission_request_not_found' });
+      expect(completeB).not.toHaveBeenCalled();
+
+      await expect(manager.completePermissionRequest(started.runId, {
+        requestId: permissionRequestId,
+        answers: { 'Which branch?': ['dev'] },
+      })).resolves.toEqual({ ok: true });
+      expect(completeA).not.toHaveBeenCalled();
+      expect(completeB).toHaveBeenCalledWith({
+        requestId: permissionRequestId,
+        status: 'approved',
+        decision: 'approved',
+        answers: { 'Which branch?': ['dev'] },
+      });
+      expect(observedStores).toEqual([storeA, storeB]);
+
+      const booleanPermissionRequestId = buildRunScopedExecutionPermissionRequestId({
+        runId: run.runId,
+        controllerOccurrenceId: controller.controllerOccurrenceId,
+        providerRequestId: 'permission-b-boolean',
+      });
+      const structuredQuestionRequest = outstandingB;
+      if (!structuredQuestionRequest) throw new Error('expected outstanding structured question');
+      outstandingB = {
+        ...structuredQuestionRequest,
+        requestId: booleanPermissionRequestId,
+        toolName: 'Write',
+        kind: 'permission',
+        toolInput: { path: '/repo/file.txt' },
+        responseTarget: {
+          ...(structuredQuestionRequest.responseTarget as Record<string, unknown>),
+          providerRequestId: 'permission-b-boolean',
+        },
+      };
+      await expect(manager.completePermissionRequest(started.runId, {
+        requestId: booleanPermissionRequestId,
+        approved: true,
+      })).resolves.toEqual({ ok: true });
+      expect(completeB).toHaveBeenLastCalledWith({
+        requestId: booleanPermissionRequestId,
+        status: 'approved',
+        decision: 'approved',
+      });
+
+      outstandingB = null;
+      await expect(manager.completePermissionRequest(started.runId, {
+        requestId: 'permission-a-stale',
+        approved: true,
+      })).resolves.toMatchObject({ ok: false, errorCode: 'permission_request_not_found' });
+      expect(completeA).not.toHaveBeenCalled();
+
+      secondTurnControl.release?.();
+      await vi.waitFor(() => expect(releaseB).toHaveBeenCalledOnce());
+    } finally {
+      secondTurnControl.release?.();
+      await manager.dispose();
+    }
+  });
+
+  it('surfaces detached execution-run Workflow persistence capacity failure through the exact Run input', async () => {
+    const runtimeListeners = new Set<(event: AgentExecutionRunEvent) => void>();
+    const runtimeEvents: AgentExecutionRunEvent[] = [];
+    let executionRunContext: AgentExecutionRunRuntimeContextV1 | null = null;
+    let sequence = 0;
+    const providerExecution = vi.fn();
+    const publishRequestAndWait = vi.fn(async () => { throw createWorkflowInteractionCapacityError(); });
+    const permissionRequestStore = {
+      publishRequest: vi.fn(),
+      publishRequestAndWait,
+      registerResponseTargetHandler: vi.fn(() => () => undefined),
+      readOutstandingRequest: vi.fn(() => null),
+      completeRequest: vi.fn(async () => false),
+      retireCompletedRequestsForTurn: vi.fn(async () => undefined),
+    };
+    const executionRunContextV1 = { async open(request: { runId: string }, context: AgentExecutionRunRuntimeContextV1) {
+      executionRunContext = context;
+      const emit = (event: AgentExecutionRunEvent) => {
+        runtimeEvents.push(event);
+        for (const listener of runtimeListeners) listener(event);
+      };
+      const execute = async () => {
+        emit({ kind: 'run-start', runId: request.runId, sequence: ++sequence, emittedAtMs: sequence });
+        try {
+          await context.services.interactions.requestApproval({
+            kind: 'approval', title: 'Allow write?',
+            subject: { kind: 'tool', name: 'Write', input: { path: '/repo/a.txt' } },
+          });
+          providerExecution();
+        } catch (error) {
+          emit({
+            kind: 'run-failed', runId: request.runId, sequence: ++sequence, emittedAtMs: sequence,
+            diagnostic: {
+              code: (error as { code?: string }).code ?? 'generic_failure',
+              message: error instanceof Error ? error.message : 'failure',
+              severity: 'error',
+            },
+          });
+        }
+      };
+      void execute();
+      return {
+        async send(_input) {
+          return { status: 'admitted' as const };
+        },
+        async stop() { return { status: 'requested' as const }; },
+        watch(listener) {
+          runtimeListeners.add(listener);
+          for (const event of runtimeEvents) listener(event);
+          return { dispose() { runtimeListeners.delete(listener); } };
+        },
+        async dispose() {},
+      } satisfies AgentExecutionRunRuntime;
+    } };
+    const agentRuntime: AgentRuntime = {
+      sessions: {
+        open: vi.fn(),
+        executionRunContextV1,
+      },
+    } as unknown as AgentRuntime;
+    const lease = {
+      pluginId: 'acme.agent', pluginVersion: '1.0.0', agentId: 'acme.agent/default',
+      localAgentId: 'default', isCurrent: () => true,
+    };
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: Record<string, unknown>) => {
+      const createExecutionRunContext = createNativeAgentExecutionRunContextLeaseFactory({
+        lease,
+        runId: String(options.runId),
+        controllerOccurrenceId: String(options.controllerOccurrenceId),
+        callId: String(options.callId),
+        sidechainId: String(options.sidechainId),
+        runtimeRegistry: null,
+        directory: String(options.cwd),
+        machineId: 'machine-1',
+        accountSettings: null,
+        permissionMode: String(options.permissionMode),
+        start: options.start as never,
+        causalPermissionAuthority: options.causalPermissionAuthority as never,
+        getPermissionRequestStore: options.getPermissionRequestStore as never,
+      });
+      return createNativeAgentExecutionRunHostRuntime({
+        runtime: agentRuntime,
+        executionRunContextV1,
+        lease,
+        options: options as never,
+        supportsResume: false,
+        createExecutionRunContext,
+        respondToPermissionRequest: createExecutionRunContext.respondToPermissionRequest,
+        abortPendingPermissionRequests: createExecutionRunContext.abortPendingPermissionRequests,
+      });
+    });
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: '/repo',
+      sendAcp: async () => {},
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        instructions: 'Write the file.',
+        localInputId: 'workflow-input-capacity',
+        permissionMode: 'default',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'default',
+        },
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+        getPermissionRequestStore: () => permissionRequestStore as never,
+      });
+      await vi.waitFor(() => expect(publishRequestAndWait).toHaveBeenCalledOnce());
+      await manager.waitForTerminal(started.runId);
+
+      expect(executionRunContext).toMatchObject({
+        scope: { kind: 'execution_run', executionRunId: started.runId },
+        executionRun: { id: started.runId },
+      });
+      expect(executionRunContext).not.toHaveProperty('session');
+      expect(publishRequestAndWait).toHaveBeenCalledOnce();
+      expect(providerExecution).not.toHaveBeenCalled();
+      expect(manager.getPublic(started.runId)).toMatchObject({
+        status: 'failed',
+        error: { code: 'workflow_interaction_capacity_exceeded' },
+      });
+      await expect(observeWorkflowDetachedExecutionRunInput({
+        runId: started.runId,
+        localInputId: 'workflow-input-capacity',
+        get: async ({ runId }) => ({ run: manager.getPublic(runId) }),
+      })).resolves.toEqual({ kind: 'failed', code: 'workflow_interaction_capacity_exceeded' });
+    } finally {
+      await manager.dispose();
+    }
   });
 
   it('executes a detached structured generic task at the incumbent run and marker owner without Session facts', async () => {
@@ -113,6 +500,63 @@ describe('ExecutionRunHostBridge detached task scope', () => {
         runId: started.runId,
         happySessionId: null,
       }));
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('forwards the daemon-owned Team credential opener into a detached explicit Run without inventing Session scope', async () => {
+    const prepareRunTeamCredentialProviderBinding = vi.fn(async () => null);
+    const createdRuntimeOptions: Array<Record<string, unknown>> = [];
+    const runtime = createTestExecutionRunHostRuntime({
+      onSendPrompt: async () => {},
+      onWaitForTurnCompletion: async () => {},
+    });
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: Record<string, unknown>) => {
+      createdRuntimeOptions.push(options);
+      return runtime as ExecutionRunHostRuntime;
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-detached',
+      teamId: 'team-detached',
+      expectedResourceRevision: 7,
+      agentTargetKey: `backend:${TEST_BACKEND_ID}:built_in` as never,
+      modelId: 'model-detached' as never,
+      deliveryMode: 'brokered' as const,
+    };
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: process.cwd(),
+      sendAcp: async () => {},
+      prepareRunTeamCredentialProviderBinding,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        teamCredentialModel: selection,
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      });
+
+      expect(createdRuntimeOptions).toHaveLength(1);
+      expect(createdRuntimeOptions[0]).not.toHaveProperty('happierSessionId');
+      const prepare = createdRuntimeOptions[0]?.prepareRunTeamCredentialProviderBinding as
+        | ((input: Readonly<{ runId: string; agentId: string; selection?: typeof selection }>) => Promise<unknown>)
+        | undefined;
+      expect(prepare).toBe(prepareRunTeamCredentialProviderBinding);
+      await expect(prepare?.({ runId: started.runId, agentId: 'task.backend', selection }))
+        .resolves.toBeNull();
+      expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledWith({
+        runId: started.runId,
+        agentId: 'task.backend',
+        selection,
+      });
     } finally {
       await manager.dispose();
     }

@@ -18,6 +18,7 @@ import {
 } from '../engineRegistryTypes';
 import type {
     BackendRuntimeOwnerResolution,
+    NativeAgentSessionRunToolBinding,
 } from '../engineRegistryTypes';
 import type { RuntimeRegistryBackendEngineEntry } from './runtimeOwnerResolution';
 import {
@@ -32,12 +33,13 @@ import { createNativeAgentSessionWorkStateService } from './nativeAgentSessionWo
 import { createNativeAgentCurrentSessionUiServices } from './nativeAgentSessionInteractions';
 import {
     createNativeAgentExecutionRunHostRuntime,
-    createNativeAgentRunScopedSessionContextLeaseFactory,
+    createNativeAgentExecutionRunContextLeaseFactory,
     createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
     type NativeAgentRuntimeLeaseIdentity,
     type NativeAgentSessionContextLeaseFactory,
 } from '@/agent/runtime/bridges/executionRun/nativeAgentExecutionRun';
+import { selectExecutionRunSessionAdapter } from '@/agent/runtime/bridges/executionRun/retainedInteractionEligibility';
 import { resolveAgentSessionRealtimeVoiceAuthority } from '@/agent/runtime/session/realtime/resolveAgentSessionRealtimeVoiceAuthority';
 import type {
     PluginRuntimeAuthoritySnapshotV1,
@@ -58,6 +60,9 @@ import type {
 import { transformAgentRequestThroughPluginHooks } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
 import { createPluginInvocationPresentation } from '@/plugins/runtime/invocation/services/interactions';
 import { createPublicAcpRuntimeProtocols } from '@/agent/acp/runtime/publicSession/createPublicAcpRuntimeProtocols';
+import { createRunScopedExecutionPermissionHandler } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
+import { resolveExecutionRunPermissionInteractionMode } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
+import { createExecutionRunCodedError } from '@/agent/runtime/bridges/executionRun/errors';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
 import type { PublicAcpHostLaunchResolver } from '@/agent/acp/runtime/publicSession/createPublicAcpSession';
 
@@ -92,6 +97,11 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
     prepareNativeManagedProviderBinding?: NonNullable<
         import('./types').RunnerAgentSessionRuntimeSource[
             'prepareManagedProviderBinding'
+        ]
+    >;
+    prepareNativeTeamCredentialProviderBinding?: NonNullable<
+        import('./types').RunnerAgentSessionRuntimeSource[
+            'prepareTeamCredentialProviderBinding'
         ]
     >;
     createNativeAgentInvocationServices?: CreateAgentInvocationServices;
@@ -197,6 +207,12 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 }
                                 : { runtime: nativeAgentRuntime! }),
                             identity: nativeIdentity,
+                            ...(runtimeRegistry?.resolveServerFeaturesSnapshot
+                                ? {
+                                    resolveServerFeaturesSnapshot:
+                                        runtimeRegistry.resolveServerFeaturesSnapshot,
+                                }
+                                : {}),
                             ...(resolveCurrentPluginMaterializationRef
                                 ? {
                                     resolveCallerMaterialization: () => (
@@ -256,6 +272,12 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         params.prepareNativeManagedProviderBinding,
                                 }
                                 : {}),
+                            ...(params.prepareNativeTeamCredentialProviderBinding
+                                ? {
+                                    prepareTeamCredentialProviderBinding:
+                                        params.prepareNativeTeamCredentialProviderBinding,
+                                }
+                                : {}),
                             createSessionHostServiceOwners: ({
                                 hostRuntimeParams,
                                 sessionId,
@@ -296,6 +318,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         correlationId,
                                         cwd,
                                         environment,
+                                        agentCliLaunch,
                                         providerBindingActive,
                                         signal,
                                         session,
@@ -315,6 +338,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 correlationId,
                                                 cwd,
                                                 environment,
+                                                ...(agentCliLaunch ? { agentCliLaunch } : {}),
                                                 providerBindingActive,
                                                 signal,
                                                 session,
@@ -326,7 +350,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 : runtimeRegistry?.createAgentInvocationServices
                                     && engineEntry
                                 ? {
-                                createInvocationServices: ({ correlationId, cwd, environment, providerBindingActive, signal, session, readActiveTurnAdmissionWitness }) => (
+                                createInvocationServices: ({ correlationId, cwd, environment, agentCliLaunch, providerBindingActive, signal, session, readActiveTurnAdmissionWitness }) => (
                                     runtimeRegistry.createAgentInvocationServices!({
                                         pluginId: engineEntry.pluginId,
                                         pluginVersion: engineEntry.pluginVersion,
@@ -335,6 +359,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         correlationId,
                                         cwd,
                                         environment,
+                                        ...(agentCliLaunch ? { agentCliLaunch } : {}),
                                         providerBindingActive,
                                         signal,
                                         session,
@@ -422,7 +447,27 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             params.agent.richDefinition?.definition,
                         )?.open;
                         const runId = options.runId?.trim();
-                        const services = runId && runtimeRegistry?.createAgentInvocationServices && engineEntry
+                        const host = options.scope === 'session_owned'
+                            ? options.sessionInteractionHost
+                            : undefined;
+                        if (options.scope === 'session_owned' && !host) {
+                            throw Object.assign(
+                                new Error('Execution-run parent Session host custody is unavailable'),
+                                { code: 'execution_run_interaction_unavailable' },
+                            );
+                        }
+                        const hasDetachedInteractionIdentity = options.scope === 'detached'
+                            && Boolean(
+                                runId
+                                && options.controllerOccurrenceId?.trim()
+                                && options.callId?.trim()
+                                && options.sidechainId?.trim(),
+                            );
+                        const services = !host
+                            && !hasDetachedInteractionIdentity
+                            && runId
+                            && runtimeRegistry?.createAgentInvocationServices
+                            && engineEntry
                             ? runtimeRegistry.createAgentInvocationServices({
                                 pluginId: engineEntry.pluginId,
                                 pluginVersion: engineEntry.pluginVersion,
@@ -435,18 +480,44 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 isGenerationCurrent: engineEntry.isCurrent,
                             })
                             : undefined;
-                        const isVoiceInteraction = options.start?.intent === 'voice_agent';
                         const effectiveSessionCapabilities = params.nativeAgentSessionCapabilities
                             ?? readAgentSessionCapabilities(params.agent.richDefinition?.definition);
                         const sessionOpenCapabilities = effectiveSessionCapabilities?.open;
-                        const host = options.sessionInteractionHost;
+                        const detachedSessionPrimary = options.scope === 'detached'
+                            && nativeAgentRuntime.sessions !== undefined;
+                        const executionRunContextV1 = detachedSessionPrimary
+                            ? nativeAgentRuntime.sessions?.executionRunContextV1
+                            : undefined;
+                        if (
+                            detachedSessionPrimary
+                            && (
+                                effectiveSessionCapabilities?.executionRunContext?.versions[0] !== 1
+                                || !executionRunContextV1
+                            )
+                        ) {
+                            throw createExecutionRunCodedError(
+                                'execution_run_protocol_unsupported',
+                                `Agent runtime '${nativeIdentity.agentId}' does not support detached execution-run context v1`,
+                            );
+                        }
+                        const adapterSelection = detachedSessionPrimary
+                            ? 'native_execution_run' as const
+                            : selectExecutionRunSessionAdapter({
+                                scope: options.scope,
+                                hasParentSessionCustody: host !== undefined && host !== null,
+                                agentExposesSessionRuntime: Boolean(nativeAgentRuntime.sessions),
+                                sessionCapabilities: effectiveSessionCapabilities ?? null,
+                                intent: options.start?.intent ?? null,
+                                runClass: options.start?.runClass ?? null,
+                                retentionPolicy: options.start?.retentionPolicy ?? null,
+                            });
                         const transformNativeAgentRequest = async (
                             payload: Readonly<Record<string, unknown>>,
                             transformOptions: Readonly<{ signal: AbortSignal }>,
                         ): Promise<Readonly<Record<string, unknown>>> => (
-                            params.daemonTurnContributionsBridge
+                            params.daemonTurnContributionsBridge && host
                                 ? await params.daemonTurnContributionsBridge.transformAgentRequest({
-                                    sessionId: host?.session.sessionId ?? options.runId ?? '',
+                                    sessionId: host.session.sessionId,
                                     payload,
                                     signal: transformOptions.signal,
                                 })
@@ -459,10 +530,44 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                         // custody context. Detached finite Runs select the run-scoped context below;
                         // the interactive Session loop retains its richer terminal/media/resume
                         // owners while reusing the same facet builders and exhaustive composer.
+                        const runScope = options.sessionOwnedRunScope ?? null;
+                        const runPermissionScope = host && options.runId
+                            ? createRunScopedExecutionPermissionHandler({
+                                runId: options.runId,
+                                controllerOccurrenceId: options.controllerOccurrenceId ?? '',
+                                handler: host.permissionHandler,
+                                readInteractionMode: () => {
+                                    const { intent, runClass, ioMode, retentionPolicy } = options.start ?? {};
+                                    if (!intent || !runClass || !ioMode || !retentionPolicy) {
+                                        return 'interaction_unavailable';
+                                    }
+                                    return resolveExecutionRunPermissionInteractionMode({
+                                        intent,
+                                        runClass,
+                                        ioMode,
+                                        retentionPolicy,
+                                        permissionMode: options.permissionMode,
+                                        parentSessionId: host.session.sessionId,
+                                        interactionTargetAvailable: true,
+                                        backendCapabilities: {
+                                            canRespondToPermission: true,
+                                            canSurfaceParentSessionPrompt: true,
+                                            runtimeKind: 'native_agent_session',
+                                            backendId: nativeIdentity.agentId,
+                                        },
+                                    });
+                                },
+                            })
+                            : null;
+                        const executionPermissionHandler = runPermissionScope?.handler ?? host?.permissionHandler;
                         const createSessionContext: NativeAgentSessionContextLeaseFactory | null = host
-                            ? async ({ services: invocationServices, signal }) => {
+                            ? async ({ services: fallbackServices, signal, readActiveTurnAdmissionWitness }) => {
                                     const sessionId = host.session.sessionId;
                                     const contributionId = runtimeLease.localAgentId;
+                                    // A Session-owned Run writes into its own sidechain. The bridge's
+                                    // target re-reads controller custody per write and refuses there,
+                                    // so no path silently reaches the parent's main transcript.
+                                    const runTranscriptSession = runScope?.projectRunTranscriptSession() ?? null;
                                     const sessionOwners = createNativeAgentSessionHostServiceOwners({
                                         runtimeRegistry,
                                         identity: nativeIdentity,
@@ -474,7 +579,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             ...(options.accountSettings !== undefined
                                                 ? { accountSettings: options.accountSettings }
                                                 : {}),
-                                            permissionHandler: host.permissionHandler,
+                                            permissionHandler: executionPermissionHandler ?? host.permissionHandler,
                                         },
                                         sessionId,
                                         directory: options.cwd,
@@ -487,7 +592,31 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             : {}),
                                     });
                                     let publications: ReturnType<typeof createNativeAgentSessionPublications> | null = null;
+                                    let runToolBinding: NativeAgentSessionRunToolBinding | null = null;
                                     try {
+                                        // The parent Session's materialization owner resolves the profile;
+                                        // only its Happier bridge entry is rebound to this Run occurrence.
+                                        runToolBinding = runScope && host.composeRunToolBinding
+                                            ? await host.composeRunToolBinding({
+                                                runId: runScope.runId,
+                                                cwd: options.cwd,
+                                                signal,
+                                                isCurrent: () => (
+                                                    runScope.readCurrentRunOccurrence(runScope.runId) !== null
+                                                ),
+                                                getPermissionMode: () => options.permissionMode,
+                                                readActiveTurnAdmissionWitness: () => (
+                                                    readActiveTurnAdmissionWitness?.() ?? null
+                                                ),
+                                                readCurrentRunOccurrence: runScope.readCurrentRunOccurrence,
+                                            })
+                                            : null;
+                                        if (runToolBinding) {
+                                            runScope?.publishSupportedSessionReadActions(
+                                                runToolBinding.supportedSessionReadActions,
+                                                signal,
+                                            );
+                                        }
                                         publications = createNativeAgentSessionPublications({
                                             agentId: nativeIdentity.agentId,
                                             session: host.session,
@@ -499,7 +628,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 || effectiveSessionCapabilities?.delivery.includes('steer') === true,
                                         });
                                         const currentSession = createNativeAgentCurrentSessionUiServices({
-                                            permissionHandler: host.permissionHandler,
+                                            permissionHandler: executionPermissionHandler,
                                             pluginId: nativeIdentity.pluginId,
                                             contributionId,
                                             runtimeId: `agent-session-projection:${options.runId ?? sessionId}`,
@@ -507,7 +636,24 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             generationId: nativeIdentity.generation,
                                             isCurrent: nativeIdentity.isCurrent,
                                             signal,
+                                            readPermissionMode: () => options.permissionMode,
+                                            readActiveTurnAdmissionWitness,
                                         });
+                                        const invocationServices = runId && runtimeRegistry?.createAgentInvocationServices && engineEntry
+                                            ? await runtimeRegistry.createAgentInvocationServices({
+                                                pluginId: engineEntry.pluginId,
+                                                pluginVersion: engineEntry.pluginVersion,
+                                                agentId: engineEntry.agentId,
+                                                generation: engineEntry.generation,
+                                                correlationId: runId,
+                                                cwd: options.cwd,
+                                                ...(options.isolation?.env ? { environment: options.isolation.env } : {}),
+                                                signal,
+                                                session: { id: sessionId, current: currentSession },
+                                                readActiveTurnAdmissionWitness,
+                                                isGenerationCurrent: engineEntry.isCurrent,
+                                            })
+                                            : fallbackServices;
                                         const nativeHome = await resolveNativeAgentSessionNativeHomeService({
                                             agent: params.agent,
                                             sourceEnvironment: options.isolation?.env ?? {},
@@ -519,7 +665,9 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             directory: options.cwd,
                                             signal,
                                             isCurrent: nativeIdentity.isCurrent,
-                                            session: host.session,
+                                            // A Session-owned Run publishes provider transcript facts into
+                                            // its own sidechain through the bridge's projection owner.
+                                            session: runTranscriptSession ?? host.session,
                                             publications: publications.services,
                                             readToolExecutionCapability: () => (
                                                 nativeAgentRuntime.toolExecution?.capability ?? null
@@ -550,6 +698,11 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             ...(params.resolveNativeAgentAcpHostLaunch
                                                 ? { resolveHostLaunch: params.resolveNativeAgentAcpHostLaunch }
                                                 : {}),
+                                            // The Run's own tool profile reaches the generic ACP composer
+                                            // exactly as the main-Session path hands it `hostRuntimeParams.mcpServers`.
+                                            ...(runToolBinding?.mcpServers
+                                                ? { mcpServers: runToolBinding.mcpServers }
+                                                : {}),
                                         });
                                         const context = composeNativeAgentSessionRuntimeContext({
                                             identity: nativeIdentity,
@@ -573,29 +726,128 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                 isCurrent: nativeIdentity.isCurrent,
                                             }),
                                         });
+                                        const disposeRunToolBinding = runToolBinding?.dispose ?? null;
                                         return Object.freeze({
                                             context,
+                                            ...(host.session.publishUsageObservation ? {
+                                                usagePublisher: Object.freeze({
+                                                    provider: nativeIdentity.agentId,
+                                                    publish: (input: Parameters<NonNullable<
+                                                        typeof host.session.publishUsageObservation
+                                                    >>[0]) => host.session.publishUsageObservation!(input),
+                                                }),
+                                            } : {}),
+                                            ...(runToolBinding?.mcpServers
+                                                ? { mcpServers: runToolBinding.mcpServers }
+                                                : {}),
                                             async dispose() {
+                                                // Only this Run's binding; the parent Session bridge and
+                                                // sibling Run bindings keep their own leases.
+                                                disposeRunToolBinding?.();
                                                 publications?.dispose();
-                                                await sessionOwners.dispose();
+                                                try {
+                                                    await sessionOwners.dispose();
+                                                } finally {
+                                                    await runPermissionScope?.dispose('Execution run disposed');
+                                                }
                                             },
                                         });
                                     } catch (error) {
+                                        runToolBinding?.dispose();
                                         publications?.dispose();
-                                        await sessionOwners.dispose();
+                                        try {
+                                            await sessionOwners.dispose();
+                                        } finally {
+                                            await runPermissionScope?.dispose('Execution run context failed');
+                                        }
                                         throw error;
                                     }
                                 }
                             : null;
-                        if (isVoiceInteraction) {
-                            if (!createSessionContext) {
+                        if (createSessionContext && runPermissionScope) {
+                            Object.assign(createSessionContext, {
+                                async abortPendingPermissionRequests(reason: string) {
+                                    await runPermissionScope.dispose(reason);
+                                },
+                            });
+                        }
+                        const detachedContextLeaseFactory = hasDetachedInteractionIdentity
+                            ? createNativeAgentExecutionRunContextLeaseFactory({
+                                lease: runtimeLease,
+                                runId: options.runId!,
+                                controllerOccurrenceId: options.controllerOccurrenceId!,
+                                callId: options.callId!,
+                                sidechainId: options.sidechainId!,
+                                runtimeRegistry,
+                                ...(params.nativeAgentRuntimeIdentity?.runtimeAuthority
+                                    ? { runtimeAuthority: params.nativeAgentRuntimeIdentity.runtimeAuthority }
+                                    : {}),
+                                directory: options.cwd,
+                                machineId: options.machineId ?? '',
+                                accountSettings: options.accountSettings ?? null,
+                                permissionMode: options.permissionMode,
+                                start: options.start ?? {},
+                                ...(options.getPermissionRequestStore
+                                    ? { getPermissionRequestStore: options.getPermissionRequestStore }
+                                    : {}),
+                                ...(options.causalPermissionAuthority
+                                    ? { causalPermissionAuthority: options.causalPermissionAuthority }
+                                    : {}),
+                                ...(options.start?.mcpSelection
+                                    ? { mcpSelection: options.start.mcpSelection }
+                                    : {}),
+                                ...(params.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : {}),
+                                transformAgentRequest: transformNativeAgentRequest,
+                                ...(params.resolveNativeAgentAcpHostLaunch
+                                    ? { resolveAcpHostLaunch: params.resolveNativeAgentAcpHostLaunch }
+                                    : {}),
+                                ...(runtimeRegistry?.createAgentInvocationServices && engineEntry
+                                    ? {
+                                        createInvocationServices: async ({
+                                            currentSession,
+                                            signal,
+                                            readActiveTurnAdmissionWitness,
+                                        }) => await runtimeRegistry.createAgentInvocationServices({
+                                            pluginId: engineEntry.pluginId,
+                                            pluginVersion: engineEntry.pluginVersion,
+                                            agentId: engineEntry.agentId,
+                                            generation: engineEntry.generation,
+                                            correlationId: options.runId!,
+                                            cwd: options.cwd,
+                                            ...(options.isolation?.env
+                                                ? { environment: options.isolation.env }
+                                                : {}),
+                                            signal,
+                                            currentSession,
+                                            ...(readActiveTurnAdmissionWitness
+                                                ? { readActiveTurnAdmissionWitness }
+                                                : {}),
+                                            isGenerationCurrent: engineEntry.isCurrent,
+                                        }),
+                                    }
+                                    : {}),
+                            })
+                            : null;
+                        const effectiveCreateSessionContext = createSessionContext;
+                        if (options.start?.intent === 'voice_agent' && (!host || adapterSelection !== 'retained_agent_session')) {
+                            // Voice's intent policy already fixes long-lived/resumable/streaming, so a
+                            // missing custody or capability here is a loud composition defect rather
+                            // than a run that should quietly degrade to a finite adapter.
+                            throw new Error(
+                                    !effectiveCreateSessionContext
+                                    ? 'Voice Agent Session interaction requires parent Session host custody'
+                                    : 'Voice Agent Session interaction requires declared Session capabilities',
+                            );
+                        }
+                        if (adapterSelection === 'retained_agent_session') {
+                            if (!effectiveCreateSessionContext) {
                                 throw new Error(
-                                    'Voice Agent Session interaction requires parent Session host custody',
+                                    'Retained Agent Session interaction requires parent Session host custody',
                                 );
                             }
                             if (!effectiveSessionCapabilities) {
                                 throw new Error(
-                                    'Voice Agent Session interaction requires declared Session capabilities',
+                                    'Retained Agent Session interaction requires declared Session capabilities',
                                 );
                             }
                             return createNativeAgentSessionInteractionHostRuntime({
@@ -605,19 +857,10 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 sessionCapabilities: effectiveSessionCapabilities,
                                 ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
-                                createSessionContext,
+                                createSessionContext: effectiveCreateSessionContext,
                             });
                         }
-                        if (nativeAgentRuntime.sessions) {
-                            const runSessionContext = createSessionContext
-                                ?? createNativeAgentRunScopedSessionContextLeaseFactory({
-                                    lease: runtimeLease,
-                                    runId: options.runId ?? '',
-                                    transformAgentRequest: transformNativeAgentRequest,
-                                    ...(params.resolveNativeAgentAcpHostLaunch
-                                        ? { resolveAcpHostLaunch: params.resolveNativeAgentAcpHostLaunch }
-                                        : {}),
-                                });
+                        if (nativeAgentRuntime.sessions && options.scope === 'session_owned') {
                             return createNativeAgentSessionExecutionRunHostRuntime({
                                 runtime: nativeAgentRuntime,
                                 lease: runtimeLease,
@@ -625,16 +868,29 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 supportsResume: sessionOpenCapabilities?.includes('resume') === true,
                                 ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
-                                createSessionContext: runSessionContext,
+                                createSessionContext: effectiveCreateSessionContext!,
                             });
                         }
                         return createNativeAgentExecutionRunHostRuntime({
                             runtime: nativeAgentRuntime,
+                            ...(executionRunContextV1 ? { executionRunContextV1 } : {}),
                             lease: runtimeLease,
                             options,
                             supportsResume: openCapabilities?.includes('resume') === true,
                             ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                             ...(services ? { services } : {}),
+                            ...(detachedContextLeaseFactory
+                                ? { createExecutionRunContext: detachedContextLeaseFactory }
+                                : {}),
+                            ...(detachedContextLeaseFactory?.respondToPermissionRequest
+                                ? { respondToPermissionRequest: detachedContextLeaseFactory.respondToPermissionRequest }
+                                : {}),
+                            ...(detachedContextLeaseFactory?.abortPendingPermissionRequests
+                                ? { abortPendingPermissionRequests: detachedContextLeaseFactory.abortPendingPermissionRequests }
+                                : {}),
+                            ...(detachedContextLeaseFactory?.resolveStructuredInputForDispatch
+                                ? { resolveStructuredInputForDispatch: detachedContextLeaseFactory.resolveStructuredInputForDispatch }
+                                : {}),
                         });
                     },
                 });

@@ -1,6 +1,3 @@
-import { randomBytes } from 'node:crypto';
-
-import { sealTerminalProvisioningV3TokenOnlyPayload } from '@happier-dev/protocol';
 import {
   applyBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceCancellationReason,
@@ -11,7 +8,6 @@ import {
   formatBackgroundServiceReplacementPrompt,
   resolveBackgroundServiceSetupServicesRequiringReplacement,
   readBackgroundServiceSetupGuidance,
-  createSetupMachineRecipeExecutorFromHappierJsonExecutor,
   runSetupMachineRecipe,
   SystemTaskExecutionError,
   type BackgroundServiceSetupGuidance,
@@ -20,8 +16,10 @@ import {
 } from '@happier-dev/cli-common/systemTasks';
 import { readMachineDaemonOwnershipMetadataFromSocketAuth, type MachineDaemonOwnershipMetadata } from '@happier-dev/protocol';
 import {
+  ensureHappierCliPathExposure,
   syncInstalledFirstPartyShims,
   writeDefaultManagedReleaseChannel,
+  type HappierCliPathExposureResult,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   resolveCliInvokerNameForPublicRing,
@@ -30,11 +28,17 @@ import {
 
 import { normalizeBootstrapChannel } from '../taskRuntime.js';
 
-type SetupThisComputerRelayProfile = Readonly<{
-  serverUrl: string;
-  webappUrl: string;
-  localServerUrl: string | null;
-}>;
+import {
+  createLocalSetupRecipeExecutor,
+  readLocalActiveRelayProfile,
+  readLocalSetupCliAcquisition,
+  type LocalSetupCliAcquisition,
+  type LocalSetupRelayProfile,
+} from './localSetupExecutor.js';
+import { resolveManagedCliBinDir } from './cliPathExposure.js';
+import { requestTokenOnlyPairingApproval } from './tokenOnlyPairingApproval.js';
+
+type SetupThisComputerRelayProfile = LocalSetupRelayProfile;
 
 type CommandDiagnostics = Readonly<{
   command: string;
@@ -237,87 +241,6 @@ function createInstrumentedRecipeExecutor(
   };
 }
 
-type TokenOnlyPairingContext = Readonly<{
-  terminalEphemeralPublicKey: Uint8Array;
-  pairingSecret: Uint8Array;
-  createdAtMs: number;
-  expiresAtMs: number;
-}>;
-
-/**
- * Reads the v3 token-only pairing context that the terminal's `auth request` retained locally.
- * Only the public key and the short-lived pairing context are consumed; the claim secret and
- * state file path are never read here and never leave this task.
- */
-function readTokenOnlyPairingContext(
-  requestPayload: Readonly<Record<string, unknown>>,
-): TokenOnlyPairingContext | null {
-  if (requestPayload.supportsTokenOnly !== true) {
-    return null;
-  }
-  const publicKeyRaw = typeof requestPayload.publicKey === 'string' ? requestPayload.publicKey.trim() : '';
-  const pairing = requestPayload.pairing;
-  if (!publicKeyRaw || !pairing || typeof pairing !== 'object' || Array.isArray(pairing)) {
-    return null;
-  }
-  const pairingRecord = pairing as Record<string, unknown>;
-  const secretRaw = typeof pairingRecord.secretB64Url === 'string' ? pairingRecord.secretB64Url.trim() : '';
-  const createdAtMs = pairingRecord.createdAtMs;
-  const expiresAtMs = pairingRecord.expiresAtMs;
-  if (!secretRaw || typeof createdAtMs !== 'number' || typeof expiresAtMs !== 'number') {
-    return null;
-  }
-  if (
-    !Number.isSafeInteger(createdAtMs)
-    || !Number.isSafeInteger(expiresAtMs)
-    || createdAtMs < 0
-    || expiresAtMs <= createdAtMs
-  ) {
-    return null;
-  }
-  const terminalEphemeralPublicKey = new Uint8Array(Buffer.from(publicKeyRaw, 'base64'));
-  const pairingSecret = new Uint8Array(Buffer.from(secretRaw, 'base64url'));
-  if (terminalEphemeralPublicKey.length !== 32 || pairingSecret.length !== 32) {
-    return null;
-  }
-  return { terminalEphemeralPublicKey, pairingSecret, createdAtMs, expiresAtMs };
-}
-
-/**
- * Seals the existing protocol-owned token-only provisioning response for the requesting terminal
- * and returns the blocking approval prompt data. The response carries no credential: the terminal
- * claims its own bearer from the Home's claim endpoint. Prompt data exposes only the opaque
- * response and the explicit target identity — never a secret, claim material, state file, or
- * bearer.
- */
-function buildTokenOnlyApprovalPromptData(
-  publicKey: string,
-  requestPayload: Readonly<Record<string, unknown>>,
-  relayProfile: SetupThisComputerRelayProfile,
-): Record<string, string> | null {
-  const context = readTokenOnlyPairingContext({ ...requestPayload, publicKey });
-  if (!context) {
-    return null;
-  }
-  let sealed: Uint8Array;
-  try {
-    sealed = sealTerminalProvisioningV3TokenOnlyPayload({
-      ...context,
-      randomBytes: (length) => new Uint8Array(randomBytes(length)),
-    });
-  } catch {
-    return null;
-  }
-  return {
-    kind: 'authRequest',
-    publicKey,
-    response: Buffer.from(sealed).toString('base64'),
-    responseKind: 'tokenOnly',
-    relayUrl: relayProfile.serverUrl,
-    webappUrl: relayProfile.webappUrl,
-  };
-}
-
 export type SetupThisComputerInteractiveParams = Readonly<{
   surface?: string;
   target?: string;
@@ -331,7 +254,12 @@ export type SetupThisComputerInteractiveParams = Readonly<{
 }>;
 
 export type SetupThisComputerInteractiveDeps = Readonly<{
-  ensureLocalHappierTools: (params: Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<void>;
+  /**
+   * Acquires the managed `happier` CLI and reports which command was resolved and how. Only a
+   * `managed` acquisition is approved for pairing without asking (R13); any other provenance is
+   * confirmed by a human who is shown the resolved command (R8).
+   */
+  ensureLocalHappierTools: (params: Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<LocalSetupCliAcquisition>;
   readActiveRelayProfile: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<SetupThisComputerRelayProfile>;
   createRecipeExecutor: (params: Readonly<{
     releaseRing?: PublicReleaseRingId;
@@ -348,10 +276,30 @@ export type SetupThisComputerInteractiveDeps = Readonly<{
   > | null>;
   switchDefaultReleaseChannel: (releaseChannel: PublicReleaseRingId) => Promise<void>;
   uninstallExistingDaemonServices: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<void>;
+  /** Makes `happier` resolve in a new terminal. Ancillary: never gates readiness (see `run`). */
+  exposeHappierCliOnPath: () => Promise<HappierCliPathExposureResult>;
 }>;
 
+/**
+ * The deps whose real implementation mutates this machine: it installs the managed CLI, spawns the
+ * CLI operations that rewrite the relay profile, credentials and OS service, rewrites the default
+ * release channel, uninstalls existing services, or edits the user's shell startup files. They have
+ * **no default**, so a construction that forgets one is a compile error rather than a silent run
+ * against the developer's real machine. Read-only deps keep their defaults.
+ */
+type MutatingSetupThisComputerDepName =
+  | 'ensureLocalHappierTools'
+  | 'createRecipeExecutor'
+  | 'switchDefaultReleaseChannel'
+  | 'uninstallExistingDaemonServices'
+  | 'exposeHappierCliOnPath';
+
+export type SetupThisComputerInteractiveDepsInput =
+  Pick<SetupThisComputerInteractiveDeps, MutatingSetupThisComputerDepName>
+  & Partial<Omit<SetupThisComputerInteractiveDeps, MutatingSetupThisComputerDepName>>;
+
 export function createSetupThisComputerInteractiveTaskKind(
-  overrides: Partial<SetupThisComputerInteractiveDeps> = {},
+  overrides: SetupThisComputerInteractiveDepsInput,
 ): InteractiveSystemTaskKind<Readonly<{ machineId: string }>> {
   const deps = createSetupThisComputerInteractiveDeps(overrides);
 
@@ -364,7 +312,7 @@ export function createSetupThisComputerInteractiveTaskKind(
         stepId: 'setup.thisComputer.ensureCli',
         message: 'Installing Happier tools',
       });
-      await deps.ensureLocalHappierTools({ releaseChannel: releaseRing });
+      const cli = await deps.ensureLocalHappierTools({ releaseChannel: releaseRing });
       ctx.emit({
         type: 'progress',
         stepId: 'setup.thisComputer.resolveRelay',
@@ -458,6 +406,19 @@ export function createSetupThisComputerInteractiveTaskKind(
         shouldTakeOverManualRelayRuntime = guidanceResult.tookOverManualRelayRuntime;
       }
 
+      // Terminal exposure edits the user's shell startup files — the one write this task makes
+      // outside Happier's own directories — so it starts only once consent has settled (D4/R12):
+      // a declined conflict prompt must not leave a Desktop PATH line behind.
+      //
+      // From here it runs beside the remaining service work and nothing waits for it (R6/L6): the
+      // app starts its readiness proof from this task's result, so awaiting a shell-profile write
+      // would hold the reveal — and a wedged `powershell.exe` or a hung append on a network home
+      // would hold it forever. The failure is reported on this run's own event stream just before
+      // the result when it has settled by then (the common case, against seconds of pairing and
+      // service work); machine settings › Terminal owns reading and repairing PATH either way,
+      // through the `cli.pathExposure.*` kinds.
+      const pathExposure = observePathExposure(deps.exposeHappierCliOnPath());
+
       const recipeExecutor = createInstrumentedRecipeExecutor(
         ctx,
         { releaseRing, takeOverManualRelayRuntime: shouldTakeOverManualRelayRuntime },
@@ -493,38 +454,31 @@ export function createSetupThisComputerInteractiveTaskKind(
           });
         },
         approvePairingRequest: async (inner) => {
-          const tokenOnlyPrompt = buildTokenOnlyApprovalPromptData(
-            inner.publicKey,
-            inner.requestPayload,
-            relayProfile,
-          );
-          if (tokenOnlyPrompt) {
-            // One blocking approval: the answering UI posts the opaque token-only response to the
-            // explicit Home endpoint with its own Home-scoped bearer and answers without any
-            // credential material. The terminal claim independently mints its own token.
-            const answer = await ctx.prompt({
-              kind: 'authRequest',
-              stepId: 'setup.thisComputer.auth.request',
-              message: 'Approve this computer in Happier to continue',
-              data: tokenOnlyPrompt,
-            }) as Readonly<{ approved?: unknown }> | null;
-            if (answer?.approved === true) {
-              return;
-            }
-          }
-          // Legacy manual approval surface: a non-blocking prompt without response material; the
-          // task keeps waiting for the local pairing request to be approved out of band.
-          ctx.emit({
-            type: 'prompt',
+          // One blocking approval: the answering UI posts the opaque token-only response to the
+          // explicit Home endpoint with its own Home-scoped bearer and answers without any
+          // credential material. The terminal claim independently mints its own token.
+          const decision = await requestTokenOnlyPairingApproval({
+            ctx,
             stepId: 'setup.thisComputer.auth.request',
             message: 'Approve this computer in Happier to continue',
-            data: {
-              kind: 'authRequest',
-              publicKey: inner.publicKey,
-              relayUrl: relayProfile.serverUrl,
-              webappUrl: relayProfile.webappUrl,
-            },
+            publicKey: inner.publicKey,
+            requestPayload: inner.requestPayload,
+            target: relayProfile,
+            cli,
           });
+          // Both outcomes fail by name, exactly as local repair does. There is no second,
+          // non-blocking approval surface to fall back to: nothing reads such a prompt, so
+          // emitting one only replaced a named failure with a silent wait for the executor
+          // timeout, and a declined approval must stop the run rather than proceed unpaired.
+          if (decision === null) {
+            throw new SystemTaskExecutionError(
+              'pairing_approval_unavailable',
+              'The Happier CLI did not provide token-only pairing material, so this computer cannot be approved automatically.',
+            );
+          }
+          if (!decision.approved) {
+            throw new SystemTaskExecutionError('approval_declined', describePairingRefusal(decision.reason));
+          }
         },
         daemonReadinessErrorMessage: 'Background service did not reach a ready state for the selected Relay.',
       });
@@ -537,9 +491,49 @@ export function createSetupThisComputerInteractiveTaskKind(
         );
       }
 
+      const pathExposureFailure = pathExposure.readFailure();
+      if (pathExposureFailure) {
+        // No stepId: this is not a step of the setup sequence, and the PATH surface that owns the
+        // outcome is `cli.pathExposure.*`. The message still reaches the run's latest message.
+        ctx.emit({
+          type: 'progress',
+          message: `Could not add happier to your PATH: ${pathExposureFailure}`,
+        });
+      }
+
       return { machineId };
     },
   };
+}
+
+/**
+ * The user-facing half of a refused approval. The approval owner names *why* it refused; only one
+ * of those reasons is an actual human decline, so the message says which it was.
+ */
+function describePairingRefusal(reason: string | null): string {
+  return reason
+    ? `This computer was not approved for pairing (${reason}).`
+    : 'This computer was not approved for pairing.';
+}
+
+/**
+ * Watches an ancillary promise without ever awaiting it, so its outcome can be reported if it has
+ * settled by the time the task finishes and simply dropped if it has not. Rejections are read as
+ * failures here because a shell-profile write must never fail this task.
+ */
+function observePathExposure(
+  exposure: Promise<HappierCliPathExposureResult>,
+): Readonly<{ readFailure: () => string | null }> {
+  let failure: string | null = null;
+  void exposure.then(
+    (outcome) => {
+      failure = outcome.failure;
+    },
+    (error: unknown) => {
+      failure = error instanceof Error && error.message.trim() ? error.message.trim() : 'PATH exposure failed.';
+    },
+  );
+  return { readFailure: () => failure };
 }
 
 function parseSetupThisComputerInteractiveParams(params: unknown): SetupThisComputerInteractiveParams {
@@ -602,6 +596,17 @@ function parseSetupThisComputerInteractiveParams(params: unknown): SetupThisComp
   if (parsed.activeWebappUrl && !parsed.activeRelayUrl) {
     throw new SystemTaskExecutionError('invalid_params', 'activeRelayUrl is required when activeWebappUrl is provided.');
   }
+  // R3: a desktop surface must name the Home it selected. The ambient fallback below reads the
+  // CLI's own currently selected relay, which for `desktop.ui` would silently repoint this
+  // machine's daemon at whatever the terminal happened to be configured for instead of the Home
+  // the app is setting up. The app always sends it, so a spec that omits it is malformed rather
+  // than a case to guess at. A terminal `hsetup` run has no app selection and keeps the fallback.
+  if (parsed.surface === 'desktop.ui' && !parsed.activeRelayUrl) {
+    throw new SystemTaskExecutionError(
+      'invalid_params',
+      'activeRelayUrl is required for surface desktop.ui.',
+    );
+  }
   if ('installService' in record) {
     if (typeof record.installService !== 'boolean') {
       throw new SystemTaskExecutionError('invalid_params', 'Expected installService to be a boolean.');
@@ -635,51 +640,10 @@ function resolveExplicitRelayProfile(params: SetupThisComputerInteractiveParams)
 }
 
 function createSetupThisComputerInteractiveDeps(
-  overrides: Partial<SetupThisComputerInteractiveDeps>,
+  overrides: SetupThisComputerInteractiveDepsInput,
 ): SetupThisComputerInteractiveDeps {
   return {
-    ensureLocalHappierTools: async ({ releaseChannel }) => {
-      await ensureLocalFirstPartyComponentCommand({
-        componentId: 'happier-cli',
-        processEnv: process.env,
-        releaseRing: releaseChannel,
-      });
-      await syncInstalledFirstPartyShims({
-        componentId: 'happier-cli',
-        channel: releaseChannel,
-        processEnv: process.env,
-      });
-    },
-    readActiveRelayProfile: async ({ releaseRing }) => {
-      const executor = createLocalHappierJsonExecutor({ releaseRing });
-      const parsed = await executor.runHappierJson(['server', 'current', '--json']);
-      const active = parsed && typeof parsed === 'object'
-        ? (parsed as { data?: { active?: Record<string, unknown> } }).data?.active
-        : null;
-
-      const serverUrl = typeof active?.serverUrl === 'string' ? active.serverUrl.trim() : '';
-      const webappUrl = typeof active?.webappUrl === 'string' && active.webappUrl.trim()
-        ? active.webappUrl.trim()
-        : serverUrl;
-      const localServerUrl = typeof active?.localServerUrl === 'string' && active.localServerUrl.trim()
-        ? active.localServerUrl.trim()
-        : null;
-
-      if (!serverUrl || !webappUrl) {
-        throw new SystemTaskExecutionError(
-          'relay_configuration_unavailable',
-          'Could not resolve the currently selected Relay configuration.',
-        );
-      }
-
-      return { serverUrl, webappUrl, localServerUrl };
-    },
-    createRecipeExecutor: ({ releaseRing, takeOverManualRelayRuntime }) => createSetupMachineRecipeExecutorFromHappierJsonExecutor({
-      executor: createLocalHappierJsonExecutor({ releaseRing }),
-      options: {
-        takeOverManualRelayRuntime,
-      },
-    }),
+    readActiveRelayProfile: readLocalActiveRelayProfile,
     readBackgroundServiceSetupGuidance: async ({ targetReleaseChannel, targetServerUrl, currentRelayOwner }) => readBackgroundServiceSetupGuidance({
       targetReleaseChannel,
       targetServerUrl,
@@ -701,6 +665,34 @@ function createSetupThisComputerInteractiveDeps(
         ? null
         : normalized;
     },
+    ...overrides,
+  };
+}
+
+/**
+ * The one production composition of the mutating deps. `hsetup` passes this explicitly, so the real
+ * installer, CLI executor, release-channel writer, service uninstaller and shell-profile writer are
+ * only ever reachable through a named production wiring — never through an omitted test stub.
+ */
+export function createProductionSetupThisComputerInteractiveDeps(): Pick<
+  SetupThisComputerInteractiveDeps,
+  MutatingSetupThisComputerDepName
+> {
+  return {
+    ensureLocalHappierTools: async ({ releaseChannel }) => {
+      await ensureLocalFirstPartyComponentCommand({
+        componentId: 'happier-cli',
+        processEnv: process.env,
+        releaseRing: releaseChannel,
+      });
+      await syncInstalledFirstPartyShims({
+        componentId: 'happier-cli',
+        channel: releaseChannel,
+        processEnv: process.env,
+      });
+      return readLocalSetupCliAcquisition({ ...(releaseChannel ? { releaseRing: releaseChannel } : {}) });
+    },
+    createRecipeExecutor: createLocalSetupRecipeExecutor,
     switchDefaultReleaseChannel: async (releaseChannel) => {
       await writeDefaultManagedReleaseChannel({
         processEnv: process.env,
@@ -716,6 +708,9 @@ function createSetupThisComputerInteractiveDeps(
       const executor = createLocalHappierJsonExecutor({ releaseRing });
       await executor.runHappierJson(['service', 'uninstall', '--all', '--yes', '--json']);
     },
-    ...overrides,
+    exposeHappierCliOnPath: async () => await ensureHappierCliPathExposure({
+      binDir: resolveManagedCliBinDir(process.env),
+      processEnv: process.env,
+    }),
   };
 }

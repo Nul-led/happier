@@ -11,11 +11,139 @@ vi.mock('../client/loopbackUrl', () => ({
 import axios, { AxiosHeaders, type AxiosResponse } from 'axios';
 
 import { HttpStatusError } from '@/api/client/httpStatusError';
+import type { Update } from '../types';
+import { encryptSessionPayload, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import { catchUpSessionMessagesAfterSeq } from './sessionMessageCatchUp';
 import { handleSessionNewMessageUpdate } from './sessionNewMessageUpdate';
 
-describe('sessionMessageCatchUp (plaintext envelopes)', () => {
+describe('sessionMessageCatchUp (stored-content envelopes)', () => {
+  it.each(['legacy', 'dataKey'] as const)('replays authenticated %s history under the established E2EE context', async (encryptionVariant) => {
+    const ctx = { encryptionKey: new Uint8Array(32), encryptionVariant };
+    const content = {
+      t: 'encrypted' as const,
+      c: encryptSessionPayload({ ctx, payload: { role: 'agent', content: { type: 'text', text: 'history' } } }),
+    };
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: { messages: [{ id: 'm11', seq: 11, content }], hasMore: false, nextAfterSeq: null },
+    });
+    const updates: Update[] = [];
+
+    await catchUpSessionMessagesAfterSeq({
+      mode: 'e2ee',
+      ctx,
+      token: 't',
+      sessionId: 's1',
+      afterSeq: 10,
+      onUpdate: (update) => updates.push(update),
+    });
+
+    expect(updates).toEqual([expect.objectContaining({ body: expect.objectContaining({
+      message: expect.objectContaining({ id: 'm11', content }),
+    }) })]);
+  });
+
+  it.each(['plain-in-e2ee', 'encrypted-in-plain', 'unopenable-e2ee'] as const)(
+    'rejects %s without publishing valid neighbors or advancing recovery',
+    async (scenario) => {
+      const ctx = { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' as const };
+      const crypto: SessionStoredContentCryptoContext = scenario === 'encrypted-in-plain'
+        ? { mode: 'plain', ctx: null }
+        : { mode: 'e2ee', ctx };
+      const payload = { role: 'agent', content: { type: 'text', text: 'history' } };
+      const plain = { t: 'plain' as const, v: payload };
+      const encrypted = { t: 'encrypted' as const, c: encryptSessionPayload({ ctx, payload }) };
+      const rejected = scenario === 'plain-in-e2ee' ? plain
+        : scenario === 'encrypted-in-plain' ? encrypted
+          : { t: 'encrypted' as const, c: 'unopenable' };
+      const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
+        status: 200,
+        data: {
+          messages: [
+            { id: 'm11', seq: 11, content: crypto.mode === 'plain' ? plain : encrypted },
+            { id: 'm12', seq: 12, content: rejected },
+          ],
+          hasMore: true,
+          nextAfterSeq: 12,
+        },
+      });
+      const updates: Update[] = [];
+
+      await expect(catchUpSessionMessagesAfterSeq({
+        ...crypto,
+        token: 't',
+        sessionId: 's1',
+        afterSeq: 10,
+        onUpdate: (update) => updates.push(update),
+      })).rejects.toMatchObject({ code: 'session_transcript_stored_content_unavailable' });
+
+      expect(updates).toEqual([]);
+      expect(getSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('drains producer-shaped forward pages beyond ten pages using the last returned sequence', async () => {
+    const getSpy = vi.spyOn(axios, 'get');
+    for (let seq = 11; seq <= 22; seq++) {
+      getSpy.mockResolvedValueOnce({
+        status: 200,
+        data: {
+          messages: [{
+            id: `m${seq}`,
+            seq,
+            content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: `message ${seq}` } } },
+          }],
+          hasMore: seq < 22,
+          nextAfterSeq: seq < 22 ? seq : null,
+        },
+      });
+    }
+    const updates: Update[] = [];
+
+    await catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
+      token: 't',
+      sessionId: 's1',
+      afterSeq: 10,
+      onUpdate: (update) => updates.push(update),
+    });
+
+    expect(updates.map((update) => update.body.t === 'new-message' ? update.body.message.id : null))
+      .toEqual(Array.from({ length: 12 }, (_, index) => `m${index + 11}`));
+    expect(getSpy.mock.calls.map((call) => call[1]?.params.afterSeq))
+      .toEqual(Array.from({ length: 12 }, (_, index) => index + 10));
+  });
+
+  it('rejects a nonprogressing continuation without publishing or requesting another page', async () => {
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: {
+        messages: [{
+          id: 'm10',
+          seq: 10,
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'repeated' } } },
+        }],
+        hasMore: true,
+        nextAfterSeq: 10,
+      },
+    });
+    const updates: Update[] = [];
+
+    await expect(catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
+      token: 't',
+      sessionId: 's1',
+      afterSeq: 10,
+      onUpdate: (update) => updates.push(update),
+    })).rejects.toMatchObject({ code: 'session_transcript_stored_content_unavailable' });
+
+    expect(updates).toEqual([]);
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('emits new-message updates for plaintext transcript messages', async () => {
     const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: {
@@ -37,6 +165,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     const updates: any[] = [];
     await catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -86,6 +216,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
     const emit = vi.fn();
 
     await catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -133,6 +265,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     const updates: any[] = [];
     await catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -157,6 +291,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     const updates: any[] = [];
     await catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -185,6 +321,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     const updates: any[] = [];
     await expect(catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -223,6 +361,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     const updates: any[] = [];
     await expect(catchUpSessionMessagesAfterSeq({
+      mode: 'plain',
+      ctx: null,
       token: 't',
       sessionId: 's1',
       afterSeq: 10,
@@ -250,6 +390,8 @@ describe('sessionMessageCatchUp (plaintext envelopes)', () => {
 
     await expect(
       catchUpSessionMessagesAfterSeq({
+        mode: 'plain',
+        ctx: null,
         token: 'expired',
         sessionId: 's1',
         afterSeq: 10,

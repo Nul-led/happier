@@ -2,7 +2,7 @@ import type { StoredCredentials } from '@/persistence';
 import { createCliApprovalsArtifactStore } from '@/session/actions/approvals/artifactStore';
 import { getSharedBlockingApprovalCoordinator } from '@/session/actions/approvals/blockingApprovalCoordinator';
 import {
-  ApprovalRequestV1Schema,
+  ApprovalRequestSchema,
   type ReviewCommentPrincipalHeaderV1,
 } from '@happier-dev/protocol';
 import { createCliReviewCommentActionExecutorFromCredentials } from '@/agent/reviews/comments/executor';
@@ -52,6 +52,7 @@ function assertReviewCommentPrincipalCurrent(
 
 export function createExecutionRunRpcApprovalDeps(params: Readonly<{
   readCredentials: () => Promise<StoredCredentials | null>;
+  isApprovalExecutionOriginCurrent?: ExecutionRunRpcApprovalDeps['isApprovalExecutionOriginCurrent'];
 }>): ExecutionRunRpcApprovalDeps {
   const coordinator = getSharedBlockingApprovalCoordinator();
 
@@ -62,6 +63,9 @@ export function createExecutionRunRpcApprovalDeps(params: Readonly<{
   };
 
   return {
+    ...(params.isApprovalExecutionOriginCurrent
+      ? { isApprovalExecutionOriginCurrent: params.isApprovalExecutionOriginCurrent }
+      : {}),
     executionRunHostActionCurrentIntent: createExecutionRunHostActionCurrentIntentAdapter({
       create: async (request) => {
         const store = await resolveStore();
@@ -148,7 +152,7 @@ export function createExecutionRunRpcApprovalDeps(params: Readonly<{
           });
         },
       });
-      return { ...result, request: ApprovalRequestV1Schema.parse(result.request) };
+      return { ...result, request: ApprovalRequestSchema.parse(result.request) };
     },
   };
 }

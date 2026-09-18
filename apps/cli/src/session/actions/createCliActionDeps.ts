@@ -2,6 +2,8 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import {
+  projectSessionActivityCompatibilityV1,
+  SESSION_LIST_AWARENESS_VIEW_V1,
   AcpConfigOptionOverridesV1Schema,
   buildAcpConfigOptionOverridesV1,
   AccountSettingMutationV1Schema,
@@ -18,6 +20,7 @@ import {
   updatePromptBundleInLibrary,
   updatePromptDocInLibrary,
   SessionMcpSelectionV1Schema,
+  SessionAccessErrorCodeV1Schema,
   SessionModelSelectionV1Schema,
   SessionModelSelectionResolutionError,
   SessionCreationCorrespondenceV1Schema,
@@ -27,9 +30,12 @@ import {
   SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
   SessionAuthoringTerminalV1Schema,
   normalizeSessionCreationOrganizationPlacementV1,
+  normalizeSpawnSessionErrorDetail,
+  SPAWN_SESSION_ERROR_DETAIL_KINDS,
   isSessionCreationCorrespondenceConflictSpawnErrorDetail,
   isSessionCreationOrganizationInvalidSpawnErrorDetail,
   supportsMachineOperationProtocolCapabilityV1,
+  supportsMachineSessionSpawnProtocolVersionV1,
   ProviderConnectionIdSchema,
   resolveExplicitSessionSpawnMachineTarget,
   resolveSessionModelSelectionInputRefV1,
@@ -39,7 +45,7 @@ import {
   readRuntimeDescriptorV1FromMetadata,
   resolveActionBackendTargetSelection,
   withExecutionRunStartFailureDetails,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type SessionAgentSpawnPolicyV1,
   type SpawnConfigOptionValue,
   type SessionBridgeLifecycleHookEventIdV1,
@@ -47,6 +53,7 @@ import {
   type SessionUsageLimitRecoveryResumePromptModeV1,
   type SessionUsageLimitRecoveryV1,
   type ActionExecutorDeps,
+  type ActionExecutorContext,
   type BackendTargetRefV2,
   type ScmDiffSummaryGenerateInput,
   type PromptRegistryFetchedItemV1,
@@ -59,9 +66,14 @@ import {
   type AgentExecutionTargetV1,
   type ActionCaller,
   type ComposerAttachmentInputV1,
+  type SessionInputAdmissionResultV1,
+  type SessionMessageSendResultV1,
   HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
+  WorkflowActionFailureV1Schema,
+  WorkflowIngressContextV1Schema,
 } from '@happier-dev/protocol';
 import type { PromptAssetAdapter } from '@happier-dev/plugin-sdk/resources';
+import { doesWorkflowImmediateEligibleStepTargetSession } from '@/daemon/workflows/coordinator';
 import { SpawnSessionTerminalSchema } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { createStableSpawnNonce } from '@/session/shared/spawnNonce';
@@ -71,14 +83,35 @@ import {
   parsePermissionIntentAlias,
   resolvePermissionIntentFromSessionMetadata,
   resolveCanonicalAgentIdFromFlavor,
+  resolveAgentIdFromSessionMetadata,
+  isBundledAgentId,
   type AgentId,
   type PermissionIntent,
 } from '@happier-dev/agents';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 import { configuration } from '@/configuration';
 import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { readMachineOperationProtocolCapabilitiesV1 } from '@/api/machine/machineOperationProtocolCapabilities';
+import {
+  SessionInitialAccessEnvelopeHostError,
+  SessionInitialAccessUpdateRequiredError,
+} from '@/api/session/sessionCreationInitialAccess';
 import { getPreferredHostName } from '@/daemon/machine/metadata';
 import { createCliApprovalsArtifactStore } from '@/session/actions/approvals/artifactStore';
+import { createCredentialedAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
+import { createWorkflowDefinitionActions } from './workflowDefinitions';
+import { createWorkflowActionExecutor } from './workflowActionExecutor';
+import { createWorkflowRunActionOwner } from './workflowRunActions';
+import { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
+import { isWorkflowRuntimeEnabled } from '@/daemon/automation/workflowFeatureGate';
+import { listCurrentAccountMachines } from '@/api/machine/resolveCurrentAccountMachineTarget';
+import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
+import { prepareWorkflowAcceptedWorkspaceTarget, restoreRecordedWorkflowWorkspace } from '@/daemon/workflows/resolveWorkflowWorkspace';
+import {
+  createAutomationAccountEncryptionMaterialSnapshotV1,
+  resolveValidatedAutomationAccountEncryptionV1,
+} from '@/plugins/runtime/automations/automationAccountCurrentness';
+import { fetchChangesAccountId } from '@/api/changes';
 import { readSettings, type StoredCredentials } from '@/persistence';
 import {
   createSpawnedSession,
@@ -89,21 +122,68 @@ import { resolveSessionHandoffSourceAuthority } from '@/session/handoff/resolveS
 import { buildReplaySeededSpawnRecipe } from '@/session/replay/buildReplaySeededSpawnRecipe';
 import { resolveReplaySourceContextAuthority } from '@/session/replay/resolveReplaySourceContextAuthority';
 import {
+  type ResolveSpawnConnectedServicesTeamResourceCatalog,
   resolveSessionSpawnConnectedServicesDefaultsPayload,
 } from '@/session/services/spawnConnectedServicesDefaults';
 import { getSessionEvents } from '@/session/services/getSessionEvents';
 import { getSessionTranscript } from '@/session/services/getSessionTranscript';
+import { projectCliSessionAwarenessV1 } from '@/cli/output/session/sessionAwareness';
+import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
 import { getSessionStatus } from '@/session/services/getSessionStatus';
-import { listSessions } from '@/session/services/listSessions';
+import { createSessionBoardActionDeps } from '@/session/board/sessionBoardActionDeps';
+import { createSessionDiscussionActionDeps } from '@/session/discussions/sessionDiscussionActionDeps';
+import { createSessionListActionDependency } from './sessionListActionDependency';
+import {
+  resolveExternalActionServerRequestHeaders,
+  type ExternalActionHomeBinding,
+} from '@/api/externalActionExecutionAuthorization';
 import { requestSessionStop } from '@/session/services/requestSessionStop';
 import {
   admitPluginSessionInputAttachmentsV1,
   buildPluginSessionInputAttachmentDraftsV1,
 } from '@/session/composer/admitPluginSessionInputAttachmentsV1';
+
+type SessionSpawnNewErrorResult = Extract<SessionSpawnNewResultV1, Readonly<{ type: 'error' }>>;
+
+/**
+ * Keeps physical-host and atomic-create initial-access failures on the strict spawn
+ * settlement instead of erasing Lane 04/Lane 06 recovery meaning behind a
+ * generic process failure. The projection carries no key or response body.
+ */
+export function projectSessionInitialAccessEnvelopeHostErrorResult(
+  error: unknown,
+): SessionSpawnNewErrorResult | null {
+  const code = error instanceof SessionInitialAccessEnvelopeHostError
+    ? error.code
+    : error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : null;
+  const parsedSessionAccessError = SessionAccessErrorCodeV1Schema.safeParse(code);
+  if (parsedSessionAccessError.success) {
+    return {
+      type: 'error',
+      code: parsedSessionAccessError.data,
+      retryable: false,
+    };
+  }
+  switch (code) {
+    case 'not_authenticated':
+      return { type: 'error', code: 'permission_denied', retryable: false };
+    case 'session_data_key_unavailable':
+      return { type: 'error', code, retryable: false };
+    case 'session_access_request_failed':
+      return { type: 'error', code, retryable: true };
+    case 'unsupported_action':
+      return { type: 'error', code: 'incompatible_target', retryable: false };
+    default:
+      return null;
+  }
+}
 import type { ComposerAttachmentSendPreparationRegistryV1 } from '@/session/composer/prepareComposerAttachmentDraftsForSendV1';
 import { notifyComposerAttachmentsAfterMessageAccepted } from '@/session/composer/notifyComposerAttachmentsAfterMessageAccepted';
 import {
   sendSessionMessage,
+  type SendSessionMessageResult,
 } from '@/session/services/sendSessionMessage';
 import { findPersistedSessionUserMessageAdmission } from '@/api/session/client/transcript/sessionUserMessageAdmissionRejoin';
 import { validateComposerAttachmentRejoinCorrespondenceV1 } from '@/session/services/admitSessionStructuredInputV1';
@@ -112,11 +192,11 @@ import {
   buildSessionSpawnInitialInputAdmissionForLocalIdV1,
   buildPluginSessionInputAdmissionV1,
 } from '@/session/services/sessionInputAdmissionIdentity';
-import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
 import {
   indexAgentRoutingIdsByContributionIdentity,
   readAgentRoutingIdForContributionIdentity,
 } from '@/plugins/projection/registry/agentRoutingIdentity';
+import { resolveSessionCreationAgentTarget } from '@/session/creation/resolveSessionCreationAgentTarget';
 import { setSessionArchivedState } from '@/session/services/setSessionArchivedState';
 import { setSessionModel } from '@/session/services/setSessionModel';
 import { setSessionMode } from '@/session/services/setSessionMode';
@@ -125,11 +205,14 @@ import { setSessionTitle } from '@/session/services/setSessionTitle';
 import { waitForSessionIdle } from '@/session/services/waitForSessionIdle';
 import { requestInactiveSessionResume } from '@/session/services/requestInactiveSessionResume';
 import { resolveSessionMachineWorkspacePath } from '@/session/machineControlLocality';
-import { resolveCurrentSessionCapabilityBinding } from '@/session/presentation/currentSessionUiBindings';
+import {
+  resolveCurrentSessionCapabilityBinding,
+  resolveCurrentSessionUiBinding,
+} from '@/session/presentation/currentSessionUiBindings';
 
 import type {
   SessionStoredContentCryptoContext,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+} from '@/session/transport/encryption/sessionStoredContentCodec';
 import {
   cancelExecutionRunStream,
   ensureExecutionRun,
@@ -138,7 +221,6 @@ import {
   getExecutionRun,
   listExecutionRuns,
   readExecutionRunStream,
-  sendExecutionRunMessage,
   startExecutionRun,
   startExecutionRunStream,
   stopExecutionRun,
@@ -146,7 +228,6 @@ import {
 } from '@/session/services/executionRuns';
 import { buildPluginInstallApprovalPreview } from '@/plugins/devLoop/installApprovalPreview';
 import {
-  normalizeExecutionRunWaitPollIntervalMs,
   normalizeExecutionRunWaitTimeoutMs,
 } from '@/session/services/executionRunWaitTiming';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
@@ -173,9 +254,6 @@ import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHos
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
 import { resolveSessionAgentSpawnInheritedOverridesFromMetadata } from '@/session/fork/resolveForkInheritedOverridesFromMetadata';
 import { createCliActionInventoryDeps } from './cliActionDeps/createCliActionInventoryDeps';
-import {
-  createRemoteDevSessionSpawnApprovalReplayNormalizer,
-} from './approvals/normalizeRemoteDevSessionSpawnApprovalReplay';
 import {
   readSessionAgentState,
   readSessionMetadata,
@@ -220,10 +298,28 @@ import type {
   ExternalSessionPluginAdmissionOwner,
 } from './externalSessions/pluginExternalSessionAdmissionOwner';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
   updateAccountSettingsV2WithRetry,
   type AccountSettingsMutationResult,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
+
+/**
+ * Projects the low-level send wrapper onto the one public Action result.
+ * Admission evidence is authoritative even when acknowledgement or waiting
+ * failed after a durable effect. A successful unprotected send predates the
+ * admission envelope, so its resolved local id is projected as accepted.
+ */
+function projectSessionMessageSendActionResult(
+  result: SendSessionMessageResult,
+): SessionMessageSendResultV1 | null {
+  if (!result.ok && result.settlementResult) return result.settlementResult;
+  if (result.admissionResult) return result.admissionResult;
+  if (result.ok) return { status: 'accepted', localId: result.localId };
+  return null;
+}
 
 function notSupported(): never {
   throw new Error('action_not_supported_in_cli');
@@ -421,7 +517,11 @@ export type MachineActionDirectTargetTransport = Readonly<{
   invoke: (
     method: string,
     request: unknown,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{
+      signal?: AbortSignal;
+      executionRunPermissionRequestStore?: unknown;
+      executionRunWorkflowObservationSink?: unknown;
+    }>,
   ) => Promise<unknown>;
 }>;
 
@@ -483,8 +583,9 @@ function resolveParentSpawnPolicyDeniedField(params: Readonly<{
 async function resolveSpawnConnectedServicesDefaultPayload(params: Readonly<{
   backendTarget: NonNullable<ReturnType<typeof readBackendTargetRefV2>>;
   credentials: StoredCredentials;
+  resolveTeamCredentialResourceCatalog?: ResolveSpawnConnectedServicesTeamResourceCatalog;
 }>): Promise<Readonly<{
-  connectedServices: ConnectedServiceBindingsV1;
+  connectedServices: ConnectedServiceBindingsV2;
   connectedServicesUpdatedAt: number;
 }> | null> {
   if (params.backendTarget.sourceKind !== 'built_in') return null;
@@ -493,10 +594,22 @@ async function resolveSpawnConnectedServicesDefaultPayload(params: Readonly<{
   return await resolveSessionSpawnConnectedServicesDefaultsPayload({
     agentId: params.backendTarget.backendId,
     credentials: params.credentials,
+    ...(params.resolveTeamCredentialResourceCatalog
+      ? { resolveTeamCredentialResourceCatalog: params.resolveTeamCredentialResourceCatalog }
+      : {}),
   });
 }
 
 type PendingAgentRequestKind = 'permission' | 'user_action';
+
+/**
+ * The Action-executor dependency contract owns the V2-only capability
+ * requirement; this transport only consumes it, so it is read back from that
+ * declaration instead of being restated here.
+ */
+type ExecutionRunProtocolV2Requirement = Parameters<
+  NonNullable<ActionExecutorDeps['executionRunCheckProtocolV2']>
+>[1];
 
 function permissionRequestNotFoundResult(sessionId: string) {
   return {
@@ -528,6 +641,29 @@ function isKnownCompletedRequestId(params: Readonly<{
   return requestKind === 'permission' || typeof requestKind === 'undefined';
 }
 
+const DETACHED_EXECUTION_RUN_CALLER_LIFECYCLE_METHODS = new Set<string>([
+  SESSION_RPC_METHODS.EXECUTION_RUN_START,
+  SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE,
+  SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START,
+  SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
+  SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
+  SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START,
+  SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2,
+  SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
+  SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
+  SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
+]);
+
+/**
+ * An exact Action Home is one target: its server id and its base URL are bound
+ * together or not at all. The Home-bound dependency owners already refuse a
+ * half-bound target, so callers express the same pair here instead of letting
+ * one half reach an owner that would fall back to the configured active Home.
+ */
+export type CliActionExactHomeTarget =
+  | Readonly<{ serverId?: undefined; serverHttpBaseUrl?: undefined }>
+  | Readonly<{ serverId: string; serverHttpBaseUrl: string }>;
+
 export function createCliActionDeps(params: Readonly<{
   token: string;
   credentials?: StoredCredentials;
@@ -558,9 +694,55 @@ export function createCliActionDeps(params: Readonly<{
    * rather than dropped.
    */
   resolveComposerAttachmentSendPreparation?: () => ComposerAttachmentSendPreparationRegistryV1 | null;
-}> & SessionStoredContentCryptoContext): ActionExecutorDeps {
+  /** Reads the daemon's already-retained snapshot for this exact Home. */
+  resolveServerFeaturesSnapshot?: () =>
+    | CliServerFeaturesSnapshot
+    | undefined
+    | Promise<CliServerFeaturesSnapshot | undefined>;
+  /** Exact Home-bound policy/settings snapshot owned by the runtime constructor. */
+  actionsSettingsProvider?: RuntimeActionSettingsProvider;
+  resolveTeamCredentialResourceCatalog?: ResolveSpawnConnectedServicesTeamResourceCatalog;
+  /** Existing daemon authority owner shared with coordinator effect currentness. */
+  workflowAcceptedAuthorizationCurrentness?: (input: Readonly<{
+    authorization: import('@happier-dev/protocol').WorkflowAcceptedAuthorizationV1;
+    signal?: AbortSignal;
+  }>) => boolean | Promise<boolean>;
+}> & SessionStoredContentCryptoContext & ExternalActionHomeBinding & CliActionExactHomeTarget): ActionExecutorDeps {
+  // Re-formed once so the proven pair travels to every Home-bound owner
+  // together; the two params fields decorrelate as soon as they are spread apart.
+  const exactHome: CliActionExactHomeTarget =
+    params.serverId !== undefined && params.serverHttpBaseUrl !== undefined
+      ? { serverId: params.serverId, serverHttpBaseUrl: params.serverHttpBaseUrl }
+      : {};
+  const readServerFeaturesSnapshot = async (): Promise<CliServerFeaturesSnapshot | undefined> =>
+    await params.resolveServerFeaturesSnapshot?.();
+  const resolveServerRequestHeaders = (
+    context: ActionExecutorContext,
+    effectActionId: string,
+    request: Readonly<{ method: string; path: string; body?: unknown }>,
+  ): Readonly<Record<string, string>> | null => {
+    const resolved = resolveExternalActionServerRequestHeaders({
+      context,
+      effectActionId,
+      method: request.method,
+      path: request.path,
+      ...(request.body === undefined ? {} : { body: request.body }),
+      daemonToken: params.token,
+      serverIdentityId: params.serverIdentityId,
+      ...(params.externalActionMachineRequestPrivateKey
+        ? { privateKey: params.externalActionMachineRequestPrivateKey }
+        : {}),
+      ...(params.externalActionMachineInstallationId
+        ? { installationId: params.externalActionMachineInstallationId }
+        : {}),
+    });
+    return resolved.ok ? resolved.headers : null;
+  };
   const inventoryDeps = createCliActionInventoryDeps(params);
   const approvalsStore = params.credentials ? createCliApprovalsArtifactStore({ credentials: params.credentials }) : null;
+  const workflowDefinitions = params.credentials
+    ? createWorkflowDefinitionActions({ artifactStore: createCredentialedAccountArtifactStore(params.credentials) })
+    : null;
   const pluginPermissionGrantAction = params.credentials
     ? createPluginPermissionGrantActionExecutor({
       credentials: params.credentials,
@@ -677,6 +859,146 @@ export function createCliActionDeps(params: Readonly<{
       : null;
   };
 
+  const resolveWorkflowIngressContext = async (
+    context: ActionExecutorContext,
+  ): Promise<ReturnType<typeof WorkflowIngressContextV1Schema.parse> | undefined> => {
+    const callingSessionId = normalizeStringValue(context.defaultSessionId);
+    if (!callingSessionId || callingSessionId !== normalizeStringValue(params.sessionId)) return undefined;
+
+    // The live Session client is the canonical current Agent authority for the
+    // hosting Session. The synced Session record is a fallback for a field the
+    // live context does not supply, never an unconditional prerequisite.
+    let backendTarget: BackendTargetRefV2 | null = null;
+    try {
+      backendTarget = params.getCurrentSessionBackendTarget?.() ?? null;
+    } catch {
+      backendTarget = null;
+    }
+    if (!backendTarget) {
+      backendTarget = resolveBackendTargetFromSessionMetadata(await readCurrentSessionMetadata());
+    }
+    const agentId = backendTarget?.sourceKind === 'built_in'
+      ? backendTarget.backendId
+      : resolveAgentIdFromSessionMetadata(await readCurrentSessionMetadata());
+    let agentIdentity: Readonly<{ pluginId: string; localId: string }> | undefined;
+    if (agentId) {
+      // A built-in backend target already carries the live Session's resolved
+      // Agent id, whose contribution identity is generated with the bundle.
+      // Open installed Agent ids still resolve through the active catalog.
+      agentIdentity = backendTarget?.sourceKind === 'built_in' && isBundledAgentId(agentId)
+        ? BUNDLED_AGENT_CONTRIBUTION_IDENTITIES[agentId]
+        : readAgentCatalogSnapshot().agentDefinitionsById.get(agentId)?.identity;
+    }
+    const machineId = await resolveCurrentSessionValue('machineId');
+    const directory = await resolveCurrentSessionValue('path');
+    return WorkflowIngressContextV1Schema.parse({
+      ...(agentIdentity ? { agentTarget: { kind: 'agent', identity: agentIdentity } } : {}),
+      ...(machineId ? { machineId } : {}),
+      ...(directory ? { directory } : {}),
+    });
+  };
+
+  const workflowAction = workflowDefinitions && params.credentials
+    ? createWorkflowActionExecutor({
+        isWorkflowFeatureEnabled: async () => {
+          try {
+            return isWorkflowRuntimeEnabled(process.env, await readServerFeaturesSnapshot());
+          } catch {
+            return false;
+          }
+        },
+        resolveIngressContext: async (args) => await resolveWorkflowIngressContext(args.context),
+        resolveTargetValidation: async (args) => {
+          try {
+            const machines = await listCurrentAccountMachines({
+              token: params.token,
+              ...(params.serverHttpBaseUrl ? { serverHttpBaseUrl: params.serverHttpBaseUrl } : {}),
+              ...(args.context.signal ? { signal: args.context.signal } : {}),
+            });
+            const target = resolveExplicitSessionSpawnMachineTarget({
+              machineId: args.input.target?.machineId,
+              machines: machines.map((machine) => ({ machineId: machine.id })),
+            });
+            if (target.kind === 'resolved') return { targetValidation: 'checked' as const };
+          } catch {
+            // The canonical inventory owner reported an unavailable observation.
+          }
+          return {
+            targetValidation: 'unavailable' as const,
+            targetIssues: [{
+              code: 'target_unavailable' as const,
+              path: '/target/machineId',
+              message: 'The requested Workflow target is unavailable.',
+              severity: 'error' as const,
+            }],
+          };
+        },
+        definitions: workflowDefinitions,
+        runs: createWorkflowRunActionOwner({
+          doesImmediateEligibleStepTargetSession: doesWorkflowImmediateEligibleStepTargetSession,
+          resolveAccountId: async (signal) => await fetchChangesAccountId({
+            token: params.token,
+            ...(signal ? { signal } : {}),
+          }),
+          storage: {
+            execute: async (operation, options) => {
+              const publisherMachineId = normalizeStringValue(options?.publisherMachineId);
+              const operationMachineId = publisherMachineId ?? (typeof operation.machineId === 'string' && operation.machineId.trim()
+                ? operation.machineId.trim()
+                : null);
+              const settingsMachineId = operationMachineId ? null : normalizeStringValue((await readSettings()).machineId);
+              const machineId = operationMachineId ?? settingsMachineId ?? await resolveCurrentSessionValue('machineId');
+              if (!machineId) throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable' });
+              return await createWorkflowRunStorageClient({
+                token: params.token,
+                machineId,
+                ...(params.serverHttpBaseUrl ? { serverHttpBaseUrl: params.serverHttpBaseUrl } : {}),
+              }).execute(
+                operation as Parameters<ReturnType<typeof createWorkflowRunStorageClient>['execute']>[0],
+                options?.signal ? { signal: options.signal } : {},
+              );
+            },
+          },
+          definitions: workflowDefinitions,
+          resolveEncryption: async (signal) => {
+            const resolved = await resolveValidatedAutomationAccountEncryptionV1({
+              signal: signal ?? new AbortController().signal,
+              resolveAccountEncryptionCurrentness: async (currentnessSignal) => await fetchAccountEncryptionCurrentness({
+                token: params.token,
+                ...(currentnessSignal ? { signal: currentnessSignal } : {}),
+              }),
+              resolveAccountEncryptionMaterial: async () => createAutomationAccountEncryptionMaterialSnapshotV1(params.credentials!),
+            });
+            if (resolved.kind !== 'available') throw Object.assign(new Error('content_unavailable'), { code: 'content_unavailable' });
+            return resolved;
+          },
+          prepareWorkspace: async ({ projectTarget, definition }) => {
+            if (!projectTarget.workspaceRefId) {
+              return await prepareWorkflowAcceptedWorkspaceTarget({ projectTarget, definition });
+            }
+            const settings = await bootstrapAccountSettingsContext({
+              credentials: params.credentials!,
+              mode: 'blocking',
+              refresh: 'force',
+            });
+            return await prepareWorkflowAcceptedWorkspaceTarget({
+              projectTarget,
+              definition,
+              currentServerId: params.serverId ?? configuration.activeServerId,
+              resolveWorkspaceRef: (workspaceRefId) => resolveWorkspaceRefById(
+                settings.settings.workspaceRefsV1,
+                workspaceRefId,
+              ),
+            });
+          },
+          restoreWorkspace: async (workspace) => await restoreRecordedWorkflowWorkspace({ workspace }),
+          ...(params.workflowAcceptedAuthorizationCurrentness
+            ? { isAcceptedAuthorizationCurrent: params.workflowAcceptedAuthorizationCurrentness }
+            : {}),
+        }),
+      })
+    : null;
+
   let currentMachineControlIdentityPromise: Promise<CurrentMachineControlIdentity> | null = null;
 
   const readCurrentMachineControlIdentity = async (): Promise<CurrentMachineControlIdentity> => {
@@ -704,33 +1026,10 @@ export function createCliActionDeps(params: Readonly<{
     return await currentMachineControlIdentityPromise;
   };
 
-  const resolveSessionSpawnAgentTarget = (agentTarget: AgentExecutionTargetV1) => {
-    const catalog = readAgentCatalogSnapshot();
-    const agentId = readAgentRoutingIdForContributionIdentity(
-      indexAgentRoutingIdsByContributionIdentity([...catalog.agentDefinitionsById.values()]),
-      agentTarget.identity,
-    );
-    const agentContribution = agentId ? catalog.agentDefinitionsById.get(agentId) : null;
-    if (!agentContribution) return null;
-
-    try {
-      return {
-        agentId: agentContribution.id,
-        backendTarget: readBackendTargetRefV2({
-          kind: 'backend',
-          backendId: agentContribution.id,
-          sourceKind: 'built_in',
-        }),
-      };
-    } catch {
-      return null;
-    }
-  };
-
   const resolveSessionSpawnAgentInventorySelection: NonNullable<
     ActionExecutorDeps['resolveSessionSpawnAgentInventorySelection']
   > = ({ agentTarget }) => {
-    const resolvedTarget = resolveSessionSpawnAgentTarget(agentTarget);
+    const resolvedTarget = resolveSessionCreationAgentTarget(agentTarget);
     return resolvedTarget
       ? {
           agentId: resolvedTarget.agentId,
@@ -738,15 +1037,6 @@ export function createCliActionDeps(params: Readonly<{
         }
       : null;
   };
-
-  const normalizeSessionSpawnNewLegacyApprovalReplay =
-    createRemoteDevSessionSpawnApprovalReplayNormalizer({
-      readAgentDefinitions: () => readAgentCatalogSnapshot().agentDefinitionsById.values(),
-      readLocalMachineIdentity: async () => {
-        const current = await readCurrentMachineControlIdentity();
-        return { machineId: current.machineId, host: current.host };
-      },
-    });
 
   const requireLocalPromptActionMachine = async (machineId: string): Promise<Readonly<{
     ok: true;
@@ -832,7 +1122,12 @@ export function createCliActionDeps(params: Readonly<{
     const cachedTransport = sessionTransportCache.get(normalized);
     if (cachedTransport) return cachedTransport;
 
-    const resolved = await resolveSessionTransportContext({ credentials: params.credentials, idOrPrefix: normalized });
+    const serverFeaturesSnapshot = await readServerFeaturesSnapshot();
+    const resolved = await resolveSessionTransportContext({
+      credentials: params.credentials,
+      idOrPrefix: normalized,
+      ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+    });
     if (!resolved.ok) {
       return {
         ok: false,
@@ -885,10 +1180,18 @@ export function createCliActionDeps(params: Readonly<{
     targetMachineId?: string | null;
     exactMachineId?: string | null;
     signal?: AbortSignal;
+    permissionRequestStore?: unknown;
+    workflowObservationSink?: unknown;
   }>;
   type ExecutionRunMachineTarget =
     | Readonly<{ ok: true; machineId: string }>
     | Readonly<{ ok: false; errorCode: 'execution_run_target_not_selected' | 'execution_run_target_unavailable' }>;
+
+  const readExecutionRunTransportMachineId = (transport: ResolvedSessionTransport): string | null => {
+    const metadata = readSessionMetadata({ ...transport, rawSession: transport.rawSession });
+    return normalizeStringValue(transport.rawSession.machineId)
+      ?? normalizeStringValue(metadata?.machineId);
+  };
 
   /**
    * Scope selection is authoritative before this point. This only resolves the
@@ -919,9 +1222,7 @@ export function createCliActionDeps(params: Readonly<{
     if (targetSessionId) {
       const transport = await resolveTransportForSession(targetSessionId);
       if (!transport.ok) return { ok: false, errorCode: 'execution_run_target_unavailable' };
-      const metadata = readSessionMetadata({ ...transport, rawSession: transport.rawSession });
-      const machineId = normalizeStringValue(transport.rawSession.machineId)
-        ?? normalizeStringValue(metadata?.machineId);
+      const machineId = readExecutionRunTransportMachineId(transport);
       return machineId
         ? { ok: true, machineId }
         : { ok: false, errorCode: 'execution_run_target_unavailable' };
@@ -940,30 +1241,60 @@ export function createCliActionDeps(params: Readonly<{
     opts?: ExecutionRunActionTransportOptions,
   ): Promise<unknown> => {
     const isStart = method === SESSION_RPC_METHODS.EXECUTION_RUN_START;
-    const failure = (code: string, runCreation: 'noRunCreated' | 'outcomeUnknown', message?: string) => (
-      executionRunActionFailure(
-        code,
-        message,
-        isStart ? withExecutionRunStartFailureDetails(undefined, runCreation) : undefined,
-      )
-    );
+    const failure = (code: string, runCreation: 'noRunCreated' | 'outcomeUnknown', message?: string) => ({
+      ok: false as const,
+      code,
+      ...(message ? { message } : {}),
+      ...(isStart
+        ? { details: withExecutionRunStartFailureDetails(undefined, runCreation) }
+        : {}),
+    });
     if (!params.credentials) {
       return failure('not_authenticated', 'noRunCreated');
     }
     const target = await resolveExecutionRunMachineTarget(sessionId, opts);
     if (!target.ok) return failure(target.errorCode, 'noRunCreated');
     try {
+      if (opts?.permissionRequestStore !== undefined || opts?.workflowObservationSink !== undefined) {
+        const direct = params.machineActionDirectTargetTransport;
+        if (!direct || direct.machineId !== target.machineId) {
+          return failure('execution_run_target_unavailable', 'noRunCreated');
+        }
+        return await direct.invoke(method, request, {
+          ...(opts.signal ? { signal: opts.signal } : {}),
+          ...(opts.permissionRequestStore === undefined
+            ? {}
+            : { executionRunPermissionRequestStore: opts.permissionRequestStore }),
+          ...(opts.workflowObservationSink === undefined
+            ? {}
+            : { executionRunWorkflowObservationSink: opts.workflowObservationSink }),
+        });
+      }
       return await callMachineRpc({
         credentials: params.credentials,
         machineId: target.machineId,
         method,
         request,
+        ...(DETACHED_EXECUTION_RUN_CALLER_LIFECYCLE_METHODS.has(method)
+          ? { timeoutMs: null }
+          : {}),
         ...(opts?.signal ? { signal: opts.signal } : {}),
       });
     } catch (error) {
-      const runCreation = readMachineRpcRequestDisposition(error) === 'notSent'
+      const requestDisposition = readMachineRpcRequestDisposition(error);
+      const runCreation = requestDisposition === 'notSent'
         ? 'noRunCreated'
         : 'outcomeUnknown';
+      if (
+        method === SESSION_RPC_METHODS.EXECUTION_RUN_SEND
+        && requestDisposition !== 'notSent'
+      ) {
+        return failure(
+          'execution_run_send_outcome_unknown',
+          'outcomeUnknown',
+          'The execution-run input may have been accepted before its response failed',
+        );
+      }
       if (isExecutionRunActionAbort(error, opts?.signal)) {
         return failure('cancelled', runCreation);
       }
@@ -973,6 +1304,7 @@ export function createCliActionDeps(params: Readonly<{
 
   const readExecutionRunProtocolV2 = async (
     sessionId: string | null,
+    requirement: ExecutionRunProtocolV2Requirement,
     opts?: ExecutionRunActionTransportOptions,
   ): Promise<
     | Readonly<{ ok: true; exactMachineId: string }>
@@ -987,8 +1319,7 @@ export function createCliActionDeps(params: Readonly<{
     const target = await resolveExecutionRunMachineTarget(sessionId, opts);
     if (!target.ok) return executionRunActionFailure(target.errorCode);
     try {
-      const response = await callMachineRpc({
-        credentials: params.credentials,
+      const response = await callMachineAction({
         machineId: target.machineId,
         method: RPC_METHODS.CAPABILITIES_DETECT,
         request: { requests: [{ id: 'tool.executionRuns' }] },
@@ -1000,8 +1331,11 @@ export function createCliActionDeps(params: Readonly<{
       if (
         readRecord(result).ok !== true
         || data.protocolVersion !== 2
-        || features.detachedScope !== true
-        || features.startAndWait !== true
+        || (requirement.detachedScope && features.detachedScope !== true)
+        || (requirement.startAndWait && features.startAndWait !== true)
+        || (requirement.exactInputResults && features.exactInputResults !== true)
+        || (requirement.runScopedAgentBindings && features.runScopedAgentBindings !== true)
+        || (requirement.secretReferenceOverlay && features.secretReferenceOverlay !== true)
       ) {
         return executionRunActionFailure('execution_run_protocol_unsupported');
       }
@@ -1635,14 +1969,19 @@ export function createCliActionDeps(params: Readonly<{
   };
 
   return {
-    normalizeSessionSpawnNewLegacyApprovalReplay,
     resolveSessionSpawnAgentInventorySelection,
     scmActionExecute: executeSessionBoundScmAction,
     executionRunCheckProtocolV2: async (sessionId, requirement, opts) => {
-      if (!requirement.detachedScope && !requirement.startAndWait) {
+      if (
+        !requirement.detachedScope
+        && !requirement.startAndWait
+        && !requirement.exactInputResults
+        && !requirement.runScopedAgentBindings
+        && !requirement.secretReferenceOverlay
+      ) {
         return { ok: true };
       }
-      return await readExecutionRunProtocolV2(sessionId, opts);
+      return await readExecutionRunProtocolV2(sessionId, requirement, opts);
     },
     executionRunStart: async (sessionId, request, opts) => {
       if (sessionId === null) {
@@ -1659,6 +1998,17 @@ export function createCliActionDeps(params: Readonly<{
           ok: false,
           code: transport.code,
           ...(transport.candidates ? { candidates: transport.candidates } : {}),
+          details: withExecutionRunStartFailureDetails(undefined, 'noRunCreated'),
+        };
+      }
+      const admittedMachineId = normalizeStringValue(opts?.exactMachineId);
+      if (
+        admittedMachineId
+        && readExecutionRunTransportMachineId(transport) !== admittedMachineId
+      ) {
+        return {
+          ok: false,
+          code: 'execution_run_target_unavailable',
           details: withExecutionRunStartFailureDetails(undefined, 'noRunCreated'),
         };
       }
@@ -1727,27 +2077,13 @@ export function createCliActionDeps(params: Readonly<{
         ...(opts?.signal ? { signal: opts.signal } : {}),
       });
     },
-    executionRunSend: async (sessionId, request, opts) => {
-      if (sessionId === null) {
-        return await callDetachedExecutionRunRpc(
-          sessionId,
-          SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
-          request,
-          opts,
-        );
-      }
-      const transport = await resolveTransportForSession(sessionId);
-      if (!transport.ok) {
-        return { ok: false, code: transport.code, ...(transport.candidates ? { candidates: transport.candidates } : {}) };
-      }
-      return await sendExecutionRunMessage({
-        ...transport,
-        token: params.token,
-        sessionId: transport.sessionId,
+    detachedExecutionRunSend: async (sessionId, request, opts) =>
+      await callDetachedExecutionRunRpc(
+        sessionId,
+        SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
         request,
-        ...(opts?.signal ? { signal: opts.signal } : {}),
-      });
-    },
+        opts,
+      ),
     executionRunEnsure: async (sessionId, request, opts) => {
       if (sessionId === null) {
         return await callDetachedExecutionRunRpc(
@@ -1896,35 +2232,13 @@ export function createCliActionDeps(params: Readonly<{
       });
     },
     executionRunWait: async (sessionId, request, opts) => {
-      const pollIntervalMs = normalizeExecutionRunWaitPollIntervalMs(
-        (request as any)?.pollIntervalMs,
-        normalizeExecutionRunWaitPollIntervalMs(process.env.HAPPIER_SESSION_RUN_WAIT_POLL_INTERVAL_MS),
-      );
       if (sessionId === null) {
-        return await waitForExecutionRun({
-          runId: String((request as any)?.runId ?? ''),
-          timeoutMs: normalizeExecutionRunWaitTimeoutMs((request as any)?.timeoutSeconds),
-          pollIntervalMs,
-          ...(opts?.signal ? { signal: opts.signal } : {}),
-          readRun: async (getRequest) => {
-            const result = await callDetachedExecutionRunRpc(
-              sessionId,
-              SESSION_RPC_METHODS.EXECUTION_RUN_GET,
-              getRequest,
-              opts,
-            );
-            const record = readRecord(result);
-            if (record.ok === false) {
-              const code = normalizeStringValue(record.errorCode) ?? 'execution_run_target_unavailable';
-              return {
-                ok: false,
-                code,
-                ...(normalizeStringValue(record.error) ? { message: normalizeStringValue(record.error)! } : {}),
-              };
-            }
-            return { ok: true, data: result };
-          },
-        });
+        return await callDetachedExecutionRunRpc(
+          sessionId,
+          SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
+          request,
+          opts,
+        );
       }
       const transport = await resolveTransportForSession(sessionId);
       if (!transport.ok) {
@@ -1935,9 +2249,8 @@ export function createCliActionDeps(params: Readonly<{
         ...transport,
         token: params.token,
         sessionId: transport.sessionId,
-        runId: String((request as any)?.runId ?? ''),
-        timeoutMs: normalizeExecutionRunWaitTimeoutMs((request as any)?.timeoutSeconds),
-        pollIntervalMs,
+        runId: request.runId,
+        timeoutMs: normalizeExecutionRunWaitTimeoutMs(request.timeoutSeconds),
         ...(opts?.signal ? { signal: opts.signal } : {}),
       });
     },
@@ -2149,14 +2462,25 @@ export function createCliActionDeps(params: Readonly<{
       };
     },
 
-    sessionOpen: async ({ sessionId, actionRequestId, signal }) => {
+    sessionOpen: async ({ sessionId, serverId, actionRequestId, signal }) => {
       if (!params.credentials) return notSupported();
+      const exactServerId = normalizeStringValue(serverId);
+      const boundServerId = normalizeStringValue(params.serverId);
+      if (!exactServerId || !boundServerId || exactServerId !== boundServerId) {
+        return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+      }
       const transport = await resolveTransportForSession(sessionId);
       if (!transport.ok) {
         return { ok: false, errorCode: transport.code, error: transport.code };
       }
       if (transport.rawSession.active === true) {
-        return { ok: true, status: 'opened', sessionId: transport.sessionId };
+        return {
+          ok: true,
+          status: 'opened',
+          sessionId: transport.sessionId,
+          serverId: exactServerId,
+          address: { serverId: exactServerId, sessionId: transport.sessionId },
+        };
       }
       const localId = normalizeStringValue(actionRequestId) ?? `session.open:${transport.sessionId}`;
       const resumed = await resumeInactiveSessionTransport({
@@ -2165,7 +2489,13 @@ export function createCliActionDeps(params: Readonly<{
         ...(signal ? { signal } : {}),
       });
       return resumed.ok
-        ? { ok: true, status: 'opened', sessionId: transport.sessionId }
+        ? {
+            ok: true,
+            status: 'opened',
+            sessionId: transport.sessionId,
+            serverId: exactServerId,
+            address: { serverId: exactServerId, sessionId: transport.sessionId },
+          }
         : { ok: false, errorCode: resumed.code, error: resumed.message };
     },
     sessionFork: async ({
@@ -2256,8 +2586,7 @@ export function createCliActionDeps(params: Readonly<{
         return { type: 'error' as const, result: { ok: false, errorCode: 'invalid_input', error: 'invalid_input' } };
       }
       try {
-        return HandoffTargetReplacementPreflightResultV1Schema.parse(await callMachineRpc({
-          credentials: params.credentials,
+        return HandoffTargetReplacementPreflightResultV1Schema.parse(await callMachineAction({
           machineId: targetMachineId,
           method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT,
           request: {
@@ -2286,6 +2615,8 @@ export function createCliActionDeps(params: Readonly<{
       serverId,
       actionRequestId,
       handoffTargetReplacementApproval,
+      handoffTargetReplacementApprovalReceiptId,
+      handoffTargetReplacementApprovalActionInput,
       signal,
     }) => {
       if (!params.credentials) return notSupported();
@@ -2321,12 +2652,16 @@ export function createCliActionDeps(params: Readonly<{
           ...(serverId ? { accountServerId: serverId } : {}),
           ...(actionRequestId ? { actionRequestId } : {}),
           ...(handoffTargetReplacementApproval ? { handoffTargetReplacementApproval } : {}),
+          ...(handoffTargetReplacementApprovalReceiptId ? {
+            handoffTargetReplacementApprovalReceiptId,
+            handoffTargetReplacementApprovalActionInput,
+          } : {}),
         },
         ...(signal ? { signal } : {}),
       });
     },
     sessionSpawnNewAgentPolicyPreflight: async ({ input, policy }) => {
-      const requestedTarget = resolveSessionSpawnAgentTarget(input.agentTarget);
+      const requestedTarget = resolveSessionCreationAgentTarget(input.agentTarget);
       if (!requestedTarget) return { type: 'denied' as const, field: 'agentTarget' };
       const parentDirectory = await resolveCurrentSessionValue('path');
       const parentMachineId = await resolveCurrentSessionValue('machineId');
@@ -2394,10 +2729,15 @@ export function createCliActionDeps(params: Readonly<{
     sessionSpawnNew: async ({
       executionTarget,
       directory,
+      initialAccess,
+      primaryTeamId,
+      teamCredentialBindings,
       organizationPlacement,
+      placementOrigin,
       agentTarget,
       modelSelection,
       profileId,
+      secretReferenceOverlay,
       permissionMode,
       agentModeId,
       configuration: configurationSnapshot,
@@ -2441,6 +2781,8 @@ export function createCliActionDeps(params: Readonly<{
         : undefined;
 
       const directTargetTransport = params.sessionSpawnDirectTargetTransport;
+      let placementOriginSupported = Boolean(directTargetTransport);
+      let secretReferenceOverlaySupported = Boolean(directTargetTransport);
       if (
         directTargetTransport
         && directTargetTransport.machineId !== executionTarget.machineId
@@ -2479,11 +2821,38 @@ export function createCliActionDeps(params: Readonly<{
             'sessionSpawn',
           )
         ) {
+          if (initialAccess !== undefined || primaryTeamId !== undefined) {
+            return {
+              type: 'error', code: 'update_required', retryable: false,
+              details: new SessionInitialAccessUpdateRequiredError('daemon').details,
+            };
+          }
           return { type: 'error', code: 'incompatible_target', retryable: false };
         }
+        placementOriginSupported = supportsMachineOperationProtocolCapabilityV1(
+          targetCapabilityProjection.capabilities,
+          'sessionSpawnPlacementOrigin',
+        );
+        secretReferenceOverlaySupported = supportsMachineSessionSpawnProtocolVersionV1(
+          targetCapabilityProjection.capabilities,
+          2,
+        );
+      }
+      if (secretReferenceOverlay && !secretReferenceOverlaySupported) {
+        return {
+          type: 'error',
+          code: 'update_required',
+          retryable: false,
+          details: {
+            kind: 'update_required',
+            operation: 'session.spawn_new',
+            component: 'daemon',
+            reason: 'session_secret_reference_overlay_update_required',
+          },
+        };
       }
 
-      const resolvedAgentTarget = resolveSessionSpawnAgentTarget(agentTarget);
+      const resolvedAgentTarget = resolveSessionCreationAgentTarget(agentTarget);
       if (!resolvedAgentTarget) {
         return { type: 'error', code: 'target_unavailable', retryable: false };
       }
@@ -2492,6 +2861,9 @@ export function createCliActionDeps(params: Readonly<{
         ? await resolveSpawnConnectedServicesDefaultPayload({
             credentials: params.credentials,
             backendTarget,
+            ...(params.resolveTeamCredentialResourceCatalog
+              ? { resolveTeamCredentialResourceCatalog: params.resolveTeamCredentialResourceCatalog }
+              : {}),
           })
         : null;
       if (signal?.aborted) {
@@ -2617,6 +2989,7 @@ export function createCliActionDeps(params: Readonly<{
           agentTarget,
           modelSelection: resolvedModelSelection ?? null,
           profileId: profileId ?? null,
+          ...(secretReferenceOverlay ? { secretReferenceOverlay } : {}),
           requestedPermissionMode: resolvedPermissionMode ?? null,
           agentModeId: resolvedAgentModeId ?? null,
           configuration: configurationSnapshot ?? null,
@@ -2689,6 +3062,9 @@ export function createCliActionDeps(params: Readonly<{
         const created = await createSpawnedSession({
           credentials: params.credentials,
           directory: normalizedDirectory,
+          ...(initialAccess !== undefined ? { initialAccess } : {}),
+          ...(primaryTeamId !== undefined ? { primaryTeamId } : {}),
+          ...(teamCredentialBindings !== undefined ? { teamCredentialBindings } : {}),
           machineId: executionTarget.machineId,
           backendTarget,
           sessionCreationTag,
@@ -2698,8 +3074,10 @@ export function createCliActionDeps(params: Readonly<{
           ...(legacyMetadataLabel ? { legacyMetadataLabel } : {}),
           sessionCreationCorrespondence: correspondence,
           organizationPlacement: normalizedPlacement,
+          ...(placementOrigin && placementOriginSupported ? { placementOrigin } : {}),
           ...(resolvedModelSelection ? { modelSelection: resolvedModelSelection } : {}),
           ...(profileId ? { profileId } : {}),
+          ...(secretReferenceOverlay ? { secretReferenceOverlay } : {}),
           ...(resolvedPermissionMode ? { permissionMode: resolvedPermissionMode } : {}),
           ...(resolvedAgentModeId ? { agentModeId: resolvedAgentModeId } : {}),
           ...(normalizedConfigurationOverrides
@@ -2781,6 +3159,8 @@ export function createCliActionDeps(params: Readonly<{
           initialInput: created.initialInput,
         };
       } catch (error) {
+        const initialAccessFailure = projectSessionInitialAccessEnvelopeHostErrorResult(error);
+        if (initialAccessFailure) return initialAccessFailure;
         const code = error && typeof error === 'object'
           && typeof (error as { code?: unknown }).code === 'string'
           ? (error as { code: string }).code
@@ -2813,14 +3193,30 @@ export function createCliActionDeps(params: Readonly<{
         if (code === SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE) {
           return { type: 'error', code: 'incompatible_target', retryable: false };
         }
+        const details = readRecord(readRecord(error).details);
+        for (const candidate of [details, details.errorDetail, readRecord(details.spawnResponse).errorDetail]) {
+          const detail = normalizeSpawnSessionErrorDetail(candidate);
+          if (detail?.kind === 'update_required') {
+            return { type: 'error', code: 'update_required', retryable: false, details: detail };
+          }
+          if (detail?.kind === SPAWN_SESSION_ERROR_DETAIL_KINDS.PROVIDER_ERROR) {
+            return {
+              type: 'error', code: 'spawn_failed',
+              retryable: detail.providerError.retryable,
+              providerError: detail.providerError,
+            };
+          }
+        }
         return { type: 'error', code: 'spawn_failed', retryable: true };
       }
     },
     ...(approvalsStore ?? {}),
     ...inventoryDeps,
     sessionSendMessage: async ({
+      context,
       sessionId,
       message,
+      recipient,
       displayText,
       messageMeta,
       requestedAction,
@@ -2882,6 +3278,22 @@ export function createCliActionDeps(params: Readonly<{
               : {}),
             modelId: normalizedModelOverride,
           };
+
+      const externalActionRequest = context?.externalActionCredential !== undefined
+        || context?.externalActionExecutionAuthorization !== undefined;
+      const resolveAuthorizationHeaders = externalActionRequest
+        ? (request: Readonly<{ method: string; path: string; body?: unknown }>) =>
+            resolveServerRequestHeaders(context, 'session.message.send', request)
+        : undefined;
+      if (resolveAuthorizationHeaders && !resolveAuthorizationHeaders({
+          method: 'GET',
+          path: '/v1/account/encryption/currentness',
+        })) {
+        return {
+          status: 'rejected' as const,
+          code: 'session_input_unauthorized' as const,
+        };
+      }
 
       if (
         pluginCaller
@@ -3025,6 +3437,7 @@ export function createCliActionDeps(params: Readonly<{
           credentials: params.credentials,
           idOrPrefix: sessionId,
           message: admittedMessageText,
+          ...(recipient ? { recipient } : {}),
           requestedAction,
           wait: normalizedWait,
           timeoutMs: normalizedTimeoutSeconds * 1000,
@@ -3048,15 +3461,22 @@ export function createCliActionDeps(params: Readonly<{
           ...(params.machineAdmissionTransport
             ? { machineAdmissionTransport: params.machineAdmissionTransport }
             : {}),
+          ...(resolveAuthorizationHeaders ? { resolveAuthorizationHeaders } : {}),
+          ...(params.machineActionDirectTargetTransport
+            ? { machineResumeTransport: params.machineActionDirectTargetTransport.invoke }
+            : {}),
           ...(modelSelectionInput ? { modelSelectionInput } : {}),
           ...(signal ? { signal } : {}),
         });
-        if (!protectedResult.ok) return protectedResult.admissionResult;
+        const admissionResult = projectSessionMessageSendActionResult(protectedResult);
+        if (!admissionResult) {
+          return { status: 'rejected' as const, code: 'session_input_target_unavailable' as const };
+        }
+        if (!protectedResult.ok) return admissionResult;
         const canonicalSessionId = typeof protectedResult.sessionId === 'string'
           && protectedResult.sessionId.trim().length > 0
           ? protectedResult.sessionId
           : sessionId;
-        const admissionResult = protectedResult.admissionResult;
         if (
           composerAttachmentRegistry
           && (admissionResult.status === 'accepted' || admissionResult.status === 'alreadyAccepted')
@@ -3079,22 +3499,39 @@ export function createCliActionDeps(params: Readonly<{
         return admissionResult;
       }
 
+      const executionRunLocalId = recipient?.kind === 'execution_run'
+        ? (typeof localId === 'string' && localId.trim().length > 0 ? localId : randomUUID())
+        : undefined;
       const result = await sendSessionMessage({
         credentials: params.credentials,
         idOrPrefix: sessionId,
         message: String(message ?? ''),
+        ...(recipient ? { recipient } : {}),
+        ...(messageMeta || displayText ? {
+          messageMeta: { ...(messageMeta ?? {}), ...(displayText ? { displayText } : {}) },
+        } : {}),
         requestedAction,
         wait: normalizedWait,
         timeoutMs: normalizedTimeoutSeconds * 1000,
         // A caller-retained localId makes an ambiguous send retryable: the
         // durable pending queue is keyed by it, so resubmitting rejoins the
         // existing input instead of enqueuing a second message.
-        ...(typeof localId === 'string' && localId.trim().length > 0 ? { localId } : {}),
+        ...(executionRunLocalId
+          ? { localId: executionRunLocalId }
+          : typeof localId === 'string' && localId.trim().length > 0
+            ? { localId }
+            : {}),
         ...(normalizedPermissionModeOverride ? { permissionModeOverride: normalizedPermissionModeOverride } : {}),
         ...(modelSelectionInput ? { modelSelectionInput } : {}),
+        ...(resolveAuthorizationHeaders ? { resolveAuthorizationHeaders } : {}),
+        ...(params.machineActionDirectTargetTransport
+          ? { machineResumeTransport: params.machineActionDirectTargetTransport.invoke }
+          : {}),
         ...(signal ? { signal } : {}),
       });
+      const admissionResult = projectSessionMessageSendActionResult(result);
       if (!result.ok) {
+        if (admissionResult) return admissionResult;
         return {
           ok: false,
           errorCode: result.code,
@@ -3108,7 +3545,10 @@ export function createCliActionDeps(params: Readonly<{
         ? result.sessionId
         : sessionId;
       await dispatchMessageHook(canonicalSessionId, 'user');
-      return result;
+      // A successful send always projects an accepted admission from its
+      // resolved local id, even for the legacy unprotected writer response.
+      if (!admissionResult) throw new Error('Successful Session send is missing its admission projection');
+      return admissionResult;
     },
 
     sessionStop: async ({ sessionId }) => {
@@ -3118,7 +3558,7 @@ export function createCliActionDeps(params: Readonly<{
       return await requestSessionStop({ credentials: params.credentials, idOrPrefix: sessionId });
     },
 
-    sessionTitleSet: async ({ sessionId, title }) => {
+    sessionTitleSet: async ({ context, sessionId, title }) => {
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
@@ -3126,7 +3566,20 @@ export function createCliActionDeps(params: Readonly<{
       if (!normalizedTitle) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
-      const res = await setSessionTitle({ credentials: params.credentials, idOrPrefix: sessionId, title: normalizedTitle });
+      const resolveAuthorizationHeaders = (request: Readonly<{
+        method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+      }>) => resolveServerRequestHeaders(context, 'session.title.set', request);
+      if (!resolveAuthorizationHeaders({
+        method: 'GET', path: '/v1/account/encryption/currentness',
+      })) {
+        return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      }
+      const res = await setSessionTitle({
+        credentials: params.credentials,
+        idOrPrefix: sessionId,
+        title: normalizedTitle,
+        resolveAuthorizationHeaders,
+      });
       if (!res.ok) {
         return { ok: false, errorCode: res.code, error: res.code, ...(res.candidates ? { candidates: res.candidates } : {}) };
       }
@@ -3154,19 +3607,21 @@ export function createCliActionDeps(params: Readonly<{
       return { ok: true, sessionId: res.sessionId, permissionMode: parsed, updatedAt };
     },
 
-    sessionModelSet: async ({ sessionId, modelId, providerConnectionId }) => {
+    sessionModelSet: async ({ sessionId, modelId, providerConnectionId, teamCredentialModel, teamVisibilityGrantConsent }) => {
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
       const normalizedModelId = String(modelId ?? '').trim();
-      if (!normalizedModelId) {
+      if (!normalizedModelId && teamCredentialModel === undefined) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
       const res = await setSessionModel({
         credentials: params.credentials,
         idOrPrefix: sessionId,
-        modelId: normalizedModelId,
+        ...(normalizedModelId ? { modelId: normalizedModelId } : {}),
         ...(providerConnectionId !== undefined ? { providerConnectionId } : {}),
+        ...(teamCredentialModel !== undefined ? { teamCredentialModel } : {}),
+        ...(teamVisibilityGrantConsent !== undefined ? { teamVisibilityGrantConsent } : {}),
       });
       if (!res.ok) {
         const errorCode = 'code' in res ? res.code : res.status;
@@ -3179,8 +3634,9 @@ export function createCliActionDeps(params: Readonly<{
             ? {
                 details: {
                   status: res.status,
-                  activeSelection: res.activeSelection,
-                  requestedSelection: res.requestedSelection,
+                  activeSelection: 'activeSelection' in res ? res.activeSelection : undefined,
+                  requestedSelection: 'requestedSelection' in res ? res.requestedSelection : undefined,
+                  requestedTeamSelection: 'requestedTeamSelection' in res ? res.requestedTeamSelection : undefined,
                   ...('reason' in res && res.reason ? { reason: res.reason } : {}),
                 },
               }
@@ -3192,7 +3648,7 @@ export function createCliActionDeps(params: Readonly<{
           ok: true,
           status: res.status,
           sessionId: res.sessionId,
-          modelId: res.selection.modelId,
+          modelId: 'ref' in res.selection ? res.selection.ref.modelId : res.selection.modelId,
           selection: res.selection,
           updatedAt: res.updatedAt,
         };
@@ -3354,6 +3810,7 @@ export function createCliActionDeps(params: Readonly<{
 	    },
 
     sessionTranscriptGet: async ({
+      context,
       sessionId,
       projection,
       callerPluginId,
@@ -3376,8 +3833,17 @@ export function createCliActionDeps(params: Readonly<{
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', errorMessage: 'not_authenticated' };
       }
+      const resolveAuthorizationHeaders = (request: Readonly<{
+        method: 'GET' | 'POST'; path: string; body?: unknown;
+      }>) => resolveServerRequestHeaders(context, 'session.transcript.get', request);
+      if (!resolveAuthorizationHeaders({
+        method: 'GET', path: '/v1/account/encryption/currentness',
+      })) {
+        return { ok: false, errorCode: 'not_authenticated', errorMessage: 'not_authenticated' };
+      }
       return await getSessionTranscript({
         credentials: params.credentials,
+        resolveAuthorizationHeaders,
         idOrPrefix: sessionId,
         ...(projection ? { projection } : {}),
         ...(callerPluginId ? { callerPluginId } : {}),
@@ -3793,49 +4259,160 @@ export function createCliActionDeps(params: Readonly<{
       }
       return { ok: true, sessionId: res.sessionId, modeId: normalizedModeId, updatedAt };
     },
-    sessionList: async ({ limit, cursor, activeOnly, archivedOnly, includeSystem, resumableOnly, includeRows, includeLastMessagePreview }) => {
-      if (!params.credentials) {
-        return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+    sessionBoardAction: params.credentials
+      ? createSessionBoardActionDeps({
+          credentials: params.credentials,
+          ...(params.resolveServerFeaturesSnapshot
+            ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
+            : {}),
+          ...exactHome,
+          ...(params.serverIdentityId ? { serverIdentityId: params.serverIdentityId } : {}),
+          ...(params.externalActionMachineRequestPrivateKey
+            ? { externalActionMachineRequestPrivateKey: params.externalActionMachineRequestPrivateKey }
+            : {}),
+          ...(params.externalActionMachineInstallationId
+            ? { externalActionMachineInstallationId: params.externalActionMachineInstallationId }
+            : {}),
+        }).sessionBoardAction
+      : async () => ({ ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' }),
+
+    currentSessionPresentationApply: async ({ input, context, signal }) => {
+      const sessionId = normalizeStringValue(context.defaultSessionId);
+      if (!sessionId) {
+        return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
       }
-      const normalizedActiveOnly = activeOnly === true;
-      const normalizedArchivedOnly = archivedOnly === true;
-      if (normalizedActiveOnly && normalizedArchivedOnly) {
-        return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+      const operationId = normalizeStringValue(context.actionRequestId);
+      if (!operationId) {
+        return { ok: false, errorCode: 'action_request_id_required', error: 'action_request_id_required' };
       }
-      const res = await listSessions({
-        credentials: params.credentials,
-        activeOnly: normalizedActiveOnly,
-        archivedOnly: normalizedArchivedOnly,
-        includeSystem: includeSystem === true,
-        resumableOnly: resumableOnly === true,
-        includeRows: includeRows === true,
-        includeLastMessagePreview: includeLastMessagePreview === true,
-        ...(typeof limit === 'number' ? { limit } : {}),
-        ...(typeof cursor === 'string' && cursor.trim().length > 0 ? { cursor: cursor.trim() } : {}),
-      });
-      return res;
+      const presentation = resolveCurrentSessionUiBinding(sessionId)?.presentation;
+      if (!presentation) {
+        return {
+          ok: false,
+          errorCode: 'current_session_presentation_unavailable',
+          error: 'current_session_presentation_unavailable',
+        };
+      }
+
+      const result = await presentation.present(
+        { operationId, intent: input.intent },
+        signal ? { signal } : undefined,
+      );
+      if (result.status === 'outcomeUnknown') {
+        return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+      }
+      // `applied`/`unchanged` and `conflict`/`unavailable` each share one
+      // constituent, so the carried evidence — not the status literal — is what
+      // separates a settled revision from a diagnosed refusal.
+      if ('diagnostic' in result) {
+        const errorCode = result.diagnostic.code;
+        return { ok: false, errorCode, error: errorCode };
+      }
+      return result;
     },
 
-    sessionActivityGet: async ({ sessionId }) => {
+    sessionDiscussionAction: params.credentials
+      ? createSessionDiscussionActionDeps({
+          credentials: params.credentials,
+          ...(params.resolveServerFeaturesSnapshot
+            ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
+            : {}),
+          ...exactHome,
+          ...(params.serverIdentityId ? { serverIdentityId: params.serverIdentityId } : {}),
+          ...(params.externalActionMachineRequestPrivateKey
+            ? { externalActionMachineRequestPrivateKey: params.externalActionMachineRequestPrivateKey }
+            : {}),
+          ...(params.externalActionMachineInstallationId
+            ? { externalActionMachineInstallationId: params.externalActionMachineInstallationId }
+            : {}),
+        }).sessionDiscussionAction
+      : async () => ({ ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' }),
+
+    sessionList: params.credentials
+      ? createSessionListActionDependency({
+          credentials: params.credentials,
+          ...(params.actionsSettingsProvider?.getAccountSettings
+            ? { resolveAccountSettings: params.actionsSettingsProvider.getAccountSettings }
+            : {}),
+          ...(params.serverId ? { serverId: params.serverId } : {}),
+          ...(params.serverIdentityId ? { serverIdentityId: params.serverIdentityId } : {}),
+          ...(params.serverHttpBaseUrl ? { serverHttpBaseUrl: params.serverHttpBaseUrl } : {}),
+          ...(params.externalActionMachineRequestPrivateKey
+            ? { externalActionMachineRequestPrivateKey: params.externalActionMachineRequestPrivateKey }
+            : {}),
+          ...(params.externalActionMachineInstallationId
+            ? { externalActionMachineInstallationId: params.externalActionMachineInstallationId }
+            : {}),
+        })
+      : async () => ({ ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' }),
+
+    sessionActivityGet: async ({ context, sessionId, view, windowSeconds, signal }) => {
       if (!params.credentials) {
         return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       }
-      const session = await fetchSessionByIdCompat({ token: params.credentials.token, sessionId }).catch(() => null);
+      if (windowSeconds !== undefined) {
+        return {
+          ok: false,
+          errorCode: 'unsupported_action',
+          error: 'unsupported_action:session.activity.get.windowSeconds',
+        };
+      }
+      const resolveAuthorizationHeaders = (request: Readonly<{
+        method: 'GET'; path: string;
+      }>) => resolveServerRequestHeaders(context, 'session.activity.get', request);
+      const currentnessAuthorizationHeaders = resolveAuthorizationHeaders({
+        method: 'GET', path: '/v1/account/encryption/currentness',
+      });
+      if (!currentnessAuthorizationHeaders) {
+        return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      }
+      signal?.throwIfAborted();
+      const serverFeaturesSnapshot = await readServerFeaturesSnapshot();
+      signal?.throwIfAborted();
+      const session = await fetchSessionByIdCompat({
+        token: params.credentials.token,
+        sessionId,
+        resolveAuthorizationHeaders,
+        ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+        signal,
+      });
       if (!session) {
         return { ok: false, errorCode: 'session_not_found', error: 'session_not_found', sessionId };
       }
+      const currentness = await fetchAccountEncryptionCurrentness({
+        token: params.credentials.token,
+        authorizationHeaders: currentnessAuthorizationHeaders,
+        signal,
+      });
+      signal?.throwIfAborted();
+      const awareness = projectCliSessionAwarenessV1({
+        credentials: params.credentials,
+        accountEncryption: currentness,
+        row: session,
+        nowMs: Date.now(),
+      });
+      // The requested representation, from the one projector this Action already derives its
+      // released booleans from. Omission keeps the compatibility digest below.
+      if (view === SESSION_LIST_AWARENESS_VIEW_V1) return awareness;
       return {
-        ok: true,
-        sessionId,
-        active: Boolean(session.active),
-        updatedAt: typeof (session as any).updatedAt === 'number' ? (session as any).updatedAt : null,
-        pendingCount: typeof (session as any).pendingCount === 'number' ? (session as any).pendingCount : 0,
-        pendingPermissionRequestCount: typeof (session as any).pendingPermissionRequestCount === 'number'
-          ? (session as any).pendingPermissionRequestCount
-          : 0,
-        pendingUserActionRequestCount: typeof (session as any).pendingUserActionRequestCount === 'number'
-          ? (session as any).pendingUserActionRequestCount
-          : 0,
+        ...projectSessionActivityCompatibilityV1({
+          awareness,
+          facts: {
+            // V2 Session rows do not carry the UI presence channel. Preserve that absence rather
+            // than fabricating online/offline reachability from the orthogonal `active` fact.
+            presence: null,
+            active: session.active,
+            thinking: session.thinking === true,
+            updatedAt: session.updatedAt,
+            // No `permissionRequestIds`: this path reads a V2 row, which carries pending counts
+            // but no request identities. The released CLI/daemon response never had the field.
+          },
+        }),
+        // cli-v0.2.11 and the current 0.2 daemon expose these ancillary raw counts.
+        // Keep that response seam while status meaning comes only from awareness.
+        pendingCount: session.pendingCount ?? 0,
+        pendingPermissionRequestCount: session.pendingPermissionRequestCount ?? 0,
+        pendingUserActionRequestCount: session.pendingUserActionRequestCount ?? 0,
       };
     },
 
@@ -3956,6 +4533,49 @@ export function createCliActionDeps(params: Readonly<{
     ...(automationEventAction ? {
       automationEventAction: async (args) => await automationEventAction(args),
     } : {}),
+
+    workflowAction: async (args) => {
+      if (!workflowAction) {
+        return { ok: false, errorCode: 'content_unavailable', error: 'content_unavailable' };
+      }
+      try {
+        let context = args.context;
+        const isTrustedCallingSession = normalizeStringValue(args.context.defaultSessionId) === normalizeStringValue(params.sessionId);
+        if (args.actionId === 'workflow.run.start'
+          && isTrustedCallingSession
+          && !(context.externalActionTarget?.kind === 'machine' && context.externalActionTarget.project)) {
+          const [machineId, directory] = await Promise.all([
+            resolveCurrentSessionValue('machineId'),
+            resolveCurrentSessionValue('path'),
+          ]);
+          if (!machineId || !directory) throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable' });
+          context = {
+            ...context,
+            externalActionTarget: {
+              kind: 'machine',
+              machineId,
+              project: { machineId, directory },
+            },
+          };
+        }
+        return await workflowAction({ ...args, context } as Parameters<typeof workflowAction>[0]);
+      } catch (error) {
+        const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+          ? (error as { code: string }).code
+          : 'content_unavailable';
+        const failure = WorkflowActionFailureV1Schema.safeParse({
+          ok: false,
+          errorCode: code,
+          error: error instanceof Error ? error.message : code,
+          ...(error && typeof error === 'object' && 'details' in error
+            ? { details: error.details }
+            : {}),
+        });
+        return failure.success
+          ? failure.data
+          : { ok: false, errorCode: 'content_unavailable', error: 'content_unavailable' };
+      }
+    },
 
     automationConversationAction: async (args) => automationConversationAction
       ? await automationConversationAction(args)

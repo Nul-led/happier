@@ -2,25 +2,37 @@ import type { CommandContext } from '@/cli/commandRegistry';
 
 const scripts = Object.freeze({
   bash: `_happier_completion() {
-  local IFS=$'\\n'
-  COMPREPLY=($(happier completion candidates -- "\${COMP_WORDS[@]:1}"))
+  local candidate
+  COMPREPLY=()
+  while IFS= read -r candidate; do
+    COMPREPLY+=("$candidate")
+  done < <(happier completion candidates -- "\${COMP_WORDS[@]:1}" 2>/dev/null)
 }
 complete -F _happier_completion happier`,
   zsh: `#compdef happier
 _happier_completion() {
   local -a candidates
-  candidates=("\${(@f)$(happier completion candidates -- "\${words[@]:2}")}")
+  candidates=("\${(@f)$(happier completion candidates -- "\${words[@]:1}" 2>/dev/null)}")
   compadd -- "\${candidates[@]}"
 }
 compdef _happier_completion happier`,
   fish: `function __happier_completion
-  happier completion candidates -- (commandline -opc | string split ' ')[2..]
+  set -l words (commandline -xpc)
+  happier completion candidates -- $words[2..] 2>/dev/null
 end
 complete -c happier -f -a '(__happier_completion)'`,
   powershell: `Register-ArgumentCompleter -Native -CommandName happier -ScriptBlock {
   param($wordToComplete, $commandAst, $cursorPosition)
-  $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text })
-  happier completion candidates -- @words | Where-Object { $_ -like "$wordToComplete*" }
+  $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {
+    $element = $_
+    # Dequote literal strings, but never evaluate expandable AST nodes during completion.
+    if ($element -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+      $element.Value
+    } else {
+      $element.Extent.Text
+    }
+  })
+  happier completion candidates -- @words 2>$null
 }`,
 });
 
@@ -28,10 +40,15 @@ export async function handleCompletionCliCommand(context: CommandContext): Promi
   const args = context.args.slice(1);
   if (args[0] === 'candidates') {
     const { ensureMergedAgentCommandRegistryLoaded, resolveCommandCompletionCandidates } = await import('@/cli/commandRegistry');
+    const { resolveActionDynamicOptionsForCliCompletion } = await import('./completionDynamicOptions');
+    const { resolveActionDefinitionForCliCompletion } = await import('./actions');
     await ensureMergedAgentCommandRegistryLoaded();
     const separator = args.indexOf('--');
     const words = separator >= 0 ? args.slice(separator + 1) : args.slice(1);
-    const candidates = resolveCommandCompletionCandidates(words);
+    const candidates = await resolveCommandCompletionCandidates(words, {
+      resolveDynamicOptions: resolveActionDynamicOptionsForCliCompletion,
+      resolveDynamicActionDefinition: resolveActionDefinitionForCliCompletion,
+    });
     if (candidates.length > 0) process.stdout.write(`${candidates.join('\n')}\n`);
     return;
   }

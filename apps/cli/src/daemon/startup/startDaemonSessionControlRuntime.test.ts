@@ -40,16 +40,17 @@ import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import {
     buildBackendTargetKeyV2,
     buildConnectedServiceCredentialRecord,
+    buildQualifiedPluginContributionKey,
     buildProviderAccountUsageRecordId,
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
     createProviderBindingSecurityFingerprintV1,
     createProviderMachineGrantFingerprintV1,
     AccountSettingsSchema,
     ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1,
-    ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
     DEFAULT_PROVIDER_SETTINGS_V1,
     FeaturesResponseSchema,
     createPlainSessionOwnerMetadataEnvelopeV1,
+    deriveAccountMachineKeyFromRecoverySecret,
     ProviderConnectionIdSchema,
     ProviderRuntimeBindingBasisV1Schema,
     ProviderSettingsV1Schema,
@@ -61,6 +62,7 @@ import {
     DEFAULT_SIMULATOR_STREAM_CONTROLS_V1,
     type SimulatorDeviceResourceV1,
     type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ProviderAccountUsageSnapshotV1,
     type AccountSettings,
     type SessionPendingEnqueueByMachineRequestV1,
@@ -78,6 +80,10 @@ import {
     type PluginUiArtifactDigestV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import {
+    openExternalActionResponseV2,
+    sealExternalActionRequestV2,
+} from '@happier-dev/protocol/actions';
 import { COMPOSER_SOURCE_REF_PRIVATE_META_FIELD_V1 } from '@happier-dev/protocol/plugins/ui/composerRef';
 import {
     createResolvedContributionRegistry,
@@ -114,6 +120,7 @@ import {
 } from './startDaemonSessionControlRuntime';
 import { executeSpawnSessionRequest } from './executeSpawnSessionRequest';
 import { startDaemonControlServer } from '../controlServer';
+import { executeExternalAction } from '../externalActions/executeExternalAction';
 import type { ExternalSessionHostOperationOwner } from '@/session/external/hostOperationOwner';
 import * as sessionRunnerRespawnModule from '../processSupervision/sessionRunnerRespawn';
 import { resolveSessionRunnerRestartEligibility } from '../sessionRunnerRuntime/resolveRestartEligibility';
@@ -268,7 +275,7 @@ const runtimeAuthRefreshRequest = {
 
 it('commits the accepted hot-apply target before stale bootstrap state can supersede its exact report', async () => {
     const binding = {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
             'openai-codex': {
                 source: 'connected',
@@ -277,7 +284,7 @@ it('commits the accepted hot-apply target before stale bootstrap state can super
                 profileId: 'primary',
             },
         },
-    } satisfies ConnectedServiceBindingsV1;
+    } satisfies ConnectedServiceBindingsV2;
     const selectionA = {
         kind: 'group',
         serviceId: 'openai-codex',
@@ -399,7 +406,7 @@ it('unregisters the canonical hot-apply target when a post-registration consumer
         agentId: 'codex',
         materializationIdentity: connectedServiceMaterializationIdentity,
         registry,
-        acceptedConnectedServicesBindingsRaw: { v: 1, bindingsByServiceId: {} },
+        acceptedConnectedServicesBindingsRaw: { v: 2, bindingsByServiceId: {} },
         acceptedConnectedServiceSelectionsEnv: environment,
         afterRegister: () => { throw new Error('consumer registration failed'); },
     })).rejects.toThrow('consumer registration failed');
@@ -438,6 +445,8 @@ const CODEX_QUALIFIED_SERVICE = {
     pluginId: 'happier.agent.codex',
     localId: 'openai-codex',
 } as const;
+/** Canonical binding/generation map key the current owners emit for that service. */
+const CODEX_QUALIFIED_SERVICE_KEY = buildQualifiedPluginContributionKey(CODEX_QUALIFIED_SERVICE);
 const connectedAccountRequestAuthServiceDependenciesCapture = vi.hoisted(() => ({
     current: null as ConnectedAccountRequestAuthServiceDependencies | null,
 }));
@@ -518,8 +527,10 @@ type StartDaemonSessionControlRuntimeTestParams = Omit<
     Parameters<typeof startDaemonSessionControlRuntimeRaw>[0],
     | 'daemonSessionMutationCustody'
     | 'cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop'
+    | 'serverId'
     | 'serverBaseUrl'
 > & Readonly<{
+    serverId?: string;
     serverBaseUrl?: string;
     daemonSessionMutationCustody?: Pick<Parameters<
         typeof startDaemonSessionControlRuntimeRaw
@@ -535,6 +546,7 @@ const startDaemonSessionControlRuntime = async (
 ): ReturnType<typeof startDaemonSessionControlRuntimeRaw> => (
     await startDaemonSessionControlRuntimeRaw({
         ...params,
+        serverId: params.serverId ?? configuration.activeServerId,
         serverBaseUrl: params.serverBaseUrl ?? configuration.apiServerUrl,
         cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop:
             params.cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop ?? (async () => null),
@@ -604,7 +616,7 @@ const applyConnectedServiceAuthGenerationToTrackedSessionMock = vi.hoisted(() =>
     ok: true,
     action: 'hot_applied',
     normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
             'openai-codex': {
                 source: 'connected',
@@ -857,6 +869,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 vi.mock('@/api/session/pendingQueueV2Transport', () => ({
+    readPendingQueueV2MessageContentByLocalIdFromServer: vi.fn(async () => null),
     materializeNextPendingQueueV2MessageViaHttp: vi.fn(async () => ({
         didMaterialize: false,
         localId: null,
@@ -1353,6 +1366,7 @@ describe('startDaemonSessionControlRuntime', () => {
             resetInMemoryAccountSettingsContextForTests();
         });
         const runtimeActionExecute = vi.fn(async () => ({ ok: true }));
+        const workflowAcceptedAuthorizationCurrentness = vi.fn(async () => true);
         const externalSessionHostAction = vi.fn(async () => ({
             ok: true as const,
             result: { items: [], nextCursor: null },
@@ -1378,6 +1392,7 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginId: 'happier.agent.codex',
             localId: 'codex',
         } as const;
+        const legacySecret = new Uint8Array(32).fill(1);
         const startParams = {
             machineId: 'machine-external-action-ingress',
             credentials: {
@@ -1385,11 +1400,10 @@ describe('startDaemonSessionControlRuntime', () => {
                 credentialProvenance: 'stored_session' as const,
                 encryption: {
                     type: 'legacy' as const,
-                    secret: new Uint8Array(32).fill(1),
+                    secret: legacySecret,
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -1408,8 +1422,10 @@ describe('startDaemonSessionControlRuntime', () => {
             // These are daemon-owned lifecycle facts. The HTTP request never
             // provides either Account or machine-placement authority.
             externalActionAccountId: 'account-external-action-ingress',
+            serverId: configuration.activeServerId,
             serverBaseUrl: 'https://daemon-current.example.test/',
             runtimeActionExecute,
+            workflowAcceptedAuthorizationCurrentness,
             currentMachineHost: 'daemon-host',
             currentMachineHomeDir: '/home/daemon',
             resolveCurrentMachineExecutionOriginContext: vi.fn(async () => ({
@@ -1431,12 +1447,15 @@ describe('startDaemonSessionControlRuntime', () => {
                 .mock.calls.at(-1)?.[0];
             const externalActionApi = controlInput?.externalActionApi;
             expect(externalActionApi).toEqual(expect.objectContaining({
-                currentServerId: configuration.activeServerId,
+                currentServerId: 'server-test',
                 verifyPat: expect.any(Function),
                 resolveTarget: expect.any(Function),
                 executor: expect.objectContaining({ execute: expect.any(Function) }),
             }));
-            await expect(externalActionApi?.resolveTarget({
+            if (!externalActionApi) throw new Error('Expected daemon external Action API');
+            const resolveEncryption = externalActionApi.resolveEncryption;
+            if (!resolveEncryption) throw new Error('Expected daemon external Action encryption resolver');
+            await expect(externalActionApi.resolveTarget({
                 actionId: 'session.status.get',
                 target: { kind: 'machine', machineId: 'machine-external-action-ingress' },
                 currentMachineId: 'machine-external-action-ingress',
@@ -1445,6 +1464,112 @@ describe('startDaemonSessionControlRuntime', () => {
                 machineId: 'machine-external-action-ingress',
             });
 
+            const encryption = await resolveEncryption();
+            expect(encryption).toEqual({
+                serverIdentityId: 'srv_external_action_account',
+                material: {
+                    type: 'dataKey',
+                    machineKey: deriveAccountMachineKeyFromRecoverySecret(
+                        legacySecret,
+                    ),
+                },
+            });
+            if (!encryption) throw new Error('Expected legacy external Action encryption material');
+            const protectedBinding = {
+                serverIdentityId: encryption.serverIdentityId,
+                accountId: 'account-external-action-ingress',
+                credentialId: '11111111-1111-4111-8111-111111111111',
+                actionId: 'session.activity.get',
+                requestId: 'legacy-protected-action',
+                target: {
+                    kind: 'machine' as const,
+                    machineId: 'machine-external-action-ingress',
+                },
+            };
+            const protectedRequest = sealExternalActionRequestV2({
+                binding: protectedBinding,
+                input: { sessionId: 'session-protected' },
+                material: encryption.material,
+                randomBytes: (length) => new Uint8Array(length).fill(7),
+            });
+            const protectedResult = await executeExternalAction({
+                actionId: protectedBinding.actionId,
+                envelope: protectedRequest,
+                principal: {
+                    accountId: protectedBinding.accountId,
+                    principalId: protectedBinding.accountId,
+                    credentialId: protectedBinding.credentialId,
+                    authority: 'account_automation',
+                },
+                currentMachineId: protectedBinding.target.machineId,
+                resolveEncryption,
+                resolveTarget: externalActionApi.resolveTarget,
+                executor: {
+                    execute: async () => {
+                        throw new Error('expected protected test stop');
+                    },
+                },
+            });
+            expect(protectedResult.kind).toBe('response');
+            if (protectedResult.kind !== 'response') {
+                throw new Error('Expected protected external Action response');
+            }
+            expect(protectedResult.response.v).toBe(2);
+            expect(openExternalActionResponseV2({
+                envelope: protectedResult.response,
+                binding: protectedBinding,
+                request: protectedRequest,
+                material: encryption.material,
+            })).toEqual({
+                ok: false,
+                errorCode: 'target_not_local',
+                error: 'target_not_local',
+            });
+            const wrongHomeBinding = {
+                ...protectedBinding,
+                serverIdentityId: 'srv_different_home',
+                requestId: 'legacy-protected-action-wrong-home',
+            };
+            const wrongHomeRequest = sealExternalActionRequestV2({
+                binding: wrongHomeBinding,
+                input: { sessionId: 'session-protected' },
+                material: encryption.material,
+                randomBytes: (length) => new Uint8Array(length).fill(8),
+            });
+            await expect(executeExternalAction({
+                actionId: wrongHomeBinding.actionId,
+                envelope: wrongHomeRequest,
+                principal: {
+                    accountId: wrongHomeBinding.accountId,
+                    principalId: wrongHomeBinding.accountId,
+                    credentialId: wrongHomeBinding.credentialId,
+                    authority: 'account_automation',
+                },
+                currentMachineId: wrongHomeBinding.target.machineId,
+                resolveEncryption,
+                resolveTarget: externalActionApi.resolveTarget,
+                executor: {
+                    execute: async () => {
+                        throw new Error('wrong-Home material cannot execute');
+                    },
+                },
+            })).resolves.toEqual({
+                kind: 'invalid_request',
+                errorCode: 'invalid_encrypted_envelope',
+                requestId: wrongHomeBinding.requestId,
+            });
+            startParams.credentials.encryption.secret = new Uint8Array(31);
+            await expect(resolveEncryption()).resolves.toBeNull();
+            startParams.credentials.encryption.secret = legacySecret;
+            Object.assign(startParams.credentials, { encryption: null });
+            await expect(resolveEncryption()).resolves.toBeNull();
+            Object.assign(startParams.credentials, {
+                encryption: { type: 'legacy' as const, secret: legacySecret },
+            });
+            startParams.resolveCurrentMachineExecutionOriginContext.mockResolvedValueOnce(null as never);
+            await expect(resolveEncryption()).resolves.toBeNull();
+
+            const externalActionPat = `hap_v1_11111111-1111-4111-8111-111111111111_${'A'.repeat(43)}`;
             const patIntrospectionPost = vi.spyOn(axios, 'post').mockResolvedValueOnce({
                 status: 200,
                 data: {
@@ -1456,7 +1581,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             });
             onTestFinished(() => patIntrospectionPost.mockRestore());
-            await expect(externalActionApi?.verifyPat('pat-external-action-ingress')).resolves.toEqual({
+            await expect(externalActionApi.verifyPat(externalActionPat)).resolves.toEqual({
                 ok: true,
                 accountId: 'account-external-action-ingress',
                 principalId: 'account-external-action-ingress',
@@ -1466,7 +1591,7 @@ describe('startDaemonSessionControlRuntime', () => {
             });
             expect(patIntrospectionPost).toHaveBeenCalledWith(
                 `https://daemon-current.example.test${ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1}`,
-                { token: 'pat-external-action-ingress' },
+                { token: externalActionPat },
                 expect.objectContaining({
                     headers: expect.objectContaining({
                         Authorization: 'Bearer token-daemon',
@@ -1474,22 +1599,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 }),
             );
 
-            const accountApiTokensPost = vi.spyOn(axios, 'post').mockResolvedValueOnce({
-                status: 200,
-                data: {
-                    tokens: [{
-                        tokenId: '11111111-1111-4111-8111-111111111111',
-                        label: 'Daemon external Action',
-                        displayPrefix: 'hap_v1_1234abcd',
-                        createdAt: '2026-08-23T10:00:00.000Z',
-                        lastUsedAt: null,
-                        expiresAt: null,
-                    }],
-                },
-            });
-            onTestFinished(() => accountApiTokensPost.mockRestore());
-            await expect(externalActionApi?.executor.execute(
-                'account.apiTokens.list',
+            await expect(externalActionApi.executor.execute(
+                'servers.list',
                 {},
                 {
                     surface: 'api',
@@ -1497,31 +1608,18 @@ describe('startDaemonSessionControlRuntime', () => {
                     actionCaller: { kind: 'host' },
                 },
             )).resolves.toEqual({
-                ok: true,
-                result: {
-                    tokens: [{
-                        tokenId: '11111111-1111-4111-8111-111111111111',
-                        label: 'Daemon external Action',
-                        displayPrefix: 'hap_v1_1234abcd',
-                        createdAt: '2026-08-23T10:00:00.000Z',
-                        lastUsedAt: null,
-                        expiresAt: null,
-                    }],
-                },
+                ok: false,
+                errorCode: 'not_authenticated',
+                error: 'not_authenticated',
             });
-            expect(accountApiTokensPost).toHaveBeenCalledWith(
-                expect.stringMatching(new RegExp(`${ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1}$`)),
-                {},
-                expect.objectContaining({
-                    headers: expect.objectContaining({
-                        Authorization: 'Bearer token-daemon',
-                    }),
-                }),
-            );
             expect(createCliActionExecutorFromCredentialsMock).toHaveBeenCalledWith(
                 expect.objectContaining({
+                    serverId: 'server-test',
+                    serverApiUrl: 'https://daemon-current.example.test/',
                     invokeContributedAction: expect.any(Function),
                     listContributedActionDefinitions: expect.any(Function),
+                    isApprovalExecutionOriginCurrent: expect.any(Function),
+                    workflowAcceptedAuthorizationCurrentness,
                 }),
             );
 
@@ -1549,7 +1647,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 'session.spawn_new',
                 { directory: '/workspace' },
                 expect.objectContaining({
-                    serverId: 'srv_external_action_account',
+                    serverId: configuration.activeServerId,
+                    serverIdentityId: 'srv_external_action_account',
                 }),
             );
 
@@ -1591,7 +1690,8 @@ describe('startDaemonSessionControlRuntime', () => {
                     actionId,
                     input,
                     expect.objectContaining({
-                        serverId: 'srv_external_action_account',
+                        serverId: configuration.activeServerId,
+                        serverIdentityId: 'srv_external_action_account',
                     }),
                 );
             }
@@ -1679,6 +1779,9 @@ describe('startDaemonSessionControlRuntime', () => {
             ) => Promise<unknown>;
             registerLocalServicesRoutes: (routes: unknown) => void;
             registerSimulatorPreviewRoutes: (routes: unknown) => void;
+            getPeerMediationMachineRpcHandlerManager: () => Readonly<{
+                invokeLocal: (method: string, request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => Promise<unknown>;
+            }>;
         }>;
         const staleEnqueueSessionPendingByMachine = vi.fn<
             (request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => Promise<{
@@ -1698,17 +1801,34 @@ describe('startDaemonSessionControlRuntime', () => {
             status: 'accepted' as const,
             localId: 'plugin-input-v1:external-spawn',
         }));
+        const staleInvokeLocal = vi.fn(async () => ({ ok: false, errorCode: 'stale' }));
+        const conflictStatus = {
+            relationshipId: 'relationship-1',
+            controllerMachineId: 'machine-external-action-admission',
+            state: 'watching' as const,
+            alphaPath: '/workspace/alpha',
+            betaPath: '/workspace/beta',
+            mode: 'keep_both_in_sync' as const,
+            changedFiles: 0,
+            conflictCount: 0,
+            lastSuccessfulSyncAtMs: 1,
+        };
+        const invokeLocal = vi.fn(async (method: string) => method === RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE
+            ? conflictStatus
+            : { ok: true, result: { handoffId: 'handoff-current' } });
         const apiMachineAtStartup: ApiMachineForTest = {
             enqueueSessionPendingByMachine: async (request, options) =>
                 await staleEnqueueSessionPendingByMachine(request, options),
             registerLocalServicesRoutes: () => {},
             registerSimulatorPreviewRoutes: () => {},
+            getPeerMediationMachineRpcHandlerManager: () => ({ invokeLocal: staleInvokeLocal }),
         };
         const apiMachineAtRequest: ApiMachineForTest = {
             enqueueSessionPendingByMachine: async (request, options) =>
                 await enqueueSessionPendingByMachine(request, options),
             registerLocalServicesRoutes: () => {},
             registerSimulatorPreviewRoutes: () => {},
+            getPeerMediationMachineRpcHandlerManager: () => ({ invokeLocal }),
         };
         let currentApiMachineForSessions: ApiMachineForTest | null =
             apiMachineAtStartup;
@@ -1733,7 +1853,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -1768,20 +1887,57 @@ describe('startDaemonSessionControlRuntime', () => {
             await externalActionApi.executor.execute(
                 'session.spawn_new',
                 { initialMessage: 'Durable E2EE initial input' },
-                { surface: 'api' },
+                {
+                    surface: 'api',
+                    authority: 'account_automation',
+                    actionCaller: { kind: 'host' },
+                    actionRequestId: 'request-external-action-admission',
+                    externalActionCredential: {
+                        accountId: 'account-external-action-admission',
+                        principalId: 'account-external-action-admission',
+                        credentialId: 'credential-external-action-admission',
+                    },
+                    externalActionTarget: {
+                        kind: 'machine',
+                        machineId: 'machine-external-action-admission',
+                    },
+                },
             );
 
             type ExecutorOptions = Readonly<{
+                workspaceSyncConflictResolve?: (
+                    request: Readonly<{
+                        actionReceiptId: string;
+                        input: unknown;
+                        signal?: AbortSignal;
+                    }>,
+                ) => Promise<unknown>;
                 machineAdmissionTransport?: (
                     request: unknown,
                     options?: Readonly<{ signal?: AbortSignal }>,
                 ) => Promise<unknown>;
+                machineActionDirectTargetTransport?: Readonly<{
+                    machineId: string;
+                    invoke: (
+                        method: string,
+                        request: unknown,
+                        options?: Readonly<{ signal?: AbortSignal }>,
+                    ) => Promise<unknown>;
+                }>;
             }>;
             const executorOptions = createCliActionExecutorFromCredentialsMock
                 .mock.calls.at(-1)?.[0] as ExecutorOptions | undefined;
             const machineAdmissionTransport = executorOptions?.machineAdmissionTransport;
             if (!machineAdmissionTransport) {
                 throw new Error('Expected external Action execution to receive machine admission');
+            }
+            const machineActionDirectTargetTransport = executorOptions?.machineActionDirectTargetTransport;
+            if (!machineActionDirectTargetTransport) {
+                throw new Error('Expected external Action execution to receive local machine Action transport');
+            }
+            const workspaceSyncConflictResolve = executorOptions?.workspaceSyncConflictResolve;
+            if (!workspaceSyncConflictResolve) {
+                throw new Error('Expected external Action execution to receive workspace conflict resolution');
             }
 
             const controller = new AbortController();
@@ -1798,18 +1954,54 @@ describe('startDaemonSessionControlRuntime', () => {
                     status: 'accepted',
                     localId: 'plugin-input-v1:external-spawn',
                 });
+            await expect(machineActionDirectTargetTransport.invoke(
+                'daemon.sessionHandoff.start.v3',
+                { sessionId: 'session-external-spawn' },
+                { signal: controller.signal },
+            )).resolves.toEqual({ ok: true, result: { handoffId: 'handoff-current' } });
+            const conflictSignal = new AbortController().signal;
+            const conflictInput = {
+                controllerMachineId: 'machine-external-action-admission',
+                request: {
+                    relationshipId: 'relationship-1',
+                    path: 'conflicted.txt',
+                    keep: 'alpha',
+                    expectedKind: 'file',
+                    expectedDigest: 'a'.repeat(40),
+                },
+            } as const;
+            await expect(workspaceSyncConflictResolve({
+                actionReceiptId: 'approval-receipt-1',
+                input: conflictInput,
+                signal: conflictSignal,
+            })).resolves.toEqual(conflictStatus);
+            expect(machineActionDirectTargetTransport.machineId).toBe('machine-external-action-admission');
             expect(getApiMachineForSessions).toHaveBeenCalledTimes(2);
             expect(enqueueSessionPendingByMachine).toHaveBeenCalledWith(request, {
                 signal: controller.signal,
             });
             expect(staleEnqueueSessionPendingByMachine).not.toHaveBeenCalled();
+            expect(invokeLocal).toHaveBeenCalledWith(
+                'daemon.sessionHandoff.start.v3',
+                { sessionId: 'session-external-spawn' },
+                { signal: controller.signal },
+            );
+            expect(invokeLocal).toHaveBeenCalledWith(
+                RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+                {
+                    actionReceiptId: 'approval-receipt-1',
+                    actionInput: conflictInput,
+                },
+                { signal: conflictSignal },
+            );
+            expect(staleInvokeLocal).not.toHaveBeenCalled();
             expect(execute).toHaveBeenCalledWith(
                 'session.spawn_new',
                 { initialMessage: 'Durable E2EE initial input' },
-                {
+                expect.objectContaining({
                     surface: 'api',
                     serverId: 'srv_external_action_account',
-                },
+                }),
             );
         } finally {
             await runtime.stopControlServer();
@@ -1948,7 +2140,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
                 getConnectedServiceCredentialPlain,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -2277,7 +2468,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -2382,7 +2572,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -2502,7 +2691,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -3650,7 +3838,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     getConnectedServiceCredentialPlain:
                         getConnectedServiceCredentialPlain,
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir:
                     materializationBaseDir,
                 getConnectedServiceRefreshCoordinator: () => null,
@@ -4564,7 +4751,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({
                 refreshConnectedServiceCredentialForQuota,
@@ -4729,7 +4915,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({
                 refreshConnectedServiceCredentialForQuota,
@@ -4909,7 +5094,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -5043,7 +5227,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({
                 refreshQualifiedConnectedAccountCredentialForRequestAuth,
@@ -5164,7 +5347,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => ({
@@ -5302,7 +5484,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -5400,7 +5581,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -5506,7 +5686,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -5635,7 +5814,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -5697,7 +5875,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             // This remains null during the startup window and permanently when quota automation
@@ -6009,7 +6186,7 @@ describe('startDaemonSessionControlRuntime', () => {
             ok: true,
             action: 'hot_applied',
             normalizedBindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -6103,7 +6280,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -6610,7 +6786,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -7055,7 +7230,6 @@ describe('startDaemonSessionControlRuntime', () => {
             machineId: 'machine-composer-source-ref',
             credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -7215,7 +7389,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -7313,7 +7486,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -8986,7 +9158,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     },
                 },
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir:
                     '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
@@ -9481,7 +9652,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -9693,7 +9863,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -10099,7 +10268,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     getConnectedServiceAuthGroup: vi.fn(),
                     updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir:
                     materializationBaseDir,
                 getConnectedServiceRefreshCoordinator: () => null,
@@ -10259,7 +10427,6 @@ describe('startDaemonSessionControlRuntime', () => {
                         },
                     },
                     api: {} as never,
-                    loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                     connectedServicesMaterializationBaseDir:
                         '/tmp/connected-services',
                     getConnectedServiceRefreshCoordinator: () => null,
@@ -10314,7 +10481,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -10376,7 +10542,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -10472,7 +10637,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -10651,7 +10815,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir:
                 '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
@@ -10751,7 +10914,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11061,7 +11223,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11118,7 +11279,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11173,7 +11333,6 @@ describe('startDaemonSessionControlRuntime', () => {
             machineId: 'machine-exact-dead-terminal-recovery',
             credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11238,7 +11397,6 @@ describe('startDaemonSessionControlRuntime', () => {
             machineId: 'machine-exact-terminal-recovery',
             credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11355,7 +11513,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11432,7 +11589,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11506,7 +11662,6 @@ describe('startDaemonSessionControlRuntime', () => {
             machineId: 'machine-exact-terminal-recovery-tracked-stop',
             credentials: { token: 'token-daemon', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11650,7 +11805,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     credentialRevision,
                 })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -11838,7 +11992,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getAccountEncryptionMode: vi.fn(async () => 'plain'),
                 getConnectedServiceCredentialPlain,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => ({
@@ -12151,7 +12304,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getAccountEncryptionMode: vi.fn(async () => 'plain'),
                 getServerFeaturesSnapshot: vi.fn(async () => undefined),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => ({ handleAccountUsageChanged }) as never,
@@ -12264,7 +12416,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     credentialRevision,
                 })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12384,7 +12535,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 setLocalServicesRuntimeActionRoutesProvider,
                 setSimulatorPreviewRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12553,7 +12703,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12630,7 +12779,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 setBrowserDaemonContextRoutesProvider,
                 setBrowserDaemonAutomationRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12738,7 +12886,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 setBrowserDaemonContextRoutesProvider,
                 setBrowserDaemonAutomationRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12816,7 +12963,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 setBrowserDaemonContextRoutesProvider,
                 setBrowserDaemonAutomationRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12893,7 +13039,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -12990,7 +13135,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13107,7 +13251,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13177,7 +13320,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 setBrowserDaemonContextRoutesProvider,
                 setBrowserDaemonAutomationRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13221,7 +13363,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13263,7 +13404,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13328,7 +13468,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13411,7 +13550,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13532,7 +13670,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 setBrowserDaemonControlRoutesProvider,
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13580,7 +13717,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13648,7 +13784,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13778,7 +13913,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -13985,7 +14119,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14164,7 +14297,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14256,7 +14388,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14345,7 +14476,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
                 },
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -14428,7 +14558,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
                 },
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -14497,7 +14626,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14549,7 +14677,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14633,7 +14760,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -14729,7 +14855,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 listConnectedServiceProfiles: vi.fn(async () => ({ serviceId: 'openai-codex', profiles: [] })),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -15327,7 +15452,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     },
                 },
                 api: api as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: materializationBaseDir,
                 getConnectedServiceRefreshCoordinator: () => refreshCoordinator,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -15360,7 +15484,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 ConstructorParameters<typeof ConnectedServiceRefreshCoordinator>[0]['resolveQualifiedPurposeBindingSnapshot']
             > = async (input) => resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
                 agentId: input.agentId,
-                bindings: ConnectedServiceBindingsV1Schema.parse(
+                bindings: ConnectedServiceBindingsV2IngressSchema.parse(
                     input.connectedServicesBindingsRaw,
                 ),
                 contributions: getResolvedContributionRegistry(),
@@ -15494,7 +15618,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -15660,7 +15783,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -15929,7 +16051,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     })),
                     push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: materializationBaseDir,
                 getConnectedServiceRefreshCoordinator: () => refreshCoordinator as never,
                 getConnectedServiceQuotasCoordinator: () => quotasCoordinator as never,
@@ -15954,7 +16075,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 runnerPid: pid,
                 agentId: 'codex',
                 connectedServices: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
                         'openai-codex': {
                             source: 'connected',
@@ -16065,7 +16186,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16154,7 +16274,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => refreshCoordinator as never,
             getConnectedServiceQuotasCoordinator: () => quotasCoordinator as never,
@@ -16258,7 +16377,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({ marker: 'refresh-coordinator' }) as never,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16376,7 +16494,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({
                 refreshOpenAiCodexChatGptTokensForBridge,
@@ -16466,7 +16583,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => ({ marker: 'refresh-coordinator' }) as never,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16546,7 +16662,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16585,7 +16700,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16641,7 +16755,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16716,7 +16829,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16825,7 +16937,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -16963,7 +17074,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17037,7 +17147,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17145,7 +17254,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => quotaCoordinator as never,
@@ -17223,7 +17331,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17253,7 +17360,7 @@ describe('startDaemonSessionControlRuntime', () => {
         expect(repairMissingConnectedServiceMaterializationIdentityForSpawn).toBeDefined();
 
         const connectedServices = {
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 'claude-subscription': {
                     source: 'connected',
@@ -17261,7 +17368,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     profileId: 'claude-work',
                 },
             },
-        } satisfies ConnectedServiceBindingsV1;
+        } satisfies ConnectedServiceBindingsV2;
         const repair = await repairMissingConnectedServiceMaterializationIdentityForSpawn?.({
             sessionId: 'sess-claude-repair',
             agentId: 'claude',
@@ -17364,7 +17471,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17482,7 +17588,6 @@ describe('startDaemonSessionControlRuntime', () => {
             },
             // Test fixture boundary: existing-session short-circuit means API methods are not invoked.
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17590,7 +17695,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
                 // Test fixture boundary: existing-session short-circuit means API methods are not invoked.
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -17690,7 +17794,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17783,7 +17886,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -17862,7 +17964,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
             },
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -18084,7 +18185,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => quotaCoordinator as never,
@@ -18322,7 +18422,7 @@ describe('startDaemonSessionControlRuntime', () => {
             inactive: {
                 agentId: 'codex',
                 connectedServices: {
-                    v: 1 as const,
+                    v: 2 as const,
                     bindingsByServiceId: {},
                 },
             },
@@ -18378,7 +18478,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -18527,7 +18626,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -18674,7 +18772,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -18815,7 +18912,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 listConnectedServiceProfiles: vi.fn(),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -18879,9 +18975,9 @@ describe('startDaemonSessionControlRuntime', () => {
                 sessionId: 'sess-runtime',
                 agentId: 'codex',
                 bindings: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
-                        'openai-codex': {
+                        [CODEX_QUALIFIED_SERVICE_KEY]: {
                             source: 'connected',
                             selection: 'group',
                             groupId: 'codex-main',
@@ -18890,7 +18986,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     },
                 },
                 expectedGroupGenerationByServiceId: {
-                    'openai-codex': 4,
+                    [CODEX_QUALIFIED_SERVICE_KEY]: 4,
                 },
             },
         }));
@@ -19021,7 +19117,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 listConnectedServiceProfiles: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -19083,9 +19178,9 @@ describe('startDaemonSessionControlRuntime', () => {
                 sessionId: 'sess-runtime-inactive',
                 agentId: 'codex',
                 bindings: {
-                    v: 1,
+                    v: 2,
                     bindingsByServiceId: {
-                        'openai-codex': {
+                        [CODEX_QUALIFIED_SERVICE_KEY]: {
                             source: 'connected',
                             selection: 'group',
                             groupId: 'codex-main',
@@ -19094,7 +19189,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     },
                 },
                 expectedGroupGenerationByServiceId: {
-                    'openai-codex': 4,
+                    [CODEX_QUALIFIED_SERVICE_KEY]: 4,
                 },
             },
         }));
@@ -19139,7 +19234,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 listConnectedServiceProfiles: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -19298,7 +19392,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 listConnectedServiceProfiles: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -19373,7 +19466,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 listConnectedServiceProfiles: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -19472,7 +19564,6 @@ describe('startDaemonSessionControlRuntime', () => {
             api: {
                 listConnectedServiceProfiles: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -19677,7 +19768,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     getConnectedServiceAuthGroup: vi.fn(),
                     updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -19845,7 +19935,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     getConnectedServiceAuthGroup: vi.fn(),
                     updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -19928,7 +20017,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
                 },
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -20032,7 +20120,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     getConnectedServiceAuthGroup: vi.fn(),
                     updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
                 } as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: '/tmp/connected-services',
                 getConnectedServiceRefreshCoordinator: () => null,
                 getConnectedServiceQuotasCoordinator: () => null,
@@ -20105,7 +20192,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(),
                 updateConnectedServiceAuthGroupActiveProfile: vi.fn(),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20183,7 +20269,6 @@ describe('startDaemonSessionControlRuntime', () => {
                     ],
                 })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20277,7 +20362,6 @@ describe('startDaemonSessionControlRuntime', () => {
             },
             // Test fixture boundary: child-exit cleanup does not need API methods.
             api: {} as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20348,7 +20432,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20371,7 +20454,7 @@ describe('startDaemonSessionControlRuntime', () => {
             sessionId: 'sess-gemini',
             agentId: 'gemini',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     gemini: { source: 'connected', selection: 'profile', profileId: 'gemini-work' },
                 },
@@ -20460,7 +20543,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20483,7 +20565,7 @@ describe('startDaemonSessionControlRuntime', () => {
             sessionId: 'sess-gemini-connected',
             agentId: 'gemini',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     gemini: { source: 'connected', selection: 'profile', profileId: 'gemini-backup' },
                 },
@@ -20581,7 +20663,6 @@ describe('startDaemonSessionControlRuntime', () => {
                 getConnectedServiceAuthGroup: vi.fn(async () => null),
                 push: vi.fn(() => ({ sendPushNotification: vi.fn() })),
             } as never,
-            loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
             connectedServicesMaterializationBaseDir: '/tmp/connected-services',
             getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => null,
@@ -20604,7 +20685,7 @@ describe('startDaemonSessionControlRuntime', () => {
             sessionId: 'sess-gemini-inactive',
             agentId: 'gemini',
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     gemini: { source: 'connected', selection: 'profile', profileId: 'gemini-backup' },
                 },

@@ -109,6 +109,24 @@ function managedPypiSource(
     };
 }
 
+function pinnedArchiveSource(
+    installId: `dep.${string}`,
+    facts: Readonly<{ version: string; sha256: string }>,
+): Extract<PluginManagedDependencyContributionV2['sources'][number], { kind: 'pinnedArchive' }> {
+    return {
+        kind: 'pinnedArchive',
+        installId,
+        version: facts.version,
+        assetsByPlatform: {
+            'linux-x64': {
+                archiveUrl: `https://dl.example.test/${installId}-${facts.version}.zip`,
+                sha256: facts.sha256,
+                executableSubpath: 'agy_acp_server.par',
+            },
+        },
+    };
+}
+
 function v2Host(params: Readonly<{
     contributions: readonly ResolvedInstallableContribution[];
     resolveSourceAdapter: NonNullable<Parameters<typeof createStablePluginManagedDependenciesHost>[0]['resolveSourceAdapter']>;
@@ -201,6 +219,52 @@ function retainedRunnerInputs(params: Readonly<{
 }
 
 describe('stable plugin managed dependencies host', () => {
+    it('authoritatively ensures a missing managed executable at launch and coalesces concurrent launch ensures', async () => {
+        let installed = false;
+        let releaseInstall!: () => void;
+        const installGate = new Promise<void>((resolve) => { releaseInstall = resolve; });
+        const installOrUpgrade = vi.fn(async () => {
+            await installGate;
+            installed = true;
+            return { ok: true as const, logPath: '/redacted/install.log' };
+        });
+        const managedAdapter = adapter('tool', {
+            detectLaunchResolution: async () => ({
+                availability: installed ? { ok: true as const } : { ok: false as const, errorMessage: 'not installed' },
+                canAutoInstall: true, canBackgroundAutoUpdate: false,
+            }),
+            resolveLaunchCommand: async () => installed
+                ? { ok: true as const, command: '/managed/tool', args: ['--asset-default'], source: 'managed' as const }
+                : { ok: false as const, errorMessage: 'not installed', canAutoInstall: true },
+            installOrUpgrade,
+        });
+        const host = v2Host({
+            contributions: [v2Contribution('acme.plugin', 'tool', [{
+                kind: 'pinnedArchive',
+                installId: 'dep.acme.tool',
+                version: '1.0.0',
+                assetsByPlatform: {
+                    'linux-x64': {
+                        archiveUrl: 'https://downloads.example.test/tool-1.0.0.zip',
+                        sha256: 'a'.repeat(64),
+                        executableSubpath: 'tool',
+                    },
+                },
+            }])],
+            resolveSourceAdapter: async () => managedAdapter,
+        });
+        const first = host.resolveExecutable({ kind: 'managedDependency', id: 'tool' }, 'acme.plugin');
+        const second = host.resolveExecutable({ kind: 'managedDependency', id: 'tool' }, 'acme.plugin');
+        await vi.waitFor(() => expect(installOrUpgrade).toHaveBeenCalledTimes(1));
+        releaseInstall();
+        const leases = await Promise.all([first, second]);
+        expect(leases.map((lease) => [lease.command, lease.args])).toEqual([
+            ['/managed/tool', ['--asset-default']], ['/managed/tool', ['--asset-default']],
+        ]);
+        expect(installOrUpgrade).toHaveBeenCalledTimes(1);
+        leases.forEach((lease) => lease.release());
+    });
+
     it('pins only exact G-approved dependencies using committed immutable owner generations, never process-local ordinal aliases', () => {
         const daemonA = v2Host({
             contributions: [
@@ -672,6 +736,145 @@ describe('stable plugin managed dependencies host', () => {
         expect(resolveSourceAdapter).not.toHaveBeenCalled();
         expect(installOrUpgrade).not.toHaveBeenCalled();
         expect(removeManagedSource).not.toHaveBeenCalled();
+    });
+
+    it('keeps a losing external V2 pinned-archive source off the shared install identity the canonical winner owns', async () => {
+        const installId = 'dep.antigravity.agy-acp-server';
+        const bundled = Object.freeze({
+            ...v2Contribution('happier.agent.antigravity', 'agy-acp-server', [
+                pinnedArchiveSource(installId, { version: '1.1.1', sha256: 'a'.repeat(64) }),
+            ]),
+            provenance: 'first_party' as const,
+            source: Object.freeze({ kind: 'bundled' as const }),
+            sourceSpec: Object.freeze({
+                kind: 'bundled' as const,
+                locator: 'happier.agent.antigravity',
+                trustPolicy: 'local_trusted' as const,
+                installPolicy: 'link' as const,
+            }),
+        }) satisfies ResolvedInstallableContribution;
+        // The loser claims the same global install identity with different
+        // immutable artifact facts, so installing it would overwrite the bytes
+        // the winner published under that identity.
+        const external = v2Contribution('acme.collision', 'agy-acp-server', [
+            pinnedArchiveSource(installId, { version: '9.9.9', sha256: 'b'.repeat(64) }),
+        ]);
+        const contributions = [bundled, external];
+        const installablesRegistry = resolveExecutableManagedDependenciesRegistry(
+            contributions,
+            { platform: 'linux', architecture: 'x64' },
+        );
+        // One install root per install identity, exactly as the pinned-archive
+        // installer keys `<happyHome>/tools/<installId>/current`.
+        const sharedInstallRoot = new Map<string, Readonly<{ version: string; installedBy: string }>>();
+        const installsByPluginId = new Map<string, number>();
+        const resolveSourceAdapter = vi.fn(async (
+            { dependency, source }: Parameters<NonNullable<
+                Parameters<typeof createStablePluginManagedDependenciesHost>[0]['resolveSourceAdapter']
+            >>[0],
+        ) => {
+            const pluginId = dependency.identity.pluginId;
+            const declaration = source.declaration;
+            if (declaration.kind !== 'pinnedArchive') throw new Error('unexpected source kind');
+            const version = declaration.version;
+            const installed = () => sharedInstallRoot.get(installId)?.version === version;
+            return adapter('pinned', {
+                detectLaunchResolution: async () => ({
+                    availability: installed()
+                        ? { ok: true }
+                        : { ok: false, errorMessage: 'not installed' },
+                    canAutoInstall: true,
+                    canBackgroundAutoUpdate: false,
+                }),
+                resolveLaunchCommand: async () => installed()
+                    ? { ok: true, command: `/tools/${installId}/current/agy_acp_server.par`, args: [], source: 'managed' }
+                    : { ok: false, errorMessage: 'not installed', canAutoInstall: true },
+                installOrUpgrade: async () => {
+                    installsByPluginId.set(pluginId, (installsByPluginId.get(pluginId) ?? 0) + 1);
+                    sharedInstallRoot.set(installId, { version, installedBy: pluginId });
+                    return { ok: true, logPath: null };
+                },
+            });
+        });
+        const removeManagedSource = vi.fn(async ({ dependency }: Readonly<{
+            dependency: { qualifiedId: string };
+        }>) => {
+            installsByPluginId.set(
+                `remove:${dependency.qualifiedId}`,
+                (installsByPluginId.get(`remove:${dependency.qualifiedId}`) ?? 0) + 1,
+            );
+            sharedInstallRoot.delete(installId);
+        });
+        const host = createStablePluginManagedDependenciesHost({
+            installablesRegistry,
+            sourceModel: createV2ManagedDependencySourceModel({
+                platform: 'linux',
+                architecture: 'x64',
+                contributions,
+            }),
+            getSettings: () => ({}),
+            resolveAdapter: async () => {
+                throw new Error('legacy adapter must not be used');
+            },
+            resolveSourceAdapter,
+            removeManagedInstall: async () => {},
+            removeManagedSource,
+        });
+        const loser = host.bind('acme.collision');
+        const winner = host.bind('happier.agent.antigravity');
+
+        expect(installablesRegistry.descriptorsByKey[installId]?.owner.pluginId)
+            .toBe('happier.agent.antigravity');
+        await expect(loser.status('agy-acp-server')).resolves.toEqual({
+            state: 'unsupported',
+            id: 'agy-acp-server',
+            code: 'plugin_managed_dependency_source_conflict',
+        });
+        await expect(loser.ensure('agy-acp-server')).rejects.toMatchObject({
+            code: 'plugin_managed_dependency_source_conflict',
+        });
+        await expect(loser.update('agy-acp-server')).rejects.toMatchObject({
+            code: 'plugin_managed_dependency_source_conflict',
+        });
+        await expect(loser.remove('agy-acp-server')).rejects.toMatchObject({
+            code: 'plugin_managed_dependency_source_conflict',
+        });
+        await expect(host.resolveExecutable(
+            { kind: 'managedDependency', id: 'agy-acp-server' },
+            'acme.collision',
+        )).rejects.toMatchObject({
+            code: 'plugin_managed_dependency_source_conflict',
+        });
+        expect(installsByPluginId.get('acme.collision')).toBeUndefined();
+        expect(removeManagedSource).not.toHaveBeenCalled();
+        expect(resolveSourceAdapter.mock.calls.map(([input]) => input.dependency.identity.pluginId))
+            .not.toContain('acme.collision');
+
+        // The canonical winner still owns the full lifecycle on that identity.
+        await expect(winner.status('agy-acp-server')).resolves.toMatchObject({
+            state: 'missing',
+            id: 'agy-acp-server',
+            supported: true,
+        });
+        await expect(winner.ensure('agy-acp-server')).resolves.toMatchObject({
+            state: 'ready',
+            id: 'agy-acp-server',
+            sourceId: 'happier.agent.antigravity/agy-acp-server#0',
+        });
+        expect(sharedInstallRoot.get(installId)).toEqual({
+            version: '1.1.1',
+            installedBy: 'happier.agent.antigravity',
+        });
+        const lease = await host.resolveExecutable(
+            { kind: 'managedDependency', id: 'agy-acp-server' },
+            'happier.agent.antigravity',
+        );
+        expect(lease.command).toBe(`/tools/${installId}/current/agy_acp_server.par`);
+        lease.release();
+        await expect(winner.remove('agy-acp-server')).resolves.toBeUndefined();
+        expect(removeManagedSource).toHaveBeenCalledOnce();
+        expect(installsByPluginId.get('remove:happier.agent.antigravity/agy-acp-server')).toBe(1);
+        expect(sharedInstallRoot.has(installId)).toBe(false);
     });
 
     it('exposes one V2 lifecycle identity for a projected wheel and rejects its installId alias while the local id is leased', async () => {
@@ -1203,5 +1406,46 @@ describe('stable plugin managed dependencies host', () => {
             legacyDescriptors: [descriptor('tool')],
             resolveSourceAdapter: async () => adapter('tool'),
         })).toThrowError(expect.objectContaining({ code: 'plugin_managed_dependency_identity_conflict' }));
+    });
+    it('keeps one owner for a projected pinned-archive dependency and pins its immutable source generation', () => {
+        const host = v2Host({
+            contributions: [v2Contribution('acme.dependency', 'pinned-tool', [{
+                kind: 'pinnedArchive',
+                installId: 'dep.acme.pinned-tool',
+                version: '4.5.6',
+                assetsByPlatform: {
+                    'linux-x64': {
+                        archiveUrl: 'https://downloads.example.test/pinned-tool-4.5.6-linux-x64.zip',
+                        sha256: 'c'.repeat(64),
+                        executableSubpath: 'bin/pinned-tool',
+                    },
+                },
+            }])],
+            // The projected installables descriptor must not become a second legacy owner:
+            // the legacy resolver throws if anything routes through it.
+            resolveSourceAdapter: async () => adapter('pinned-tool'),
+            immutableGenerationIdsByPluginId: new Map([
+                ['acme.dependency', 'immutable-dependency-p'],
+            ]),
+        });
+        const retained = retainedRunnerInputs({
+            pluginId: 'acme.agent',
+            immutableGenerationId: 'immutable-agent-p',
+            executableIds: [{ pluginId: 'acme.dependency', localId: 'pinned-tool' }],
+        });
+
+        expect(host.snapshotRunnerRetention(
+            retained.binding,
+            retained.hostAccessRequests,
+        )).toEqual({
+            v: 1,
+            sourceGenerationIds: ['immutable-dependency-p'],
+            qualifiedDependencyIds: ['acme.dependency/pinned-tool'],
+            sourceCandidates: [{
+                qualifiedDependencyId: 'acme.dependency/pinned-tool',
+                immutableGenerationId: 'immutable-dependency-p',
+                manifestAuthority: 'external',
+            }],
+        });
     });
 });

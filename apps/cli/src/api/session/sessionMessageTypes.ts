@@ -78,4 +78,8 @@ export type SessionEventMessage =
   | (TranscriptEventLifecycle & { type: 'context-compaction' } & ContextCompactionEventFields)
   | ConnectedServiceRuntimeAuthRecoverySessionEventMessage
   | { type: 'permission-mode-changed'; mode: import('../types').PermissionMode }
-  | (TranscriptEventLifecycle & { type: 'ready' });
+  | (TranscriptEventLifecycle & {
+      type: 'ready';
+      /** Host-composed owner delivery responsibility; projected beside ciphertext for the authenticated runtime. */
+      ownerActivityDelivery?: 'rich_sender' | 'home_required';
+    });

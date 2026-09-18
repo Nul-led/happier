@@ -1,13 +1,13 @@
 import type { ClientToServerEvents, ServerToClientEvents } from '../types';
 import { io, Socket } from 'socket.io-client'
-import { resolveServerHttpBaseUrl, resolveServerSocketIoTransports } from '../client/serverHttpBaseUrl';
+import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl, resolveServerSocketIoTransports } from '../client/serverHttpBaseUrl';
 import { getSocketIoProxyOptions } from '@/utils/proxy/socketIoProxy';
 import {
     buildCurrentCliClientCompatibilitySocketAuth,
 } from '@/api/clientCompatibility/cliClientCompatibility';
 
-export function createSessionScopedSocket(opts: { token: string; sessionId: string; machineId?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
-    const serverUrl = resolveServerHttpBaseUrl();
+export function createSessionScopedSocket(opts: { token: string; sessionId: string; machineId?: string; serverUrl?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
+    const serverUrl = opts.serverUrl ? normalizeServerHttpBaseUrl(opts.serverUrl) : resolveServerHttpBaseUrl();
     const transports = resolveServerSocketIoTransports();
     return io(serverUrl, {
         auth: {
@@ -26,8 +26,8 @@ export function createSessionScopedSocket(opts: { token: string; sessionId: stri
     });
 }
 
-export function createUserScopedSocket(opts: { token: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
-    const serverUrl = resolveServerHttpBaseUrl();
+export function createUserScopedSocket(opts: { token: string; serverUrl?: string }): Socket<ServerToClientEvents, ClientToServerEvents> {
+    const serverUrl = opts.serverUrl ? normalizeServerHttpBaseUrl(opts.serverUrl) : resolveServerHttpBaseUrl();
     const transports = resolveServerSocketIoTransports();
     return io(serverUrl, {
         auth: {

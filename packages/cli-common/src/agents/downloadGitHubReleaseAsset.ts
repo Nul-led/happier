@@ -24,6 +24,7 @@ async function openGitHubReleaseAssetResponse(
   url: string,
   headers: Readonly<Record<string, string>>,
   redirectCount = 0,
+  signal?: AbortSignal,
 ): Promise<IncomingMessage> {
   if (redirectCount > MAX_REDIRECTS) {
     throw new Error('[github-release] too many redirects while downloading asset');
@@ -33,13 +34,13 @@ async function openGitHubReleaseAssetResponse(
   const requestImpl = target.protocol === 'https:' ? httpsRequest : httpRequest;
 
   return await new Promise<IncomingMessage>((resolve, reject) => {
-    const req = requestImpl(target, { headers }, (response) => {
+    const req = requestImpl(target, { headers, signal }, (response) => {
       const statusCode = Number(response.statusCode ?? 0);
       const location = typeof response.headers.location === 'string' ? response.headers.location.trim() : '';
       if (isRedirect(statusCode) && location) {
         response.resume();
         const nextUrl = new URL(location, target).toString();
-        void openGitHubReleaseAssetResponse(nextUrl, headers, redirectCount + 1).then(resolve, reject);
+        void openGitHubReleaseAssetResponse(nextUrl, headers, redirectCount + 1, signal).then(resolve, reject);
         return;
       }
       if (statusCode < 200 || statusCode >= 300) {
@@ -59,7 +60,9 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
   destinationPath: string;
   digest?: string | null;
   userAgent?: string;
+  signal?: AbortSignal;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   const url = String(params.url ?? '').trim();
   const destinationPath = String(params.destinationPath ?? '').trim();
   const userAgent = String(params.userAgent ?? '').trim() || 'happier-cli';
@@ -76,7 +79,7 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
   const tempPath = `${destinationPath}.download`;
 
   try {
-    const response = await openGitHubReleaseAssetResponse(url, headers);
+    const response = await openGitHubReleaseAssetResponse(url, headers, 0, params.signal);
     const hash = createHash('sha256');
     const hashTap = new Transform({
       transform(chunk, _encoding, callback) {
@@ -84,13 +87,14 @@ export async function downloadGitHubReleaseAsset(params: Readonly<{
         callback(null, chunk);
       },
     });
-    await pipeline(response, hashTap, createWriteStream(tempPath));
+    await pipeline(response, hashTap, createWriteStream(tempPath), { signal: params.signal });
     if (expectedSha256) {
       const actualSha256 = hash.digest('hex');
       if (actualSha256 !== expectedSha256) {
         throw new Error('[github-release] checksum verification failed');
       }
     }
+    params.signal?.throwIfAborted();
     await rename(tempPath, destinationPath);
   } catch (error) {
     await rm(tempPath, { force: true }).catch(() => undefined);

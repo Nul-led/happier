@@ -102,6 +102,8 @@ describe('Personal Home erase', () => {
         removedPaths: [layout.databasePath, join(layout.configDir, 'server.env')],
         remainingOwnedPaths: [],
         remainingUnknownPaths: [join(layout.dataDir, 'marker.txt')],
+        inspectionComplete: true,
+        inspectionError: null,
         error: null,
       });
     });
@@ -237,6 +239,8 @@ describe('Personal Home erase', () => {
           removedPaths: [layout.databasePath],
           remainingOwnedPaths: [layout.masterSecretPath],
           remainingUnknownPaths: [],
+          inspectionComplete: true,
+          inspectionError: null,
           error: `Failed to remove Personal Home target ${layout.masterSecretPath}: simulated platform refusal`,
         });
       });
@@ -261,6 +265,87 @@ describe('Personal Home erase', () => {
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('preserve');
     } finally {
       await release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains irreversible success when residual inspection fails after every owned target was deleted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-post-inspection-'));
+    const layout = resolvePersonalHomeRuntimeLayout({
+      homeDir: root,
+      env: {
+        HAPPIER_SELF_HOST_INSTALL_ROOT: join(root, 'runtime'),
+        HAPPIER_SERVER_LIGHT_DATA_DIR: join(root, 'runtime', 'data'),
+      },
+    });
+    await mkdir(layout.dataDir, { recursive: true });
+    await writeFile(layout.databasePath, 'remove-me');
+    try {
+      await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
+        const result = await erasePersonalHomeData(
+          { layout, operationLeaseHeld: true },
+          {
+            lstat,
+            rm,
+            readdir: async (target) => {
+              if (target === layout.dataDir) throw Object.assign(new Error('simulated residual inspection failure'), { code: 'EACCES' });
+              return readdir(target);
+            },
+          },
+        );
+        expect(result).toMatchObject({
+          outcome: 'completed_with_cleanup_attention',
+          removedPaths: [layout.databasePath],
+          inspectionComplete: false,
+          inspectionError: 'simulated residual inspection failure',
+        });
+      });
+      await expect(readFile(layout.databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the residual paths it already inspected when the retained lease artifact cannot be read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-erase-lease-artifact-'));
+    const layout = resolvePersonalHomeRuntimeLayout({
+      homeDir: root,
+      env: {
+        HAPPIER_SELF_HOST_INSTALL_ROOT: join(root, 'runtime'),
+        HAPPIER_SERVER_LIGHT_DATA_DIR: join(root, 'runtime', 'data'),
+      },
+    });
+    const artifacts = resolvePersonalHomeRuntimeArtifactPaths(layout);
+    const residual = join(layout.dataDir, 'unexpected-user-file.txt');
+    await mkdir(layout.dataDir, { recursive: true });
+    await writeFile(layout.databasePath, 'remove-me');
+    await writeFile(residual, 'keep-me-visible');
+    try {
+      await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
+        const result = await erasePersonalHomeData(
+          { layout, operationLeaseHeld: true },
+          {
+            readdir,
+            rm,
+            lstat: async (target) => {
+              if (String(target) === artifacts.operationLockPath) {
+                throw Object.assign(new Error('simulated lease artifact read failure'), { code: 'EACCES' });
+              }
+              return lstat(target);
+            },
+          },
+        );
+        expect(result).toMatchObject({
+          outcome: 'completed_with_cleanup_attention',
+          removedPaths: [layout.databasePath],
+          inspectionComplete: false,
+          inspectionError: 'simulated lease artifact read failure',
+        });
+        // A destructive erase must still disclose the residual user paths it did observe.
+        expect(result.remainingUnknownPaths).toContain(residual);
+      });
+      await expect(readFile(residual, 'utf8')).resolves.toBe('keep-me-visible');
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

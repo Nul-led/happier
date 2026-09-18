@@ -14,8 +14,8 @@ import {
   readSessionMetadataTupleWriterSnapshot,
 } from '@/session/metadata/updateSessionMetadataWithRetry';
 import {
-  encryptSessionPayload,
   encryptStoredSessionPayload,
+  sealSessionStoredContent,
   type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import type {
@@ -172,17 +172,10 @@ export function buildSessionAgentTransitionDividerPayload(
       },
     },
   };
-  const content = SessionStoredMessageContentSchema.parse(
-    params.mode === 'plain'
-      ? { t: 'plain', v: payload }
-      : {
-          t: 'encrypted',
-          c: encryptSessionPayload({
-            ctx: params.ctx,
-            payload,
-            idempotencyKey: localId,
-          }),
-        },
-  );
+  const content = SessionStoredMessageContentSchema.parse(sealSessionStoredContent({
+    ...params,
+    payload,
+    idempotencyKey: localId,
+  }));
   return { localId, content };
 }

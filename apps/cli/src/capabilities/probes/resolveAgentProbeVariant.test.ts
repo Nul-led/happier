@@ -35,16 +35,19 @@ describe('resolveAgentProbeVariant', () => {
       agentId: 'codex';
       probeKind: 'configOptions';
       accountSettings: Readonly<Record<string, unknown>>;
+      env?: NodeJS.ProcessEnv;
     }>) => Promise<string>)({
       agentId: 'codex',
       probeKind: 'configOptions',
       accountSettings: { runtimeFlavor: 'app-server' },
+      env: { OPENAI_API_KEY: 'profile-key' },
     });
 
     expect(variant).toBe('provider:variant');
     expect(resolveSessionControlsProbeVariantMock).toHaveBeenCalledWith(expect.objectContaining({
       probeKind: 'configOptions',
       accountSettings: { runtimeFlavor: 'app-server' },
+      env: { OPENAI_API_KEY: 'profile-key' },
     }));
     expect(resolveModelsProbeVariantMock).not.toHaveBeenCalled();
   });

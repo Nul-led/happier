@@ -41,6 +41,26 @@ type ScmHostingProviderRegistryDiagnostic = Readonly<{
 
 type ResolvedScmHostingProvider = ScmHostingProviderDescriptor & Readonly<{
     runtime?: ScmHostingProviderRuntimeBinding;
+    /**
+     * The configured service bases owned by the Connected Accounts bound to this provider's
+     * `authService`, as the Connected Account owner published them. A provider with no
+     * product-owned hostname resolves its own remotes against these; the host supplies them so
+     * no plugin has to keep a second deployment inventory.
+     */
+    connectedAccountBases?: readonly string[];
+}>;
+
+/**
+ * What the Connected Account owner could publish about one hosting provider's configured
+ * deployments. `complete` is the only status under which a missing base proves the deployment is
+ * not configured: the owner's bounded metadata listing has no cursor and reports its own elision
+ * as `truncated`, and a listing that could not be read at all is `unavailable`. Whatever bases did
+ * arrive stay usable either way — an incomplete inventory narrows what can be recognized, never
+ * what a recognized base means.
+ */
+export type ScmHostingProviderConfiguredDeployments = Readonly<{
+    bases: readonly string[];
+    status: 'complete' | 'truncated' | 'unavailable';
 }>;
 
 type ScmHostingProviderRemoteDetectionInput = Readonly<{
@@ -151,6 +171,27 @@ function createDuplicateScmHostingProviderDiagnostic(params: Readonly<{
     };
 }
 
+function createIncompleteScmHostingProviderConfiguredDeploymentsDiagnostic(params: Readonly<{
+    pluginId?: string;
+    providerId: string;
+    status: 'truncated' | 'unavailable';
+}>): ScmHostingProviderRegistryDiagnostic {
+    const pluginId = params.pluginId?.trim() || 'unknown';
+    return params.status === 'truncated'
+        ? {
+            code: 'scm_hosting_provider_configured_deployments_truncated',
+            pluginId,
+            providerId: params.providerId,
+            message: `SCM hosting provider '${params.providerId}' from plugin '${pluginId}' read only part of its configured Connected Account deployments`,
+        }
+        : {
+            code: 'scm_hosting_provider_configured_deployments_unavailable',
+            pluginId,
+            providerId: params.providerId,
+            message: `SCM hosting provider '${params.providerId}' from plugin '${pluginId}' could not read its configured Connected Account deployments`,
+        };
+}
+
 function readScmHostingProviderUrlSafety(
     provider: ScmHostingProviderDescriptor,
 ): NonNullable<ScmHostingProviderDescriptor['urlSafety']> {
@@ -193,13 +234,16 @@ function bindRuntimeCapability<TCapability extends object>(
     }) as TCapability;
 }
 
-function createUnknownProvider(remoteName: string | null): UnresolvedScmHostingProvider {
+function createUnknownProvider(
+    remoteName: string | null,
+    unsupportedReason: string,
+): UnresolvedScmHostingProvider {
     return Object.freeze({
         id: 'unknown',
         kind: 'unknown',
         displayName: 'Unknown SCM hosting provider',
         ...(remoteName ? { remoteName } : {}),
-        unsupportedReason: 'no_registered_provider_detected',
+        unsupportedReason,
     });
 }
 
@@ -378,10 +422,16 @@ function resolveSafeCompareUrl(
 export function createScmHostingProviderRegistry(params: Readonly<{
     providers: readonly ScmHostingProviderDescriptor[];
     runtimeRegistrations?: readonly ScmHostingProviderRuntimeBinding[];
+    /** Keyed by qualified provider id; see `ScmHostingProviderConfiguredDeployments`. */
+    configuredDeploymentsByProviderId?: ReadonlyMap<string, ScmHostingProviderConfiguredDeployments>;
 }>): ResolvedScmHostingProviderRegistry {
     const diagnostics: ScmHostingProviderRegistryDiagnostic[] = [];
     const providersById = new Map<string, ResolvedScmHostingProvider>();
     const runtimeByProviderId = new Map<string, ScmHostingProviderRuntimeBinding>();
+    // A provider whose configured deployments could not be read whole makes "no provider
+    // recognized this remote" unproven for every remote, so the unresolved result says so
+    // instead of asserting that nothing is configured.
+    let hasIncompleteConfiguredDeployments = false;
 
     const qualify = (pluginId: string | undefined, localId: string): string => (
         pluginId ? `${pluginId}/${localId}` : localId
@@ -427,11 +477,23 @@ export function createScmHostingProviderRegistry(params: Readonly<{
             continue;
         }
 
+        const configuredDeployments = params.configuredDeploymentsByProviderId?.get(qualifiedId);
+        if (configuredDeployments && configuredDeployments.status !== 'complete') {
+            hasIncompleteConfiguredDeployments = true;
+            diagnostics.push(createIncompleteScmHostingProviderConfiguredDeploymentsDiagnostic({
+                pluginId: provider.pluginId,
+                providerId: provider.id,
+                status: configuredDeployments.status,
+            }));
+        }
         providersById.set(qualifiedId, Object.freeze({
             ...provider,
             id: qualifiedId,
             urlSafety: readScmHostingProviderUrlSafety(provider),
             ...(runtime ? { runtime } : {}),
+            ...(configuredDeployments?.bases.length
+                ? { connectedAccountBases: Object.freeze([...configuredDeployments.bases]) }
+                : {}),
         }));
     }
 
@@ -483,7 +545,12 @@ export function createScmHostingProviderRegistry(params: Readonly<{
                 try {
                     const routing = provider.runtime?.registration.adapter.routing;
                     if (!routing) continue;
-                    const detected = routing.detectRemote(input);
+                    const detected = routing.detectRemote({
+                        ...input,
+                        ...(provider.connectedAccountBases
+                            ? { connectedAccountBases: provider.connectedAccountBases }
+                            : {}),
+                    });
                     if (!detected) {
                         continue;
                     }
@@ -503,7 +570,12 @@ export function createScmHostingProviderRegistry(params: Readonly<{
             }
             return Object.freeze({
                 kind: 'unknown' as const,
-                provider: createUnknownProvider(input.remoteName),
+                provider: createUnknownProvider(
+                    input.remoteName,
+                    hasIncompleteConfiguredDeployments
+                        ? 'configured_deployment_listing_incomplete'
+                        : 'no_registered_provider_detected',
+                ),
             });
         },
         buildCompareUrl(input) {
@@ -543,6 +615,9 @@ export function createScmHostingProviderRegistry(params: Readonly<{
                     provider: normalizedProvider,
                     base: input.base,
                     head: input.head,
+                    ...(descriptor.connectedAccountBases
+                        ? { connectedAccountBases: descriptor.connectedAccountBases }
+                        : {}),
                 });
                 url = candidate ? resolveSafeCompareUrl(candidate, normalizedProvider, descriptor) : null;
             } catch {

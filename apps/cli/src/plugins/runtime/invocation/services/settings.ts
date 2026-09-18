@@ -396,7 +396,7 @@ export type PluginAccountSettingsRecordWriteResult =
     | Readonly<{ status: 'outcomeUnknown' }>
     | Readonly<{ status: 'unavailable' }>;
 
-export type PluginAccountSettingsRecordAdapter = Readonly<{
+export type PluginAccountSettingsRecordAccess = Readonly<{
     readRecord(
         model: StablePluginSettingsModel,
         options?: Readonly<{ signal?: AbortSignal }>,
@@ -409,6 +409,11 @@ export type PluginAccountSettingsRecordAdapter = Readonly<{
         }>,
         options?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<PluginAccountSettingsRecordWriteResult>;
+}>;
+
+export type PluginAccountSettingsRecordAdapter = Readonly<{
+    /** Pins one Account/server lifetime across the read, CAS, and reconciliation. */
+    bindOperation(options?: Readonly<{ signal?: AbortSignal }>): Promise<PluginAccountSettingsRecordAccess>;
     watchRecord?(
         model: StablePluginSettingsModel,
         listener: (hint: Readonly<{ revision?: number }>) => void,
@@ -441,7 +446,7 @@ function assertAccountSettingsModel(model: StablePluginSettingsModel): void {
 
 async function readAccountPluginSettingsRecord(
     model: StablePluginSettingsModel,
-    adapter: PluginAccountSettingsRecordAdapter,
+    adapter: PluginAccountSettingsRecordAccess,
     options?: Readonly<{ signal?: AbortSignal }>,
 ): Promise<AccountPluginSettingsRecordState> {
     const source = await adapter.readRecord(model, options);
@@ -516,7 +521,8 @@ export function createAccountSettingsBackedSettingsRecordStore(
         },
         async read(model, options): Promise<unknown | null> {
             assertAccountSettingsModel(model);
-            return (await readAccountPluginSettingsRecord(model, adapter, options)).record;
+            const access = await adapter.bindOperation(options);
+            return (await readAccountPluginSettingsRecord(model, access, options)).record;
         },
         async update<T>(
             model: StablePluginSettingsModel,
@@ -534,7 +540,8 @@ export function createAccountSettingsBackedSettingsRecordStore(
             }>,
         ): Promise<T> {
             assertAccountSettingsModel(model);
-            const current = await readAccountPluginSettingsRecord(model, adapter, options);
+            const access = await adapter.bindOperation(options);
+            const current = await readAccountPluginSettingsRecord(model, access, options);
             const next = operation(current.record);
             // A raced pruning writer found nothing left to remove: the stored
             // bytes already satisfy the postcondition, so no CAS write, no
@@ -544,7 +551,7 @@ export function createAccountSettingsBackedSettingsRecordStore(
                 model,
                 parseCanonicalPluginSettingsRecord(next.record),
             );
-            const response = await adapter.writeRecord(
+            const response = await access.writeRecord(
                 model,
                 {
                     expectedRevision: current.expectedRevision,
@@ -560,7 +567,7 @@ export function createAccountSettingsBackedSettingsRecordStore(
             }
             if (response.status === 'conflict') {
                 const readback = options?.settleConflict
-                    ? await readAccountPluginSettingsRecord(model, adapter).catch(() => null)
+                    ? await readAccountPluginSettingsRecord(model, access).catch(() => null)
                     : null;
                 const settled = readback
                     ? options?.settleConflict?.(readback.record)
@@ -573,7 +580,7 @@ export function createAccountSettingsBackedSettingsRecordStore(
                 );
             }
             if (response.status === 'outcomeUnknown') {
-                const readback = await readAccountPluginSettingsRecord(model, adapter)
+                const readback = await readAccountPluginSettingsRecord(model, access)
                     .catch(() => null);
                 const settled = readback
                     ? options?.settleOutcomeUnknown?.(readback.record)
@@ -600,7 +607,8 @@ export function createAccountSettingsBackedSettingsRecordStore(
             let closed = false;
             let previous: CanonicalPluginSettingsRecord | null = null;
             let serial = Promise.resolve();
-            const baseline = readAccountPluginSettingsRecord(model, adapter)
+            const access = adapter.bindOperation();
+            const baseline = access.then((bound) => readAccountPluginSettingsRecord(model, bound))
                 .then((state) => {
                     previous = state.record;
                 })
@@ -610,7 +618,7 @@ export function createAccountSettingsBackedSettingsRecordStore(
                     await baseline;
                     if (closed) return;
                     try {
-                        const next = (await readAccountPluginSettingsRecord(model, adapter)).record;
+                        const next = (await readAccountPluginSettingsRecord(model, await access)).record;
                         const before = previous ?? emptyRecord();
                         if (next.revision < before.revision) return;
                         previous = next;
@@ -985,7 +993,6 @@ export function createStablePluginSettingsOwner(params: Readonly<{
                     ? { settleOutcomeUnknown: settlePatchReadback }
                     : {}),
             });
-            assertCurrent(seed);
             await params.broker.emit({
                 event: {
                     ref: SETTINGS_CHANGED_REF,

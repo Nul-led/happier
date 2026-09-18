@@ -229,6 +229,7 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
             status: 'recovery_superseded',
             reason: 'source_tuple_mismatch',
         });
+        expect('adoptedTarget' in result).toBe(false);
         expect(resolveCurrentRuntimeAuthFailureSource).toHaveBeenCalledOnce();
     });
 
@@ -610,6 +611,7 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
             serviceId: 'openai-codex',
             groupId: 'main',
             observedProfileId: 'primary',
+            allowCurrentProfileRetry: true,
         }));
     });
 
@@ -677,6 +679,70 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
             status: 'recovery_superseded',
             reason: 'source_tuple_mismatch',
         });
+    });
+
+    it('continues the interrupted origin when an exact newer group target is already adopted', async () => {
+        const tracked = {
+            startedBy: 'daemon' as const,
+            pid: 111,
+            happySessionId: 'sess_adopted_newer_target',
+            spawnOptions: { directory: '/tmp/project', environmentVariables: {} },
+        };
+        const switchAfterClassifiedFailure = vi.fn();
+        const continueAfterRuntimeAuthSwitch = vi.fn(async () => {});
+
+        await expect(handleConnectedServiceRuntimeAuthFailureForSession({
+            getChildren: () => [tracked],
+            sessionId: tracked.happySessionId,
+            switchesThisTurn: 0,
+            classification: {
+                kind: 'usage_limit',
+                serviceId: 'happier.agent.codex/openai-codex',
+                profileId: 'exhausted',
+                groupId: 'main',
+                groupGeneration: 6,
+                expectedCredentialRevision: 'csr_abcdefghijklmnopqrstuv',
+                resetsAtMs: null,
+                planType: null,
+                rateLimits: null,
+                source: 'structured_provider_error',
+                recoveryAction: { kind: 'quota_recovery_required' },
+            },
+            resolveRegisteredRuntimeAuthFailureSource: async () => ({
+                serviceId: 'happier.agent.codex/openai-codex',
+                groupId: 'main',
+                profileId: 'replacement',
+                generation: 7,
+                credentialRevision: 'csr_bcdefghijklmnopqrstuvw',
+            }),
+            switchCoordinator: { switchAfterClassifiedFailure },
+            continueAfterRuntimeAuthSwitch,
+        })).resolves.toEqual({
+            status: 'recovery_superseded',
+            reason: 'source_tuple_mismatch',
+            serviceId: 'happier.agent.codex/openai-codex',
+            groupId: 'main',
+            profileId: 'exhausted',
+        });
+
+        expect(switchAfterClassifiedFailure).not.toHaveBeenCalled();
+        expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
+        expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
+            tracked,
+            sessionId: tracked.happySessionId,
+            action: 'hot_applied',
+            attemptId: 'connected-service-auth-switch|hot_applied|happier.agent.codex/openai-codex:group:main:replacement:7',
+            normalizedBindings: {
+                v: 2,
+                bindingsByServiceId: {
+                    'happier.agent.codex/openai-codex': {
+                        source: 'connected',
+                        selection: 'group',
+                        groupId: 'main',
+                    },
+                },
+            },
+        }));
     });
 
     it('continues a scheduled recovery on the refreshed revision of the same profile without attributing the old failure to it', async () => {
@@ -2050,7 +2116,7 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
         }));
         const resolveInactiveSession = vi.fn(async () => ({
             connectedServices: {
-                v: 1 as const,
+                v: 2 as const,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected' as const,
@@ -2118,7 +2184,7 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
                     happyToolsDir: '/tmp/home/.happier/tools',
                     host: 'test-host',
                     connectedServices: {
-                        v: 1,
+                        v: 2,
                         bindingsByServiceId: {
                             'openai-codex': {
                                 source: 'connected',
@@ -2185,7 +2251,7 @@ describe('handleConnectedServiceRuntimeAuthFailureForSession', () => {
                     happyToolsDir: '/tmp/home/.happier/tools',
                     host: 'test-host',
                     connectedServices: {
-                        v: 1,
+                        v: 2,
                         bindingsByServiceId: {
                             'openai-codex': {
                                 source: 'connected',

@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
 
@@ -58,7 +59,7 @@ describe('ApiSessionClient outbound diagnostics logging', () => {
     const { logger } = await import('@/ui/logger');
     const debugSpy = vi.spyOn(logger, 'debug');
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
 
     await client.enqueueAgentMessageCommitted(
       'claude',
@@ -78,7 +79,7 @@ describe('ApiSessionClient outbound diagnostics logging', () => {
     const { logger } = await import('@/ui/logger');
     const debugSpy = vi.spyOn(logger, 'debug');
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's-socket-log' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's-socket-log' }));
     const socketError = new AxiosError('socket failed', 'ECONNRESET', createAxiosConfig({
       method: 'get',
       url: 'https://relay:SUPER_SECRET_PASSWORD@api.example.test/socket.io/?token=SECRET',

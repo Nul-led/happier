@@ -6,6 +6,7 @@ import {
 import {
   ExternalSessionsAgentIdSchema,
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
+  readNonBlankOpaqueIdentifier,
   type ExternalSessionsAgentId,
   type SessionMetadata,
 } from '@happier-dev/protocol';
@@ -22,14 +23,9 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function normalizeNullableString(value: unknown): string | null {
-  if (value === null) return null;
-  const normalized = String(value ?? '').trim();
-  return normalized ? normalized : null;
-}
-
 function normalizeExternalSessionsAgentId(value: unknown): ExternalSessionsAgentId | null {
-  const normalized = normalizeNullableString(value);
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
   if (!normalized) return null;
   const parsed = ExternalSessionsAgentIdSchema.safeParse(normalized);
   return parsed.success ? parsed.data : null;
@@ -62,7 +58,7 @@ function readProviderResumeFieldSessionId(
   const resume = getAgentResumeConfig(agentId);
   if (!resume) return null;
   const field = 'vendorResumeIdField' in resume ? resume.vendorResumeIdField ?? null : null;
-  return field ? normalizeNullableString(metadata[field]) : null;
+  return field ? readNonBlankOpaqueIdentifier(metadata[field]) : null;
 }
 
 function readExternalSessionRemoteSessionId(
@@ -71,7 +67,7 @@ function readExternalSessionRemoteSessionId(
 ): string | null {
   const externalSession = readNonAuthoritativeLinkedExternalSessionV1FromMetadata(metadata);
   if (externalSession?.agentId !== agentId) return null;
-  return normalizeNullableString(externalSession.remoteSessionId);
+  return readNonBlankOpaqueIdentifier(externalSession.remoteSessionId);
 }
 
 function readProviderSessionIdForProvider(value: unknown, agentId: ExternalSessionsAgentId): string | null {
@@ -94,7 +90,7 @@ function resolveMarkerRemoteSessionId(
   agentId: ExternalSessionsAgentId,
 ): string | null {
   const respawn = readRecord(marker.respawn);
-  return normalizeNullableString(respawn?.resume)
+  return readNonBlankOpaqueIdentifier(respawn?.resume)
     ?? readProviderSessionIdForProvider(marker.metadata, agentId)
     ?? readProviderSessionIdForProvider(marker.respawn, agentId);
 }
@@ -119,10 +115,12 @@ function resolveMarkerConnectedServiceRuntimeSnapshot(marker: DaemonSessionMarke
  * Resolve the Connected Services a linked external session must run under.
  *
  * Ownership is proven by the Agent plus the native session identity a Session
- * marker carries. Directory coincidence is not ownership: markers are
- * Session/PID-owned, and two sessions in one repository may legitimately run
- * under different Connected Service profiles, so an unmatched marker never
- * contributes credentials.
+ * marker carries. That identity is Agent-minted and opaque, so it is matched by
+ * exact bytes — a padded marker id and its stripped sibling are two different
+ * sessions and must not share credentials. Directory coincidence is not
+ * ownership either: markers are Session/PID-owned, and two sessions in one
+ * repository may legitimately run under different Connected Service profiles,
+ * so an unmatched marker never contributes credentials.
  */
 export async function resolveConnectedServiceRuntimeSnapshotForExternalSession(params: Readonly<{
   agentId: ExternalSessionsAgentId;

@@ -273,15 +273,21 @@ export function createNativeAgentAccountUsageService(params: Readonly<{
         publicSource: Awaited<ReturnType<AgentAccountUsageService['resolveSourceContext']>>;
         connectedServiceSource: ConnectedServiceUsageSourceV1 | null;
     }> | null => {
-        const context = address.env
+        // The launch selection is only a semantic fallback. A hot-applied account switch updates
+        // session metadata while the provider process keeps its original environment, so allowing
+        // the environment to win here would attribute later quota evidence to the old pool member.
+        const currentContext = resolveConnectedServiceRuntimeAuthContextFromSessionMetadata(
+            params.session,
+            address.serviceId,
+        );
+        const context = currentContext.profileId
+            ? currentContext
+            : address.env
             ? resolveConnectedServiceRuntimeAuthContextFromEnv(
                 address.env,
                 address.serviceId,
             )
-            : resolveConnectedServiceRuntimeAuthContextFromSessionMetadata(
-                params.session,
-                address.serviceId,
-            );
+            : currentContext;
         if (!context?.profileId) return null;
         const source = {
             serviceId: context.serviceId,

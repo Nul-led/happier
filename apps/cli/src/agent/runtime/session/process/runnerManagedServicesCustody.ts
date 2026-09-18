@@ -338,7 +338,7 @@ export type RunnerManagedServicesCustodyOwnerV1 =
         materializeAdoptedProviderAgentBinding(input: Readonly<{
             materialize(input: Readonly<{
                 endpointUrl: string;
-                credentialPlaceholder: string;
+                credentialPlaceholder: string | null;
             }>): Promise<unknown>;
         }>): Promise<
             RunnerManagedProviderAgentBindingMaterializationV1
@@ -1165,7 +1165,7 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
         endpointTemplateId: string;
         materialize(input: Readonly<{
             endpointUrl: string;
-            credentialPlaceholder: string;
+            credentialPlaceholder: string | null;
         }>): Promise<unknown>;
     }>): Promise<
         RunnerManagedProviderAgentBindingMaterializationV1 | null
@@ -2701,7 +2701,7 @@ export function createRunnerManagedServicesCustodyPort(input: Readonly<{
         materializeInput: Readonly<{
             materialize(input: Readonly<{
                 endpointUrl: string;
-                credentialPlaceholder: string;
+                credentialPlaceholder: string | null;
             }>): Promise<unknown>;
         }>,
     ): Promise<RunnerManagedProviderAgentBindingMaterializationV1> => {

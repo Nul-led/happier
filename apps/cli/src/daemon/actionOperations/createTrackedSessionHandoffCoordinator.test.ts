@@ -74,6 +74,85 @@ describe('createTrackedSessionHandoffCoordinator', () => {
     expect(options).not.toHaveProperty('backendTarget');
   });
 
+  it('admits copy without a replacement approval and returns the typed update requirement for an older target daemon', async () => {
+    const policyInput = {
+      v: 1 as const,
+      selection: 'all_files' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+    };
+    const action = {
+      kind: 'copy_once' as const,
+      contentPolicy: {
+        ...policyInput,
+        policyDigest: computeWorkspaceSyncPolicyDigest(policyInput),
+      },
+    };
+    const prepared = { kind: 'copy_once' as const, operationId: 'operation-1', action };
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async () => prepared),
+      finalize: vi.fn(async () => prepared),
+      commit: vi.fn(async () => prepared),
+      abort: vi.fn(async () => undefined),
+    };
+    const callMachine = vi.fn(async () => {
+      throw Object.assign(new Error('RPC method not available'), {
+        rpcErrorCode: 'RPC_METHOD_NOT_AVAILABLE',
+      });
+    });
+    const coordinate = createTrackedSessionHandoffCoordinator({
+      expectedAccountServerId: 'server-1',
+      readCredentials: async () => ({ token: 'token' } as never),
+      resolveSource: async () => ({
+        ok: true,
+        sourceMachineId: 'source-1',
+        sourceRootPath: '/source/workspace',
+        sessionStorageMode: 'persisted',
+      }),
+      callMachine,
+      workspaceSyncAdapter,
+    });
+
+    await expect(coordinate({
+      operationId: 'operation-1',
+      actionInput: {
+        sessionId: 'session-1',
+        targetMachineId: 'target-1',
+        targetPath: '/target/workspace',
+        accountServerId: 'server-1',
+        workspaceAction: action,
+      },
+      start: async () => ({
+        ok: true,
+        result: {
+          handoffId: 'handoff-1',
+          targetPath: '/target/workspace',
+          endpointCandidates: [],
+          status: {
+            handoffId: 'handoff-1',
+            sessionId: 'session-1',
+            sourceMachineId: 'source-1',
+            targetMachineId: 'target-1',
+            status: 'in_progress',
+            phase: 'preparing',
+            transportStrategy: 'server_routed_stream',
+            recoveryActions: [],
+          },
+        },
+      }),
+      signal: new AbortController().signal,
+      publishOwnerUpdate: vi.fn(),
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'workspace_sync_update_required',
+    });
+    expect(callMachine).toHaveBeenCalledTimes(3);
+    expect(callMachine).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      machineId: 'target-1',
+      method: RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3,
+    }));
+  });
+
   it('routes the accepted handoff through the existing source and target daemon primitives', async () => {
     const calls: Array<{ machineId: string; method: string; request: unknown; timeoutMs?: number }> = [];
     let resultGets = 0;
@@ -114,6 +193,9 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       }
       if (input.method === RPC_METHODS.SPAWN_HAPPY_SESSION) {
         return { type: 'success', spawnNonce: 'handoff:handoff-1', sessionIdStatus: 'pending' };
+      }
+      if (input.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE) {
+        return { status: 'success', sessionId: 'session-1' };
       }
       if (input.method === RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3) {
         if (input.machineId === 'source-1') {
@@ -174,7 +256,11 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       resume: vi.fn(async () => relationshipStatus),
       terminate: vi.fn(async () => undefined),
       listConflicts: vi.fn(async () => ({
-        relationshipId: 'relationship-1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [],
+        status: 'page' as const,
+        relationshipId: 'relationship-1',
+        totalCount: 0,
+        nextCursor: null,
+        conflicts: [],
       })),
       deleteConflictLoser: vi.fn(async () => relationshipStatus),
       readFile: vi.fn(async () => ({ status: 'missing' as const })),
@@ -225,7 +311,6 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         sessionStorageMode: 'persisted',
       }),
       callMachine,
-      awaitTargetCustody: async () => ({ type: 'success', sessionId: 'session-1' }),
       wait: async () => undefined,
       workspaceSyncAdapter,
       refreshWorkspaceSettings,
@@ -235,6 +320,7 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       }),
     });
 
+    let privateStartInput: unknown;
     const result = await coordinate({
       operationId: 'action-request-1',
       actionInput: {
@@ -244,6 +330,10 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         accountServerId: 'server-1',
         actionRequestId: 'action-request-1',
         handoffTargetReplacementApproval: approval,
+        handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+        handoffTargetReplacementApprovalActionInput: {
+          sessionId: 'session-1', targetMachineId: 'target-1', targetPath: '/target/workspace',
+        },
         workspaceAction: {
           kind: 'create_relationship',
           mode: 'mirror_exactly',
@@ -251,17 +341,20 @@ describe('createTrackedSessionHandoffCoordinator', () => {
           flushBeforeCommit: true,
         },
       },
-      start: async () => ({
-        ok: true,
-        result: {
-          handoffId: 'handoff-1', targetPath: '/source/workspace', endpointCandidates: [],
-          status: {
-            handoffId: 'handoff-1', sessionId: 'session-1', sourceMachineId: 'source-1',
-            targetMachineId: 'target-1', status: 'in_progress', phase: 'preparing',
-            transportStrategy: 'server_routed_stream', recoveryActions: [],
+      start: async (input?: unknown) => {
+        privateStartInput = input;
+        return {
+          ok: true as const,
+          result: {
+            handoffId: 'handoff-1', targetPath: '/source/workspace', endpointCandidates: [],
+            status: {
+              handoffId: 'handoff-1', sessionId: 'session-1', sourceMachineId: 'source-1',
+              targetMachineId: 'target-1', status: 'in_progress', phase: 'preparing',
+              transportStrategy: 'server_routed_stream', recoveryActions: [],
+            },
           },
-        },
-      }),
+        };
+      },
       signal: new AbortController().signal,
       publishOwnerUpdate: vi.fn(),
     });
@@ -279,12 +372,21 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         message: 'Source cleanup is still pending.',
       },
     });
+    expect(privateStartInput).toMatchObject({
+      sessionId: 'session-1',
+      sourceMachineId: 'source-1',
+      targetMachineId: 'target-1',
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+      handoffTargetReplacementApprovalReceiptId: 'approval-receipt-1',
+    });
     expect(calls.map(({ machineId, method }) => [machineId, method])).toEqual([
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3],
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V3],
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3],
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V3],
       ['target-1', RPC_METHODS.SPAWN_HAPPY_SESSION],
+      ['target-1', RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE],
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3],
       ['source-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3],
     ]);
@@ -303,6 +405,10 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       sourceRootPath: '/source/workspace',
       targetRootPath: '/target/workspace',
       targetReplacementApproval: approval,
+      targetReplacementApprovalReceiptId: 'approval-receipt-1',
+      targetReplacementApprovalActionInput: {
+        sessionId: 'session-1', targetMachineId: 'target-1', targetPath: '/target/workspace',
+      },
     }));
   });
 });

@@ -685,6 +685,28 @@ export type TokenOnlyCredentials = CredentialProvenanceMarker & {
 
 export type StoredCredentials = Credentials | TokenOnlyCredentials;
 
+function sameCredentialBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength
+    && left.every((value, index) => value === right[index]);
+}
+
+/** Exact current credential identity used by credential-refreshing operation owners. */
+export function sameStoredCredentials(
+  left: StoredCredentials,
+  right: StoredCredentials | null | undefined,
+): boolean {
+  if (!right || left.token !== right.token || left.credentialProvenance !== right.credentialProvenance) return false;
+  if (left.encryption === null || right.encryption === null) return left.encryption === right.encryption;
+  if (left.encryption.type === 'legacy' && right.encryption.type === 'legacy') {
+    return sameCredentialBytes(left.encryption.secret, right.encryption.secret);
+  }
+  if (left.encryption.type === 'dataKey' && right.encryption.type === 'dataKey') {
+    return sameCredentialBytes(left.encryption.publicKey, right.encryption.publicKey)
+      && sameCredentialBytes(left.encryption.machineKey, right.encryption.machineKey);
+  }
+  return false;
+}
+
 /**
  * Only the credential reader may attest an interactive stored CLI session.
  * Synthetic/legacy callers without this marker fail closed as automation.
@@ -830,6 +852,33 @@ export async function writeCredentialsTokenOnlyForServerId(
   await mkdir(serverDir, { recursive: true });
   await bestEffortChmod(serverDir, 0o700);
   await writeFile(credentialPath, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  await bestEffortChmod(credentialPath, 0o600);
+}
+
+/** Writes an exact profile credential without changing the active Home. */
+export async function writeStoredCredentialsForServerId(
+  serverIdRaw: string,
+  credentials: StoredCredentials,
+): Promise<void> {
+  const serverId = String(serverIdRaw ?? '').trim();
+  const token = String(credentials.token ?? '').trim();
+  if (!isServerIdFilesystemSafe(serverId) || !token) throw new Error('Invalid server credential target.');
+  const serverDir = join(configuration.serversDir, serverId);
+  const credentialPath = join(serverDir, 'access.key');
+  const persisted = credentials.encryption?.type === 'legacy'
+    ? { token, secret: encodeBase64(credentials.encryption.secret) }
+    : credentials.encryption?.type === 'dataKey'
+      ? {
+          token,
+          encryption: {
+            publicKey: encodeBase64(credentials.encryption.publicKey),
+            machineKey: encodeBase64(credentials.encryption.machineKey),
+          },
+        }
+      : { token };
+  await mkdir(serverDir, { recursive: true });
+  await bestEffortChmod(serverDir, 0o700);
+  await writeFile(credentialPath, JSON.stringify(persisted, null, 2), { mode: 0o600 });
   await bestEffortChmod(credentialPath, 0o600);
 }
 

@@ -6,7 +6,7 @@ import {
   type ActionExecutorDeps,
 } from '@happier-dev/protocol';
 
-import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { createActionSettingsProvider, type RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 
 import { createCliActionDeps } from './createCliActionDeps';
 import { createActionExecutionHookDeps } from './createActionExecutionHookDeps';
@@ -28,7 +28,10 @@ type ApprovalUpdateArgs = Parameters<NonNullable<ActionExecutorDeps['approvalsUp
 type ApprovalCreateArgs = Parameters<NonNullable<ActionExecutorDeps['approvalsCreate']>>[0];
 
 export function createCliActionExecutorHarness(
-  params: Parameters<typeof createCliActionDeps>[0],
+  params: Parameters<typeof createCliActionDeps>[0] & Readonly<{
+    /** Host-owned reviewed policy; never resolved from Action input or endpoint environment. */
+    actionsSettingsProvider?: RuntimeActionSettingsProvider;
+  }>,
   overrides?: Partial<ActionExecutorDeps>,
 ): Readonly<{
   deps: ActionExecutorDeps;
@@ -36,11 +39,29 @@ export function createCliActionExecutorHarness(
 }> {
   const coordinator = getSharedBlockingApprovalCoordinator();
   const baseDeps = createCliActionDeps(params);
-  const actionSettingsProvider = createActionSettingsProvider();
+  const baseDepsForRuntime = (() => {
+    if (!params.actionsSettingsProvider || params.actionsSettingsProvider.getAccountSettings) {
+      return baseDeps;
+    }
+    // A reviewed runtime-only policy has no Account authority. Keep its
+    // Session Action dependencies, but do not let the restricted bearer make
+    // the Account-private approval Artifact carrier appear available.
+    const {
+      approvalsList: _approvalsList,
+      approvalsCreate: _approvalsCreate,
+      approvalsGet: _approvalsGet,
+      approvalsUpdate: _approvalsUpdate,
+      ...scopedDeps
+    } = baseDeps;
+    return scopedDeps;
+  })();
+  const actionSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider();
   const isActionEnabled: NonNullable<ActionExecutorDeps['isActionEnabled']> = (id, ctx) =>
     isActionEnabledByActionsSettings(
       id,
-      ctx.actionsSettings ?? actionSettingsProvider.getActionsSettings(),
+      params.actionsSettingsProvider?.getActionsSettings()
+        ?? ctx.actionsSettings
+        ?? actionSettingsProvider.getActionsSettings(),
       {
         surface: ctx.surface ?? 'cli',
         placement: ctx.placement ?? null,
@@ -49,11 +70,17 @@ export function createCliActionExecutorHarness(
   const isActionApprovalRequired: NonNullable<ActionExecutorDeps['isActionApprovalRequired']> = (id, ctx) =>
     isApprovalRequiredByActionsSettings(
       id,
-      ctx.actionsSettings ?? actionSettingsProvider.getActionsSettings(),
-      { surface: ctx.surface ?? null },
+      params.actionsSettingsProvider?.getActionsSettings()
+        ?? ctx.actionsSettings
+        ?? actionSettingsProvider.getActionsSettings(),
+      {
+        surface: ctx.surface ?? null,
+        authority: ctx.authority,
+        presentUserConfirmation: ctx.presentUserConfirmation,
+      },
     );
   const rawDeps: MutableActionExecutorDeps = {
-    ...baseDeps,
+    ...baseDepsForRuntime,
     approvalsWaitForDecision: async (args: ApprovalWaitForDecisionArgs) => {
       const result = await coordinator.waitForDecision({
         artifactId: args.artifactId,
@@ -62,7 +89,7 @@ export function createCliActionExecutorHarness(
         signal: args.signal,
         pollIntervalMs: normalizePollIntervalMs(process.env.HAPPIER_BLOCKING_APPROVAL_POLL_INTERVAL_MS),
         readRequest: async () => {
-          const getApproval = rawDeps.approvalsGet ?? baseDeps.approvalsGet;
+          const getApproval = rawDeps.approvalsGet;
           return getApproval ? await getApproval({ artifactId: args.artifactId, serverId: args.serverId ?? null }) : null;
         },
       });
@@ -105,9 +132,22 @@ export function createCliActionExecutorHarness(
     };
   }
   const deps = rawDeps as ActionExecutorDeps;
+  const executor = createActionExecutor(deps);
+  const resolveContext = (context: Parameters<typeof executor.execute>[2]) => ({
+    ...(context ?? {}),
+    ...(params.serverId ? { serverId: params.serverId } : {}),
+    ...(params.serverIdentityId ? { serverIdentityId: params.serverIdentityId } : {}),
+    ...(params.actionsSettingsProvider
+      ? { actionsSettings: params.actionsSettingsProvider.getActionsSettings() }
+      : {}),
+  });
 
   return {
     deps,
-    executor: createActionExecutor(deps),
+    executor: {
+      prepare: (actionId, input, context) => executor.prepare(actionId, input, resolveContext(context)),
+      execute: (actionId, input, context) => executor.execute(actionId, input, resolveContext(context)),
+      replayApprovedApprovalRequest: (args) => executor.replayApprovedApprovalRequest(args),
+    },
   };
 }

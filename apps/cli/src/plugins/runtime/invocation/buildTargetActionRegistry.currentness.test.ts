@@ -252,6 +252,11 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
         const alphaBefore = materialization('acme.alpha', 'alpha-before');
         const betaCurrent = materialization('acme.beta', 'beta-current');
         const gammaCurrent = materialization('acme.gamma', 'gamma-current');
+        const immutableGenerationIds = new Map<string, string>([
+            ['acme.alpha', 'immutable-alpha'],
+            ['acme.beta', 'immutable-beta'],
+            ['acme.gamma', 'immutable-gamma'],
+        ]);
         const materializations = new Map<string, PluginMachineMaterializationRefV1>([
             ['acme.alpha', alphaBefore],
             ['acme.beta', betaCurrent],
@@ -387,6 +392,10 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
         targetActivationFacts.push(activationFact('acme.alpha', 'start'));
         targetActionInvocations = buildTargetActionInvocationRegistry({
             contributes,
+            immutableGenerationIdsByPluginId: immutableGenerationIds,
+            resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
+                immutableGenerationIds.get(pluginId) ?? null
+            ),
             targetRegistrations,
             targetActivationFacts,
             resolveAuthorizationFacts: (action) => ({
@@ -412,6 +421,9 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             resolveCurrentPluginMaterializationRef: (pluginId) => (
                 materializations.get(pluginId) ?? null
             ),
+            resolveCurrentPluginImmutableGenerationId: async (pluginId) => (
+                immutableGenerationIds.get(pluginId) ?? null
+            ),
             activateContributionsOnDemand,
         });
         const committedRuntimeRegistry: ResolvedExecutablePluginRuntimeRegistry = runtimeRegistry;
@@ -430,6 +442,7 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             kind: 'plugin',
             pluginId: 'acme.alpha',
             contribution: { id: 'start', qualifiedId: 'acme.alpha/actions/start' },
+            immutableGenerationId: 'immutable-alpha',
             materialization: alphaBefore,
             originSurface: 'cli',
         });
@@ -437,6 +450,7 @@ describe('buildTargetActionInvocationRegistry caller currentness', () => {
             kind: 'plugin',
             pluginId: 'acme.beta',
             contribution: { id: 'continue', qualifiedId: 'acme.beta/actions/continue' },
+            immutableGenerationId: 'immutable-beta',
             materialization: betaCurrent,
             originSurface: 'cli',
         });
@@ -730,6 +744,7 @@ function createComposedAdmittedOperationFixture() {
                             id: 'request',
                             qualifiedId: 'acme.caller/actions/request',
                         },
+                        immutableGenerationId: params.targetImmutableGenerationId,
                         materialization: materializations.get('acme.caller')!,
                     },
                 },

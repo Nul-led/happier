@@ -247,12 +247,20 @@ describe('RelayHostEngine (installOrUpdate local legacy unit name)', () => {
       const legacyInstallRoot = join(homeDir, '.happier', 'l1', 'self-host');
       const unitDir = join(homeDir, '.config', 'systemd', 'user');
       await mkdir(join(previewInstallRoot, 'data'), { recursive: true });
+      await mkdir(join(previewInstallRoot, 'config'), { recursive: true });
       await mkdir(join(legacyInstallRoot, 'data'), { recursive: true });
       await mkdir(unitDir, { recursive: true });
       await writeFile(join(previewInstallRoot, 'data', 'handy-master-secret.txt'), 'preview-secret\n', 'utf8');
       await writeFile(join(legacyInstallRoot, 'data', 'handy-master-secret.txt'), 'legacy-secret\n', 'utf8');
       await writeFile(join(previewInstallRoot, 'data', 'happier-server-light.sqlite'), 'preview-db\n', 'utf8');
       await writeFile(join(legacyInstallRoot, 'data', 'happier-server-light.sqlite'), 'legacy-db\n', 'utf8');
+      await writeFile(join(previewInstallRoot, 'self-host-state.json'), JSON.stringify({
+        version: 'preview-1',
+        channel: 'preview',
+        mode: 'user',
+        purpose: { kind: 'generic' },
+      }), 'utf8');
+      await writeFile(join(previewInstallRoot, 'config', 'server.env'), 'PORT=3005\n', 'utf8');
       await writeFile(
         join(unitDir, 'happier-server-preview.service'),
         `[Service]\nWorkingDirectory=${previewInstallRoot}\nEnvironment=PORT=3005\n`,

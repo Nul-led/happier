@@ -42,6 +42,7 @@ import { delay } from '@/utils/time';
 import { handlePluginsRegistryCommand, type PluginsRegistryCommandDeps } from './pluginsRegistry';
 import {
   handlePluginsSettingsCommand,
+  pluginSettingsHelpRows,
   type PluginsSettingsCommandDeps,
 } from './pluginsSettings';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
@@ -156,7 +157,7 @@ type PluginsCommandDeps = Readonly<{
     request: PluginInvocationLogQuery;
     signal?: AbortSignal;
   }>) => Promise<MachinePluginInvocationLogReadResult>;
-  executeSettingsAdministrationAction?: PluginsSettingsCommandDeps['executeSettingsAdministrationAction'];
+  pluginSettings?: PluginsSettingsCommandDeps;
   marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources' | 'queryExactListing'>;
 }>;
 
@@ -196,8 +197,7 @@ function usage(): string {
       { label: `${pluginCommand} reload [developmentPluginId] [--json]`, description: 'Reapply the development source registered for this directory, or one explicit plugin id' },
       { label: `${pluginCommand} change status|approve|reject <pendingChangeId> [--json]`, description: 'Rejoin or explicitly decide a daemon-lifetime pending plugin change by its issued id' },
       { label: `${pluginCommand} logs <pluginId> [--machine <id>] [--generation <id>] [--correlation <id>] [--cursor <byteOffset>] [--limit <1-500>] [--follow] [--json]`, description: 'Read canonical structured logs from one exact current daemon' },
-      { label: `${pluginCommand} settings list <pluginId> --scope <account|daemon> [--machine <id>] [--json]`, description: 'List declared Plugin Settings from one exact Account or daemon scope' },
-      { label: `${pluginCommand} settings secret status|bind|unbind|delete <pluginId> <localId> [--scope <account|daemon>] [--machine <id>]`, description: 'Read or mutate declared Plugin secret custody without accepting raw secret material; daemon custody requires one exact machine' },
+      ...pluginSettingsHelpRows(pluginCommand),
       { label: `${pluginCommand} registry add <origin> [--id <id>] [--name <name>] [--scope <@scope>] [--default] [--allow-private-network] [--json]`, description: 'Add a private npm registry profile' },
       { label: `${pluginCommand} registry login <profileId> [--json]`, description: 'Store a registry token through a hidden prompt' },
       { label: `${pluginCommand} registry test|logout|remove <profileId> [--json]`, description: 'Test or change one private registry profile' },
@@ -3181,9 +3181,7 @@ export async function handlePluginsCommand(
 
   if (subcommand === 'settings') {
     await handlePluginsSettingsCommand(args.slice(1), {
-      ...(deps.executeSettingsAdministrationAction
-        ? { executeSettingsAdministrationAction: deps.executeSettingsAdministrationAction }
-        : {}),
+      ...(deps.pluginSettings ?? {}),
       ...(deps.resolvePluginInvocationLogTarget
         ? { resolvePluginInvocationLogTarget: deps.resolvePluginInvocationLogTarget }
         : {}),

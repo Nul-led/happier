@@ -9,7 +9,7 @@ import type {
   TurnChangeSet,
   ChangeEvidenceSource,
 } from '@happier-dev/protocol';
-import { ScmStatusSnapshotResponseSchema } from '@happier-dev/protocol';
+import { ScmStatusSnapshotResponseSchema, normalizeCheckpointAttributionScope } from '@happier-dev/protocol';
 
 import {
   createNonRepositoryScmSnapshotResponse,
@@ -101,7 +101,7 @@ function buildMetadataFromTurnChangeSet(input: ExecutionRunScmDiffSummaryInputV1
     ...(input.checkpointReceiptId ? { checkpointReceiptId: input.checkpointReceiptId } : {}),
     ...(input.turnEvidenceMode ? { turnEvidenceMode: input.turnEvidenceMode } : {}),
     ...(checkpoint?.contentConfidence ? { contentConfidence: checkpoint.contentConfidence } : {}),
-    ...(checkpoint?.attributionScope ? { attributionScope: checkpoint.attributionScope } : {}),
+    ...(checkpoint ? { attributionScope: normalizeCheckpointAttributionScope(checkpoint.attributionScope) } : {}),
   };
 }
 

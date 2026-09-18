@@ -32,7 +32,8 @@ function readAccountIdFromCredentials(credentials: Awaited<ReturnType<typeof rea
   return subject || null;
 }
 
-export async function handleAuthLogin(args: string[]): Promise<void> {
+export async function handleAuthLogin(args: string[], signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (args.includes('--help') || args.includes('-h')) {
     showAuthHelp();
     return;
@@ -41,6 +42,7 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
   args = await applyServerSelectionFromArgs(args);
 
   const callerIntent = args.includes('--no-daemon-start') ? 'setup-managed' : 'standalone';
+  const requireAccountMaterial = args.includes('--recover-account-material');
   const forceAuth = args.includes('--force') || args.includes('-f');
   const noOpen = args.includes('--no-open') || args.includes('--no-browser') || args.includes('--no-browser-open');
   const printConfigureLinks = args.includes('--print-configure-links');
@@ -100,7 +102,7 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
   }
 
   if (!forceAuth) {
-    const readiness = await resolveActiveServerAuthReadiness();
+    const readiness = await resolveActiveServerAuthReadiness({ ...(signal ? { signal } : {}) });
     let existingCreds = readiness.credentials;
 
     if (readiness.unusableReason === 'credentials-rejected' && existingCreds) {
@@ -125,7 +127,12 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
         existingCreds = null;
     }
 
-    if (readiness.authenticated && existingCreds && readiness.machineRegistered) {
+    if (
+      readiness.authenticated
+      && existingCreds
+      && readiness.machineRegistered
+      && !requireAccountMaterial
+    ) {
       const out = createOutputBuilder();
       out.line(ok('Already authenticated'));
       out.definitionList([
@@ -148,7 +155,11 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
   }
 
   try {
-    const result = await authAndSetupMachineIfNeeded({ callerIntent });
+    const result = await authAndSetupMachineIfNeeded({
+      callerIntent,
+      ...(requireAccountMaterial ? { requireAccountMaterial: true } : {}),
+      ...(signal ? { signal } : {}),
+    });
     const out = createOutputBuilder();
     out.blank();
     out.line(ok('Authentication successful'));

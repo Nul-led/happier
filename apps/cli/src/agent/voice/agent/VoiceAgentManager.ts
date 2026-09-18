@@ -40,6 +40,9 @@ import type {
 } from './voiceAgentTypes';
 import type { PermissionIntent } from '@happier-dev/agents';
 import { VoiceAgentError } from './voiceAgentTypes';
+import { renderSessionInputContextPromptV1 } from '@happier-dev/protocol';
+import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import { isSessionProviderInputOutcomeTerminal } from '@/agent/runtime/session/input/providerInputOutcome';
 
 export type {
   VoiceAgentCommitResult,
@@ -50,6 +53,11 @@ export type {
   VoiceAgentTurnStreamStartResult,
 } from './voiceAgentTypes';
 export { VoiceAgentError } from './voiceAgentTypes';
+
+export type VoiceAgentRuntimeAuthorityV1 = Readonly<{
+  runtimeState: 'active_turn' | 'idle';
+  activeTurnId: string | null;
+}>;
 
 function areVoiceModelSelectionsEqual(
   left: ProviderBoundModelRef | undefined,
@@ -88,6 +96,11 @@ export class VoiceAgentManager {
   private readonly getNowMs: () => number;
   private readonly onIdleReaped: ((voiceAgentId: string) => Promise<void>) | null;
   private readonly onTerminalFailure: ((voiceAgentId: string, reason: 'backend_replacement_failed') => Promise<void>) | null;
+  private readonly prepareFollowContext: ((input: Readonly<{
+    executionRunId: string;
+    requiredPrompt: string;
+    signal: AbortSignal;
+  }>) => Promise<SessionFollowPreparedContext | null>) | null;
   private readonly voiceAgents = new Map<string, VoiceAgentInstance>();
   private readonly startingVoiceAgents = new Map<string, {
     cancelled: boolean;
@@ -99,6 +112,39 @@ export class VoiceAgentManager {
   private readonly runtimeDisposals = new WeakMap<ExecutionRunHostRuntime, Promise<void>>();
   private readonly reaper: NodeJS.Timeout;
   private disposed = false;
+
+  /**
+   * Live currentness projection for the exact nested Voice runtime. The Voice
+   * manager remains the sole owner of chat/commit replacement; callers receive
+   * only liveness and turn state. The parent Execution Run controller owns the
+   * stable occurrence across chat and isolated-commit runtime replacement.
+   */
+  readCurrentRuntimeAuthority(voiceAgentId: string): VoiceAgentRuntimeAuthorityV1 | null {
+    if (this.disposed || this.startingVoiceAgents.has(voiceAgentId) || this.retiringVoiceAgents.has(voiceAgentId)) {
+      return null;
+    }
+    const voiceAgent = this.voiceAgents.get(voiceAgentId);
+    if (!voiceAgent) return null;
+
+    const readActive = (runtime: ExecutionRunHostRuntime | null): ReturnType<NonNullable<ExecutionRunHostRuntime['readActiveTurnAdmissionWitness']>> | null | undefined => {
+      if (!runtime || runtime.getRuntimeLifetimeSignal().aborted) return null;
+      try {
+        return runtime.readActiveTurnAdmissionWitness?.() ?? undefined;
+      } catch {
+        return null;
+      }
+    };
+    const chatActive = readActive(voiceAgent.chatBackend);
+    if (chatActive === null) return null;
+    const commitActive = voiceAgent.commitBackend ? readActive(voiceAgent.commitBackend) : undefined;
+    if (commitActive === null || (chatActive && commitActive)) return null;
+    const runtime = commitActive ? voiceAgent.commitBackend : voiceAgent.chatBackend;
+    if (!runtime) return null;
+    return Object.freeze({
+      runtimeState: chatActive || commitActive ? 'active_turn' : 'idle',
+      activeTurnId: (commitActive ?? chatActive)?.turnId ?? null,
+    });
+  }
 
   private unsubscribeBestEffort(unsubscribe: () => void): void {
     try {
@@ -151,6 +197,86 @@ export class VoiceAgentManager {
       return Math.floor(explicitTimeoutMs);
     }
     return this.responseTimeoutMs;
+  }
+
+  private async prepareFollowContextForPrompt(
+    backend: ExecutionRunHostRuntime,
+    prompt: string,
+    durableUserTranscriptLocalId?: string,
+    executionRunId?: string,
+  ): Promise<SessionFollowPreparedContext | null> {
+    // Follow settlement is defined only at the canonical provider-input outcome
+    // boundary. A retained runtime without that boundary must not receive Follow
+    // context that it can never acknowledge precisely.
+    if (!backend.subscribeProviderInputOutcomes || !durableUserTranscriptLocalId || !executionRunId) return null;
+    return await this.prepareFollowContext?.({
+      executionRunId,
+      requiredPrompt: prompt,
+      signal: backend.getRuntimeLifetimeSignal(),
+    }) ?? null;
+  }
+
+  /**
+   * The single Voice entry point onto the host input ABI. `deliverInput` reports a
+   * refusal as a value rather than a throw, so admission is checked here: every Voice
+   * turn below this point may assume the prompt actually reached the Agent, exactly as
+   * it could when delivery failures always threw.
+   */
+  private async deliverPrompt(
+    backend: ExecutionRunHostRuntime,
+    runtimeId: string,
+    prompt: string,
+    context?: Parameters<ExecutionRunHostRuntime['deliverInput']>[2],
+    followContext?: SessionFollowPreparedContext | null,
+    durableUserTranscriptLocalId?: string,
+  ): Promise<void> {
+    const composedPrompt = followContext
+      ? renderSessionInputContextPromptV1({
+          transformedUserText: prompt,
+          sessionFollowUpdates: followContext.updates,
+        })
+      : prompt;
+    const localInputId = durableUserTranscriptLocalId ?? randomUUID();
+    let settled = false;
+    let unsubscribe: (() => void) | null = null;
+    if (followContext && backend.subscribeProviderInputOutcomes) {
+      unsubscribe = backend.subscribeProviderInputOutcomes((outcome) => {
+        if (
+          settled
+          || outcome.localId !== localInputId
+          || !isSessionProviderInputOutcomeTerminal(outcome)
+        ) return;
+        settled = true;
+        if (unsubscribe) this.unsubscribeBestEffort(unsubscribe);
+        if (outcome.kind === 'accepted') {
+          followContext.acknowledgeAccepted({
+            kind: 'admitted_input',
+            localInputId: outcome.localId,
+            userMessageSeq: outcome.userMessageSeq,
+          });
+        }
+      });
+      if (settled) this.unsubscribeBestEffort(unsubscribe);
+    }
+    let result: Awaited<ReturnType<ExecutionRunHostRuntime['deliverInput']>>;
+    try {
+      result = await backend.deliverInput(
+        runtimeId,
+        { text: composedPrompt },
+        { ...context, localId: localInputId },
+      );
+    } catch (error) {
+      settled = true;
+      if (unsubscribe) this.unsubscribeBestEffort(unsubscribe);
+      throw error;
+    }
+    if (result.status === 'admitted') return;
+    settled = true;
+    if (unsubscribe) this.unsubscribeBestEffort(unsubscribe);
+    throw new VoiceAgentError(
+      result.status === 'unsupported' ? 'VOICE_AGENT_UNSUPPORTED' : 'VOICE_AGENT_START_FAILED',
+      result.diagnostic.message ?? `Voice prompt was not admitted (${result.status})`,
+    );
   }
 
   private subscribeToChatBackend(
@@ -207,9 +333,9 @@ export class VoiceAgentManager {
       if (replacementBackend === previousBackend) {
         throw new Error('Cancelled backend factory returned the tainted runtime instance');
       }
-      // A cancelled provider session is tainted: provision a genuinely fresh
-      // session before changing the live instance, then swap atomically.
-      const replacementSession = await replacementBackend.provisionSession();
+      // A cancelled provider runtime is tainted: provision a genuinely fresh
+      // runtime before changing the live instance, then swap atomically.
+      const replacementRuntime = await replacementBackend.provisionRuntime();
       if (this.voiceAgents.get(voiceAgent.id) !== voiceAgent) {
         await this.disposeRuntimeOnce(replacementBackend);
         return;
@@ -225,7 +351,7 @@ export class VoiceAgentManager {
       // has succeeded. Until this point the canonical instance still owns and
       // can retire the previous generation.
       voiceAgent.chatBackend = replacementBackend;
-      voiceAgent.chatSessionId = replacementSession.sessionId;
+      voiceAgent.chatSessionId = replacementRuntime.runtimeId;
       voiceAgent.chatGeneration = replacementGeneration;
       voiceAgent.chatSessionSeeded = false;
       voiceAgent.clearChatBuffer();
@@ -256,6 +382,11 @@ export class VoiceAgentManager {
     reaperIntervalMs?: number;
     onIdleReaped?: (voiceAgentId: string) => Promise<void>;
     onTerminalFailure?: (voiceAgentId: string, reason: 'backend_replacement_failed') => Promise<void>;
+    prepareFollowContext?: (input: Readonly<{
+      executionRunId: string;
+      requiredPrompt: string;
+      signal: AbortSignal;
+    }>) => Promise<SessionFollowPreparedContext | null>;
   }>) {
     const createRuntime = opts.createRuntime ?? opts.createBackend;
     if (!createRuntime) {
@@ -270,6 +401,7 @@ export class VoiceAgentManager {
     this.getNowMs = opts.getNowMs ?? (() => Date.now());
     this.onIdleReaped = typeof opts.onIdleReaped === 'function' ? opts.onIdleReaped : null;
     this.onTerminalFailure = typeof opts.onTerminalFailure === 'function' ? opts.onTerminalFailure : null;
+    this.prepareFollowContext = typeof opts.prepareFollowContext === 'function' ? opts.prepareFollowContext : null;
     const intervalMs = Math.max(5_000, Math.floor(opts.reaperIntervalMs ?? 30_000));
     this.reaper = setInterval(() => {
       void this.reapIdle();
@@ -332,16 +464,16 @@ export class VoiceAgentManager {
         if (typeof msg.fullText === 'string') voiceAgent.commitBuffer = msg.fullText;
       });
 
-      const sessionId = await (async () => {
+      const runtimeId = await (async () => {
         return (
-          await commitBackend.provisionSession(
+          await commitBackend.provisionRuntime(
             voiceAgent.commitResumeSessionId
-              ? { resumeSessionId: voiceAgent.commitResumeSessionId }
+              ? { resumeRuntimeId: voiceAgent.commitResumeSessionId }
               : undefined,
           )
-        ).sessionId;
+        ).runtimeId;
       })();
-      voiceAgent.commitSessionId = sessionId;
+      voiceAgent.commitSessionId = runtimeId;
       voiceAgent.commitResumeSessionId = null;
     } catch (e: unknown) {
       if (voiceAgent.commitBackend === commitBackend) {
@@ -465,12 +597,12 @@ export class VoiceAgentManager {
       };
       const chatSessionId = await (async () => {
         return (
-          await chatBackend.provisionSession(
+          await chatBackend.provisionRuntime(
             resume.chatSessionId
-              ? { resumeSessionId: resume.chatSessionId }
+              ? { resumeRuntimeId: resume.chatSessionId }
               : undefined,
           )
-        ).sessionId;
+        ).runtimeId;
       })();
       ensureCurrentStart();
 
@@ -549,7 +681,7 @@ export class VoiceAgentManager {
           memoryRecallGuidanceEnabled: instance.memoryRecallGuidanceEnabled,
           systemAppendBlocks: instance.systemAppendBlocks,
         });
-        await instance.chatBackend.sendPrompt(instance.chatSessionId, prompt);
+        await this.deliverPrompt(instance.chatBackend, instance.chatSessionId, prompt);
         ensureCurrentStart();
         if (instance.chatBackend.waitForTurnCompletion) {
           await instance.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs(params.bootstrapTimeoutMs));
@@ -641,7 +773,11 @@ export class VoiceAgentManager {
                 memoryRecallGuidanceEnabled: voiceAgent.memoryRecallGuidanceEnabled,
                 systemAppendBlocks: voiceAgent.systemAppendBlocks,
               });
-		      await voiceAgent.chatBackend.sendPrompt(voiceAgent.chatSessionId, prompt);
+          const followContext = await this.prepareFollowContextForPrompt(
+            voiceAgent.chatBackend,
+            prompt,
+          );
+		      await this.deliverPrompt(voiceAgent.chatBackend, voiceAgent.chatSessionId, prompt, undefined, followContext);
 		      if (voiceAgent.chatBackend.waitForTurnCompletion) {
 		        await voiceAgent.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs());
 		      }
@@ -692,7 +828,8 @@ export class VoiceAgentManager {
         memoryRecallGuidanceEnabled: voiceAgent.memoryRecallGuidanceEnabled,
         systemAppendBlocks: voiceAgent.systemAppendBlocks,
       });
-      await voiceAgent.chatBackend.sendPrompt(
+      await this.deliverPrompt(
+        voiceAgent.chatBackend,
         voiceAgent.chatSessionId,
         prompt,
         params.causalPermissionAuthority
@@ -720,6 +857,7 @@ export class VoiceAgentManager {
   async startTurnStream(params: Readonly<{
     voiceAgentId: string;
     userText: string;
+    durableUserTranscriptLocalId?: string;
     causalPermissionAuthority?: import('@happier-dev/protocol').SessionInputCausalPermissionAuthorityV1;
     onTurnFinal?: (assistantText: string) => Promise<void> | void;
   }>): Promise<VoiceAgentTurnStreamStartResult> {
@@ -780,12 +918,21 @@ export class VoiceAgentManager {
               memoryRecallGuidanceEnabled: voiceAgent.memoryRecallGuidanceEnabled,
               systemAppendBlocks: voiceAgent.systemAppendBlocks,
             });
-        await voiceAgent.chatBackend.sendPrompt(
+        const followContext = await this.prepareFollowContextForPrompt(
+          voiceAgent.chatBackend,
+          prompt,
+          params.durableUserTranscriptLocalId,
+          params.voiceAgentId,
+        );
+        await this.deliverPrompt(
+          voiceAgent.chatBackend,
           voiceAgent.chatSessionId,
           prompt,
           params.causalPermissionAuthority
             ? { causalPermissionAuthority: params.causalPermissionAuthority }
             : undefined,
+          followContext,
+          params.durableUserTranscriptLocalId,
         );
         if (settleCancelled()) return;
         if (voiceAgent.chatBackend.waitForTurnCompletion) {
@@ -955,7 +1102,8 @@ export class VoiceAgentManager {
               history: voiceAgent.history,
               maxChars: effectiveMaxChars,
             });
-            await voiceAgent.chatBackend.sendPrompt(
+            await this.deliverPrompt(
+              voiceAgent.chatBackend,
               voiceAgent.chatSessionId,
               prompt,
               params.causalPermissionAuthority
@@ -980,7 +1128,8 @@ export class VoiceAgentManager {
 		        history: voiceAgent.history,
 		        maxChars: effectiveMaxChars,
 		      });
-		      await voiceAgent.commitBackend!.sendPrompt(
+		      await this.deliverPrompt(
+            voiceAgent.commitBackend!,
             voiceAgent.commitSessionId!,
             prompt,
             params.causalPermissionAuthority

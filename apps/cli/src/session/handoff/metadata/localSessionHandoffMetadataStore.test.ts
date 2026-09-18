@@ -206,7 +206,7 @@ describe('localSessionHandoffMetadataStore — inactive Agent native record', ()
     })).resolves.toBeNull();
   });
 
-  it('stores only the trimmed id and the departure boundary, never transcript or runtime content', async () => {
+  it('stores only the exact id and the departure boundary, never transcript or runtime content', async () => {
     const { store } = await createStore();
     await store.writeAgentNativeResumeRecord({
       happierSessionId: 'session-1',
@@ -228,7 +228,9 @@ describe('localSessionHandoffMetadataStore — inactive Agent native record', ()
       'v',
       'vendorResumeId',
     ]);
-    expect(raw.vendorResumeId).toBe('claude-1');
+    // The Agent minted this resume id and it is replayed to that Agent, so the
+    // record keeps its exact bytes; the schema decides presence, not shape.
+    expect(raw.vendorResumeId).toBe('  claude-1  ');
     expect(raw.departureSeqInclusive).toBe(DEPARTURE_SEQ);
   });
 
@@ -249,13 +251,4 @@ describe('localSessionHandoffMetadataStore — inactive Agent native record', ()
     expect((await stat(recordPath)).mode & 0o777).toBe(0o600);
   });
 
-  it('keeps the existing vendor-resume overlay store working alongside the native record', async () => {
-    const { store } = await createStore();
-    await store.saveByVendorResumeId({
-      vendorResumeId: 'claude-1',
-      exportMetadataOverlay: { handoffV1: { v: 1 } },
-    });
-
-    await expect(store.loadByVendorResumeId('claude-1')).resolves.toEqual({ handoffV1: { v: 1 } });
-  });
 });

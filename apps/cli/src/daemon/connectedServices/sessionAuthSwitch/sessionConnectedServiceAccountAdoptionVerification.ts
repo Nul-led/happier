@@ -1,4 +1,4 @@
-import type { ConnectedAccountServiceKey, ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import type { ConnectedAccountServiceKey, ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 
 import { getConnectedServiceRuntimeAuthAdapter } from '@/daemon/connectedServices/catalogHooks';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -19,7 +19,7 @@ export type ConnectedServiceAccountAdoptionVerificationInput = Readonly<{
     profileId: string | null;
     groupId?: string | null;
   }>;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   action: 'hot_applied' | 'restart_requested';
   runtimeAuthSelection?: unknown;
 }>;

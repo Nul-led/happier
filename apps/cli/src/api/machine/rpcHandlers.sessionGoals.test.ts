@@ -104,6 +104,7 @@ describe('rpcHandlers.sessionGoals', () => {
           accountEncryptionCurrentness: {
             mode: 'e2ee', version: 1, signingKeyFingerprint: null,
             contentKeyFingerprint: 'content-fingerprint', updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'available' },
           },
           ctx: {
             encryptionKey: new Uint8Array(32),
@@ -175,6 +176,7 @@ describe('rpcHandlers.sessionGoals', () => {
         accountEncryptionCurrentness: {
           mode: 'plain', version: 1, signingKeyFingerprint: null,
           contentKeyFingerprint: null, updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
         },
         ctx: null,
         mode: 'plain',
@@ -362,6 +364,7 @@ describe('rpcHandlers.sessionGoals', () => {
         accountEncryptionCurrentness: {
           mode: 'plain', version: 1, signingKeyFingerprint: null,
           contentKeyFingerprint: null, updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
         },
         ctx: null,
         mode: 'plain',

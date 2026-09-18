@@ -5,10 +5,14 @@ import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SessionPendingEnqueueByMachineRequestV1 } from '@happier-dev/protocol';
 import { encodeBase64, encryptLegacy } from '@/api/encryption';
+import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
 
 import type { AutomationDaemonAssignmentsResponse } from './automationTypes';
+
+type MachineAdmissionTransport = NonNullable<
+  Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']
+>;
 
 const TEST_ENCRYPTION = {
   type: 'legacy' as const,
@@ -303,7 +307,7 @@ async function startAutomationServer(params: {
 }
 
 function createAcceptedMachineAdmissionTransport(state: RecordedState) {
-  return vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+  return vi.fn<MachineAdmissionTransport>(async (request) => {
     state.pendingEnqueue.push(request);
     return {
       status: 'accepted' as const,
@@ -1324,7 +1328,7 @@ describe('automationWorker integration', () => {
       const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId }));
       const machineAdmissionTransport = scenario.machineResult === null
         ? undefined
-        : vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+        : vi.fn<MachineAdmissionTransport>(async (request) => {
           server.state.pendingEnqueue.push(request);
           if (scenario.machineResult === 'throw') {
             throw new Error('machine admission transport failed after Session creation');
@@ -1420,7 +1424,7 @@ describe('automationWorker integration', () => {
     const { startAutomationWorker } = await import('./automationWorker');
     const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId }));
     let worker: ReturnType<typeof startAutomationWorker> | null = null;
-    const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+    const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
       server.state.pendingEnqueue.push(request);
       worker!.handleServerUpdate({
         id: 'update-v2-post-emit-cancel',
@@ -1532,7 +1536,7 @@ describe('automationWorker integration', () => {
       type: 'success' as const,
       sessionId: 'session-v2-post-emit-wrong-machine',
     }));
-    const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+    const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
       server.state.pendingEnqueue.push(request);
       worker!.handleServerUpdate({
         id: 'update-v2-post-emit-wrong-machine',

@@ -1,4 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import nacl from 'tweetnacl';
+import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, deriveAccountMachineKeyFromRecoverySecret } from '@happier-dev/protocol';
 
 import { ApiClient } from './api';
 import {
@@ -8,11 +10,12 @@ import {
   libsodiumPublicKeyFromSecretKey,
 } from './encryption';
 
-const mockPost = vi.fn();
+const { mockPost, mockGet } = vi.hoisted(() => ({ mockPost: vi.fn(), mockGet: vi.fn() }));
 
 vi.mock('axios', () => ({
   default: {
-    post: (...args: any[]) => mockPost(...args),
+    post: mockPost,
+    get: mockGet,
     isAxiosError: () => false,
   },
   isAxiosError: () => false,
@@ -31,29 +34,43 @@ vi.mock('@/ui/logger', () => ({
   },
 }));
 
-vi.mock('@/features/serverFeaturesClient', () => ({
-  fetchServerFeaturesSnapshot: async () => ({ status: 'unsupported', reason: 'endpoint_missing' }),
-}));
-
 describe('ApiClient.getOrCreateSession (dataEncryptionKey)', () => {
   beforeEach(() => {
     mockPost.mockReset();
+    mockGet.mockReset();
+    mockGet.mockResolvedValue({ status: 200, data: {
+      mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+      recipientEnvelopeReadiness: { status: 'available' },
+    } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      features: {},
+      capabilities: {
+        accountStoredContentCompatibility: {
+          v: 1, minimumProtocolVersion: 2,
+          currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+          declarationTransport: 'http-header-and-socket-auth-v1',
+        },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
   });
+  afterEach(() => vi.unstubAllGlobals());
 
-  it('opens server-provided session.dataEncryptionKey and uses it to decrypt metadata', async () => {
+  it.each(['dataKey', 'legacy'] as const)('opens server-provided session.dataEncryptionKey with %s credentials and decrypts metadata', async (credentialKind) => {
     const machineSeed = new Uint8Array(32).fill(11);
-    const publicKey = libsodiumPublicKeyFromSecretKey(machineSeed);
+    const publicKey = credentialKind === 'legacy'
+      ? nacl.box.keyPair.fromSecretKey(deriveAccountMachineKeyFromRecoverySecret(machineSeed)).publicKey
+      : libsodiumPublicKeyFromSecretKey(machineSeed);
 
     const credential = {
       token: 'token-test',
-      encryption: {
+      encryption: credentialKind === 'legacy' ? { type: 'legacy' as const, secret: machineSeed } : {
         type: 'dataKey' as const,
         publicKey,
         machineKey: machineSeed,
       },
     };
 
-    const api = await ApiClient.create(credential as any);
+    const api = await ApiClient.create(credential);
 
     const sessionDataKey = new Uint8Array(32).fill(9);
     const metadata = {
@@ -102,7 +119,7 @@ describe('ApiClient.getOrCreateSession (dataEncryptionKey)', () => {
     expect(session.metadata).toEqual(metadata);
   });
 
-  it('throws when server provides session.dataEncryptionKey but the client cannot open it', async () => {
+  it.each(['AAECAw==', '', 123])('throws when a present server envelope is unusable (%j), even when Account fallback could decrypt the metadata', async (invalidEnvelope) => {
     const machineSeed = new Uint8Array(32).fill(11);
     const publicKey = libsodiumPublicKeyFromSecretKey(machineSeed);
 
@@ -115,7 +132,7 @@ describe('ApiClient.getOrCreateSession (dataEncryptionKey)', () => {
       },
     };
 
-    const api = await ApiClient.create(credential as any);
+    const api = await ApiClient.create(credential);
 
     const metadata = {
       path: '/tmp',
@@ -132,11 +149,11 @@ describe('ApiClient.getOrCreateSession (dataEncryptionKey)', () => {
         session: {
           id: 'session-1',
           seq: 1,
-          metadata: encodeBase64(encrypt(new Uint8Array(32).fill(9), 'dataKey', metadata)),
+          metadata: encodeBase64(encrypt(machineSeed, 'dataKey', metadata)),
           metadataVersion: 1,
           agentState: null,
           agentStateVersion: 0,
-          dataEncryptionKey: encodeBase64(new Uint8Array([0, 1, 2, 3])),
+          dataEncryptionKey: invalidEnvelope,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },

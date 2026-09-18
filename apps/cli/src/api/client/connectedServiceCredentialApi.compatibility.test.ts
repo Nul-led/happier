@@ -13,6 +13,7 @@ import {
   AccountEncryptionCurrentnessUnavailableError,
   ConnectedServiceCredentialHttpClient,
 } from './connectedServiceCredentialApi';
+import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 
 describe('connected-service credential exact 0.2.1 response boundary', () => {
   beforeEach(() => {
@@ -52,6 +53,7 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
           signingKeyFingerprint: null,
           contentKeyFingerprint: null,
           updatedAt: 10,
+          recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
         },
       })
       .mockResolvedValueOnce({
@@ -62,6 +64,7 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
           signingKeyFingerprint: null,
           contentKeyFingerprint: 'content-fingerprint',
           updatedAt: 20,
+          recipientEnvelopeReadiness: { status: 'available' },
         },
       });
 
@@ -69,10 +72,12 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
     await expect(api.getAccountEncryptionCurrentness()).resolves.toMatchObject({
       mode: 'plain',
       version: 1,
+      recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
     });
     await expect(api.getAccountEncryptionCurrentness()).resolves.toMatchObject({
       mode: 'e2ee',
       version: 2,
+      recipientEnvelopeReadiness: { status: 'available' },
     });
 
     expect(axios.get).toHaveBeenCalledTimes(2);
@@ -82,7 +87,7 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
       expect.objectContaining({
         headers: {
           Authorization: 'Bearer token',
-          'x-happier-account-stored-content-protocol': '2',
+          ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
         },
         validateStatus: expect.any(Function),
       }),
@@ -108,6 +113,39 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
     await expect(api.getAccountEncryptionCurrentness()).rejects.toBeInstanceOf(
       AccountEncryptionCurrentnessUnavailableError,
     );
+  });
+
+  it.each(['encryption_setup_required', 'encryption_inconsistent'] as const)(
+    'retains strict 400 %s readiness as failure, never successful currentness',
+    async (reason) => {
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 400,
+        data: { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason } },
+      });
+      const api = new ConnectedServiceCredentialHttpClient({ token: 'token' });
+      const error: unknown = await api.getAccountEncryptionCurrentness().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AccountEncryptionCurrentnessUnavailableError);
+      expect(error).toMatchObject({
+        code: 'account_encryption_currentness_unavailable',
+        recipientEnvelopeReadiness: { status: 'unavailable', reason },
+      });
+      expect(error).not.toHaveProperty('mode');
+      expect(error).not.toHaveProperty('version');
+    },
+  );
+
+  it.each([
+    [400, { error: 'migration-required', recipientEnvelopeReadiness: { status: 'available' } }],
+    [400, { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' } }],
+    [400, { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' }, mode: 'e2ee' }],
+    [403, { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' } }],
+    [200, { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' } }],
+  ])('does not accept readiness from an invalid currentness error at HTTP %s', async (status, data) => {
+    vi.mocked(axios.get).mockResolvedValue({ status, data });
+    const api = new ConnectedServiceCredentialHttpClient({ token: 'token' });
+    const error: unknown = await api.getAccountEncryptionCurrentness().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(AccountEncryptionCurrentnessUnavailableError);
+    expect(error).not.toHaveProperty('recipientEnvelopeReadiness', expect.anything());
   });
 
   it('does not infer E2EE from a malformed Account-mode response', async () => {
@@ -204,7 +242,7 @@ describe('connected-service credential exact 0.2.1 response boundary', () => {
         expect.objectContaining({
           headers: {
             Authorization: 'Bearer token',
-            'x-happier-account-stored-content-protocol': '2',
+            ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
           },
         }),
       );

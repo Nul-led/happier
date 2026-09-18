@@ -9,6 +9,7 @@ import {
   resolveQualifiedConnectedAccountGroupActiveAccountV4,
   sameQualifiedConnectedAccountRef,
   type ConnectedServiceId,
+  type ConnectedServiceCredentialRevisionV1,
   type PluginConnectedAccountAuthenticationV2,
   type QualifiedConnectedAccountGroupV4,
   type QualifiedConnectedAccountProfileV4,
@@ -62,6 +63,11 @@ import type {
   QualifiedConnectedAccountEstablishedRuntimeOwner,
   RevisionedLegacyConnectedAccountMaterializationOwner,
 } from '../qualifiedConnectedAccountEstablishedRuntimeOwner';
+import type {
+  TeamCredentialDirectMaterialClient,
+  TeamCredentialDirectMaterialOperationFailure,
+  TeamCredentialDirectMaterialUnavailableReason,
+} from '../directMaterial/teamCredentialDirectMaterialClient';
 
 type ConnectedAccountPurposeBindingApi = Pick<
   ApiClient,
@@ -73,7 +79,7 @@ type ConnectedAccountPurposeBindingApi = Pick<
 
 type QualifiedConnectedAccountMaterializationOwner = Pick<
   QualifiedConnectedAccountEstablishedRuntimeOwner,
-  'invokeWithReceipt'
+  'invokeWithReceipt' | 'invokeDirectMaterial'
 > & Partial<Pick<
   QualifiedConnectedAccountEstablishedRuntimeOwner,
   'readCredentialRevision'
@@ -129,6 +135,7 @@ export type DaemonConnectedAccountPurposeBindingRuntime = Readonly<{
   materializeRequestAuthBearer:
     ConnectedAccountPurposeBindingOwner['materializeRequestAuthBearer'];
   resolveBindingIntent: ConnectedAccountPurposeBindingOwner['resolveBindingIntent'];
+  resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'];
   /**
    * Lists account targets for one purpose already authorized by the caller.
    * This is intentionally account-only: group selection remains the separate
@@ -346,6 +353,83 @@ function listedAccountOutOfScope(): PluginError {
   });
 }
 
+function teamDirectMaterialFailure(
+  reason: TeamCredentialDirectMaterialUnavailableReason,
+  service: QualifiedConnectedAccountRef['service'],
+): PluginError {
+  switch (reason) {
+    case 'preparing':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_preparing',
+        message: 'Shared Connected Account access is still being prepared',
+        retryable: true,
+        remediation: { kind: 'retry' },
+      });
+    case 'temporarily_unavailable':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_temporarily_unavailable',
+        message: 'Shared Connected Account access is temporarily unavailable',
+        retryable: true,
+        remediation: { kind: 'retry' },
+      });
+    case 'source_changed':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_source_changed',
+        message: 'The shared Connected Account source changed and is being updated',
+        retryable: true,
+        remediation: { kind: 'retry' },
+      });
+    case 'recipient_binding_changed':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_recipient_binding_changed',
+        message: 'This device needs current Account encryption material before using the shared Connected Account',
+        remediation: { kind: 'openSettings', path: '/settings/account/security' },
+      });
+    case 'access_removed':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_access_removed',
+        message: 'Access to the shared Connected Account was removed',
+        remediation: { kind: 'selectAccount', service },
+      });
+    case 'disabled':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_disabled',
+        message: 'Direct access to the shared Connected Account is disabled',
+        remediation: { kind: 'selectAccount', service },
+      });
+    case 'unsupported_direct_source':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_unsupported',
+        message: 'This client cannot use the shared Connected Account directly',
+        remediation: { kind: 'selectAccount', service },
+      });
+    case 'invalid_material':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_material_invalid',
+        message: 'The shared Connected Account material must be repaired before it can be used',
+      });
+    case 'resource_corrupt':
+      return new PluginError({
+        code: 'plugin_connected_account_direct_resource_corrupt',
+        message: 'The shared Connected Account resource must be repaired before it can be used',
+      });
+  }
+}
+
+function teamDirectMaterialOperationFailure(
+  error: TeamCredentialDirectMaterialOperationFailure,
+): PluginError {
+  const remediation = error.error === 'team_authentication_required'
+    || error.error === 'team_authentication_policy_unavailable'
+    ? { kind: 'openSettings' as const, path: '/settings/teams/authentication' }
+    : undefined;
+  return new PluginError({
+    code: error.error,
+    message: error.error,
+    ...(remediation ? { remediation } : {}),
+  });
+}
+
 function unavailableSelection(): never {
   throw new PluginError({
     code: 'plugin_ui_unavailable',
@@ -366,6 +450,8 @@ function assertCurrentRegistry(
 export function createDaemonConnectedAccountPurposeBindingRuntime(params: Readonly<{
   api: ConnectedAccountPurposeBindingApi;
   establishedRuntimeOwner: QualifiedConnectedAccountMaterializationOwner;
+  openTeamDirect?: TeamCredentialDirectMaterialClient['open'];
+  workerMachineId?: string;
   revisionedLegacyMaterializationOwner:
     RevisionedLegacyConnectedAccountMaterializationOwner;
   resolveQualifiedConnectedAccountMaterializationTransport(
@@ -1159,6 +1245,54 @@ export function createDaemonConnectedAccountPurposeBindingRuntime(params: Readon
     selectTarget,
     resolveTarget,
     materializeAccount,
+    async materializeTeamDirect(input) {
+      if (!params.openTeamDirect) throw listedAccountOutOfScope();
+      const open = async () => await params.openTeamDirect!({
+        resourceId: input.origin.resourceId,
+        consumer: input.consumer.kind === 'session'
+          ? input.consumer
+          : {
+              ...input.consumer,
+              workerMachineId: params.workerMachineId ?? unavailableSelection(),
+            },
+        slot: { kind: 'connected_service_purpose', purpose: input.origin.purpose },
+        disclosedMember: input.origin.disclosedMember,
+        signal: input.signal,
+      });
+      const opened = await open();
+      if (!opened.ok) {
+        if ('operationError' in opened) throw teamDirectMaterialOperationFailure(opened.operationError);
+        throw teamDirectMaterialFailure(opened.reason, input.account.service);
+      }
+      if (
+        opened.payload.material.kind !== 'qualified_connected_account'
+        || opened.payload.sourceMember.kind !== 'connected_account'
+        || opened.payload.sourceMember.connectedAccountId !== input.account.accountId
+        || opened.payload.sourceMember.service.pluginId !== input.account.service.pluginId
+        || opened.payload.sourceMember.service.localId !== input.account.service.localId
+      ) {
+        throw teamDirectMaterialFailure('invalid_material', input.account.service);
+      }
+      const materialization = await params.establishedRuntimeOwner.invokeDirectMaterial({
+        account: input.account,
+        sourceVersion: opened.payload.sourceVersion,
+        material: opened.payload.material,
+        operation: Object.freeze({ kind: 'materialize', request: input.request }),
+        isCurrent: async () => {
+          const current = await open();
+          if (!current.ok) {
+            if ('operationError' in current) throw teamDirectMaterialOperationFailure(current.operationError);
+            throw teamDirectMaterialFailure(current.reason, input.account.service);
+          }
+          return true;
+        },
+        signal: input.signal,
+      });
+      input.credentialRevisionBasis?.captureCredentialRevision(
+        input.origin.resourceId as ConnectedServiceCredentialRevisionV1,
+      );
+      return materialization;
+    },
     projectTargetAccounts,
     assertTargetAccountMaterializable,
     async resolveCredentialRevision(account, signal) {
@@ -1244,6 +1378,7 @@ export function createDaemonConnectedAccountPurposeBindingRuntime(params: Readon
     materializeRequestAuthBearer:
       bindingOwner.materializeRequestAuthBearer,
     resolveBindingIntent: bindingOwner.resolveBindingIntent,
+    resolveBindingIntentSelection: bindingOwner.resolveBindingIntentSelection,
     listActionFormConnectedAccountOptions,
     async listCoordinatorAccounts(signal = new AbortController().signal) {
       signal.throwIfAborted();

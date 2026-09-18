@@ -6,6 +6,8 @@ import type {
     AgentExternalSessionsContribution,
     AgentExternalSessionsManagedEndpointRead,
 } from '@happier-dev/plugin-sdk/sessions/external';
+import type { AgentSessionHostServices } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { SessionPermissionsService } from '@happier-dev/plugin-sdk/sessions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { projectRuntimeTranscriptEvent } from '@/agent/runtime/session/transcripts/projectRuntimeTranscriptEvent';
@@ -179,6 +181,78 @@ describe('Claude terminal follow projection', () => {
 
         expect(enqueueUserTextMessageCommitted).toHaveBeenCalledTimes(1);
         expect(enqueueAgentMessageCommitted).toHaveBeenCalledTimes(1);
+    });
+
+    it('commits mixed assistant context while the native question remains unanswered', async () => {
+        const seeded = await seedClaudeSession();
+        const initial = await seeded.contribution.pageTranscript({
+            ...invocation(), source: seeded.source, remoteSessionId: seeded.remoteSessionId,
+            direction: 'older', maxItems: 200,
+        });
+        if (!initial.ok || !initial.value.tailCursor) throw new Error('Expected a Claude tail cursor');
+        // Like the contribution loader above, load plugin source at runtime without pulling it into the host compilation root.
+        const permissionHookModulePath = '../../../../../packages/plugins/claude/src/agent/runtime/shared/permissionHookHandler.js';
+        const permissionHookModule = await import(permissionHookModulePath);
+        const createClaudePermissionHookHandler = permissionHookModule.createClaudePermissionHookHandler as (
+            ctx: Readonly<{
+                sessions: { current: { permissions: Pick<SessionPermissionsService, 'requestDecision'> } };
+                agentRuntime: { toolExecution: Pick<AgentSessionHostServices['toolExecution'], 'before'> };
+            }>,
+        ) => (data: Readonly<Record<string, unknown>>) => Promise<unknown>;
+        let answer!: (value: { decision: 'approved' }) => void;
+        const decision = new Promise<{ decision: 'approved' }>((resolve) => { answer = resolve; });
+        // Plugin host permission transport remains pending; the permission engine and transcript projection stay real.
+        const requestDecision = vi.fn(() => decision);
+        const handler = createClaudePermissionHookHandler({
+            sessions: { current: { permissions: { requestDecision } } },
+            agentRuntime: { toolExecution: { before: async (input) => ({ status: 'continue', input: input.input }) } },
+        });
+        const toolInput = { questions: [{
+            header: 'Cleanup', question: 'Remove scratch files?', multiSelect: false,
+            options: [{ label: 'Remove', description: 'Delete files' }, { label: 'Keep', description: 'Inspect files' }],
+        }] };
+        let answered = false;
+        const pending = handler({
+            hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion',
+            tool_use_id: 'question_1', tool_input: toolInput,
+        }).then((result) => { answered = true; return result; });
+        try {
+            await vi.waitFor(() => expect(requestDecision).toHaveBeenCalledOnce());
+            await appendFile(seeded.sessionFilePath, jsonl({
+                type: 'assistant', uuid: 'context_and_question', timestamp: new Date().toISOString(),
+                message: { role: 'assistant', content: [
+                    { type: 'text', text: 'The scratch files are no longer needed by the build.' },
+                    { type: 'tool_use', id: 'question_1', name: 'AskUserQuestion', input: toolInput },
+                ] },
+            }));
+            const after = await seeded.contribution.readAfterTranscript({
+                ...invocation(), source: seeded.source, remoteSessionId: seeded.remoteSessionId,
+                cursor: initial.value.tailCursor, maxItems: 200,
+            });
+            if (!after.ok || after.value.outcome !== 'advanced') throw new Error('Expected a transcript advance');
+            const { project, enqueueAgentMessageCommitted } = createProjector();
+            await project({
+                kind: 'data', items: after.value.items.map(mapPluginExternalTranscriptItem),
+                fromCursor: initial.value.tailCursor, nextCursor: after.value.nextCursor,
+            });
+            expect(answered).toBe(false);
+            expect(enqueueAgentMessageCommitted).toHaveBeenCalledWith('claude', expect.objectContaining({
+                type: 'message', message: 'The scratch files are no longer needed by the build.',
+            }), expect.anything());
+            expect(enqueueAgentMessageCommitted).toHaveBeenCalledWith('claude', expect.objectContaining({
+                type: 'tool-call', callId: 'question_1', name: 'AskUserQuestion',
+            }), expect.anything());
+            answer({ decision: 'approved' });
+            await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
+            const settled = await seeded.contribution.readAfterTranscript({
+                ...invocation(), source: seeded.source, remoteSessionId: seeded.remoteSessionId,
+                cursor: after.value.nextCursor, maxItems: 200,
+            });
+            expect(settled).toEqual({ ok: true, value: { outcome: 'already_current' } });
+        } finally {
+            answer({ decision: 'approved' });
+            await pending;
+        }
     });
 
     it('fails closed when a live Claude user row carries only the source-fact classification', async () => {

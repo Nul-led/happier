@@ -80,7 +80,9 @@ function parseNodeShaSums(text: string): ReadonlyMap<string, string> {
 export async function fetchNodeRuntimeReleaseAsset(params: Readonly<{
   processEnv?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }> = {}): Promise<NodeRuntimeReleaseAsset> {
+  params.signal?.throwIfAborted();
   const processEnv = params.processEnv ?? process.env;
   const fetchImpl = params.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
@@ -88,6 +90,7 @@ export async function fetchNodeRuntimeReleaseAsset(params: Readonly<{
   }
 
   const indexResponse = await fetchImpl(NODE_RELEASE_INDEX_URL, {
+    signal: params.signal,
     headers: {
       'user-agent': 'happier-cli',
       accept: 'application/json',
@@ -97,10 +100,12 @@ export async function fetchNodeRuntimeReleaseAsset(params: Readonly<{
     throw new Error(`Failed to fetch Node release index (${indexResponse.status})`);
   }
   const index = (await indexResponse.json()) as ReadonlyArray<NodeReleaseIndexEntry>;
+  params.signal?.throwIfAborted();
   const tag = selectNodeReleaseTag(Array.isArray(index) ? index : [], resolveRequestedNodeTag(processEnv));
   const assetNames = resolvePreferredNodeAssetNames({ tag });
 
   const shasumsResponse = await fetchImpl(`${NODE_RELEASE_BASE_URL}/${tag}/SHASUMS256.txt`, {
+    signal: params.signal,
     headers: {
       'user-agent': 'happier-cli',
       accept: 'text/plain',
@@ -110,6 +115,7 @@ export async function fetchNodeRuntimeReleaseAsset(params: Readonly<{
     throw new Error(`Failed to fetch Node release checksums (${shasumsResponse.status})`);
   }
   const shasums = parseNodeShaSums(await shasumsResponse.text());
+  params.signal?.throwIfAborted();
   const selectedAssetName = assetNames.find((assetName) => shasums.has(assetName)) ?? null;
   if (!selectedAssetName) {
     throw new Error(`Failed to resolve checksum for Node assets ${assetNames.join(', ')}`);

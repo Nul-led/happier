@@ -120,21 +120,26 @@ describe('runtime Provider connection composition', () => {
     // where the typed refusal has to survive: an untyped Error here reaches
     // the caller as `provider_settings_invalid` and sends them to retry a
     // possibly-applied mutation.
-    const updateAccountSettingsV2WithRetry = vi.fn(async () => ({
+    const updateAccountSettingsV2OnceAgainstLatest = vi.fn(async () => ({
       status: 'outcomeUnknown' as const,
       lastKnownVersion: 3,
     }));
-    vi.doMock('@/settings/accountSettings/updateAccountSettingsV2WithRetry', async () => ({
-      ...(await vi.importActual<
-        typeof import('@/settings/accountSettings/updateAccountSettingsV2WithRetry')
-      >('@/settings/accountSettings/updateAccountSettingsV2WithRetry')),
-      updateAccountSettingsV2WithRetry,
+    vi.doMock('@/settings/accountSettings/updateAccountSettingsV2WithRetry', () => ({
+      updateAccountSettingsV2OnceAgainstLatest,
     }));
 
     const credentials: StoredCredentials = {
       token: 'provider-runtime-services-cas-test',
       encryption: null,
     };
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: AccountSettingsSchema.parse({}),
+      settingsVersion: 3,
+      loadedAtMs: 1,
+      settingsSecretsReadKeys: [],
+      scopeKey: resolveAccountSettingsScopeKey(credentials),
+    });
     const { createRuntimeProviderConnectionServices } = await import('./runtimeServices');
     const { service } = createRuntimeProviderConnectionServices({
       machineId: 'machine-a',
@@ -162,6 +167,6 @@ describe('runtime Provider connection composition', () => {
         action: 'review_current_state',
       },
     });
-    expect(updateAccountSettingsV2WithRetry).toHaveBeenCalledOnce();
+    expect(updateAccountSettingsV2OnceAgainstLatest).toHaveBeenCalledOnce();
   });
 });

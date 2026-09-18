@@ -22,9 +22,12 @@ import {
   type NewSessionRequest,
   type ForkSessionRequest,
   type LoadSessionRequest,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
   type PromptRequest,
   type SetSessionModeRequest,
   type ContentBlock,
+  type Stream,
 } from '@agentclientprotocol/sdk';
 import { redactBugReportSensitiveText } from '@happier-dev/protocol';
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
@@ -55,6 +58,7 @@ import {
   type StderrContext,
   DefaultTransport,
 } from '../transport';
+import { classifyProviderOutputFailure } from '@/agent/runtime/classifyProviderOutputFailure';
 import {
   type HandlerContext,
   type SessionUpdate,
@@ -62,7 +66,7 @@ import {
 } from './sessionUpdateHandlers';
 import { LegacyAcpToolRuntime } from './toolCalls/legacy/runtime';
 import type { MergedAcpToolResult } from './toolCalls/types';
-import { withRetry } from './withRetry';
+import { createAcpRequestFailureLogRecord, withRetry } from './withRetry';
 import { nodeToWebStreams } from './nodeToWebStreams';
 import { buildAcpSpawnSpec } from './acpSpawn';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
@@ -103,12 +107,17 @@ import {
   readSessionConfigOptionsFromSessionResponse,
   readSessionModeStateFromSessionResponse,
   readSessionModelStateFromSessionResponse,
+  readSessionModelStateFromConfigOptions,
 } from './sessionSettings/sessionSettingsState';
 import { createAcpClientHandlers } from './createAcpClientHandlers';
 import {
   createAcpClientConnection,
   type AcpClientConnection,
 } from './connection/createAcpClientConnection';
+import {
+  createAcpNetworkStream,
+  type AcpBackendNetworkTransport,
+} from './connection/createAcpNetworkStream';
 import type {
   AcpExtensionContextFactory,
   AcpExtensionRegistration,
@@ -117,7 +126,7 @@ import { handleAcpSessionNotification } from './updates/handleSessionNotificatio
 import type { AcpTurnOutcome } from './turn/outcome';
 import { mapStopReasonToAcpTurnOutcome, readPromptStopReason } from './turn/completion';
 import { abortPendingAcpPermissionRequests } from './permissions/permissionFinalization';
-import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 
 export type { AcpPermissionHandler } from './permissions/acpPermissionHandler';
 export { isAcpFsEnabled, buildInitializeRequest, createAcpClientFsMethods } from './fs/acpClientFsMethods';
@@ -138,6 +147,23 @@ export type {
   SessionModelState,
 } from './sessionSettings/sessionSettingsState';
 
+export type AcpSessionModelAdapter = Readonly<{
+  projectModelState?: (input: Readonly<{
+    normalizedModelState: Readonly<SessionModelState>;
+  }>) => Readonly<SessionModelState>;
+  projectModelId?: (input: Readonly<{
+    modelId: string;
+    modelState: Readonly<SessionModelState> | null;
+  }>) => string;
+  resolveModelUpdate?: (input: Readonly<{
+    modelId: string;
+    modelState: Readonly<SessionModelState> | null;
+  }>) => Readonly<{
+    modelId: string;
+    requestMeta?: Readonly<Record<string, unknown>>;
+  }> | null | undefined;
+}>;
+
 /**
  * Retry configuration for ACP operations
  */
@@ -150,11 +176,46 @@ const RETRY_CONFIG = {
   maxDelayMs: 5000,
 } as const;
 
+class AcpStartupTimeoutError extends Error {
+  readonly retryable = false;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AcpStartupTimeoutError';
+  }
+}
+
 const MAX_RECENT_STDERR_DIAGNOSTICS = 3;
 const MAX_STARTUP_DIAGNOSTIC_CHARS = 1_200;
 const MAX_AUTH_METHODS = 64;
 const MAX_AUTH_METHOD_ID_CODE_UNITS = 256;
 const MAX_INITIALIZE_METADATA_CODE_UNITS = 16_384;
+
+/** The established best-effort bound for one graceful ACP teardown call. */
+const GRACEFUL_TEARDOWN_BOUND_MS = 2_000;
+
+/**
+ * Races one graceful-teardown ACP call against {@link GRACEFUL_TEARDOWN_BOUND_MS}
+ * and says which side won, so a peer that accepts the call and never answers is
+ * distinguishable from a completed one. The losing timer is always cleared: a
+ * teardown that already settled must not leave a two-second handle holding the
+ * runtime open. Rejections still propagate to the caller's own handling.
+ */
+async function withGracefulTeardownBound(
+  call: Promise<unknown>,
+): Promise<'settled' | 'timed_out'> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      call.then(() => 'settled' as const),
+      new Promise<'timed_out'>((resolve) => {
+        timer = setTimeout(() => resolve('timed_out'), GRACEFUL_TEARDOWN_BOUND_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 // SessionNotification payload shape differs across ACP SDK versions (some use `update`, some use `updates[]`).
 // We normalize dynamically in `handleSessionUpdate` and avoid relying on the SDK type here.
@@ -209,6 +270,14 @@ export type AcpSetModelResponseProjector = (input: Readonly<{
   requestMeta: Readonly<Record<string, unknown>> | null;
   targetModel: SessionModel;
 }>) => SessionModel | null;
+
+export type AcpNegotiatedSessionCapabilities = Readonly<{
+  loadSession: boolean;
+  listSessions: boolean;
+  forkSession: boolean;
+  closeSession: boolean;
+  deleteSession: boolean;
+}>;
 
 function readAdvertisedAuthMethodIds(initResponse: InitializeResponse): readonly string[] {
   const output: string[] = [];
@@ -265,8 +334,8 @@ export interface AcpBackendOptions {
   /** Working directory for the agent */
   cwd: string;
 
-  /** Command to spawn the ACP agent */
-  command: string;
+  /** Command to spawn the ACP agent. Required unless `networkTransport` is set. */
+  command?: string;
 
   /** Arguments for the agent command */
   args?: string[];
@@ -281,6 +350,9 @@ export interface AcpBackendOptions {
   transformAgentChildLaunchEnvironment?: (
     environment: Readonly<Record<string, string>>,
   ) => Readonly<Record<string, string>>;
+
+  /** Connects the canonical ACP client lifecycle to a declared network endpoint. */
+  networkTransport?: AcpBackendNetworkTransport;
 
   /** MCP servers to make available to the agent */
   mcpServers?: Record<string, McpServerConfig>;
@@ -319,6 +391,9 @@ export interface AcpBackendOptions {
 
   /** Provider-owned pure augmentation of normalized ACP model metadata. */
   projectModel?: SessionModelProjector;
+
+  /** Provider-owned projection and reversible identity mapping for the complete model snapshot. */
+  sessionModelAdapter?: AcpSessionModelAdapter;
 
   /** Provider-owned projection for non-standard prompt usage fields and accounting semantics. */
   projectPromptUsage?: (input: Readonly<{
@@ -360,6 +435,9 @@ export interface AcpBackendOptions {
   /** Observes the subprocess terminal fact without taking lifecycle ownership from the caller. */
   onProcessExit?: (exit: Readonly<{ code: number | null; signal: NodeJS.Signals | null }>) => void;
 
+  /** Observes an unintentional network connection loss after the connection is installed. */
+  onConnectionLost?: (loss: Readonly<{ detail: string }>) => void;
+
   /** Observes only accumulator-owned terminal result publications. */
   onPublishedTerminalToolResult?: (result: MergedAcpToolResult) => void;
 }
@@ -376,8 +454,16 @@ export class AcpBackend implements CatalogAcpBackend {
   private readonly summarizeStderrForLogs = createAcpStderrLogSummarizer();
   private readonly sessionUpdateShapeLogger = createEventShapeLoggerForLog({ logger, scope: 'acp-backend' });
   private connection: AcpClientConnection | null = null;
+  private closeNetworkTransport: (() => void) | null = null;
   private acpSessionId: string | null = null;
   private acceptsImageInput = false;
+  private negotiatedSessionCapabilities: AcpNegotiatedSessionCapabilities = Object.freeze({
+    loadSession: false,
+    listSessions: false,
+    forkSession: false,
+    closeSession: false,
+    deleteSession: false,
+  });
   private disposed = false;
   private replayCapture: AcpReplayCapture | null = null;
   /** Sole legacy ACP tool lifecycle owner. */
@@ -416,6 +502,10 @@ export class AcpBackend implements CatalogAcpBackend {
 
   supportsImagePrompts(): boolean {
     return this.acceptsImageInput;
+  }
+
+  getNegotiatedSessionCapabilities(): AcpNegotiatedSessionCapabilities {
+    return this.negotiatedSessionCapabilities;
   }
 
   private settlePendingPromptSubmissionEffect(
@@ -580,7 +670,7 @@ export class AcpBackend implements CatalogAcpBackend {
   }
 
   private createStartupTimeoutError(operation: string, timeoutMs: number): Error {
-    return new Error(
+    return new AcpStartupTimeoutError(
       `${operation} timeout after ${timeoutMs}ms - ${this.transport.agentName} did not respond${this.buildStartupFailureDiagnosticSuffix()}`,
     );
   }
@@ -624,12 +714,22 @@ export class AcpBackend implements CatalogAcpBackend {
   private async cleanupInitializedProcessConnection(params: { graceMs: number }): Promise<void> {
     const proc = this.process;
     const connection = this.connection;
+    const closeNetworkTransport = this.closeNetworkTransport;
     this.process = null;
     this.connection = null;
+    this.closeNetworkTransport = null;
     this.acpSessionId = null;
     this.acceptsImageInput = false;
+    this.negotiatedSessionCapabilities = Object.freeze({
+      loadSession: false,
+      listSessions: false,
+      forkSession: false,
+      closeSession: false,
+      deleteSession: false,
+    });
 
     connection?.close(undefined, { timeoutMs: params.graceMs });
+    closeNetworkTransport?.();
 
     try {
       await this.stderrAppender?.close();
@@ -650,17 +750,35 @@ export class AcpBackend implements CatalogAcpBackend {
   }
 
   private async createConnectionAndInitialize(params: { operationId: string }): Promise<{ initTimeout: number }> {
-    logger.debug(`[AcpBackend] Starting process + initializing connection (op=${params.operationId})`);
+    logger.debug(`[AcpBackend] Starting transport + initializing connection (op=${params.operationId})`);
 
     if (this.process || this.connection) {
       throw new Error('ACP backend is already initialized');
     }
 
     try {
+      const networkTransport = this.options.networkTransport;
+      let stream: Stream;
+      if (networkTransport) {
+        if (this.options.command) {
+          throw new Error('ACP backend cannot configure both a command and a network transport');
+        }
+        const networkStream = createAcpNetworkStream(networkTransport, {
+          onMessageWritten: (message) => {
+            this.observeAcpTransportMessageWritten(message);
+          },
+        });
+        this.closeNetworkTransport = networkStream.closeTransport;
+        stream = networkStream;
+      } else {
+        const command = this.options.command?.trim();
+        if (!command) {
+          throw new Error('ACP backend requires a command or network transport');
+        }
       // Spawn the ACP agent process.
       // Use cross-spawn so Windows quoting/.cmd resolution is handled safely without joining args.
       const spec = buildAcpSpawnSpec({
-        command: this.options.command,
+        command,
         args: this.options.args || [],
         cwd: this.options.cwd,
         env: this.buildSpawnEnv(),
@@ -861,18 +979,18 @@ export class AcpBackend implements CatalogAcpBackend {
 
             const analysisText = trimmed.length > 5000 ? trimmed.slice(0, 5000) : trimmed;
             const lower = analysisText.toLowerCase();
+            const outputFailure = classifyProviderOutputFailure(analysisText);
             const looksLikeError =
-              lower.startsWith('error') ||
+              lower.startsWith('error:') ||
               lower.includes('error:') ||
               lower.includes('exception') ||
               lower.includes('traceback') ||
               lower.includes('invalid_request') ||
               lower.includes('invalid request') ||
-              lower.includes('unauthorized') ||
               lower.includes('forbidden') ||
               lower.includes('permission denied') ||
-              (/\b(4\d\d|5\d\d)\b/.test(lower) &&
-                (lower.includes('http') || lower.includes('status') || lower.includes('error') || lower.includes('request'))) ||
+              outputFailure.authenticationError ||
+              outputFailure.providerStatusFailure ||
               (lower.includes('exceeds') && lower.includes('bytes') && trimmed.includes('>'));
             if (!looksLikeError) return;
 
@@ -895,11 +1013,12 @@ export class AcpBackend implements CatalogAcpBackend {
     });
 
     // Create ndJSON stream for ACP
-    const stream = createAcpNdJsonStream(writable, filteredReadable, {
+    stream = createAcpNdJsonStream(writable, filteredReadable, {
       onMessageWritten: (message) => {
         this.observeAcpTransportMessageWritten(message);
       },
     });
+      }
 
     const clientHandlers = createAcpClientHandlers({
       onSessionUpdate: (notification) => this.handleSessionUpdate(notification),
@@ -923,6 +1042,7 @@ export class AcpBackend implements CatalogAcpBackend {
       },
       toolCalls: this.toolCalls,
       lastSelectedPermissionOptionIdByToolCallId: this.lastSelectedPermissionOptionIdByToolCallId,
+      failTurn: (error) => this.failPendingResponseWait(error),
     });
 
     const fsEnabled = this.options.fsEnabled ?? isAcpFsEnabled();
@@ -945,6 +1065,16 @@ export class AcpBackend implements CatalogAcpBackend {
         ? { createExtensionContext: this.options.createExtensionContext }
         : {}),
     });
+    if (networkTransport) {
+      const connection = this.connection;
+      void connection.closed.then(() => {
+        if (this.disposed || this.connection !== connection) return;
+        const detail = 'ACP network connection closed';
+        this.failPendingResponseWait(new Error(detail));
+        this.emit({ type: 'status', status: 'error', detail });
+        this.options.onConnectionLost?.({ detail });
+      });
+    }
 
     // Initialize the connection with timeout and retry
     const initRequest = buildInitializeRequest({
@@ -1007,7 +1137,15 @@ export class AcpBackend implements CatalogAcpBackend {
 
     const agentCapabilities = asRecord((initResponse as InitializeResponse).agentCapabilities);
     const promptCapabilities = asRecord(agentCapabilities?.promptCapabilities);
+    const sessionCapabilities = asRecord(agentCapabilities?.sessionCapabilities);
     this.acceptsImageInput = promptCapabilities?.image === true;
+    this.negotiatedSessionCapabilities = Object.freeze({
+      loadSession: agentCapabilities?.loadSession === true,
+      listSessions: asRecord(sessionCapabilities?.list) !== null,
+      forkSession: asRecord(sessionCapabilities?.fork) !== null,
+      closeSession: asRecord(sessionCapabilities?.close) !== null,
+      deleteSession: asRecord(sessionCapabilities?.delete) !== null,
+    });
 
     const advertisedMethodIds = readAdvertisedAuthMethodIds(initResponse);
     const staticAuthMethodId = typeof this.options.authMethodId === 'string'
@@ -1065,7 +1203,10 @@ export class AcpBackend implements CatalogAcpBackend {
 
     return { initTimeout };
   } catch (error) {
-    logger.debug('[AcpBackend] Initialization failed; cleaning up process/connection', error);
+    logger.debug(
+      '[AcpBackend] Initialization failed; cleaning up process/connection',
+      createAcpRequestFailureLogRecord({ operation: 'Initialize', error }),
+    );
     await this.cleanupInitializedProcessConnection({ graceMs: 250 });
     throw error;
   }
@@ -1132,7 +1273,10 @@ export class AcpBackend implements CatalogAcpBackend {
 
     } catch (error) {
       // Log to file only, not console
-      logger.debug('[AcpBackend] Error starting session:', error);
+      logger.debug(
+        '[AcpBackend] Error starting session:',
+        createAcpRequestFailureLogRecord({ operation: 'StartSession', error }),
+      );
       this.emit({ 
         type: 'status', 
         status: 'error', 
@@ -1172,7 +1316,10 @@ export class AcpBackend implements CatalogAcpBackend {
       this.emitIdleStatus();
       return { sessionId: normalized };
     } catch (error) {
-      logger.debug('[AcpBackend] Error loading session:', error);
+      logger.debug(
+        '[AcpBackend] Error loading session:',
+        createAcpRequestFailureLogRecord({ operation: 'LoadSession', error }),
+      );
       this.emit({
         type: 'status',
         status: 'error',
@@ -1220,6 +1367,16 @@ export class AcpBackend implements CatalogAcpBackend {
       if (!connection?.peer) {
         throw new Error(`${this.transport.agentName} does not support ACP session/fork`);
       }
+      // The handshake is the runtime authority here exactly as it is for
+      // `session/load`. Discovering non-support from a `-32601` reply means the
+      // request already went out, and an Agent that answers `session/fork` with
+      // any other error — or implements it without advertising
+      // `sessionCapabilities.fork` — would be forked on an unnegotiated method.
+      if (!this.negotiatedSessionCapabilities.forkSession) {
+        throw new Error(
+          `${this.transport.agentName} did not negotiate ACP session/fork support during initialize`,
+        );
+      }
 
       const request: ForkSessionRequest = {
         sessionId: normalized,
@@ -1246,13 +1403,88 @@ export class AcpBackend implements CatalogAcpBackend {
 
       return { sessionId: forkedSessionId };
     } catch (error) {
-      logger.debug('[AcpBackend] Error forking session:', error);
+      logger.debug(
+        '[AcpBackend] Error forking session:',
+        createAcpRequestFailureLogRecord({ operation: 'ForkSession', error }),
+      );
       this.emit({
         type: 'status',
         status: 'error',
         detail: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    }
+  }
+
+  /**
+   * ACP `cwd` is a listing filter, not an identity. Omitting it defaults to this
+   * backend's own workspace; an explicit `null` asks the Agent for every session
+   * it owns, which is the only truthful request when the caller has no workspace.
+   */
+  async listSessions(
+    params: Readonly<{ cwd?: string | null; cursor?: string }> = {},
+  ): Promise<ListSessionsResponse> {
+    if (this.disposed) {
+      throw new Error('Backend has been disposed');
+    }
+    if (!this.connection) {
+      await this.createConnectionAndInitialize({ operationId: randomUUID() });
+    }
+    const peer = this.connection?.peer;
+    if (!peer) {
+      throw new Error(`${this.transport.agentName} does not support ACP session/list`);
+    }
+    if (!this.negotiatedSessionCapabilities.listSessions) {
+      throw new Error(
+        `${this.transport.agentName} did not negotiate ACP session/list support during initialize`,
+      );
+    }
+    const cwd = params.cwd === undefined ? this.options.cwd : params.cwd;
+    const request: ListSessionsRequest = {
+      ...(cwd === null ? {} : { cwd }),
+      ...(params.cursor === undefined ? {} : { cursor: params.cursor }),
+    };
+    return await peer.listSessions(request);
+  }
+
+  async closeSession(sessionId: SessionId): Promise<void> {
+    await this.runNegotiatedSessionLifecycleOperation('close', sessionId);
+  }
+
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    await this.runNegotiatedSessionLifecycleOperation('delete', sessionId);
+  }
+
+  private async runNegotiatedSessionLifecycleOperation(
+    operation: 'close' | 'delete',
+    sessionId: SessionId,
+  ): Promise<void> {
+    if (this.disposed) {
+      throw new Error('Backend has been disposed');
+    }
+    const normalized = readNonBlankOpaqueIdentifier(sessionId);
+    if (!normalized) {
+      throw new Error('Session ID is required');
+    }
+    if (!this.connection) {
+      await this.createConnectionAndInitialize({ operationId: randomUUID() });
+    }
+    const peer = this.connection?.peer;
+    if (!peer) {
+      throw new Error(`${this.transport.agentName} does not support ACP session/${operation}`);
+    }
+    const negotiated = operation === 'close'
+      ? this.negotiatedSessionCapabilities.closeSession
+      : this.negotiatedSessionCapabilities.deleteSession;
+    if (!negotiated) {
+      throw new Error(
+        `${this.transport.agentName} did not negotiate ACP session/${operation} support during initialize`,
+      );
+    }
+    if (operation === 'close') {
+      await peer.closeSession({ sessionId: normalized });
+    } else {
+      await peer.deleteSession({ sessionId: normalized });
     }
   }
 
@@ -1330,6 +1562,11 @@ export class AcpBackend implements CatalogAcpBackend {
     if (!connection?.peer) {
       throw new Error('ACP session/load requires an initialized provider connection');
     }
+    if (!this.negotiatedSessionCapabilities.loadSession) {
+      throw new Error(
+        `${this.transport.agentName} did not negotiate ACP session/load support during initialize`,
+      );
+    }
     const request: LoadSessionRequest = {
       sessionId,
       cwd: this.options.cwd,
@@ -1338,37 +1575,33 @@ export class AcpBackend implements CatalogAcpBackend {
 
     logger.debug(`[AcpBackend] Loading session: ${sessionId}`);
 
-    return await withRetry(
-      async () => {
-        let timeoutHandle: NodeJS.Timeout | null = null;
-        try {
-          return await Promise.race([
-            connection.peer.loadSession(request).then((response) => {
-              if (timeoutHandle) {
-                clearTimeout(timeoutHandle);
-                timeoutHandle = null;
-              }
-              return response;
-            }),
-            new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(() => {
-                reject(this.createStartupTimeoutError('Load session', timeoutMs));
-              }, timeoutMs);
-            }),
-          ]);
-        } finally {
+    // `session/load` may have mutated provider session state as soon as the
+    // request is emitted, exactly like `session/new`. A rejection, timeout,
+    // disconnect, or transport failure is therefore ambiguous and must not
+    // replay the load on this connection. The callers' catch paths tear the
+    // ambiguous connection/process down, and a refused resume never degrades
+    // into `session/new`.
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        connection.peer.loadSession(request).then((response) => {
           if (timeoutHandle) {
             clearTimeout(timeoutHandle);
+            timeoutHandle = null;
           }
-        }
-      },
-      {
-        operationName: 'LoadSession',
-        maxAttempts: RETRY_CONFIG.maxAttempts,
-        baseDelayMs: RETRY_CONFIG.baseDelayMs,
-        maxDelayMs: RETRY_CONFIG.maxDelayMs,
-      },
-    );
+          return response;
+        }),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(this.createStartupTimeoutError('Load session', timeoutMs));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   /**
@@ -1540,6 +1773,23 @@ export class AcpBackend implements CatalogAcpBackend {
       setSessionModelState: (state) => {
         this.sessionModelState = state;
       },
+      ...(this.options.sessionModelAdapter?.projectModelId
+        ? { projectModelId: this.options.sessionModelAdapter.projectModelId }
+        : {}),
+      ...(this.options.modelConfigOptionId
+        ? {
+            deriveSessionModelState: (configOptions) => {
+              const rawState = readSessionModelStateFromConfigOptions(
+                { configOptions },
+                this.options.modelConfigOptionId!,
+              );
+              return rawState
+                ? this.options.sessionModelAdapter?.projectModelState?.({ normalizedModelState: rawState })
+                  ?? rawState
+                : null;
+            },
+          }
+        : {}),
       sessionConfigOptionsState: this.sessionConfigOptionsState,
       setSessionConfigOptionsState: (state) => {
         this.sessionConfigOptionsState = state;
@@ -1555,10 +1805,16 @@ export class AcpBackend implements CatalogAcpBackend {
   }
 
   private async seedSessionModelsFromSessionResponse(sessionResponse: unknown): Promise<void> {
-    const state = this.options.prepareSessionModels
+    const standardState = this.options.prepareSessionModels
       ? await this.options.prepareSessionModels(sessionResponse)
       : readSessionModelStateFromSessionResponse(sessionResponse, this.options.projectModel);
-    if (!state) return;
+    const rawState = standardState ?? (this.options.modelConfigOptionId
+      ? readSessionModelStateFromConfigOptions(sessionResponse, this.options.modelConfigOptionId)
+      : null);
+    if (!rawState) return;
+    const state = this.options.sessionModelAdapter?.projectModelState?.({
+      normalizedModelState: rawState,
+    }) ?? rawState;
     this.sessionModelState = state;
     this.emit({ type: 'event', name: 'session_models_state', payload: this.sessionModelState });
   }
@@ -1606,6 +1862,19 @@ export class AcpBackend implements CatalogAcpBackend {
     if (configOptionsRaw) {
       const next = normalizeSessionConfigOptions(configOptionsRaw);
       this.sessionConfigOptionsState = next;
+      if (this.options.modelConfigOptionId === normalizedConfigId) {
+        const rawModelState = readSessionModelStateFromConfigOptions(
+          { configOptions: next },
+          normalizedConfigId,
+        );
+        if (rawModelState) {
+          const modelState = this.options.sessionModelAdapter?.projectModelState?.({
+            normalizedModelState: rawModelState,
+          }) ?? rawModelState;
+          this.sessionModelState = modelState;
+          this.emit({ type: 'event', name: 'session_models_state', payload: modelState });
+        }
+      }
     }
 
     this.emit({
@@ -2240,7 +2509,10 @@ export class AcpBackend implements CatalogAcpBackend {
     }
   }
 
-  async sendSteerPrompt(sessionId: SessionId, prompt: string): Promise<void> {
+  async sendSteerPrompt(
+    sessionId: SessionId,
+    prompt: string | readonly ContentBlock[],
+  ): Promise<void> {
     if (this.disposed) {
       throw new Error('Backend has been disposed');
     }
@@ -2256,14 +2528,11 @@ export class AcpBackend implements CatalogAcpBackend {
       throw new Error('Session ID does not match the active ACP session');
     }
 
-    const contentBlock: ContentBlock = {
-      type: 'text',
-      text: prompt,
-    };
-
     const rawPromptRequest: PromptRequest = {
       sessionId: this.acpSessionId,
-      prompt: [contentBlock],
+      prompt: typeof prompt === 'string'
+        ? [{ type: 'text', text: prompt }]
+        : [...prompt],
     };
     const promptRequest = this.options.transformPromptRequest
       ? await this.options.transformPromptRequest(rawPromptRequest, {
@@ -2362,19 +2631,26 @@ export class AcpBackend implements CatalogAcpBackend {
       throw new Error('Model ID is required');
     }
 
+    const resolvedUpdate = this.options.sessionModelAdapter?.resolveModelUpdate?.({
+      modelId: normalizedModelId,
+      modelState: this.sessionModelState,
+    });
+    const providerModelId = resolvedUpdate?.modelId ?? normalizedModelId;
+    const providerRequestMeta = resolvedUpdate?.requestMeta ?? requestMeta;
+
     if (this.options.modelConfigOptionId) {
       await this.setSessionConfigOption(
         normalizedSessionId,
         this.options.modelConfigOptionId,
-        normalizedModelId,
+        providerModelId,
       );
       return;
     }
 
     const response = await this.connection.peer.setSessionModelLegacy({
       sessionId: normalizedSessionId,
-      modelId: normalizedModelId,
-      ...(requestMeta ? { _meta: requestMeta } : {}),
+      modelId: providerModelId,
+      ...(providerRequestMeta ? { _meta: providerRequestMeta } : {}),
     });
     let returnedState = this.options.prepareSessionModels
       ? await this.options.prepareSessionModels(response)
@@ -2390,14 +2666,14 @@ export class AcpBackend implements CatalogAcpBackend {
         ? this.options.projectSetModelResponseAwaitable
           ? await this.options.projectSetModelResponseAwaitable({
               response,
-              requestedModelId: normalizedModelId,
-              requestMeta: requestMeta ?? null,
+              requestedModelId: providerModelId,
+              requestMeta: providerRequestMeta ?? null,
               targetModel,
             })
           : this.options.projectSetModelResponse!({
               response,
-              requestedModelId: normalizedModelId,
-              requestMeta: requestMeta ?? null,
+              requestedModelId: providerModelId,
+              requestMeta: providerRequestMeta ?? null,
               targetModel,
             })
         : null;
@@ -2415,10 +2691,19 @@ export class AcpBackend implements CatalogAcpBackend {
         }
       }
     }
+    if (returnedState) {
+      returnedState = this.options.sessionModelAdapter?.projectModelState?.({
+        normalizedModelState: returnedState,
+      }) ?? returnedState;
+    }
     if (!returnedState) {
       throw new Error('ACP session/set_model did not return model state');
     }
-    if (returnedState.currentModelId !== normalizedModelId) {
+    const projectedModelId = this.options.sessionModelAdapter?.projectModelId?.({
+      modelId: providerModelId,
+      modelState: returnedState,
+    }) ?? normalizedModelId;
+    if (returnedState.currentModelId !== projectedModelId) {
       throw new Error('ACP session/set_model returned a different current model');
     }
     this.sessionModelState = returnedState;
@@ -2729,17 +3014,43 @@ export class AcpBackend implements CatalogAcpBackend {
     if (this.connection && this.acpSessionId) {
       try {
         // Send cancel to stop any ongoing work
-        await Promise.race([
+        await withGracefulTeardownBound(
           this.connection.peer.cancel({ sessionId: this.acpSessionId }),
-          new Promise((resolve) => setTimeout(resolve, 2000)), // 2s timeout for graceful shutdown
-        ]);
+        );
       } catch (error) {
         logger.debug('[AcpBackend] Error during graceful shutdown:', error);
       }
+      // Killing the local process only releases local resources. An Agent that
+      // negotiated `session/close` owns session resources beyond this process (a
+      // remote/cloud session, a shared worker), so release them explicitly before
+      // the transport goes away. A refusal or a silent peer must not hold up the
+      // teardown below.
+      if (this.negotiatedSessionCapabilities.closeSession) {
+        try {
+          const outcome = await withGracefulTeardownBound(
+            this.connection.peer.closeSession({ sessionId: this.acpSessionId }),
+          );
+          if (outcome === 'timed_out') {
+            // A peer that accepts `session/close` and never answers would
+            // otherwise be indistinguishable from a completed release, so the
+            // unreleased Agent-side session is reported on the daemon's
+            // default-enabled debug log before teardown continues.
+            logger.debug(
+              '[AcpBackend] ACP session/close did not settle within the graceful teardown bound; continuing disposal',
+              { agentName: this.options.agentName, sessionId: this.acpSessionId },
+            );
+          }
+        } catch (error) {
+          logger.debug('[AcpBackend] Error closing ACP session during shutdown:', error);
+        }
+      }
     }
     const connection = this.connection;
+    const closeNetworkTransport = this.closeNetworkTransport;
+    this.closeNetworkTransport = null;
     const processConnectionGraceMs = 1000;
     connection?.close(undefined, { timeoutMs: processConnectionGraceMs });
+    closeNetworkTransport?.();
 
     // Kill the whole process tree (some ACP CLIs spawn child processes).
     if (this.process) {

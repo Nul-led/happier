@@ -16,6 +16,7 @@ import {
 } from '@happier-dev/protocol';
 
 import type { Credentials } from '@/persistence';
+import { decodeRouteGrantBase64Url as fromBase64Url, findRouteGrantTrustRoot as findTrustRoot, verifyRouteGrantSignature, type DirectRouteGrantTrustRoot } from './verifyRouteGrantSignature';
 
 export type DirectRouteGrantVerifyReasonCode =
     | 'grant_invalid'
@@ -54,11 +55,7 @@ export type PeerRouteNonceVerificationResult =
     | Readonly<{ valid: true }>
     | Readonly<{ valid: false; reasonCode: PeerRouteNonceVerifyReasonCode }>;
 
-export type DirectRouteGrantTrustRoot = Readonly<{
-    keyId: string;
-    publicKey: string;
-    expiresAt?: number | null;
-}>;
+export type { DirectRouteGrantTrustRoot } from './verifyRouteGrantSignature';
 
 /** Full signed machine/1 initiator/target relationship expected for `iroh_peer` admissions. */
 export type DirectRouteGrantIrohExpectedBinding = IrohPeerRouteBindingV2;
@@ -76,26 +73,6 @@ export type DirectRouteGrantExpectedBinding = Readonly<{
      */
     iroh?: DirectRouteGrantIrohExpectedBinding;
 }>;
-
-function fromBase64Url(value: string): Uint8Array | null {
-    try {
-        return Buffer.from(value, 'base64url');
-    } catch {
-        return null;
-    }
-}
-
-function findTrustRoot(
-    roots: readonly DirectRouteGrantTrustRoot[],
-    keyId: string,
-    nowMs: number,
-): Uint8Array | null {
-    const root = roots.find((entry) => entry.keyId === keyId);
-    if (!root || (root.expiresAt != null && nowMs >= root.expiresAt)) return null;
-    const publicKey = fromBase64Url(root.publicKey);
-    if (!publicKey || publicKey.length !== tweetnacl.sign.publicKeyLength) return null;
-    return publicKey;
-}
 
 function matchesExpectedBinding(
     payload: SignedDirectRouteGrantV1['payload'] | SignedDirectRouteGrantV2['payload'],
@@ -150,12 +127,7 @@ export function verifyDirectRouteGrantV2(input: Readonly<{
 
     const bindingMismatch = matchesExpectedBinding(grant.payload, input.expected);
     if (bindingMismatch) return { valid: false, reasonCode: bindingMismatch };
-    const signature = fromBase64Url(grant.signature.valueBase64Url);
-    if (!signature || signature.length !== tweetnacl.sign.signatureLength) {
-        return { valid: false, reasonCode: 'grant_bad_signature' };
-    }
-    const signingInput = Buffer.from(createDirectRouteGrantSigningInputV2(grant.payload), 'utf8');
-    if (!tweetnacl.sign.detached.verify(signingInput, signature, publicKey)) {
+    if (!verifyRouteGrantSignature({ signingInput: createDirectRouteGrantSigningInputV2(grant.payload), signatureBase64Url: grant.signature.valueBase64Url, publicKey })) {
         return { valid: false, reasonCode: 'grant_bad_signature' };
     }
     const proofVerification = verifyPeerRouteEphemeralProofV2({ grant, proof: input.proof });
@@ -183,13 +155,7 @@ export function verifyDirectRouteGrantV1(input: Readonly<{
     const bindingMismatch = matchesExpectedBinding(grant.payload, input.expected);
     if (bindingMismatch) return { valid: false, reasonCode: bindingMismatch };
 
-    const signature = fromBase64Url(grant.signature.valueBase64Url);
-    if (!signature || signature.length !== tweetnacl.sign.signatureLength) {
-        return { valid: false, reasonCode: 'grant_bad_signature' };
-    }
-
-    const signingInput = Buffer.from(createDirectRouteGrantSigningInputV1(grant.payload), 'utf8');
-    if (!tweetnacl.sign.detached.verify(signingInput, signature, publicKey)) {
+    if (!verifyRouteGrantSignature({ signingInput: createDirectRouteGrantSigningInputV1(grant.payload), signatureBase64Url: grant.signature.valueBase64Url, publicKey })) {
         return { valid: false, reasonCode: 'grant_bad_signature' };
     }
 

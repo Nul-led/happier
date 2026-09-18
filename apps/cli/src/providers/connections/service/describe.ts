@@ -385,6 +385,14 @@ export async function describeProviderConnections(
                 : {}),
             }
           : null,
+        teamCredentialSourceOffer: resolved && credentialDefinition
+          ? {
+              connectionId: connection.id,
+              connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint,
+              credentialSlotId: credentialDefinition.slotId,
+              label: connection.displayName,
+            }
+          : null,
         deployment,
         managedLocalOption,
         endpoints,

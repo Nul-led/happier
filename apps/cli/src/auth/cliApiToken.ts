@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { parseAccountApiTokenBearerV1 } from '@happier-dev/protocol';
+import { parseAccountApiTokenBearerV1, parseAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
 
 export const CLI_API_TOKEN_ENV = 'HAPPIER_TOKEN';
 /** One-shot handoff for a selected --api-token across Happier's tmux re-exec. */
@@ -20,9 +20,18 @@ export class CliApiTokenInputError extends Error {
   }
 }
 
+export class CliApiTokenChildContinuationError extends Error {
+  readonly code = 'api_token_child_continuation_unsupported' as const;
+
+  constructor() {
+    super('Encryption-capable API tokens can only be used by in-process SDK calls; child-session continuation is unsupported.');
+    this.name = 'CliApiTokenChildContinuationError';
+  }
+}
+
 function validateApiToken(raw: unknown, source: '--api-token' | typeof CLI_API_TOKEN_ENV): string {
   const value = typeof raw === 'string' ? raw : '';
-  if (parseAccountApiTokenBearerV1(value) === null) {
+  if (parseAccountApiTokenBearerV1(value) === null && parseAccountApiTokenCredentialV1(value) === null) {
     throw new CliApiTokenInputError(
       `Invalid ${source}. Use an exact API Token created in Settings.`,
     );
@@ -86,7 +95,7 @@ export function validateCliApiTokenEnvironment(
  * A command-line flag is stored in the current invocation only; direct programmatic
  * callers use HAPPIER_TOKEN from their supplied environment.
  */
-export function resolveCliApiToken(env: NodeJS.ProcessEnv = process.env): string | null {
+function resolveInvocationCredential(env: NodeJS.ProcessEnv): string | null {
   const invocation = invocationApiTokenStore.getStore();
   if (invocation) return invocation.token;
 
@@ -95,16 +104,35 @@ export function resolveCliApiToken(env: NodeJS.ProcessEnv = process.env): string
   return validateApiToken(envValue, CLI_API_TOKEN_ENV);
 }
 
+/** Generic credential readers and HTTP transports receive only the bearer. */
+export function resolveCliApiToken(env: NodeJS.ProcessEnv = process.env): string | null {
+  const credential = resolveInvocationCredential(env);
+  return credential === null ? null : parseAccountApiTokenCredentialV1(credential)?.bearer ?? credential;
+}
+
+/** Only the in-process SDK may consume the matching invocation's local secret. */
+export function resolveCliApiTokenForSdk(bearer: string, env: NodeJS.ProcessEnv = process.env): string {
+  const credential = resolveInvocationCredential(env);
+  return credential !== null && parseAccountApiTokenCredentialV1(credential)?.bearer === bearer
+    ? credential
+    : bearer;
+}
+
 /**
- * The only intentional child-environment transfer: a selected token reaches
+ * The only intentional child-environment transfer: an ordinary bearer reaches
  * the next Happier CLI process across tmux, where dispatch consumes and deletes
- * it before any generic agent or PTY launch.
+ * it before any generic agent or PTY launch. Compound credentials fail closed;
+ * their local wrapping secret never crosses a child boundary.
  */
 export function buildCliApiTokenContinuationEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
-  const token = resolveCliApiToken(environment);
-  return token === null ? {} : { [CLI_API_TOKEN_HANDOFF_ENV]: token };
+  const credential = resolveInvocationCredential(environment);
+  if (credential === null) return {};
+  if (parseAccountApiTokenCredentialV1(credential) !== null) {
+    throw new CliApiTokenChildContinuationError();
+  }
+  return { [CLI_API_TOKEN_HANDOFF_ENV]: credential };
 }
 
 export async function withCliApiToken<T>(token: string, run: () => Promise<T>): Promise<T> {
@@ -131,12 +159,25 @@ export function takePrefixCliApiTokenFlag(args: readonly string[]): Readonly<{
   return null;
 }
 
-/** Redacts only the explicit CLI spelling before argv reaches logs or command contexts. */
+const SENSITIVE_CLI_VALUE_FLAGS = new Set([
+  '--api-token',
+  '--password',
+  '--current-password',
+  '--new-password',
+  '--key',
+  '--recovery-key',
+  '--token',
+  '--invitation-token',
+  '--verification-token',
+  '--reauth-proof-json',
+]);
+
+/** Redacts secret-bearing CLI compatibility spellings before argv reaches logs or command contexts. */
 export function redactCliApiTokenArgv(argv: readonly string[]): string[] {
   const redacted: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const value = String(argv[index] ?? '');
-    if (value === '--api-token') {
+    if (SENSITIVE_CLI_VALUE_FLAGS.has(value)) {
       redacted.push(value);
       if (index + 1 < argv.length) {
         redacted.push('<redacted>');
@@ -144,8 +185,9 @@ export function redactCliApiTokenArgv(argv: readonly string[]): string[] {
       }
       continue;
     }
-    if (value.startsWith('--api-token=')) {
-      redacted.push('--api-token=<redacted>');
+    const equals = value.indexOf('=');
+    if (equals > 0 && SENSITIVE_CLI_VALUE_FLAGS.has(value.slice(0, equals))) {
+      redacted.push(`${value.slice(0, equals)}=<redacted>`);
       continue;
     }
     redacted.push(value);

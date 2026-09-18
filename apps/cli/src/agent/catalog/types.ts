@@ -2,7 +2,7 @@ import type { CommandHandler } from '@/cli/commandRegistry';
 import type { DaemonSpawnHooks } from '@/daemon/spawnHooks';
 import type {
   BackendTargetRefV1,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
   ConnectedAccountServiceKey,
   ConnectedAccountRequestAuthUseV1,
   ConnectedServiceCredentialRecordV1,
@@ -159,11 +159,16 @@ export type ConnectedServiceResumeContinuityDiagnostics = Readonly<{
 }>;
 
 export type ConnectedServiceSwitchEffectiveBinding = Readonly<{
-  source: 'native' | 'connected';
-  selection: 'native' | 'profile' | 'group';
+  source: 'native' | 'connected' | 'team_resource';
+  selection: 'native' | 'profile' | 'group' | 'team_resource';
   serviceId: ConnectedAccountServiceKey;
   profileId: string | null;
   groupId: string | null;
+  teamId?: string;
+  resourceId?: string;
+  expectedResourceRevision?: number;
+  sourceMemberKey?: string;
+  sourceVersion?: string;
 }>;
 
 export type ConnectedServiceSwitchContinuityParams = Readonly<{
@@ -172,8 +177,8 @@ export type ConnectedServiceSwitchContinuityParams = Readonly<{
   serviceId: ConnectedAccountServiceKey;
   previousBinding: ConnectedServiceSwitchEffectiveBinding | null;
   nextBinding: ConnectedServiceSwitchEffectiveBinding;
-  fromBindings: ConnectedServiceBindingsV1;
-  toBindings: ConnectedServiceBindingsV1;
+  fromBindings: ConnectedServiceBindingsV2;
+  toBindings: ConnectedServiceBindingsV2;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1 | null;
   vendorResumeId?: string | null;
   targetMaterializedRoot?: string | null;
@@ -409,6 +414,7 @@ export type AgentCatalogEntry = Readonly<{
     backendTarget?: BackendTargetRefV1;
     probeKind?: PreflightSessionControlsProbeKind;
     accountSettings?: Readonly<Record<string, unknown>> | null;
+    env?: NodeJS.ProcessEnv;
   }>) => string | null;
   /**
    * Optional cache-variant shaper for dynamic session-control probes.
@@ -421,6 +427,7 @@ export type AgentCatalogEntry = Readonly<{
     backendTarget?: BackendTargetRefV1;
     probeKind: PreflightSessionControlsProbeKind;
     accountSettings?: Readonly<Record<string, unknown>> | null;
+    env?: NodeJS.ProcessEnv;
   }>) => string | null;
   /**
    * Optional provider-owned adapter for probing dynamic session controls (models/modes/config options)

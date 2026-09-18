@@ -86,6 +86,7 @@ describe('createAgentAttachStatePublisher', () => {
       getAccountEncryptionCurrentness: async () => ({
         mode: 'plain', version: 1, signingKeyFingerprint: null,
         contentKeyFingerprint: null, updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       }),
       rawSession,
       createSessionScopedSocketFn,
@@ -187,6 +188,7 @@ describe('createAgentAttachStatePublisher', () => {
       getAccountEncryptionCurrentness: async () => ({
         mode: 'plain', version: 1, signingKeyFingerprint: null,
         contentKeyFingerprint: null, updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       }),
       rawSession,
       createSessionScopedSocketFn,
@@ -253,6 +255,7 @@ describe('createAgentAttachStatePublisher', () => {
       getAccountEncryptionCurrentness: async () => ({
         mode: 'plain', version: 1, signingKeyFingerprint: null,
         contentKeyFingerprint: null, updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       }),
       rawSession,
     });
@@ -314,6 +317,7 @@ describe('createAgentAttachStatePublisher', () => {
       getAccountEncryptionCurrentness: async () => ({
         mode: 'plain', version: 1, signingKeyFingerprint: null,
         contentKeyFingerprint: null, updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
       }),
       rawSession,
       updateSessionMetadataEnvelopeTupleWithRetryFn,

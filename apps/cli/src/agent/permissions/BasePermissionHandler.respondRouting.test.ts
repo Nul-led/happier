@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { PermissionResponseClaim } from './agentStateRequestStore';
+import { AgentStateRequestStore, AgentStateResponseTargetDispatcher, type PermissionResponseClaim } from './agentStateRequestStore';
+import { createSessionActionConfirmationAdapter } from '@/session/actions/approvals/sessionActionConfirmation';
 import { CodexLikePermissionHandler } from './CodexLikePermissionHandler';
 import { ServerBoundPermissionRpcHandlerManager } from './testkit/serverBoundPermissionRpcHandlerManager';
 
@@ -10,6 +11,21 @@ class FakeSession {
   agentState: any = { requests: {}, completedRequests: {} };
   metadata: any = null;
   permissionResponseClaimWriteCount = 0;
+  private readonly responseTargetDispatcher = new AgentStateResponseTargetDispatcher();
+
+  getAgentStateResponseTargetDispatcher() {
+    return this.responseTargetDispatcher;
+  }
+
+  private requestStore: AgentStateRequestStore | null = null;
+
+  bindAgentStateRequestStore(store: AgentStateRequestStore) {
+    this.requestStore = store;
+  }
+
+  getAgentStateRequestStore() {
+    return this.requestStore;
+  }
 
   getAgentStateSnapshot() {
     return this.agentState;
@@ -34,6 +50,90 @@ class FakeSession {
 }
 
 describe('BasePermissionHandler permission-response routing (gap 28/29)', () => {
+  it.each(['approve', 'reset'] as const)('preserves live Action confirmation delivery after handler replacement: %s', async (completion) => {
+    const session = new FakeSession();
+    const initialHandler = new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Initial]' });
+    const initialStore = session.getAgentStateRequestStore()!;
+    const adapter = createSessionActionConfirmationAdapter({
+      sessionId: session.sessionId, store: initialStore,
+      sessionSignal: new AbortController().signal,
+      getAuthenticatedAccountId: async () => 'account-owner',
+    });
+    await initialHandler.reset();
+    let resolvedDecision: string | undefined;
+    const pending = adapter.confirm({
+      actionId: 'session.activity.get', input: { sessionId: session.sessionId },
+      preview: { sessionId: session.sessionId }, sessionId: session.sessionId,
+      context: {
+        surface: 'agent', authority: 'account_automation', defaultSessionId: session.sessionId,
+        sessionInputSource: { sourceSessionId: session.sessionId, sourceTurnId: 'turn-action', via: 'action' },
+      },
+    }, { turnId: 'turn-action', lifetimeSignal: new AbortController().signal, isCurrent: () => true })
+      .then((result) => { resolvedDecision = result?.decision; });
+    await vi.waitFor(() => expect(initialStore.listOutstandingRequests()).toHaveLength(1));
+    const requestId = initialStore.listOutstandingRequests()[0]!.requestId;
+    const currentHandler = new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Current]' });
+    const rpc = session.rpcHandlerManager.handlers.get('session.permission.respond')!;
+    if (completion === 'approve') {
+      await rpc({ id: requestId, turnId: 'turn-action', approved: true, decision: 'approved' });
+    } else {
+      await currentHandler.reset();
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const decisionAfterResponse = resolvedDecision;
+    await adapter.dispose();
+    await pending;
+    expect(decisionAfterResponse).toBe(completion === 'approve' ? 'approve' : 'canceled');
+    expect(session.agentState.completedRequests[requestId]).toMatchObject(completion === 'approve'
+      ? { status: 'approved', decision: 'approved' }
+      : { status: 'canceled', decision: 'abort' });
+  });
+
+  it.each([
+    { decision: 'approved_for_session' },
+    { decision: 'approved', allowedTools: ['Bash'] },
+    { decision: 'approved', allowTools: ['Bash'] },
+  ])('rejects native permission grants on a Happier Action confirmation: %j', async (grant) => {
+    const session = new FakeSession();
+    session.agentState.requests['action-confirmation'] = {
+      tool: 'Bash',
+      kind: 'permission',
+      arguments: { command: 'echo hi' },
+      source: 'happier_action',
+      createdAt: 1,
+    };
+    new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Test]' });
+    const rpc = session.rpcHandlerManager.handlers.get('session.permission.respond');
+    const result = await rpc!({ id: 'action-confirmation', approved: true, ...grant });
+    expect(result).toEqual(expect.objectContaining({ ok: false }));
+    expect(session.agentState.requests['action-confirmation']).toBeDefined();
+    expect(session.agentState.completedRequests['action-confirmation']).toBeUndefined();
+  });
+
+  it('accepts one authenticated request-scoped Action decision with exact turn custody', async () => {
+    const session = new FakeSession();
+    session.agentState.requests['action-confirmation'] = {
+      tool: 'Happier Action',
+      kind: 'permission',
+      arguments: { actionId: 'session.message.send', sessionId: session.sessionId },
+      source: 'happier_action',
+      turnId: 'turn-action',
+      createdAt: 1,
+    };
+    new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Test]' });
+    const rpc = session.rpcHandlerManager.handlers.get('session.permission.respond');
+    await expect(rpc!({
+      id: 'action-confirmation', turnId: 'turn-action', approved: true, decision: 'approved',
+    })).resolves.toBeUndefined();
+    expect(session.agentState.requests['action-confirmation']).toBeUndefined();
+    expect(session.agentState.completedRequests['action-confirmation']).toEqual(expect.objectContaining({
+      status: 'approved',
+      decision: 'approved',
+      turnId: 'turn-action',
+      permissionDecisionActorV1: expect.objectContaining({ accountId: 'account-owner' }),
+    }));
+  });
+
   it('returns a typed permission_request_not_found for an unknown explicit id over the RPC route', async () => {
     const session = new FakeSession();
     const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });

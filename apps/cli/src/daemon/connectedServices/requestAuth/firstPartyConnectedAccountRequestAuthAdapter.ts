@@ -4,7 +4,7 @@ import {
     readBuiltInLegacyConnectedAccountServiceKeyIngress,
     type ConnectedAccountPurposeDeclarationV1,
     type ConnectedAccountServiceKey,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ConnectedServiceCredentialRecordV1,
     type ConnectedServiceCredentialRevisionV1,
     type ConnectedServiceId,
@@ -28,6 +28,12 @@ import {
     parseHttpHeadersRequestAuthBearer,
 } from './parseHttpHeadersRequestAuthBearer';
 
+export type QualifiedPurposeTeamDirectMaterialOrigin = Readonly<{
+    purpose: QualifiedConnectedAccountPurposeV1;
+    resourceId: string;
+    disclosedMember: QualifiedConnectedAccountRef;
+}>;
+
 /**
  * The sole compatibility map from the released service-keyed Connected Services namespace to the
  * qualified Connected Account namespace. New purpose bindings carry the qualified ref and this
@@ -49,7 +55,7 @@ export function resolveFirstPartyConnectedAccountServiceId(
 export function projectConnectedServiceBindingsToQualifiedPurposeBindings(input: Readonly<{
     consumer: PluginContributionIdentityV1;
     declarations: readonly ConnectedAccountPurposeDeclarationV1[];
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
 }>): readonly QualifiedConnectedAccountPurposeBindingV1[] {
     return projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot(input).bindings;
 }
@@ -57,13 +63,15 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindings(input:
 export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot(input: Readonly<{
     consumer: PluginContributionIdentityV1;
     declarations: readonly ConnectedAccountPurposeDeclarationV1[];
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
 }>): Readonly<{
     purposes: readonly QualifiedConnectedAccountPurposeV1[];
     bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
+    directMaterialOrigins: readonly QualifiedPurposeTeamDirectMaterialOrigin[];
 }> {
     const purposes: QualifiedConnectedAccountPurposeV1[] = [];
     const projected: QualifiedConnectedAccountPurposeBindingV1[] = [];
+    const directMaterialOrigins: QualifiedPurposeTeamDirectMaterialOrigin[] = [];
     for (const declaration of input.declarations) {
         const qualifiedService = typeof declaration.service === 'string'
             ? Object.freeze({
@@ -82,7 +90,34 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot
             ?? (legacyServiceId
                 ? input.bindings.bindingsByServiceId[legacyServiceId]
                 : undefined);
-        if (!binding || binding.source !== 'connected') continue;
+        if (!binding) continue;
+        if (binding.source === 'team_resource') {
+            const disclosedMember = binding.disclosedMember;
+            if (
+                !disclosedMember
+                || buildQualifiedPluginContributionKey(disclosedMember.service) !== qualifiedServiceKey
+            ) continue;
+            projected.push(Object.freeze({
+                purpose,
+                target: Object.freeze({
+                    kind: 'account' as const,
+                    account: Object.freeze({
+                        service: Object.freeze({ ...disclosedMember.service }),
+                        accountId: disclosedMember.accountId,
+                    }),
+                }),
+            }));
+            directMaterialOrigins.push(Object.freeze({
+                purpose,
+                resourceId: binding.resourceId,
+                disclosedMember: Object.freeze({
+                    service: Object.freeze({ ...disclosedMember.service }),
+                    accountId: disclosedMember.accountId,
+                }),
+            }));
+            continue;
+        }
+        if (binding.source !== 'connected') continue;
 
         projected.push(Object.freeze({
             purpose,
@@ -104,6 +139,9 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot
     return Object.freeze({
         purposes: Object.freeze(purposes),
         bindings: Object.freeze(projected),
+        ...(directMaterialOrigins.length > 0
+            ? { directMaterialOrigins: Object.freeze(directMaterialOrigins) }
+            : { directMaterialOrigins: Object.freeze([]) }),
     });
 }
 

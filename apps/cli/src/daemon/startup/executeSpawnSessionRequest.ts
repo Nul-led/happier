@@ -1,7 +1,8 @@
 import { configuration } from '@/configuration';
+import { createSessionInitialAccessFile } from '../spawn/sessionInitialAccessFile';
 import {
     createProviderErrorV1,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 import { validateEnvVarRecordStrict } from '@/terminal/runtime/envVarSanitization';
 import { logger } from '@/ui/logger';
@@ -72,20 +73,23 @@ import {
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveSpawnLaunchProfileDefaults } from '../spawn/resolveSpawnLaunchProfileDefaults';
+import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import {
+    LaunchSecretReferenceOverlayError,
+    readLaunchSecretReferenceOverlayProviderErrorCodeV1,
+    resolveLaunchProfileSavedSecretEnvironment,
+} from '../agentRuntime/resolveForegroundProfileSavedSecretEnvironment';
 
 type SpawnCredentials = NonNullable<Parameters<typeof resolveSpawnBackendIdentity>[0]['credentials']>;
 type SpawnApi = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['api'];
 type SpawnAccountUsageStore = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['accountUsageStore'];
 type SpawnAuthGroupSwitchCoordinator = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['authGroupSwitchCoordinator'];
 type SpawnPredictiveSwitchGuard = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['predictiveSwitchGuard'];
-type LoadLocalHandoffMetadataByVendorResumeId =
-    Parameters<typeof resolveSpawnBackendIdentity>[0]['loadLocalHandoffMetadataByVendorResumeId'];
 export type ExecuteSpawnSessionRequestParams = Readonly<{
     options: SpawnSessionOptions;
     credentials: SpawnCredentials;
     deviceLocalSecretStorage?: DeviceLocalSecretStorage;
     api: SpawnApi;
-    loadLocalHandoffMetadataByVendorResumeId: LoadLocalHandoffMetadataByVendorResumeId;
     connectedServicesMaterializationBaseDir: string;
     connectedServiceRefreshCoordinator: ConnectedServiceRefreshCoordinator | null;
     connectedServiceQuotasCoordinator: ConnectedServiceQuotasCoordinator | null;
@@ -96,7 +100,7 @@ export type ExecuteSpawnSessionRequestParams = Readonly<{
     repairMissingConnectedServiceMaterializationIdentityForSpawn?: (input: Readonly<{
         sessionId: string;
         agentId: CatalogAgentId;
-        connectedServices: ConnectedServiceBindingsV1;
+        connectedServices: ConnectedServiceBindingsV2;
         vendorResumeId: string | null;
     }>) => Promise<MissingConnectedServiceMaterializationIdentityRepair | null>;
     pidToTrackedSession: Map<number, TrackedSession>;
@@ -144,11 +148,12 @@ export async function executeSpawnSessionRequest(
         // the daemon, rather than an Action/UI caller, owns the profile overlay.
         await refreshAccountSettingsForSpawn(params);
 
+        const activeAccountSettingsSnapshot = getActiveAccountSettingsSnapshot();
         let prepared = await prepareExecuteSpawnSessionRequest({
             request: {
                 ...params,
                 options,
-                accountSettings: getActiveAccountSettingsSnapshot()?.settings ?? {},
+                accountSettings: activeAccountSettingsSnapshot?.settings ?? {},
             },
             validateEnvVarRecordStrict,
         });
@@ -159,7 +164,7 @@ export async function executeSpawnSessionRequest(
         const profileResolution = resolveSpawnLaunchProfileDefaults({
             options,
             effectiveBackendTarget: prepared.effectiveBackendTargetV2,
-            rawSettings: getActiveAccountSettingsSnapshot()?.settings,
+            rawSettings: activeAccountSettingsSnapshot?.settings,
         });
         if (!profileResolution.ok) return profileResolution.result;
         if (profileResolution.options !== options) {
@@ -218,6 +223,64 @@ export async function executeSpawnSessionRequest(
         launchResourceScope.register(
             providerDiagnosticRedactionLease.close,
         );
+        let profileLaunchEnvironment = environmentVariablesValidation.env;
+        if (options.profileId) {
+            const matchingProfiles = readProfilesFromAccountSettings(
+                activeAccountSettingsSnapshot?.settings,
+            ).visibleProfiles.filter((profile) => profile.id === options.profileId);
+            if (matchingProfiles.length === 1 && activeAccountSettingsSnapshot) {
+                try {
+                    const savedSecretEnvironment =
+                        resolveLaunchProfileSavedSecretEnvironment({
+                            profile: matchingProfiles[0]!,
+                            accountSettings:
+                                activeAccountSettingsSnapshot.settings,
+                            settingsSecretsReadKeys:
+                                activeAccountSettingsSnapshot
+                                    .settingsSecretsReadKeys,
+                            savedSecretResources:
+                                activeAccountSettingsSnapshot
+                                    .savedSecretResources,
+                            foregroundSatisfiedSecretRequirementNames: [],
+                            ...(options.secretReferenceOverlay
+                                ? {
+                                    secretReferenceOverlay:
+                                        options.secretReferenceOverlay,
+                                }
+                                : {}),
+                        });
+                    profileLaunchEnvironment = Object.freeze({
+                        ...profileLaunchEnvironment,
+                        ...savedSecretEnvironment,
+                    });
+                    providerDiagnosticRedactionLease.add(
+                        Object.values(savedSecretEnvironment),
+                    );
+                } catch (error) {
+                    if (!(error instanceof LaunchSecretReferenceOverlayError)) {
+                        throw error;
+                    }
+                    await launchResourceScope.retire();
+                    return buildProviderSpawnErrorResult(createProviderErrorV1(
+                        readLaunchSecretReferenceOverlayProviderErrorCodeV1(
+                            error.reason,
+                        ),
+                        { sourceProfileId: options.profileId },
+                    ));
+                }
+            } else if (options.secretReferenceOverlay) {
+                await launchResourceScope.retire();
+                return buildProviderSpawnErrorResult(createProviderErrorV1(
+                    'provider_settings_invalid',
+                    { sourceProfileId: options.profileId },
+                ));
+            }
+        } else if (options.secretReferenceOverlay) {
+            await launchResourceScope.retire();
+            return buildProviderSpawnErrorResult(createProviderErrorV1(
+                'provider_settings_invalid',
+            ));
+        }
         const pluginRuntimeLease = createSpawnPluginRuntimeLease(launchResourceScope);
         let launchRetirementOutcome:
             Promise<string | null> | null = null;
@@ -300,7 +363,7 @@ export async function executeSpawnSessionRequest(
                 effectiveBackendTarget: effectiveBackendTargetV2,
                 catalogAgentId,
                 ...(modelSelection ? { modelSelection } : {}),
-                profileEnvironmentVariables: environmentVariablesValidation.env,
+                profileEnvironmentVariables: profileLaunchEnvironment,
                 daemonSpawnHooks,
                 persistedProviderBinding: priorBindingMetadata,
                 normalizedExistingSessionId,
@@ -612,7 +675,7 @@ export async function executeSpawnSessionRequest(
                 resolvedAgentId: catalogAgentId,
                 effectiveModelSelection: modelSelection,
                 terminal: options.terminal,
-                profileEnvironmentVariables: environmentVariablesValidation.env,
+                profileEnvironmentVariables: profileLaunchEnvironment,
                 daemonSpawnHooks,
                 pluginRuntimeRegistry: appliedPluginRuntimeLease.registry,
                 processEnv: params.processEnv ?? process.env,
@@ -676,6 +739,10 @@ export async function executeSpawnSessionRequest(
                         'connected_account_request_auth_unavailable',
                 });
             }
+            const initialAccessFile = effectiveOptionsForSpawn.initialAccess === undefined
+                ? undefined
+                : await createSessionInitialAccessFile(configuration.happyHomeDir, effectiveOptionsForSpawn.initialAccess);
+            if (initialAccessFile) launchResourceScope.register(initialAccessFile.cleanup);
             const spawnLifecycle = await prepareDaemonSpawnLifecycle({
                 runnerAgentSessionBootstrap,
                 normalizedExistingSessionId,
@@ -739,6 +806,7 @@ export async function executeSpawnSessionRequest(
                 : undefined;
 
             let spawnResult = await routeSpawnModeAndWaitForWebhook({
+                initialAccessFilePath: initialAccessFile?.path,
                 terminalRequest,
                 directory,
                 options: effectiveOptionsForSpawn,

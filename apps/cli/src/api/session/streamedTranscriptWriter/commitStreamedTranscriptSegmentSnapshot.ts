@@ -15,6 +15,8 @@ export function commitStreamedTranscriptSegmentSnapshot(params: {
   segment: StreamedTranscriptSegmentRuntime;
   state: StreamedTranscriptSegmentState;
   interruptedReason?: string;
+  failureRetryDelayMs?: number;
+  onStreamingCommitFailure?: () => void;
 }) {
   const { provider, session, segment, state, interruptedReason } = params;
 
@@ -41,6 +43,19 @@ export function commitStreamedTranscriptSegmentSnapshot(params: {
     segment.lastCommittedTextVersion = commitVersion;
     segment.lastCommittedState = state;
     segment.appendOnlySinceLastDurableSnapshot = true;
+    segment.durableRetryNotBeforeMs = 0;
+    const recovered = segment.durableCommitFailure;
+    segment.durableCommitFailure = null;
+    if (recovered) {
+      logger.debug('[StreamedTranscriptWriter] Durable snapshot commit recovered', {
+        failureCount: recovered.count,
+        suppressedFailureCount: recovered.suppressedCount,
+        firstError: recovered.firstError,
+        localId: durableLocalId,
+        kind: segment.kind,
+        sidechainId: segment.sidechainId,
+      });
+    }
   };
 
   let committedSnapshotPromise: Promise<void>;
@@ -65,11 +80,28 @@ export function commitStreamedTranscriptSegmentSnapshot(params: {
     committedSnapshotPromise = Promise.reject(error);
   }
 
+  let commitFailed = false;
   void committedSnapshotPromise
     .catch((error) => {
+      commitFailed = true;
       segment.lastCommitFailedAtMs = Date.now();
+      if (state === 'streaming' && params.failureRetryDelayMs !== undefined) {
+        segment.durableRetryNotBeforeMs = Date.now() + params.failureRetryDelayMs;
+      }
+      const serializedError = serializeAxiosErrorForLog(error);
+      const failure = segment.durableCommitFailure;
+      if (failure) {
+        failure.count += 1;
+        failure.suppressedCount += 1;
+        return;
+      }
+      segment.durableCommitFailure = {
+        firstError: serializedError,
+        count: 1,
+        suppressedCount: 0,
+      };
       logger.debug('[StreamedTranscriptWriter] Durable snapshot commit failed (non-fatal)', {
-        error: serializeAxiosErrorForLog(error),
+        error: serializedError,
         localId: durableLocalId,
         segmentLocalId: segment.segmentLocalId,
         kind: segment.kind,
@@ -85,15 +117,20 @@ export function commitStreamedTranscriptSegmentSnapshot(params: {
       segment.isCommittingDurable = false;
       const pendingCommit = segment.pendingDurableCommit;
       segment.pendingDurableCommit = null;
-      if (pendingCommit) {
+      if (pendingCommit && (!commitFailed || pendingCommit.state !== 'streaming')) {
         commitStreamedTranscriptSegmentSnapshot({
           provider,
           session,
           segment,
           state: pendingCommit.state,
           interruptedReason: pendingCommit.interruptedReason,
+          failureRetryDelayMs: params.failureRetryDelayMs,
+          onStreamingCommitFailure: params.onStreamingCommitFailure,
         });
         return;
+      }
+      if (commitFailed && state === 'streaming') {
+        params.onStreamingCommitFailure?.();
       }
       if (segment.idleWaiters.length === 0) return;
       const waiters = segment.idleWaiters.splice(0, segment.idleWaiters.length);

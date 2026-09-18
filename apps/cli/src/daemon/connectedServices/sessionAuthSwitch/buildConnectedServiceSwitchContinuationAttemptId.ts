@@ -1,13 +1,14 @@
 import type {
     ConnectedAccountServiceKey,
-    ConnectedServiceBindingsV1,
+    ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 export function buildConnectedServiceSwitchContinuationAttemptId(input: Readonly<{
     action: 'hot_applied' | 'restart_requested';
     serviceIds: ReadonlySet<ConnectedAccountServiceKey>;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    normalizedBindings: ConnectedServiceBindingsV2;
     expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
+    quotaRecoveryIdempotencyKey?: string;
 }>): string {
     const parts = [...input.serviceIds]
         .sort()
@@ -26,5 +27,12 @@ export function buildConnectedServiceSwitchContinuationAttemptId(input: Readonly
             }
             return [serviceId, 'profile', binding.profileId].join(':');
         });
-    return ['connected-service-auth-switch', input.action, ...parts].join('|');
+    return [
+        'connected-service-auth-switch',
+        input.action,
+        ...parts,
+        ...(input.quotaRecoveryIdempotencyKey === undefined
+            ? []
+            : [`quota-recovery:${JSON.stringify(input.quotaRecoveryIdempotencyKey)}`]),
+    ].join('|');
 }

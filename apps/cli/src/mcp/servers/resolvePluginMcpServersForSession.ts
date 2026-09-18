@@ -2,7 +2,9 @@ import {
   readSessionMcpSelectionV1FromMetadata,
   type AccountSettings,
   type McpServerCatalogEntryV1,
+  type PluginExecutionScopeV1,
   type ResolvedMcpServerV1,
+  type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 import { readMcpServersSettingsFromAccountSettings } from './readMcpServersSettingsFromAccountSettings';
 import { resolveManagedSessionMcpSelectionForDirectory } from './resolveManagedSessionMcpSelectionForDirectory';
@@ -19,6 +21,19 @@ export type ResolvePluginMcpServersForSessionParams = Readonly<{
   machineId: string;
   directory: string;
   sessionMetadata?: unknown;
+  /** Explicit Run-owned selection; avoids fabricating Session metadata for detached Runs. */
+  selection?: SessionMcpSelectionV1 | null;
+}>;
+
+export type ResolvedPluginMcpServerForExecutionScope = Omit<ResolvedSessionMcpServer, 'scope'> & Readonly<{
+  scope: PluginExecutionScopeV1 & Readonly<{ directory: string }>;
+}>;
+
+export type ResolvePluginMcpServersForExecutionScopeParams = Omit<
+  ResolvePluginMcpServersForSessionParams,
+  'input' | 'sessionMetadata'
+> & Readonly<{
+  scope: PluginExecutionScopeV1;
 }>;
 
 function readTrimmedString(value: unknown): string | null {
@@ -67,7 +82,10 @@ function resolveManagedServerSpec(
   });
 }
 
-function compareResolvedMcpServers(left: ResolvedSessionMcpServer, right: ResolvedSessionMcpServer): number {
+function compareResolvedMcpServers(
+  left: Pick<ResolvedSessionMcpServer, 'id' | 'name'>,
+  right: Pick<ResolvedSessionMcpServer, 'id' | 'name'>,
+): number {
   return left.id.localeCompare(right.id) || left.name.localeCompare(right.name);
 }
 
@@ -82,7 +100,9 @@ export function resolvePluginMcpServersForSession(
   if (!scope) return Object.freeze([]);
 
   const settings = readMcpServersSettingsFromAccountSettings(params.accountSettings);
-  const selection = readSessionMcpSelectionV1FromMetadata(params.sessionMetadata);
+  const selection = params.selection === undefined
+    ? readSessionMcpSelectionV1FromMetadata(params.sessionMetadata)
+    : params.selection;
   const resolvedSelection = resolveManagedSessionMcpSelectionForDirectory({
     settings,
     machineId,
@@ -94,6 +114,38 @@ export function resolvePluginMcpServersForSession(
   for (const server of Object.values(resolvedSelection.selectedServersByName)) {
     const spec = resolveManagedServerSpec(server, scope);
     if (spec) resolved.push(spec);
+  }
+  return Object.freeze(resolved.sort(compareResolvedMcpServers));
+}
+
+/** Resolves explicit Run-owned MCP selection without manufacturing Session metadata or identity. */
+export function resolvePluginMcpServersForExecutionScope(
+  params: ResolvePluginMcpServersForExecutionScopeParams,
+): readonly ResolvedPluginMcpServerForExecutionScope[] {
+  const directory = readTrimmedString(params.directory);
+  const machineId = readTrimmedString(params.machineId);
+  if (!params.accountSettings || !directory || !machineId) return Object.freeze([]);
+
+  const settings = readMcpServersSettingsFromAccountSettings(params.accountSettings);
+  const resolvedSelection = resolveManagedSessionMcpSelectionForDirectory({
+    settings,
+    machineId,
+    directory,
+    selection: params.selection ?? null,
+  });
+  const scope = Object.freeze({ ...params.scope, directory });
+  const resolved: ResolvedPluginMcpServerForExecutionScope[] = [];
+  for (const server of Object.values(resolvedSelection.selectedServersByName)) {
+    const transport = resolveManagedTransport(server.config);
+    if (!transport) continue;
+    resolved.push(Object.freeze({
+      id: server.serverId,
+      name: server.name,
+      ...(server.config.title ? { title: server.config.title } : {}),
+      ...(server.config.description ? { description: server.config.description } : {}),
+      transport,
+      scope,
+    }));
   }
   return Object.freeze(resolved.sort(compareResolvedMcpServers));
 }

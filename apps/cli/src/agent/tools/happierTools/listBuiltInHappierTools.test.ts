@@ -168,13 +168,13 @@ describe('listBuiltInHappierTools', () => {
     expect(names).toContain('subagents_plan_start');
   });
 
-  it('does not expose MCP-only discovery tools on the CLI surface', async () => {
+  it('exposes the canonical Action discovery tools on the CLI surface', async () => {
     const { listBuiltInHappierTools } = await import('./listBuiltInHappierTools');
     const names = listBuiltInHappierTools({ surface: 'cli' }).map((tool) => tool.name);
 
-    expect(names).not.toContain('action_spec_search');
-    expect(names).not.toContain('action_spec_get');
-    expect(names).not.toContain('action_options_resolve');
+    expect(names).toContain('action_spec_search');
+    expect(names).toContain('action_spec_get');
+    expect(names).toContain('action_options_resolve');
     expect(names).toContain('action_execute');
     expect(names).toContain('review_start');
   });
@@ -366,6 +366,9 @@ describe('listBuiltInHappierTools', () => {
       'action_options_resolve',
       'action_execute',
       'change_title',
+      'execution_run_list',
+      'execution_run_get',
+      'execution_run_wait',
       'acme_review_start',
     ]));
     expect(names).not.toContain('review_start');
@@ -397,6 +400,37 @@ describe('listBuiltInHappierTools', () => {
     expect(names).toContain('acme_review_start');
   });
 
+  it('applies the shared Action settings to trusted plugin tool exposure', async () => {
+    const { listBuiltInHappierTools } = await import('./listBuiltInHappierTools');
+    const disabled = ActionsSettingsV1Schema.parse({
+      v: 1,
+      actions: {
+        'acme.review.plugin/actions/review-start': {
+          disabledSurfaces: ['agent'],
+        },
+      },
+    });
+    const discoverableOnly = ActionsSettingsV1Schema.parse({
+      v: 1,
+      actions: {
+        'acme.review.plugin/actions/review-start': {
+          toolExposureModes: { agent: 'discoverable_only' },
+        },
+      },
+    });
+
+    expect(listBuiltInHappierTools({
+      surface: 'agent',
+      registry: useActiveRegistryWithPluginTool(),
+      actionsSettings: disabled,
+    }).map((tool) => tool.name)).not.toContain('acme_review_start');
+    expect(listBuiltInHappierTools({
+      surface: 'agent',
+      registry: useActiveRegistryWithPluginTool(),
+      actionsSettings: discoverableOnly,
+    }).map((tool) => tool.name)).not.toContain('acme_review_start');
+  });
+
   it('lists trusted plugin action tools when they explicitly opt into tool exposure', async () => {
     const { listBuiltInHappierTools } = await import('./listBuiltInHappierTools');
     const names = listBuiltInHappierTools({
@@ -405,6 +439,38 @@ describe('listBuiltInHappierTools', () => {
     }).map((tool) => tool.name);
 
     expect(names).toContain('acme_review_start');
+  });
+
+  it('projects only admitted Session read Actions from the exact materialized tool snapshot', async () => {
+    const {
+      listAdmittedSessionRunReadActionIds,
+      listBuiltInHappierTools,
+    } = await import('./listBuiltInHappierTools');
+    const actionsSettings = ActionsSettingsV1Schema.parse({
+      v: 1,
+      actions: {
+        'session.discussion.get': { disabledSurfaces: ['agent'] },
+      },
+    });
+    const tools = listBuiltInHappierTools({
+      surface: 'agent',
+      registry: useActiveRegistryWithPluginTool(),
+      actionsSettings,
+      requiredDirectActionIds: [
+        'session.transcript.get',
+        'session.discussion.list',
+        'session.discussion.get',
+        'session.discussion.read',
+        'session.discussion.post',
+      ],
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain('acme_review_start');
+    expect(listAdmittedSessionRunReadActionIds(tools)).toEqual([
+      'session.transcript.get',
+      'session.discussion.list',
+      'session.discussion.read',
+    ]);
   });
 
   it('fails closed for plugin actions without an explicit tool declaration or runtime policy approval', async () => {

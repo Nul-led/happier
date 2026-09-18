@@ -200,6 +200,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     lastInstallRemoteFirstPartyDeps.current = null;
     lastOpenSshParams.current = null;
     openSshParamsCalls.length = 0;
+    transferOpenSshFile.mockImplementation(async () => undefined);
     localEnrollmentExecutor.current = null;
     remoteEnrollmentCompleted = false;
     isLoopbackPortAvailable.mockResolvedValue(true);
@@ -325,7 +326,26 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     });
   });
 
+  it('forwards the manage-host task AbortSignal to the canonical OpenSSH connection test', async () => {
+    const controller = new AbortController();
+
+    await createLiveRemoteSshManageHostTaskKind().run({
+      params: {
+        action: 'testConnection',
+        ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
+      },
+      signal: controller.signal,
+      emit: () => undefined,
+      prompt: async () => {
+        throw new Error('unexpected prompt');
+      },
+    });
+
+    expect(lastOpenSshParams.current?.signal).toBe(controller.signal);
+  });
+
   it('delivers remote Home erase approval over bounded stdin and parses the canonical task result', async () => {
+    const controller = new AbortController();
     const defaultSpawn = spawnSync.getMockImplementation();
     spawnSync.mockImplementation((command: string, args: readonly string[] = [], options?: unknown) => {
       const remoteCommand = String(args.at(-1) ?? '');
@@ -355,6 +375,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
         relayRuntime: { channel: 'preview', mode: 'system' },
         ssh: { target: 'example.test', auth: 'agent', trustedHostKey: TRUSTED_HOST_KEY },
       },
+      signal: controller.signal,
       emit: () => undefined,
       prompt: async (request) => {
         expect(request).toMatchObject({
@@ -382,6 +403,10 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
     })}\n`);
     expect(String(lastOpenSshParams.current?.remoteCommand)).not.toContain('srv_remote_home');
     expect(String(lastOpenSshParams.current?.remoteCommand)).not.toContain('4096');
+    expect(lastOpenSshParams.current?.signal).toBeUndefined();
+    expect(lastOpenSshParams.current?.timeoutMs).toBeNull();
+    const inspectionTimeouts = openSshParamsCalls.map((call) => call.timeoutMs);
+    expect(inspectionTimeouts).toContain(15 * 60_000);
   });
 
   it('downloads a remote Home backup without overwriting an existing local archive', async () => {
@@ -407,8 +432,8 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       }
       return defaultSpawn?.(command, args, options) as ReturnType<typeof spawnSync>;
     });
-    transferOpenSshFile.mockImplementationOnce(async (params) => {
-      await writeFile(params.localPath, 'new archive', 'utf8');
+    transferOpenSshFile.mockImplementation(async (params) => {
+      if (params.direction === 'download') await writeFile(params.localPath, 'new archive', 'utf8');
     });
     const directory = await mkdtemp(join(tmpdir(), 'happier-home-download-'));
     const outputPath = join(directory, 'home.tar');
@@ -657,6 +682,11 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
         .filter(([command]) => command === 'ssh')
         .map(([, args]) => String((args as readonly string[]).at(-1) ?? ''));
       expect(sshRemoteCommands.join('\n')).toContain('local-cli-payload');
+      expect(transferOpenSshFile).toHaveBeenCalledWith(expect.objectContaining({
+        direction: 'upload',
+        recursive: true,
+        signal: expect.any(AbortSignal),
+      }));
     } finally {
       if (previous === undefined) delete process.env.HAPPIER_FIRST_PARTY_REMOTE_CLI_PAYLOAD_ROOT;
       else process.env.HAPPIER_FIRST_PARTY_REMOTE_CLI_PAYLOAD_ROOT = previous;
@@ -844,6 +874,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
 
   it('installs the remote CLI from the verified payload path instead of curl-bash', async () => {
     const kind = createLiveRemoteSshBootstrapTaskKind();
+    const controller = new AbortController();
     const previousImplementation = spawnSync.getMockImplementation();
     if (!previousImplementation) {
       throw new Error('Missing spawnSync mock implementation');
@@ -877,6 +908,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
         serviceMode: 'none',
       },
       emit: () => undefined,
+      signal: controller.signal,
       prompt: async (request) => {
         if (request.kind === 'auth.approveRemoteProvisioning') {
           return { approved: true };
@@ -895,6 +927,7 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       publicKey: REMOTE_PUBLIC_KEY,
       pairing: REMOTE_REQUEST_PAIRING,
       supportsTokenOnly: true,
+      signal: controller.signal,
     });
   });
 

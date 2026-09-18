@@ -53,6 +53,60 @@ const UNRESOLVED_OWNER_METADATA = [
 ] as const;
 
 describe('session handoff start — source-derived transcript-storage authority', () => {
+  it('refuses a valid but stale caller storage mode before any source effect', async () => {
+    const stopSessionForHandoff = vi.fn(async () => 'already_inactive' as const);
+    const prepareStartedState = vi.fn();
+    const exportSessionBundle = vi.fn();
+    const acquire = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const invalidateDirectPeerRouteCacheForHandoffMachines = vi.fn();
+
+    const handler = createSessionHandoffStartActionHandler({
+      activeServerDir: '/tmp/happier-handoff-storage-authority',
+      createUuid: () => 'handoff-storage-authority',
+      loadSessionMetadata: async () => ({
+        path: '/tmp/project',
+        machineId: 'machine-source',
+        externalSessionV1: VALID_LINK,
+      }),
+      machineTransferChannelPresent: true,
+      directPeerTransfer: undefined,
+      stopSessionForHandoff,
+      prepareJobStore: { write: vi.fn() } as never,
+      sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
+      prepareStartedState: prepareStartedState as never,
+      exportSessionBundle: exportSessionBundle as never,
+      waitForPersistedSourceExport: vi.fn() as never,
+      invalidateDirectPeerRouteCacheForHandoffMachines,
+      buildStartPendingStatus: vi.fn() as never,
+      buildStartRecoveryStatus: vi.fn() as never,
+      buildPrepareJobRecord: vi.fn() as never,
+      invalidRequest: () => ({ ok: false, errorCode: 'invalid_request' }),
+      sessionOperationExclusion: { acquire } as never,
+      retainSessionOperationClaim: vi.fn(),
+      releaseSessionOperationClaim: vi.fn(),
+    });
+
+    await expect(handler({
+      sessionId: 'session-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      // The current linked Session is direct. A predecessor/direct RPC may
+      // still carry a valid but stale persisted classification.
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['server_routed_stream'],
+      negotiatedTransportStrategy: 'server_routed_stream',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'session_storage_mode_mismatch',
+    });
+
+    expect(invalidateDirectPeerRouteCacheForHandoffMachines).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(stopSessionForHandoff).not.toHaveBeenCalled();
+    expect(prepareStartedState).not.toHaveBeenCalled();
+    expect(exportSessionBundle).not.toHaveBeenCalled();
+  });
+
   it.each(UNRESOLVED_OWNER_METADATA)(
     'refuses %s with zero source effect',
     async (_label, ownerMetadata, errorCode) => {

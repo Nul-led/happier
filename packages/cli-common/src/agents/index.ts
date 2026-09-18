@@ -16,9 +16,17 @@ export {
 export type {
   AgentCliJavaScriptRuntimeKind,
   AgentCliCommandResolution,
+  AgentCliCommandResolutionOptions,
   AgentCliResolutionSource,
   AgentCliRuntimeDescriptor,
+  AgentCliSourcePolicy,
 } from './resolution.js';
+export type {
+  ManagedAgentCliPreparation,
+  ManagedAgentCliPreparationErrorCode,
+  ManagedAgentCliResolution,
+} from './prepareForRuntime.js';
+export { prepareAgentCliForRuntime } from './prepareForRuntime.js';
 export {
   isAgentCliPathRunnable,
   readBackendCliSourcePreferenceForAgent,

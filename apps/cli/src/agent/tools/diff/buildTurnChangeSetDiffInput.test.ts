@@ -40,7 +40,7 @@ describe('buildTurnChangeSetDiffInput', () => {
                     file_path: 'src/huge.ts',
                     change_kind: 'modified',
                     source: 'scm_checkpoint',
-                    confidence: 'exact',
+                    confidence: 'best_effort',
                     provider: 'scm:git',
                     truncated: true,
                     stats: expect.objectContaining({
@@ -50,6 +50,7 @@ describe('buildTurnChangeSetDiffInput', () => {
                 }),
             ],
             _happier: expect.objectContaining({
+                confidence: 'best_effort',
                 turnDiffTruncatedFileCount: 1,
             }),
         }));
@@ -57,6 +58,70 @@ describe('buildTurnChangeSetDiffInput', () => {
         const file = (input.files as Array<Record<string, unknown>>)[0];
         expect(file.oldText).toBeUndefined();
         expect(file.newText).toBeUndefined();
-        expect(file.unified_diff).toEqual(expect.stringContaining('src/huge.ts'));
+        expect(file.unified_diff).toBeUndefined();
+    });
+
+    it('charges retained placeholder text against the shared turn budget', () => {
+        const base = makeTurnChangeSet({
+            filePath: 'src/first.ts',
+            changeKind: 'modified',
+            unifiedDiff: 'x'.repeat(1_000),
+            source: 'provider_tool',
+            confidence: 'exact',
+            provider: 'codex',
+        });
+        const input = buildTurnChangeSetDiffInput({
+            turnChangeSet: {
+                ...base,
+                files: [
+                    base.files[0]!,
+                    { ...base.files[0]!, filePath: 'src/second.ts', unifiedDiff: 'y'.repeat(1_000) },
+                ],
+            },
+            protocol: 'codex',
+            rawToolName: 'apply_patch',
+            fileBudgetBytes: 100,
+            turnBudgetBytes: 100,
+        });
+
+        const files = input.files as Array<{ unified_diff?: string; truncated?: true; stats?: unknown }>;
+        const retainedBytes = files.reduce((total, file) => total + Buffer.byteLength(file.unified_diff ?? '', 'utf8'), 0);
+        expect(retainedBytes).toBeLessThanOrEqual(100);
+        expect(files).toEqual([
+            expect.objectContaining({ truncated: true, stats: expect.any(Object) }),
+            expect.objectContaining({ truncated: true, stats: expect.any(Object) }),
+        ]);
+        expect(files.filter((file) => file.unified_diff === undefined).length).toBeGreaterThan(0);
+    });
+
+    it('marks a bounded partial text diff as truncated and no longer exact', () => {
+        const input = buildTurnChangeSetDiffInput({
+            turnChangeSet: makeTurnChangeSet({
+                filePath: 'src/partial.ts',
+                changeKind: 'modified',
+                oldText: `${'same\n'.repeat(20)}old\n${'tail\n'.repeat(20)}`,
+                newText: `${'same\n'.repeat(20)}new\n${'tail\n'.repeat(20)}`,
+                source: 'provider_tool',
+                confidence: 'exact',
+                provider: 'codex',
+            }),
+            protocol: 'codex',
+            rawToolName: 'apply_patch',
+            fileBudgetBytes: 256,
+            turnBudgetBytes: 256,
+        });
+
+        expect(input).toEqual(expect.objectContaining({
+            files: [expect.objectContaining({
+                file_path: 'src/partial.ts',
+                confidence: 'best_effort',
+                truncated: true,
+                stats: expect.objectContaining({
+                    oldTextBytes: expect.any(Number),
+                    newTextBytes: expect.any(Number),
+                }),
+            })],
+            _happier: expect.objectContaining({ confidence: 'best_effort', turnDiffTruncatedFileCount: 1 }),
+        }));
     });
 });

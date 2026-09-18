@@ -23,6 +23,12 @@ export type UsageObservation = {
     cost: UsageCostMap | null;
     contextUsedTokens: number | null;
     contextWindowTokens: number | null;
+    /** Which normalized dimensions were actually supplied by the provider. */
+    availability?: Readonly<{
+        inputTokens: boolean;
+        outputTokens: boolean;
+        reportedCostUsd: boolean;
+    }>;
     contextSnapshot?: SessionContextUsageSnapshotV1;
 };
 
@@ -136,7 +142,24 @@ function normalizeTopLevelTokens(record: Record<string, unknown>): UsageNumberMa
     return normalizeTokensMap(record);
 }
 
-function normalizeCodexInfoTokens(record: Record<string, unknown>): UsageNumberMap | null {
+const INPUT_TOKEN_KEYS = [
+    'input_tokens', 'input', 'prompt_tokens', 'promptTokens', 'inputTokens',
+] as const;
+const OUTPUT_TOKEN_KEYS = [
+    'output_tokens', 'output', 'completion_tokens', 'completionTokens', 'outputTokens',
+] as const;
+
+function hasFiniteNonNegativeField(
+    record: Record<string, unknown>,
+    keys: readonly string[],
+): boolean {
+    return keys.some((key) => asFiniteNonNegativeNumber(record[key]) !== null);
+}
+
+function selectNormalizedTokenRecord(record: Record<string, unknown>): Record<string, unknown> | null {
+    const nested = asRecord(record.tokens);
+    if (nested && normalizeTokensMap(nested)) return nested;
+    if (normalizeTopLevelTokens(record)) return record;
     const info = asRecord(record.info);
     if (!info) return null;
     const usageRecord =
@@ -144,8 +167,7 @@ function normalizeCodexInfoTokens(record: Record<string, unknown>): UsageNumberM
         asRecord(info.totalTokenUsage) ??
         asRecord(info.last_token_usage) ??
         asRecord(info.lastTokenUsage);
-    if (!usageRecord) return null;
-    return normalizeTopLevelTokens(usageRecord);
+    return usageRecord && normalizeTokensMap(usageRecord) ? usageRecord : null;
 }
 
 function normalizeCostBreakdown(record: Record<string, unknown>): Record<string, number> | undefined {
@@ -191,10 +213,12 @@ function normalizeCostMap(raw: unknown, source: string): UsageCostMap | null {
     if (!record) return null;
 
     const total = asFiniteNonNegativeNumber(record.total);
-    const reportedUsd =
+    const reportedUsdExplicit =
         asFiniteNonNegativeNumber(record.reportedUsd) ??
         asFiniteNonNegativeNumber(record.reported_usd) ??
-        asFiniteNonNegativeNumber(record.reported) ??
+        asFiniteNonNegativeNumber(record.reported);
+    const reportedUsd =
+        reportedUsdExplicit ??
         (source === 'claude-sdk-result' ? total : null) ??
         0;
     const estimatedUsd =
@@ -209,6 +233,7 @@ function normalizeCostMap(raw: unknown, source: string): UsageCostMap | null {
     const costSource = asUsageCostSource(record.costSource);
     const breakdown = normalizeCostBreakdown(record);
     const hasCostData =
+        reportedUsdExplicit != null ||
         reportedUsd > 0 ||
         estimatedUsd > 0 ||
         invoiceUsd != null ||
@@ -246,10 +271,8 @@ export function extractUsageObservationFromTokenCountMessage(params: Readonly<{
     const record = asRecord(params.body);
     if (!record) return null;
 
-    const tokens =
-        normalizeTokensMap(record.tokens) ??
-        normalizeTopLevelTokens(record) ??
-        normalizeCodexInfoTokens(record);
+    const tokenRecord = selectNormalizedTokenRecord(record);
+    const tokens = tokenRecord ? normalizeTokensMap(tokenRecord) : null;
     const info = asRecord(record.info);
     const lastUsage = asRecord(info?.last_token_usage) ?? asRecord(info?.lastTokenUsage);
     const scope = normalizeScope(record.scope) ?? params.defaultScope ?? 'turn_delta';
@@ -271,6 +294,15 @@ export function extractUsageObservationFromTokenCountMessage(params: Readonly<{
         (scope === 'turn_delta' && contextWindowExplicit != null && tokens ? tokens.total : null);
     const contextWindowTokens = contextWindowExplicit ?? null;
     const cost = normalizeCostMap(record.cost, source);
+    const rawCost = asRecord(record.cost);
+    const reportedCostSource = rawCost ? asUsageCostSource(rawCost.costSource) : null;
+    const reportedCostUsd = rawCost
+        ? (
+            (reportedCostSource === 'provider_reported'
+                || reportedCostSource === 'provider_reported_api_equivalent')
+                && hasFiniteNonNegativeField(rawCost, ['reportedUsd', 'reported_usd', 'reported'])
+        ) || (source === 'claude-sdk-result' && asFiniteNonNegativeNumber(rawCost.total) !== null)
+        : false;
     const parsedContextSnapshot = SessionContextUsageSnapshotV1Schema.safeParse(record.contextSnapshot);
     const contextSnapshot = parsedContextSnapshot.success ? parsedContextSnapshot.data : null;
     const hasData = tokens != null || cost != null || contextUsedTokens != null || contextWindowTokens != null;
@@ -286,6 +318,11 @@ export function extractUsageObservationFromTokenCountMessage(params: Readonly<{
         cost,
         contextUsedTokens,
         contextWindowTokens,
+        availability: {
+            inputTokens: tokenRecord ? hasFiniteNonNegativeField(tokenRecord, INPUT_TOKEN_KEYS) : false,
+            outputTokens: tokenRecord ? hasFiniteNonNegativeField(tokenRecord, OUTPUT_TOKEN_KEYS) : false,
+            reportedCostUsd,
+        },
         ...(contextSnapshot ? { contextSnapshot } : {}),
     };
 }
@@ -293,10 +330,25 @@ export function extractUsageObservationFromTokenCountMessage(params: Readonly<{
 export function normalizeUsageObservation(
     input: UsageObservationBoundaryInput,
 ): UsageObservation | null {
-    return extractUsageObservationFromTokenCountMessage({
+    const normalized = extractUsageObservationFromTokenCountMessage({
         provider: input.provider,
         body: input,
         defaultSource: input.source,
         defaultScope: input.scope,
     });
+    if (!normalized) return null;
+    const availability = asRecord(asRecord(input)?.availability);
+    if (typeof availability?.inputTokens !== 'boolean'
+        || typeof availability.outputTokens !== 'boolean'
+        || typeof availability.reportedCostUsd !== 'boolean') {
+        return normalized;
+    }
+    return {
+        ...normalized,
+        availability: {
+            inputTokens: availability.inputTokens,
+            outputTokens: availability.outputTokens,
+            reportedCostUsd: availability.reportedCostUsd,
+        },
+    };
 }

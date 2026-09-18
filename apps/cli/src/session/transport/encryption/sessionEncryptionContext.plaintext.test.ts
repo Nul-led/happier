@@ -105,6 +105,8 @@ describe('decryptStoredSessionPayload (plaintext)', () => {
     expect(resolveSessionStoredContentEncryptionMode({})).toBe('e2ee');
     expect(resolveSessionStoredContentEncryptionMode({ encryptionMode: 'e2ee' })).toBe('e2ee');
     expect(resolveSessionStoredContentEncryptionMode({ encryptionMode: 'plain' })).toBe('plain');
+    expect(() => resolveSessionStoredContentEncryptionMode({ encryptionMode: 'unknown' }))
+      .toThrow('Session stored content encryption mode mismatch');
   });
 
   it('parses JSON when mode is plain', () => {
@@ -370,7 +372,7 @@ describe('decryptStoredSessionPayload (plaintext)', () => {
         runtimeDescriptorV1: {
           v: 1,
           agentId: 'grok',
-          providerSessionId: 'provider-parent',
+          agent: { providerSessionId: 'provider-parent' },
         },
       },
     });

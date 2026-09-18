@@ -8,6 +8,7 @@ import type { RuntimeActiveTurnPermissionWitness } from '@/agent/runtime/turns/r
 export type RunnerMcpSessionContextAccessors = Readonly<{
   getPermissionMode?: (() => PermissionMode | null | undefined) | null;
   getActiveTurnPermissionWitness?: (() => RuntimeActiveTurnPermissionWitness | null | undefined) | null;
+  getRuntimeLifetimeSignal?: (() => AbortSignal | null | undefined) | null;
   getBackendTarget?: (() => BackendTargetRefV2 | null | undefined) | null;
   getCurrentSessionLocation?: (() => Readonly<{
     path?: string | null;
@@ -21,6 +22,7 @@ export type RunnerMcpSessionWithContext<TSession> = TSession & {
   getMetadataSnapshot?: () => Metadata | null;
   getPermissionMode?: () => PermissionMode | null | undefined;
   getActiveTurnPermissionWitness?: () => RuntimeActiveTurnPermissionWitness | null | undefined;
+  getRuntimeLifetimeSignal?: () => AbortSignal | null | undefined;
   getBackendTarget?: () => BackendTargetRefV2 | null | undefined;
   getCurrentSessionLocation?: () => Readonly<{
     path?: string | null;
@@ -40,6 +42,9 @@ export function applyRunnerMcpSessionContext<TSession extends object>(
   }
   if (accessors.getActiveTurnPermissionWitness) {
     target.getActiveTurnPermissionWitness = accessors.getActiveTurnPermissionWitness;
+  }
+  if (accessors.getRuntimeLifetimeSignal) {
+    target.getRuntimeLifetimeSignal = accessors.getRuntimeLifetimeSignal;
   }
   if (accessors.getBackendTarget) {
     target.getBackendTarget = accessors.getBackendTarget;

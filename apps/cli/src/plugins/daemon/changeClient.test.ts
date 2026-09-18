@@ -208,6 +208,19 @@ describe('requestUserPluginChange', () => {
     expect(output).not.toContain('undefined');
   });
 
+  it('discloses full archive URL retention in the terminal trust decision', () => {
+    const locator = 'https://downloads.example.test/plugin.tgz?access_token=example';
+    const output = formatPluginInstallationReviewForTerminal(completeReview({
+      source: { kind: 'archive', locator, integrity: 'sha512-example', integrityBasis: 'observed' },
+      updateChannel: { kind: 'archive', locator },
+    }));
+
+    expect(output).toContain('full archive URL');
+    expect(output).toContain('credentials');
+    expect(output).toContain('future updates');
+    expect(formatPluginInstallationReviewForTerminal(completeReview())).not.toContain('full archive URL');
+  });
+
   it('discloses raw Voice credential receipt and copy capability without adding it to mediated-only reviews', () => {
     const rawReview: PluginInstallationReview = {
       ...completeReview(),

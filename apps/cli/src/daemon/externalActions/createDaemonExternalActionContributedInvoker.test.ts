@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { isDeepStrictEqual } from 'node:util';
+import tweetnacl from 'tweetnacl';
 
 const externalActionTargetResolverMocks = vi.hoisted(() => ({
   fetchSessionById: vi.fn(),
@@ -18,12 +20,15 @@ import {
   createPluginContributionIdentity,
   StrictJsonValueSchema,
   TargetActionApprovalRequestV1Schema,
+  type ApprovalExecutionOriginV1,
   type PluginMachineExecutionOriginV1,
   type TargetActionApprovalReplayPlacementV1,
   type TargetActionApprovalRequestV1,
 } from '@happier-dev/protocol';
 import {
   createActionExecutor,
+  signExternalActionApprovalInputV1,
+  verifyExternalActionApprovalInputV1,
   type ActionExecutorDeps,
 } from '@happier-dev/protocol/actions';
 import type {
@@ -58,6 +63,8 @@ import {
   createUnavailablePluginServices,
 } from '@/plugins/runtime/invocation/services/unavailable';
 import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
+import { encodeBase64 } from '@/api/encryption';
+import type { PluginActionsServiceSeed } from '@/plugins/runtime/invocation/services/actions';
 
 import {
   createDaemonExternalActionContributedApprovalReplay,
@@ -69,6 +76,24 @@ import { executeExternalAction } from './executeExternalAction';
 
 const EXTERNAL_ACTION_ENCRYPTION_KEY = new Uint8Array(32).fill(7);
 
+function createApiActionApprovalOrigin(defaultSessionId?: string): ApprovalExecutionOriginV1 {
+  return {
+    v: 1,
+    authority: 'account_automation',
+    surface: 'api',
+    caller: { kind: 'host' },
+    serverId: 'server-external',
+    accountId: 'account-1',
+    principalId: 'principal-1',
+    credentialId: '11111111-1111-4111-8111-111111111111',
+    machineId: 'machine-local',
+    ...(defaultSessionId ? { sessionId: defaultSessionId } : {}),
+    target: { kind: 'machine', machineId: 'machine-local' },
+    actionId: 'action.invoke',
+    requestId: 'request-1',
+  };
+}
+
 function createExternalActionRuntime(
   scope: 'global' | 'session' = 'session',
   pluginId = 'acme.external',
@@ -79,6 +104,7 @@ function createExternalActionRuntime(
   resolveCurrentPluginApprovalReplayPlacement?: (
     pluginId: string,
   ) => TargetActionApprovalReplayPlacementV1 | null,
+  onServicesSeed?: (seed: PluginActionsServiceSeed) => void,
 ): ResolvedExecutablePluginRuntimeRegistry {
   const plugin = {
     pluginId,
@@ -195,7 +221,10 @@ function createExternalActionRuntime(
     }),
     resolveHostBinding: createTargetActionHostBindingResolver(),
     resolveHostPolicy: createTargetActionHostPolicyResolver(),
-    createServices: createUnavailablePluginServicesFactory(),
+    createServices: (seed, binding) => {
+      onServicesSeed?.(seed);
+      return createUnavailablePluginServicesFactory()(seed, binding);
+    },
   });
 
   const runtime = {
@@ -302,9 +331,14 @@ function createExternalActionIngressExecutor(scope: 'global' | 'session' = 'sess
     durableRevision: runtime.durableRevision ?? -1,
     release: async () => {},
   };
-  return createExternalActionExecutor(createDaemonExternalActionContributedInvoker({
-    acquireRuntimeRegistryLease: async () => lease,
-  }));
+  return createExternalActionExecutor(
+    createDaemonExternalActionContributedInvoker({
+      acquireRuntimeRegistryLease: async () => lease,
+    }),
+    createDaemonExternalActionContributedDefinitionLister({
+      tryAcquireRuntimeRegistryLease: () => lease,
+    }),
+  );
 }
 
 describe('createDaemonExternalActionContributedInvoker', () => {
@@ -373,14 +407,74 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it('does not advertise a contributed Action rejected by the runtime catalog policy', () => {
+    const runtime = createExternalActionRuntime('global');
+    const targetActionInvocations = runtime.targetActionInvocations;
+    if (!targetActionInvocations) throw new Error('Expected complete Action invocation fixture');
+    const evaluateCatalogPolicy = vi.fn(() => ({
+      outcome: 'denied',
+      code: 'plugin_action_grant_revoked',
+      requiresCurrentIntent: false,
+    } as const));
+    const deniedRuntime: ResolvedExecutablePluginRuntimeRegistry = {
+      ...runtime,
+      targetActionInvocations: {
+        ...targetActionInvocations,
+        evaluateCatalogPolicy,
+      },
+    };
+    const listContributedActionDefinitions = createDaemonExternalActionContributedDefinitionLister({
+      tryAcquireRuntimeRegistryLease: () => ({
+        registry: deniedRuntime,
+        source: 'active',
+        durableRevision: deniedRuntime.durableRevision ?? -1,
+        release: async () => {},
+      }),
+    });
+
+    expect(listContributedActionDefinitions()).toEqual([]);
+    expect(evaluateCatalogPolicy).toHaveBeenCalledWith('acme.external', 'inspect');
+  });
+
+  it('fails closed when a partial committed runtime has no Action invocation policy owner', () => {
+    const runtime = createExternalActionRuntime('global');
+    const partialRuntime: ResolvedExecutablePluginRuntimeRegistry = {
+      ...runtime,
+      targetActionInvocations: undefined,
+    };
+    const listContributedActionDefinitions = createDaemonExternalActionContributedDefinitionLister({
+      tryAcquireRuntimeRegistryLease: () => ({
+        registry: partialRuntime,
+        source: 'active',
+        durableRevision: partialRuntime.durableRevision ?? -1,
+        release: async () => {},
+      }),
+    });
+
+    expect(listContributedActionDefinitions()).toEqual([]);
+  });
+
   it('keeps equal local ids from separate plugins distinct in external Action discovery', async () => {
     const alphaRuntime = createExternalActionRuntime('global', 'acme.alpha');
     const betaRuntime = createExternalActionRuntime('global', 'acme.beta');
+    const alphaTargetActionInvocations = alphaRuntime.targetActionInvocations;
+    const betaTargetActionInvocations = betaRuntime.targetActionInvocations;
+    if (!alphaTargetActionInvocations || !betaTargetActionInvocations) {
+      throw new Error('Expected complete Action invocation fixtures');
+    }
     const runtime: ResolvedExecutablePluginRuntimeRegistry = {
       ...alphaRuntime,
       contributes: {
         ...alphaRuntime.contributes,
         actions: [...alphaRuntime.contributes.actions, ...betaRuntime.contributes.actions],
+      },
+      targetActionInvocations: {
+        ...alphaTargetActionInvocations,
+        evaluateCatalogPolicy: (pluginId, localId) => (
+          pluginId === 'acme.beta'
+            ? betaTargetActionInvocations.evaluateCatalogPolicy(pluginId, localId)
+            : alphaTargetActionInvocations.evaluateCatalogPolicy(pluginId, localId)
+        ),
       },
     };
     const lease: PluginRuntimeRegistryLease = {
@@ -742,10 +836,15 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         status: 'deferred',
         artifactId: 'approval-api-required-1',
       } as never));
-      const executor = createExternalActionExecutor(createDaemonExternalActionContributedInvoker({
-        acquireRuntimeRegistryLease: async () => lease,
-        requestCurrentIntent,
-      }));
+      const executor = createExternalActionExecutor(
+        createDaemonExternalActionContributedInvoker({
+          acquireRuntimeRegistryLease: async () => lease,
+          requestCurrentIntent,
+        }),
+        createDaemonExternalActionContributedDefinitionLister({
+          tryAcquireRuntimeRegistryLease: () => lease,
+        }),
+      );
 
       await expect(executeExternalAction({
         actionId: 'action.invoke',
@@ -928,6 +1027,10 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       await expect(invoke({
         action: { pluginId: 'happier.channels', localId: 'inspect' },
         input: {},
+        approvalExecutionOrigin: {
+          ...createApiActionApprovalOrigin(),
+          serverId: 'server-bundled',
+        },
         context: {
           surface: 'api',
           authority: 'account_automation',
@@ -951,6 +1054,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
 
       const replay = createDaemonExternalActionContributedApprovalReplay({
         credentials: { token: 'daemon-token', encryption: null } as never,
+        isApprovalExecutionOriginCurrent: async () => true,
         acquireRuntimeRegistryLease: async () => lease,
         targetActionApprovals,
         now: () => 2,
@@ -1035,6 +1139,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       await expect(deferred({
         action: { pluginId: 'acme.external', localId: 'inspect' },
         input: {},
+        approvalExecutionOrigin: createApiActionApprovalOrigin('session-1'),
         context: {
           surface: 'api',
           authority: 'account_automation',
@@ -1062,6 +1167,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
 
       const replay = createDaemonExternalActionContributedApprovalReplay({
         credentials: { token: 'daemon-token', encryption: null } as never,
+        isApprovalExecutionOriginCurrent: async () => true,
         acquireRuntimeRegistryLease: async () => lease,
         targetActionApprovals,
         now: () => 2,
@@ -1105,7 +1211,162 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     }
   });
 
-  it('serializes concurrent approve replays for one API target-action artifact', async () => {
+  it('reconstructs an immutable PAT context and installation-key signer for contributed-Action replay', async () => {
+    const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+      v: 1,
+      actions: {
+        'acme.external/actions/inspect': {
+          approvalRequiredSurfaces: ['api'],
+        },
+      },
+    });
+    try {
+    const installationKeyPair = tweetnacl.sign.keyPair();
+    const outerInput = {
+      action: { pluginId: 'acme.external', localId: 'inspect' },
+      input: {},
+    } as const;
+    const target = { kind: 'machine' as const, machineId: 'machine-local' };
+    const authorization = {
+      v: 1 as const,
+      token: 'home-signed-external-invocation',
+      binding: {
+        serverIdentityId: 'server-external',
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: '11111111-1111-4111-8111-111111111111',
+        machineId: 'machine-local',
+        actionId: 'action.invoke',
+        requestId: 'request-1',
+        requestEnvelopeDigest: 'A'.repeat(43),
+        target,
+      },
+    };
+    const approvalExecutionOrigin: ApprovalExecutionOriginV1 = {
+      ...createApiActionApprovalOrigin(),
+      serverIdentityId: authorization.binding.serverIdentityId,
+      externalActionExecutionAuthorization: authorization,
+      externalActionInputSignature: signExternalActionApprovalInputV1({
+        authorizationToken: authorization.token,
+        actionId: 'action.invoke',
+        target,
+        input: outerInput,
+        privateKey: installationKeyPair.secretKey,
+      }),
+    };
+    let replaySeed: PluginActionsServiceSeed | null = null;
+    const runtime = createExternalActionRuntime(
+      'global',
+      'acme.external',
+      undefined,
+      undefined,
+      undefined,
+      (seed) => { replaySeed = seed; },
+    );
+    const lease: PluginRuntimeRegistryLease = {
+      registry: runtime,
+      source: 'ephemeral',
+      durableRevision: runtime.durableRevision ?? -1,
+      release: async () => {},
+    };
+    let persisted: TargetActionApprovalRequestV1 | null = null;
+    const targetActionApprovals = {
+      targetActionApprovalsGet: async () => persisted,
+      targetActionApprovalsUpdate: async (args: Readonly<{
+        artifactId: string;
+        request: TargetActionApprovalRequestV1;
+      }>) => {
+        persisted = args.request;
+        return { ok: true as const };
+      },
+    };
+    const deferred = createDaemonExternalActionContributedInvoker({
+      acquireRuntimeRegistryLease: async () => lease,
+      requestCurrentIntent: createTargetActionCurrentIntentAdapter({
+        now: () => 1,
+        create: async (request) => {
+          persisted = request;
+          return { artifactId: 'approval-external-pat-replay' };
+        },
+        read: async () => persisted,
+      }),
+    });
+
+    await expect(deferred({
+      action: outerInput.action,
+      input: outerInput.input,
+      approvalExecutionOrigin,
+      context: {
+        surface: 'api',
+        authority: 'account_automation',
+        actionCaller: { kind: 'host' },
+        serverId: 'server-external',
+        serverIdentityId: 'server-external',
+        actionRequestId: 'request-1',
+        externalActionCredential: {
+          accountId: 'account-1',
+          principalId: 'principal-1',
+          credentialId: '11111111-1111-4111-8111-111111111111',
+        },
+        externalActionExecutionAuthorization: authorization,
+        externalActionTarget: target,
+      },
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { kind: 'approval_request_created', artifactId: 'approval-external-pat-replay' },
+    });
+
+    const replay = createDaemonExternalActionContributedApprovalReplay({
+      credentials: { token: 'daemon-token', encryption: null } as never,
+      isApprovalExecutionOriginCurrent: async () => true,
+      acquireRuntimeRegistryLease: async () => lease,
+      targetActionApprovals,
+      readInstallationIdentity: () => ({
+        version: 1,
+        installationId: 'machine-installation-1',
+        createdAt: 1,
+        publicKey: encodeBase64(installationKeyPair.publicKey, 'base64url'),
+        privateKey: encodeBase64(installationKeyPair.secretKey, 'base64url'),
+      }),
+      now: () => 2,
+    });
+    await expect(replay({
+      artifactId: 'approval-external-pat-replay',
+      decision: 'approve',
+    })).resolves.toMatchObject({ ok: true, result: { status: 'executed' } });
+
+    expect(replaySeed).not.toBeNull();
+    const context = replaySeed!.externalActionContext!;
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(Object.isFrozen(context.externalActionCredential)).toBe(true);
+    expect(Object.isFrozen(context.externalActionExecutionAuthorization)).toBe(true);
+    expect(Object.isFrozen(context.externalActionExecutionAuthorization.binding)).toBe(true);
+    expect(Object.isFrozen(context.externalActionExecutionAuthorization.binding.target)).toBe(true);
+    expect(Object.isFrozen(context.externalActionTarget)).toBe(true);
+    const effectInput = { v: 1, teamId: 'team-1' };
+    const signature = context.signExternalActionApprovalInput!({
+      actionId: 'teams.archive',
+      input: effectInput,
+      target,
+      authorization,
+    });
+    expect(verifyExternalActionApprovalInputV1({
+      authorizationToken: authorization.token,
+      actionId: 'teams.archive',
+      target,
+      input: effectInput,
+      publicKey: installationKeyPair.publicKey,
+      signature,
+    })).toBe(true);
+    } finally {
+      if (previousSettings === undefined) delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+      else process.env.HAPPIER_ACTIONS_SETTINGS_V1 = previousSettings;
+    }
+  });
+
+  it('admits one target effect across independent concurrent executors', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
@@ -1137,12 +1398,38 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         release: async () => {},
       };
       let persisted: TargetActionApprovalRequestV1 | null = null;
+      let failTerminalWrite = false;
       const targetActionApprovals = {
         targetActionApprovalsGet: async () => persisted,
         targetActionApprovalsUpdate: async (args: Readonly<{
           artifactId: string;
           request: TargetActionApprovalRequestV1;
         }>) => {
+          const prior = persisted;
+          if (failTerminalWrite
+            && (args.request.status === 'executed' || args.request.status === 'failed')) {
+            return { ok: false as const, errorCode: 'conflict', error: 'synthetic_terminal_write_failure' };
+          }
+          // Mirror the Artifact store contract: terminal equality is
+          // idempotent, while an equal executing row loses the claim.
+          if (prior !== null && isDeepStrictEqual(prior, args.request)) {
+            return args.request.status === 'executing'
+              ? { ok: false as const, errorCode: 'invalid_transition', error: 'target_action_approval_invalid_transition' }
+              : { ok: true as const };
+          }
+          const allowed = prior !== null && (
+            (prior.status === 'open' && args.request.status === 'approved')
+            || (prior.status === 'approved' && args.request.status === 'executing')
+            || (prior.status === 'executing'
+              && (args.request.status === 'executed' || args.request.status === 'failed'))
+          );
+          if (!allowed) {
+            return {
+              ok: false as const,
+              errorCode: 'invalid_transition',
+              error: 'target_action_approval_invalid_transition',
+            };
+          }
           persisted = args.request;
           return { ok: true as const };
         },
@@ -1161,6 +1448,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       await defer({
         action: { pluginId: 'acme.external', localId: 'inspect' },
         input: {},
+        approvalExecutionOrigin: createApiActionApprovalOrigin(),
         context: {
           surface: 'api',
           authority: 'account_automation',
@@ -1168,44 +1456,42 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         },
         signal: new AbortController().signal,
       });
-      const replay = createDaemonExternalActionContributedApprovalReplay({
+      const createReplay = () => createDaemonExternalActionContributedApprovalReplay({
         credentials: { token: 'daemon-token', encryption: null } as never,
+        isApprovalExecutionOriginCurrent: async () => true,
         acquireRuntimeRegistryLease: async () => lease,
         targetActionApprovals,
         now: () => 2,
       });
-
-      const firstController = new AbortController();
-      const first = replay({
+      const first = createReplay()({
         artifactId: 'approval-api-concurrent-1',
         decision: 'approve',
-        signal: firstController.signal,
       });
       await firstActionInvocation;
-      const second = replay({ artifactId: 'approval-api-concurrent-1', decision: 'approve' });
-      const cancelledReason = new DOMException('Stopped waiting', 'AbortError');
-      firstController.abort(cancelledReason);
-      await expect(first).rejects.toBe(cancelledReason);
-      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      const second = createReplay()({ artifactId: 'approval-api-concurrent-1', decision: 'approve' });
 
       expect(actionInvocations).toBe(1);
-
       releaseActionInvocation();
-      const secondResult = await second;
-      expect(secondResult).toMatchObject({
-        ok: true,
-        result: {
-          ok: true,
-          status: 'executed',
-          execution: { ok: true },
-        },
-      });
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        expect.objectContaining({ ok: true, result: { ok: true, status: 'executed', execution: expect.any(Object) } }),
+        { ok: false, errorCode: 'approval_execution_outcome_unknown', error: 'approval_execution_outcome_unknown' },
+      ]);
       expect(actionInvocations).toBe(1);
+      await vi.waitFor(() => expect(persisted).toMatchObject({ status: 'executed' }));
       expect(persisted).toMatchObject({
         status: 'executed',
         decision: { kind: 'approve' },
         execution: { ok: true },
       });
+      persisted = { ...persisted!, status: 'approved', updatedAtMs: 3, execution: undefined };
+      failTerminalWrite = true;
+      await expect(createReplay()({ artifactId: 'approval-api-concurrent-1', decision: 'approve' }))
+        .resolves.toEqual({ ok: false, errorCode: 'approval_execution_outcome_unknown', error: 'approval_execution_outcome_unknown' });
+      expect(actionInvocations).toBe(2);
+      expect(persisted).toMatchObject({ status: 'executing' });
+      await expect(createReplay()({ artifactId: 'approval-api-concurrent-1', decision: 'approve' }))
+        .resolves.toEqual({ ok: false, errorCode: 'approval_execution_outcome_unknown', error: 'approval_execution_outcome_unknown' });
+      expect(actionInvocations).toBe(2);
     } finally {
       releaseActionInvocation();
       if (previousSettings === undefined) delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
@@ -1269,6 +1555,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       await defer({
         action: { pluginId: 'acme.external', localId: 'inspect' },
         input: {},
+        approvalExecutionOrigin: createApiActionApprovalOrigin(),
         context: {
           surface: 'api',
           authority: 'account_automation',
@@ -1278,6 +1565,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       });
       const replay = createDaemonExternalActionContributedApprovalReplay({
         credentials: { token: 'daemon-token', encryption: null } as never,
+        isApprovalExecutionOriginCurrent: async () => true,
         acquireRuntimeRegistryLease: async () => lease,
         targetActionApprovals,
         now: () => 2,
@@ -1355,6 +1643,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       await defer({
         action: { pluginId: 'acme.external', localId: 'inspect' },
         input: {},
+        approvalExecutionOrigin: createApiActionApprovalOrigin(),
         context: {
           surface: 'api',
           authority: 'account_automation',
@@ -1368,6 +1657,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({ v: 1, actions: {} });
       const replay = createDaemonExternalActionContributedApprovalReplay({
         credentials: { token: 'daemon-token', encryption: null } as never,
+        isApprovalExecutionOriginCurrent: async () => true,
         acquireRuntimeRegistryLease: async () => lease,
         targetActionApprovals,
         now: () => 2,
@@ -1396,7 +1686,9 @@ describe('createDaemonExternalActionContributedInvoker', () => {
   });
 
   it('rejects a stamped API target-action artifact without acquiring its executor', async () => {
-    let persisted = TargetActionApprovalRequestV1Schema.parse({
+    // Simulates the pre-origin development artifact shape. Current writers
+    // cannot construct it, but replay must still fail closed before a lease.
+    let persisted = {
       v: 1,
       kind: 'plugin_target_action',
       status: 'open',
@@ -1414,7 +1706,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         machineId: 'machine-local',
       },
       summary: 'Inspect',
-    });
+    } as TargetActionApprovalRequestV1;
     const acquireRuntimeRegistryLease = vi.fn(async () => {
       throw new Error('rejection_must_not_acquire_a_runtime_lease');
     });

@@ -6,7 +6,7 @@ import type { StoredCredentials } from '@/persistence';
 import type { RawSessionRecord } from '@/session/transport/http/sessionsHttp';
 import { commitSessionStoredMessage } from '@/session/transport/http/sessionsHttp';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
-import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
+import { sealSessionStoredContent } from '@/session/transport/encryption/sessionEncryptionContext';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { persistUsageLimitRecoveryFieldDurably } from '@/session/usageLimitRecoveryControls/persistUsageLimitRecoveryFieldDurably';
 import {
@@ -145,15 +145,10 @@ export function createDaemonSessionMutationCustody(params: Readonly<{
           data,
         },
       };
-      const content: SessionStoredMessageContent = resolved.mode === 'plain'
-        ? { t: 'plain' as const, v: payload }
-        : {
-            t: 'encrypted' as const,
-            c: encryptSessionPayload({
-              ctx: resolved.ctx,
-              payload,
-            }),
-          };
+      const content: SessionStoredMessageContent = sealSessionStoredContent({
+        ...resolved,
+        payload,
+      });
       retainedSessionIds.delete(sessionId);
       const custody = resolveSessionCustody(sessionId, resolved.rawSession);
       if (usageLimitRecovery) {

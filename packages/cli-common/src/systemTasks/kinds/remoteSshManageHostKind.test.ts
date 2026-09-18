@@ -39,6 +39,48 @@ async function waitForResult(
 }
 
 describe('createRemoteSshManageHostTaskKind', () => {
+  it.each([
+    ['testConnection', 'testConnection'],
+    ['relayRuntime.status', 'runRelayRuntimeCommand'],
+    ['daemonService.restart', 'runDaemonServiceCommand'],
+  ] as const)('forwards one task AbortSignal through host trust and %s execution', async (action, expectedOwner) => {
+    const controller = new AbortController();
+    const observedSignals: Array<Readonly<{ owner: string; signal?: AbortSignal }>> = [];
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async ({ signal }) => {
+        observedSignals.push({ owner: 'resolveHostTrust', signal });
+        return { status: 'trusted' };
+      },
+      testConnection: async ({ signal }) => {
+        observedSignals.push({ owner: 'testConnection', signal });
+      },
+      installRemoteCli: async () => {},
+      runDaemonServiceCommand: async ({ signal }) => {
+        observedSignals.push({ owner: 'runDaemonServiceCommand', signal });
+      },
+      runRelayRuntimeCommand: async ({ signal }) => {
+        observedSignals.push({ owner: 'runRelayRuntimeCommand', signal });
+      },
+    });
+
+    await kind.run({
+      params: {
+        action,
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+      signal: controller.signal,
+      emit: () => {},
+      prompt: async () => {
+        throw new Error('unexpected prompt');
+      },
+    });
+
+    expect(observedSignals).toEqual([
+      { owner: 'resolveHostTrust', signal: controller.signal },
+      { owner: expectedOwner, signal: controller.signal },
+    ]);
+  });
+
   it('calls the injected relocation coordinator with the exact remote target and publication/readback prompts', async () => {
     const descriptor = {
       v: 1 as const,
@@ -56,9 +98,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
       const published = await input.publishDestination({
         operationId: input.operationId,
         homeServerIdentityId: 'srv_home1',
-        canonicalServerUrl: descriptor.canonicalServerUrl,
-        minimumOuterRevisionExclusive: 7,
-        endpoints: descriptor.endpoints,
+        connectionDescriptor: descriptor,
       });
       const current = await input.readPublishedDescriptor('srv_home1');
       return { operationId: input.operationId, status: 'committed', published, current } as SystemTaskJsonObject;
@@ -66,7 +106,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
     const kind = createRemoteSshManageHostTaskKind({
       resolveHostTrust: async () => ({ status: 'trusted' }),
       testConnection: async () => {},
-      installRemoteCli: async () => {},
+      installRemoteCli: vi.fn(async () => {}),
       runDaemonServiceCommand: async () => {},
       runRelayRuntimeCommand: async () => {},
       runPersonalHomeRelocation,
@@ -110,6 +150,40 @@ describe('createRemoteSshManageHostTaskKind', () => {
     }));
   });
 
+  it('forwards the task AbortSignal through relocation CLI installation and source coordination', async () => {
+    const controller = new AbortController();
+    const installRemoteCli = vi.fn(async () => {});
+    const runPersonalHomeRelocation = vi.fn(async (input: { progress(stepId: string): void }) => {
+      input.progress('preflight');
+      return { status: 'committed' } as SystemTaskJsonObject;
+    });
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      testConnection: async () => {},
+      installRemoteCli,
+      runDaemonServiceCommand: async () => {},
+      runRelayRuntimeCommand: async () => {},
+      runPersonalHomeRelocation,
+    });
+
+    const events: Array<{ stepId?: string }> = [];
+    await kind.run({
+      params: {
+        action: 'personalHome.relocate',
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        personalHomeRelocation: { operationId: 'operation-1', destinationMachineId: 'machine-2', sourceDescriptorRevision: 7 },
+        ssh: { target: 'relocation@example.test', auth: 'agent' },
+      },
+      signal: controller.signal,
+      emit: (event) => events.push(event),
+      prompt: async () => ({ descriptor: null }),
+    });
+
+    expect(installRemoteCli).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+    expect(runPersonalHomeRelocation).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+    expect(events).toContainEqual(expect.objectContaining({ stepId: 'personal_home.preflight' }));
+  });
+
   it('fails closed before relocation when its operation and exact runtime target are absent', async () => {
     const runPersonalHomeRelocation = vi.fn(async () => ({}));
     const kind = createRemoteSshManageHostTaskKind({
@@ -125,6 +199,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
   });
 
   it('creates a Personal Home through the installed remote CLI and returns only strict descriptor facts', async () => {
+    const controller = new AbortController();
     const descriptor = {
       v: 1 as const,
       homeServerIdentityId: 'srv_remote_home',
@@ -170,6 +245,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
         enrollInvokingClient: true,
         ssh: { target: 'dev@example.test', auth: 'agent' },
       },
+      signal: controller.signal,
       emit: () => undefined,
       prompt: async () => ({}),
     });
@@ -178,6 +254,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
       channel: 'preview',
       mode: 'system',
       args: ['home', 'create', '--yes', '--json', '--link-account', 'never', '--channel', 'preview', '--mode', 'system'],
+      signal: controller.signal,
     }));
     expect(runPersonalHomePairDevice).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'preview',
@@ -322,6 +399,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
   });
 
   it('confirms exact remote erase facts at the invoking client and revalidates them through ephemeral stdin', async () => {
+    const controller = new AbortController();
     const inspection = {
       purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
       running: true,
@@ -340,6 +418,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
     const prompt = vi.fn(async () => ({ confirmed: true }));
     await expect(kind.run({
       params: { action: 'personalHome.erase', relayRuntime: { channel: 'stable', mode: 'user' }, ssh: { target: 'dev@example.test', auth: 'agent' } },
+      signal: controller.signal,
       emit: () => undefined,
       prompt,
     })).resolves.toEqual({
@@ -355,7 +434,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
         estimatedBytes: 4096,
       }),
     }));
-    const eraseCall = runPersonalHomeCommand.mock.calls[1]?.[0] as { args: readonly string[]; input?: string };
+    const eraseCall = runPersonalHomeCommand.mock.calls[1]?.[0] as { args: readonly string[]; input?: string; signal?: AbortSignal; timeoutMs?: number | null };
     expect(eraseCall.args).toEqual(['home', 'erase', '--json', '--approval-stdin', '--channel', 'stable', '--mode', 'user']);
     expect(eraseCall.args.join(' ')).not.toMatch(/confirmation-token|--yes|home-1|4096/u);
     expect(parseRemotePersonalHomeApprovalInput(eraseCall.input ?? '')).toEqual({
@@ -367,6 +446,8 @@ describe('createRemoteSshManageHostTaskKind', () => {
       estimatedBytes: 4096,
       confirmed: true,
     });
+    expect(eraseCall).not.toHaveProperty('signal');
+    expect(eraseCall.timeoutMs).toBeNull();
   });
 
   it('returns remote status only after persisted Personal Home purpose and canonical identity are present', async () => {
@@ -416,6 +497,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
   });
 
   it('stages, verifies, confirms, restores, and cleans an archive without approval or identity in argv', async () => {
+    const controller = new AbortController();
     const inspection = {
       purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' }, running: false,
       identity: { homeServerIdentityId: 'home-1' }, layout: { dataDir: '/srv/home' },
@@ -424,7 +506,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
     };
     const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
       if (args[1] === 'status') return inspection as SystemTaskJsonObject;
-      if (args.includes('--prepare-upload')) return { operationId: 'remote-restore-1', uploadLocator: '/tmp/reserved/bundle.tar', uploadReceipt: 'unused' };
+      if (args.includes('--prepare-upload')) return { operationId: 'remote-restore-1', uploadLocator: '/tmp/reserved/bundle.tar' };
       if (args[1] === 'verify-backup') return { identityMatchesCurrentHome: 'match', archiveBytes: 100, manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' } };
       if (args[1] === 'restore') return { outcome: 'restored' };
       return { status: 'aborted' };
@@ -441,17 +523,46 @@ describe('createRemoteSshManageHostTaskKind', () => {
       params: {
         action: 'personalHome.restore', relayRuntime: { channel: 'stable', mode: 'user' },
         personalHomeOperation: { archivePath: '/work/home.tar' }, ssh: { target: 'dev@example.test', auth: 'agent' },
-      }, emit: () => undefined, prompt,
+      }, signal: controller.signal, emit: () => undefined, prompt,
     })).resolves.toMatchObject({ personalHome: { outcome: 'restored' } });
     expect(transferPersonalHomeArchive).toHaveBeenCalledWith(expect.objectContaining({
       direction: 'upload', localPath: '/work/home.tar', remotePath: '/tmp/reserved/bundle.tar',
     }));
-    const restoreCall = runPersonalHomeCommand.mock.calls.find(([call]) => (call as { args: string[] }).args[1] === 'restore')?.[0] as { args: string[]; input?: string };
+    const restoreCall = runPersonalHomeCommand.mock.calls.find(([call]) => (call as { args: string[] }).args[1] === 'restore')?.[0] as { args: string[]; input?: string; signal?: AbortSignal; timeoutMs?: number | null };
     expect(restoreCall.args).toContain('--approval-stdin');
     expect(restoreCall.args.join(' ')).not.toMatch(/--yes|home-1|confirmation-token/u);
+    expect(restoreCall).not.toHaveProperty('signal');
+    expect(restoreCall.timeoutMs).toBeNull();
     expect(runPersonalHomeCommand.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       args: expect.arrayContaining(['relocation-destination', 'abort']),
     }));
+  });
+
+  it('rejects secret-bearing or extra upload reservation fields before transferring bytes', async () => {
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      if (args.includes('--prepare-upload')) {
+        return {
+          operationId: 'remote-strict-reservation-1',
+          uploadLocator: '/tmp/reserved/bundle.tar',
+          uploadReceipt: 'must-remain-destination-local',
+        };
+      }
+      throw new Error(`Unexpected command: ${args.join(' ')}`);
+    });
+    const transferPersonalHomeArchive = vi.fn(async () => undefined);
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand,
+      transferPersonalHomeArchive, createOperationId: () => 'remote-strict-reservation-1',
+    });
+
+    await expect(kind.run({
+      params: {
+        action: 'personalHome.verifyBackup', relayRuntime: { channel: 'stable', mode: 'user' },
+        personalHomeOperation: { archivePath: '/work/home.tar' }, ssh: { target: 'dev@example.test', auth: 'agent' },
+      }, emit: () => undefined, prompt: async () => ({}),
+    })).rejects.toMatchObject({ code: 'invalid_cli_response' });
+    expect(transferPersonalHomeArchive).not.toHaveBeenCalled();
   });
 
   it('cleans the exact upload reservation when remote archive verification fails', async () => {
@@ -527,6 +638,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
   });
 
   it('binds restore recovery to freshly inspected identity and affected targets through stdin only', async () => {
+    const controller = new AbortController();
     const inspection = {
       purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' }, running: false,
       identity: { homeServerIdentityId: 'home-1' }, layout: { dataDir: '/srv/home' },
@@ -546,7 +658,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
       params: {
         action: 'personalHome.recoverRestore', relayRuntime: { channel: 'stable', mode: 'user' },
         ssh: { target: 'dev@example.test', auth: 'agent' },
-      }, emit: () => undefined, prompt,
+      }, signal: controller.signal, emit: () => undefined, prompt,
     })).resolves.toMatchObject({ personalHome: { outcome: 'rolled_back' } });
     expect(prompt).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'personal_home.confirm_remote_recover_restore.v1',
@@ -555,13 +667,63 @@ describe('createRemoteSshManageHostTaskKind', () => {
         paths: ['/srv/home', '/srv/home.rollback'], estimatedBytes: 2048,
       }),
     }));
-    const recoveryCall = runPersonalHomeCommand.mock.calls.at(-1)?.[0] as { args: readonly string[]; input?: string };
+    const recoveryCall = runPersonalHomeCommand.mock.calls.at(-1)?.[0] as { args: readonly string[]; input?: string; signal?: AbortSignal; timeoutMs?: number | null };
     expect(recoveryCall.args).toEqual(['home', 'recover-restore', '--approval-stdin', '--json', '--channel', 'stable', '--mode', 'user']);
     expect(recoveryCall.args.join(' ')).not.toMatch(/home-1|2048|confirmation-token/u);
     expect(parseRemotePersonalHomeApprovalInput(recoveryCall.input ?? '')).toMatchObject({
       operation: 'recover-restore', homeServerIdentityId: 'home-1',
       paths: ['/srv/home', '/srv/home.rollback'], estimatedBytes: 2048,
     });
+    expect(recoveryCall).not.toHaveProperty('signal');
+    expect(recoveryCall.timeoutMs).toBeNull();
+  });
+
+  it.each([
+    'personalHome.restore',
+    'personalHome.recoverRestore',
+    'personalHome.erase',
+  ] as const)('refuses to cross the %s irreversible boundary when cancellation arrives after approval', async (action) => {
+    const controller = new AbortController();
+    const inspection = {
+      purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' }, running: false,
+      identity: { homeServerIdentityId: 'home-1' }, layout: { dataDir: '/srv/home' },
+      storage: { ownedErasePaths: ['/srv/home'], estimatedOwnedBytes: 2048, destinationEmpty: false },
+      restoreRecovery: { status: 'rollback_available', affectedTargets: ['/srv/home', '/srv/home.rollback'] },
+    };
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      if (args[1] === 'status') return inspection as SystemTaskJsonObject;
+      if (args.includes('--prepare-upload')) return { operationId: 'remote-cancel-after-approval', uploadLocator: '/tmp/reserved/bundle.tar' };
+      if (args[1] === 'verify-backup') return { identityMatchesCurrentHome: 'match', archiveBytes: 100, manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' } };
+      if (args.includes('abort')) return { status: 'aborted' };
+      return { outcome: 'mutation-must-not-start' };
+    });
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand,
+      transferPersonalHomeArchive: async () => undefined, createOperationId: () => 'remote-cancel-after-approval',
+    });
+
+    await expect(kind.run({
+      params: {
+        action,
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        ...(action === 'personalHome.restore' ? { personalHomeOperation: { archivePath: '/work/home.tar' } } : {}),
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+      signal: controller.signal,
+      emit: () => undefined,
+      prompt: async () => {
+        controller.abort();
+        return { confirmed: true };
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(runPersonalHomeCommand.mock.calls.some(([call]) => {
+      const command = (call as { args: readonly string[] }).args[1];
+      return command === 'restore' || command === 'recover-restore' || command === 'erase';
+    })).toBe(false);
+    expect(runPersonalHomeCommand.mock.calls.find(([call]) => (call as { args: readonly string[] }).args[1] === 'status')?.[0])
+      .toEqual(expect.objectContaining({ signal: controller.signal }));
   });
   it('fails closed when SSH host trust is declined', async () => {
     const trustAccept = vi.fn(async () => {});

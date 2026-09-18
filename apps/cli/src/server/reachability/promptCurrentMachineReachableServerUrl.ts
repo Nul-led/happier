@@ -25,7 +25,7 @@ export async function promptForCurrentMachineReachableServerUrl(
     remoteDescription?: string;
     /**
      * Overrides the line that introduces `localServerUrl`. The default says the
-     * relay is only reachable from this computer, which is true when a caller
+     * Home is only reachable from this computer, which is true when a caller
      * has just discovered a loopback URL but not when it is asking about a URL
      * that is already reachable elsewhere.
      */
@@ -42,7 +42,7 @@ export async function promptForCurrentMachineReachableServerUrl(
   const input = deps.promptInput ?? promptInput;
   const remoteDescription = String(params.remoteDescription ?? 'the remote machine').trim() || 'the remote machine';
   const intro = String(params.localServerUrlIntro ?? '').trim()
-    || 'The selected relay is only reachable from this computer:';
+    || 'The selected Home is only reachable from this computer:';
   const candidates = params.candidates
     ?? await collectCurrentMachineReachableServerUrlCandidates(params, deps);
 
@@ -51,7 +51,7 @@ export async function promptForCurrentMachineReachableServerUrl(
       intro,
       `  ${params.localServerUrl}`,
       '',
-      `Enter an address ${remoteDescription} can use to reach this computer's relay: `,
+      `Enter an address ${remoteDescription} can use to reach this computer's Home: `,
     ].join('\n'))).trim();
   }
 
@@ -59,7 +59,7 @@ export async function promptForCurrentMachineReachableServerUrl(
     intro,
     `  ${params.localServerUrl}`,
     '',
-    `Choose the address ${remoteDescription} should use to reach this computer's relay:`,
+    `Choose the address ${remoteDescription} should use to reach this computer's Home:`,
     '',
     ...candidates.map((candidate, index) => `  ${index + 1}) ${candidate.label}  ${candidate.url}`),
     `  ${candidates.length + 1}) Custom`,
@@ -73,14 +73,14 @@ export async function promptForCurrentMachineReachableServerUrl(
     if (index !== null) {
       if (index >= 0 && index < candidates.length) return candidates[index].url;
       if (index === candidates.length) {
-        return (await input(`Enter an address ${remoteDescription} can use to reach this computer's relay: `)).trim();
+        return (await input(`Enter an address ${remoteDescription} can use to reach this computer's Home: `)).trim();
       }
     }
     if (answer.toLowerCase() === 'c' || answer.toLowerCase() === 'custom') {
-      return (await input(`Enter an address ${remoteDescription} can use to reach this computer's relay: `)).trim();
+      return (await input(`Enter an address ${remoteDescription} can use to reach this computer's Home: `)).trim();
     }
     if (looksLikeUrl(answer)) return answer;
   }
 
-  return (await input(`Enter an address ${remoteDescription} can use to reach this computer's relay: `)).trim();
+  return (await input(`Enter an address ${remoteDescription} can use to reach this computer's Home: `)).trim();
 }

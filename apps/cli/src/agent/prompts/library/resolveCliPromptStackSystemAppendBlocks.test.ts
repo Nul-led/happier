@@ -5,12 +5,12 @@ import {
   sealEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
 
-import { encodeBase64, encryptWithDataKey } from '@/api/encryption';
-import type { StoredCredentials } from '@/persistence';
 import {
   ARTIFACT_ENCRYPTION_MATERIAL_UNAVAILABLE,
   ArtifactEncryptionMaterialUnavailableError,
-} from '@/session/actions/approvals/artifactStore';
+} from '@/api/artifacts/accountArtifactStore';
+import { encodeBase64, encryptWithDataKey } from '@/api/encryption';
+import type { StoredCredentials } from '@/persistence';
 
 import {
   resolveCliPromptStackSystemAppendBlocks,

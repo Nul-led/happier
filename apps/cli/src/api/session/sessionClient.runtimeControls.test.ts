@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -98,7 +99,7 @@ describe('ApiSessionClient runtime controls', () => {
   it('publishes the V1 pending wake through the session client', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true });
     userSocketStub = createApiSessionSocketStub({ connected: true });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     installSessionControlHandlersFromLatestClient();
     const wakePendingMaterialization = vi.spyOn(client, 'wakePendingMaterialization');
 
@@ -113,7 +114,7 @@ describe('ApiSessionClient runtime controls', () => {
   it('force-reconciles pending state before publishing an explicit materialization wake', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true });
     userSocketStub = createApiSessionSocketStub({ connected: true });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const calls: string[] = [];
     vi.spyOn(client, 'reconcilePendingQueueState').mockImplementation(async (options) => {
       expect(options).toEqual({ force: true });
@@ -130,7 +131,7 @@ describe('ApiSessionClient runtime controls', () => {
   it('routes connected-service auth invalidation RPCs through installed runtime controls', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true });
     userSocketStub = createApiSessionSocketStub({ connected: true });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     installSessionControlHandlersFromLatestClient();
     const invalidateConnectedServiceAuthTransports = vi.fn(async () => undefined);
 
@@ -149,7 +150,7 @@ describe('ApiSessionClient runtime controls', () => {
   it('publishes the goal controls currently installed on the session RPC registry', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true });
     userSocketStub = createApiSessionSocketStub({ connected: true });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     let state = client.getAgentStateSnapshot() ?? {};
     vi.spyOn(client, 'updateAgentState').mockImplementation(async (updater) => {
       state = updater(state);

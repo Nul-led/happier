@@ -68,12 +68,45 @@ const PUBLIC_HANDOFF_PROTOCOL_SOURCES = [
     '../../../../../../packages/protocol/src/index.ts',
 ] as const;
 
+const LOCAL_HANDOFF_METADATA_PRODUCTION_SOURCES = [
+    '../../../daemon/sessions/createDaemonSessionHandoffMetadataBridge.ts',
+    '../../../daemon/sessions/createLoadLocalSessionMetadataForHandoff.ts',
+    '../../../daemon/sessions/buildHandoffSessionMetadataFromTrackedSession.ts',
+    '../../../daemon/spawn/resolveSpawnBackendIdentity.ts',
+    '../../../daemon/startup/prepareExecuteSpawnSessionRequest.ts',
+    '../../../daemon/startup/executeSpawnSessionRequest.ts',
+    '../../../daemon/startup/startDaemonSessionControlRuntime.ts',
+    '../../../daemon/machine/bootstrapMachineSyncRuntime.ts',
+    '../../../daemon/startup/createDaemonMachineBootstrapRuntime.ts',
+    '../../../daemon/startDaemon.ts',
+    '../../../session/handoff/metadata/localSessionHandoffMetadataStore.ts',
+    '../rpcHandlers.ts',
+    '../../apiMachine.ts',
+    './handlers.ts',
+] as const;
+
+const RETIRED_LOCAL_HANDOFF_METADATA_TOKENS = [
+    'savePreparedTargetLocalMetadata',
+    'loadLocalHandoffMetadataByVendorResumeId',
+    'localExportMetadataOverlay',
+    'sessionHandoffMetadataV1',
+] as const;
+
 describe('sessionHandoff architecture', () => {
     it('keeps the retired workspace transfer corridor out of the public handoff protocol surface', async () => {
         for (const relativeSource of PUBLIC_HANDOFF_PROTOCOL_SOURCES) {
             const source = await readFile(new URL(relativeSource, import.meta.url), 'utf8');
             for (const token of RETIRED_WORKSPACE_TRANSFER_CORRIDOR_TOKENS) {
                 expect(source.includes(token), `${relativeSource} must not declare retired token ${token}`).toBe(false);
+            }
+        }
+    });
+
+    it('keeps the retired vendor-resume handoff overlay out of the daemon runtime', async () => {
+        for (const relativeSource of LOCAL_HANDOFF_METADATA_PRODUCTION_SOURCES) {
+            const source = await readFile(new URL(relativeSource, import.meta.url), 'utf8');
+            for (const token of RETIRED_LOCAL_HANDOFF_METADATA_TOKENS) {
+                expect(source.includes(token), `${relativeSource} must not contain retired token ${token}`).toBe(false);
             }
         }
     });

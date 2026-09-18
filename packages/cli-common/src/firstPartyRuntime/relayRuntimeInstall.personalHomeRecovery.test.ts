@@ -116,9 +116,9 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 
-  it('quarantines a durable interrupted update instead of restoring the old writable candidate', async () => {
+  it('recovers the prior runtime from the reachable legacy candidate-less durable record', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-update-resume-'));
     try {
       const payloadRoot = join(homeDir, 'payload');
@@ -170,6 +170,9 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         },
       });
       const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
+      const restore = vi.fn(async () => ({ outcome: 'restored' } as never));
+      const finalize = vi.fn(async () => ({ outcome: 'finalized' } as never));
+      const dispose = vi.fn(async () => undefined);
       await expect(installOrUpdateRelayRuntimeLocal({
         serverBinaryPath,
         channel: 'preview',
@@ -183,12 +186,24 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         runServiceCommands: true,
         skipHealthCheck: true,
         readPersonalHomeWasRunning: async () => false,
-      } as never)).rejects.toThrow('quarantined for forward recovery');
+        openPersonalHomeRestorePoint: async () => ({
+          backup: { path: join(layout.backupsDir, 'restore-points', restorePointFileName), manifest: {} },
+          restore,
+          recover: async () => ({ outcome: 'rolled_back', restartedHome: false }),
+          finalize,
+          dispose,
+        } as never),
+      } as never)).resolves.toEqual({ baseUrl: 'http://127.0.0.1:43123', version: '0.2.0-original' });
       const { readPersonalHomeUpdateRecoveryRecord } = await import('./personalHome/updateRecovery.js');
-      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toMatchObject({ phase: 'prepared' });
-      await expect(stat(runtimeBackupRoot)).resolves.toMatchObject({});
-      await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('interrupted-candidate');
-      expect(serviceEvents).toContain('service:quarantine');
+      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toBeNull();
+      await expect(stat(runtimeBackupRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('original-runtime');
+      expect(restore).toHaveBeenCalledOnce();
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      // The existing service was already stopped before candidate preparation;
+      // recovery owns the exact durable candidate even though activation never began.
+      expect(serviceEvents).toContain('service:install');
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
@@ -256,7 +271,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     }
   });
 
-  it('converges forward after a crash when the exact authenticated candidate receipt exists', async () => {
+  it('ignores a receipt without an immutable candidate and attempts prior-runtime recovery', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-update-committed-'));
     try {
       const payloadRoot = join(homeDir, 'payload');
@@ -330,7 +345,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         readPersonalHomeWasRunning: async () => true,
         openPersonalHomeRestorePoint: async () => {
           restoreOpened = true;
-          throw new Error('forward recovery must not reopen the old restore point');
+          throw new Error('injected prior-runtime restore failure');
         },
         createPersonalHomeRestorePoint: async () => {
           await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('verified-candidate');
@@ -338,12 +353,15 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         },
         runServiceCommands: true,
         skipHealthCheck: true,
-      } as never)).rejects.toThrow('retry reached new restore-point creation');
+      } as never)).rejects.toMatchObject({
+        code: 'personal_home_update_retry_required',
+        recoveryAction: 'retry_prior_runtime',
+      });
 
-      expect(restoreOpened).toBe(false);
-      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toBeNull();
-      await expect(stat(runtimeBackupRoot)).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(stat(restorePointPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(restoreOpened).toBe(true);
+      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toMatchObject({ phase: 'prepared' });
+      await expect(stat(runtimeBackupRoot)).resolves.toBeDefined();
+      await expect(stat(restorePointPath)).resolves.toBeDefined();
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
@@ -511,6 +529,128 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
       await rm(homeDir, { recursive: true, force: true });
     }
   });
+
+  it('durably selects the exact candidate before payload or configuration mutation can fail', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-candidate-boundary-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho selected-candidate\n', 'utf8');
+      const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
+      const { resolvePersonalHomeRuntimeLayout } = await import('./personalHome/layout.js');
+      const { readPersonalHomeUpdateRecoveryRecord } = await import('./personalHome/updateRecovery.js');
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const layout = resolvePersonalHomeRuntimeLayout({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const installedBinaryPath = join(defaults.installRoot, 'bin', 'happier-server');
+      await mkdir(dirname(installedBinaryPath), { recursive: true });
+      await writeFile(installedBinaryPath, '#!/bin/sh\necho prior-runtime\n', 'utf8');
+      await writeFile(join(defaults.installRoot, 'self-host-state.json'), `${JSON.stringify({ version: '0.2.0-prior' })}\n`, 'utf8');
+      const restorePointPath = join(layout.backupsDir, 'restore-points', 'pre-upgrade-boundary.tar');
+      await mkdir(dirname(restorePointPath), { recursive: true });
+      await writeFile(restorePointPath, 'verified-backup', 'utf8');
+
+      const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        version: '0.3.0-selected',
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        resolvePersonalHomeUpdateLayout: async () => layout,
+        readPersonalHomeWasRunning: async () => false,
+        assertPersonalHomeStopped: async () => undefined,
+        openPersonalHomeRestorePoint: async () => { throw new Error('not reached'); },
+        createPersonalHomeRestorePoint: async () => {
+          // Force the later canonical server.env write to fail after the payload mutation.
+          await mkdir(join(defaults.configDir, 'server.env'), { recursive: true });
+          return {
+            backup: { path: restorePointPath, manifest: { homeServerIdentityId: 'home-expected', schemaVersion: 'schema-v1' } },
+            restore: async () => ({ outcome: 'restored' }),
+            finalize: async () => ({ outcome: 'finalized' }),
+            dispose: async () => undefined,
+          } as never;
+        },
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: true,
+        skipHealthCheck: true,
+      })).rejects.toBeInstanceOf(Error);
+
+      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toMatchObject({
+        phase: 'prepared',
+        expectedStartupNonce: expect.any(String),
+        candidate: {
+          envText: expect.stringContaining('PORT=43123'),
+          state: { version: '0.3.0-selected' },
+        },
+      });
+      await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('selected-candidate');
+      expect(serviceEvents).toContain('service:quarantine');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('keeps the prior runtime untouched when interrupted before the durable candidate boundary', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-pre-candidate-boundary-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho selected-candidate\n', 'utf8');
+      const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
+      const { resolvePersonalHomeRuntimeLayout } = await import('./personalHome/layout.js');
+      const { readPersonalHomeUpdateRecoveryRecord } = await import('./personalHome/updateRecovery.js');
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const layout = resolvePersonalHomeRuntimeLayout({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const installedBinaryPath = join(defaults.installRoot, 'bin', 'happier-server');
+      const statePath = join(defaults.installRoot, 'self-host-state.json');
+      const envPath = join(defaults.configDir, 'server.env');
+      const priorState = { version: '0.2.0-prior', purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } };
+      const priorEnv = 'PORT=43123\nAUTH_ANONYMOUS_SIGNUP_ENABLED=0\n';
+      await mkdir(dirname(installedBinaryPath), { recursive: true });
+      await mkdir(defaults.configDir, { recursive: true });
+      await writeFile(installedBinaryPath, '#!/bin/sh\necho prior-runtime\n', 'utf8');
+      await writeFile(statePath, `${JSON.stringify(priorState)}\n`, 'utf8');
+      await writeFile(envPath, priorEnv, 'utf8');
+
+      const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        version: '0.3.0-selected',
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        resolvePersonalHomeUpdateLayout: async () => layout,
+        readPersonalHomeWasRunning: async () => false,
+        assertPersonalHomeStopped: async () => undefined,
+        openPersonalHomeRestorePoint: async () => { throw new Error('not reached'); },
+        createPersonalHomeRestorePoint: async () => {
+          // This callback is the last fallible preparation boundary before the exact candidate
+          // record can be committed. A hard interruption here must still leave the incumbent
+          // payload, configuration, and state bytes untouched.
+          expect(await readFile(installedBinaryPath, 'utf8')).toContain('prior-runtime');
+          expect(await readFile(envPath, 'utf8')).toBe(priorEnv);
+          expect(await readFile(statePath, 'utf8')).toBe(`${JSON.stringify(priorState)}\n`);
+          throw new Error('simulated hard interruption before durable candidate selection');
+        },
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      })).rejects.toThrow('simulated hard interruption before durable candidate selection');
+
+      await expect(readPersonalHomeUpdateRecoveryRecord(layout)).resolves.toBeNull();
+      await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('prior-runtime');
+      await expect(readFile(envPath, 'utf8')).resolves.toBe(priorEnv);
+      await expect(readFile(statePath, 'utf8')).resolves.toBe(`${JSON.stringify(priorState)}\n`);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('rolls back runtime and Home data when the activated Personal Home identity mismatches the restore point', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-recovery-identity-mismatch-'));

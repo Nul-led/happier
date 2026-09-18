@@ -4,6 +4,7 @@ import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -49,13 +50,11 @@ describe('happier session run wait (integration)', () => {
       if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
+        res.end(JSON.stringify(createAccountEncryptionCurrentnessFixture({
           mode: 'e2ee',
           version: 1,
-          signingKeyFingerprint: null,
-          contentKeyFingerprint: null,
           updatedAt: 1,
-        }));
+        })));
         return;
       }
       if (req.method === 'GET' && url.pathname === `/v2/sessions/${sessionId}`) {
@@ -98,7 +97,6 @@ describe('happier session run wait (integration)', () => {
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();
 
-    process.env.HAPPIER_SESSION_RUN_WAIT_POLL_INTERVAL_MS = '10';
 
     const { decodeBase64, decrypt, encodeBase64: encodeBase64Rpc, encrypt } = await import('@/api/encryption');
     let getCount = 0;
@@ -146,7 +144,6 @@ describe('happier session run wait (integration)', () => {
     envScope.restore();
     envScope = createEnvKeyScope(envKeys);
 
-    delete process.env.HAPPIER_SESSION_RUN_WAIT_POLL_INTERVAL_MS;
 
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();

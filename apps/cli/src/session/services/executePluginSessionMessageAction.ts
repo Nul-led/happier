@@ -10,6 +10,7 @@ import {
   type PluginMachineMaterializationRefV1,
   type SessionInputAdmissionResultV1,
 } from '@happier-dev/protocol';
+import { PluginUiImmutableGenerationIdV1Schema } from '@happier-dev/protocol/plugins/ui';
 
 type SessionMessageActionExecutor = (
   actionId: 'session.message.send',
@@ -22,6 +23,8 @@ export async function executePluginSessionMessageAction(params: Readonly<{
   execute: SessionMessageActionExecutor;
   pluginId: string;
   contributionLocalId: string;
+  /** Host-resolved immutable generation; never accepted from plugin input. */
+  immutableGenerationId: string;
   /**
    * The runtime-owned registry callback is read at dispatch time. A plugin
    * session handle must never recreate this authority from its plugin id.
@@ -36,7 +39,10 @@ export async function executePluginSessionMessageAction(params: Readonly<{
   if (!request.success) return { status: 'rejected', code: 'session_input_invalid' };
   const pluginId = PluginIdSchema.safeParse(params.pluginId);
   const contributionLocalId = PluginContributionLocalIdSchema.safeParse(params.contributionLocalId);
-  if (!pluginId.success || !contributionLocalId.success) {
+  const immutableGenerationId = PluginUiImmutableGenerationIdV1Schema.safeParse(
+    params.immutableGenerationId,
+  );
+  if (!pluginId.success || !contributionLocalId.success || !immutableGenerationId.success) {
     return { status: 'rejected', code: 'session_input_untrusted_assertion' };
   }
   let rawMaterialization: PluginMachineMaterializationRefV1 | null | undefined;
@@ -53,6 +59,7 @@ export async function executePluginSessionMessageAction(params: Readonly<{
     kind: 'plugin' as const,
     pluginId: pluginId.data,
     contributionLocalId: contributionLocalId.data,
+    immutableGenerationId: immutableGenerationId.data,
     materialization: materialization.data,
   };
   const localId = derivePluginSessionInputLocalIdV1({
@@ -75,6 +82,7 @@ export async function executePluginSessionMessageAction(params: Readonly<{
             sessionId: params.sessionId,
             message: request.data.text,
             idempotencyKey: request.data.idempotencyKey,
+            ...(request.data.recipient ? { recipient: request.data.recipient } : {}),
             ...(request.data.source ? { source: request.data.source } : {}),
             ...(request.data.attachments ? { attachments: request.data.attachments } : {}),
           },

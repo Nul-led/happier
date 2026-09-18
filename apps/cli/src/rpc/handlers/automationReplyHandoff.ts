@@ -17,6 +17,7 @@ import {
     type AutomationReplyHandoffSettlementV1,
     type AutomationRunResultCorrespondenceV1,
 } from '@happier-dev/protocol';
+import { openWorkflowFinalResultStoredEnvelopeV1 } from '@happier-dev/protocol/workflows';
 
 import type { RpcHandlerRegistrar } from '@/api/rpc/types';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
@@ -240,11 +241,36 @@ export function registerAutomationReplyHandoffRpcHandler(
             });
         }
 
-        const resultContent = openAutomationRunResultStoredEnvelopeV1({
-            mode: encryptionAtOpen.witness.mode,
-            ...(encryptionAtOpen.material ? { material: encryptionAtOpen.material.material } : {}),
-            envelope: request.handoff.resultEnvelope,
-        });
+        const recipeKind = request.handoff.recipeKind ?? 'legacy';
+        // Each recipe opens a different envelope and proves its correspondence
+        // differently: the workflow-v2 binding seals the Account and Run into the
+        // envelope, while a legacy envelope carries the correspondence as opened
+        // content that still has to match the claim. Both settle into the one
+        // result the delivery input consumes, so the recipe is decided once here
+        // instead of being re-narrowed at every later read.
+        const resultContent = recipeKind === 'workflow-v2'
+            ? (() => {
+                const opened = openWorkflowFinalResultStoredEnvelopeV1({
+                    mode: encryptionAtOpen.witness.mode,
+                    ...(encryptionAtOpen.material ? { material: encryptionAtOpen.material.material } : {}),
+                    binding: { v: 1, purpose: 'final_result', accountId, runId: request.handoff.runId },
+                    envelope: request.handoff.resultEnvelope,
+                });
+                return opened.kind === 'available' && opened.content.result.kind === 'text'
+                    ? { kind: 'available' as const, result: { v: 1 as const, kind: 'text' as const, text: opened.content.result.value } }
+                    : { kind: 'unavailable' as const };
+            })()
+            : (() => {
+                const opened = openAutomationRunResultStoredEnvelopeV1({
+                    mode: encryptionAtOpen.witness.mode,
+                    ...(encryptionAtOpen.material ? { material: encryptionAtOpen.material.material } : {}),
+                    envelope: request.handoff.resultEnvelope,
+                });
+                return opened.kind === 'available'
+                    && sameCorrespondence(opened.correspondence, expectedCorrespondence)
+                    ? { kind: 'available' as const, result: opened.result }
+                    : { kind: 'unavailable' as const };
+            })();
         const contextContent = openAutomationConversationReplyContextStoredEnvelopeV1({
             mode: encryptionAtOpen.witness.mode,
             ...(encryptionAtOpen.material ? { material: encryptionAtOpen.material.material } : {}),
@@ -253,7 +279,6 @@ export function registerAutomationReplyHandoffRpcHandler(
         if (
             resultContent.kind !== 'available'
             || contextContent.kind !== 'available'
-            || !sameCorrespondence(resultContent.correspondence, expectedCorrespondence)
             || !sameReplyContextCorrespondence(
                 contextContent.correspondence,
                 expectedReplyContextCorrespondence,

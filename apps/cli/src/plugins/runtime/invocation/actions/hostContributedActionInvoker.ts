@@ -26,6 +26,7 @@ export function createHostContributedActionInvoker(params: Readonly<{
         if (
             caller?.kind !== 'plugin'
             || !caller.contributionLocalId
+            || !caller.immutableGenerationId
             || !caller.materialization
         ) {
             return {
@@ -35,6 +36,7 @@ export function createHostContributedActionInvoker(params: Readonly<{
             };
         }
         const callerMaterialization = caller.materialization;
+        const callerImmutableGenerationId = caller.immutableGenerationId;
         const parsedInput = input === undefined
             ? undefined
             : StrictJsonValueSchema.safeParse(input);
@@ -50,10 +52,9 @@ export function createHostContributedActionInvoker(params: Readonly<{
                 if (!await params.revalidatePluginActionCallerMaterialization(
                     callerMaterialization,
                 )) return false;
-                return !caller.immutableGenerationId
-                    || await params.revalidatePluginActionCallerImmutableGeneration({
+                return await params.revalidatePluginActionCallerImmutableGeneration({
                         pluginId: caller.pluginId,
-                        immutableGenerationId: caller.immutableGenerationId,
+                        immutableGenerationId: callerImmutableGenerationId,
                     });
             } catch {
                 return false;
@@ -83,6 +84,7 @@ export function createHostContributedActionInvoker(params: Readonly<{
                         }),
                     ),
                 },
+                immutableGenerationId: callerImmutableGenerationId,
                 materialization: callerMaterialization,
             },
             signal: signal ?? context.signal ?? new AbortController().signal,

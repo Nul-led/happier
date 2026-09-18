@@ -1,15 +1,24 @@
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import { MACHINE_HTTP_LOCAL_CAPABILITY_HEADER } from '@happier-dev/iroh-native/node';
 import type {
+  ActionExecutorDeps,
+  HandoffTargetReplacementApprovalV1,
   WorkspaceContentPolicyV1,
+  WorkspaceSyncRuntimeReadinessV1,
   WorkspaceSyncStatusV1,
   WorkspaceSyncRelationshipV1,
   WorkspaceSyncTargetBootstrapPrepareV1,
   WorkspaceSyncLegacyStateInspectionV1,
+  WorkspaceSyncConflictResolveActionInputV1,
 } from '@happier-dev/protocol';
-import { WorkspaceSyncStatusV1Schema } from '@happier-dev/protocol';
+import {
+  ApprovalRequestV2Schema,
+  WorkspaceSyncConflictResolveActionInputV1Schema,
+  WorkspaceSyncStatusV1Schema,
+} from '@happier-dev/protocol';
 import { TransferEndpointCandidateSchema, type TransferEndpointCandidate } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -63,6 +72,7 @@ import {
   spawnWorkspaceSyncSidecar,
   stopRetainedWorkspaceSyncNativeProcesses,
 } from './workspaceSyncNativeProcessLaunchers';
+import { createCliApprovalsArtifactStore } from '@/session/actions/approvals/artifactStore';
 
 export type ProductionDaemonWorkspaceSyncFactories = Readonly<{
   createDaemonRuntime: typeof createDaemonWorkspaceSyncRuntime;
@@ -151,6 +161,75 @@ function resolveSeedWorkspaceTransfer(
 
 function compositionError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
+}
+
+async function requireExecutingWorkspaceActionReceipt(input: Readonly<{
+  approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']>;
+  serverId: string;
+  actionReceiptId: string;
+  actionId: 'workspace.sync.conflict.resolve' | 'session.handoff';
+  actionInput: unknown;
+  expectedExecutionMachineId?: string;
+  expectedExecutionRequestId?: string;
+  expectedExecutionSessionId?: string;
+  expectedTargetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+}>): Promise<void> {
+  const artifact = await input.approvalsGet({ artifactId: input.actionReceiptId, serverId: input.serverId });
+  const parsed = ApprovalRequestV2Schema.safeParse(artifact);
+  const request = parsed.success ? parsed.data : null;
+  const origin = request?.executionOriginV1;
+  let sameInput = false;
+  if (request !== null) {
+    try {
+      sameInput = createCanonicalJsonSigningInput(request.actionArgs)
+        === createCanonicalJsonSigningInput(input.actionInput);
+    } catch {
+      sameInput = false;
+    }
+  }
+  if (!request
+    || !origin
+    || request.status !== 'executing'
+    || request.decision?.kind !== 'approve'
+    || request.actionId !== input.actionId
+    || origin.actionId !== input.actionId
+    || origin.serverId !== input.serverId
+    || (input.expectedExecutionMachineId !== undefined
+      && origin.machineId !== input.expectedExecutionMachineId)
+    || (input.expectedExecutionRequestId !== undefined
+      && origin.requestId !== input.expectedExecutionRequestId)
+    || (input.expectedExecutionSessionId !== undefined
+      && origin.sessionId !== input.expectedExecutionSessionId)
+    || !sameInput
+    || (input.expectedTargetReplacementApproval !== undefined
+      && !isDeepStrictEqual(
+        request.handoffTargetReplacementApproval,
+        input.expectedTargetReplacementApproval,
+      ))) {
+    throw compositionError('approval_stale', 'Workspace Action receipt is stale or does not match');
+  }
+}
+
+/**
+ * Canonical destructive conflict-Action receipt validator. The approvals store
+ * remains the injected persistence boundary so production and composed real
+ * tests exercise the same admission decision without duplicating its rules.
+ */
+export function createWorkspaceSyncConflictResolutionAuthorizer(input: Readonly<{
+  approvalsGet: NonNullable<ActionExecutorDeps['approvalsGet']>;
+  serverId: string;
+}>): (actionReceiptId: string, rawActionInput: WorkspaceSyncConflictResolveActionInputV1) => Promise<void> {
+  return async (actionReceiptId, rawActionInput) => {
+    const actionInput = WorkspaceSyncConflictResolveActionInputV1Schema.parse(rawActionInput);
+    await requireExecutingWorkspaceActionReceipt({
+      approvalsGet: input.approvalsGet,
+      serverId: input.serverId,
+      actionReceiptId,
+      actionId: 'workspace.sync.conflict.resolve',
+      actionInput,
+      expectedExecutionMachineId: actionInput.controllerMachineId,
+    });
+  };
 }
 
 function controllerUnavailable(cause?: unknown): Error {
@@ -245,7 +324,11 @@ function resolveBootstrapPrepareRequest(
       // if source materialization would replace non-empty contents.
       targetBootstrap: 'materialize_from_source_workspace',
       ...(input.targetReplacementApproval
-        ? { targetReplacementApproval: input.targetReplacementApproval }
+        ? {
+            targetReplacementApproval: input.targetReplacementApproval,
+            targetReplacementApprovalReceiptId: input.targetReplacementApprovalReceiptId,
+            targetReplacementApprovalActionInput: input.targetReplacementApprovalActionInput,
+          }
         : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     };
@@ -310,7 +393,9 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       expectedSizeBytes?: number;
       expectedManifestHash?: string;
       fetchFn?: typeof fetch;
+      signal?: AbortSignal;
     }>) => Promise<unknown>;
+    onReadinessPublished?: (readiness: WorkspaceSyncRuntimeReadinessV1) => void;
     onStatusPublished?: (status: WorkspaceSyncStatusV1) => void;
   }>,
   overrides: Partial<ProductionDaemonWorkspaceSyncFactories> = {},
@@ -338,11 +423,52 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     lockDirectory: factories.resolveRootOwnershipDirectory(),
   });
   let runtime: ReturnType<typeof createDaemonWorkspaceSyncRuntime> | null = null;
+  const carrierReadiness: WorkspaceSyncRuntimeReadinessV1['carrier'] = input.openMachineCarrierTunnel
+    ? { state: 'ready' }
+    : { state: 'unavailable', errorCode: 'machine_carrier_unavailable' };
+  let engineReadiness: WorkspaceSyncRuntimeReadinessV1['engine'] = { state: 'starting' };
+  const publishReadiness = (next: WorkspaceSyncRuntimeReadinessV1['engine']): void => {
+    if (engineReadiness.state === next.state
+      && (next.state !== 'unavailable'
+        || (engineReadiness.state === 'unavailable' && engineReadiness.errorCode === next.errorCode))) return;
+    engineReadiness = next;
+    input.onReadinessPublished?.({ engine: next, carrier: carrierReadiness });
+  };
+  input.onReadinessPublished?.({ engine: engineReadiness, carrier: carrierReadiness });
   let relationshipOwner: WorkspaceSyncRelationshipOwner | null = null;
+  const approvalsStore = createCliApprovalsArtifactStore({ credentials: input.credentials });
+  const assertConflictResolutionAuthorized = createWorkspaceSyncConflictResolutionAuthorizer({
+    approvalsGet: approvalsStore.approvalsGet,
+    serverId: input.activeServerId ?? configuration.activeServerId,
+  });
+  const assertTargetReplacementAuthorized = async (
+    actionReceiptId: string,
+    actionInput: unknown,
+    approval: HandoffTargetReplacementApprovalV1,
+  ): Promise<void> => {
+    const actionInputRecord = actionInput && typeof actionInput === 'object' && !Array.isArray(actionInput)
+      ? actionInput as Readonly<Record<string, unknown>>
+      : null;
+    const sessionId = typeof actionInputRecord?.sessionId === 'string'
+      ? actionInputRecord.sessionId.trim()
+      : '';
+    await requireExecutingWorkspaceActionReceipt({
+      approvalsGet: approvalsStore.approvalsGet,
+      serverId: input.activeServerId ?? configuration.activeServerId,
+      actionReceiptId,
+      actionId: 'session.handoff',
+      actionInput,
+      expectedExecutionRequestId: approval.operationId,
+      ...(sessionId ? { expectedExecutionSessionId: sessionId } : {}),
+      expectedTargetReplacementApproval: approval,
+    });
+  };
   const targetAuthority = factories.createTargetAuthority({
     localServerId: input.activeServerId ?? configuration.activeServerId,
     localMachineId: input.localMachineId,
     getSettingsSnapshot: factories.getSettingsSnapshot,
+    assertConflictResolutionAuthorized,
+    assertTargetReplacementAuthorized,
     assertLegacyStateAvailable,
     prepareSourceSeedExport: async ({ operationId, sourceWorkspaceRefId, targetMachineId, contentPolicy }) => {
       if (!runtime) {
@@ -361,16 +487,17 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       }));
     },
     bootstrap: {
-      stagingDirectory: join(workspaceSyncRoot, 'bootstrap'),
+      materializationDirectory: join(input.activeServerDir, 'workspace-sync', 'materialization'),
       rootOwnershipManager,
       prepareGitTarget: factories.prepareGitTarget,
-      materializeLocalSeed: async ({ operationId, sourcePath, canonicalRoot, contentPolicy, materializationReceiptPath, originalTargetExists }) => await factories.materializeLocalSeed({
+      materializeLocalSeed: async ({ operationId, sourcePath, canonicalRoot, contentPolicy, materializationReceiptPath, originalTargetExists, targetFence }) => await factories.materializeLocalSeed({
         operationId,
         activeServerDir: input.activeServerDir,
         sourcePath,
         targetPath: canonicalRoot,
         materializationReceiptPath,
         originalTargetExists,
+        targetFence,
         workspaceTransfer: resolveSeedWorkspaceTransfer(contentPolicy),
       }),
       ...(input.openMachineCarrierTunnel && input.requestDirectTransferPayloadFile
@@ -409,9 +536,10 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
             return await factories.materializeSeedExport({
               operationId: request.operationId,
               targetPath: request.canonicalRoot,
-              stagingDirectory: join(workspaceSyncRoot, 'seed-transfer'),
+              ...(request.signal ? { signal: request.signal } : {}),
               materializationReceiptPath: request.materializationReceiptPath,
               originalTargetExists: request.originalTargetExists,
+              targetFence: request.targetFence,
               requestPayload: async ({ transferId, destinationPath, expectedSizeBytes, expectedManifestHash }) => {
                 const sizeBytes = transferId === request.operationId ? prepared.sizeBytes as number : expectedSizeBytes;
                 const manifestHash = transferId === request.operationId ? prepared.manifestHash as string : expectedManifestHash;
@@ -441,13 +569,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
                     destinationPath,
                     expectedSizeBytes: sizeBytes,
                     expectedManifestHash: manifestHash,
-                    fetchFn: async (fetchInput, fetchInit) => await fetch(fetchInput, {
-                      ...fetchInit,
-                      headers: {
-                        ...Object.fromEntries(new Headers(fetchInit?.headers).entries()),
-                        [MACHINE_HTTP_LOCAL_CAPABILITY_HEADER]: tunnel.localCapability,
-                      },
-                    }),
+                    ...(request.signal ? { signal: request.signal } : {}),
                   });
                 } finally {
                   await tunnel.close();
@@ -501,7 +623,11 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
         createIfMissing: true,
         ...(preparation ? { targetBootstrap: preparation.targetBootstrap } : {}),
         ...(preparation?.targetReplacementApproval
-          ? { targetReplacementApproval: preparation.targetReplacementApproval }
+          ? {
+              targetReplacementApproval: preparation.targetReplacementApproval,
+              targetReplacementApprovalReceiptId: preparation.targetReplacementApprovalReceiptId,
+              targetReplacementApprovalActionInput: preparation.targetReplacementApprovalActionInput,
+            }
           : {}),
         ...(signal ? { signal } : {}),
       });
@@ -644,7 +770,6 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
                     ? 'copy_committed'
                     : 'relationship_committed'
                   : 'abort',
-                ...(bootstrapInput.signal ? { signal: bootstrapInput.signal } : {}),
               });
             }
           } finally {
@@ -669,8 +794,10 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       : {}),
     deleteConflictLoserAtTarget: targetAuthority.deleteConflictLoserAtTarget,
     readFileAtTarget: targetAuthority.readFileAtTarget,
+    assertConflictResolutionAuthorized,
     getSettingsSnapshot: factories.getSettingsSnapshot,
     assertLegacyStateAvailable,
+    onEngineReadinessPublished: publishReadiness,
     ...(input.onStatusPublished ? { onStatusPublished: input.onStatusPublished } : {}),
   });
 
@@ -739,12 +866,16 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
   const unsubscribe = factories.subscribeSettingsSnapshot(() => reconcileAuthority());
   reconcileAuthority();
   await authorityTail.catch(() => undefined);
-  await runtime.start().catch((error) => {
+  await runtime.start().then(
+    () => publishReadiness({ state: 'ready' }),
+    (error) => {
+      publishReadiness({ state: 'unavailable', errorCode: 'engine_unavailable' });
     factories.warn(
       '[DAEMON RUN] Workspace sync engine is initially unavailable; commands and settings changes may retry it',
       error,
     );
-  });
+    },
+  );
 
   const workspaceSync: MachineWorkspaceSyncRpcService = {
     controller: runtime.managedWorkspaceSync,
@@ -755,6 +886,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     prepareBootstrapAtTarget: targetAuthority.prepareBootstrapHere,
     releaseBootstrapAtTarget: targetAuthority.releaseBootstrapHere,
     prepareSourceSeedExport: targetAuthority.prepareSourceSeedExport,
+    assertConflictResolutionAuthorized,
     inspectRetiredState: async (signal): Promise<WorkspaceSyncLegacyStateInspectionV1> => {
       signal?.throwIfAborted();
       try {

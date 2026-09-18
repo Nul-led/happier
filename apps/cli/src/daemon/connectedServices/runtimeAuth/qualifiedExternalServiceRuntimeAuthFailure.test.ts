@@ -8,7 +8,6 @@ import { resolveConnectedServiceRuntimeAuthRecoverySelection } from './resolveCo
 import { sanitizeConnectedServiceRuntimeFailureClassification } from './sanitizeConnectedServiceRuntimeFailureClassification';
 import { ConnectedServiceRuntimeAuthSwitchAttemptTracker } from './ConnectedServiceRuntimeAuthSwitchAttemptTracker';
 import type { ConnectedServiceRuntimeFailureClassification } from './types';
-import { buildConnectedServiceSwitchContinuationAttemptId } from '../sessionAuthSwitch/buildConnectedServiceSwitchContinuationAttemptId';
 
 /**
  * Runtime-auth failure contract for a NOVEL EXTERNAL plugin service identified
@@ -86,6 +85,35 @@ describe('qualified external connected-service runtime-auth failure contract', (
         });
     });
 
+    it.each([
+        { deliveryMode: 'brokered' as const },
+        {
+            deliveryMode: 'direct' as const,
+            disclosedMember: {
+                service: { pluginId: 'acme.forge.gateway', localId: 'acme-gateway-account' },
+                accountId: 'source-account-1',
+            },
+        },
+    ])('does not reinterpret a Team $deliveryMode resource binding as personal Connected Account recovery authority', (teamBinding) => {
+        expect(resolveConnectedServiceRuntimeAuthRecoverySelection({
+            classification: {
+                ...externalClassification,
+                profileId: null,
+                groupId: null,
+            },
+            trackedConnectedServices: {
+                v: 2,
+                bindingsByServiceId: {
+                    [EXTERNAL_SERVICE_KEY]: {
+                        source: 'team_resource',
+                        resourceId: 'resource-1',
+                        ...teamBinding,
+                    },
+                },
+            },
+        })).toEqual({ selection: null, source: null });
+    });
+
     it('authorizes the exact external failure source from the live runtime registry binding', async () => {
         const result = await authorizeConnectedServiceRuntimeAuthFailureSource({
             getChildren: () => [{
@@ -115,7 +143,21 @@ describe('qualified external connected-service runtime-auth failure contract', (
         });
     });
 
-    it('settles retry/switch through the canonical host owner and retains the exact service key in the continuation', async () => {
+    it.each([
+        [null, 'gateway-backup', 'reset-1', 80, 1_000, true],
+        [null, 'gateway-primary', 'reset-1', 80, 1_000, false],
+        ['no_receipt', 'gateway-primary', 'reset-1', 80, 1_000, true],
+        ['not_available', 'gateway-primary', 'reset-1', 80, 1_000, true],
+        ['unknown_after_timeout', 'gateway-primary', 'reset-1', 80, 1_000, false],
+        ['consumed', 'gateway-primary', 'reset-1', 80, 1_000, true],
+        ['consumed', 'gateway-primary', 'reset-2', 80, 1_000, true],
+        ['already_consumed', 'gateway-primary', 'reset-1', 80, 1_000, true],
+        ['nothing_to_reset', 'gateway-primary', 'reset-1', 80, 1_000, true],
+        ['consumed', 'gateway-primary', 'reset-1', 0, 1_000, false],
+        ['consumed', 'gateway-primary', 'reset-1', NaN, 1_000, false],
+        ['consumed', 'gateway-primary', 'reset-1', 80, NaN, false],
+    ] as const)('retains the exact qualified service continuation and usable reset identity (%s, %s, %s, %s, %s)', async (resetStatus, activeProfileId, resetKey, remainingPercent, capturedAtMs, shouldContinue) => {
+        const generation = activeProfileId === 'gateway-backup' ? 4 : 3;
         const tracked = {
             startedBy: 'daemon' as const,
             pid: 4242,
@@ -142,9 +184,14 @@ describe('qualified external connected-service runtime-auth failure contract', (
             status: 'observed_generation' as const,
             serviceId: EXTERNAL_SERVICE_KEY,
             groupId: 'acme-gateway',
-            activeProfileId: 'gateway-backup',
-            credentialRevision: 'csr_backup000000000000000001',
-            generation: 4,
+            activeProfileId,
+            credentialRevision: activeProfileId === 'gateway-backup'
+                ? 'csr_backup000000000000000001' : externalClassification.expectedCredentialRevision,
+            generation,
+            ...(resetStatus ? { quotaRecovery: {
+                ...(resetStatus === 'no_receipt' ? {} : { receipt: { idempotencyKey: resetKey, status: resetStatus } }),
+                quotaSnapshot: { effectiveRemainingPercent: remainingPercent, capturedAtMs },
+            } } : {}),
             groupExhausted: false,
             retryAtMs: null,
             excluded: [],
@@ -192,6 +239,10 @@ describe('qualified external connected-service runtime-auth failure contract', (
         expect(JSON.stringify(switchAfterClassifiedFailure.mock.calls)).not.toContain('happier.agent.codex/');
         expect(restartSession).not.toHaveBeenCalled();
 
+        if (!shouldContinue) {
+            expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
+            return;
+        }
         expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
         const continuation = continueAfterRuntimeAuthSwitch.mock.calls[0]?.[0];
         expect(continuation).toMatchObject({
@@ -200,7 +251,7 @@ describe('qualified external connected-service runtime-auth failure contract', (
             switchReason: 'automatic_runtime_failure',
         });
         expect(continuation.normalizedBindings).toEqual({
-            v: 1,
+            v: 2,
             bindingsByServiceId: {
                 [EXTERNAL_SERVICE_KEY]: {
                     source: 'connected',
@@ -209,21 +260,9 @@ describe('qualified external connected-service runtime-auth failure contract', (
                 },
             },
         });
-        expect(continuation.attemptId).toBe(buildConnectedServiceSwitchContinuationAttemptId({
-            action: 'hot_applied',
-            serviceIds: new Set([EXTERNAL_SERVICE_KEY]),
-            normalizedBindings: {
-                v: 1,
-                bindingsByServiceId: {
-                    [EXTERNAL_SERVICE_KEY]: {
-                        source: 'connected',
-                        selection: 'group',
-                        groupId: 'acme-gateway',
-                        profileId: 'gateway-backup',
-                    },
-                },
-            },
-            expectedGroupGenerationByServiceId: { [EXTERNAL_SERVICE_KEY]: 4 },
-        }));
+        expect(continuation.attemptId).toBe(
+            `connected-service-auth-switch|hot_applied|${EXTERNAL_SERVICE_KEY}:group:acme-gateway:${activeProfileId}:${generation}`
+            + (resetStatus ? `|quota-recovery:${JSON.stringify(resetStatus === 'no_receipt' ? `quota-snapshot:${capturedAtMs}` : resetKey)}` : ''),
+        );
     });
 });

@@ -49,6 +49,80 @@ async function createCommittedFileBackedFixtureActivationSource(params: Readonly
 }
 
 describe('target activation publication', () => {
+    it('bounds module loading before activation and still activates an unrelated plugin', async () => {
+        vi.useFakeTimers();
+        const hangingPluginId = 'acme.module-load-hangs';
+        const healthyPluginId = 'acme.module-load-healthy';
+        const createIngestedManifest = (pluginId: string) => ingestCanonicalPluginManifest({
+            schemaVersion: 2,
+            id: pluginId,
+            version: '1.0.0',
+            displayName: pluginId,
+            engines: { happier: '^0.2.0' },
+            runtime: { apiVersion: 1 },
+            entrypoints: { daemon: './daemon.mjs' },
+            activation: { events: [{ kind: 'startup' }] },
+            contributes: {},
+        }, { sourceProvenance: 'registryCustodied' });
+        const hangingManifest = createIngestedManifest(hangingPluginId);
+        const healthyManifest = createIngestedManifest(healthyPluginId);
+        if (!hangingManifest.ok || !healthyManifest.ok) {
+            throw new Error('Expected valid module-load deadline fixtures');
+        }
+        const activateHealthy = vi.fn();
+        const activation = activatePluginRuntimeRegistry({
+            contributes: {
+                agents: [], actions: [], resources: [],
+                activationTargets: [
+                    {
+                        provenance: 'first_party', source: { kind: 'bundled' }, pluginId: hangingPluginId,
+                        manifestPath: '/virtual/hanging/plugin.json', daemonEntryPath: '/virtual/hanging/daemon.mjs',
+                        sourceSpec: { kind: 'package', locator: '@happier-dev/module-load-hangs', trustPolicy: 'bundled_trusted', installPolicy: 'copy' },
+                        activationEvents: ['startup'], manifest: hangingManifest.manifest,
+                    },
+                    {
+                        provenance: 'first_party', source: { kind: 'bundled' }, pluginId: healthyPluginId,
+                        manifestPath: '/virtual/healthy/plugin.json', daemonEntryPath: '/virtual/healthy/daemon.mjs',
+                        sourceSpec: { kind: 'package', locator: '@happier-dev/module-load-healthy', trustPolicy: 'bundled_trusted', installPolicy: 'copy' },
+                        activationEvents: ['startup'], manifest: healthyManifest.manifest,
+                    },
+                ],
+                catalogEntriesById: Object.freeze({}),
+                agentDefinitionsById: new Map(),
+                pluginDiagnosticsByPluginId: Object.freeze({}),
+            } as unknown as ResolvedContributionRegistry,
+            generation: 25,
+            resolveActivationSource: (target) => target.pluginId === hangingPluginId
+                ? {
+                    kind: 'bundled',
+                    moduleId: '@happier-dev/module-load-hangs/daemon',
+                    load: () => new Promise<never>(() => undefined),
+                }
+                : {
+                    kind: 'bundled',
+                    moduleId: '@happier-dev/module-load-healthy/daemon',
+                    load: async () => ({ activate: activateHealthy }),
+                },
+        });
+
+        try {
+            await vi.advanceTimersByTimeAsync(30_000);
+            const registry = await activation;
+            expect(registry.targetActivationFacts).toEqual([
+                expect.objectContaining({
+                    pluginId: hangingPluginId,
+                    status: 'unavailable',
+                    diagnostics: [expect.objectContaining({ code: 'plugin_daemon_module_load_failed' })],
+                }),
+                expect.objectContaining({ pluginId: healthyPluginId, status: 'active' }),
+            ]);
+            expect(activateHealthy).toHaveBeenCalledOnce();
+            await registry.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    }, 5_000);
+
     it('projects required HostAccess directly for static daemon consumers without a legacy grant map', async () => {
         const pluginId = 'acme.host-access-projection';
         const ingested = ingestCanonicalPluginManifest({

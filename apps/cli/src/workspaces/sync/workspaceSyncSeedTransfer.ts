@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { WorkspaceManifestSchema } from '@happier-dev/protocol';
 import type { ScmBackendRegistry } from '@/scm/registry';
@@ -8,7 +9,10 @@ import { buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration }
 import type { ScmWorkspaceIntegrationWorkspaceExportArtifacts } from '@/scm/workspace/workspaceExportArtifacts';
 import type { ScmWorkspaceIntegrationWorkspaceTransferRequestInput } from '@/scm/workspace/workspaceTransfer';
 import type { WorkspaceExportBlobProvider } from '@/scm/workspace/workspaceExportStaging/stageWorkspaceEntries';
-import type { WorkspaceExportMaterializationCustody } from '@/scm/workspace/workspaceExportMaterialization';
+import type {
+  WorkspaceExportMaterializationCustody,
+  WorkspaceTargetMaterializationFence,
+} from '@/scm/workspace/workspaceExportMaterialization';
 import { materializeWorkspaceExportArtifactsWithScmWorkspace } from '@/scm/workspace/workspaceExportMaterialization';
 import type { DirectPeerOnDemandTransferScope } from '@/machines/transfer/directPeerTransport';
 import {
@@ -82,6 +86,7 @@ export async function materializeLocalWorkspaceSyncSeed(input: Readonly<{
   workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
   materializationReceiptPath?: string;
   originalTargetExists?: boolean;
+  targetFence?: WorkspaceTargetMaterializationFence;
   registry?: ScmBackendRegistry;
 }>): Promise<WorkspaceExportMaterializationCustody> {
   const built = await buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration(input);
@@ -96,6 +101,7 @@ export async function materializeLocalWorkspaceSyncSeed(input: Readonly<{
       sourcePath: input.sourcePath,
       ...(input.materializationReceiptPath ? { materializationReceiptPath: input.materializationReceiptPath } : {}),
       ...(input.originalTargetExists === undefined ? {} : { originalTargetExists: input.originalTargetExists }),
+      ...(input.targetFence ? { targetFence: input.targetFence } : {}),
     });
     return materialized.custody;
   } finally {
@@ -140,9 +146,10 @@ function parseEnvelope(raw: Buffer, operationId: string): WorkspaceSyncSeedEnvel
 export async function materializeWorkspaceSyncSeedExport(input: Readonly<{
   operationId: string;
   targetPath: string;
-  stagingDirectory: string;
+  signal?: AbortSignal;
   materializationReceiptPath?: string;
   originalTargetExists?: boolean;
+  targetFence?: WorkspaceTargetMaterializationFence;
   requestPayload(request: Readonly<{
     transferId: string;
     destinationPath: string;
@@ -157,13 +164,16 @@ export async function materializeWorkspaceSyncSeedExport(input: Readonly<{
     naming: Readonly<{ siblingCopySuffixBase: string; backupDirectoryPrefix: string; stagingIdPrefix: string }>;
     materializationReceiptPath?: string;
     originalTargetExists?: boolean;
+    targetFence?: WorkspaceTargetMaterializationFence;
+    assertCanContinue?: () => Promise<void>;
   }>): Promise<Readonly<{ targetPath: string; custody: WorkspaceExportMaterializationCustody }>>;
 }>): Promise<WorkspaceExportMaterializationCustody> {
-  const operationDirectory = resolve(input.stagingDirectory, `workspace-sync-seed-${createHash('sha256').update(input.operationId).digest('hex')}`);
-  await mkdir(operationDirectory, { recursive: true });
+  input.signal?.throwIfAborted();
+  const operationDirectory = await mkdtemp(join(tmpdir(), 'happier-workspace-sync-seed-'));
   try {
     const manifestPath = join(operationDirectory, 'manifest.json');
     await input.requestPayload({ transferId: input.operationId, destinationPath: manifestPath });
+    input.signal?.throwIfAborted();
     const envelope = parseEnvelope(await readFile(manifestPath), input.operationId);
     const blobPaths = new Map<string, string>();
     const sizeByDigest = new Map(envelope.workspaceExportArtifacts.manifest.entries.flatMap((entry) => (
@@ -177,8 +187,10 @@ export async function materializeWorkspaceSyncSeedExport(input: Readonly<{
         expectedSizeBytes: sizeByDigest.get(digest)!,
         expectedManifestHash: digest,
       });
+      input.signal?.throwIfAborted();
       blobPaths.set(digest, destinationPath);
     }
+    input.signal?.throwIfAborted();
     const materialized = await input.materializeWorkspaceExportArtifacts({
       workspaceExportArtifacts: envelope.workspaceExportArtifacts,
       targetPath: input.targetPath,
@@ -187,6 +199,10 @@ export async function materializeWorkspaceSyncSeedExport(input: Readonly<{
       naming: WORKSPACE_SYNC_SEED_MATERIALIZATION_NAMING,
       ...(input.materializationReceiptPath ? { materializationReceiptPath: input.materializationReceiptPath } : {}),
       ...(input.originalTargetExists === undefined ? {} : { originalTargetExists: input.originalTargetExists }),
+      ...(input.targetFence ? { targetFence: input.targetFence } : {}),
+      ...(input.signal
+        ? { assertCanContinue: async () => input.signal?.throwIfAborted() }
+        : {}),
     });
     return materialized.custody;
   } finally {

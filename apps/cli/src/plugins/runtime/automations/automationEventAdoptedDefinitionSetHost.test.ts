@@ -174,6 +174,7 @@ const plainCurrentness = async (): Promise<AccountEncryptionCurrentnessResponse>
   signingKeyFingerprint: 'aemk1_signing',
   contentKeyFingerprint: null,
   updatedAt: 8,
+  recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
 });
 
 async function collectPreparedAdmissionRequests(
@@ -327,6 +328,7 @@ describe('Automation Event adopted-definition host factory', () => {
         signingKeyFingerprint: 'aemk1_signing',
         contentKeyFingerprint: 'aemk1_content_key',
         updatedAt: 9,
+        recipientEnvelopeReadiness: { status: 'available' },
       }),
       resolveAccountEncryptionMaterial: async () => null,
     });
@@ -730,6 +732,7 @@ describe('Automation Event adopted-definition host factory', () => {
             snapshot.contentPublicKeyFingerprint,
           ),
         updatedAt: 9,
+        recipientEnvelopeReadiness: { status: 'available' },
       }),
       resolveAccountEncryptionMaterial: async () => snapshot,
     });
@@ -894,6 +897,7 @@ describe('Automation Event adopted-definition host factory', () => {
             snapshot.contentPublicKeyFingerprint,
           ),
         updatedAt: 9,
+        recipientEnvelopeReadiness: { status: 'available' },
       }),
       resolveAccountEncryptionMaterial: async () => snapshot,
     });
@@ -1025,6 +1029,7 @@ describe('Automation Event adopted-definition host factory', () => {
             snapshot.contentPublicKeyFingerprint,
           ),
         updatedAt: 9,
+        recipientEnvelopeReadiness: { status: 'available' },
       }),
       resolveAccountEncryptionMaterial: async () => snapshot,
     });

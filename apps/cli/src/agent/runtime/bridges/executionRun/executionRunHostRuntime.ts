@@ -1,24 +1,30 @@
 import type { AgentMessage } from '@/agent/core/AgentMessage';
-import type { SessionInputCausalPermissionAuthorityV1 } from '@happier-dev/protocol';
+import type {
+    ExecutionRunInteractionV1,
+    ExecutionRunResultContractV1,
+} from '@happier-dev/protocol';
+import type { AgentSessionInput, AgentSessionSendResult, AgentSessionRuntimeEvent } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { RuntimeTurnPromptMeta } from '@/agent/runtime/turns/runtimeTurnOperations';
+import type { SessionProviderInputOutcome } from '@/agent/runtime/session/input/providerInputOutcome';
+import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 
-type ExecutionRunPromptMeta = Readonly<{
-    localInputId?: string | null;
-    localInputIds?: readonly string[];
-    userMessageSeq?: number | null;
-    userMessageSeqs?: readonly number[];
-    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+/** The incumbent host admission context; routing never crosses the Agent SDK input boundary. */
+export type ExecutionRunInputContext = Omit<RuntimeTurnPromptMeta, 'structuredInput'>;
+
+export type ExecutionRunNativeInputContext = ExecutionRunInputContext & Readonly<{
+    resultContract?: ExecutionRunResultContractV1;
 }>;
 
 export type ExecutionRunHostRuntimeMessageHandler = (message: AgentMessage) => void;
 
-export type ExecutionRunSessionProvisionOptions = Readonly<{
+export type ExecutionRunRuntimeProvisionOptions = Readonly<{
     initialPrompt?: string;
-    resumeSessionId?: string;
+    resumeRuntimeId?: string;
     captureReplay?: boolean;
 }>;
 
-export type ExecutionRunSessionProvisionResult = Readonly<{
-    sessionId: string;
+export type ExecutionRunRuntimeProvisionResult = Readonly<{
+    runtimeId: string;
 }>;
 
 export type ExecutionRunTurnLivenessProbeResult = Readonly<{
@@ -38,30 +44,45 @@ export type RuntimePermissionResponseOutcome = Readonly<{ delivered: true }>
 
 export type ExecutionRunHostRuntime = Readonly<{
     permissionCapability?: ExecutionRunPermissionCapability;
+    /**
+     * Present only when this exact runtime is the retained Agent Session adapter.
+     * It is the actual adapter choice plus the selected generation's declared
+     * Session capabilities — never inferred from status, intent, or run class.
+     */
+    interaction?: ExecutionRunInteractionV1;
     readResumeSupport: (opts?: Readonly<{ captureReplay?: boolean }>) => Promise<boolean>;
-    provisionSession: (opts?: ExecutionRunSessionProvisionOptions) => Promise<ExecutionRunSessionProvisionResult>;
-    sendPrompt: (
-        sessionId: string,
-        prompt: string,
-        meta?: ExecutionRunPromptMeta,
-    ) => Promise<unknown>;
-    sendSteerPrompt?: (
-        sessionId: string,
-        prompt: string,
-        meta?: ExecutionRunPromptMeta,
-    ) => Promise<void>;
-    cancel: (sessionId: string) => Promise<void>;
+    provisionRuntime: (opts?: ExecutionRunRuntimeProvisionOptions) => Promise<ExecutionRunRuntimeProvisionResult>;
+    deliverInput: (
+        runtimeId: string,
+        input: AgentSessionInput,
+        context?: ExecutionRunNativeInputContext,
+    ) => Promise<AgentSessionSendResult>;
+    steerInput?: (
+        runtimeId: string,
+        input: AgentSessionInput,
+        context?: ExecutionRunNativeInputContext,
+    ) => Promise<AgentSessionSendResult>;
+    getRuntimeLifetimeSignal: () => AbortSignal;
+    /** Exact native custody evidence, independent of the send command's admission acknowledgement. */
+    subscribeProviderInputOutcomes?: (handler: (outcome: SessionProviderInputOutcome) => void) => () => void;
+    /** Validated native turn evidence; generic Run status is not exact completion proof. */
+    subscribeRuntimeEvents?: (handler: (event: AgentSessionRuntimeEvent) => void) => () => void;
+    readActiveTurnAdmissionWitness?: () => AgentInvocationTurnAdmissionWitness | null;
+    cancel: (runtimeId: string) => Promise<void>;
     subscribeMessages: (handler: ExecutionRunHostRuntimeMessageHandler) => () => void;
     respondToPermission?: (requestId: string, approved: boolean) => Promise<RuntimePermissionResponseOutcome>;
+    /** Rejects and durably settles only permission waits owned by this Run occurrence. */
+    abortPendingPermissionRequests?: (reason: string) => Promise<void>;
     waitForTurnCompletion?: (timeoutMs?: number | null) => Promise<void>;
-    probeTurnLiveness?: (sessionId: string) => Promise<ExecutionRunTurnLivenessProbeResult>;
+    probeTurnLiveness?: (runtimeId: string) => Promise<ExecutionRunTurnLivenessProbeResult>;
     dispose: () => Promise<void>;
 }>;
 
 export function isExecutionRunHostRuntime(runtime: unknown): runtime is ExecutionRunHostRuntime {
     return typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.readResumeSupport === 'function'
-        && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.provisionSession === 'function'
-        && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.sendPrompt === 'function'
+        && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.provisionRuntime === 'function'
+        && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.deliverInput === 'function'
+        && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.getRuntimeLifetimeSignal === 'function'
         && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.cancel === 'function'
         && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.subscribeMessages === 'function'
         && typeof (runtime as ExecutionRunHostRuntime | null | undefined)?.dispose === 'function';

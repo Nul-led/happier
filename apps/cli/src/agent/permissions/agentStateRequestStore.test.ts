@@ -40,6 +40,94 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('AgentStateRequestStore', () => {
+    it('surfaces durable publication failure to an interaction producer', async () => {
+        const persistenceError = new Error('workflow interaction exceeds durable content capacity');
+        const store = new AgentStateRequestStore({
+            target: {
+                scopeId: 'workflow-invocation:capacity-failure',
+                readState: () => ({ requests: Object.create(null), completedRequests: Object.create(null) }),
+                updateState: async () => {
+                    throw persistenceError;
+                },
+            },
+            logPrefix: '[WorkflowTest]',
+        });
+
+        await expect(store.publishRequestAndWait({
+            requestId: 'req-too-large',
+            toolName: 'Bash',
+            toolInput: { command: 'large command' },
+            createdAt: 123,
+        })).rejects.toBe(persistenceError);
+    });
+
+    it('persists and notifies through a non-Session request-state target', async () => {
+        let state: AgentState = {
+            requests: Object.create(null),
+            completedRequests: Object.create(null),
+        };
+        const notifyRequest = vi.fn();
+        const markRequestCompleted = vi.fn();
+        const store = new AgentStateRequestStore({
+            target: {
+                scopeId: 'workflow-invocation:test',
+                readState: () => state,
+                updateState: (updater) => {
+                    state = updater(state);
+                },
+                notifyRequest,
+                markRequestCompleted,
+            },
+            logPrefix: '[WorkflowTest]',
+        });
+
+        store.publishRequest({
+            requestId: 'req-run-1',
+            toolName: 'Bash',
+            toolInput: { command: 'git status' },
+            createdAt: 123,
+        });
+        expect(state.requests?.['req-run-1']).toEqual(expect.objectContaining({ tool: 'Bash' }));
+        expect(notifyRequest).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'req-run-1' }));
+
+        await store.completeRequest({ requestId: 'req-run-1', status: 'approved', decision: 'approved' });
+        expect(state.requests?.['req-run-1']).toBeUndefined();
+        expect(state.completedRequests?.['req-run-1']).toEqual(expect.objectContaining({ status: 'approved' }));
+        expect(markRequestCompleted).toHaveBeenCalledWith('req-run-1');
+    });
+
+    it('retires only the selected request source when an Action continuation cannot be restored', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({ session, logPrefix: '[Test]' });
+        for (const [requestId, source] of [['action', 'happier_action'], ['native', 'native_tool']] as const) {
+            store.publishRequest({ requestId, source, toolName: 'Review', toolInput: {}, createdAt: 1 });
+        }
+        await store.cancelRequestsBySource?.({
+            source: 'happier_action', reason: 'continuation unavailable', decision: 'abort', requestIds: [],
+        });
+        expect(store.hasOutstandingRequest('action')).toBe(false);
+        expect(store.hasOutstandingRequest('native')).toBe(true);
+        expect(session.agentState.completedRequests?.action?.status).toBe('canceled');
+    });
+
+    it('does not let automatic native policy claim a Happier Action confirmation', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({ session, logPrefix: '[Test]' });
+        store.publishRequest({
+            requestId: 'action-confirmation',
+            toolName: 'Bash',
+            toolInput: { command: 'echo hi' },
+            createdAt: 1,
+            source: 'happier_action',
+        });
+        await expect(store.acquirePermissionResponseClaim({
+            requestId: 'action-confirmation',
+            claim: { version: 1, origin: 'automaticPolicy' },
+        })).resolves.toEqual({ status: 'conflict' });
+        expect(store.hasPermissionResponseClaim('action-confirmation')).toBe(false);
+        expect(store.hasOutstandingRequest('action-confirmation')).toBe(true);
+    });
+
     afterEach(() => {
         vi.restoreAllMocks();
     });
@@ -434,7 +522,7 @@ describe('AgentStateRequestStore', () => {
         );
     });
 
-    it('replays completed response targets after failed delivery and leaves the terminal projection idempotent', async () => {
+    it('retains a failed response delivery for replay and clears its target after later success', async () => {
         const session = new FakeSession();
         const store = new AgentStateRequestStore({
             session,
@@ -481,22 +569,122 @@ describe('AgentStateRequestStore', () => {
         store.registerResponseTargetHandler('test_target', repeatDelivery);
         await flushMicrotasks();
 
-        expect(repeatDelivery).toHaveBeenCalledTimes(1);
+        expect(repeatDelivery).not.toHaveBeenCalled();
         expect(session.agentState.completedRequests!['req-recoverable-delivery']).toEqual(
             expect.objectContaining({
                 status: 'approved',
                 decision: 'approved',
-                responseTarget: { kind: 'test_target', requestOwner: 'owner-1' },
             }),
         );
+        expect(session.agentState.completedRequests!['req-recoverable-delivery']?.responseTarget).toBeUndefined();
         debug.mockRestore();
     });
 
-    it('replays matching completed response targets after every authoritative session rebind', async () => {
+    it('retires only completed records for an exact terminal turn after delivery while preserving grants', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({ session, logPrefix: '[Test]' });
+        for (const [requestId, turnId, decision] of [
+            ['prior-plain', 'turn-a', 'approved'],
+            ['prior-grant', 'turn-a', 'approved_for_session'],
+            ['current-plain', 'turn-b', 'approved'],
+        ] as const) {
+            store.publishRequest({ requestId, turnId, toolName: 'Bash', toolInput: { command: requestId }, createdAt: 1 });
+            await store.completeRequest({ requestId, status: 'approved', decision });
+        }
+
+        await store.retireCompletedRequestsForTurn('turn-a');
+
+        expect(session.agentState.completedRequests?.['prior-plain']).toBeUndefined();
+        expect(session.agentState.completedRequests?.['prior-grant']).toMatchObject({
+            turnId: 'turn-a',
+            decision: 'approved_for_session',
+        });
+        expect(session.agentState.completedRequests?.['current-plain']).toMatchObject({ turnId: 'turn-b' });
+    });
+
+    it('compacts a terminal turn when its in-flight response delivery later succeeds', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({ session, logPrefix: '[Test]' });
+        const deliveryControl: { finish: (() => void) | null } = { finish: null };
+        store.registerResponseTargetHandler('test_target', async () => {
+            await new Promise<void>((resolve) => { deliveryControl.finish = resolve; });
+            return true;
+        });
+        store.publishRequest({
+            requestId: 'terminal-delivery',
+            turnId: 'turn-terminal',
+            toolName: 'Bash',
+            toolInput: { command: 'echo done' },
+            createdAt: 1,
+            responseTarget: { kind: 'test_target' },
+        });
+        await store.completeRequest({
+            requestId: 'terminal-delivery',
+            status: 'approved',
+            decision: 'approved',
+        });
+
+        const retirement = store.retireCompletedRequestsForTurn('turn-terminal');
+        await flushMicrotasks();
+        expect(session.agentState.completedRequests?.['terminal-delivery']).toBeDefined();
+        deliveryControl.finish?.();
+        await retirement;
+        await flushMicrotasks();
+
+        expect(session.agentState.completedRequests?.['terminal-delivery']).toBeUndefined();
+    });
+
+    it('retains a failed terminal-turn delivery for replay and compacts it after later success', async () => {
+        const session = new FakeSession();
+        const store = new AgentStateRequestStore({ session, logPrefix: '[Test]' });
+        const releaseFailed = store.registerResponseTargetHandler('test_target', () => false);
+        store.publishRequest({
+            requestId: 'terminal-replay',
+            turnId: 'turn-terminal',
+            toolName: 'Bash',
+            toolInput: { command: 'echo replay' },
+            createdAt: 1,
+            responseTarget: { kind: 'test_target' },
+        });
+        await store.completeRequest({
+            requestId: 'terminal-replay',
+            status: 'approved',
+            decision: 'approved',
+        });
+        await store.retireCompletedRequestsForTurn('turn-terminal');
+        await flushMicrotasks();
+
+        expect(session.agentState.completedRequests?.['terminal-replay']).toMatchObject({
+            responseTarget: { kind: 'test_target' },
+        });
+        releaseFailed();
+        store.registerResponseTargetHandler('test_target', () => true);
+        await flushMicrotasks();
+
+        expect(session.agentState.completedRequests?.['terminal-replay']).toBeUndefined();
+    });
+
+    it('does not deliver another Session completed response to the old Session handler', async () => {
+        const sessionA = new FakeSession();
+        const sessionB = new FakeSession();
+        sessionB.sessionId = 'another-session';
+        sessionB.agentState.completedRequests!.other = {
+            tool: 'Review', arguments: {}, createdAt: 1, completedAt: 2,
+            status: 'approved', decision: 'approved', responseTarget: { kind: 'test_target' },
+        };
+        const store = new AgentStateRequestStore({ session: sessionA, logPrefix: '[Test]' });
+        const delivered: string[] = [];
+        store.registerResponseTargetHandler('test_target', (dispatch) => { delivered.push(dispatch.requestId); });
+        store.updateSession(sessionB);
+        await flushMicrotasks();
+        expect(delivered).toEqual([]);
+    });
+
+    it('replays only undelivered completed response targets after an authoritative session rebind', async () => {
         const sessionA = new FakeSession();
         const sessionB = new FakeSession();
         sessionA.sessionId = 'session-a';
-        sessionB.sessionId = 'session-b';
+        sessionB.sessionId = 'session-a';
         sessionB.agentState.completedRequests!['delivered'] = {
             tool: 'Bash',
             arguments: { command: ['bash', '-lc', 'echo delivered'] },
@@ -571,14 +759,12 @@ describe('AgentStateRequestStore', () => {
 
         expect(dispatches.sort()).toEqual(['delivered', 'rejects', 'returned-false', 'throws']);
 
-        // Completed response targets remain the durable source of truth, so
-        // every authoritative rebind attempts delivery again without an ack
-        // ledger or a Channels-local replay path.
+        // Successful delivery removes only its response target. Failed
+        // deliveries retain their exact durable replay obligation.
         store.updateSession(sessionB);
         await flushMicrotasks();
 
         expect(dispatches.sort()).toEqual([
-            'delivered',
             'delivered',
             'rejects',
             'rejects',
@@ -591,7 +777,7 @@ describe('AgentStateRequestStore', () => {
         unsubscribe();
         store.updateSession(sessionB);
         await flushMicrotasks();
-        expect(dispatches).toHaveLength(8);
+        expect(dispatches).toHaveLength(7);
 
         const disposedStore = new AgentStateRequestStore({
             session: sessionA,
@@ -635,13 +821,10 @@ describe('AgentStateRequestStore', () => {
             sidechainId: 'sidechain-1',
             permissionSuggestions: [{ mode: 'allow' }],
         });
+        await flushMicrotasks();
 
         expect(session.agentState.completedRequests!['req-recorded']).toEqual(
             expect.objectContaining({
-                responseTarget: expect.objectContaining({
-                    kind: 'test_target',
-                    requestOwner: 'owner-1',
-                }),
                 subagentRef: {
                     runId: 'run-1',
                     callId: 'call-1',
@@ -650,6 +833,7 @@ describe('AgentStateRequestStore', () => {
                 permissionSuggestions: [{ mode: 'allow' }],
             }),
         );
+        expect(session.agentState.completedRequests!['req-recorded']?.responseTarget).toBeUndefined();
         expect(dispatches).toEqual([
             expect.objectContaining({
                 requestId: 'req-recorded',

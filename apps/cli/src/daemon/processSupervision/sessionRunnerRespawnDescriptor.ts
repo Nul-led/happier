@@ -29,6 +29,7 @@ import {
   type BackendTargetRefV2Input,
   type AgentExecutionTargetV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import * as z from 'zod';
 import {
   resolveConcreteBackendTargetRefV2,
@@ -532,8 +533,9 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
 ): SessionRunnerRespawnDescriptorV1 | null {
   const directory = normalizeOptionalString(spawnOptions.directory);
   if (!directory) return null;
-  const resume = normalizeOptionalString(spawnOptions.resume);
-  const vendorResumeId = normalizeOptionalString(options?.vendorResumeId);
+  // Opaque Agent identity: recovery must respawn with the same bytes.
+  const resume = readNonBlankOpaqueIdentifier(spawnOptions.resume) ?? undefined;
+  const vendorResumeId = readNonBlankOpaqueIdentifier(options?.vendorResumeId) ?? undefined;
   const existingSessionId = normalizeOptionalString(spawnOptions.existingSessionId);
   const spawnNonce = normalizeOptionalString(spawnOptions.spawnNonce);
   const transcriptStorage = spawnOptions.transcriptStorage === 'direct' ? 'direct' : undefined;

@@ -16,6 +16,7 @@ import { DelegateProfile } from './delegate/DelegateProfile';
 import { VoiceAgentProfile } from './voiceAgent/VoiceAgentProfile';
 import { MemoryHintsProfile } from './memoryHints/MemoryHintsProfile';
 import { TaskProfile } from './task/TaskProfile';
+import { AgentProfile } from './agent/AgentProfile';
 import { ScmCommitMessageProfile } from '@/agent/runtime/bridges/executionRun/kinds/scmCommitMessage/ScmCommitMessageProfile';
 import { ScmDiffSummaryProfile } from '@/agent/runtime/bridges/executionRun/kinds/scmDiffSummary/ScmDiffSummaryProfile';
 import {
@@ -27,6 +28,7 @@ const PROFILES: Record<ExecutionRunIntent, ExecutionRunIntentProfile> = {
   review: ReviewProfile,
   plan: PlanProfile,
   delegate: DelegateProfile,
+  agent: AgentProfile,
   task: TaskProfile,
   voice_agent: VoiceAgentProfile,
   memory_hints: MemoryHintsProfile,

@@ -26,6 +26,19 @@ const request = {
 };
 
 describe('Agent runtime daemon Session-input admission service protocol', () => {
+  it('preserves strict target Machine V2 admission through the runner bridge', () => {
+    const targeted = {
+      ...request,
+      operation: {
+        ...request.operation,
+        request: { ...request.operation.request, v: 2, recipient: { kind: 'execution_run', runId: 'run-a' } },
+      },
+    };
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.parse(targeted)).toEqual(targeted);
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse({
+      ...targeted, operation: { ...targeted.operation, request: { ...targeted.operation.request, recipient: { kind: 'execution_run', runId: 'run-a', label: 'Not routing' } } },
+    }).success).toBe(false);
+  });
   it('accepts only the strict canonical machine-admission request', () => {
     expect(AgentRuntimeDaemonServiceRequestV1Schema.parse(request)).toEqual(request);
     expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse({

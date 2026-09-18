@@ -4,10 +4,11 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveInstalledFirstPartyComponentPaths } from '../../firstPartyRuntime/index.js';
+import { installVersionedPayload, resolveInstalledFirstPartyComponentPaths } from '../../firstPartyRuntime/index.js';
 import {
   DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
   ensureLocalFirstPartyComponentCommand,
+  resolveExplicitOrInstalledLocalFirstPartyCommand,
 } from '../index.js';
 
 afterEach(() => {
@@ -93,6 +94,109 @@ describe('ensureLocalFirstPartyComponentCommand', () => {
       expect(installPayload).toHaveBeenCalledTimes(1);
     } finally {
       process.chdir(previousCwd);
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveExplicitOrInstalledLocalFirstPartyCommand provenance', () => {
+  it('refuses managed provenance for a binary planted under the install root with no install record', () => {
+    // A local process can create `<installRoot>/current/<binary>` before anything was ever
+    // acquired. Nothing verified it, so it must never be classified `managed`: the desktop
+    // approval owner offers automatic pairing approval only to a managed CLI, and the approved
+    // CLI goes on to claim its own account bearer from the Home.
+    const rootDir = mkdtempSync(join(tmpdir(), 'cli-common-planted-binary-'));
+    const happierHomeDir = join(rootDir, 'home');
+    const plantedPath = join(happierHomeDir, 'cli', 'current', 'happier');
+
+    try {
+      mkdirSync(dirname(plantedPath), { recursive: true });
+      writeFileSync(plantedPath, '#!/usr/bin/env node\n', 'utf8');
+      chmodSync(plantedPath, 0o755);
+
+      expect(resolveExplicitOrInstalledLocalFirstPartyCommand({
+        componentId: 'happier-cli',
+        releaseRing: 'stable',
+        processEnv: {
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_STACK_REPO_DIR: join(rootDir, 'elsewhere'),
+        },
+      })).toEqual({ command: plantedPath, provenance: 'override' });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a real managed install as managed and env/repo commands as override', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'cli-common-provenance-'));
+    const happierHomeDir = join(rootDir, 'home');
+    const managedPath = join(happierHomeDir, 'cli', 'current', 'happier');
+    const repoRoot = join(rootDir, 'repo');
+    const repoPath = join(repoRoot, 'apps', 'cli', 'bin', 'happier.mjs');
+    const envPath = join(rootDir, 'env-happier');
+    const stagedPayloadRoot = join(rootDir, 'staged');
+
+    try {
+      for (const path of [repoPath, envPath]) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, '#!/usr/bin/env node\n', 'utf8');
+        chmodSync(path, 0o755);
+      }
+
+      // The real install path: it writes the payload under `versions/<versionId>` and records
+      // `current.version` beside it. That record is what `managed` means.
+      mkdirSync(stagedPayloadRoot, { recursive: true });
+      writeFileSync(join(stagedPayloadRoot, 'happier'), '#!/usr/bin/env node\n', 'utf8');
+      chmodSync(join(stagedPayloadRoot, 'happier'), 0o755);
+      await installVersionedPayload({
+        componentId: 'happier-cli',
+        versionId: '0.3.0',
+        payloadRoot: stagedPayloadRoot,
+        releaseRing: 'stable',
+        processEnv: { HAPPIER_HOME_DIR: happierHomeDir },
+      });
+
+      expect(resolveExplicitOrInstalledLocalFirstPartyCommand({
+        componentId: 'happier-cli',
+        releaseRing: 'stable',
+        envVarNames: DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
+        processEnv: {
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_STACK_REPO_DIR: repoRoot,
+          [DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES[0]]: envPath,
+        },
+      })).toEqual({ command: envPath, provenance: 'override' });
+
+      expect(resolveExplicitOrInstalledLocalFirstPartyCommand({
+        componentId: 'happier-cli',
+        releaseRing: 'stable',
+        processEnv: {
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_STACK_REPO_DIR: repoRoot,
+        },
+      })).toEqual({ command: repoPath, provenance: 'override' });
+
+      expect(resolveExplicitOrInstalledLocalFirstPartyCommand({
+        componentId: 'happier-cli',
+        releaseRing: 'stable',
+        processEnv: {
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_STACK_REPO_DIR: join(rootDir, 'elsewhere'),
+        },
+      })).toEqual({ command: managedPath, provenance: 'managed' });
+
+      // The binary alone is not enough: with the install record removed the very same runnable
+      // payload is `override`, because nothing here recorded an install that was verified.
+      rmSync(join(happierHomeDir, 'cli', 'current.version'), { force: true });
+      expect(resolveExplicitOrInstalledLocalFirstPartyCommand({
+        componentId: 'happier-cli',
+        releaseRing: 'stable',
+        processEnv: {
+          HAPPIER_HOME_DIR: happierHomeDir,
+          HAPPIER_STACK_REPO_DIR: join(rootDir, 'elsewhere'),
+        },
+      })).toEqual({ command: managedPath, provenance: 'override' });
+    } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });

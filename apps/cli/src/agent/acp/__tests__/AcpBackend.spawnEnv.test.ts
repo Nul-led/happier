@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { logger } from '@/ui/logger';
 
 import { AcpBackend } from '../AcpBackend';
 import { createAcpTestTransportHandler, writeAcpTestAgentScript } from '../testkit/subprocessHarness';
@@ -75,6 +76,27 @@ function writeEnvCaptureAcpAgentScript(params: { dir: string }): string {
     dir: params.dir,
     fileName: 'fake-acp-env-capture-agent.mjs',
     source: src,
+  });
+}
+
+function writeRejectedInitializeAcpAgentScript(params: { dir: string; secret: string }): string {
+  return writeAcpTestAgentScript({
+    dir: params.dir,
+    fileName: 'rejected-initialize-acp-agent.mjs',
+    source: `
+      const readline = await import('node:readline');
+      const lines = readline.createInterface({ input: process.stdin });
+      lines.on('line', (line) => {
+        const request = JSON.parse(line);
+        if (request.method === 'initialize') {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32603, message: ${JSON.stringify(`provider rejected: ${params.secret}`)} },
+          }) + '\\n');
+        }
+      });
+    `,
   });
 }
 
@@ -191,4 +213,28 @@ describe('AcpBackend spawn environment', () => {
       }
     });
   });
+
+  it('does not log provider-controlled initialization failure contents during cleanup', async () => {
+    await withTempDir('happier-acp-initialize-log-', async (dir) => {
+      const secret = 'Bearer must-not-appear-in-acp-initialization-log';
+      const scriptPath = writeRejectedInitializeAcpAgentScript({ dir, secret });
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+      const backend = new AcpBackend({
+        agentName: 'test',
+        cwd: dir,
+        command: process.execPath,
+        args: [scriptPath],
+      });
+
+      try {
+        await expect(backend.startSession()).rejects.toThrow(secret);
+        const logged = debugSpy.mock.calls.flatMap((call) => call).map((value) => (
+          value instanceof Error ? `${value.message}\n${value.stack ?? ''}` : JSON.stringify(value)
+        )).join('\n');
+        expect(logged).not.toContain(secret);
+      } finally {
+        await backend.dispose();
+      }
+    });
+  }, 10_000);
 });

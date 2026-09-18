@@ -1,24 +1,32 @@
 import type { StoredCredentials } from '@/persistence';
 
-import { openEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
-import { decodeBase64 } from '../encryption';
+import { deriveAccountMachineKeyFromRecoverySecret, openEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import { decodeBase64, encodeBase64 } from '../encryption';
 
 export function openSessionDataEncryptionKey(params: {
   credential: StoredCredentials;
-  encryptedDataEncryptionKeyBase64: string | null | undefined;
+  encryptedDataEncryptionKeyBase64: unknown;
 }): Uint8Array | null {
-  if (params.credential.encryption?.type !== 'dataKey') {
-    return null;
-  }
-
+  const encryption = params.credential.encryption;
+  if (!encryption) return null;
   const encryptedBase64 = params.encryptedDataEncryptionKeyBase64;
   if (typeof encryptedBase64 !== 'string' || encryptedBase64.length === 0) {
     return null;
   }
 
-  const encrypted = decodeBase64(encryptedBase64);
-  return openEncryptedDataKeyEnvelopeV1({
-    envelope: encrypted,
-    recipientSecretKeyOrSeed: params.credential.encryption.machineKey,
-  });
+  const credentialKey = encryption.type === 'legacy' ? encryption.secret : encryption.machineKey;
+  if (credentialKey.length !== 32) return null;
+  try {
+    const encrypted = decodeBase64(encryptedBase64);
+    // The shared decoder is deliberately permissive; published envelopes are not.
+    if (encodeBase64(encrypted) !== encryptedBase64) return null;
+    return openEncryptedDataKeyEnvelopeV1({
+      envelope: encrypted,
+      recipientSecretKeyOrSeed: encryption.type === 'legacy'
+        ? deriveAccountMachineKeyFromRecoverySecret(credentialKey)
+        : credentialKey,
+    });
+  } catch {
+    return null;
+  }
 }

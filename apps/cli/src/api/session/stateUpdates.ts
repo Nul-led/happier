@@ -179,6 +179,7 @@ export async function updateSessionMetadataWithAck(opts: {
 export async function updateSessionAgentStateWithAck(opts: {
     socket: AckableSocket;
     sessionId: string;
+    ownerActivityDelivery?: 'rich_sender' | 'home_required';
     getAgentState: () => AgentState | null;
     setAgentState: (agentState: AgentState | null) => void;
     getAgentStateVersion: () => number;
@@ -208,7 +209,12 @@ export async function updateSessionAgentStateWithAck(opts: {
             opts.sessionEncryptionMode === 'plain'
                 ? JSON.stringify(updated)
                 : (updated ? encodeBase64(encrypt(opts.encryptionKey, opts.encryptionVariant, updated)) : null);
-        const activitySummaryV1 = deriveActivitySummaryFromAgentState(updated, previous);
+        const activitySummaryV1 = {
+            ...deriveActivitySummaryFromAgentState(updated, previous),
+            ...(opts.ownerActivityDelivery
+                ? { ownerActivityDelivery: opts.ownerActivityDelivery }
+                : {}),
+        };
         const answer = await emitSocketWithAck<any>({
             socket: opts.socket,
             event: 'update-state',

@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Credentials, TokenOnlyCredentials } from '@/persistence';
 import type { AccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
-import { accountSettingsParse, McpServersSettingsV1Schema, type AccountSettings } from '@happier-dev/protocol';
+import {
+  accountSettingsParse,
+  formatSavedSecretCatalogReferenceV1,
+  McpServersSettingsV1Schema,
+  sealSavedSecretResourceStoredContentV1,
+  type AccountSettings,
+} from '@happier-dev/protocol';
 
 import { handleMcpCommand } from './mcp';
 import type { McpCommandDeps } from './mcp/deps';
@@ -93,7 +99,10 @@ async function runJsonMcpCommand(
   process.exitCode = undefined;
 
   try {
-    await handleMcpCommand(args, deps);
+    await handleMcpCommand(args, {
+      hydrateSavedSecretCatalog: async () => ({ resources: [], state: 'ready' }),
+      ...deps,
+    });
     return {
       parsed: JSON.parse(output.logs.join('\n').trim()) as JsonEnvelope,
       exitCode: process.exitCode,
@@ -563,6 +572,68 @@ describe.sequential('happier mcp servers --json', () => {
     ]);
     expect(capturedProbeBaseEnv).toBe(commandEnv);
     expect(capturedProbeConfigEnv).toEqual({ API_KEY: 'plain-secret-value' });
+    expect(exitCode).toBe(0);
+  });
+
+  it('hydrates and probes an MCP server backed by a shared Saved Secret', async () => {
+    const resourceId = 'shared-resource-1';
+    const sharedRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+    const mcpSettings = McpServersSettingsV1Schema.parse({
+      v: 1,
+      strictMode: true,
+      servers: [{
+        id: 'srv-shared',
+        name: 'shared-example',
+        transport: 'stdio',
+        stdio: { command: 'node', args: ['server.js'] },
+        env: { API_KEY: { t: 'savedSecret', secretId: sharedRef } },
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+      bindings: [{
+        id: 'bind-shared',
+        serverId: 'srv-shared',
+        enabled: true,
+        target: { t: 'allMachines' },
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    });
+    let observedApiKey: string | undefined;
+
+    const { parsed, exitCode } = await runJsonMcpCommand([
+      'servers', 'test', '--mcp-server', 'shared-example', '--dir', '/tmp', '--json',
+    ], {
+      readStoredCredentials: async () => createTokenOnlyCredentialsStub(),
+      ensureMachineIdForCredentials: async () => ({ machineId: 'machine-1' }),
+      bootstrapAccountSettingsContext: async () => createAccountSettingsContextStub({
+        mcpServersSettingsV1: mcpSettings,
+      }),
+      hydrateSavedSecretCatalog: async () => ({
+        state: 'ready',
+        resources: [{
+          resourceId,
+          ownerAccountId: 'owner-account',
+          displayName: 'Shared API key',
+          kind: 'apiKey',
+          encryptionMode: 'plain',
+          revision: 3,
+          storedContent: sealSavedSecretResourceStoredContentV1({
+            resourceId,
+            mode: 'plain',
+            content: { v: 1, name: 'Shared API key', kind: 'apiKey', value: 'shared-value' },
+          }),
+          materialStatus: 'ready',
+        }],
+      }),
+      probeMcpStdioServerTools: async ({ config }) => {
+        observedApiKey = config.env?.API_KEY;
+        return [{ name: 'shared-tool' }];
+      },
+    } satisfies Partial<McpCommandDeps>);
+
+    expect(parsed.ok).toBe(true);
+    expect(observedApiKey).toBe('shared-value');
     expect(exitCode).toBe(0);
   });
 

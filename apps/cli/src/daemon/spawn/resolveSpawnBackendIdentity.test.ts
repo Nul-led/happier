@@ -85,7 +85,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result.ok).toBe(true);
@@ -111,7 +110,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
         sourceKind: 'built_in',
       },
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toMatchObject({
@@ -138,7 +136,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
       credentials: null,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result.ok).toBe(true);
@@ -151,7 +148,7 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
     });
   });
 
-  it('backfills resume from attach context before loading local handoff overlay backend identity', async () => {
+  it('requires canonical attach identity instead of reviving a local handoff overlay backend identity', async () => {
     const liveCredentials = createLegacyCredentials('live-token', 4);
     resolveExistingSessionAttachContextMock.mockResolvedValueOnce({
       ok: true,
@@ -159,40 +156,25 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       vendorResumeId: 'sess-handoff-direct',
       backendTarget: null,
     });
-    const loadLocalHandoffMetadataByVendorResumeId = vi.fn(async (vendorResumeId: string) =>
-      vendorResumeId === 'sess-handoff-direct'
-        ? {
-            handoffV1: {
-              v: 1,
-              providerId: 'claude',
-            },
-          }
-        : null,
-    );
-
     const result = await resolveSpawnBackendIdentity({
       existingSessionId: 'sess-handoff-source',
       resume: '',
       agentTarget: undefined,
       backendTarget: undefined,
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId,
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      effectiveResume: 'sess-handoff-direct',
-      effectiveBackendTargetV2: {
-        kind: 'backend',
-        backendId: 'claude',
-        sourceKind: 'built_in',
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        type: 'error',
+        errorCode: 'INVALID_REQUEST',
+        errorMessage: 'Unknown Agent or backend target',
       },
-      catalogAgentId: 'claude',
     });
-    expect(loadLocalHandoffMetadataByVendorResumeId).toHaveBeenCalledWith('sess-handoff-direct');
   });
 
-  it('rejects a local handoff overlay whose ACP flavor nests the customAcp placeholder', async () => {
+  it('rejects a resume whose canonical attach context has no backend target', async () => {
     const liveCredentials = createLegacyCredentials('live-token', 16);
     resolveExistingSessionAttachContextMock.mockResolvedValueOnce({
       ok: true,
@@ -207,12 +189,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: undefined,
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => ({
-        handoffV1: {
-          v: 1,
-          providerId: 'acp:customAcp',
-        },
-      }),
     });
 
     expect(result).toEqual({
@@ -225,7 +201,7 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
     });
   });
 
-  it('uses an active external Agent handoff identity without substituting a bundled Agent', async () => {
+  it('does not infer an external Agent identity from retired handoff metadata', async () => {
     const liveCredentials = createLegacyCredentials('live-token', 14);
     resolveExistingSessionAttachContextMock.mockResolvedValueOnce({
       ok: true,
@@ -240,19 +216,15 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: undefined,
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => ({
-        handoffV1: { v: 1, agentId: 'acme-agent' },
-      }),
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      effectiveBackendTargetV2: {
-        kind: 'backend',
-        backendId: 'acme-agent',
-        sourceKind: 'built_in',
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        type: 'error',
+        errorCode: 'INVALID_REQUEST',
+        errorMessage: 'Unknown Agent or backend target',
       },
-      catalogAgentId: 'acme-agent',
     });
   });
 
@@ -270,7 +242,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'acme-agent', sourceKind: 'built_in' },
       credentials: createLegacyCredentials('live-token', 15),
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toEqual({
@@ -289,15 +260,12 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       ok: false,
       reason: 'linkedResumeIdentityUnavailable',
     });
-    const loadLocalHandoffMetadataByVendorResumeId = vi.fn(async () => null);
-
     const result = await resolveSpawnBackendIdentity({
       existingSessionId: 'sess-linked-stale',
       resume: 'caller-supplied-stale-id',
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'antigravity', sourceKind: 'built_in' },
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId,
     });
 
     expect(result).toMatchObject({
@@ -307,7 +275,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
         errorCode: 'SPAWN_VALIDATION_FAILED',
       },
     });
-    expect(loadLocalHandoffMetadataByVendorResumeId).not.toHaveBeenCalled();
   });
 
   it('uses the verified linked vendor resume id instead of a caller-supplied resume id', async () => {
@@ -326,7 +293,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'antigravity', sourceKind: 'built_in' },
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toMatchObject({
@@ -355,7 +321,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: undefined,
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toMatchObject({
@@ -384,7 +349,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
         sourceKind: 'configured',
       } as never,
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toMatchObject({
@@ -408,7 +372,6 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
       agentTarget: undefined,
       backendTarget: { kind: 'backend', backendId: 'customAcp', sourceKind: 'built_in' },
       credentials: liveCredentials,
-      loadLocalHandoffMetadataByVendorResumeId: async () => null,
     });
 
     expect(result).toEqual({
@@ -419,5 +382,67 @@ describe('resolveSpawnBackendIdentity credential precedence', () => {
         errorMessage: 'Unknown Agent or backend target',
       },
     });
+  });
+});
+
+describe('resolveSpawnBackendIdentity opaque Agent resume id', () => {
+  /** The Agent minted these bytes; the daemon hands them straight back. */
+  const OPAQUE_RESUME_ID = ' provider\nsession ';
+
+  beforeEach(() => {
+    readAgentCatalogSnapshotMock.mockReturnValue({
+      agentDefinitionsById: new Map(),
+      catalogEntriesById: {
+        codex: { id: 'codex', cliSubcommand: 'codex', vendorResumeSupport: 'supported' },
+      },
+    });
+  });
+
+  afterEach(() => {
+    readStoredCredentialsMock.mockReset();
+    readStoredCredentialsMock.mockResolvedValue(null);
+  });
+
+  it('carries the exact resume bytes into the resolved backend identity', async () => {
+    const result = await resolveSpawnBackendIdentity({
+      existingSessionId: '',
+      resume: OPAQUE_RESUME_ID,
+      agentTarget: undefined,
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      credentials: null,
+    });
+
+    expect(result).toMatchObject({ ok: true, effectiveResume: OPAQUE_RESUME_ID });
+  });
+
+  it('does not use resume bytes as a retired local metadata lookup key', async () => {
+    const result = await resolveSpawnBackendIdentity({
+      existingSessionId: 'sess-handoff',
+      resume: OPAQUE_RESUME_ID,
+      agentTarget: undefined,
+      backendTarget: undefined,
+      credentials: null,
+    });
+
+    expect(result).toMatchObject({ ok: false });
+  });
+
+  it('adopts an attached Session vendor resume id without renormalizing its bytes', async () => {
+    resolveExistingSessionAttachContextMock.mockResolvedValue({
+      ok: true,
+      attachPayload: { v: 2, encryptionMode: 'plain' },
+      vendorResumeId: OPAQUE_RESUME_ID,
+      backendTarget: null,
+    });
+
+    const result = await resolveSpawnBackendIdentity({
+      existingSessionId: 'sess-attached',
+      resume: '',
+      agentTarget: undefined,
+      backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+      credentials: null,
+    });
+
+    expect(result).toMatchObject({ ok: true, effectiveResume: OPAQUE_RESUME_ID });
   });
 });

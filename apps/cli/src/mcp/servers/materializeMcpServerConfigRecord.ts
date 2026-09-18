@@ -10,6 +10,10 @@
  * Strict mode:
  * - when enabled, any missing/invalid materialization for an enabled server throws.
  * - when disabled, invalid servers are skipped and surfaced as warnings.
+ *
+ * An explicitly selected Saved Secret is not an optional invalid server: its
+ * canonical catalog failure is always thrown as `SavedSecretResolutionError`,
+ * including in non-strict mode, so callers cannot silently drop the server.
  */
 
 import { tmpdir } from 'node:os';
@@ -24,6 +28,10 @@ import {
   type ResolveEffectiveServersV1Result,
   type SecretStringV1,
 } from '@happier-dev/protocol';
+import {
+  SavedSecretResolutionError,
+  type SavedSecretMaterializerV1,
+} from '@/settings/secrets/savedSecretCatalog';
 
 import { normalizePackageRunnerInvocation } from './normalizePackageRunnerInvocation';
 import { resolveMcpValueRefPlaintext } from './resolveMcpValueRefPlaintext';
@@ -179,6 +187,7 @@ async function materializeRemoteServer(params: Readonly<{
 export async function materializeMcpServerConfigRecord(params: Readonly<{
   resolved: ResolveEffectiveServersV1Result;
   savedSecretsById: ReadonlyMap<string, SecretStringV1>;
+  savedSecretMaterializer?: SavedSecretMaterializerV1;
   settingsSecretsKey: Uint8Array | null;
   settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
   processEnv?: NodeJS.ProcessEnv;
@@ -204,15 +213,28 @@ export async function materializeMcpServerConfigRecord(params: Readonly<{
       const resolved = resolveMcpValueRefPlaintext({
         valueRef,
         savedSecretsById: params.savedSecretsById,
+        savedSecretMaterializer: params.savedSecretMaterializer,
         settingsSecretsKey: params.settingsSecretsKey,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         processEnv,
       });
-      if (resolved === null) {
+      if (
+        resolved.status !== 'ready'
+        && resolved.status !== 'literal_unavailable'
+        && valueRef.t === 'savedSecret'
+      ) {
+        throw new SavedSecretResolutionError({
+          status: resolved.status,
+          reference: valueRef.secretId,
+          consumer: 'mcp',
+          field: `env:${envKey}`,
+        });
+      }
+      if (resolved.status !== 'ready') {
         missingDetail = `env:${envKey}`;
         break;
       }
-      resolvedEnv[envKey] = resolved;
+      resolvedEnv[envKey] = resolved.value;
     }
 
     if (missingDetail) {
@@ -267,15 +289,28 @@ export async function materializeMcpServerConfigRecord(params: Readonly<{
       const resolved = resolveMcpValueRefPlaintext({
         valueRef,
         savedSecretsById: params.savedSecretsById,
+        savedSecretMaterializer: params.savedSecretMaterializer,
         settingsSecretsKey: params.settingsSecretsKey,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         processEnv,
       });
-      if (resolved === null) {
+      if (
+        resolved.status !== 'ready'
+        && resolved.status !== 'literal_unavailable'
+        && valueRef.t === 'savedSecret'
+      ) {
+        throw new SavedSecretResolutionError({
+          status: resolved.status,
+          reference: valueRef.secretId,
+          consumer: 'mcp',
+          field: `header:${headerKey}`,
+        });
+      }
+      if (resolved.status !== 'ready') {
         missingDetail = `header:${headerKey}`;
         break;
       }
-      resolvedHeaders[headerKey] = resolved;
+      resolvedHeaders[headerKey] = resolved.value;
     }
 
     if (missingDetail) {

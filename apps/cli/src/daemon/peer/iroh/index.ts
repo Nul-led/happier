@@ -10,6 +10,7 @@ export {
   type MachineCarrierRole,
   type MachineCarrierTransportConnection,
   type MachineCarrierTransportOpenInput,
+  type ProviderBrokerMachineCarrierTransportOpenInput,
   type MachineCarrierHandshakeVerificationInput,
   type MachineCarrierVerifiedHandshake,
 } from './machineCarrier';
@@ -20,3 +21,4 @@ export {
   type UnavailableDaemonMachineIrohRuntime,
 } from './daemonMachineIrohRuntime';
 export { createWorkspaceMachineCarrierTunnelOpen } from './workspaceMachineCarrierTunnelOpen';
+export { createProviderBrokerMachineCarrierTunnelOpen } from './providerBrokerMachineCarrierTunnelOpen';

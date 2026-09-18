@@ -1,6 +1,10 @@
 import type { ResolvedExecutablePluginRuntimeRegistry } from '../resolveExecutablePluginRuntimeRegistry';
 
 import { hasBlockingPluginReloadDiagnostic } from './controller';
+import {
+  DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS,
+  runWithOptionalTimeout,
+} from '../lifecycle/utils';
 
 function normalizePluginIds(pluginIds: readonly string[]): readonly string[] {
   return Object.freeze([...new Set(pluginIds.map((pluginId) => pluginId.trim()).filter(Boolean))].sort());
@@ -54,8 +58,15 @@ export async function bootstrapPrimaryAgentRuntimesForReadiness(params: Readonly
   if (pluginIds.size === 0) return;
   const registrations = [...params.registry.agentRuntimesByAgentId.values()]
     .sort((left, right) => left.agentId.localeCompare(right.agentId));
+  const deadline = Date.now() + DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS;
   for (const registration of registrations) {
     if (!pluginIds.has(registration.pluginId) || !registration.hasPrimaryRuntime) continue;
-    await registration.createRuntime({ signal: registration.retirementSignal });
+    await runWithOptionalTimeout(
+      Math.max(0, deadline - Date.now()),
+      () => registration.createRuntime({ signal: registration.retirementSignal }),
+      () => new Error(
+        `Plugin '${registration.pluginId}' primary Agent runtime readiness timed out after ${DEFAULT_PLUGIN_INITIALIZATION_TIMEOUT_MS}ms`,
+      ),
+    );
   }
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { ConnectedServiceTemporaryThrottleRetryScheduler } from './temporaryThrottleRetryScheduler';
+import { routeSessionUsageLimitRecoveryWaitResumeCancel } from '@/session/usageLimitRecoveryControls/sessionUsageLimitRecoveryControlRouter';
+import { createRecoveryIntentFileStore } from '../recoveryScheduler/recoveryIntentFileStore';
 
 function createMemoryStore() {
   const persisted = new Map<string, unknown>();
@@ -20,6 +25,206 @@ function createMemoryStore() {
 }
 
 describe('ConnectedServiceTemporaryThrottleRetryScheduler', () => {
+  it('rejects cancellation of a replaced occurrence inside the durable owner transaction', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'capacity-recovery-'));
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 1_000, store: createRecoveryIntentFileStore(join(directory, 'intents.json')), random: () => 0.5, resume: async () => ({ status: 'continued' }) });
+    try {
+      const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+      await scheduler.enable(input);
+      const previous = scheduler.read('sess-1')!;
+      await scheduler.enable({ ...input, continuation: { ...input.continuation, interruptedOriginId: 'turn-2' } });
+      await expect(scheduler.cancel({ sessionId: 'sess-1', issueFingerprint: previous.issueFingerprint, armedAtMs: previous.armedAtMs })).resolves.toBeNull();
+      expect(scheduler.read('sess-1')).toMatchObject({ status: 'waiting', continuation: { interruptedOriginId: 'turn-2' } });
+      const current = scheduler.read('sess-1')!;
+      await expect(scheduler.cancel({ sessionId: 'sess-1', issueFingerprint: current.issueFingerprint, armedAtMs: current.armedAtMs })).resolves.toMatchObject({ status: 'cancelled' });
+    } finally {
+      scheduler.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it('routes Stop retrying to the temporary recovery owner without quota mutation', async () => {
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 1_000, store: createMemoryStore().store, random: () => 0.5, resume: async () => ({ status: 'continued' }) });
+    await scheduler.enable({ sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard', customResumePrompt: null, recoveryKind: 'capacity' } });
+    const intent = scheduler.read('sess-1')!;
+    const routeInput: Parameters<typeof routeSessionUsageLimitRecoveryWaitResumeCancel>[0] = {
+      token: 'token', sessionId: 'sess-1', rawSession: {
+        id: 'sess-1', seq: 1, createdAt: 1_000, updatedAt: 1_000, activeAt: 1_000,
+        active: true, machineId: 'machine-1', metadata: '{}', metadataVersion: 1,
+        encryptionMode: 'plain', dataEncryptionKey: null,
+      },
+      metadata: { machineId: 'machine-1' }, currentMachineId: 'machine-1', ctx: null, mode: 'plain',
+      stageUsageLimitRecoveryMutation: async () => { throw new Error('Must not mutate quota recovery'); },
+      callLiveSessionRpc: async () => { throw new Error('Must not route capacity to live quota recovery'); },
+      request: { sessionId: 'sess-1', issueFingerprint: `temporary-throttle:${intent.issueFingerprint}`, armedAtMs: intent.armedAtMs },
+      readTemporaryThrottleRecovery: (sessionId: string) => scheduler.read(sessionId),
+      cancelTemporaryThrottleRecovery: (input: { sessionId: string }) => scheduler.cancel(input),
+    };
+    await expect(routeSessionUsageLimitRecoveryWaitResumeCancel({ ...routeInput, request: { ...routeInput.request, armedAtMs: intent.armedAtMs - 1 } })).resolves.toMatchObject({ ok: false });
+    expect(scheduler.read('sess-1')?.status).toBe('waiting');
+    await expect(routeSessionUsageLimitRecoveryWaitResumeCancel({ ...routeInput, currentMachineId: 'another-machine' })).resolves.toMatchObject({ ok: false });
+    expect(scheduler.read('sess-1')?.status).toBe('waiting');
+    const result = await routeSessionUsageLimitRecoveryWaitResumeCancel(routeInput);
+    expect(result).toMatchObject({ ok: true, status: 'cancelled' });
+    expect(scheduler.read('sess-1')?.status).toBe('cancelled');
+    scheduler.dispose();
+  });
+  it('backs off consecutive overloads across accepted continuations until completed model execution', async () => {
+    let nowMs = 1_000;
+    const { store } = createMemoryStore();
+    const resume = vi.fn(async () => ({ status: 'continued' as const }));
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => nowMs, store, resume, random: () => 0.5 });
+    const report = (origin: string) => ({
+      sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null,
+      issueFingerprint: 'temporary-retry:capacity:openai-codex:no-group:primary',
+      continuation: { interruptedOriginId: origin, resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const },
+    });
+    for (const [attempt, delay] of [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000, 300_000].entries()) {
+      await expect(scheduler.enable(report(`turn-${attempt}`))).resolves.toMatchObject({ nextRetryAtMs: nowMs + delay, attemptCount: attempt, maxAttempts: 0 });
+      nowMs += delay;
+      await scheduler.wake({ sessionId: 'sess-1', reason: 'timer' });
+      expect(scheduler.read('sess-1')).toMatchObject({ status: 'awaiting_outcome', nextRetryAtMs: null, attemptCount: attempt + 1 });
+      await scheduler.wake({ sessionId: 'sess-1', reason: 'manual' });
+      expect(resume).toHaveBeenCalledTimes(attempt + 1);
+      for (const event of ['task_started', 'prompt_or_steer', 'turn_cancelled'] as const) {
+        await scheduler.recordTurnLifecycle({ sessionId: 'sess-1', event, observedAtMs: nowMs });
+      }
+      await scheduler.recordTurnLifecycle({ sessionId: 'sess-1', event: 'assistant_message_end', terminalStatus: 'failed', observedAtMs: nowMs });
+      expect(scheduler.read('sess-1')?.attemptCount).toBe(attempt + 1);
+    }
+    await scheduler.recordTurnLifecycle({ sessionId: 'sess-1', event: 'assistant_message_end', terminalStatus: 'completed', observedAtMs: nowMs });
+    await expect(scheduler.enable(report('after-success'))).resolves.toMatchObject({ attemptCount: 0, nextRetryAtMs: nowMs + 5_000 });
+    await scheduler.cancel({ sessionId: 'sess-1' });
+    await scheduler.wake({ sessionId: 'sess-1', reason: 'timer' });
+    expect(resume).toHaveBeenCalledTimes(9);
+    scheduler.dispose();
+  });
+
+  it('jitter stays within twenty percent and provider timing is a minimum for overloads', async () => {
+    for (const [random, expectedDelay] of [[0, 4_000], [1, 6_000]] as const) {
+      const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 1_000, store: createMemoryStore().store, random: () => random, resume: async () => ({ status: 'continued' }) });
+      const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+      await expect(scheduler.enable(input)).resolves.toMatchObject({ nextRetryAtMs: 1_000 + expectedDelay });
+      await expect(scheduler.enable({ ...input, retryAfterMs: 20_000, resetAtMs: 15_000 })).resolves.toMatchObject({ nextRetryAtMs: 21_000 });
+      scheduler.dispose();
+    }
+  });
+
+  it('does not postpone a duplicate capacity report or lose cancellation during continuation handoff', async () => {
+    let nowMs = 1_000;
+    let finishResume!: () => void;
+    let markResumeStarted!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => { markResumeStarted = resolve; });
+    const states: Array<string | null> = [];
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({
+      nowMs: () => nowMs, store: createMemoryStore().store, random: () => 0.5,
+      onStateChange: (_sessionId, intent) => { states.push(intent?.status ?? null); },
+      resume: async () => {
+        markResumeStarted();
+        await new Promise<void>((resolve) => { finishResume = resolve; });
+        return { status: 'continued' };
+      },
+    });
+    const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+    await scheduler.enable(input);
+    nowMs = 2_000;
+    await expect(scheduler.enable(input)).resolves.toMatchObject({ nextRetryAtMs: 6_000 });
+    await expect(scheduler.enable({ ...input, retryAfterMs: 8_000 })).resolves.toMatchObject({ nextRetryAtMs: 9_000 });
+    nowMs = 3_000;
+    await expect(scheduler.enable({ ...input, retryAfterMs: 8_000 })).resolves.toMatchObject({ nextRetryAtMs: 9_000 });
+    nowMs = 9_000;
+    const wake = scheduler.wake({ sessionId: 'sess-1', reason: 'manual' });
+    await resumeStarted;
+    await scheduler.cancel({ sessionId: 'sess-1' });
+    finishResume();
+    await wake;
+    expect(scheduler.read('sess-1')).toMatchObject({ status: 'cancelled', nextRetryAtMs: null });
+    expect(states.at(-1)).toBe('cancelled');
+    scheduler.dispose();
+  });
+
+  it('backs off handoff transport failures without counting them as model failures', async () => {
+    let nowMs = 1_000;
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => nowMs, store: createMemoryStore().store, random: () => 0.5, resume: async () => { throw new Error('transport unavailable'); } });
+    const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+    await scheduler.enable(input);
+    nowMs = 6_000;
+    await scheduler.wake({ sessionId: 'sess-1', reason: 'timer' });
+    expect(scheduler.read('sess-1')).toMatchObject({ capacityFailureCount: 1, attemptCount: 1, nextRetryAtMs: 16_000 });
+    nowMs = 16_000;
+    await scheduler.wake({ sessionId: 'sess-1', reason: 'timer' });
+    expect(scheduler.read('sess-1')).toMatchObject({ capacityFailureCount: 1, attemptCount: 2, nextRetryAtMs: 36_000 });
+    scheduler.dispose();
+  });
+
+  it('manual retry bypasses Happier backoff but honors the provider timing minimum', async () => {
+    let nowMs = 1_000;
+    const resume = vi.fn(async () => ({ status: 'continued' as const }));
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => nowMs, store: createMemoryStore().store, random: () => 0.5, resume });
+    await scheduler.enable({ sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', retryAfterMs: 2_000, resetAtMs: 4_000, continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard', customResumePrompt: null, recoveryKind: 'capacity' } });
+    await scheduler.cancel({ sessionId: 'sess-1' });
+    await expect(scheduler.wake({ sessionId: 'sess-1', reason: 'manual' })).resolves.toEqual({ status: 'waiting' });
+    expect(scheduler.read('sess-1')!.armedAtMs).toBeGreaterThan(1_000);
+    expect(resume).not.toHaveBeenCalled();
+    nowMs = 4_000;
+    await expect(scheduler.wake({ sessionId: 'sess-1', reason: 'manual' })).resolves.toEqual({ status: 'resumed' });
+    expect(resume).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it('keeps Stop retrying across a new failed origin and resumes only on explicit retry', async () => {
+    const resume = vi.fn(async () => ({ status: 'continued' as const }));
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 1_000, store: createMemoryStore().store, random: () => 0.5, resume });
+    const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+    await scheduler.enable(input);
+    await scheduler.cancel({ sessionId: 'sess-1' });
+    await expect(scheduler.enable({ ...input, continuation: { ...input.continuation, interruptedOriginId: 'turn-2' } })).resolves.toMatchObject({ status: 'cancelled', nextRetryAtMs: null });
+    await expect(scheduler.wake({ sessionId: 'sess-1', reason: 'timer' })).resolves.toMatchObject({ status: 'inactive' });
+    expect(resume).not.toHaveBeenCalled();
+    await expect(scheduler.wake({ sessionId: 'sess-1', reason: 'manual' })).resolves.toMatchObject({ status: 'resumed' });
+    expect(resume).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it('retains the capacity streak when newer user input supersedes a continuation', async () => {
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 1_000, store: createMemoryStore().store, random: () => 0.5, resume: async () => ({ status: 'superseded', reason: 'newer_user_input' }) });
+    const input = { sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard' as const, customResumePrompt: null, recoveryKind: 'capacity' as const } };
+    await scheduler.enable(input);
+    await scheduler.wake({ sessionId: 'sess-1', reason: 'manual' });
+    expect(scheduler.read('sess-1')).toMatchObject({ capacityFailureCount: 1, nextRetryAtMs: null });
+    await expect(scheduler.enable(input)).resolves.toMatchObject({ nextRetryAtMs: null });
+    await expect(scheduler.enable({ ...input, continuation: { ...input.continuation, interruptedOriginId: 'turn-2' } })).resolves.toMatchObject({ nextRetryAtMs: 11_000 });
+    scheduler.dispose();
+  });
+
+  it('does not reinterpret a predecessor completed-handoff row as an explicit Stop on a later turn', async () => {
+    const { persisted, store } = createMemoryStore();
+    // Before this correction, continued handoff settled through markCancelled and
+    // persisted this shape, indistinguishable from the old same-occurrence cancel.
+    persisted.set('sess-1', {
+      v: 1, sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null,
+      status: 'cancelled', issueFingerprint: 'overload:origin:turn-1', armedAtMs: 1_000,
+      nextRetryAtMs: null, retryAfterMs: null, resetAtMs: null, attemptCount: 1, maxAttempts: 3, lastError: null,
+      continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard', customResumePrompt: null, recoveryKind: 'capacity' },
+    });
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 2_000, store, random: () => 0.5, resume: async () => ({ status: 'continued' }) });
+    await expect(scheduler.enable({ sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null, issueFingerprint: 'overload', continuation: { interruptedOriginId: 'turn-2', resumePromptMode: 'standard', customResumePrompt: null, recoveryKind: 'capacity' } })).resolves.toMatchObject({ status: 'waiting', attemptCount: 0, maxAttempts: 0, nextRetryAtMs: 7_000 });
+    scheduler.dispose();
+  });
+
+  it('explicit retry retires the predecessor capacity attempt ceiling', async () => {
+    const { persisted, store } = createMemoryStore();
+    persisted.set('sess-1', {
+      v: 1, sessionId: 'sess-1', serviceId: 'openai-codex', profileId: 'primary', groupId: null,
+      status: 'exhausted', issueFingerprint: 'overload:origin:turn-1', armedAtMs: 1_000,
+      nextRetryAtMs: null, retryAfterMs: null, resetAtMs: null, attemptCount: 3, maxAttempts: 3, lastError: 'max_attempts_exhausted',
+      continuation: { interruptedOriginId: 'turn-1', resumePromptMode: 'standard', customResumePrompt: null, recoveryKind: 'capacity' },
+    });
+    const resume = vi.fn(async () => ({ status: 'continued' as const }));
+    const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({ nowMs: () => 2_000, store, random: () => 0.5, resume });
+    await expect(scheduler.wake({ sessionId: 'sess-1', reason: 'manual' })).resolves.toMatchObject({ status: 'resumed' });
+    expect(resume).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
   it('returns typed unsupported when no durable store is configured', async () => {
     const scheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({
       nowMs: () => 1_000,

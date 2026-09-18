@@ -8,6 +8,10 @@ import type {
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { ResolvedAgentRuntimeContribution } from '@/plugins/projection/registry/types';
 
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
+
 
 function createStubRuntime(): ExecutionRunHostRuntime {
     let handler: ExecutionRunHostRuntimeMessageHandler | null = null;
@@ -15,11 +19,16 @@ function createStubRuntime(): ExecutionRunHostRuntime {
         async readResumeSupport() {
             return false;
         },
-        async provisionSession() {
+        async provisionRuntime() {
             handler?.({ type: 'model-output', fullText: 'started' });
-            return { sessionId: 's1' };
+            return { runtimeId: 's1' };
         },
-        async sendPrompt() {},
+        async deliverInput() {
+            return { status: 'admitted' as const };
+        },
+        getRuntimeLifetimeSignal() {
+            return TEST_RUNTIME_LIFETIME_SIGNAL;
+        },
         async cancel() {},
         subscribeMessages(next) {
             handler = next;
@@ -58,6 +67,7 @@ describe('createCliRuntimeCore execution-run descriptor fallback governance', ()
         }).runtimeCore;
 
         expect(() => runtimeCore.createExecutionRunBackend({
+            scope: 'detached',
             cwd: '/tmp',
             backendId: 'codex',
             permissionMode: 'read_only',

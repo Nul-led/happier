@@ -103,6 +103,9 @@ const unavailableLegacyMaterializationOwner = {
     throw new Error('legacy materialization must not be invoked');
   },
 };
+const unavailableDirectMaterial = async (): Promise<never> => {
+  throw new Error('direct Team materialization must not be invoked');
+};
 const testAuthentication = PluginConnectedAccountAuthenticationV2Schema.parse({
   defaultModeId: 'api-key',
   modes: [{
@@ -423,6 +426,7 @@ function createSelectionRuntime(
       async invokeWithReceipt() {
         throw new Error('selection must not materialize a credential');
       },
+      invokeDirectMaterial: unavailableDirectMaterial,
     },
     revisionedLegacyMaterializationOwner:
       unavailableLegacyMaterializationOwner,
@@ -477,6 +481,10 @@ function createInventoryRuntime(input: Readonly<{
   originsByAccountId?: Readonly<Record<string, readonly string[]>>;
   omitOriginReader?: boolean;
   invokeWithReceipt?: () => Promise<unknown>;
+  invokeDirectMaterial?: (
+    input: Parameters<QualifiedConnectedAccountEstablishedRuntimeOwner['invokeDirectMaterial']>[0],
+  ) => Promise<unknown>;
+  openTeamDirect?: Parameters<typeof createDaemonConnectedAccountPurposeBindingRuntime>[0]['openTeamDirect'];
   onOriginsRead?: () => void;
 }> = {}) {
   const qualifiedApi = testQualifiedApi(
@@ -491,6 +499,10 @@ function createInventoryRuntime(input: Readonly<{
     result: { kind: 'environment' as const, env: { OPENAI_API_KEY: 'sk-listed' } },
     basis: { credentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS' },
   })));
+  const invokeDirectMaterial = vi.fn(input.invokeDirectMaterial ?? (async () => ({
+    kind: 'environment' as const,
+    env: { OPENAI_API_KEY: 'sk-team-direct' },
+  })));
   const resolveConnectedAccountEndpoints = vi.fn(async (
     request: Readonly<{ account: { accountId: string } }>,
   ) => {
@@ -502,10 +514,11 @@ function createInventoryRuntime(input: Readonly<{
     resolveQualifiedConnectedAccountV4Support: () => 'advertised',
     resolveQualifiedConnectedAccountMaterializationTransport:
       advertisedMaterializationTransport,
-    establishedRuntimeOwner: { invokeWithReceipt } as unknown as Pick<
+    establishedRuntimeOwner: { invokeWithReceipt, invokeDirectMaterial } as unknown as Pick<
       QualifiedConnectedAccountEstablishedRuntimeOwner,
-      'invokeWithReceipt'
+      'invokeWithReceipt' | 'invokeDirectMaterial'
     >,
+    ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
     revisionedLegacyMaterializationOwner: unavailableLegacyMaterializationOwner,
     qualifiedApi,
     ...(input.omitOriginReader ? {} : { resolveConnectedAccountEndpoints }),
@@ -538,7 +551,7 @@ function createInventoryRuntime(input: Readonly<{
       },
     },
   });
-  return { runtime, qualifiedApi, invokeWithReceipt, resolveConnectedAccountEndpoints };
+  return { runtime, qualifiedApi, invokeWithReceipt, invokeDirectMaterial, resolveConnectedAccountEndpoints };
 }
 
 type ActionFormRuntimeParams = Parameters<typeof createDaemonConnectedAccountPurposeBindingRuntime>[0];
@@ -560,6 +573,7 @@ function createActionFormRuntime(input: Readonly<{
       async invokeWithReceipt() {
         throw new Error('Action-form option listing must not materialize a credential');
       },
+      invokeDirectMaterial: unavailableDirectMaterial,
     },
     revisionedLegacyMaterializationOwner: unavailableLegacyMaterializationOwner,
     qualifiedApi: input.qualifiedApi ?? testQualifiedApi(),
@@ -595,6 +609,148 @@ function createActionFormRuntime(input: Readonly<{
 }
 
 describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
+  it('preserves Team authentication operation errors through Connected Service materialization', async () => {
+    const { runtime, invokeDirectMaterial } = createInventoryRuntime({
+      openTeamDirect: async () => ({
+        ok: false,
+        operationError: { error: 'team_authentication_policy_unavailable' },
+      }),
+    });
+    const sessionLease = runtime.activateSessionPurposeBindings({
+      sessionId: 'session-team-direct-auth', purposes: [purpose],
+      bindings: [{ purpose, target: { kind: 'account', account: { service: openAiService, accountId: 'standard-openai' } } }],
+      directMaterialOrigins: [{
+        purpose, resourceId: 'resource-1',
+        disclosedMember: { service: openAiService, accountId: 'standard-openai' },
+      }],
+    });
+
+    await expect(runtime.owner.materialize({
+      purpose, serviceRefs: [openAiService], sessionId: 'session-team-direct-auth',
+      request: { kind: 'environment', keys: ['OPENAI_API_KEY'] }, signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'team_authentication_policy_unavailable',
+      retryable: false,
+      remediation: { kind: 'openSettings', path: '/settings/teams/authentication' },
+    });
+    expect(invokeDirectMaterial).not.toHaveBeenCalled();
+    sessionLease.dispose();
+  });
+
+  it.each([
+    ['temporarily_unavailable', 'plugin_connected_account_direct_material_temporarily_unavailable', true, { kind: 'retry' }],
+    ['source_changed', 'plugin_connected_account_direct_material_source_changed', true, { kind: 'retry' }],
+    ['recipient_binding_changed', 'plugin_connected_account_direct_material_recipient_binding_changed', false, { kind: 'openSettings', path: '/settings/account/security' }],
+    ['access_removed', 'plugin_connected_account_direct_access_removed', false, { kind: 'selectAccount', service: openAiService }],
+    ['unsupported_direct_source', 'plugin_connected_account_direct_material_unsupported', false, { kind: 'selectAccount', service: openAiService }],
+    ['resource_corrupt', 'plugin_connected_account_direct_resource_corrupt', false, undefined],
+  ] as const)(
+    'preserves Team direct failure %s as Connected Account outcome %s without materialization',
+    async (reason, code, retryable, remediation) => {
+      const { runtime, invokeDirectMaterial } = createInventoryRuntime({
+        openTeamDirect: async () => ({ ok: false, reason }),
+      });
+      const sessionLease = runtime.activateSessionPurposeBindings({
+        sessionId: 'session-team-direct',
+        purposes: [purpose],
+        bindings: [{
+          purpose,
+          target: {
+            kind: 'account',
+            account: { service: openAiService, accountId: 'standard-openai' },
+          },
+        }],
+        directMaterialOrigins: [{
+          purpose,
+          resourceId: 'resource-1',
+          disclosedMember: { service: openAiService, accountId: 'standard-openai' },
+        }],
+      });
+
+      await expect(runtime.owner.materialize({
+        purpose,
+        serviceRefs: [openAiService],
+        sessionId: 'session-team-direct',
+        request: { kind: 'environment', keys: ['OPENAI_API_KEY'] },
+        signal: new AbortController().signal,
+      })).rejects.toMatchObject({
+        code,
+        retryable,
+        ...(remediation ? { remediation } : {}),
+      } satisfies Partial<PluginError>);
+      expect(invokeDirectMaterial).not.toHaveBeenCalled();
+      sessionLease.dispose();
+    },
+  );
+
+  it('preserves a typed Team direct failure from the materialization currentness check', async () => {
+    let openCount = 0;
+    const { runtime } = createInventoryRuntime({
+      openTeamDirect: async () => {
+        openCount += 1;
+        if (openCount > 1) return { ok: false, reason: 'source_changed' } as const;
+        return {
+          ok: true,
+          payload: {
+            v: 1,
+            domain: 'happier.team-credential-direct-material',
+            homeServerIdentityId: 'home-1',
+            teamId: 'team-1',
+            resourceId: 'resource-1',
+            resourceRevision: 1,
+            recipientAccountId: 'recipient-1',
+            sourceMember: {
+              kind: 'connected_account',
+              service: openAiService,
+              connectedAccountId: 'standard-openai',
+            },
+            sourceVersion: 'source-version-1',
+            material: {
+              kind: 'qualified_connected_account',
+              credential: { v: 1, values: { token: 'direct-token' } },
+              configuration: null,
+              authenticationModeId: 'api_key',
+            },
+          },
+        } as const;
+      },
+      invokeDirectMaterial: async (input) => {
+        await input.isCurrent();
+        return { kind: 'environment', env: { OPENAI_API_KEY: 'should-not-return' } };
+      },
+    });
+    const sessionLease = runtime.activateSessionPurposeBindings({
+      sessionId: 'session-team-direct-currentness',
+      purposes: [purpose],
+      bindings: [{
+        purpose,
+        target: {
+          kind: 'account',
+          account: { service: openAiService, accountId: 'standard-openai' },
+        },
+      }],
+      directMaterialOrigins: [{
+        purpose,
+        resourceId: 'resource-1',
+        disclosedMember: { service: openAiService, accountId: 'standard-openai' },
+      }],
+    });
+
+    await expect(runtime.owner.materialize({
+      purpose,
+      serviceRefs: [openAiService],
+      sessionId: 'session-team-direct-currentness',
+      request: { kind: 'environment', keys: ['OPENAI_API_KEY'] },
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'plugin_connected_account_direct_material_source_changed',
+      retryable: true,
+      remediation: { kind: 'retry' },
+    } satisfies Partial<PluginError>);
+    expect(openCount).toBe(2);
+    sessionLease.dispose();
+  });
+
   it('lists only safe exact refs for an Action form purpose scope', async () => {
     const runtimeOwner = createSelectionRuntime(emptyStore());
 
@@ -917,9 +1073,9 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
       resolveQualifiedConnectedAccountMaterializationTransport:
         advertisedMaterializationTransport,
       // This fixture exercises only environment materialization.
-      establishedRuntimeOwner: { invokeWithReceipt } as unknown as Pick<
+      establishedRuntimeOwner: { invokeWithReceipt, invokeDirectMaterial: unavailableDirectMaterial } as unknown as Pick<
         QualifiedConnectedAccountEstablishedRuntimeOwner,
-        'invokeWithReceipt'
+        'invokeWithReceipt' | 'invokeDirectMaterial'
       >,
       revisionedLegacyMaterializationOwner:
         unavailableLegacyMaterializationOwner,
@@ -1057,9 +1213,9 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
       resolveQualifiedConnectedAccountMaterializationTransport:
         advertisedMaterializationTransport,
       // This fixture rejects before any established operation can run.
-      establishedRuntimeOwner: { invokeWithReceipt } as unknown as Pick<
+      establishedRuntimeOwner: { invokeWithReceipt, invokeDirectMaterial: unavailableDirectMaterial } as unknown as Pick<
         QualifiedConnectedAccountEstablishedRuntimeOwner,
-        'invokeWithReceipt'
+        'invokeWithReceipt' | 'invokeDirectMaterial'
       >,
       revisionedLegacyMaterializationOwner:
         unavailableLegacyMaterializationOwner,
@@ -1215,6 +1371,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
       invokeWithReceipt: vi.fn(async (): Promise<never> => {
         throw new Error('revisioned GitHub must not use the V4 reader');
       }),
+      invokeDirectMaterial: unavailableDirectMaterial,
     };
     const runtimeOwner = createDaemonConnectedAccountPurposeBindingRuntime({
       api,
@@ -1346,7 +1503,10 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
             getConnectedServiceCredentialPlain,
             getConnectedServiceCredentialSealed: vi.fn(),
           },
-          establishedRuntimeOwner: { invokeWithReceipt: establishedInvokeWithReceipt },
+          establishedRuntimeOwner: {
+            invokeWithReceipt: establishedInvokeWithReceipt,
+            invokeDirectMaterial: unavailableDirectMaterial,
+          },
           revisionedLegacyMaterializationOwner: {
             invokeWithReceipt: revisionedLegacyInvokeWithReceipt,
             invoke: vi.fn(),
@@ -2051,6 +2211,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
         async invokeWithReceipt() {
           throw new Error('no-session selection must fail before materialization');
         },
+        invokeDirectMaterial: unavailableDirectMaterial,
       },
       revisionedLegacyMaterializationOwner:
         unavailableLegacyMaterializationOwner,
@@ -2633,9 +2794,9 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
       resolveQualifiedConnectedAccountV4Support: () => 'advertised',
       resolveQualifiedConnectedAccountMaterializationTransport:
         advertisedMaterializationTransport,
-      establishedRuntimeOwner: { invokeWithReceipt } as unknown as Pick<
+      establishedRuntimeOwner: { invokeWithReceipt, invokeDirectMaterial: unavailableDirectMaterial } as unknown as Pick<
         QualifiedConnectedAccountEstablishedRuntimeOwner,
-        'invokeWithReceipt'
+        'invokeWithReceipt' | 'invokeDirectMaterial'
       >,
       revisionedLegacyMaterializationOwner: unavailableLegacyMaterializationOwner,
       qualifiedApi,

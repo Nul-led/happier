@@ -7,6 +7,7 @@ import {
   hasSessionInputContentV1,
   sessionCreationCorrespondenceMatchesV1,
   type BackendTargetRefV2,
+  type MachinePoolSelectionOriginV1,
   type SessionCreationCorrespondenceV1,
   type SessionCreationTagV1,
   type SessionSpawnNewInitialInputDispositionV1,
@@ -38,6 +39,7 @@ import {
 } from '@/session/transport/http/sessionsHttp';
 import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
+import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '@/daemon/spawn/sessionWebhookTimeoutPolicy';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { summarizeSessionRecord, type SessionSummary } from '@/cli/output/session/sessionSummary';
 import { delay } from '@/utils/time';
@@ -119,7 +121,11 @@ export type CreateSpawnedSessionParams = Readonly<{
   backendTarget?: BackendTargetRefV2;
   sessionCreationTag?: SessionCreationTagV1;
   sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
+  /** Informational origin persisted only by the fresh canonical creator. */
+  placementOrigin?: MachinePoolSelectionOriginV1;
   organizationPlacement?: SessionOrganizationPlacementV1;
+  initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1;
+  primaryTeamId?: string | null;
   modelSelection?: SessionModelSelectionV1;
   /** Mutable presentation written only through the fresh create envelope. */
   initialTitle?: string;
@@ -182,11 +188,13 @@ export type CreateSpawnedSessionParams = Readonly<{
   | 'executionAuthorization'
   | 'sessionConfigOptionOverrides'
   | 'profileId'
+  | 'secretReferenceOverlay'
   | 'environmentVariables'
   | 'resume'
   | 'approvedNewDirectoryCreation'
   | 'connectedServices'
   | 'connectedServicesUpdatedAt'
+  | 'teamCredentialBindings'
   | 'mcpSelection'
   | 'transcriptStorage'
   | 'terminal'
@@ -530,10 +538,16 @@ async function dispatchReplaySeededSpawn(args: Readonly<{
   dispatchSpawnRequest: (request: SpawnDaemonSessionRequest) => Promise<unknown>;
   spawnRequestInput: Record<string, unknown>;
 }>): Promise<unknown> {
+  const {
+    placementOrigin: _creationOwnedPlacementOrigin,
+    initialAccess: _creationOwnedInitialAccess,
+    primaryTeamId: _creationOwnedPrimaryTeamId,
+    ...attachSpawnRequestInput
+  } = args.spawnRequestInput;
   try {
     return await args.dispatchSpawnRequest(
       SpawnDaemonSessionRequestSchema.parse({
-        ...args.spawnRequestInput,
+        ...attachSpawnRequestInput,
         existingSessionId: args.sessionId,
       }),
     );
@@ -610,10 +624,14 @@ async function createReplaySeededSpawnedSession(args: Readonly<{
       path: params.directory,
       host: os.hostname(),
       flavor: replaySeededCreation.flavor,
+      ...(params.placementOrigin ? { placementOrigin: params.placementOrigin } : {}),
       ...replaySeededCreation.metadata,
       ...connectedServiceChildLaunch.metadata,
     },
     agentState: null,
+    ...(params.initialAccess !== undefined ? { initialAccess: params.initialAccess } : {}),
+    ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
+    ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
     ...(params.organizationPlacement ? { organizationPlacement: params.organizationPlacement } : {}),
     ...(accountEncryptionCurrentness ? { accountEncryptionCurrentness } : {}),
   });
@@ -840,6 +858,9 @@ export async function createSpawnedSession(
   }
   const spawnRequestInput = {
     directory: params.directory,
+    ...(params.initialAccess !== undefined ? { initialAccess: params.initialAccess } : {}),
+    ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
+    ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
     spawnNonce,
     ...(exactMachineId ? { machineId: exactMachineId } : {}),
     ...(params.agentTarget ? { agentTarget: params.agentTarget } : {}),
@@ -848,6 +869,7 @@ export async function createSpawnedSession(
     ...(params.sessionCreationCorrespondence
       ? { sessionCreationCorrespondence: params.sessionCreationCorrespondence }
       : {}),
+    ...(params.placementOrigin ? { placementOrigin: params.placementOrigin } : {}),
     ...(typeof params.initialTitle === 'string' && params.initialTitle.trim().length > 0
       ? { initialTitle: params.initialTitle.trim() }
       : {}),
@@ -869,6 +891,7 @@ export async function createSpawnedSession(
     ...(params.executionAuthorization ? { executionAuthorization: params.executionAuthorization } : {}),
     ...(params.sessionConfigOptionOverrides ? { sessionConfigOptionOverrides: params.sessionConfigOptionOverrides } : {}),
     ...(typeof params.profileId === 'string' ? { profileId: params.profileId } : {}),
+    ...(params.secretReferenceOverlay ? { secretReferenceOverlay: params.secretReferenceOverlay } : {}),
     ...(params.environmentVariables ? { environmentVariables: params.environmentVariables } : {}),
     ...(params.resume ? { resume: params.resume } : {}),
     ...(typeof params.approvedNewDirectoryCreation === 'boolean'
@@ -899,13 +922,19 @@ export async function createSpawnedSession(
       tags: [params.sessionCreationTag],
       ...(params.signal ? { signal: params.signal } : {}),
     });
-    if (lookup.state === 'available' && lookup.sessions.length > 1) {
+    if (lookup.state === 'unavailable') {
+      throw createCodedError(
+        'Deterministic Session creation requires tag lookup support',
+        SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE,
+      );
+    }
+    if (lookup.sessions.length > 1) {
       throw createCodedError(
         'Session creation tag matched more than one Session',
         'creation_conflict',
       );
     }
-    const existing = lookup.state === 'available' ? lookup.sessions[0] : undefined;
+    const existing = lookup.sessions[0];
     if (existing) {
       const accountEncryptionCurrentness = await readKnownSessionAccountEncryptionCurrentness({
         token: params.credentials.token,
@@ -1016,6 +1045,7 @@ export async function createSpawnedSession(
             ? RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE
             : RPC_METHODS.SPAWN_HAPPY_SESSION,
           request,
+          timeoutMs: DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS,
           ...(params.signal ? { signal: params.signal } : {}),
         });
     } catch (error) {
@@ -1061,6 +1091,7 @@ export async function createSpawnedSession(
   const resolveSpawnSessionByNonce = async (
     nonce: string,
     signal?: AbortSignal,
+    timeoutMs?: number,
   ): Promise<SpawnSessionNonceResolution> => {
     try {
       if (params.directTransport) {
@@ -1079,6 +1110,7 @@ export async function createSpawnedSession(
           machineId: exactMachineId,
           method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
           request: { spawnNonce: nonce },
+          ...(typeof timeoutMs === 'number' && timeoutMs > 0 ? { timeoutMs } : {}),
           ...(signal ? { signal } : {}),
         });
       return normalizeSpawnSessionNonceResolution(resolved);
@@ -1119,7 +1151,11 @@ export async function createSpawnedSession(
       ? { type: 'success', spawnNonce, sessionIdStatus: 'pending' }
       : spawnResponse,
     spawnNonce,
-    resolveSpawnSessionByNonce: (nonce) => resolveSpawnSessionByNonce(nonce, params.signal),
+    resolveSpawnSessionByNonce: (nonce, remainingTimeoutMs) => resolveSpawnSessionByNonce(
+      nonce,
+      params.signal,
+      remainingTimeoutMs,
+    ),
     ...(params.signal ? { signal: params.signal } : {}),
   });
   if (settledSpawn.type === 'error') {
@@ -1151,6 +1187,7 @@ export async function createSpawnedSession(
     (error as { code?: string }).code = settledSpawn.errorCode;
     (error as { details?: unknown }).details = {
       spawnResponse: spawnResponse ?? null,
+      ...(settledSpawn.errorDetail ? { errorDetail: settledSpawn.errorDetail } : {}),
       ...(acceptedWithoutSessionId ? { spawnNonce } : {}),
     };
     throw error;
@@ -1239,7 +1276,10 @@ export async function createSpawnedSession(
     : null;
   const candidateValidation = validateExistingSessionCreationCandidate({
     ownerMetadata,
-    correspondence: params.sessionCreationCorrespondence,
+    // An authenticated fresh-create result already proves the committed Session.
+    // Missing optional currentness is not contradictory recipe evidence; rejoin
+    // and source-recipe cases were rejected above before reaching this branch.
+    correspondence: accountEncryptionCurrentness ? params.sessionCreationCorrespondence : undefined,
     sourceRecipe: params.sourceContext,
     validateSourceRecipe: Boolean(params.sourceContext),
   });

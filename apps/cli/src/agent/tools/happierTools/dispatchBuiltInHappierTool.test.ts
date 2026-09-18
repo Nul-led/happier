@@ -30,7 +30,12 @@ vi.mock('@/plugins/runtime/reload/singleton', () => ({
 }));
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ActionsSettingsV1Schema } from '@happier-dev/protocol';
+import {
+  ActionsSettingsV1Schema,
+  actionSpecToActionDefinitionV1,
+  getActionSpec,
+  searchSerializedActionSpecsForSurface,
+} from '@happier-dev/protocol';
 
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 
@@ -168,14 +173,31 @@ describe('built-in Happier tools', () => {
     expect(changeTitle).not.toHaveBeenCalled();
   });
 
-  it('returns serialized action spec payloads without needing transport deps', async () => {
+  it('uses canonical Action executor discovery and projects Session-bound schemas', async () => {
+    const executeActionByToolName = vi.fn(async (toolName: string, args: unknown) => {
+      if (toolName === 'action_spec_search') {
+        const query = typeof (args as { query?: unknown } | null)?.query === 'string'
+          ? (args as { query: string }).query
+          : '';
+        return ok({
+          actionSpecs: searchSerializedActionSpecsForSurface({ surface: 'agent', query }),
+        });
+      }
+      if (toolName === 'action_spec_get') {
+        const id = (args as { id?: unknown } | null)?.id;
+        if (id === 'subagents.plan.start' || id === 'session.spawn_new') {
+          return ok({ actionSpec: actionSpecToActionDefinitionV1(getActionSpec(id), { surface: 'agent' }) });
+        }
+      }
+      return unsupported();
+    });
     const listResult = await dispatchBuiltInHappierTool({
       toolName: 'action_spec_search',
       args: { query: 'review' },
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
+        executeActionByToolName,
       },
     });
 
@@ -192,7 +214,7 @@ describe('built-in Happier tools', () => {
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
+        executeActionByToolName,
       },
     });
 
@@ -229,7 +251,7 @@ describe('built-in Happier tools', () => {
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
+        executeActionByToolName,
       },
     });
 
@@ -262,23 +284,54 @@ describe('built-in Happier tools', () => {
     }));
   });
 
-  it('resolves action options through the shared options resolver hook', async () => {
+  it('routes Action discovery through the canonical executor so contributed Actions are visible', async () => {
+    const contributedSummary = {
+      id: 'plugin:happier.example/action:memory.search',
+      title: 'Search memory',
+      description: 'Search plugin-owned memory.',
+    };
+    const executeActionByToolName = vi.fn(async (toolName: string) => {
+      if (toolName === 'action_spec_search') {
+        return ok({ actionSpecs: [contributedSummary] });
+      }
+      return unsupported();
+    });
+
+    const result = await dispatchBuiltInHappierTool({
+      toolName: 'action_spec_search',
+      args: { query: 'memory' },
+      sessionId: 'sess-1',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { actionSpecs: [contributedSummary] },
+    });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'action_spec_search',
+      { query: 'memory' },
+      'sess-1',
+    );
+  });
+
+  it('routes Action options through the canonical Action executor', async () => {
+    const executeActionByToolName = vi.fn(async () => ok({
+      actionId: 'subagents.plan.start',
+      fieldPath: 'backendTargetKeys',
+      optionsSourceId: 'execution.backends.enabled',
+      options: [{ value: 'agent:codex', label: 'Codex' }],
+    }));
     const result = await dispatchBuiltInHappierTool({
       toolName: 'action_options_resolve',
       args: { actionId: 'subagents.plan.start', fieldPath: 'backendTargetKeys' },
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
-        resolveActionOptions: async ({ actionId, fieldPath, optionsSourceId }) => ({
-          ok: true,
-          result: {
-            actionId,
-            fieldPath,
-            optionsSourceId,
-            options: [{ value: 'agent:codex', label: 'Codex' }],
-          },
-        }),
+        executeActionByToolName,
       },
     });
 
@@ -291,17 +344,19 @@ describe('built-in Happier tools', () => {
         options: [{ value: 'agent:codex', label: 'Codex' }],
       },
     });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'action_options_resolve',
+      { actionId: 'subagents.plan.start', fieldPath: 'backendTargetKeys' },
+      'sess-1',
+    );
   });
 
   it('preserves V2 session spawn option context through the agent/MCP discovery tool', async () => {
-    const resolveActionOptions = vi.fn(async (args: Record<string, unknown>) => ({
-      ok: true as const,
-      result: {
-        actionId: args.actionId as 'session.spawn_new',
-        fieldPath: args.fieldPath as string,
-        optionsSourceId: args.optionsSourceId as string,
-        options: [],
-      },
+    const executeActionByToolName = vi.fn(async () => ok({
+      actionId: 'session.spawn_new',
+      fieldPath: 'modelSelection',
+      optionsSourceId: 'agents.models.available',
+      options: [],
     }));
     const sessionSpawnOptionContext = {
       executionTarget: { serverId: 'local', machineId: 'm1' },
@@ -327,8 +382,7 @@ describe('built-in Happier tools', () => {
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
-        resolveActionOptions,
+        executeActionByToolName,
       },
     });
 
@@ -341,18 +395,24 @@ describe('built-in Happier tools', () => {
         options: [],
       },
     });
-    expect(resolveActionOptions).toHaveBeenCalledWith({
-      actionId: 'session.spawn_new',
-      fieldPath: 'modelSelection',
-      optionsSourceId: 'agents.models.available',
-      sessionId: null,
-      limit: null,
-      query: null,
-      ...sessionSpawnOptionContext,
-    });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'action_options_resolve',
+      {
+        actionId: 'session.spawn_new',
+        fieldPath: 'modelSelection',
+        ...sessionSpawnOptionContext,
+      },
+      'sess-1',
+    );
   });
 
-  it('rejects action_options_resolve on the CLI surface', async () => {
+  it('resolves canonical Action options on the CLI surface', async () => {
+    const executeActionByToolName = vi.fn(async () => ok({
+      actionId: null,
+      fieldPath: null,
+      optionsSourceId: 'session.modes.available',
+      options: [{ value: 'plan', label: 'Plan' }],
+    }));
     const result = await dispatchBuiltInHappierTool({
       toolName: 'action_options_resolve',
       args: { optionsSourceId: 'session.modes.available' },
@@ -360,39 +420,7 @@ describe('built-in Happier tools', () => {
       surface: 'cli',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
-        resolveActionOptions: async () => ({
-          ok: true,
-          result: {
-            actionId: null,
-            fieldPath: null,
-            optionsSourceId: 'session.modes.available',
-            options: [{ value: 'plan', label: 'Plan' }],
-          },
-        }),
-      },
-    });
-
-    expectActionDisabled(result);
-  });
-
-  it('resolves action options directly from an optionsSourceId', async () => {
-    const result = await dispatchBuiltInHappierTool({
-      toolName: 'action_options_resolve',
-      args: { optionsSourceId: 'session.modes.available' },
-      sessionId: 'sess-1',
-      deps: {
-        changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
-        resolveActionOptions: async ({ actionId, fieldPath, optionsSourceId }) => ({
-          ok: true,
-          result: {
-            actionId,
-            fieldPath,
-            optionsSourceId,
-            options: [{ value: 'plan', label: 'Plan' }],
-          },
-        }),
+        executeActionByToolName,
       },
     });
 
@@ -405,6 +433,44 @@ describe('built-in Happier tools', () => {
         options: [{ value: 'plan', label: 'Plan' }],
       },
     });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'action_options_resolve',
+      { optionsSourceId: 'session.modes.available' },
+      'sess-1',
+    );
+  });
+
+  it('resolves action options directly from an optionsSourceId', async () => {
+    const executeActionByToolName = vi.fn(async () => ok({
+      actionId: null,
+      fieldPath: null,
+      optionsSourceId: 'session.modes.available',
+      options: [{ value: 'plan', label: 'Plan' }],
+    }));
+    const result = await dispatchBuiltInHappierTool({
+      toolName: 'action_options_resolve',
+      args: { optionsSourceId: 'session.modes.available' },
+      sessionId: 'sess-1',
+      deps: {
+        changeTitle: async () => ({ success: true }),
+        executeActionByToolName,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        actionId: null,
+        fieldPath: null,
+        optionsSourceId: 'session.modes.available',
+        options: [{ value: 'plan', label: 'Plan' }],
+      },
+    });
+    expect(executeActionByToolName).toHaveBeenCalledWith(
+      'action_options_resolve',
+      { optionsSourceId: 'session.modes.available' },
+      'sess-1',
+    );
   });
 
   it('rejects disabled action specs through the shared policy hook', async () => {
@@ -414,7 +480,16 @@ describe('built-in Happier tools', () => {
       sessionId: 'sess-1',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
+        executeActionByToolName: async () => ({
+          ok: false,
+          errorCode: 'action_disabled',
+          error: 'Action is disabled',
+          details: {
+            actionId: 'review.start',
+            surface: 'agent',
+            reason: 'disabled_by_policy',
+          },
+        }),
         isActionEnabled: (id) => id !== 'review.start',
       },
     });
@@ -430,7 +505,16 @@ describe('built-in Happier tools', () => {
       surface: 'mcp',
       deps: {
         changeTitle: async () => ({ success: true }),
-        executeActionByToolName: async () => unsupported(),
+        executeActionByToolName: async () => ({
+          ok: false,
+          errorCode: 'action_disabled',
+          error: 'Action is disabled',
+          details: {
+            actionId: 'ui.voice_global.reset',
+            surface: 'mcp',
+            reason: 'unsupported_surface',
+          },
+        }),
       },
     });
 
@@ -529,7 +613,7 @@ describe('built-in Happier tools', () => {
 
     const result = await dispatchBuiltInHappierTool({
       toolName: 'action_execute',
-      args: { actionId: 'action.spec.search', input: { query: 'review' } },
+      args: { actionId: 'account.plugins.data.erase', input: { pluginId: 'example.plugin' } },
       sessionId: 'sess-1',
       surface: 'cli',
       deps: {
@@ -543,7 +627,7 @@ describe('built-in Happier tools', () => {
       errorCode: 'action_disabled',
       error: 'Action is disabled',
       details: {
-        actionId: 'action.spec.search',
+        actionId: 'account.plugins.data.erase',
         surface: 'cli',
         reason: 'unsupported_surface',
       },

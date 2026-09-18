@@ -23,13 +23,26 @@ export type AutomationV3ClaimedRun = Readonly<{
   id: string;
   automationId: string;
   attempt: number;
+  revision: number;
+  recipeKind: 'legacy' | 'workflow-v2';
   triggerId: AutomationTriggerId | null;
   /** Null is a retained pre-recipe Run and must fail closed in the worker. */
   executionInputEnvelope: string | null;
+  automationEvidenceEnvelope?: string | null;
   /** Immutable Run-owned cause consumed with the frozen execution recipe. */
   cause: AutomationRunCause;
   /** Missing wire fact normalizes to none at the private claim boundary. */
   resultDelivery: AutomationV3WorkerResultDelivery | Readonly<{ kind: 'none' }>;
+}>;
+
+export type DirectWorkflowV3ClaimedRun = Readonly<{
+  id: string;
+  automationId: null;
+  attempt: number;
+  revision: number;
+  origin: Readonly<{ kind: 'direct'; originSessionId?: string }>;
+  workflowAcceptedSnapshotEnvelope: string;
+  triggerId: null;
 }>;
 
 export type AutomationV3ClaimedAutomation = Readonly<{
@@ -44,13 +57,20 @@ export type AutomationV2ClaimedRunPayload = Readonly<{
   automation: AutomationV2ClaimedAutomation;
 }>;
 
-export type AutomationV3ClaimedRunPayload = Readonly<{
-  protocol: 'v3';
-  run: AutomationV3ClaimedRun;
-  automation: AutomationV3ClaimedAutomation;
-  /** C: exact Account currentness observed atomically with the claim. */
-  accountCurrentness: AutomationAccountCurrentnessWitnessV1;
-}>;
+export type AutomationV3ClaimedRunPayload =
+  | Readonly<{
+    protocol: 'v3';
+    run: AutomationV3ClaimedRun;
+    automation: AutomationV3ClaimedAutomation;
+    /** C: exact Account currentness observed atomically with the claim. */
+    accountCurrentness: AutomationAccountCurrentnessWitnessV1;
+  }>
+  | Readonly<{
+    protocol: 'v3';
+    run: DirectWorkflowV3ClaimedRun;
+    automation: null;
+    accountCurrentness: AutomationAccountCurrentnessWitnessV1;
+  }>;
 
 export type AutomationClaimedRunPayload =
   | AutomationV2ClaimedRunPayload

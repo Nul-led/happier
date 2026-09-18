@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import { fetchAccountProfile } from '@/api/accountProfile';
 import { configuration } from '@/configuration';
 import { readStoredCredentials } from '@/persistence';
@@ -101,7 +103,9 @@ export function createExternalSessionFollowTargetHostOperation(params: Readonly<
             if (
                 request.machineId !== params.machineId
                 || request.contributionId.trim().length === 0
-                || request.remoteSessionId.trim().length === 0
+                // Agent-minted: presence is the only judgement, and the request
+                // carries the exact bytes on to the provider operation.
+                || readNonBlankOpaqueIdentifier(request.remoteSessionId) === null
                 || !requestOwnerIsCurrent(request)
             ) {
                 return unavailable(

@@ -107,7 +107,7 @@ describe('buildHandoffSessionMetadataFromTrackedSession', () => {
         }));
     });
 
-    it('falls back to the persisted handoff overlay when the tracked session lost its webhook metadata', async () => {
+    it('does not revive retired persisted handoff metadata when the tracked session lost its current metadata', async () => {
         const metadata = await buildHandoffSessionMetadataFromTrackedSession({
             trackedSession: {
                 startedBy: 'daemon',
@@ -116,48 +116,9 @@ describe('buildHandoffSessionMetadataFromTrackedSession', () => {
                 vendorResumeId: 'sess-handoff-direct',
             } as never,
             machineId: 'machine-session-handoff',
-            localExportMetadataOverlay: {
-                machineId: 'machine-session-handoff',
-                path: '/repo-source-current',
-                homeDir: '/Users/target',
-                flavor: 'claude',
-                runtimeDescriptorV1: {
-                    v: 1,
-                    agentId: 'claude',
-                    agent: { providerSessionId: 'sess-handoff-direct' },
-                },
-                handoffV1: {
-                    v: 1,
-                    sourceMachineId: 'machine_source',
-                    targetMachineId: 'machine-session-handoff',
-                    providerId: 'claude',
-                    sessionStorageBefore: 'direct',
-                    sessionStorageAfter: 'direct',
-                    transportStrategy: 'direct_peer',
-                    completedAtMs: 1,
-                    sourceWorkspaceRootPath: '/repo-source-origin',
-                    targetWorkspaceRootPath: '/repo-source-current',
-                },
-            },
         });
 
-        expect(metadata).toEqual(expect.objectContaining({
-            exportMetadata: expect.objectContaining({
-                machineId: 'machine-session-handoff',
-                path: '/repo-source-current',
-                homeDir: '/Users/target',
-                flavor: 'claude',
-                handoffV1: expect.objectContaining({
-                    sourceMachineId: 'machine_source',
-                    targetMachineId: 'machine-session-handoff',
-                }),
-            }),
-            runtimeLocalMetadata: expect.objectContaining({
-                runtimeDescriptorV1: expect.objectContaining({
-                    agentId: 'claude',
-                }),
-            }),
-        }));
+        expect(metadata).toBeNull();
     });
 
     it('does not masquerade a configured ACP backend as an Agent when webhook metadata is missing', async () => {

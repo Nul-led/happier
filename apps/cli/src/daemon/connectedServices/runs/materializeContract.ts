@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import {
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
     ExecutionRunConnectedServicesLaunchV1Schema,
     type ExecutionRunConnectedServicesLaunchV1,
 } from '@happier-dev/protocol';
@@ -26,7 +26,7 @@ export const ConnectedServiceRunMaterializeRequestSchema = z.object({
     runId: z.string().trim().min(1),
     runnerPid: z.number().int().positive(),
     agentId: z.string().trim().min(1),
-    connectedServices: ConnectedServiceBindingsV1Schema,
+    connectedServices: ConnectedServiceBindingsV2IngressSchema,
     cwd: z.string().trim().min(1),
 });
 export type ConnectedServiceRunMaterializeRequest = z.infer<typeof ConnectedServiceRunMaterializeRequestSchema>;

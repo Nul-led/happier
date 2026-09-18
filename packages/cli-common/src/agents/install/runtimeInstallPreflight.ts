@@ -4,6 +4,7 @@ import {
     resolveAgentCliCommandForRuntime,
     type AgentCliCommandResolution,
     type AgentCliRuntimeDescriptor,
+    type AgentCliSourcePolicy,
 } from '../resolution.js';
 
 type RuntimeInstallPreflightResult =
@@ -15,9 +16,13 @@ function shouldTreatResolutionAsInstalled(params: Readonly<{
     plan: AgentCliInstallPlan;
     resolution: AgentCliCommandResolution | null;
     env: NodeJS.ProcessEnv;
+    sourcePolicy: AgentCliSourcePolicy;
 }>): boolean {
     const resolution = params.resolution;
     if (!resolution) return false;
+    // Under the strict request-scoped policy only a current managed install can
+    // satisfy the request, so a retry reuses it and nothing else stands in.
+    if (params.sourcePolicy === 'managed_only') return resolution.source === 'managed';
     if (resolution.source === 'override' || resolution.source === 'managed') return true;
     if (params.plan.installMode === 'vendor_recipe') return true;
 
@@ -37,17 +42,23 @@ export function runRuntimeInstallPreflight(params: Readonly<{
     skipIfInstalled?: boolean;
     intent?: AgentCliInstallIntent;
     allowVendorRecipeExecution?: boolean;
+    sourcePolicy?: AgentCliSourcePolicy;
 }>): RuntimeInstallPreflightResult {
     const skipIfInstalled = params.intent !== 'update' && params.skipIfInstalled !== false;
+    const sourcePolicy = params.sourcePolicy ?? 'default';
     const allowVendorRecipeExecution = params.allowVendorRecipeExecution === true;
 
     if (skipIfInstalled) {
-        const existingResolution = resolveAgentCliCommandForRuntime(params.runtimeSpec, { processEnv: params.env });
+        const existingResolution = resolveAgentCliCommandForRuntime(params.runtimeSpec, {
+            processEnv: params.env,
+            sourcePolicy,
+        });
         const alreadyInstalled = shouldTreatResolutionAsInstalled({
             runtimeSpec: params.runtimeSpec,
             plan: params.plan,
             resolution: existingResolution,
             env: params.env,
+            sourcePolicy,
         });
         if (alreadyInstalled) {
             return {
@@ -55,6 +66,20 @@ export function runRuntimeInstallPreflight(params: Readonly<{
                 result: { ok: true, plan: params.plan, alreadyInstalled: true, logPath: null },
             };
         }
+    }
+
+    if (sourcePolicy === 'managed_only' && params.plan.installMode === 'vendor_recipe') {
+        return {
+            kind: 'return',
+            result: {
+                ok: false,
+                errorCode: 'vendor-recipe-disallowed',
+                errorMessage:
+                    `Vendor install recipes are not available for ${params.runtimeSpec.id} under the managed_only source policy. This request may install and launch only a managed install.`,
+                plan: params.plan,
+                logPath: null,
+            },
+        };
     }
 
     if (params.dryRun) {

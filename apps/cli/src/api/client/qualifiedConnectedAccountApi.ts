@@ -14,6 +14,7 @@ import {
     QualifiedConnectedAccountGroupActiveAccountV4Schema,
     QualifiedConnectedAccountGroupRefSchema,
     QualifiedConnectedAccountGroupListResponseV4Schema,
+    QualifiedConnectedAccountGroupMemberMutationV4Schema,
     QualifiedConnectedAccountGroupResponseV4Schema,
     QualifiedConnectedAccountGroupRuntimeStatePatchV4Schema,
     QualifiedConnectedAccountListResponseV4Schema,
@@ -634,6 +635,35 @@ export async function updateQualifiedConnectedAccountGroupRuntimeStateV4(
     if (response.status !== 200) {
         throw new Error(
             `Qualified Connected Account group runtime-state mutation returned ${response.status}`,
+        );
+    }
+    return QualifiedConnectedAccountGroupResponseV4Schema.parse(
+        response.data,
+    ).group;
+}
+
+export async function updateQualifiedConnectedAccountGroupMemberV4(
+    params: Readonly<{ token: string; mutation: unknown }>,
+) {
+    const mutation =
+        QualifiedConnectedAccountGroupMemberMutationV4Schema.parse(
+            params.mutation,
+        );
+    const response = await axios.patch(
+        `${resolveServerHttpBaseUrl()}/v4/connect/qualified/group/member`,
+        mutation,
+        {
+            headers: requestHeaders(params.token),
+            timeout: resolveConnectedServicesServerApiTimeoutMs(),
+            validateStatus: (status) => status === 200 || status === 409,
+        },
+    );
+    if (response.status === 409) {
+        throwQualifiedConnectedAccountGroupConflict(response.data);
+    }
+    if (response.status !== 200) {
+        throw new Error(
+            `Qualified Connected Account group member mutation returned ${response.status}`,
         );
     }
     return QualifiedConnectedAccountGroupResponseV4Schema.parse(

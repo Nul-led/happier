@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ExternalSessionTranscriptInvalidationV1 } from '@happier-dev/protocol';
+import { accountSettingsParse, type ExternalSessionTranscriptInvalidationV1 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
@@ -14,6 +14,10 @@ import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/contro
 import { resolveBuiltInContributions } from '@/plugins/projection/registry/resolveBuiltInContributions';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { resolveBackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistry';
+import {
+  resetActiveAccountSettingsSnapshotForTests,
+  setActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
 const {
   readCredentialsMock,
@@ -21,7 +25,6 @@ const {
   commitSessionStoredMessageMock,
   updateSessionMetadataWithRetryMock,
   dispatchActivityNotificationAsyncMock,
-  getActiveAccountSettingsSnapshotMock,
   resolveTranscriptRefreshBindingMock,
   fetchAccountEncryptionCurrentnessMock,
 } = vi.hoisted(() => ({
@@ -33,7 +36,6 @@ const {
     attemptedChannels: 1,
     deliveredChannels: 1,
   })),
-  getActiveAccountSettingsSnapshotMock: vi.fn(),
   resolveTranscriptRefreshBindingMock: vi.fn(),
   fetchAccountEncryptionCurrentnessMock: vi.fn(),
 }));
@@ -76,10 +78,6 @@ vi.mock('@/session/metadata/updateSessionMetadataWithRetry', () => ({
 
 vi.mock('@/notifications/activity/dispatchActivityNotification', () => ({
   dispatchActivityNotificationAsync: dispatchActivityNotificationAsyncMock,
-}));
-
-vi.mock('@/settings/accountSettings/activeAccountSettingsSnapshot', () => ({
-  getActiveAccountSettingsSnapshot: getActiveAccountSettingsSnapshotMock,
 }));
 
 import { registerMachineExternalSessionsRpcHandlers } from '../rpcHandlers.externalSessions';
@@ -177,6 +175,7 @@ describe('registerMachineExternalSessionsRpcHandlers', () => {
 
   afterAll(async () => {
     await runtimeRegistryLease?.release();
+    resetActiveAccountSettingsSnapshotForTests();
   });
 
   beforeEach(() => {
@@ -198,16 +197,19 @@ describe('registerMachineExternalSessionsRpcHandlers', () => {
       contributionGeneration: 'contribution-1',
       cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
     }));
-    getActiveAccountSettingsSnapshotMock.mockReturnValue({
-      source: 'active',
-      settings: {
+    resetActiveAccountSettingsSnapshotForTests();
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settingsVersion: 1,
+      loadedAtMs: 1,
+      settings: accountSettingsParse({
         notificationsSettingsV1: {
           v: 1,
           pushEnabled: true,
           ready: true,
           permissionRequest: false,
         },
-      },
+      }),
       settingsSecretsReadKeys: [],
     });
     fetchAccountEncryptionCurrentnessMock.mockResolvedValue({

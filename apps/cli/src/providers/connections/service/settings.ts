@@ -9,6 +9,11 @@ import {
   type ProviderErrorV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
+import {
+  createSavedSecretMaterializerV1,
+  type SavedSecretCatalogResourceInputV1,
+  type SavedSecretCatalogState,
+} from '@/settings/secrets/savedSecretCatalog';
 
 import type { ProviderConnectionCreateInput } from './types';
 
@@ -60,11 +65,39 @@ export function replaceSettings(
   return writeProviderSettingsToAccountSettingsV1(raw, settings);
 }
 
-export function savedSecretExists(raw: Readonly<Record<string, unknown>>, id: string): boolean {
+function personalSavedSecretExists(raw: Readonly<Record<string, unknown>>, id: string): boolean {
   return Array.isArray(raw.secrets) && raw.secrets.some((entry) =>
     entry !== null && typeof entry === 'object'
       && Object.prototype.hasOwnProperty.call(entry, 'id')
       && (entry as { id?: unknown }).id === id);
+}
+
+/**
+ * Validates an opaque Saved Secret reference through the one Account-scoped
+ * catalog resolver. Shared-resource metadata retained during a failed refresh
+ * is deliberately unavailable rather than sufficient authorization.
+ */
+export function requireSavedSecretReferenceReady(input: Readonly<{
+  rawAccountSettings: Readonly<Record<string, unknown>>;
+  savedSecretId: string;
+  savedSecretResources: readonly SavedSecretCatalogResourceInputV1[] | undefined;
+  savedSecretCatalogState: SavedSecretCatalogState | undefined;
+  connectionId: string;
+  machineId: string;
+}>): void {
+  const inspected = createSavedSecretMaterializerV1({
+    accountSettings: input.rawAccountSettings,
+    settingsSecretsReadKeys: [],
+    resources: input.savedSecretResources,
+    resourceCatalogState: input.savedSecretCatalogState,
+  }).inspect(input.savedSecretId);
+  if (inspected.status === 'ready') return;
+  throw createProviderErrorV1(
+    inspected.status === 'temporarily_unavailable'
+      ? 'provider_secret_unavailable'
+      : 'provider_secret_missing',
+    { connectionId: input.connectionId, machineId: input.machineId },
+  );
 }
 
 export function addPreparedSavedSecret(
@@ -73,7 +106,7 @@ export function addPreparedSavedSecret(
 ): Record<string, unknown> {
   if (!prepared) return { ...raw };
   const record = SavedSecretSchema.parse(prepared.record);
-  if (prepared.id !== record.id || savedSecretExists(raw, prepared.id)) {
+  if (prepared.id !== record.id || personalSavedSecretExists(raw, prepared.id)) {
     throw new ProviderConnectionValidationError('Allocated SavedSecret id is already used or inconsistent');
   }
   try {

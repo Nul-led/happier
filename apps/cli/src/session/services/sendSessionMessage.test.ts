@@ -268,7 +268,7 @@ describe('sendSessionMessage', () => {
             wait: false,
             timeoutMs: 1_000,
             localId: 'local-active-with-pending-intent',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'local-active-with-pending-intent',
@@ -283,11 +283,21 @@ describe('sendSessionMessage', () => {
     }, 60_000);
 
     it('emits structured Provider selections through prompt custody without providerless fallback', async () => {
-        const enqueuePendingQueueV2MessageViaHttp = vi.fn(async (_params: unknown) => ({
-            didWrite: true,
-            terminal: false,
-            suppressed: false,
-        }));
+        const acceptedBodies = new Map<string, unknown>();
+        const enqueuePendingQueueV2MessageViaHttp = vi.fn(async (params: Readonly<{
+            body: Readonly<{ localId: string }>;
+        }>) => {
+            const existing = acceptedBodies.get(params.body.localId);
+            if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(params.body)) {
+                const error = new Error('idempotency conflict') as Error & {
+                    response: { status: number; data: { code: string } };
+                };
+                error.response = { status: 400, data: { code: 'session_input_idempotency_conflict' } };
+                throw error;
+            }
+            acceptedBodies.set(params.body.localId, params.body);
+            return { didWrite: existing === undefined, terminal: false, suppressed: false };
+        });
         vi.doMock('@/api/session/pendingQueueV2Transport', async (importOriginal) => ({
             ...await importOriginal<typeof import('@/api/session/pendingQueueV2Transport')>(),
             enqueuePendingQueueV2MessageViaHttp,
@@ -360,7 +370,7 @@ describe('sendSessionMessage', () => {
                 modelId: 'default',
             },
         });
-        expect(firstResult).toEqual({
+        expect(firstResult).toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'local-provider-default',
@@ -383,6 +393,28 @@ describe('sendSessionMessage', () => {
         }));
         expect(firstMessageMeta).not.toHaveProperty('model');
 
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(2_000);
+        await expect(sendSessionMessage({
+            credentials: {
+                token: 'token',
+                encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+            },
+            idOrPrefix: 'sess-1',
+            message: 'hello',
+            wait: false,
+            timeoutMs: 1_000,
+            localId: 'local-provider-default',
+            modelSelectionInput: {
+                providerConnectionId: 'pc_work',
+                modelId: 'default',
+            },
+        })).resolves.toMatchObject({ ok: true, localId: 'local-provider-default' });
+        nowSpy.mockRestore();
+        const retryEnqueue = enqueuePendingQueueV2MessageViaHttp.mock.calls[1]?.[0] as {
+            body?: { content?: { t?: string; v?: { meta?: Record<string, unknown> } } };
+        };
+        expect(retryEnqueue.body?.content).toEqual(firstEnqueue.body?.content);
+
         await expect(sendSessionMessage({
             credentials: {
                 token: 'token',
@@ -397,13 +429,13 @@ describe('sendSessionMessage', () => {
                 providerConnectionId: 'pc_other',
                 modelId: 'other-model',
             },
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'local-provider-switch',
             waited: false,
         });
-        const secondEnqueue = enqueuePendingQueueV2MessageViaHttp.mock.calls[1]?.[0] as {
+        const secondEnqueue = enqueuePendingQueueV2MessageViaHttp.mock.calls[2]?.[0] as {
             body?: { content?: { t?: string; v?: { meta?: Record<string, unknown> } } };
         };
         const secondMessageMeta = secondEnqueue.body?.content?.v?.meta;
@@ -418,7 +450,97 @@ describe('sendSessionMessage', () => {
             }),
         }));
         expect(secondMessageMeta).not.toHaveProperty('model');
+        await expect(sendSessionMessage({
+            credentials: {
+                token: 'token',
+                encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+            },
+            idOrPrefix: 'sess-1',
+            message: 'hello',
+            wait: false,
+            timeoutMs: 1_000,
+            localId: 'local-provider-default',
+            modelSelectionInput: {
+                providerConnectionId: 'pc_other',
+                modelId: 'other-model',
+            },
+        })).resolves.toMatchObject({
+            ok: false,
+            code: 'admission_rejected',
+            admissionResult: { status: 'rejected', code: 'session_input_idempotency_conflict' },
+        });
         expect(callSessionRpc).not.toHaveBeenCalled();
+    }, 60_000);
+
+    it('rejoins one exact E2EE execution-run send identity and conflicts on changed content or target', async () => {
+        const acceptedByLocalId = new Map<string, unknown>();
+        const enqueuePendingExecutionRunMessageViaHttp = vi.fn(async (params: Readonly<{
+            recipient: unknown;
+            body: Readonly<{ localId: string }>;
+        }>) => {
+            const requestIdentity = { recipient: params.recipient, body: params.body };
+            const existing = acceptedByLocalId.get(params.body.localId);
+            if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(requestIdentity)) {
+                const error = new Error('idempotency conflict') as Error & {
+                    response: { status: number; data: { code: string } };
+                };
+                error.response = { status: 400, data: { code: 'session_input_idempotency_conflict' } };
+                throw error;
+            }
+            acceptedByLocalId.set(params.body.localId, requestIdentity);
+            return { didWrite: existing === undefined, terminal: false, suppressed: false };
+        });
+        vi.doMock('@/api/session/pendingQueueV2Transport', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/api/session/pendingQueueV2Transport')>(),
+            enqueuePendingExecutionRunMessageViaHttp,
+        }));
+        vi.doMock('./resolveSessionTransportContext', () => ({
+            resolveSessionTransportContext: vi.fn(async () => ({
+                ok: true,
+                sessionId: 'sess-target',
+                mode: 'e2ee',
+                ctx: { encryptionKey: new Uint8Array(32).fill(3), encryptionVariant: 'dataKey' },
+                accountEncryptionCurrentness: { mode: 'e2ee' },
+                rawSession: {
+                    id: 'sess-target',
+                    active: true,
+                    encryptionMode: 'e2ee',
+                    machineId: 'machine-target',
+                    metadata: '{}',
+                },
+            })),
+        }));
+
+        const { sendSessionMessage } = await import('./sendSessionMessage');
+        const request = {
+            credentials: {
+                token: 'token',
+                encryption: { type: 'dataKey' as const, publicKey: new Uint8Array(32).fill(1), machineKey: new Uint8Array(32).fill(1) },
+            },
+            idOrPrefix: 'sess-target',
+            message: 'continue',
+            recipient: { kind: 'execution_run' as const, runId: 'run-a' },
+            localId: 'target-retry-1',
+            wait: false,
+            timeoutMs: 1_000,
+        };
+        await expect(sendSessionMessage(request)).resolves.toMatchObject({ ok: true, localId: request.localId });
+        await expect(sendSessionMessage(request)).resolves.toMatchObject({ ok: true, localId: request.localId });
+        const firstContent = enqueuePendingExecutionRunMessageViaHttp.mock.calls[0]?.[0]?.body;
+        const retryContent = enqueuePendingExecutionRunMessageViaHttp.mock.calls[1]?.[0]?.body;
+        expect(retryContent).toEqual(firstContent);
+
+        await expect(sendSessionMessage({ ...request, message: 'changed' })).resolves.toMatchObject({
+            ok: false,
+            admissionResult: { status: 'rejected', code: 'session_input_idempotency_conflict' },
+        });
+        await expect(sendSessionMessage({
+            ...request,
+            recipient: { kind: 'execution_run', runId: 'run-b' },
+        })).resolves.toMatchObject({
+            ok: false,
+            admissionResult: { status: 'rejected', code: 'session_input_idempotency_conflict' },
+        });
     }, 60_000);
 
     it('returns wait_failed when the current prompt delivery is blocked before transcript materialization', async () => {
@@ -499,10 +621,11 @@ describe('sendSessionMessage', () => {
             wait: true,
             timeoutMs: 10_000,
             localId: 'blocked-local',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: false,
             code: 'wait_failed',
             message: expect.stringContaining('runtime_disposed_before_delivery'),
+            admissionResult: { status: 'rejected', code: 'session_input_target_unavailable' },
         });
 
         expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
@@ -723,7 +846,7 @@ describe('sendSessionMessage', () => {
             wait: true,
             timeoutMs: 1_000,
             localId: 'local-user',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'local-user',
@@ -800,7 +923,7 @@ describe('sendSessionMessage', () => {
             wait: true,
             timeoutMs: 50,
             localId: 'local-user',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: false,
             code: 'timeout',
         });
@@ -890,7 +1013,7 @@ describe('sendSessionMessage', () => {
             wait: true,
             timeoutMs: 50,
             localId: 'local-user',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: false,
             code: 'timeout',
         });
@@ -924,7 +1047,7 @@ describe('sendSessionMessage', () => {
                 },
             ]);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'local-user',
@@ -950,7 +1073,7 @@ describe('sendSessionMessage', () => {
         const { result, fetchEncryptedTranscriptPageAfterSeq, waitForIdleViaSocket } =
             await sendAndWaitForRowsAfterCurrentUser([row]);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             code: 'timeout',
         });
@@ -966,7 +1089,7 @@ describe('sendSessionMessage', () => {
         const { result, fetchEncryptedTranscriptPageAfterSeq, waitForIdleViaSocket } =
             await sendAndWaitForRowsAfterCurrentUser([row]);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             code: 'wait_failed',
             message,
@@ -1211,7 +1334,7 @@ describe('sendSessionMessage', () => {
             wait: true,
             timeoutMs: 50,
             localId: 'local-user',
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: false,
             code: 'wait_failed',
             message: 'Current turn failed',
@@ -1252,7 +1375,7 @@ describe('sendSessionMessage', () => {
                 },
             );
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             code: 'wait_failed',
             message: 'Current turn failed: Provider session failed',
@@ -1282,7 +1405,7 @@ describe('sendSessionMessage', () => {
                 rawEventLifecycle('turn_failed'),
             ]);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             code: 'wait_failed',
             message: 'Current turn failed',
@@ -1384,7 +1507,7 @@ describe('sendSessionMessage', () => {
             localId: 'connected-service-continuation:test',
             wait: false,
             timeoutMs: 1,
-        })).resolves.toEqual({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:test', waited: false });
+        })).resolves.toMatchObject({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:test', waited: false });
 
         expect(enqueuePendingQueueV2MessageViaHttp).toHaveBeenCalledWith(expect.objectContaining({
             token: 'token',
@@ -1409,7 +1532,7 @@ describe('sendSessionMessage', () => {
             resumeInactiveSession: false,
             wait: false,
             timeoutMs: 1,
-        })).resolves.toEqual({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:pending-only', waited: false });
+        })).resolves.toMatchObject({ ok: true, sessionId: 'sess-1', localId: 'connected-service-continuation:pending-only', waited: false });
         expect(requestInactiveSessionResume).toHaveBeenCalledTimes(1);
     });
 
@@ -1560,7 +1683,7 @@ describe('sendSessionMessage', () => {
             localId: 'layout1-owner-send',
             wait: false,
             timeoutMs: 1_000,
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-layout1',
             localId: 'layout1-owner-send',
@@ -1638,7 +1761,7 @@ describe('sendSessionMessage', () => {
             localId: 'already-terminal',
             wait: false,
             timeoutMs: 1,
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'already-terminal',
@@ -1696,7 +1819,7 @@ describe('sendSessionMessage', () => {
             requestedAction: { v: 1, kind: 'send_now' },
             wait: false,
             timeoutMs: 1,
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: 'connected-service-continuation:test',
@@ -1724,7 +1847,7 @@ describe('sendSessionMessage', () => {
         }));
         const firstBody = enqueuePendingQueueV2MessageViaHttp.mock.calls[0]?.[0]?.body;
         const retryBody = enqueuePendingQueueV2MessageViaHttp.mock.calls[1]?.[0]?.body;
-        expect(firstBody?.ciphertext).not.toBe(retryBody?.ciphertext);
+        expect(firstBody?.ciphertext).toBe(retryBody?.ciphertext);
         expect(firstBody).not.toHaveProperty('requestEqualityEvidenceV1');
         expect(retryBody).not.toHaveProperty('requestEqualityEvidenceV1');
         expect(callSessionRpc).not.toHaveBeenCalled();
@@ -1810,7 +1933,7 @@ describe('sendSessionMessage', () => {
             localId: 'connected-service-continuation:test',
             wait: true,
             timeoutMs: 1_000,
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: false,
             code: 'unsupported',
             message: 'Inactive session has no recorded machine target; pending custody was retained',
@@ -1907,7 +2030,7 @@ describe('sendSessionMessage', () => {
             localId: ' connected-service-continuation:test ',
             wait: false,
             timeoutMs: 1,
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             ok: true,
             sessionId: 'sess-1',
             localId: ' connected-service-continuation:test ',

@@ -195,6 +195,7 @@ export function createRuntimeProviderProbeAuthorizationPort(input: Readonly<{
   localCandidateUrlsByConnectionId?: Parameters<typeof resolveProviderProbeAuthorization>[0]['localCandidateUrlsByConnectionId'];
   resolveAddresses?: (hostname: string) => Promise<readonly string[]>;
   resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
+  openTeamDirect?: Parameters<typeof resolveRuntimeProviderCredential>[0]['openTeamDirect'];
 }>): ProviderProbeAuthorizationPort<ProviderProbeHostAuthorizationTicket, ProviderProbeHostCredentialReference> {
   const getAccountSettingsSnapshot = createAccountBoundProviderSnapshotReader(
     input.getAccountSettingsSnapshot,
@@ -367,6 +368,7 @@ export function createRuntimeProviderProbeAuthorizationPort(input: Readonly<{
     return resolveProviderProbeAuthorization({
       request,
       accountSettings,
+      savedSecretResources: snapshot.savedSecretResources,
       providerSettings,
       settingsRead,
       registry,
@@ -426,6 +428,7 @@ export function createRuntimeProviderProbeAuthorizationPort(input: Readonly<{
     resolveCredential: async (credentialRef) => resolveRuntimeProviderCredential({
       credentialRef,
       getAccountSettingsSnapshot,
+      ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
     }),
   });
 }
@@ -436,6 +439,7 @@ export function createRuntimeProviderModelLoadAuthorizationPort(input: Readonly<
   getAccountSettingsSnapshot: () => ActiveAccountSettingsSnapshot | null;
   localCandidateUrlsByConnectionId?: Parameters<typeof resolveProviderModelLoadAuthorization>[0]['localCandidateUrlsByConnectionId'];
   resolveAddresses?: (hostname: string) => Promise<readonly string[]>;
+  openTeamDirect?: Parameters<typeof resolveRuntimeProviderCredential>[0]['openTeamDirect'];
 }>): RuntimeProviderModelLoadAuthorizationPort {
   const getAccountSettingsSnapshot = createAccountBoundProviderSnapshotReader(
     input.getAccountSettingsSnapshot,
@@ -509,6 +513,7 @@ export function createRuntimeProviderModelLoadAuthorizationPort(input: Readonly<
     const resolved = await resolveProviderModelLoadAuthorization({
       request,
       accountSettings: snapshot.settings,
+      savedSecretResources: snapshot.savedSecretResources,
       providerSettings,
       registry,
       dnsEvidenceByEndpointUrl,
@@ -570,6 +575,7 @@ export function createRuntimeProviderModelLoadAuthorizationPort(input: Readonly<
     resolveCredential: async (credentialRef) => resolveRuntimeProviderCredential({
       credentialRef,
       getAccountSettingsSnapshot,
+      ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
     }),
   });
 }

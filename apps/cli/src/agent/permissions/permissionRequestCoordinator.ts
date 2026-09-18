@@ -2,6 +2,7 @@ import { deepEqual } from '@/utils/deterministicJson';
 import type {
     AgentStateOutstandingRequest,
     AgentStateRequestResponseTarget,
+    AgentStateResponseTargetDispatch,
     PermissionResponseClaim,
     PermissionResponseClaimAcquisition,
     PermissionResponseClaimRejoin,
@@ -119,6 +120,7 @@ export type PermissionRequestCoordinatorStore = Readonly<{
     hasOutstandingRequest(requestId: string): boolean;
     hasPermissionResponseClaim?(requestId: string): boolean;
     readOutstandingRequest(requestId: string): AgentStateOutstandingRequest | null;
+    readCompletedResponseTarget?(requestId: string): AgentStateResponseTargetDispatch | null;
     listOutstandingRequests(): readonly AgentStateOutstandingRequest[];
     acquirePermissionResponseClaim(params: Readonly<{
         requestId: string;
@@ -177,6 +179,7 @@ type CachedPermissionDecision<TResult> = {
     toolInput: unknown;
     turnId?: string;
     source?: string;
+    responseTarget?: AgentStateRequestResponseTarget;
     owner?: PermissionRequestOwner;
 };
 
@@ -450,7 +453,30 @@ export class PermissionRequestCoordinator<TResult> {
                         ...(entry.owner ? { owner: entry.owner } : {}),
                     },
                 });
-                return persisted !== false;
+                if (persisted !== false) return true;
+                // Response targets arrive after the store's terminal write. Rejoin
+                // that exact completed subject rather than persisting it again.
+                const delivered = this.store.readCompletedResponseTarget?.(entry.requestId);
+                if (!delivered || !entry.responseTarget) return false;
+                const completed = delivered.completedRequest;
+                const expected = completion.completedRequest;
+                return (!expected.isCurrent || expected.isCurrent())
+                    && delivered.requestId === entry.requestId
+                    && deepEqual(delivered.responseTarget, entry.responseTarget)
+                    && completed.tool === entry.toolName
+                    && deepEqual(completed.arguments, entry.toolInput)
+                    && completed.createdAt === entry.createdAt
+                    && completed.turnId === entry.turnId
+                    && completed.source === entry.source
+                    && deepEqual(completed.owner ?? null, entry.owner ?? null)
+                    && completed.status === expected.status
+                    && completed.decision === expected.decision
+                    && completed.mode === expected.mode
+                    && deepEqual(completed.allowedTools, expected.allowedTools)
+                    && deepEqual(completed.updatedPermissions, expected.updatedPermissions)
+                    && Object.entries(expected.extraCompletedFields ?? {}).every(
+                        ([key, value]) => deepEqual(completed[key], value),
+                    );
             });
             entry.completionPersistence = completionPersistence;
             let didComplete = false;
@@ -475,6 +501,7 @@ export class PermissionRequestCoordinator<TResult> {
                     toolInput: entry.toolInput,
                     ...(typeof entry.turnId === 'string' ? { turnId: entry.turnId } : {}),
                     ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+                    ...(entry.responseTarget ? { responseTarget: entry.responseTarget } : {}),
                     ...(entry.owner ? { owner: entry.owner } : {}),
                 });
             }
@@ -507,6 +534,46 @@ export class PermissionRequestCoordinator<TResult> {
             rejectWaiter(waiter, createPermissionRequestAbortError(reason));
         }
         entry.waiters.clear();
+    }
+
+    async cancelRequests(requestIds: readonly string[], reason: string): Promise<void> {
+        const uniqueRequestIds = [...new Set(requestIds)];
+        const entries = uniqueRequestIds
+            .map((requestId) => this.pendingRequests.get(requestId) ?? null)
+            .filter((entry): entry is PendingPermissionRequest<TResult> => entry !== null);
+        const entriesByRequestId = new Map(entries.map((entry) => [entry.requestId, entry]));
+        await this.cancelEntries({
+            entries,
+            reason,
+            persist: async (ids) => {
+                await Promise.all(ids.map(async (requestId) => {
+                    const entry = entriesByRequestId.get(requestId);
+                    if (!entry) return;
+                    await this.store.completeRequest({
+                        requestId,
+                        status: 'canceled',
+                        decision: 'abort',
+                        reason,
+                        fallback: {
+                            toolName: entry.toolName,
+                            toolInput: entry.toolInput,
+                            createdAt: entry.createdAt,
+                            ...(typeof entry.turnId === 'string' ? { turnId: entry.turnId } : {}),
+                            ...(typeof entry.kind === 'string' ? { kind: entry.kind } : {}),
+                            ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+                            ...(entry.responseTarget ? { responseTarget: entry.responseTarget } : {}),
+                            ...(typeof entry.subagentRef !== 'undefined' ? { subagentRef: entry.subagentRef } : {}),
+                            ...(typeof entry.sidechainId === 'string' ? { sidechainId: entry.sidechainId } : {}),
+                            ...(typeof entry.permissionSuggestions !== 'undefined'
+                                ? { permissionSuggestions: entry.permissionSuggestions }
+                                : {}),
+                            ...(entry.owner ? { owner: entry.owner } : {}),
+                        },
+                    });
+                }));
+            },
+        });
+        for (const requestId of uniqueRequestIds) this.cachedDecisions.delete(requestId);
     }
 
     async cancelAll(reason: string): Promise<void> {
@@ -552,9 +619,10 @@ export class PermissionRequestCoordinator<TResult> {
         reason: string;
         persist: (requestIds: readonly string[]) => Promise<void> | void;
     }>): Promise<void> {
+        if (params.entries.length === 0) return;
+
         const markedEntries = params.entries.filter(
-            (entry) => entry.completionPersistence !== null
-                && !entry.cancelReason,
+            (entry) => !entry.cancelReason,
         );
         for (const entry of markedEntries) {
             entry.cancelReason = params.reason;
@@ -735,6 +803,7 @@ function isCompatibleCachedDecision<TResult>(
 ): boolean {
     return cached.toolName === request.toolName
         && deepEqual(cached.toolInput, request.toolInput)
+        && deepEqual(cached.responseTarget ?? null, request.responseTarget ?? null)
         && turnIdsEqual(cached.turnId, request.turnId)
         && permissionSourcesEqual(cached.source, request.source)
         && permissionOwnersEqual(cached.owner, normalizePermissionRequestOwner(request.owner));
@@ -746,6 +815,7 @@ function isCompatiblePendingRequest<TResult>(
 ): boolean {
     return entry.toolName === request.toolName
         && deepEqual(entry.toolInput, request.toolInput)
+        && deepEqual(entry.responseTarget ?? null, request.responseTarget ?? null)
         && turnIdsEqual(entry.turnId, request.turnId)
         && permissionSourcesEqual(entry.source, request.source)
         && permissionOwnersEqual(entry.owner, normalizePermissionRequestOwner(request.owner));
@@ -764,6 +834,7 @@ function isCompatibleOutstandingRequest(
     if (
         outstanding.toolName !== request.toolName
         || !deepEqual(outstanding.toolInput, request.toolInput)
+        || !deepEqual(outstanding.responseTarget ?? null, request.responseTarget ?? null)
         || !permissionSourcesEqual(outstanding.source, request.source)
         || !permissionOwnersEqual(outstanding.owner, normalizePermissionRequestOwner(request.owner))
     ) {

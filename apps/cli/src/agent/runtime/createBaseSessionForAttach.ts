@@ -1,5 +1,5 @@
 import type { AgentState, Metadata, Session as ApiSession } from '@/api/types';
-import { readSessionAttachFromEnv, readSessionAttachFromFile } from '@/agent/runtime/sessionAttach';
+import { readSessionAttachFromEnv, readSessionAttachFromFile, type SessionAttachSecret } from '@/agent/runtime/sessionAttach';
 import {
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionSharedMetadataV1Schema,
@@ -11,15 +11,18 @@ export async function createBaseSessionForAttach(opts: Readonly<{
   metadata: Metadata;
   state: AgentState;
   sessionAttachFilePath?: string;
+  /** Already-authenticated process-local custody; never persisted or read from Account state. */
+  sessionAttachSecret?: SessionAttachSecret;
 }>): Promise<ApiSession> {
   const existingSessionId = opts.existingSessionId.trim();
   if (!existingSessionId) {
     throw new Error('Missing existingSessionId');
   }
 
-  const attach = opts.sessionAttachFilePath
-    ? await readSessionAttachFromFile(opts.sessionAttachFilePath)
-    : await readSessionAttachFromEnv();
+  const attach = opts.sessionAttachSecret
+    ?? (opts.sessionAttachFilePath
+      ? await readSessionAttachFromFile(opts.sessionAttachFilePath)
+      : await readSessionAttachFromEnv());
   if (!attach) {
     throw new Error(`Cannot resume session ${existingSessionId}: missing session attach secret`);
   }
@@ -76,6 +79,9 @@ export async function createBaseSessionForAttach(opts: Readonly<{
       metadataVersion,
       agentState,
       agentStateVersion,
+      ...(attach.snapshot?.pendingExecutionRunIds
+        ? { pendingExecutionRunIds: attach.snapshot.pendingExecutionRunIds }
+        : {}),
     };
   }
 
@@ -97,5 +103,8 @@ export async function createBaseSessionForAttach(opts: Readonly<{
     metadataVersion,
     agentState,
     agentStateVersion,
+    ...(attach.snapshot?.pendingExecutionRunIds
+      ? { pendingExecutionRunIds: attach.snapshot.pendingExecutionRunIds }
+      : {}),
   };
 }

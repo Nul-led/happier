@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import type { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -6,6 +6,8 @@ import { createRequire } from 'node:module';
 
 import type { AgentCliInstallPlatform, AgentCliManagedInstallSpec } from '@happier-dev/agents';
 import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime';
+
+import { execFileWithDeadline, resolveWindowsCommandInvocation } from '../../process/index.js';
 
 import { createManagedToolScratchDir } from '../createManagedToolScratchDir.js';
 import { downloadGitHubReleaseAsset } from '../downloadGitHubReleaseAsset.js';
@@ -30,6 +32,7 @@ export type ManagedInstallDeps = Readonly<{
   ensureManagedPnpmCommand?: typeof ensureManagedPnpmCommand;
   ensureManagedJavaScriptRuntimeCommand?: typeof ensureManagedJavaScriptRuntimeCommand;
   spawnSync?: typeof spawnSync;
+  execFileWithDeadline?: typeof execFileWithDeadline;
 }>;
 
 export type AppendCommandLogFn = (
@@ -126,7 +129,7 @@ function resolveOpenCodeArchName(arch: string): 'x64' | 'arm64' | 'arm' | string
   return arch;
 }
 
-function hasOpenCodeLinuxMuslRuntime(): boolean {
+async function hasOpenCodeLinuxMuslRuntime(signal?: AbortSignal): Promise<boolean> {
   if (process.platform !== 'linux') return false;
   try {
     return existsSync('/etc/alpine-release');
@@ -134,19 +137,20 @@ function hasOpenCodeLinuxMuslRuntime(): boolean {
     // Ignore filesystem probes that are blocked by the host.
   }
   try {
-    const result = spawnSync('ldd', ['--version'], { encoding: 'utf8' });
+    const result = await execFileWithDeadline('ldd', ['--version'], { encoding: 'utf8', signal });
     return `${result.stdout || ''}${result.stderr || ''}`.toLowerCase().includes('musl');
   } catch {
     return false;
   }
 }
 
-function supportsOpenCodeAvx2(params: Readonly<{
+async function supportsOpenCodeAvx2(params: Readonly<{
   platform: AgentCliInstallPlatform;
   arch: string;
   env: NodeJS.ProcessEnv;
-  spawn: typeof spawnSync;
-}>): boolean {
+  runCommand: typeof execFileWithDeadline;
+  signal?: AbortSignal;
+}>): Promise<boolean> {
   if (params.arch !== 'x64') return false;
 
   if (params.platform === 'linux') {
@@ -160,12 +164,12 @@ function supportsOpenCodeAvx2(params: Readonly<{
 
   if (params.platform === 'darwin') {
     try {
-      const result = params.spawn('sysctl', ['-n', 'hw.optional.avx2_0'], {
+      const result = await params.runCommand('sysctl', ['-n', 'hw.optional.avx2_0'], {
         encoding: 'utf8',
         env: params.env,
         timeout: 1500,
+        signal: params.signal,
       });
-      if (result.status !== 0) return false;
       return String(result.stdout ?? '').trim() === '1';
     } catch {
       return false;
@@ -177,13 +181,13 @@ function supportsOpenCodeAvx2(params: Readonly<{
       '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)';
     for (const executable of ['powershell.exe', 'pwsh.exe', 'pwsh', 'powershell']) {
       try {
-        const result = params.spawn(executable, ['-NoProfile', '-NonInteractive', '-Command', command], {
+        const result = await params.runCommand(executable, ['-NoProfile', '-NonInteractive', '-Command', command], {
           encoding: 'utf8',
           env: params.env,
           timeout: 3000,
+          signal: params.signal,
           windowsHide: true,
         });
-        if (result.status !== 0) continue;
         const output = String(result.stdout ?? '').trim().toLowerCase();
         if (output === 'true' || output === '1') return true;
         if (output === 'false' || output === '0') return false;
@@ -196,19 +200,21 @@ function supportsOpenCodeAvx2(params: Readonly<{
   return false;
 }
 
-function resolveOpenCodePlatformPackageCandidates(params: Readonly<{
+async function resolveOpenCodePlatformPackageCandidates(params: Readonly<{
   platform: AgentCliInstallPlatform;
   arch: string;
   env: NodeJS.ProcessEnv;
-  spawn: typeof spawnSync;
-}>): ReadonlyArray<string> {
+  runCommand: typeof execFileWithDeadline;
+  signal?: AbortSignal;
+}>): Promise<ReadonlyArray<string>> {
   const platform = resolveOpenCodePlatformName(params.platform);
   const arch = resolveOpenCodeArchName(params.arch);
   const base = `opencode-${platform}-${arch}`;
-  const baseline = arch === 'x64' && !supportsOpenCodeAvx2(params);
+  const baseline = arch === 'x64' && !await supportsOpenCodeAvx2(params);
+  params.signal?.throwIfAborted();
 
   if (platform === 'linux') {
-    if (hasOpenCodeLinuxMuslRuntime()) {
+    if (await hasOpenCodeLinuxMuslRuntime(params.signal)) {
       if (arch === 'x64') {
         return baseline
           ? [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
@@ -281,7 +287,8 @@ async function materializeOpenCodeManagedPackageBinary(params: Readonly<{
   workspaceDir: string;
   platform: AgentCliInstallPlatform;
   env: NodeJS.ProcessEnv;
-  spawnSync: typeof spawnSync;
+  runCommand: typeof execFileWithDeadline;
+  signal?: AbortSignal;
 }>): Promise<Readonly<{ packageName: string }>> {
   const packageDir = join(params.workspaceDir, 'node_modules', 'opencode-ai');
   const packageJsonPath = join(packageDir, 'package.json');
@@ -289,12 +296,13 @@ async function materializeOpenCodeManagedPackageBinary(params: Readonly<{
   const optionalDependencyNames = readOptionalDependencyNames(JSON.parse(rawPackageJson));
   const sourceBinary = params.platform === 'win32' ? 'opencode.exe' : 'opencode';
   const targetBinary = join(packageDir, 'bin', sourceBinary);
-  const candidates = resolveOpenCodePlatformPackageCandidates({
+  const candidates = (await resolveOpenCodePlatformPackageCandidates({
     platform: params.platform,
     arch: process.arch,
     env: params.env,
-    spawn: params.spawnSync,
-  }).filter((packageName) => optionalDependencyNames.has(packageName));
+    runCommand: params.runCommand,
+    signal: params.signal,
+  })).filter((packageName) => optionalDependencyNames.has(packageName));
 
   for (const packageName of candidates) {
     for (const platformPackageJsonPath of await resolvePackageJsonPaths({
@@ -325,10 +333,12 @@ export async function installManagedPackageAgentCli(params: Readonly<{
   env: NodeJS.ProcessEnv;
   logPath: string;
   deps: ManagedInstallDeps;
+  signal?: AbortSignal;
   appendCommandLog: AppendCommandLogFn;
   appendLogLine: AppendLogLineFn;
 }>): Promise<void> {
-  const pnpmCommand = await (params.deps.ensureManagedPnpmCommand ?? ensureManagedPnpmCommand)(params.env);
+  params.signal?.throwIfAborted();
+  const pnpmCommand = await (params.deps.ensureManagedPnpmCommand ?? ensureManagedPnpmCommand)(params.env, {}, { signal: params.signal });
   if (!pnpmCommand) {
     const rawPnpmOverride = readRawPnpmOverride(params.env);
     if (rawPnpmOverride) {
@@ -339,7 +349,7 @@ export async function installManagedPackageAgentCli(params: Readonly<{
     throw new Error('Managed pnpm is unavailable');
   }
   const jsRuntimeCommand =
-    await (params.deps.ensureManagedJavaScriptRuntimeCommand ?? ensureManagedJavaScriptRuntimeCommand)(params.env);
+    await (params.deps.ensureManagedJavaScriptRuntimeCommand ?? ensureManagedJavaScriptRuntimeCommand)(params.env, {}, { signal: params.signal });
   if (!jsRuntimeCommand) {
     const rawRuntimeOverride = readExplicitJavaScriptRuntimeCommand(params.env);
     if (rawRuntimeOverride) {
@@ -350,6 +360,7 @@ export async function installManagedPackageAgentCli(params: Readonly<{
     throw new Error('Managed JavaScript runtime is unavailable');
   }
 
+  params.signal?.throwIfAborted();
   const installRoot = resolveManagedAgentInstallDir(params.runtimeSpec.id, params.env);
   const scratchDir = await createManagedToolScratchDir({
     installDir: installRoot,
@@ -380,35 +391,34 @@ export async function installManagedPackageAgentCli(params: Readonly<{
         .join(delimiter);
     }
     const addArgs = ['--dir', workspaceDir, 'add', params.managedInstall.packageName, '--ignore-scripts'];
-    const spawn = params.deps.spawnSync ?? spawnSync;
-    const result = spawn(pnpmCommand, addArgs, {
-      cwd: workspaceDir,
-      encoding: 'utf8',
-      env: childEnv,
-      windowsHide: true,
-    });
-    params.appendCommandLog(
-      params.logPath,
-      pnpmCommand,
-      addArgs,
-      String(result.stdout ?? ''),
-      String(result.stderr ?? ''),
-      result.status ?? null,
-      result.signal ?? null,
-    );
-    if (result.error) {
-      throw result.error;
+    params.signal?.throwIfAborted();
+    const invocation = resolveWindowsCommandInvocation({ command: pnpmCommand, args: addArgs, env: childEnv });
+    try {
+      const result = await (params.deps.execFileWithDeadline ?? execFileWithDeadline)(invocation.command, invocation.args, {
+        cwd: workspaceDir,
+        encoding: 'utf8',
+        env: childEnv,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        signal: params.signal,
+      });
+      params.appendCommandLog(params.logPath, pnpmCommand, addArgs, String(result.stdout), String(result.stderr), 0, null);
+    } catch (error) {
+      const failure = error as { stdout?: unknown; stderr?: unknown; code?: unknown; signal?: NodeJS.Signals };
+      params.appendCommandLog(params.logPath, pnpmCommand, addArgs,
+        String(failure.stdout ?? ''), String(failure.stderr ?? ''),
+        typeof failure.code === 'number' ? failure.code : null, failure.signal ?? null);
+      throw error;
     }
-    if ((result.status ?? 1) !== 0) {
-      throw new Error(String(result.stderr ?? '').trim() || `pnpm add failed (${result.status ?? 'unknown'})`);
-    }
+    params.signal?.throwIfAborted();
 
     if (params.managedInstall.packageBinarySetup?.kind === 'opencode_platform_binary') {
       const materialized = await materializeOpenCodeManagedPackageBinary({
         workspaceDir,
         platform: params.platform,
         env: childEnv,
-        spawnSync: spawn,
+        runCommand: params.deps.execFileWithDeadline ?? execFileWithDeadline,
+        signal: params.signal,
       });
       params.appendLogLine(params.logPath, `# opencode platform package: ${materialized.packageName}`);
     }
@@ -420,8 +430,10 @@ export async function installManagedPackageAgentCli(params: Readonly<{
       runtimePathEntries,
     });
 
+    params.signal?.throwIfAborted();
     await promoteManagedCurrentInstall({
       installRoot,
+      signal: params.signal,
       candidatePath: candidateDir,
       reportWarning: (message) => params.appendLogLine(params.logPath, `# ${message}`),
     });
@@ -434,12 +446,14 @@ async function resolveManagedBinaryAsset(params: Readonly<{
   managedInstall: Extract<AgentCliManagedInstallSpec, { kind: 'github_release_binary' }>;
   platform: AgentCliInstallPlatform;
   deps: ManagedInstallDeps;
+  signal?: AbortSignal;
   env: NodeJS.ProcessEnv;
 }>): Promise<Readonly<{ name: string; url: string; digest: string | null }>> {
   const release = await (params.deps.fetchGitHubLatestRelease ?? fetchGitHubLatestRelease)({
     githubRepo: params.managedInstall.githubRepo,
     userAgent: 'happier-cli',
     githubToken: params.env.GITHUB_TOKEN,
+    signal: params.signal,
   });
 
   const assets = normalizeGitHubReleaseAssets(release);
@@ -562,14 +576,17 @@ export async function installManagedBinaryAgentCli(params: Readonly<{
   env: NodeJS.ProcessEnv;
   logPath: string;
   deps: ManagedInstallDeps;
+  signal?: AbortSignal;
   appendLogLine: AppendLogLineFn;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   const installRoot = resolveManagedAgentInstallDir(params.runtimeSpec.id, params.env);
   const asset = await resolveManagedBinaryAsset({
     managedInstall: params.managedInstall,
     platform: params.platform,
     deps: params.deps,
     env: params.env,
+    signal: params.signal,
   });
   const scratchDir = await createManagedToolScratchDir({
     installDir: installRoot,
@@ -591,11 +608,13 @@ export async function installManagedBinaryAgentCli(params: Readonly<{
       destinationPath: archivePath,
       digest: asset.digest,
       userAgent: 'happier-cli',
+      signal: params.signal,
     });
 
     await mkdir(dirname(candidateBinPath), { recursive: true });
     await (params.deps.extractGitHubReleaseAsset ?? extractGitHubReleaseAsset)({
       archivePath,
+      signal: params.signal,
       archiveName: asset.name,
       extractDir,
       outputPath: candidateBinPath,
@@ -616,8 +635,10 @@ export async function installManagedBinaryAgentCli(params: Readonly<{
     }
 
     params.appendLogLine(params.logPath, `# asset: ${asset.name}`);
+    params.signal?.throwIfAborted();
     await promoteManagedCurrentInstall({
       installRoot,
+      signal: params.signal,
       candidatePath: candidateDir,
       reportWarning: (message) => params.appendLogLine(params.logPath, `# ${message}`),
       activateVersionedRelease: params.platform !== 'win32',

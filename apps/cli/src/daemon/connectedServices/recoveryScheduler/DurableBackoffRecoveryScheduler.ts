@@ -25,6 +25,7 @@ export type DurableBackoffRecoveryStore<TIntent> = Readonly<{
 }>;
 
 export type DurableBackoffRecoveryResult<TIntent> =
+  | Readonly<{ status: 'pending'; intent: TIntent; wakeResult?: Readonly<{ status: string } & Record<string, unknown>> }>
   | Readonly<{ status: 'success'; intent?: TIntent; wakeResult?: Readonly<{ status: string } & Record<string, unknown>> }>
   | Readonly<{
       status: 'wait';
@@ -285,10 +286,15 @@ export class DurableBackoffRecoveryScheduler<TIntent> {
     return hydrated;
   }
 
-  async cancel(input: Readonly<{ sessionId: string }>): Promise<TIntent | null> {
+  async cancel(input: Readonly<{ sessionId: string; matches?: (intent: TIntent) => boolean }>): Promise<TIntent | null> {
     if (this.#store?.transact) {
+      let matched = true;
       const cancelled = await this.#store.transact(input.sessionId, (current) => {
         const intent = current.intent === null ? null : this.#normalizeIntent(current.intent);
+        if (intent && input.matches && !input.matches(intent)) {
+          matched = false;
+          return { ...current, result: null };
+        }
         const next = intent ? this.#markCancelled(intent) : null;
         return {
           intent: next,
@@ -296,6 +302,7 @@ export class DurableBackoffRecoveryScheduler<TIntent> {
           result: next,
         };
       });
+      if (!matched) return null;
       this.#intentVersionsBySessionId.set(
         input.sessionId,
         (this.#intentVersionsBySessionId.get(input.sessionId) ?? 0) + 1,
@@ -310,7 +317,7 @@ export class DurableBackoffRecoveryScheduler<TIntent> {
       return cancelled;
     }
     const current = this.read(input.sessionId);
-    if (!current) return null;
+    if (!current || (input.matches && !input.matches(current))) return null;
     const cancelled = this.#markCancelled(current);
     await this.#write(input.sessionId, cancelled);
     this.#clearTimer(input.sessionId);
@@ -608,6 +615,11 @@ export class DurableBackoffRecoveryScheduler<TIntent> {
 
     if ((this.#intentVersionsBySessionId.get(input.sessionId) ?? 0) !== recoveryStartedVersion) {
       return { status: 'inactive' };
+    }
+
+    if (recovery.status === 'pending') {
+      if (!await this.#replaceIfCurrent(input.sessionId, checking, recovery.intent, effectClaimToken)) return { status: 'inactive' };
+      return recovery.wakeResult ?? { status: 'pending' };
     }
 
     if (recovery.status === 'success') {

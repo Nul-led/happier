@@ -1,3 +1,8 @@
+import {
+  compareConnectedServiceQuotaObservationRecency,
+  isConnectedServiceQuotaObservationAtOrBeforeNow,
+} from '@happier-dev/protocol';
+
 export type QuotaPersistenceMaterialState = Readonly<{
   fingerprint: string;
   fetchedAt: number;
@@ -7,8 +12,8 @@ export type QuotaPersistenceMaterialState = Readonly<{
 }>;
 
 export type QuotaPersistenceDecision =
-  | Readonly<{ persist: true; reason: 'first_snapshot' | 'fingerprint_changed' | 'status_changed' | 'freshness_refresh' | 'stale_after_changed' | 'refresh_marker_clearing' }>
-  | Readonly<{ persist: false; reason: 'stale_snapshot' | 'unchanged_fresh' }>;
+  | Readonly<{ persist: true; reason: 'first_snapshot' | 'clock_recovered' | 'fingerprint_changed' | 'status_changed' | 'freshness_refresh' | 'stale_after_changed' | 'refresh_marker_clearing' }>
+  | Readonly<{ persist: false; reason: 'future_snapshot' | 'stale_snapshot' | 'unchanged_fresh' }>;
 
 function readFiniteNumber(value: number | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -20,8 +25,21 @@ export function shouldPersistQuotaSnapshot(input: Readonly<{
   nowMs: number;
   minFreshnessMs: number;
 }>): QuotaPersistenceDecision {
+  if (!isConnectedServiceQuotaObservationAtOrBeforeNow({
+    observedAtMs: input.next.fetchedAt,
+    nowMs: input.nowMs,
+  })) return { persist: false, reason: 'future_snapshot' };
   if (!input.previous) return { persist: true, reason: 'first_snapshot' };
-  if (input.next.fetchedAt < input.previous.fetchedAt) return { persist: false, reason: 'stale_snapshot' };
+  const recency = compareConnectedServiceQuotaObservationRecency({
+    existingObservedAtMs: input.previous.fetchedAt,
+    incomingObservedAtMs: input.next.fetchedAt,
+    nowMs: input.nowMs,
+  });
+  if (recency === 'incoming_older') return { persist: false, reason: 'stale_snapshot' };
+  if (!isConnectedServiceQuotaObservationAtOrBeforeNow({
+    observedAtMs: input.previous.fetchedAt,
+    nowMs: input.nowMs,
+  })) return { persist: true, reason: 'clock_recovered' };
   if (input.next.fingerprint !== input.previous.fingerprint) return { persist: true, reason: 'fingerprint_changed' };
   if (input.next.status !== input.previous.status) return { persist: true, reason: 'status_changed' };
   if (input.next.staleAfterMs !== input.previous.staleAfterMs) return { persist: true, reason: 'stale_after_changed' };

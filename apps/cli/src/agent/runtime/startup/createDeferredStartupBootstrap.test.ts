@@ -7,9 +7,78 @@ import type {
 } from '@/api/session/sessionClient';
 import { createStartupMetadataOverrides } from '@/agent/runtime/createStartupMetadataOverrides';
 import { DeferredApiSessionClient } from './DeferredApiSessionClient';
-import { createDeferredStartupBootstrap } from './createDeferredStartupBootstrap';
+import {
+  createDeferredStartupBootstrap,
+  type DeferredStartupBackendApi,
+} from './createDeferredStartupBootstrap';
 
 describe('createDeferredStartupBootstrap', () => {
+  it('uses an admitted scoped API context and forwards process-local attach authority', async () => {
+    const stop = new Error('stop after observing restricted initialization');
+    const ordinaryInitialize = vi.fn(async () => {
+      throw new Error('ordinary Account initialization must not run');
+    });
+    const api = {
+      getOrCreateSession: vi.fn(),
+      sessionSyncClient: vi.fn(),
+      push: () => null,
+    } satisfies DeferredStartupBackendApi;
+    const scopedInitialize = vi.fn(async () => ({
+      api,
+      machineId: 'runner-machine',
+    }));
+    const initializeBackendRunSessionFn = vi.fn(async (params) => {
+      expect(params.existingSessionId).toBe('runner-session');
+      expect(params.sessionAttachSecret).toEqual({ encryptionMode: 'plain' });
+      throw stop;
+    });
+    const bootstrap = await createDeferredStartupBootstrap({
+      credentials: { token: 'runtime-token' } as never,
+      startedBy: 'terminal',
+      initialMachineId: 'runner-machine',
+      machineMetadata: {
+        host: 'host',
+        platform: 'linux',
+        happyCliVersion: '1.0.0',
+        homeDir: '/tmp',
+        happyHomeDir: '/tmp/.happy',
+        happyLibDir: '/tmp/lib',
+      },
+      sessionTag: 'runner-session-tag',
+      existingSessionId: 'runner-session',
+      sessionAttachSecret: { encryptionMode: 'plain' },
+      initialMetadata: {
+        path: '/tmp/workspace',
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 1,
+      } as never,
+      createInitializedSessionMetadata: (machineId) => ({
+        metadata: {
+          path: '/tmp/workspace',
+          permissionMode: 'default',
+          permissionModeUpdatedAt: 1,
+          machineId,
+        } as never,
+        state: { controlledByUser: false },
+      }),
+      uiLogPrefix: '[test]',
+      startupMetadataOverrides: createStartupMetadataOverrides({
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 1,
+      }),
+      initializeBackendApiContext: scopedInitialize,
+      deps: {
+        initializeBackendApiContextFn: ordinaryInitialize,
+        initializeBackendRunSessionFn,
+      },
+    });
+
+    await expect(bootstrap.start?.()).rejects.toBe(stop);
+    expect(scopedInitialize).toHaveBeenCalledOnce();
+    expect(ordinaryInitialize).not.toHaveBeenCalled();
+    expect(initializeBackendRunSessionFn).toHaveBeenCalledOnce();
+  });
+
   it('does not create or persist a server session after cancellation wins during API initialization', async () => {
     type ApiContext = Readonly<{ api: ApiClient; machineId: string }>;
     let resolveApiContext!: (value: ApiContext) => void;

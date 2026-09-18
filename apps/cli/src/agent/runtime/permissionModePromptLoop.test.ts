@@ -81,6 +81,19 @@ function localIdentityMeta(localId: string) {
   return { localId, localIds: [localId] };
 }
 
+function createProviderAcceptanceHarness() {
+  const effects = new Map<string, () => void>();
+  return {
+    registerProviderAcceptedEffect(localId: string, onAccepted: (() => void) | null) {
+      if (onAccepted) effects.set(localId, onAccepted);
+      else effects.delete(localId);
+    },
+    accept(localId: string) {
+      effects.get(localId)?.();
+    },
+  };
+}
+
 describe('runPermissionModePromptLoop', () => {
   it('applies replay seed exactly once to the first real user prompt', async () => {
     const session = createPromptLoopSession();
@@ -99,6 +112,10 @@ describe('runPermissionModePromptLoop', () => {
     });
     const queue = createModeQueue();
     const runtime = createRuntime();
+    const providerAcceptance = createProviderAcceptanceHarness();
+    runtime.sendTurnPrompt.mockImplementation(async (_prompt, meta) => {
+      if (meta?.localId) providerAcceptance.accept(meta.localId);
+    });
     const messageBuffer = new MessageBuffer();
     const permissionHandler = {
       setPermissionMode: vi.fn(),
@@ -137,6 +154,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: providerAcceptance.registerProviderAcceptedEffect,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(1, 'SEED\n\nhello', localIdentityMeta('local-1'));
@@ -177,6 +195,7 @@ describe('runPermissionModePromptLoop', () => {
     });
     const queue = createModeQueue();
     const runtime = createRuntime();
+    const providerAcceptance = createProviderAcceptanceHarness();
     let sendCount = 0;
     const seedTextAtEachSend: unknown[] = [];
     runtime.sendTurnPrompt = vi.fn<RuntimeTurnOperations['sendTurnPrompt']>(async () => {
@@ -187,6 +206,7 @@ describe('runPermissionModePromptLoop', () => {
       if (sendCount === 1 && failFirstSendBeforeAcceptance) {
         throw new Error('provider rejected the prompt before acceptance');
       }
+      providerAcceptance.accept(sendCount === 1 ? 'local-1' : 'local-2');
     });
     // The provider accepted the prompt and the turn then died — the shape of the
     // observed incident. A genuinely abort-like failure tears the loop down (see the
@@ -232,6 +252,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: providerAcceptance.registerProviderAcceptedEffect,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(1, 'SEED\n\nhello', localIdentityMeta('local-1'));
@@ -256,6 +277,10 @@ describe('runPermissionModePromptLoop', () => {
     });
     const queue = createModeQueue();
     const runtime = createRuntime();
+    const providerAcceptance = createProviderAcceptanceHarness();
+    runtime.sendTurnPrompt.mockImplementation(async (_prompt, meta) => {
+      if (meta?.localId) providerAcceptance.accept(meta.localId);
+    });
     runtime.waitForTurnCompletion = vi.fn(async () => {
       throw new Error('Cancelled by user');
     });
@@ -281,11 +306,12 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: providerAcceptance.registerProviderAcceptedEffect,
     })).rejects.toThrow('Cancelled by user');
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledExactlyOnceWith('SEED\n\nhello', localIdentityMeta('local-1'));
-    // Retirement is scoped to provider acceptance, which already happened when the
-    // send resolved — so the abort cannot leave the seed live for the next prompt.
+    // Retirement is scoped to the exact provider-acceptance witness emitted before
+    // turn completion failed, so the abort cannot leave the seed live for the next prompt.
     expect(session.__getMetadata()?.replaySeedV1?.appliedToLocalId).toBe('local-1');
     expect(session.__getMetadata()?.replaySeedV1?.seedText).toBe('');
   });
@@ -491,6 +517,7 @@ describe('runPermissionModePromptLoop', () => {
         throw new Error('composition unavailable before provider dispatch');
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
@@ -963,6 +990,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.resetOrDisposeRuntime).not.toHaveBeenCalled();
@@ -1014,6 +1042,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionModeUpdatedAt: () => {},
       onAfterLoopBoundary,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('hello', localIdentityMeta('local-1'));
@@ -1077,6 +1106,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     })).resolves.toBeUndefined();
 
     // The failure was surfaced to the transcript and the loop continued to the second prompt.
@@ -1149,6 +1179,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     })).resolves.toBeUndefined();
 
     expect(enqueueAgentMessageCommitted).not.toHaveBeenCalledWith('qwen', expect.objectContaining({
@@ -1226,6 +1257,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     })).resolves.toBeUndefined();
 
     // Surfaced (not silent, not fatal), parked (1 dispatch when the next message arrived),
@@ -1284,6 +1316,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     }).catch(() => undefined);
 
     expect(enqueueAgentMessageCommitted).not.toHaveBeenCalledWith('qwen', expect.objectContaining({
@@ -1336,6 +1369,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('recover as a new turn', localIdentityMeta('local-already-echoed'));
@@ -1414,6 +1448,7 @@ describe('runPermissionModePromptLoop', () => {
         },
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('hello', localIdentityMeta('local-checkpoint-1'));
@@ -1494,12 +1529,113 @@ describe('runPermissionModePromptLoop', () => {
         },
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(calls).toEqual([
       'message-start:local-canonical-runtime',
       'turn-start:local-canonical-runtime:codex-turn-1',
       'turn-final:local-canonical-runtime:codex-turn-1:completed',
+    ]);
+  });
+
+  it('does not let turn finalization or session cleanup overtake an in-flight checkpoint turn start', async () => {
+    const session = createPromptLoopSession();
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    let runtimeMessageHandler: ((message: unknown) => void) | null = null;
+    runtime.subscribeRuntimeEvents = vi.fn((handler: (message: unknown) => void) => {
+      runtimeMessageHandler = handler;
+      return () => {
+        runtimeMessageHandler = null;
+      };
+    });
+    runtime.sendTurnPrompt = vi.fn(async () => {
+      runtimeMessageHandler?.({
+        kind: 'turn-start',
+        sequence: 1,
+        sessionId: 'session-1',
+        emittedAtMs: 1,
+        turnId: 'turn-deferred-start',
+        startedBy: 'host',
+      });
+      runtimeMessageHandler?.({
+        kind: 'turn-complete',
+        sequence: 2,
+        sessionId: 'session-1',
+        emittedAtMs: 2,
+        turnId: 'turn-deferred-start',
+      });
+    });
+    const messageBuffer = new MessageBuffer();
+    const permissionHandler = {
+      setPermissionMode: vi.fn(),
+      reset: vi.fn(),
+    } as any;
+    const calls: string[] = [];
+    let releaseTurnStart!: () => void;
+    const turnStartReleased = new Promise<void>((resolve) => {
+      releaseTurnStart = resolve;
+    });
+
+    queue.push({ text: 'hello', localId: 'local-deferred-start' }, { permissionMode: 'default' });
+
+    let shouldExit = false;
+    const loop = runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer,
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {
+        shouldExit = true;
+      },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      checkpointLifecycle: {
+        onBeforePromptDispatch: ({ messageId }) => {
+          calls.push(`message-start:${messageId}`);
+        },
+        onTurnStarted: async ({ messageId, turnId }) => {
+          calls.push(`turn-start-enter:${messageId}:${turnId}`);
+          await turnStartReleased;
+          calls.push(`turn-start-exit:${messageId}:${turnId}`);
+        },
+        onTurnFinal: ({ messageId, turnId, status }) => {
+          calls.push(`turn-final:${messageId}:${turnId}:${status}`);
+        },
+        onSessionEnd: () => {
+          calls.push('session-end');
+        },
+      },
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
+    });
+
+    await vi.waitFor(() => expect(calls).toContain(
+      'turn-start-enter:local-deferred-start:turn-deferred-start',
+    ));
+    expect(calls).not.toContain('turn-final:local-deferred-start:turn-deferred-start:completed');
+    expect(calls).not.toContain('session-end');
+
+    releaseTurnStart();
+    await loop;
+
+    expect(calls).toEqual([
+      'message-start:local-deferred-start',
+      'turn-start-enter:local-deferred-start:turn-deferred-start',
+      'turn-start-exit:local-deferred-start:turn-deferred-start',
+      'turn-final:local-deferred-start:turn-deferred-start:completed',
+      'session-end',
     ]);
   });
 
@@ -1552,6 +1688,7 @@ describe('runPermissionModePromptLoop', () => {
         },
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(calls).toEqual([
@@ -1617,6 +1754,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionModeUpdatedAt: () => {},
       beforePendingMaterialize,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(beforePendingMaterialize).not.toHaveBeenCalled();
@@ -1674,6 +1812,7 @@ describe('runPermissionModePromptLoop', () => {
       strictInitialResume: true,
       onAfterStart,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(messageBuffer.getMessages()).toContainEqual(expect.objectContaining({
@@ -1734,6 +1873,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     })).resolves.toBeUndefined();
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
@@ -1783,6 +1923,7 @@ describe('runPermissionModePromptLoop', () => {
         shouldExit = true;
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(session.refreshSessionSnapshotFromServerBestEffort).not.toHaveBeenCalled();
@@ -1825,6 +1966,7 @@ describe('runPermissionModePromptLoop', () => {
       onAfterStart,
       startRuntimeBeforeFirstPrompt: true,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(onAfterStart).toHaveBeenCalledTimes(1);
@@ -1869,6 +2011,7 @@ describe('runPermissionModePromptLoop', () => {
         throw resumeFailure;
       },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     })).rejects.toBe(resumeFailure);
 
     expect(onStrictInitialResumeFailure).toHaveBeenCalledOnce();
@@ -1922,6 +2065,7 @@ describe('runPermissionModePromptLoop', () => {
       startRuntimeBeforeFirstPrompt: true,
       resolveFreshSessionSystemPrompt: async ({ baseOverride }) => baseOverride === undefined ? 'FALLBACK' : baseOverride ?? '',
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('APPEND\n\nhello', localIdentityMeta('local-eager-1'));
@@ -2039,6 +2183,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('inspect this image', {
@@ -2156,6 +2301,7 @@ describe('runPermissionModePromptLoop', () => {
       }),
       onProviderPromptDispatchPrepared,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(events).toEqual(['model-transition', 'dispatch-model-snapshotted', 'provider-dispatch']);
@@ -2254,6 +2400,7 @@ describe('runPermissionModePromptLoop', () => {
               requestedSelection,
             },
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
@@ -2350,6 +2497,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionModeUpdatedAt: () => {},
       resolveComposerAttachmentForDispatch,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.beginTurnLifecycle).not.toHaveBeenCalled();
@@ -2446,6 +2594,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
     expect(runtime.beginTurnLifecycle).not.toHaveBeenCalled();
@@ -2526,6 +2675,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.updateSessionRuntimeConfig).toHaveBeenCalledWith({ permissionMode: 'read-only' });
@@ -2577,6 +2727,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: formatProviderPromptErrorMessage,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(enqueueAgentMessageCommittedSpy).toHaveBeenCalledWith('qwen', {
@@ -2631,6 +2782,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: formatProviderPromptErrorMessage,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(enqueueAgentMessageCommittedSpy).toHaveBeenCalledWith('qwen', {
@@ -2681,6 +2833,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: formatProviderPromptErrorMessage,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(enqueueAgentMessageCommittedSpy).not.toHaveBeenCalledWith('opencode', expect.objectContaining({
@@ -2770,6 +2923,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(promptSnapshots).toEqual([
@@ -2839,6 +2993,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(2);
@@ -2909,6 +3064,7 @@ describe('runPermissionModePromptLoop', () => {
         auditActive = true;
         refreshSessionSnapshotSpy.mockClear();
       },
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(1);
@@ -3010,6 +3166,7 @@ describe('runPermissionModePromptLoop', () => {
         setCurrentPermissionMode: () => {},
         setCurrentPermissionModeUpdatedAt: () => {},
         formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+        registerProviderAcceptedEffect: () => undefined,
       }),
       appliedPromise,
     ]);
@@ -3083,6 +3240,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     try {
@@ -3195,6 +3353,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     await promptStarted;
@@ -3262,6 +3421,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionModeUpdatedAt: () => {},
       resolveFreshSessionSystemPrompt: async ({ baseOverride }) => baseOverride === undefined ? 'FALLBACK' : baseOverride ?? '',
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(1, 'APPEND\n\nhello', localIdentityMeta('local-1'));
@@ -3309,6 +3469,7 @@ describe('runPermissionModePromptLoop', () => {
       initialResumeId: 'resume-1',
       resolveFreshSessionSystemPrompt: async ({ baseOverride }) => baseOverride === undefined ? 'FALLBACK' : baseOverride ?? '',
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('hello', localIdentityMeta('local-1'));
@@ -3351,6 +3512,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.compactContext).toBeUndefined();
@@ -3410,6 +3572,7 @@ describe('runPermissionModePromptLoop', () => {
       onAfterReset,
       onAfterLoopBoundary,
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     await vi.waitFor(() => {
@@ -3471,6 +3634,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(1, 'first', localIdentityMeta('local-3b'));
@@ -3524,6 +3688,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionModeUpdatedAt: () => {},
       initialResumeId: 'resume-id',
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('hello', localIdentityMeta('local-fork'));
@@ -3797,6 +3962,7 @@ describe('runPermissionModePromptLoop', () => {
       setCurrentPermissionMode: () => {},
       setCurrentPermissionModeUpdatedAt: () => {},
       formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+      registerProviderAcceptedEffect: () => undefined,
     });
 
     expect(runtime.resolveComposerReference).toHaveBeenCalledWith({

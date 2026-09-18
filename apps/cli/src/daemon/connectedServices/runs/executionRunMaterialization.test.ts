@@ -28,7 +28,7 @@ type ResolveAuthForSpawnInput = Parameters<
 >[0];
 
 const RUN_BINDINGS = {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
         'openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
     },
@@ -146,7 +146,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             createAdoptedRootCleanup,
         });
         const receipt = {
-            v: 1 as const,
+            v: 2 as const,
             activationId: '33333333-3333-4333-8333-333333333333',
             runKey: MATERIALIZE_INPUT.runId,
             agentId: MATERIALIZE_INPUT.agentId,
@@ -317,6 +317,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             bindings: [expect.objectContaining({
                 target: expect.objectContaining({ kind: 'account' }),
             })],
+            directMaterialOrigins: [],
         });
         expect(requestAuthRegistry.activate).toHaveBeenCalledWith({
             subject: expect.objectContaining({
@@ -369,7 +370,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
 
     it('preserves native run environment while snapshotting the declared purpose as explicitly unbound', async () => {
         const nativeBindings = {
-            v: 1 as const,
+            v: 2 as const,
             bindingsByServiceId: {
                 'openai-codex': { source: 'native' as const },
             },
@@ -437,6 +438,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
                 purpose: 'primary',
             }],
             bindings: [],
+            directMaterialOrigins: [],
         });
         expect(requestAuthRegistry.activate).not.toHaveBeenCalled();
     });

@@ -30,6 +30,7 @@ const e2eeCurrentness = {
   signingKeyFingerprint: null,
   contentKeyFingerprint: 'content-fingerprint',
   updatedAt: 1,
+  recipientEnvelopeReadiness: { status: 'available' as const },
 };
 const plainCurrentness = {
   mode: 'plain' as const,
@@ -37,6 +38,7 @@ const plainCurrentness = {
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
   updatedAt: 1,
+  recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 };
 
 type SnapshotUpdateParams = Parameters<
@@ -58,6 +60,30 @@ function fetchSessionSnapshotUpdateFromServer(
 }
 
 describe('snapshotSync.fetchSessionSnapshotUpdateFromServer', () => {
+    it('projects exact queued Execution Run target ids from the current Session snapshot', async () => {
+        const getSpy = vi.spyOn(axios, 'get');
+        getSpy.mockResolvedValueOnce({
+            status: 200,
+            data: {
+                session: {
+                    ...createSessionRecordFixture({ id: 's1' }),
+                    pendingExecutionRunIds: ['run-a', 'run-b', 'run-a'],
+                },
+            },
+        } as any);
+
+        await expect(fetchSessionSnapshotUpdateFromServer({
+            token: 't',
+            sessionId: 's1',
+            mode: 'e2ee',
+            ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
+            currentMetadataVersion: 0,
+            currentAgentStateVersion: 0,
+        })).resolves.toMatchObject({
+            pendingExecutionRunIds: ['run-a', 'run-b'],
+        });
+    });
+
     it('preserves unexpected non-auth HTTP statuses as HttpStatusError carriers', async () => {
         const getSpy = vi.spyOn(axios, 'get');
         getSpy.mockResolvedValueOnce({
@@ -182,6 +208,7 @@ describe('snapshotSync.fetchSessionSnapshotUpdateFromServer', () => {
           metadataVersion: 1,
           metadata: tuple.sharedMetadata.ciphertext,
           ownerMetadata: tuple.ownerMetadata,
+          share: null,
           agentStateVersion: 1,
           agentState: tuple.agentState,
         }),
@@ -267,6 +294,7 @@ describe('snapshotSync.fetchSessionSnapshotUpdateFromServer', () => {
           metadataVersion: 1,
           metadata: tuple.sharedMetadata.ciphertext,
           ownerMetadata: tuple.ownerMetadata,
+          share: null,
           agentStateVersion: 1,
           agentState: tuple.agentState,
         }),
@@ -322,6 +350,7 @@ describe('snapshotSync.fetchSessionSnapshotUpdateFromServer', () => {
             path: '/must-not-cross-the-shared-envelope',
           }),
           ownerMetadata: ownerTuple.ownerMetadata,
+          share: null,
           agentStateVersion: 1,
           agentState: JSON.stringify({ controlledByUser: false }),
         }),

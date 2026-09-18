@@ -3,9 +3,30 @@ import { describe, expect, it } from 'vitest';
 
 import { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from '../quotas/ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
 import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1 } from '../selection/selectConnectedServiceAuthGroupCandidate';
-import { buildConnectedServiceAuthGroupSwitchState } from './buildConnectedServiceAuthGroupSwitchState';
+import {
+  buildConnectedServiceAuthGroupSwitchState,
+  mergePersistedMemberRuntimeState,
+} from './buildConnectedServiceAuthGroupSwitchState';
 
 describe('buildConnectedServiceAuthGroupSwitchState', () => {
+  it('preserves the failure reset when a healthy snapshot reports the next quota window', () => {
+    expect(mergePersistedMemberRuntimeState({
+      providerResetsAtMs: 20_000,
+      quotaSnapshot: {
+        capturedAtMs: 11_000,
+        effectiveRemainingPercent: 60,
+      },
+    }, {
+      providerResetsAtMs: 10_000,
+      lastFailureKind: 'usage_limit',
+      lastObservedAtMs: 9_000,
+    })).toMatchObject({
+      providerResetsAtMs: 10_000,
+      lastFailureKind: 'usage_limit',
+      lastObservedAtMs: 9_000,
+    });
+  });
+
   it('preserves persisted limiter evidence used by candidate selection after restart', () => {
     const group: ConnectedServiceAuthGroupV1 = {
       v: 1,

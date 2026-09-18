@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, win32 as win32Path } from 'node:path';
-import { pathToFileURL } from 'node:url';
+
+import { resolveServerRuntimePrismaEngineFileName } from './serverRuntimeArtifactLayout.js';
 
 export const DEFAULT_PRISMA_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 export const DEFAULT_SERVER_LIGHT_SQLITE_CONNECTION_LIMIT = 4;
@@ -131,6 +132,7 @@ export function renderSelfHostServerEnvText(params: Readonly<{
     serverBinDir?: string;
     arch?: string;
     platform?: NodeJS.Platform;
+    prismaEnginePath?: string;
 }>): string {
     const normalizedDataDir = String(params.dataDir ?? '').replace(/\/+$/, '') || String(params.dataDir ?? '');
     const platform = String(params.platform ?? '').trim() || process.platform;
@@ -152,24 +154,18 @@ export function renderSelfHostServerEnvText(params: Readonly<{
         sqlite: resolveServerLightSqliteDatabaseUrlOptionsFromEnv(process.env),
     });
 
-    const prismaEngineCandidates: string[] = [];
-    if (serverBinDir && platform === 'darwin' && arch === 'arm64') {
-        prismaEngineCandidates.push(
-            join(serverBinDir, 'node_modules', '.prisma', 'client', 'libquery_engine-darwin-arm64.dylib.node'),
-            join(serverBinDir, 'generated', 'sqlite-client', 'libquery_engine-darwin-arm64.dylib.node'),
-        );
-    } else if (serverBinDir && platform === 'linux' && arch === 'arm64') {
-        prismaEngineCandidates.push(
-            join(serverBinDir, 'node_modules', '.prisma', 'client', 'libquery_engine-linux-arm64-openssl-3.0.x.so.node'),
-            join(serverBinDir, 'generated', 'sqlite-client', 'libquery_engine-linux-arm64-openssl-3.0.x.so.node'),
-        );
-    } else if (serverBinDir && platform === 'linux' && arch === 'x64') {
-        prismaEngineCandidates.push(
-            join(serverBinDir, 'node_modules', '.prisma', 'client', 'libquery_engine-debian-openssl-3.0.x.so.node'),
-            join(serverBinDir, 'generated', 'sqlite-client', 'libquery_engine-debian-openssl-3.0.x.so.node'),
-        );
-    }
-    const prismaEnginePath = prismaEngineCandidates.find((candidate) => existsSync(candidate)) || '';
+    const prismaEngineFileName = serverBinDir
+        ? resolveServerRuntimePrismaEngineFileName({ platform, arch })
+        : '';
+    const prismaEngineCandidates = prismaEngineFileName
+        ? [
+            join(serverBinDir, 'node_modules', '.prisma', 'client', prismaEngineFileName),
+            join(serverBinDir, 'generated', 'sqlite-client', prismaEngineFileName),
+        ]
+        : [];
+    const prismaEnginePath = String(params.prismaEnginePath ?? '').trim()
+        || prismaEngineCandidates.find((candidate) => existsSync(candidate))
+        || '';
     const nodeModulesPath = serverBinDir ? join(serverBinDir, 'node_modules') : '';
 
     return renderSelfHostServerEnvTextFromResolvedValues({
@@ -195,18 +191,11 @@ export type PrismaSqliteDatabaseUrlOptions = Readonly<{
 
 function renderPrismaCompatibleSqliteFileUrl(params: Readonly<{
     dbPath: string;
-    platform: string;
 }>): string {
-    if (params.platform !== 'win32') {
-        return pathToFileURL(params.dbPath).href;
+    if (/[?#]/.test(params.dbPath)) {
+        throw new Error("SQLite database path cannot contain '?' or '#' because Prisma reserves them for connection parameters");
     }
-
-    const fileUrl = pathToFileURL(params.dbPath, { windows: true });
-    if (fileUrl.hostname) {
-        return `file://${fileUrl.hostname}${fileUrl.pathname}`;
-    }
-
-    return `file:${fileUrl.pathname.replace(/^\/(?=[A-Za-z]:\/)/, '')}`;
+    return `file:${params.dbPath}`;
 }
 
 function resolvePrismaSqliteSocketTimeoutSeconds(busyTimeoutMs: number): number | null {
@@ -333,7 +322,6 @@ export function renderPrismaCompatibleSqliteDatabaseUrl(params: Readonly<{
 }>): string {
     const fileUrl = renderPrismaCompatibleSqliteFileUrl({
         dbPath: params.dbPath,
-        platform: params.platform,
     });
     return appendPrismaSqliteConnectionParams({
         databaseUrl: fileUrl,

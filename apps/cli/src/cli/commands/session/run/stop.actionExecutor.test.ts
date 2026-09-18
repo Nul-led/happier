@@ -18,7 +18,7 @@ describe('happier session run stop (action executor)', () => {
   it('routes through ActionExecutor with the expected action id and args', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, stopped: true },
+      result: { ok: true },
     });
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
@@ -38,7 +38,7 @@ describe('happier session run stop (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stop',
         { sessionId: 'sess-1', runId: 'run-1' },
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -51,7 +51,7 @@ describe('happier session run stop (action executor)', () => {
   });
 
   it('does not resolve an API-token Session through the generic transport', async () => {
-    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, stopped: true } });
+    execute.mockResolvedValueOnce({ ok: true, result: { ok: true } });
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     try {

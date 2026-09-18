@@ -38,6 +38,10 @@ export async function loadCliFeatureDecisionInputsForServer(params: {
   env: NodeJS.ProcessEnv;
   serverUrl: string;
   timeoutMs?: number;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET';
+    path: string;
+  }>) => Readonly<Record<string, string>> | null;
 }): Promise<CliFeatureDecisionInputs> {
   const globalDecision = resolveCliGlobalOnlyFeatureDecision({ featureId: params.featureId, env: params.env });
   if (globalDecision.state !== 'enabled') {
@@ -59,6 +63,9 @@ export async function loadCliFeatureDecisionInputsForServer(params: {
   const serverSnapshot = await fetchServerFeaturesSnapshot({
     serverUrl: params.serverUrl,
     timeoutMs: params.timeoutMs,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
   });
 
   return createCliFeatureDecisionInputs({

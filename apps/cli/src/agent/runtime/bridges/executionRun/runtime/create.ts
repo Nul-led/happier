@@ -10,16 +10,19 @@ import {
     type BackendTargetRefV1,
     type BackendTargetRefV2,
     type BackendTargetRefV2Input,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ExecutionRunConnectedServicesLaunchV1,
     type ProviderBoundModelRef,
+    type TeamCredentialProviderModelSelectionV1,
     type SessionInputCausalPermissionAuthorityV1,
+    type SecretReferenceOverlayV1,
 } from '@happier-dev/protocol';
 
 import type {
     ExecutionRunHostRuntime,
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type {
+    ExecutionRunHostRunScopeBinding,
     NativeAgentSessionInteractionHostBinding,
     ResolvedCliEngineRegistry,
 } from '@/agent/runtime/registry/engineRegistryTypes';
@@ -28,12 +31,22 @@ import {
     withExecutionRunRuntimeIdentityPublication,
 } from '@/agent/runtime/identity/executionRunRuntimeIdentityPublication';
 import type { ExecutionRunSessionStateTarget } from '@/agent/runtime/bridges/executionRun/sessionStateDelivery';
+import type { ExecutionRunPermissionRequestStoreProvider } from '@/agent/runtime/bridges/executionRun/executionRunPermissionResponseTarget';
+import type { ExecutionRunRetainedInteractionScope } from '@/agent/runtime/bridges/executionRun/retainedInteractionEligibility';
+import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
 import { resolveBackendEngineAdapterResolution } from '@/agent/runtime/registry/engineRegistry';
 import { throwIfPluginRuntimeStartBlocked } from '@/agent/runtime/registry/throwIfPluginRuntimeStartBlocked';
 import { configuration } from '@/configuration';
 import { resolveBackendIsolationBundle } from '@/packagedRuntime/isolation/resolveBackendIsolationBundle';
-import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { assertBackendEnabledByAccountSettings } from '@/settings/backendEnabled';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import {
+    LaunchSecretReferenceOverlayError,
+    readLaunchSecretReferenceOverlayProviderErrorCodeV1,
+    resolveSecretReferenceOverlayEnvironment,
+} from '@/daemon/agentRuntime/resolveForegroundProfileSavedSecretEnvironment';
+import { createProviderRedactionLease } from '@/providers/spawn/redaction';
 
 import { withExecutionRunHostRuntimeCleanup } from '../hostRuntime/cleanup';
 import { createLazyExecutionRunHostRuntime } from '../hostRuntime/lazy';
@@ -47,6 +60,7 @@ import { cleanupExecutionRunIsolationBundle } from './isolation';
 import { buildExecutionRunConfiguration } from './openInputs';
 import {
     prepareExecutionRunProviderLaunch,
+    type ExecutionRunTeamCredentialProviderBindingPreparer,
     type PreparedExecutionRunProviderLaunch,
 } from './providerLaunch';
 
@@ -55,16 +69,8 @@ function normalizeAccountSettings(value: unknown): AccountSettings | null {
     return accountSettingsParse(value);
 }
 
-function resolveExecutionRunAccountSettings(params: Readonly<{
-    backendTarget?: BackendTargetRefV2 | null;
-    accountSettings?: unknown;
-}>): AccountSettings | null {
-    const explicitSettings = normalizeAccountSettings(params.accountSettings);
-    if (explicitSettings) return explicitSettings;
-    if (params.backendTarget?.sourceKind === 'configured') {
-        return null;
-    }
-    return normalizeAccountSettings(getActiveAccountSettingsSnapshot()?.settings ?? null);
+function resolveExecutionRunAccountSettings(accountSettings: unknown): AccountSettings | null {
+    return normalizeAccountSettings(accountSettings);
 }
 
 function resolveExecutionRunCompatBackendTarget(
@@ -87,8 +93,12 @@ function resolveExecutionRunCompatBackendTarget(
 function resolveExecutionRunPluginIsolationBundle(opts: Readonly<{
     cwd: string;
     runId?: string;
+    controllerOccurrenceId?: string;
+    callId?: string;
+    sidechainId?: string;
+    getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
     backendId: string;
-    start?: Readonly<{ intentInput?: unknown; retentionPolicy?: string; intent?: string }> | null;
+    start?: ExecutionRunBackendStartContext | null;
 }>): Readonly<{
     env: Readonly<Record<string, string>>;
     cleanup?: (() => Promise<void>) | undefined;
@@ -128,28 +138,42 @@ type LazyExecutionRunRuntimeShellConfig = Parameters<typeof createLazyExecutionR
 function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
     cwd: string;
     runId?: string;
+    controllerOccurrenceId?: string;
+    callId?: string;
+    sidechainId?: string;
+    scope: ExecutionRunRetainedInteractionScope;
+    getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
     backendId: string;
     backendTarget?: BackendTargetRefV2Input;
     backendSourceKind?: string;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
+    teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
+    secretReferenceOverlay?: SecretReferenceOverlayV1;
+    /** Already materialized first-launch values; never persisted or used on resume. */
+    secretReferenceEnvironment?: Readonly<Record<string, string>>;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     permissionMode: string;
     /** Normalized Protocol settings; the outer input normalizes raw settings exactly once. */
     accountSettings?: AccountSettings | null;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesDefaultServiceIds?: readonly string[];
-    start?: Readonly<{ intentInput?: unknown; retentionPolicy?: string; intent?: string }> | null;
+    start?: ExecutionRunBackendStartContext | null;
     happyHomeDir?: string | null;
     engineRegistry?: ResolvedCliEngineRegistry;
     parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
     /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
     happierSessionId?: string;
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
+    sessionOwnedRunScope?: ExecutionRunHostRunScopeBinding;
+    prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
     machineId?: string;
     resolveProvidersFeatureEnabled?: () => boolean | Promise<boolean>;
+    resolveAccountSettingsSnapshot?: (input?: Readonly<{
+        secretReferenceOverlay?: SecretReferenceOverlayV1;
+    }>) => Promise<ActiveAccountSettingsSnapshot | null>;
 }>): LazyExecutionRunRuntimeShellConfig {
     let resolvedBackendPromise: Promise<ExecutionRunHostRuntime> | null = null;
 
@@ -190,6 +214,9 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                                 opts.sessionConfigOptionOverrides,
                         }
                         : {}),
+                    ...(opts.start?.acpSessionModeId
+                        ? { acpSessionModeId: opts.start.acpSessionModeId }
+                        : {}),
                     permissionMode: opts.permissionMode,
                     updatedAtMs: Date.now(),
                 })
@@ -210,13 +237,21 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                         }
                         : {}),
                 });
+            const prepareRunTeamCredentialProviderBinding = opts.teamCredentialModel
+                ? opts.prepareRunTeamCredentialProviderBinding
+                    ?? opts.sessionInteractionHost?.prepareRunTeamCredentialProviderBinding
+                : opts.sessionInteractionHost?.prepareRunTeamCredentialProviderBinding;
             let providerLaunch: PreparedExecutionRunProviderLaunch | null = null;
-            if (opts.modelSelection && effectiveBackendTarget) {
+            if (effectiveBackendTarget && (
+                opts.modelSelection || opts.teamCredentialModel || opts.sessionInteractionHost?.prepareRunTeamCredentialProviderBinding
+            )) {
                 const featureEnabled =
-                    opts.modelSelection.providerConnectionId === null
+                    !opts.modelSelection
+                    || opts.modelSelection.providerConnectionId === null
                     || await opts.resolveProvidersFeatureEnabled?.() === true;
                 providerLaunch = await prepareExecutionRunProviderLaunch({
-                    selection: opts.modelSelection,
+                    ...(opts.modelSelection ? { selection: opts.modelSelection } : {}),
+                    ...(opts.teamCredentialModel ? { teamCredentialModel: opts.teamCredentialModel } : {}),
                     backendTarget: effectiveBackendTarget,
                     machineId: opts.machineId,
                     agentId: engineResolution.agentId,
@@ -226,6 +261,11 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                     featureEnabled,
                     happyHomeDir:
                         opts.happyHomeDir ?? configuration.happyHomeDir,
+                    accountSettingsSnapshot:
+                        await opts.resolveAccountSettingsSnapshot?.() ?? null,
+                    ...(prepareRunTeamCredentialProviderBinding
+                        ? { prepareTeamCredentialProviderBinding: prepareRunTeamCredentialProviderBinding }
+                        : {}),
                 });
             }
             const materializedConnectedServicesSelection:
@@ -286,14 +326,61 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
             const pluginIsolationBundle = engineResolution.runtimeOwner?.selected?.kind === 'plugin_engine'
                 ? resolveExecutionRunPluginIsolationBundle(opts)
                 : null;
+            let secretReferenceEnvironment: Readonly<Record<string, string>> =
+                opts.secretReferenceEnvironment ?? {};
+            let secretReferenceRedaction: ReturnType<typeof createProviderRedactionLease> | null = null;
+            if (opts.secretReferenceOverlay && !opts.secretReferenceEnvironment) {
+                try {
+                    const snapshot = await opts.resolveAccountSettingsSnapshot?.({
+                        secretReferenceOverlay: opts.secretReferenceOverlay,
+                    }) ?? null;
+                    if (!snapshot) {
+                        throw new LaunchSecretReferenceOverlayError('reference_unavailable', 'launch');
+                    }
+                    secretReferenceEnvironment = resolveSecretReferenceOverlayEnvironment({
+                        accountSettings: snapshot.settings,
+                        settingsSecretsReadKeys: snapshot.settingsSecretsReadKeys,
+                        ...(snapshot.savedSecretResources
+                            ? { savedSecretResources: snapshot.savedSecretResources }
+                            : {}),
+                        secretReferenceOverlay: opts.secretReferenceOverlay,
+                    });
+                } catch (error) {
+                    await connectedServicesEnv?.cleanup();
+                    await providerLaunch?.cleanupOnExit?.();
+                    if (
+                        error instanceof LaunchSecretReferenceOverlayError
+                        || error instanceof SavedSecretOperationAdmissionError
+                    ) {
+                        throw Object.assign(error, {
+                            code: readLaunchSecretReferenceOverlayProviderErrorCodeV1(error.reason),
+                        });
+                    }
+                    throw error;
+                }
+            }
+            if (Object.keys(secretReferenceEnvironment).length > 0) {
+                secretReferenceRedaction = createProviderRedactionLease({
+                    values: Object.values(secretReferenceEnvironment),
+                });
+            }
             const isolationEnv: Record<string, string> = {
                 ...(pluginIsolationBundle?.env ?? {}),
                 ...(connectedServicesEnv?.env ?? {}),
                 ...(providerLaunch?.environment ?? {}),
+                ...secretReferenceEnvironment,
             };
             const runtimeOpts = {
                 cwd: opts.cwd,
+                scope: opts.scope,
+                ...(opts.machineId ? { machineId: opts.machineId } : {}),
                 runId: opts.runId,
+                ...(opts.controllerOccurrenceId ? { controllerOccurrenceId: opts.controllerOccurrenceId } : {}),
+                ...(opts.callId ? { callId: opts.callId } : {}),
+                ...(opts.sidechainId ? { sidechainId: opts.sidechainId } : {}),
+                ...(opts.getPermissionRequestStore
+                    ? { getPermissionRequestStore: opts.getPermissionRequestStore }
+                    : {}),
                 backendId: opts.backendId,
                 backendTarget: opts.backendTarget,
                 modelId: opts.modelId,
@@ -309,15 +396,21 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 ...(boundedOpenInputs
                     ? { configuration: boundedOpenInputs.configuration }
                     : {}),
+                ...(opts.start?.runtimeDescriptorV1
+                    ? { runtimeDescriptorV1: opts.start.runtimeDescriptorV1 }
+                    : {}),
                 ...(providerLaunch?.providerBinding
                     ? { providerBinding: providerLaunch.providerBinding }
                     : {}),
-                ...(providerLaunch
+                ...(providerLaunch || secretReferenceRedaction
                     ? {
-                        revalidateProviderBeforeOpen:
-                            providerLaunch.revalidateBeforeCommit,
+                        ...(providerLaunch
+                            ? { revalidateProviderBeforeOpen: providerLaunch.revalidateBeforeCommit }
+                            : {}),
                         sanitizeProviderDiagnosticText:
-                            providerLaunch.sanitizeDiagnosticText,
+                            (value: string) => secretReferenceRedaction?.redact(
+                                providerLaunch?.sanitizeDiagnosticText(value) ?? value,
+                            ) ?? providerLaunch?.sanitizeDiagnosticText(value) ?? value,
                     }
                     : {}),
                 permissionMode: opts.permissionMode,
@@ -326,6 +419,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 ...(opts.parentSessionStateTarget ? { parentSessionStateTarget: opts.parentSessionStateTarget } : {}),
                 ...(opts.happierSessionId ? { happierSessionId: opts.happierSessionId } : {}),
                 ...(opts.sessionInteractionHost ? { sessionInteractionHost: opts.sessionInteractionHost } : {}),
+                ...(opts.sessionOwnedRunScope ? { sessionOwnedRunScope: opts.sessionOwnedRunScope } : {}),
                 ...(Object.keys(isolationEnv).length > 0
                     || (providerLaunch?.unsetEnvKeys.length ?? 0) > 0
                     ? {
@@ -356,16 +450,20 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 }
                 await connectedServicesEnv?.cleanup();
                 await providerLaunch?.cleanupOnExit?.();
-                if (providerLaunch && error instanceof Error) {
+                if ((providerLaunch || secretReferenceRedaction) && error instanceof Error) {
                     const sanitized = new Error(
-                        providerLaunch.sanitizeDiagnosticText(error.message),
+                        secretReferenceRedaction?.redact(
+                            providerLaunch?.sanitizeDiagnosticText(error.message) ?? error.message,
+                        ) ?? providerLaunch?.sanitizeDiagnosticText(error.message) ?? error.message,
                     ) as Error & { code?: string };
                     sanitized.name = error.name;
                     if ('code' in error && typeof error.code === 'string') {
                         sanitized.code = error.code;
                     }
+                    secretReferenceRedaction?.close();
                     throw sanitized;
                 }
+                secretReferenceRedaction?.close();
                 throw error;
             }
 
@@ -384,9 +482,15 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                     providerLaunch.cleanupOnExit,
                 )
                 : withPluginIsolationCleanup;
-            return connectedServicesEnv
-                ? withExecutionRunHostRuntimeCleanup(withProviderCleanup, connectedServicesEnv.cleanup)
+            const withSecretReferenceCleanup = secretReferenceRedaction
+                ? withExecutionRunHostRuntimeCleanup(
+                    withProviderCleanup,
+                    async () => { secretReferenceRedaction?.close(); },
+                )
                 : withProviderCleanup;
+            return connectedServicesEnv
+                ? withExecutionRunHostRuntimeCleanup(withSecretReferenceCleanup, connectedServicesEnv.cleanup)
+                : withSecretReferenceCleanup;
         })();
         return await resolvedBackendPromise;
     };
@@ -399,33 +503,43 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
 export function createExecutionRunRuntime(opts: Readonly<{
     cwd: string;
     runId?: string;
+    controllerOccurrenceId?: string;
+    callId?: string;
+    sidechainId?: string;
+    scope: ExecutionRunRetainedInteractionScope;
+    getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
     backendId: string;
     backendTarget?: BackendTargetRefV2Input;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
+    teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
+    secretReferenceOverlay?: SecretReferenceOverlayV1;
+    secretReferenceEnvironment?: Readonly<Record<string, string>>;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     permissionMode: string;
     accountSettings?: Readonly<Record<string, unknown>> | null;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesDefaultServiceIds?: readonly string[];
-    start?: Readonly<{ intentInput?: unknown; retentionPolicy?: string; intent?: string }> | null;
+    start?: ExecutionRunBackendStartContext | null;
     happyHomeDir?: string | null;
     engineRegistry?: ResolvedCliEngineRegistry;
     parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
     /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
     happierSessionId?: string;
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
+    sessionOwnedRunScope?: ExecutionRunHostRunScopeBinding;
+    prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
     machineId?: string;
     resolveProvidersFeatureEnabled?: () => boolean | Promise<boolean>;
+    resolveAccountSettingsSnapshot?: (input?: Readonly<{
+        secretReferenceOverlay?: SecretReferenceOverlayV1;
+    }>) => Promise<ActiveAccountSettingsSnapshot | null>;
 }>): ExecutionRunHostRuntime {
     const resolvedBackendTarget = resolveExecutionRunCompatBackendTarget(opts.backendTarget);
     const backendId = String(opts.backendId ?? '').trim();
-    const accountSettings = resolveExecutionRunAccountSettings({
-        backendTarget: resolvedBackendTarget?.canonical,
-        accountSettings: opts.accountSettings,
-    });
+    const accountSettings = resolveExecutionRunAccountSettings(opts.accountSettings);
     if (accountSettings && resolvedBackendTarget?.canonical.sourceKind === 'built_in') {
         assertBackendEnabledByAccountSettings({
             agentId: resolvedBackendTarget.compat.kind === 'builtInAgent' ? resolvedBackendTarget.compat.agentId as AgentId : undefined,
@@ -451,7 +565,14 @@ export function createExecutionRunRuntime(opts: Readonly<{
         : resolvedBackendTarget?.canonical;
     const runtimeShellConfig = createEngineExecutionRunRuntimeShellConfig({
             cwd: opts.cwd,
+            scope: opts.scope,
             runId: opts.runId,
+            ...(opts.controllerOccurrenceId ? { controllerOccurrenceId: opts.controllerOccurrenceId } : {}),
+            ...(opts.callId ? { callId: opts.callId } : {}),
+            ...(opts.sidechainId ? { sidechainId: opts.sidechainId } : {}),
+            ...(opts.getPermissionRequestStore
+                ? { getPermissionRequestStore: opts.getPermissionRequestStore }
+                : {}),
             backendId: runtimeBackendId,
             ...(runtimeBackendTarget ? { backendTarget: runtimeBackendTarget } : {}),
             backendSourceKind: resolvedBackendTarget?.canonical.sourceKind ?? 'built_in',
@@ -459,8 +580,17 @@ export function createExecutionRunRuntime(opts: Readonly<{
             ...(opts.modelSelection
                 ? { modelSelection: opts.modelSelection }
                 : {}),
+            ...(opts.teamCredentialModel
+                ? { teamCredentialModel: opts.teamCredentialModel }
+                : {}),
             ...(opts.sessionConfigOptionOverrides
                 ? { sessionConfigOptionOverrides: opts.sessionConfigOptionOverrides }
+                : {}),
+            ...(opts.secretReferenceOverlay
+                ? { secretReferenceOverlay: opts.secretReferenceOverlay }
+                : {}),
+            ...(opts.secretReferenceEnvironment
+                ? { secretReferenceEnvironment: opts.secretReferenceEnvironment }
                 : {}),
             ...(opts.causalPermissionAuthority
                 ? { causalPermissionAuthority: opts.causalPermissionAuthority }
@@ -477,6 +607,10 @@ export function createExecutionRunRuntime(opts: Readonly<{
             parentSessionStateTarget: opts.parentSessionStateTarget ?? null,
             ...(opts.happierSessionId ? { happierSessionId: opts.happierSessionId } : {}),
             ...(opts.sessionInteractionHost ? { sessionInteractionHost: opts.sessionInteractionHost } : {}),
+            ...(opts.sessionOwnedRunScope ? { sessionOwnedRunScope: opts.sessionOwnedRunScope } : {}),
+            ...(opts.prepareRunTeamCredentialProviderBinding
+                ? { prepareRunTeamCredentialProviderBinding: opts.prepareRunTeamCredentialProviderBinding }
+                : {}),
             ...(opts.onConnectedServicesRegistration
                 ? { onConnectedServicesRegistration: opts.onConnectedServicesRegistration }
                 : {}),
@@ -486,6 +620,9 @@ export function createExecutionRunRuntime(opts: Readonly<{
                     resolveProvidersFeatureEnabled:
                         opts.resolveProvidersFeatureEnabled,
                 }
+                : {}),
+            ...(opts.resolveAccountSettingsSnapshot
+                ? { resolveAccountSettingsSnapshot: opts.resolveAccountSettingsSnapshot }
                 : {}),
         });
     return createLazyExecutionRunHostRuntime(runtimeShellConfig);

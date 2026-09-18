@@ -257,6 +257,46 @@ describe('workspace sync broker moving bytes over real OS IPC', () => {
 });
 
 describe('workspace sync broker authentication and attach rules', () => {
+  it('closes a control socket that does not authenticate within the handshake deadline', async () => {
+    const fixture = await useFixture(await startBroker({ handshakeDeadlineMs: 20 }));
+    const socket = await openRawControl(fixture.socketPath);
+
+    await waitFor(() => socket.destroyed, 'unauthenticated control deadline');
+  });
+
+  it('bounds control sockets waiting for HELLO before allocating another decoder', async () => {
+    const fixture = await useFixture(await startBroker({ maxPreauthenticatedControls: 1 }));
+    const first = await openRawControl(fixture.socketPath);
+    const second = await openRawControl(fixture.socketPath);
+
+    await waitFor(() => second.destroyed, 'preauthenticated control capacity rejection');
+    expect(first.destroyed).toBe(false);
+    first.destroy();
+  });
+
+  it('rolls back the listener and endpoint when post-bind ACL hardening fails', async () => {
+    if (process.platform === 'win32') return;
+    const directory = await mkdtemp(join(tmpdir(), 'wsbroker-bind-rollback-'));
+    const socketPath = join(directory, 'broker.sock');
+    const native = createWorkspaceSyncBrokerEndpoint({ endpointPath: socketPath });
+    const remove = vi.fn(async (path?: string) => await native.remove(path));
+
+    await expect(listenWorkspaceSyncBroker({
+      socketPath,
+      launchSecret: randomBytes(32),
+      openExternalStream: async () => new PeerStream(),
+      createEndpoint: () => ({
+        ...native,
+        secure: async () => { throw new Error('ACL hardening failed'); },
+        remove,
+      }),
+    })).rejects.toThrow('ACL hardening failed');
+
+    expect(remove).toHaveBeenCalledOnce();
+    await expect(stat(socketPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it('does not remove a pre-existing endpoint before binding its owned listener', async () => {
     if (process.platform === 'win32') return;
     const directory = await mkdtemp(join(tmpdir(), 'wsbroker-owned-'));
@@ -608,6 +648,26 @@ describe('workspace sync broker authentication and attach rules', () => {
       'data_ok after the open deadline has elapsed',
     );
     data.destroy();
+    socket.destroy();
+  });
+
+  it('derives the published and enforced attach expiry from one clock observation', async () => {
+    let nowCalls = 0;
+    const fixture = await useFixture(await startBroker({
+      now: () => 1_000_000 + (nowCalls++ * 1_000),
+    }));
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data',
+      requestId: 'req-one-attach-now',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-one-attach-now', 'alpha'),
+      expiresAtMs: 1_000_000 + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    const ready = await wire.waitFor((frame) => frame.t === 'data_ready', 'data_ready');
+    if (ready.t !== 'data_ready') throw new Error('unreachable');
+
+    expect(nowCalls).toBe(2);
+    expect(ready.expiresAtMs).toBe(1_001_000 + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS);
     socket.destroy();
   });
 

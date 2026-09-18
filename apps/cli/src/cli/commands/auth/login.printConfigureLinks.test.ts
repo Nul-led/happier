@@ -116,6 +116,18 @@ describe('happier auth login --print-configure-links', () => {
     }
   });
 
+  it('prints authentication success exactly once after machine setup completes', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin([]);
+      const output = consoleSpy.mock.calls.flat().map(String).join('\n');
+      expect(output.match(/Authentication successful/gu) ?? []).toHaveLength(1);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('passes a positive --wait-timeout to the auth polling owner', async () => {
     delete process.env.HAPPIER_AUTH_WAIT_TIMEOUT_MS;
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -135,6 +147,43 @@ describe('happier auth login --print-configure-links', () => {
       const { handleAuthLogin } = await import('./login');
       await handleAuthLogin(['--no-daemon-start']);
       expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledWith({ callerIntent: 'setup-managed' });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('threads command cancellation into the authentication owner', async () => {
+    const controller = new AbortController();
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin(['--no-daemon-start'], controller.signal);
+      expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledWith({
+        callerIntent: 'setup-managed',
+        signal: controller.signal,
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('forwards Account material recovery without replacing the existing Home session', async () => {
+    readStoredCredentialsMock.mockResolvedValue({ token: 'committed-home-token', encryption: null });
+    readSettingsMock.mockResolvedValue({
+      machineId: 'committed-home-machine',
+      machineIdConfirmedByServer: true,
+    });
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin(['--recover-account-material', '--no-daemon-start']);
+
+      expect(clearCredentialsMock).not.toHaveBeenCalled();
+      expect(clearMachineIdMock).not.toHaveBeenCalled();
+      expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledWith({
+        callerIntent: 'setup-managed',
+        requireAccountMaterial: true,
+      });
     } finally {
       consoleSpy.mockRestore();
     }

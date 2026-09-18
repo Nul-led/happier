@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
@@ -84,7 +85,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
 
     expect(userSocketStub.connect).toHaveBeenCalledTimes(0);
     client.onUserMessage(() => {});
@@ -104,7 +105,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
 
     await client.close();
 
@@ -134,7 +135,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     fetchSessionByIdCompatMock.mockResolvedValue({ active: false });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
 
     await client.close();
 
@@ -151,7 +152,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     client.onUserMessage(() => {});
 
     const abortController = new AbortController();
@@ -173,7 +174,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     fetchSessionByIdCompatMock.mockResolvedValue(null);
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as unknown as { metadata: unknown; metadataVersion: number }).metadata = null;
     (client as unknown as { metadata: unknown; metadataVersion: number }).metadataVersion = -1;
 
@@ -190,7 +191,7 @@ describe('ApiSessionClient user socket lifecycle', () => {
     userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const snapshots: Array<string | null> = [];
 
     client.on('metadata-updated', () => {

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
+import * as pinnedHttp from '@/network/pinnedHttp';
 
 import {
   accountSettingsParse,
@@ -165,6 +167,7 @@ describe('BasePermissionHandler push notifications', () => {
     const session1 = new FakeSession();
     const session2 = new FakeSession();
     session2.sessionId = 'session-two';
+    session2.rpcHandlerManager = new ServerBoundPermissionRpcHandlerManager(session2.sessionId);
 
     const settings = accountSettingsParse({
       notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
@@ -246,8 +249,10 @@ describe('BasePermissionHandler push notifications', () => {
   });
 
   it('signs webhook notifications when account settings secrets read keys are provided', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+    // The webhook's genuine network boundary is the pinned HTTP transport.
+    const transport = vi.spyOn(pinnedHttp, 'openPinnedHttpStream').mockResolvedValue({
+      status: 200, headers: {}, contentLength: 0, read: async () => null, cancel: () => {},
+    });
 
     const settingsSecretsKey = deriveSettingsSecretsKeyV1(new Uint8Array(32).fill(9));
     const encryptedSigningSecret = encryptSecretStringV1(
@@ -290,19 +295,22 @@ describe('BasePermissionHandler push notifications', () => {
 
     const promise = handler.request('perm-1', 'Write', { path: '/tmp/x', content: 'hi' });
 
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:40123/webhook',
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(1));
+    expect(transport).toHaveBeenCalledWith(
       expect.objectContaining({
+        url: 'http://127.0.0.1:40123/webhook',
+        validatedAddresses: ['127.0.0.1'],
         method: 'POST',
         headers: expect.objectContaining({
           'content-type': 'application/json',
           'x-happier-signature-256': expect.stringMatching(/^sha256=/),
         }),
       }),
+    );
+
+    const request = transport.mock.calls[0]![0];
+    expect(request.headers['x-happier-signature-256']).toBe(
+      `sha256=${createHmac('sha256', 'qa-signing-secret').update(request.body!).digest('hex')}`,
     );
 
     const rpc = session.rpcHandlerManager.handlers.get('permission');

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createProviderCliAttachSurface } from './providerCliAttach';
+import { createProviderCliAttachSurface, probeLocalSocket } from './providerCliAttach';
 
 type SpawnExitHandler = (code: number | null, signal: NodeJS.Signals | null) => void;
 type SpawnErrorHandler = (error: Error) => void;
@@ -107,7 +107,7 @@ describe('createProviderCliAttachSurface', () => {
             agentId: 'opencode',
             resolveTarget: () => ({ ok: true, value: { healthUrl: 'https://opencode.example.test/global/health' } }),
             createArgs: () => [],
-            buildHealthUrl: (target) => target.healthUrl,
+            resolveReachability: (target) => ({ kind: 'http', url: target.healthUrl }),
             fetchFn: fetchFn as unknown as typeof fetch,
             reachabilityTimeoutMs: 25,
         });
@@ -122,6 +122,36 @@ describe('createProviderCliAttachSurface', () => {
             'https://opencode.example.test/global/health',
             expect.objectContaining({ method: 'GET' }),
         );
+    });
+
+    it('probes a provider-owned local socket through the canonical attach reachability seam', async () => {
+        const probeSocket = vi.fn(async () => true);
+        const surface = createProviderCliAttachSurface<{ socketPath: string }>({
+            agentId: 'codex',
+            resolveTarget: () => ({ ok: true, value: { socketPath: '/tmp/codex.sock' } }),
+            createArgs: () => [],
+            resolveReachability: (target) => ({ kind: 'localSocket', path: target.socketPath }),
+            probeSocket,
+            reachabilityTimeoutMs: 25,
+        });
+
+        await expect(surface.evaluateAvailability?.({
+            operation: 'attach',
+            sessionId: 'session-1',
+            metadata: {},
+            depth: 'live',
+        })).resolves.toEqual({ available: true });
+        expect(probeSocket).toHaveBeenCalledWith('/tmp/codex.sock', 25);
+    });
+
+    it('uses the Codex rendezvous path as the Windows local-socket liveness signal', async () => {
+        const statPath = vi.fn(async () => ({}) as never);
+
+        await expect(probeLocalSocket('C:\\Temp\\codex.sock', 25, {
+            platform: 'win32',
+            statPath,
+        })).resolves.toBe(true);
+        expect(statPath).toHaveBeenCalledWith('C:\\Temp\\codex.sock');
     });
 
     it('does not use local managed-server fallback when evaluating a remote provider attach target', async () => {

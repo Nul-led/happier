@@ -1,4 +1,5 @@
 import {
+    ActionApprovalRequestCreatedResultSchema,
     readExecutionRunStartRunCreation,
     withExecutionRunStartFailureDetails,
     type ActionExecuteResult,
@@ -61,6 +62,7 @@ export type RegisterActionSpecRpcHandlersParams = Readonly<{
         actionRequestId?: string;
         sessionId?: string;
         execute: (context: Readonly<{
+            actionRequestId?: string;
             signal: AbortSignal;
             operationProgress: NonNullable<RpcHandlerContext['localActionContext']>['operationProgress'];
             operationOwnerUpdate: NonNullable<RpcHandlerContext['localActionContext']>['operationOwnerUpdate'];
@@ -267,32 +269,39 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
             }
             const executor = await resolveActionExecutor(params);
             const execute = async (execution: Readonly<{
+                actionRequestId?: string;
                 signal?: AbortSignal;
                 operationProgress?: NonNullable<RpcHandlerContext['localActionContext']>['operationProgress'];
                 operationOwnerUpdate?: NonNullable<RpcHandlerContext['localActionContext']>['operationOwnerUpdate'];
-            }>): Promise<ActionExecuteResult> => await dispatchActionFromRpc({
-                actionId: typedActionId,
-                input: semanticInput,
-                ...buildActionExecutorContextHints(semanticInput),
-                ...(execution.signal ? { signal: execution.signal } : {}),
-                ...(
-                    context?.localActionContext || execution.operationProgress || execution.operationOwnerUpdate || params.authority
-                      ? {
-                          localActionContext: {
-                              ...context?.localActionContext,
-                              ...(params.authority ? { authority: params.authority } : {}),
-                              ...(execution.operationProgress
-                                ? { operationProgress: execution.operationProgress }
-                                : {}),
-                              ...(execution.operationOwnerUpdate
-                                ? { operationOwnerUpdate: execution.operationOwnerUpdate }
-                                : {}),
-                          },
-                        }
-                      : {}
-                ),
-                executor,
-            });
+            }>): Promise<ActionExecuteResult> => {
+                const actionRequestId = execution.actionRequestId ?? context?.transportRequestId;
+                return await dispatchActionFromRpc({
+                    actionId: typedActionId,
+                    input: semanticInput,
+                    ...buildActionExecutorContextHints(semanticInput),
+                    ...(execution.signal ? { signal: execution.signal } : {}),
+                    ...(
+                        context?.localActionContext || actionRequestId || execution.operationProgress || execution.operationOwnerUpdate || params.authority
+                            ? {
+                                localActionContext: {
+                                    ...context?.localActionContext,
+                                    ...(actionRequestId
+                                        ? { actionRequestId }
+                                        : {}),
+                                    ...(params.authority ? { authority: params.authority } : {}),
+                                    ...(execution.operationProgress
+                                        ? { operationProgress: execution.operationProgress }
+                                        : {}),
+                                    ...(execution.operationOwnerUpdate
+                                        ? { operationOwnerUpdate: execution.operationOwnerUpdate }
+                                        : {}),
+                                },
+                            }
+                            : {}
+                    ),
+                    executor,
+                });
+            };
             const sessionId = readDefaultSessionIdFromRpcInput(semanticInput);
             const result = params.observeExecution && spec.operation
                 ? await params.observeExecution({
@@ -302,7 +311,8 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
                         ? { actionRequestId: context.localActionContext.actionRequestId }
                         : {}),
                     ...(sessionId ? { sessionId } : {}),
-                    execute: async ({ signal, operationProgress, operationOwnerUpdate }) => await execute({
+                    execute: async ({ actionRequestId, signal, operationProgress, operationOwnerUpdate }) => await execute({
+                        ...(actionRequestId ? { actionRequestId } : {}),
                         signal,
                         operationProgress,
                         operationOwnerUpdate,
@@ -311,6 +321,15 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
                 : await execute({ ...(context?.signal ? { signal: context.signal } : {}) });
             if (!result.ok || !rpcBinding) {
                 return unwrapActionResultForRpc(typedActionId, result);
+            }
+            const deferredApproval = ActionApprovalRequestCreatedResultSchema.safeParse(result.result);
+            if (deferredApproval.success) {
+                return deferredApproval.data.actionId === typedActionId
+                    ? deferredApproval.data
+                    : unwrapActionResultForRpc(
+                        typedActionId,
+                        transportFailure(typedActionId, 'invalid_action_transport_output'),
+                    );
             }
             let encoded: unknown;
             try {

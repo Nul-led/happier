@@ -62,7 +62,6 @@ async function prepareConfiguredAcpResume(params: Readonly<{
             },
             ...(params.accountSettings ? { accountSettings: params.accountSettings } : {}),
             credentials: { token: 'token', encryption: null },
-            loadLocalHandoffMetadataByVendorResumeId: async () => null,
         },
         validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
     });

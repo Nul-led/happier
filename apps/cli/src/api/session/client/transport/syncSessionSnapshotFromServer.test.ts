@@ -48,6 +48,7 @@ describe('syncSessionSnapshotFromServer', () => {
                 signingKeyFingerprint: null,
                 contentKeyFingerprint: 'content-fingerprint',
                 updatedAt: 1,
+                recipientEnvelopeReadiness: { status: 'available' },
             },
             mode: 'e2ee',
             ctx: {
@@ -79,5 +80,51 @@ describe('syncSessionSnapshotFromServer', () => {
         expect(setMetadataEnvelopeTupleSnapshot).toHaveBeenCalledWith(metadataTuple);
         expect(setMetadataSnapshot).not.toHaveBeenCalled();
         expect(setAgentStateSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('awaits exact Execution Run target reconciliation from the current Session snapshot', async () => {
+        let release!: () => void;
+        const blocked = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        mocks.fetchSessionSnapshotUpdateFromServer.mockResolvedValueOnce({
+            pendingExecutionRunIds: ['run-offline'],
+        });
+        const reconcilePendingExecutionRunTarget = vi.fn(async () => {
+            await blocked;
+        });
+
+        const sync = syncSessionSnapshotFromServer({
+            token: 'token',
+            sessionId: 'session',
+            accountEncryptionCurrentness: null,
+            mode: 'plain',
+            ctx: null,
+            currentMetadataLayoutVersion: 0,
+            currentMetadataVersion: 0,
+            currentAgentStateVersion: 0,
+            currentMetadata: null,
+            currentAgentState: null,
+            sessionConnectionSupervisor: null,
+            isClosed: () => false,
+            setMetadataSnapshot: vi.fn(),
+            setAgentStateSnapshot: vi.fn(),
+            setMetadataEnvelopeTupleSnapshot: vi.fn(),
+            applyPendingQueueState: vi.fn(),
+            applyLatestTurnStatus: vi.fn(),
+            reconcilePendingExecutionRunTarget,
+            reason: 'reconnect',
+        });
+
+        await vi.waitFor(() => {
+            expect(reconcilePendingExecutionRunTarget).toHaveBeenCalledWith('run-offline');
+        });
+        let settled = false;
+        void sync.then(() => { settled = true; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        release();
+        await expect(sync).resolves.toBe(true);
     });
 });

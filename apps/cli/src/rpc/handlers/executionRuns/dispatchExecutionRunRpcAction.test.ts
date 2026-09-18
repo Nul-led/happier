@@ -1,17 +1,29 @@
-import { describe, expect, it, vi } from 'vitest';
-import { BrowserCommandV1Schema, FeaturesResponseSchema, type ExecutionRunPublicState } from '@happier-dev/protocol';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  BrowserCommandV1Schema,
+  buildBackendTargetKeyV2,
+  FeaturesResponseSchema,
+  normalizeActionsSettingsV1,
+  type ExecutionRunPublicState,
+} from '@happier-dev/protocol';
 
 import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executionRunPolicy';
 import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
 import type { CliServerFeaturesSnapshot } from '@/features/featureDecisionService';
+import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
 
 import {
   createExecutionRunRpcActionDeps,
   createExecutionRunRpcActionExecutor,
   type ExecutionRunRpcApprovalDeps,
 } from './dispatchExecutionRunRpcAction';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function unusedBridgeMethod(): never {
   throw new Error('execution-run bridge should not be used for unavailable runtime action families');
@@ -24,6 +36,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     getStructuredMeta: () => null,
     getLatestToolResult: () => null,
     waitForTerminal: async () => unusedBridgeMethod(),
+    waitForInputTurn: async () => unusedBridgeMethod(),
     getPublic: () => null,
     listPublic: () => [],
     listPublicForRequest: () => [],
@@ -38,6 +51,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     cancelTurnStream: async () => unusedBridgeMethod(),
     stop: async () => unusedBridgeMethod(),
     respondToPermissionRequest: async () => unusedBridgeMethod(),
+    completePermissionRequest: async () => unusedBridgeMethod(),
     applyAction: async () => unusedBridgeMethod(),
   };
 }
@@ -179,7 +193,326 @@ function createAgentExecutionRunStartExecutor(start: ExecutionRunHostBridgeContr
   });
 }
 
+describe('execution-run RPC Action settings provider', () => {
+  it('uses scoped runtime enablement when the endpoint environment permits the Action', async () => {
+    vi.stubEnv('HAPPIER_ACTIONS_SETTINGS_V1', JSON.stringify({ v: 1, actions: {} }));
+    const listPublicForRequest = vi.fn(() => []);
+    const params = {
+      manager: createExecutionRunBridgeWithRun({ listPublicForRequest }),
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+      actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+        normalizeActionsSettingsV1({
+          v: 1,
+          actions: { 'execution.run.list': { enabled: false } },
+        }),
+      ),
+    };
+    const executor = createExecutionRunRpcActionExecutor(params);
+
+    await expect(executor.execute('execution.run.list', { sessionId: 'sess_1' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'sess_1',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+    expect(listPublicForRequest).not.toHaveBeenCalled();
+  });
+
+  it('uses scoped runtime approval policy when the endpoint environment waives approval', async () => {
+    vi.stubEnv('HAPPIER_ACTIONS_SETTINGS_V1', JSON.stringify({
+      v: 1,
+      actions: {},
+      approvalWaivedSurfaces: { 'execution.run.list': ['agent'] },
+    }));
+    const listPublicForRequest = vi.fn(() => []);
+    const approvalsCreate = vi.fn<NonNullable<ExecutionRunRpcApprovalDeps['approvalsCreate']>>(
+      async () => ({ artifactId: 'approval_execution_run_list' }),
+    );
+    const approvalsWaitForDecision = vi.fn<NonNullable<ExecutionRunRpcApprovalDeps['approvalsWaitForDecision']>>(
+      async ({ request }) => ({
+        decision: 'reject',
+        request: {
+          ...request,
+          status: 'rejected',
+          decision: { kind: 'reject', decidedAtMs: 2 },
+          updatedAtMs: 2,
+        },
+      }),
+    );
+    const approvalsUpdate = vi.fn<NonNullable<ExecutionRunRpcApprovalDeps['approvalsUpdate']>>(
+      async () => ({ ok: true }),
+    );
+    const params = {
+      manager: createExecutionRunBridgeWithRun({ listPublicForRequest }),
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+      actionsSettingsProvider: createScopedRuntimeActionSettingsProvider(
+        normalizeActionsSettingsV1({
+          v: 1,
+          actions: { 'execution.run.list': { approvalRequiredSurfaces: ['agent'] } },
+        }),
+      ),
+      approvalDeps: { approvalsCreate, approvalsWaitForDecision, approvalsUpdate },
+    };
+    const executor = createExecutionRunRpcActionExecutor(params);
+
+    await expect(executor.execute('execution.run.list', { sessionId: 'sess_1' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'sess_1',
+      serverId: 'server-1',
+      runtimeAccountId: 'account-1',
+      actionRequestId: 'execution-run-list-request-1',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'approval_rejected' });
+    expect(approvalsCreate).toHaveBeenCalledOnce();
+    expect(approvalsWaitForDecision).toHaveBeenCalledOnce();
+    expect(listPublicForRequest).not.toHaveBeenCalled();
+  });
+
+  it('retains environment overrides through the ordinary Account settings provider', async () => {
+    vi.stubEnv('HAPPIER_ACTIONS_SETTINGS_V1', JSON.stringify({
+      v: 1,
+      actions: { 'execution.run.list': { enabled: false } },
+    }));
+    const listPublicForRequest = vi.fn(() => []);
+    const params = {
+      manager: createExecutionRunBridgeWithRun({ listPublicForRequest }),
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+      actionsSettingsProvider: createActionSettingsProvider(),
+    };
+    const executor = createExecutionRunRpcActionExecutor(params);
+
+    await expect(executor.execute('execution.run.list', { sessionId: 'sess_1' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'sess_1',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+    expect(listPublicForRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe('createExecutionRunRpcActionExecutor', () => {
+  it('binds the exact Workflow observation sink to a detached start with a local input id', async () => {
+    const workflowObservationSink = { commit: vi.fn(async () => undefined) };
+    const start = vi.fn(async () => ({
+      runId: 'run_detached_1', callId: 'call_detached_1', sidechainId: 'sidechain_detached_1',
+    }));
+    const deps = createExecutionRunRpcActionDeps({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: null, cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
+          maxTurns: null, maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(deps.executionRunStart?.(null, {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      sessionId: null,
+      localInputId: 'workflow-input-1',
+    }, { workflowObservationSink })).resolves.toMatchObject({ runId: 'run_detached_1' });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      localInputId: 'workflow-input-1',
+      workflowObservationSink,
+    }));
+  });
+
+  it('forwards the exact detached send interaction and Workflow observation owners to the retained turn', async () => {
+    const structuredInput = {
+      v: 1 as const,
+      mentions: [{
+        kind: 'happier.file',
+        ref: 'file:src/index.ts',
+        token: '@src/index.ts',
+        label: 'index.ts',
+      }],
+    };
+    const permissionRequestStore = {
+      publishRequest: vi.fn(async () => undefined),
+      publishRequestAndWait: vi.fn(async () => ({
+        requestId: 'permission_1',
+        status: 'approved' as const,
+        decision: 'approved' as const,
+        completedAt: 2,
+      })),
+      registerResponseTargetHandler: vi.fn(() => () => undefined),
+    };
+    const workflowObservationSink = { commit: vi.fn(async () => undefined) };
+    const send = vi.fn(async () => ({ ok: true }));
+    const run = {
+      runId: 'run_detached_1',
+      callId: 'call_detached_1',
+      sidechainId: 'sidechain_detached_1',
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+      status: 'running',
+      startedAtMs: 1,
+      sessionId: null,
+      depth: 0,
+      backendId: 'codex',
+      instructions: 'Continue the workflow.',
+    } satisfies ExecutionRunState;
+    const deps = createExecutionRunRpcActionDeps({
+      manager: {
+        ...createUnusedExecutionRunBridge(),
+        get: (runId) => runId === run.runId ? run : null,
+        send,
+      },
+      context: { sessionId: null, cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(deps.detachedExecutionRunSend?.(null, {
+      sessionId: null,
+      runId: run.runId,
+      message: 'Continue',
+      localInputId: 'workflow-input-b',
+      structuredInput,
+    }, { permissionRequestStore, workflowObservationSink })).resolves.toEqual({ ok: true });
+
+    expect(send).toHaveBeenCalledWith(run.runId, expect.objectContaining({
+      message: 'Continue',
+      localInputId: 'workflow-input-b',
+      structuredInput,
+      permissionRequestStore,
+      workflowObservationSink,
+    }));
+  });
+
+  it('routes Session-owned Run listing through the injected scoped runtime list dependency', async () => {
+    const sessionList = vi.fn(async () => ({
+      sessions: [],
+      nextCursor: 'cursor_v1_next',
+      hasNext: true,
+      attentionNextCursor: 'cursor_v1_attention',
+      attentionHasNext: true,
+      queryVersion: 1,
+    }));
+    const query = {
+      v: 1,
+      storage: 'active',
+      includeInactive: false,
+      attention: 'any',
+      scope: 'my_work',
+      audiences: [],
+      tagIds: [],
+      limit: 17,
+    } as const;
+    const contextWithScopedList = { sessionId: 'sess_1', cwd: '/workspace', sessionList };
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: createUnusedExecutionRunBridge(),
+      context: contextWithScopedList,
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    await expect(executor.execute('session.list', { query, view: 'summary' }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 'sess_1',
+      runtimeAccountId: 'account-1',
+      sessionListAccess: 'current_session',
+      serverId: 'home-a',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        sessions: [],
+        nextCursor: 'cursor_v1_next',
+        hasNext: true,
+        attentionNextCursor: 'cursor_v1_attention',
+        attentionHasNext: true,
+        queryVersion: 1,
+      },
+    });
+    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({
+      query,
+      view: 'summary',
+      serverId: 'home-a',
+    }));
+  });
+
+  it('keeps Session listing unavailable in the detached execution-run host', async () => {
+    const sessionList = vi.fn(async () => ({ sessions: [] }));
+    const contextWithUnsafeAccountList = { sessionId: null, cwd: '/workspace', sessionList };
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: createUnusedExecutionRunBridge(),
+      context: contextWithUnsafeAccountList,
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(executor.execute('session.list', {}, {
+      surface: 'agent',
+      authority: 'account_automation',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.list',
+    });
+    expect(sessionList).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed explicit review intent input before creating a run', async () => {
     const start = vi.fn(async () => ({
       runId: 'run_started_1',
@@ -199,6 +532,190 @@ describe('createExecutionRunRpcActionExecutor', () => {
       error: expect.stringContaining('review intentInput'),
     });
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('keeps Discussion launch provenance in the fixed Session scope without treating it as authority', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_started_1',
+      callId: 'call_started_1',
+      sidechainId: 'sidechain_started_1',
+    }));
+    const executor = createAgentExecutionRunStartExecutor(start);
+    const launchOrigin = {
+      kind: 'session_discussion',
+      sessionId: 'sess_1',
+      discussionId: 'discussion_1',
+      messageIds: ['message_1'],
+      draftCorrelationId: 'draft_1',
+    } as const;
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+    }, {
+      surface: 'rpc',
+      defaultSessionId: 'sess_1',
+      sessionInputSource: launchOrigin,
+    })).resolves.toMatchObject({ ok: true });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ launchOrigin }));
+  });
+
+  it('accepts the canonical Agent target and lowers it at daemon admission', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_started_1',
+      callId: 'call_started_1',
+      sidechainId: 'sidechain_started_1',
+    }));
+    const executor = createAgentExecutionRunStartExecutor(start);
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      backendTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+      },
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+    }));
+  });
+
+  it('admits attached deferred input and carries the Workflow request identity only to the Run manager', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_workflow_1',
+      callId: 'call_workflow_1',
+      sidechainId: 'sidechain_workflow_1',
+    }));
+    const executor = createAgentExecutionRunStartExecutor(start);
+    const actionCaller = {
+      kind: 'workflowRun' as const,
+      runId: 'workflow_run_1',
+      authorization: {
+        admittedPermissionCeiling: 'safe-yolo' as const,
+        principal: { kind: 'host' as const },
+      },
+    };
+
+    const result = await executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      intent: 'agent',
+      instructions: undefined,
+      initialInput: { kind: 'deferred_session_pending' },
+      permissionMode: 'safe-yolo',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+    }, {
+      ...APPROVED_INTERNAL_RUNTIME_ACTION_CONTEXT,
+      actionCaller,
+      actionRequestId: 'workflow-input-v2:stable:execution-run-start',
+    });
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        runId: 'run_workflow_1',
+        callId: 'call_workflow_1',
+        sidechainId: 'sidechain_workflow_1',
+      },
+    });
+
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'sess_1',
+      initialInput: { kind: 'deferred_session_pending' },
+      actionRequestId: 'workflow-input-v2:stable:execution-run-start',
+    }));
+  });
+
+  it('rejects deferred Session Pending input in the detached Run host', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_unexpected',
+      callId: 'call_unexpected',
+      sidechainId: 'sidechain_unexpected',
+    }));
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: null, cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      sessionId: null,
+      intent: 'agent',
+      instructions: undefined,
+      initialInput: { kind: 'deferred_session_pending' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+    }, {
+      surface: 'rpc',
+      authority: 'account_automation',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_invalid_action_input',
+    });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('rejects deferred Session Pending input without host-stamped Workflow provenance', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_unexpected',
+      callId: 'call_unexpected',
+      sidechainId: 'sidechain_unexpected',
+    }));
+    const executor = createAgentExecutionRunStartExecutor(start);
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      intent: 'agent',
+      instructions: undefined,
+      initialInput: { kind: 'deferred_session_pending' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'streaming',
+    }, {
+      surface: 'rpc',
+      defaultSessionId: 'sess_1',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_invalid_action_input',
+    });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('preserves Workflow-authored mode and runtime descriptor through RPC admission', async () => {
+    const start = vi.fn(async () => ({
+      runId: 'run_started_1', callId: 'call_started_1', sidechainId: 'sidechain_started_1',
+    }));
+    const executor = createAgentExecutionRunStartExecutor(start);
+    const runtimeDescriptorV1 = {
+      v: 1 as const,
+      agentId: 'happier.agent.codex/codex',
+      agent: { backendMode: 'acp' },
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      acpSessionModeId: 'plan',
+      runtimeDescriptorV1,
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true });
+
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      acpSessionModeId: 'plan',
+      runtimeDescriptorV1,
+    }));
   });
 
   it('normalizes partial explicit review intent input before creating a run', async () => {
@@ -366,7 +883,9 @@ describe('createExecutionRunRpcActionExecutor', () => {
 
     await expect(executor.execute(actionId, input, { surface: 'rpc' })).resolves.toMatchObject({
       ok: false,
-      errorCode: 'execution_run_not_found',
+      errorCode: actionId === 'execution.run.send'
+        ? 'session_input_target_update_required'
+        : 'execution_run_not_found',
     });
 
     for (const effect of [start, send, ensure, startTurnStream, readTurnStream, cancelTurnStream, stop, applyAction]) {
@@ -465,6 +984,165 @@ describe('createExecutionRunRpcActionExecutor', () => {
       error: 'manager disconnected',
       details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } },
     });
+
+    const providerStart = vi.fn(async () => {
+      throw Object.assign(new Error('Saved Secret selection changed'), {
+        code: 'provider_binding_changed',
+        details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+      });
+    });
+    const providerExecutor = createAgentExecutionRunStartExecutor(providerStart);
+    await expect(providerExecutor.execute(
+      'execution.run.start',
+      AGENT_EXECUTION_RUN_START_REQUEST,
+      { surface: 'rpc' },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'provider_binding_changed',
+      error: 'Saved Secret selection changed',
+      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+    });
+  });
+
+  it('commits an attached Team model through the Session owner before opening the Run', async () => {
+    const order: string[] = [];
+    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => {
+      order.push('session-binding');
+      return { ok: true as const };
+    });
+    const start = vi.fn(async (_request: Parameters<ExecutionRunHostBridgeContract['start']>[0]) => {
+      order.push('run-start');
+      return { runId: 'run_team_1', callId: 'call_team_1', sidechainId: 'side_team_1' };
+    });
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: {
+        sessionId: 'sess_1',
+        cwd: '/workspace',
+        prepareAttachedTeamCredentialSessionBinding,
+      },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 7,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model',
+      // The selection carries the resolved route the caller committed to.
+      deliveryMode: 'brokered',
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      modelId: selection.modelId,
+      teamCredentialModel: selection,
+      teamCredentialSessionBindingConsent: {
+        v: 1,
+        sessionId: 'sess_1',
+        teamId: selection.teamId,
+        resourceId: selection.resourceId,
+        expectedResourceRevision: selection.expectedResourceRevision,
+      },
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_team_1' } });
+
+    expect(order).toEqual(['session-binding', 'run-start']);
+    expect(prepareAttachedTeamCredentialSessionBinding).toHaveBeenCalledWith({
+      sessionId: 'sess_1',
+      selection,
+      consent: {
+        v: 1,
+        sessionId: 'sess_1',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+      },
+    });
+    const managerRequest = start.mock.calls[0]?.[0];
+    expect(managerRequest).toBeDefined();
+    expect(managerRequest).not.toHaveProperty('teamCredentialSessionBindingConsent');
+  });
+
+  it('rejects stale attached Team consent without mutating the Session or opening a Run', async () => {
+    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => ({ ok: true as const }));
+    const start = vi.fn(async () => ({ runId: 'unexpected', callId: 'unexpected', sidechainId: 'unexpected' }));
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: 'sess_1', cwd: '/workspace', prepareAttachedTeamCredentialSessionBinding },
+      policy: resolveExecutionRunPolicy({
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 7,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model',
+      // The selection carries the resolved route the caller committed to.
+      deliveryMode: 'brokered',
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      modelId: selection.modelId,
+      teamCredentialModel: selection,
+      teamCredentialSessionBindingConsent: {
+        v: 1,
+        sessionId: 'sess_1',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 6,
+      },
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: false });
+
+    expect(prepareAttachedTeamCredentialSessionBinding).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('keeps a detached Team model start independent from Session binding authority', async () => {
+    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => ({ ok: true as const }));
+    const start = vi.fn(async () => ({ runId: 'run_detached_team', callId: 'call_detached_team', sidechainId: 'side_detached_team' }));
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: null, cwd: '/workspace', prepareAttachedTeamCredentialSessionBinding },
+      policy: resolveExecutionRunPolicy({
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-personal',
+      teamId: 'team-1',
+      expectedResourceRevision: 7,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model',
+      // The selection carries the resolved route the caller committed to.
+      deliveryMode: 'brokered',
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      sessionId: null,
+      modelId: selection.modelId,
+      teamCredentialModel: selection,
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_detached_team' } });
+
+    expect(prepareAttachedTeamCredentialSessionBinding).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null, teamCredentialModel: selection }));
   });
 
   it('rejects escalation above the active turn ceiling after the session mode widens', async () => {
@@ -488,6 +1166,10 @@ describe('createExecutionRunRpcActionExecutor', () => {
       AGENT_EXECUTION_RUN_START_REQUEST,
       {
         surface: 'agent',
+        // The host stamps the admitted current-Session corpus for every
+        // autonomous surface; without it the shared scope guard refuses before
+        // the turn-ceiling check this test exercises.
+        defaultSessionId: AGENT_EXECUTION_RUN_START_REQUEST.sessionId,
         // The mutable Session mode has widened after the first turn was admitted.
         callerPermissionMode: 'yolo',
         causalPermissionAuthority: firstTurnAuthority,
@@ -505,6 +1187,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       AGENT_EXECUTION_RUN_START_REQUEST,
       {
         surface: 'agent',
+        defaultSessionId: AGENT_EXECUTION_RUN_START_REQUEST.sessionId,
         callerPermissionMode: 'yolo',
         // A later independently admitted turn may carry a new ceiling.
         causalPermissionAuthority: laterTurnAuthority,
@@ -537,6 +1220,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       AGENT_EXECUTION_RUN_START_REQUEST,
       {
         surface: 'agent',
+        defaultSessionId: AGENT_EXECUTION_RUN_START_REQUEST.sessionId,
         callerPermissionMode: 'yolo',
         causalPermissionAuthority: null,
       } as unknown as Parameters<typeof executor.execute>[2],
@@ -552,6 +1236,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       AGENT_EXECUTION_RUN_START_REQUEST,
       {
         surface: 'agent',
+        defaultSessionId: AGENT_EXECUTION_RUN_START_REQUEST.sessionId,
         callerPermissionMode: 'yolo',
         causalPermissionAuthority: {
           kind: 'admittedSessionInputV1',
@@ -684,6 +1369,13 @@ describe('createExecutionRunRpcActionExecutor', () => {
           stop,
           get: (runId) => runId === publicRun.runId ? runState : null,
           getPublic: (runId) => runId === publicRun.runId ? publicRun : null,
+          waitForTerminal: async (_runId, options) => await new Promise<void>((_resolve, reject) => {
+            const signal = options?.signal;
+            if (!signal) return;
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          }),
         },
         context: { sessionId: null, cwd: '/workspace' },
         policy: resolveExecutionRunPolicy({
@@ -789,6 +1481,45 @@ describe('createExecutionRunRpcActionExecutor', () => {
         details: {
           executionRunStart: { v: 1, runCreation: 'noRunCreated' },
         },
+      });
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed from the daemon cache when a feature-gated start has no published snapshot', async () => {
+    vi.stubEnv('HAPPIER_FEATURE_VOICE__ENABLED', '1');
+    vi.stubEnv('HAPPIER_FEATURE_VOICE_AGENT__ENABLED', '1');
+    const start = vi.fn();
+    try {
+      const executor = createExecutionRunRpcActionExecutor({
+        manager: { ...createUnusedExecutionRunBridge(), start },
+        context: { sessionId: 'sess_1', cwd: '/workspace', serverUrl: 'https://must-not-be-read.example' },
+        policy: resolveExecutionRunPolicy({
+          defaults: {
+            maxConcurrentRuns: null,
+            boundedTimeoutMs: null,
+            reviewBoundedTimeoutMs: null,
+            maxTurns: null,
+            maxDepth: 3,
+          },
+        }),
+        isExecutionRunsEnabled: () => true,
+      });
+
+      await expect(executor.execute('execution.run.start', {
+        sessionId: 'sess_1',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        instructions: 'Voice turn.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      }, { surface: 'rpc', defaultSessionId: 'sess_1' })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_not_allowed',
       });
       expect(start).not.toHaveBeenCalled();
     } finally {
@@ -1266,7 +1997,14 @@ describe('createExecutionRunRpcActionExecutor', () => {
         payload: { selector: '#submit' },
         timeoutMs: 5_000,
       },
-    }, { surface: 'rpc', defaultSessionId: 'sess_1' });
+    }, {
+      surface: 'rpc',
+      authority: 'account_automation',
+      defaultSessionId: 'sess_1',
+      serverId: 'server-1',
+      runtimeAccountId: 'account-1',
+      actionRequestId: 'browser-click-request-1',
+    });
 
     expect(result).toEqual({
       ok: false,
@@ -1322,6 +2060,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
   });
 
   it('returns the same lossless terminal projection from execution-run get and wait', async () => {
+    const waitForInputTurn = vi.fn(async () => null);
     const run = {
       runId: 'run_1',
       callId: 'call_1',
@@ -1346,6 +2085,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     } satisfies ExecutionRunState;
     const manager: ExecutionRunHostBridgeContract = {
       ...createUnusedExecutionRunBridge(),
+      waitForInputTurn,
       get: (runId) => runId === run.runId ? runState : null,
       getPublic: (runId) => runId === run.runId ? run : null,
       getLatestToolResult: () => false,
@@ -1377,10 +2117,17 @@ describe('createExecutionRunRpcActionExecutor', () => {
       },
     };
 
+    const observationController = new AbortController();
     await expect(deps.executionRunGet('sess_1', {
       runId: 'run_1',
       includeStructured: true,
-    })).resolves.toEqual(expectedResult);
+      waitForInputId: 'input_1',
+    }, { signal: observationController.signal })).resolves.toEqual(expectedResult);
+    expect(waitForInputTurn).toHaveBeenCalledWith(
+      'run_1',
+      'input_1',
+      observationController.signal,
+    );
     await expect(deps.executionRunWait('sess_1', {
       runId: 'run_1',
     })).resolves.toEqual({
@@ -1388,5 +2135,98 @@ describe('createExecutionRunRpcActionExecutor', () => {
       status: 'succeeded',
       result: expectedResult,
     });
+  });
+
+  it('returns the exact waited input result even if the live latest-turn projection has advanced', async () => {
+    const requestedTurn = {
+      turnId: 'turn-requested', inputIds: ['input-requested'], state: 'completed' as const,
+      result: { kind: 'text' as const, value: 'requested result' },
+    };
+    const latestTurn = {
+      turnId: 'turn-latest', inputIds: ['input-latest'], state: 'completed' as const,
+      result: { kind: 'text' as const, value: 'later result' },
+    };
+    const run = {
+      runId: 'run_1', callId: 'call_1', sidechainId: 'sidechain_1', intent: 'agent',
+      backendTarget: { kind: 'builtInAgent' as const, agentId: 'codex' },
+      permissionMode: 'default', retentionPolicy: 'resumable' as const,
+      runClass: 'long_lived' as const, ioMode: 'request_response' as const,
+      status: 'running' as const, startedAtMs: 1,
+      inputTurns: { occurrenceId: 'occurrence-1', last: latestTurn },
+    } satisfies ExecutionRunPublicState;
+    const manager: ExecutionRunHostBridgeContract = {
+      ...createUnusedExecutionRunBridge(),
+      waitForInputTurn: vi.fn(async () => ({ occurrenceId: 'occurrence-1', turn: requestedTurn })),
+      get: () => ({
+        ...run, sessionId: 'sess_1', depth: 0, backendId: 'codex', instructions: '',
+      } satisfies ExecutionRunState),
+      getPublic: () => run,
+    };
+    const deps = createExecutionRunRpcActionDeps({
+      manager,
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null,
+          maxTurns: null, maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    await expect(deps.executionRunGet('sess_1', {
+      runId: 'run_1', waitForInputId: 'input-requested', includeStructured: false,
+    })).resolves.toMatchObject({
+      run: { inputTurns: { occurrenceId: 'occurrence-1', last: requestedTurn } },
+    });
+  });
+
+  it('detaches the bridge terminal observer when an execution-run wait times out', async () => {
+    vi.useFakeTimers();
+    let observerSignal: AbortSignal | undefined;
+    const waitForTerminal = vi.fn(async (
+      _runId: string,
+      options?: Readonly<{ signal?: AbortSignal }>,
+    ) => await new Promise<void>((resolve, reject) => {
+      observerSignal = options?.signal;
+      const signal = options?.signal;
+      if (!signal) return;
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }));
+    const deps = createExecutionRunRpcActionDeps({
+      manager: createExecutionRunBridgeWithRun({ waitForTerminal }),
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+
+    try {
+      const waiting = deps.executionRunWait('sess_1', {
+        runId: 'run_1',
+        timeoutSeconds: 0.001,
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(waiting).resolves.toMatchObject({
+        ok: true,
+        status: 'running',
+        disposition: 'observation_timeout',
+        runId: 'run_1',
+      });
+      expect(waitForTerminal).toHaveBeenCalledOnce();
+      expect(observerSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -13,7 +13,9 @@ import {
   type AccountScopedCryptoMaterial,
   type BuiltInLegacyConnectedServiceId,
   type ConnectedServiceCredentialRevisionV1,
+  type JsonValue,
   type PluginConnectedAccountAuthenticationModeV2,
+  type QualifiedConnectedAccountCredentialPayloadV1,
   type QualifiedConnectedAccountConfigurationSnapshotV4,
   type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
@@ -54,6 +56,7 @@ import type {
   ConnectedAccountRuntimeEstablishedResult,
 } from '@/plugins/runtime/connectedAccounts/runtimeInvoker';
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
+import type { TeamCredentialDirectMaterialPayloadV1 } from '@happier-dev/protocol/teams';
 
 import type { ConnectedAccountDaemonPersistence } from './ConnectedAccountDaemonRuntime';
 
@@ -75,6 +78,19 @@ type RevisionedQualifiedConnectedAccountConfigurationSnapshotV4 = Extract<
   { revisionSemantics: 'revisioned' }
 >;
 
+export type QualifiedConnectedAccountMaterialSnapshot = Readonly<{
+  credential: QualifiedConnectedAccountCredentialPayloadV1;
+  configuration: Readonly<{
+    values: Readonly<Record<string, JsonValue>>;
+    secretValues: Readonly<Record<string, string>>;
+  }> | null;
+  authenticationModeId: string;
+  credentialRevision: ConnectedServiceCredentialRevisionV1;
+  configurationRevision: string | null;
+  contributionContractVersion: string;
+  isCurrent(): Promise<boolean>;
+}>;
+
 export type QualifiedConnectedAccountEstablishedRuntimeOwner = Readonly<{
   /**
    * Host-private currentness read for the request-auth broker. It exposes no credential content
@@ -94,6 +110,24 @@ export type QualifiedConnectedAccountEstablishedRuntimeOwner = Readonly<{
     account: QualifiedConnectedAccountRef;
     signal?: AbortSignal;
   }>): Promise<readonly ConnectedAccountConfiguredEndpoint[]>;
+  /** Reads one exact source-owned credential/configuration snapshot for direct delivery. */
+  readMaterialSnapshot(input: Readonly<{
+    account: QualifiedConnectedAccountRef;
+    signal?: AbortSignal;
+  }>): Promise<QualifiedConnectedAccountMaterialSnapshot>;
+  /** Invokes the existing trusted contribution materializer over one opened,
+   * recipient-scoped Team snapshot without creating a recipient source row. */
+  invokeDirectMaterial<TOperation extends Extract<
+    ConnectedAccountRuntimeEstablishedOperation,
+    { kind: 'materialize' }
+  >>(input: Readonly<{
+    account: QualifiedConnectedAccountRef;
+    sourceVersion: string;
+    material: Extract<TeamCredentialDirectMaterialPayloadV1['material'], { kind: 'qualified_connected_account' }>;
+    operation: TOperation;
+    isCurrent(): boolean | Promise<boolean>;
+    signal?: AbortSignal;
+  }>): Promise<ConnectedAccountRuntimeEstablishedResult<TOperation>>;
   invokeWithReceipt<TOperation extends ConnectedAccountRuntimeEstablishedOperation>(
     input: Readonly<{
       account: QualifiedConnectedAccountRef;
@@ -310,6 +344,34 @@ function assertSnapshotPair(input: Readonly<{
   }
 }
 
+async function resolveDirectMaterialConfiguration(
+  record: ConnectedAccountConfigurationRecord | null,
+  readSecret: (
+    secretId: string,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<string | null>,
+  signal?: AbortSignal,
+): Promise<Readonly<{
+  values: Readonly<Record<string, JsonValue>>;
+  secretValues: Readonly<Record<string, string>>;
+}> | null> {
+  if (record === null) return null;
+  const secretValues: Record<string, string> = { ...(record.secretValues ?? {}) };
+  for (const [fieldId, secretId] of Object.entries(record.secretRefs)) {
+    assertNotAborted(signal);
+    const value = await readSecret(secretId, signal ? { signal } : undefined);
+    if (value === null) {
+      throw new Error('Connected-account configuration secret is unavailable');
+    }
+    secretValues[fieldId] = value;
+  }
+  assertNotAborted(signal);
+  return Object.freeze({
+    values: Object.freeze({ ...record.values }),
+    secretValues: Object.freeze(secretValues),
+  });
+}
+
 export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
   params: Readonly<{
     reloadController: Pick<
@@ -324,6 +386,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
       ConnectedAccountDaemonPersistence['configuration'],
       'read' | 'secrets'
     >;
+    configurationOwner?: ConnectedAccountConfigurationOwner;
     randomBytes?: (length: number) => Uint8Array;
   }>,
 ): QualifiedConnectedAccountEstablishedRuntimeOwner {
@@ -388,6 +451,142 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
     assertCredentialSnapshotIdentity(credential, input.account);
     requireRevisionedCredentialSnapshot(credential);
     return credential.credentialRevision;
+  }
+
+  async function readMaterialSnapshot(input: Readonly<{
+    account: QualifiedConnectedAccountRef;
+    signal?: AbortSignal;
+  }>): Promise<QualifiedConnectedAccountMaterialSnapshot> {
+    assertNotAborted(input.signal);
+    const accountMode = await params.getAccountEncryptionMode(input.signal);
+    if (accountMode === 'unknown') {
+      throw new Error('Connected-account account encryption mode is unavailable');
+    }
+    const snapshots = await readExactSnapshots(input.account, input.signal);
+    const authenticationModeId = snapshots.credential.authenticationModeId;
+    if (!authenticationModeId) {
+      throw new Error('Connected-account authentication mode is unavailable in the current descriptor');
+    }
+    const credential = parseQualifiedConnectedAccountCredentialPlaintextV1({
+      ref: input.account,
+      authenticationModeId,
+      metadata: snapshots.credential.metadata,
+      plaintext: openEnvelope({
+        kind: 'credential',
+        accountMode,
+        credentials: params.credentials,
+        material,
+        envelope: snapshots.credential.content,
+      }),
+    });
+    const configurationRecord = snapshots.configuration === null
+      ? null
+      : parseConnectedAccountConfigurationRecordContent(
+        openEnvelope({
+          kind: 'configuration',
+          accountMode,
+          credentials: params.credentials,
+          material,
+          envelope: snapshots.configuration.configurationContent,
+        }),
+        snapshots.configuration.configurationRevision,
+      );
+    const configuration = await resolveDirectMaterialConfiguration(
+      configurationRecord,
+      (secretId, options) => params.configuration.secrets.read(secretId, options),
+      input.signal,
+    );
+    const current = await readExactSnapshots(input.account, input.signal);
+    if (
+      current.credential.credentialRevision
+        !== snapshots.credential.credentialRevision
+      || current.credential.configurationRevision
+        !== snapshots.credential.configurationRevision
+      || current.credential.authenticationModeId
+        !== snapshots.credential.authenticationModeId
+    ) {
+      throw new Error('Connected-account material source changed during snapshot resolution');
+    }
+    const registryLease = await params.reloadController.acquireRuntimeRegistry();
+    let contributionContractVersion: string;
+    try {
+      const contribution = registryLease.registry.connectedAccountContributions?.describe(
+        input.account.service,
+      );
+      if (
+        !contribution
+        || !contribution.isCurrent()
+        || !params.reloadController.isRuntimeRegistryCurrent(registryLease.registry)
+        || !contribution.descriptor.authentication.modes.some(
+          (mode) => mode.id === authenticationModeId,
+        )
+      ) {
+        throw new Error('Connected-account contribution contract is unavailable');
+      }
+      contributionContractVersion = contribution.immutableGenerationId;
+    } finally {
+      await registryLease.release();
+    }
+    assertNotAborted(input.signal);
+    return Object.freeze({
+      credential,
+      configuration,
+      authenticationModeId,
+      credentialRevision: snapshots.credential.credentialRevision,
+      configurationRevision: snapshots.credential.configurationRevision,
+      contributionContractVersion,
+      async isCurrent(): Promise<boolean> {
+        if (input.signal?.aborted) return false;
+        try {
+          const latest = await readExactSnapshots(input.account, input.signal);
+          if (
+            latest.credential.credentialRevision
+              !== snapshots.credential.credentialRevision
+            || latest.credential.configurationRevision
+              !== snapshots.credential.configurationRevision
+            || latest.credential.authenticationModeId !== authenticationModeId
+          ) {
+            return false;
+          }
+          const latestConfigurationRecord = latest.configuration === null
+            ? null
+            : parseConnectedAccountConfigurationRecordContent(
+                openEnvelope({
+                  kind: 'configuration',
+                  accountMode,
+                  credentials: params.credentials,
+                  material,
+                  envelope: latest.configuration.configurationContent,
+                }),
+                latest.configuration.configurationRevision,
+              );
+          const latestConfiguration = await resolveDirectMaterialConfiguration(
+            latestConfigurationRecord,
+            (secretId, options) => params.configuration.secrets.read(secretId, options),
+            input.signal,
+          );
+          if (JSON.stringify(latestConfiguration) !== JSON.stringify(configuration)) {
+            return false;
+          }
+          const latestRegistryLease = await params.reloadController.acquireRuntimeRegistry();
+          try {
+            const latestContribution = latestRegistryLease.registry.connectedAccountContributions?.describe(
+              input.account.service,
+            );
+            return Boolean(
+              latestContribution
+              && latestContribution.immutableGenerationId === contributionContractVersion
+              && latestContribution.isCurrent()
+              && params.reloadController.isRuntimeRegistryCurrent(latestRegistryLease.registry),
+            );
+          } finally {
+            await latestRegistryLease.release();
+          }
+        } catch {
+          return false;
+        }
+      },
+    });
   }
 
   async function invokeWithReceipt<
@@ -507,7 +706,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
               ? await params.configuration.read(exactConfigurationTarget)
               : null;
         const configurationOwner: ConnectedAccountConfigurationOwner =
-          createConnectedAccountConfigurationOwner({
+          params.configurationOwner ?? createConnectedAccountConfigurationOwner({
             async read(target) {
               if (target.modeId !== mode.id) return null;
               if (exactConfigurationTarget.kind === 'service') {
@@ -747,6 +946,69 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
       }
   }
 
+  async function invokeDirectMaterial<
+    TOperation extends Extract<ConnectedAccountRuntimeEstablishedOperation, { kind: 'materialize' }>,
+  >(input: Readonly<{
+    account: QualifiedConnectedAccountRef;
+    sourceVersion: string;
+    material: Extract<TeamCredentialDirectMaterialPayloadV1['material'], { kind: 'qualified_connected_account' }>;
+    operation: TOperation;
+    isCurrent(): boolean | Promise<boolean>;
+    signal?: AbortSignal;
+  }>): Promise<ConnectedAccountRuntimeEstablishedResult<TOperation>> {
+    assertNotAborted(input.signal);
+    const lease = await params.reloadController.acquireRuntimeRegistry();
+    try {
+      if (!params.reloadController.isRuntimeRegistryCurrent(lease.registry)) {
+        throw new Error('Connected-account runtime registry is no longer current');
+      }
+      const runtimeLease = await lease.registry.resolveConnectedAccountRuntime?.(input.account.service);
+      const invoker = lease.registry.connectedAccountRuntimeInvoker;
+      if (
+        !runtimeLease
+        || !invoker
+        || !runtimeLease.isCurrent()
+        || !sameService(runtimeLease.ref, input.account.service)
+        || !runtimeLease.descriptor.authentication.modes.some(
+          (mode) => mode.id === input.material.authenticationModeId,
+        )
+      ) {
+        throw new Error('Connected-account direct material consumer is unavailable');
+      }
+      const configuration: PluginConnectedAccountRuntimeConfiguration = Object.freeze({
+        target: Object.freeze({
+          kind: 'account' as const,
+          account: input.account,
+          modeId: input.material.authenticationModeId,
+        }),
+        revision: input.sourceVersion,
+        values: Object.freeze({ ...(input.material.configuration?.values ?? {}) }),
+        async getSecret(fieldId) {
+          return input.material.configuration?.secretValues[fieldId] ?? null;
+        },
+      });
+      const credentials: ConnectedAccountCredentialReader = Object.freeze({
+        async get(key) {
+          return input.material.credential.values[key] ?? null;
+        },
+      });
+      return await invoker.invokeEstablished({
+        target: Object.freeze({
+          account: input.account,
+          expectedCredentialRevision: input.sourceVersion,
+          expectedRuntimeConfigurationRevision: input.sourceVersion,
+        }),
+        operation: input.operation,
+        context: Object.freeze({ account: input.account, configuration, credentials }),
+        isConfigurationCurrent: (candidate) => candidate === configuration && input.isCurrent(),
+        isCredentialRevisionCurrent: input.isCurrent,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    } finally {
+      await lease.release();
+    }
+  }
+
   async function readConfiguredEndpoints(input: Readonly<{
     account: QualifiedConnectedAccountRef;
     signal?: AbortSignal;
@@ -829,6 +1091,8 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
 
   return Object.freeze({
     readCredentialRevision,
+    readMaterialSnapshot,
+    invokeDirectMaterial,
     readConfiguredEndpoints,
     invokeWithReceipt,
     async invoke<TOperation extends ConnectedAccountRuntimeEstablishedOperation>(

@@ -247,9 +247,14 @@ describe('activatePendingInactiveSession', () => {
     expect(spawnSession).not.toHaveBeenCalled();
   });
 
-  it('does not start an active runner or a session whose exact Pending authorization resolved', async () => {
-    const spawnSession = vi.fn();
+  it('delegates an active relay projection to the canonical runner serviceability owner', async () => {
+    const spawnSession = vi.fn(async () => ({
+      type: 'success' as const,
+      sessionId: 'session-1',
+      runnerAcceptance: 'preexisting_or_adopted' as const,
+    }));
     vi.mocked(fetchSessionByIdCompat).mockResolvedValue(createSession(true));
+    vi.mocked(readPendingQueueV2ActivationEligibilityFromServer).mockResolvedValue('eligible');
     await expect(activatePendingInactiveSession({
       credentials,
       machineId: 'machine-1',
@@ -257,7 +262,12 @@ describe('activatePendingInactiveSession', () => {
       requestId: 'pending-after-ui-death',
       pendingVersion: 9,
       spawnSession,
-    })).resolves.toEqual({ status: 'not-needed', reason: 'active' });
+    })).resolves.toEqual({ status: 'activated' });
+    expect(spawnSession).toHaveBeenCalledOnce();
+  });
+
+  it('does not start a session whose exact Pending authorization resolved', async () => {
+    const spawnSession = vi.fn();
 
     vi.mocked(fetchSessionByIdCompat).mockResolvedValue(createSession(false));
     vi.mocked(readPendingQueueV2ActivationEligibilityFromServer).mockResolvedValue('missing');

@@ -35,12 +35,49 @@ export type BackgroundServiceSetupGuidance = Readonly<{
   managedReleaseChannels: ManagedReleaseChannelInventory['managedReleaseChannels'];
   manualRelayOwner: BackgroundServiceSetupGuidanceManualRelayOwner | null;
   exactDefaultServiceExists: boolean;
+  exactDefaultServiceRunning: boolean;
   conflictingServices: readonly BackgroundServiceSetupGuidanceService[];
   foreignHomeConflictingServices: readonly BackgroundServiceSetupGuidanceService[];
   shouldOfferDefaultReleaseChannelSwitch: boolean;
   shouldPromptForManualRelayTakeover: boolean;
   shouldPromptForServiceReplacement: boolean;
 }>;
+
+export type BackgroundServiceSetupReconciliationAction =
+  | Readonly<{ kind: 'remove-existing' }>
+  | Readonly<{ kind: 'install'; takeover: boolean }>
+  | Readonly<{ kind: 'start'; takeover: boolean }>
+  | Readonly<{ kind: 'restart' }>;
+
+export function resolveBackgroundServiceSetupReconciliationDisposition(params: Readonly<{
+  guidance: BackgroundServiceSetupGuidance;
+  targetChanged: boolean;
+  tookOverManualRelayRuntime: boolean;
+  replacedExistingServices: boolean;
+}>): readonly BackgroundServiceSetupReconciliationAction[] {
+  if (params.replacedExistingServices) {
+    return [
+      { kind: 'remove-existing' },
+      { kind: 'install', takeover: params.tookOverManualRelayRuntime },
+      { kind: 'start', takeover: params.tookOverManualRelayRuntime },
+    ];
+  }
+  if (!params.guidance.exactDefaultServiceExists) {
+    return [
+      { kind: 'install', takeover: params.tookOverManualRelayRuntime },
+      { kind: 'start', takeover: params.tookOverManualRelayRuntime },
+    ];
+  }
+  if (params.tookOverManualRelayRuntime) {
+    return [{ kind: 'start', takeover: true }];
+  }
+  if (params.targetChanged) {
+    return [{ kind: 'restart' }];
+  }
+  return params.guidance.exactDefaultServiceRunning
+    ? []
+    : [{ kind: 'start', takeover: false }];
+}
 
 function normalizeServiceSummary(service: HappierService): BackgroundServiceSetupGuidanceService | null {
   if (service.serviceType !== 'daemon') {
@@ -149,16 +186,11 @@ export function buildBackgroundServiceSetupGuidance(params: Readonly<{
   const foreignHomeConflictingServices = conflictPlan.foreignHomeConflicts
     .map((service) => normalizeServiceSummary(service))
     .filter((service): service is BackgroundServiceSetupGuidanceService => service != null);
+  const foreignHomeConflicts = new Set(conflictPlan.foreignHomeConflicts);
   const conflictingServices = conflictPlan.competingServices
+    .filter((service) => !foreignHomeConflicts.has(service))
     .map((service) => normalizeServiceSummary(service))
-    .filter((service): service is BackgroundServiceSetupGuidanceService => (
-      service != null
-      && !(
-        service.happierHomeDir != null
-        && currentHappierHomeDir != null
-        && service.happierHomeDir !== currentHappierHomeDir
-      )
-    ));
+    .filter((service): service is BackgroundServiceSetupGuidanceService => service != null);
   const manualRelayOwner = normalizeManualRelayOwner(params.currentRelayOwner);
 
   return {
@@ -171,6 +203,7 @@ export function buildBackgroundServiceSetupGuidance(params: Readonly<{
     managedReleaseChannels: params.managedReleaseChannelInventory.managedReleaseChannels,
     manualRelayOwner,
     exactDefaultServiceExists: conflictPlan.exactTargetExists,
+    exactDefaultServiceRunning: conflictPlan.exactTargetRunning,
     conflictingServices,
     foreignHomeConflictingServices,
     shouldOfferDefaultReleaseChannelSwitch:

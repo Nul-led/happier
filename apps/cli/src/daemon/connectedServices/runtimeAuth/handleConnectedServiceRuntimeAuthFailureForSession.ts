@@ -2,7 +2,7 @@ import type { TrackedSession } from '@/daemon/types';
 import {
   readBuiltInLegacyConnectedAccountServiceKeyIngress,
   type ConnectedAccountServiceKey,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 import {
@@ -41,7 +41,7 @@ type RuntimeAuthSwitchContinuation = (input: Readonly<{
   tracked: TrackedSession;
   sessionId: string;
   attemptId: string;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   serviceIds: ReadonlySet<ConnectedAccountServiceKey>;
   action: 'hot_applied' | 'restart_requested';
   switchReason?: ConnectedServiceSessionAuthSwitchReason;
@@ -61,7 +61,7 @@ type RuntimeAuthCredentialRefresh = (input: Readonly<{
 type RuntimeAuthRecoveryInvocationSource = 'daemon_report' | 'scheduler_retry';
 type InactiveRuntimeAuthSession = Readonly<{
   agentId?: string | null;
-  connectedServices: ConnectedServiceBindingsV1;
+  connectedServices: ConnectedServiceBindingsV2;
   connectedServiceMaterializationIdentityV1?: unknown;
   vendorResumeId?: string | null;
   cwd?: string | null;
@@ -143,6 +143,17 @@ export type RuntimeAuthFailureSourceAuthorization =
       inactive: null;
       sourceBinding: RuntimeAuthFailureSourceBinding;
     }>
+  | (Extract<RuntimeAuthRecoverySuperseded, Readonly<{
+      reason: 'source_tuple_unavailable' | 'source_tuple_mismatch';
+    }>> & Readonly<{
+      adoptedTarget: Readonly<{
+        tracked: TrackedSession;
+        sourceBinding: RuntimeAuthFailureSourceBinding & Readonly<{
+          groupId: string;
+          generation: number;
+        }>;
+      }>;
+    }>)
   | RuntimeAuthRecoverySuperseded
   | Readonly<{ status: 'session_not_found' }>;
 
@@ -292,6 +303,47 @@ export async function authorizeConnectedServiceRuntimeAuthFailureSource(input: R
     return runtimeAuthFailureSourceBindingMatchesReport(exactCurrentBinding, classification)
       ? { status: 'authorized', tracked, inactive, sourceBinding: exactCurrentBinding }
       : { status: 'recovery_superseded', reason: 'source_tuple_mismatch', serviceId: classification.serviceId, groupId: classification.groupId, profileId: classification.profileId };
+  }
+
+  const registeredBindingProvesNewerGroupTarget =
+    reportCarriesRevision
+    && registeredBinding.serviceId === classification.serviceId
+    && registeredBinding.groupId !== null
+    && registeredBinding.groupId === classification.groupId
+    && registeredBinding.generation !== null
+    && classification.groupGeneration !== null
+    && classification.groupGeneration !== undefined
+    && registeredBinding.generation > classification.groupGeneration
+    && (
+      registeredBinding.profileId !== classification.profileId
+      || registeredBinding.credentialRevision !== classification.expectedCredentialRevision
+    );
+  if (registeredBindingProvesNewerGroupTarget) {
+    // The report still belongs to the old credential, so it must not penalize or rotate the
+    // replacement. For a fresh daemon report, the exact newer registered target is also enough
+    // proof to continue the interrupted origin through the existing deduplicated dispatcher.
+    // Scheduler replays remain passive because their original continuation already had custody.
+    const supersededResult = {
+      status: 'recovery_superseded',
+      reason: 'source_tuple_mismatch',
+      serviceId: classification.serviceId,
+      groupId: classification.groupId,
+      profileId: classification.profileId,
+    } as const;
+    if (input.recoveryInvocationSource === 'scheduler_retry') {
+      return supersededResult;
+    }
+    return {
+      ...supersededResult,
+      adoptedTarget: {
+        tracked,
+        sourceBinding: {
+          ...registeredBinding,
+          groupId: registeredBinding.groupId,
+          generation: registeredBinding.generation,
+        },
+      },
+    };
   }
 
   const scheduledRecoveryTargetsCurrentCredential =
@@ -461,6 +513,16 @@ async function maybeRestartAfterRuntimeGroupSwitch(input: Readonly<{
   await input.restartSession?.(input.tracked);
 }
 
+function readQuotaRecoveryIdempotencyKey(result: ConnectedServiceAuthGroupSwitchResult): string | null {
+  if (result.status !== 'observed_generation') return null;
+  const recovery = result.quotaRecovery;
+  if (!recovery || recovery.receipt?.status === 'unknown_after_timeout') return null;
+  const remainingPercent = recovery.quotaSnapshot.effectiveRemainingPercent;
+  if (typeof remainingPercent !== 'number' || !Number.isFinite(remainingPercent) || remainingPercent <= 0
+    || !Number.isFinite(recovery.quotaSnapshot.capturedAtMs)) return null;
+  return recovery.receipt?.idempotencyKey ?? `quota-snapshot:${recovery.quotaSnapshot.capturedAtMs}`;
+}
+
 async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
   tracked: TrackedSession | null;
   sessionId: string;
@@ -474,9 +536,11 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
 }>): Promise<void> {
   if (!input.tracked) return;
   if (!input.continueAfterRuntimeAuthSwitch) return;
+  const quotaRecoveryIdempotencyKey = readQuotaRecoveryIdempotencyKey(input.result);
   const observedUsableReplacement = input.result.status === 'observed_generation'
     && (
-      normalizeNullableProfileId(input.result.activeProfileId) !== input.failedProfileId
+      quotaRecoveryIdempotencyKey !== null
+      || normalizeNullableProfileId(input.result.activeProfileId) !== input.failedProfileId
       || (
         input.result.credentialRevision !== null
         && input.result.credentialRevision !== undefined
@@ -490,7 +554,7 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
   if (!activeProfileId) return;
 
   const normalizedBindings = {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
       [input.serviceId]: {
         source: 'connected',
@@ -498,7 +562,7 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
         groupId: input.groupId,
       },
     },
-  } satisfies ConnectedServiceBindingsV1;
+  } satisfies ConnectedServiceBindingsV2;
   const serviceIds = new Set<ConnectedAccountServiceKey>([input.serviceId]);
 
   await input.continueAfterRuntimeAuthSwitch({
@@ -508,7 +572,7 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
       action: 'hot_applied',
       serviceIds,
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           [input.serviceId]: {
             source: 'connected',
@@ -521,6 +585,7 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
       expectedGroupGenerationByServiceId: {
         [input.serviceId]: input.result.generation,
       },
+      ...(quotaRecoveryIdempotencyKey === null ? {} : { quotaRecoveryIdempotencyKey }),
     }),
     normalizedBindings,
     serviceIds,
@@ -529,18 +594,19 @@ async function maybeContinueAfterRuntimeGroupGeneration(input: Readonly<{
   });
 }
 
-async function continueAfterRuntimeCredentialRefresh(input: Readonly<{
+async function continueAfterRuntimeAuthTargetAdoption(input: Readonly<{
   tracked: TrackedSession | null;
   sessionId: string;
   serviceId: ConnectedAccountServiceKey;
   groupId: string;
   profileId: string;
+  generation?: number | null;
   continueAfterRuntimeAuthSwitch?: RuntimeAuthSwitchContinuation | null;
 }>): Promise<void> {
   if (!input.tracked) return;
   if (!input.continueAfterRuntimeAuthSwitch) return;
   const normalizedBindings = {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
       [input.serviceId]: {
         source: 'connected',
@@ -548,7 +614,7 @@ async function continueAfterRuntimeCredentialRefresh(input: Readonly<{
         groupId: input.groupId,
       },
     },
-  } satisfies ConnectedServiceBindingsV1;
+  } satisfies ConnectedServiceBindingsV2;
   const serviceIds = new Set<ConnectedAccountServiceKey>([input.serviceId]);
 
   await input.continueAfterRuntimeAuthSwitch({
@@ -558,7 +624,7 @@ async function continueAfterRuntimeCredentialRefresh(input: Readonly<{
       action: 'hot_applied',
       serviceIds,
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           [input.serviceId]: {
             source: 'connected',
@@ -568,6 +634,9 @@ async function continueAfterRuntimeCredentialRefresh(input: Readonly<{
           },
         },
       },
+      ...(typeof input.generation === 'number'
+        ? { expectedGroupGenerationByServiceId: { [input.serviceId]: input.generation } }
+        : {}),
     }),
     normalizedBindings,
     serviceIds,
@@ -627,7 +696,7 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
   getChildren: () => ReadonlyArray<TrackedSession>;
   resolveInactiveSession?(input: Readonly<{ sessionId: string }>): Promise<Readonly<{
     agentId?: string | null;
-    connectedServices: ConnectedServiceBindingsV1;
+    connectedServices: ConnectedServiceBindingsV2;
     connectedServiceMaterializationIdentityV1?: unknown;
     vendorResumeId?: string | null;
     cwd?: string | null;
@@ -664,6 +733,20 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
   const sourceAuthorization = input.sourceAuthorization ?? await authorizeConnectedServiceRuntimeAuthFailureSource({
     ...input,
   });
+  if (sourceAuthorization.status === 'recovery_superseded' && 'adoptedTarget' in sourceAuthorization) {
+    const sourceBinding = sourceAuthorization.adoptedTarget.sourceBinding;
+    await continueAfterRuntimeAuthTargetAdoption({
+      tracked: sourceAuthorization.adoptedTarget.tracked,
+      sessionId: input.sessionId,
+      serviceId: sourceBinding.serviceId,
+      groupId: sourceBinding.groupId,
+      profileId: sourceBinding.profileId,
+      generation: sourceBinding.generation,
+      continueAfterRuntimeAuthSwitch: input.continueAfterRuntimeAuthSwitch ?? null,
+    });
+    const { adoptedTarget: _adoptedTarget, ...supersededResult } = sourceAuthorization;
+    return supersededResult;
+  }
   if (sourceAuthorization.status === 'current_credential_revision') {
     const sourceBinding = sourceAuthorization.sourceBinding;
     if (
@@ -679,7 +762,7 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
         profileId: sourceBinding.profileId,
       };
     }
-    await continueAfterRuntimeCredentialRefresh({
+    await continueAfterRuntimeAuthTargetAdoption({
       tracked: sourceAuthorization.tracked,
       sessionId: input.sessionId,
       serviceId: sourceBinding.serviceId,
@@ -837,7 +920,7 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
       // member. Let the existing group-generation consumer adopt that truth; do not report the
       // stale member as recovered or create a second continuation/restart path.
     } else if (refresh.status === 'refreshed') {
-      await continueAfterRuntimeCredentialRefresh({
+      await continueAfterRuntimeAuthTargetAdoption({
         tracked,
         sessionId: input.sessionId,
         serviceId: selection.serviceId,
@@ -911,6 +994,10 @@ export async function handleConnectedServiceRuntimeAuthFailureForSession(input: 
         sessionSwitchesThisHour,
         switchCoordinator,
         temporaryThrottleRecovery: input.temporaryThrottleRecovery ?? null,
+        ...(input.recoveryInvocationSource === 'scheduler_retry'
+          && (classification.kind === 'usage_limit' || classification.kind === 'rate_limit')
+          ? { allowCurrentProfileRetry: true }
+          : {}),
       });
     },
   });

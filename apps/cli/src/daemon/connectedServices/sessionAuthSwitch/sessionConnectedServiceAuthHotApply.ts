@@ -1,7 +1,7 @@
 import {
   ConnectedServiceCredentialRevisionV1Schema,
   ConnectedAccountServiceKeySchema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceCredentialRevisionV1,
   type ConnectedAccountServiceKey,
 } from '@happier-dev/protocol';
@@ -172,7 +172,7 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
 
   return async function hotApplySessionConnectedServiceAuth(input: Readonly<{
     tracked: TrackedSession;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    normalizedBindings: ConnectedServiceBindingsV2;
     serviceIds?: ReadonlySet<ConnectedAccountServiceKey>;
     runtimeAuthSelectionsByServiceId?: ReadonlyMap<ConnectedAccountServiceKey, unknown>;
   }>): Promise<HotApplyResult> {

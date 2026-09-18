@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ManagedReleaseChannelInventory } from '../../happierRuntime/deriveManagedReleaseChannelInventory.js';
 import type { HappierService } from '../../happierRuntime/types.js';
-import { buildBackgroundServiceSetupGuidance } from './buildBackgroundServiceSetupGuidance.js';
+import {
+    buildBackgroundServiceSetupGuidance,
+    resolveBackgroundServiceSetupReconciliationDisposition,
+} from './buildBackgroundServiceSetupGuidance.js';
 
 describe('buildBackgroundServiceSetupGuidance', () => {
     it('flags default release-channel drift and conflicting background services for guided setup', async () => {
@@ -95,6 +98,78 @@ describe('buildBackgroundServiceSetupGuidance', () => {
             shouldPromptForServiceReplacement: false,
             conflictingServices: [],
         }));
+    });
+
+    it('retains whether the exact default background service is running', () => {
+        const exactStoppedService: HappierService = {
+            id: 'systemd-user:happier-daemon.default',
+            serviceType: 'daemon',
+            platform: 'linux',
+            backend: 'systemd-user',
+            label: 'happier-daemon.default',
+            targetMode: 'default-following',
+            verification: 'verified',
+            ring: 'stable',
+            instanceId: null,
+            scope: 'user',
+            definitionPath: '/home/tester/.config/systemd/user/happier-daemon.default.service',
+            executablePath: '/home/tester/.happier/cli/current/happier',
+            happierHomeDir: '/home/tester/.happier',
+            installed: true,
+            running: false,
+        };
+
+        expect(buildBackgroundServiceSetupGuidance({
+            services: [exactStoppedService],
+            managedReleaseChannelInventory: {
+                defaultReleaseChannel: 'stable',
+                managedReleaseChannels: [],
+            },
+            currentHappierHomeDir: '/home/tester/.happier',
+            platform: 'linux',
+            mode: 'user',
+            targetReleaseChannel: 'stable',
+        })).toEqual(expect.objectContaining({
+            exactDefaultServiceExists: true,
+            exactDefaultServiceRunning: false,
+        }));
+    });
+
+    it('routes an exact stopped service to the existing start lifecycle action', () => {
+        const guidance = buildBackgroundServiceSetupGuidance({
+            services: [{
+                id: 'systemd-user:happier-daemon.default',
+                serviceType: 'daemon',
+                platform: 'linux',
+                backend: 'systemd-user',
+                label: 'happier-daemon.default',
+                targetMode: 'default-following',
+                verification: 'verified',
+                ring: 'stable',
+                instanceId: null,
+                scope: 'user',
+                definitionPath: '/home/tester/.config/systemd/user/happier-daemon.default.service',
+                executablePath: '/home/tester/.happier/cli/current/happier',
+                happierHomeDir: '/home/tester/.happier',
+                installed: true,
+                running: false,
+            }],
+            managedReleaseChannelInventory: {
+                defaultReleaseChannel: 'stable',
+                managedReleaseChannels: [],
+            },
+            currentHappierHomeDir: '/home/tester/.happier',
+            platform: 'linux',
+            mode: 'user',
+            targetReleaseChannel: 'stable',
+        });
+
+        expect(resolveBackgroundServiceSetupReconciliationDisposition({
+            guidance,
+            targetChanged: false,
+            tookOverManualRelayRuntime: false,
+            replacedExistingServices: false,
+        })).toEqual([{ kind: 'start', takeover: false }]);
     });
 
     it('treats verified pinned daemon services as conflicting with a default-following setup target', async () => {

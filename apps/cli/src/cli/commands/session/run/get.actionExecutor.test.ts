@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 
+const runState = {
+  runId: 'run-1',
+  callId: 'call-1',
+  sidechainId: 'sidechain-1',
+  intent: 'review',
+  backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+  permissionMode: 'read_only',
+  retentionPolicy: 'ephemeral',
+  runClass: 'bounded',
+  ioMode: 'request_response',
+  status: 'running',
+  startedAtMs: 1,
+} as const;
+
 const execute = vi.fn();
 const resolveSessionTarget = vi.fn(async () => ({ ok: true as const, sessionId: 'sess-1' }));
 const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute, resolveSessionTarget }));
@@ -18,7 +32,7 @@ describe('happier session run get (action executor)', () => {
   it('routes through ActionExecutor with the expected action id and args', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, run: { runId: 'run-1' } },
+      result: { ok: true, run: runState },
     });
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
@@ -38,7 +52,7 @@ describe('happier session run get (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.get',
         { sessionId: 'sess-1', runId: 'run-1', includeStructured: true },
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
 
       expect(output.json()).toEqual(expect.objectContaining({
@@ -46,7 +60,7 @@ describe('happier session run get (action executor)', () => {
         kind: 'session_run_get',
         data: expect.objectContaining({
           sessionId: 'sess-1',
-          run: { runId: 'run-1' },
+          run: runState,
         }),
       }));
     } finally {
@@ -55,7 +69,7 @@ describe('happier session run get (action executor)', () => {
   });
 
   it('does not resolve an API-token Session through the generic transport', async () => {
-    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, run: { runId: 'run-1' } } });
+    execute.mockResolvedValueOnce({ ok: true, result: { ok: true, run: runState } });
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     try {

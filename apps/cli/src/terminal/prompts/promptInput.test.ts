@@ -62,33 +62,167 @@ function createPromptRl(answer: string, onQuestion?: () => void) {
 
 describe('promptInput', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.clearAllMocks();
     platformRef.value = 'linux';
-    stdinRef.value = { isTTY: true, label: 'stdin' } as unknown as NodeJS.ReadStream;
+    stdinRef.value = Object.assign(new EventEmitter(), { isTTY: true, label: 'stdin' }) as unknown as NodeJS.ReadStream;
     stdoutRef.value = { isTTY: true, label: 'stdout' } as unknown as NodeJS.WriteStream;
     existsSyncMock.mockReturnValue(false);
-    openSyncMock.mockReset();
+    openSyncMock.mockReset().mockImplementation(() => {
+      const error = new Error('no controlling tty') as NodeJS.ErrnoException;
+      error.code = 'ENXIO';
+      throw error;
+    });
     ttyReadStreamMock.mockReset();
     ttyWriteStreamMock.mockReset();
+    createInterfaceMock.mockReset();
   });
 
-  it('uses process stdio when stdin is piped even if /dev/tty exists', async () => {
+  it('lets the multi-select choose multiple ids or explicit skip through the real static prompt boundary', async () => {
+    stdinRef.value = { isTTY: false, label: 'stdin-pipe' } as unknown as NodeJS.ReadStream;
+    stdoutRef.value = { isTTY: false, label: 'stdout-pipe' } as unknown as NodeJS.WriteStream;
+    createInterfaceMock
+      .mockReturnValueOnce(createPromptRl('1,codex'))
+      .mockReturnValueOnce(createPromptRl('skip'));
+    const { promptMultipleSelection } = await import('./promptMultipleChoice');
+    const options = [
+      { id: 'claude', label: 'Claude Code' },
+      { id: 'codex', label: 'Codex' },
+      { id: 'skip', label: 'Skip for now', kind: 'skip' as const },
+    ];
+
+    await expect(promptMultipleSelection('Choose agents', options)).resolves.toEqual(['claude', 'codex']);
+    await expect(promptMultipleSelection('Choose agents', options)).resolves.toEqual([]);
+  });
+
+  it('keeps the controlling-/dev/tty fallback static when process stdin is piped', async () => {
     stdinRef.value = { isTTY: false, label: 'stdin-pipe' } as unknown as NodeJS.ReadStream;
     stdoutRef.value = { isTTY: true, label: 'stdout-tty' } as unknown as NodeJS.WriteStream;
     existsSyncMock.mockReturnValue(true);
+    openSyncMock.mockReturnValueOnce(39).mockReturnValueOnce(40).mockReturnValueOnce(41);
+    const input = new PassThrough();
+    const output = new PassThrough();
+    ttyReadStreamMock.mockReturnValue(input);
+    ttyWriteStreamMock.mockReturnValue(output);
     const rl = createPromptRl('piped value');
+    createInterfaceMock.mockReturnValue(rl);
+    const render = vi.fn(() => 'animated frame');
+
+    const { promptInput } = await import('./promptInput');
+    await expect(promptInput('Prompt: ', { animation: { render } })).resolves.toBe('piped value');
+
+    expect(openSyncMock).toHaveBeenCalledTimes(3);
+    expect(createInterfaceMock).toHaveBeenCalledWith({
+      input,
+      output,
+      terminal: true,
+    });
+    expect(render).not.toHaveBeenCalled();
+    expect(rl.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('redraws an animated multiline prompt through readline while preserving input and stops on resize', async () => {
+    vi.useFakeTimers();
+    existsSyncMock.mockReturnValue(true);
+    stdinRef.value = Object.assign(new EventEmitter(), { isTTY: true, label: 'stdin' }) as unknown as NodeJS.ReadStream;
+    stdoutRef.value = { isTTY: true, columns: 92, rows: 24, label: 'stdout' } as unknown as NodeJS.WriteStream;
+    let answer!: (value: string) => void;
+    const rl = Object.assign(new EventEmitter(), {
+      line: 'partially typed',
+      question: vi.fn((_prompt: string, resolve: (value: string) => void) => {
+        answer = resolve;
+      }),
+      setPrompt: vi.fn(),
+      prompt: vi.fn(),
+      getCursorPos: vi.fn(() => ({ cols: 12, rows: 3 })),
+      close: vi.fn(),
+    });
     createInterfaceMock.mockReturnValue(rl);
 
     const { promptInput } = await import('./promptInput');
-    await expect(promptInput('Prompt: ')).resolves.toBe('piped value');
+    const pending = promptInput('frame 0\nChoose [A/b] ', {
+      animation: { intervalMs: 20, render: (seconds) => `frame ${seconds > 0 ? 1 : 0}\nChoose [A/b] ` },
+    });
+    await vi.advanceTimersByTimeAsync(45);
 
     expect(openSyncMock).not.toHaveBeenCalled();
-    expect(createInterfaceMock).toHaveBeenCalledWith({
-      input: stdinRef.value,
-      output: stdoutRef.value,
+    expect(rl.setPrompt).toHaveBeenCalledWith('frame 1\nChoose [A/b] ');
+    expect(rl.prompt).toHaveBeenCalledWith(true);
+    expect(rl.line).toBe('partially typed');
+
+    (stdoutRef.value as NodeJS.WriteStream & { columns: number }).columns = 80;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(rl.prompt).toHaveBeenCalledTimes(1);
+    answer('accepted');
+    await expect(pending).resolves.toBe('accepted');
+    await vi.advanceTimersByTimeAsync(50);
+    expect(rl.prompt).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('stops animation and rejects as cancellation when readline closes before an answer', async () => {
+    vi.useFakeTimers();
+    stdinRef.value = Object.assign(new EventEmitter(), { isTTY: true }) as unknown as NodeJS.ReadStream;
+    stdoutRef.value = { isTTY: true, columns: 92, rows: 24 } as unknown as NodeJS.WriteStream;
+    const rl = Object.assign(new EventEmitter(), {
+      question: vi.fn(),
+      setPrompt: vi.fn(),
+      prompt: vi.fn(),
+      getCursorPos: vi.fn(() => ({ cols: 0, rows: 3 })),
+      close: vi.fn(),
     });
-    expect(rl.close).toHaveBeenCalledTimes(1);
+    createInterfaceMock.mockReturnValue(rl);
+    const { promptInput } = await import('./promptInput');
+    const pending = promptInput('frame 0\nChoose [A/b] ', {
+      animation: { intervalMs: 40, render: () => 'frame 1\nChoose [A/b] ' },
+    });
+    await vi.advanceTimersByTimeAsync(45);
+    rl.emit('close');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(rl.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('adapts arrow and Escape keypresses through the same readline prompt lifecycle', async () => {
+    const input = Object.assign(new EventEmitter(), { isTTY: true, label: 'stdin' });
+    stdinRef.value = input as unknown as NodeJS.ReadStream;
+    stdoutRef.value = { isTTY: true, columns: 92, rows: 24 } as unknown as NodeJS.WriteStream;
+    const onMove = vi.fn();
+    const onToggle = vi.fn();
+    const rl = Object.assign(new EventEmitter(), {
+      question: vi.fn(),
+      setPrompt: vi.fn(),
+      prompt: vi.fn(),
+      getCursorPos: vi.fn(() => ({ cols: 0, rows: 3 })),
+      write: vi.fn(),
+      close: vi.fn(),
+    });
+    createInterfaceMock.mockReturnValue(rl);
+    const { promptInput } = await import('./promptInput');
+    const render = vi.fn(() => 'moved menu\nChoose ');
+    const pending = promptInput('menu\nChoose ', {
+      animation: {
+        animate: false,
+        render,
+        onMove,
+        onToggle,
+        answerOnEmpty: () => 'b',
+      },
+    });
+    input.emit('keypress', '', { name: 'down' });
+    expect(onMove).toHaveBeenCalledWith(1);
+    expect(render).toHaveBeenCalledWith(0);
+    expect(rl.setPrompt).toHaveBeenCalledWith('moved menu\nChoose ');
+    input.emit('keypress', ' ', { name: 'space' });
+    expect(onToggle).toHaveBeenCalledOnce();
+    expect(rl.write).toHaveBeenCalledWith(null, { ctrl: true, name: 'u' });
+    (stdoutRef.value as NodeJS.WriteStream & { columns: number }).columns = 80;
+    input.emit('keypress', '', { name: 'up' });
+    expect(onMove).toHaveBeenCalledTimes(1);
+    input.emit('keypress', '', { name: 'escape' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(input.listenerCount('keypress')).toBe(0);
   });
 
   it('opens /dev/tty on POSIX interactive terminals and closes readline streams and file handle', async () => {

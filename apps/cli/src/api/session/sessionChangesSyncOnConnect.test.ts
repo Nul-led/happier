@@ -320,6 +320,107 @@ describe('runSessionChangesSyncOnConnect', () => {
     expect(changesCursor.writeChangesCursor).toHaveBeenCalledWith('account-1', 8);
   });
 
+  it('awaits reconciliation of every exact queued Execution Run target before acknowledging the change cursor', async () => {
+    const events: string[] = [];
+    let releaseRunA!: () => void;
+    const runABlocked = new Promise<void>((resolve) => {
+      releaseRunA = resolve;
+    });
+    fetchChanges.mockResolvedValueOnce({
+      status: 'ok',
+      response: {
+        nextCursor: 8,
+        changes: [
+          {
+            cursor: 4,
+            kind: 'session',
+            entityId: 's1',
+            changedAt: 123,
+            hint: {
+              pendingCount: 3,
+              pendingVersion: 7,
+              pendingExecutionRunIds: ['run-a', 'run-b', 'run-a'],
+            },
+          },
+        ],
+      },
+    });
+
+    const sync = runSessionChangesSyncOnConnect({
+      reason: 'connect',
+      token: 'token-1',
+      sessionId: 's1',
+      lastObservedMessageSeq: 0,
+      getAccountId: async () => 'account-1',
+      readChangesCursor: async () => 3,
+      writeChangesCursor: async (_accountId, cursor) => { events.push(`cursor:${cursor}`); },
+      catchUpSessionMessages: vi.fn(),
+      syncSessionSnapshotFromServer: vi.fn(async () => true),
+      applyPendingQueueState: () => { events.push('pending'); },
+      reconcilePendingExecutionRunTarget: async (runId) => {
+        events.push(`target:${runId}:start`);
+        if (runId === 'run-a') await runABlocked;
+        events.push(`target:${runId}:done`);
+      },
+      onDebug: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual([
+        'pending',
+        'target:run-a:start',
+        'target:run-b:start',
+        'target:run-b:done',
+      ]);
+    });
+    expect(events).not.toContain('cursor:8');
+
+    releaseRunA();
+    await sync;
+    expect(events).toEqual([
+      'pending',
+      'target:run-a:start',
+      'target:run-b:start',
+      'target:run-b:done',
+      'target:run-a:done',
+      'cursor:8',
+    ]);
+  });
+
+  it('recovers exact Pending targets when a later ordinary Session hint replaced the Pending counters', async () => {
+    const events: string[] = [];
+    fetchChanges.mockResolvedValueOnce({
+      status: 'ok',
+      response: {
+        nextCursor: 8,
+        changes: [{
+          cursor: 4,
+          kind: 'session',
+          entityId: 's1',
+          changedAt: 123,
+          hint: { lastMessageSeq: 0, pendingExecutionRunIds: ['run-offline'] },
+        }],
+      },
+    });
+
+    await runSessionChangesSyncOnConnect({
+      reason: 'connect',
+      token: 'token-1',
+      sessionId: 's1',
+      lastObservedMessageSeq: 0,
+      getAccountId: async () => 'account-1',
+      readChangesCursor: async () => 3,
+      writeChangesCursor: async (_accountId, cursor) => { events.push(`cursor:${cursor}`); },
+      catchUpSessionMessages: vi.fn(),
+      syncSessionSnapshotFromServer: vi.fn(async () => true),
+      applyPendingQueueState: () => { events.push('pending'); },
+      reconcilePendingExecutionRunTarget: async (runId) => { events.push(`target:${runId}`); },
+      onDebug: vi.fn(),
+    });
+
+    expect(events).toEqual(['target:run-offline', 'cursor:8']);
+  });
+
   it('does not advance the changes cursor when reconnect transcript catch-up fails', async () => {
     const changesCursor = createChangesCursorStore();
     const syncSessionSnapshotFromServer = vi.fn();

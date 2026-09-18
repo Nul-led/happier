@@ -60,6 +60,18 @@ const survivorShellArgs = (foreground: string): readonly string[] => ([
 ]);
 
 describe('execFileWithDeadline', () => {
+  it('supports caller cancellation without imposing a command deadline', async () => {
+    const result = await execFileWithDeadline(process.execPath, [
+      '-e', 'setTimeout(() => process.stdout.write("finished"), 50)',
+    ], {});
+    expect(String(result.stdout)).toBe('finished');
+    const controller = new AbortController();
+    const pending = execFileWithDeadline(process.execPath, sleeperArgs(''), { signal: controller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    controller.abort();
+    await rejected;
+  });
+
   it('delivers the output a finished child already produced when the deadline expires late on a stalled event loop', async () => {
     // The child writes and exits in milliseconds; the loop then stalls far past the budget, so
     // the deadline can only fire after the child is already gone. Node's own `execFile` timeout

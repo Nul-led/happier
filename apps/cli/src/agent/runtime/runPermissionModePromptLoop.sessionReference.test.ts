@@ -125,6 +125,7 @@ async function runOneSessionReferencePrompt(params: Readonly<{
     setCurrentPermissionMode: () => {},
     setCurrentPermissionModeUpdatedAt: () => {},
     formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    registerProviderAcceptedEffect: () => undefined,
   });
   return runtime;
 }
@@ -193,6 +194,7 @@ async function runOneStructuredInputPrompt(params: Readonly<{
       ? { resolveComposerAttachmentForDispatch: params.resolveComposerAttachmentForDispatch }
       : {}),
     formatPromptErrorMessage: (error) => 'Error: ' + String(error),
+    registerProviderAcceptedEffect: () => undefined,
   });
 
   return { observeProviderInputSettlement, runtime };
@@ -675,6 +677,7 @@ describe('runPermissionModePromptLoop Session reference dispatch', () => {
         setCurrentPermissionMode: () => {},
         setCurrentPermissionModeUpdatedAt: () => {},
         formatPromptErrorMessage: (error) => 'Error: ' + String(error),
+        registerProviderAcceptedEffect: () => undefined,
       });
       return {
         prompt: (runtime.sendTurnPrompt.mock.calls[0]?.[0] ?? '') as string,

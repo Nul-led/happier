@@ -961,6 +961,7 @@ describe('representative public Provider-to-SVC09 handoff', () => {
         const startDaemonAuthorityHost = async () => {
             const runtime = await startDaemonSessionControlRuntime({
                 machineId,
+                serverId: 'server-public-p-composed',
                 serverBaseUrl: 'https://account.example.test',
                 credentials: {
                     token: 'token-public-p-composed',
@@ -973,7 +974,6 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     stageTranscriptEvent: async () => ({ persisted: true, delivered: true }),
                 },
                 api: {} as never,
-                loadLocalHandoffMetadataByVendorResumeId: vi.fn(),
                 connectedServicesMaterializationBaseDir: join(
                     happyHomeDir,
                     'connected-services',
@@ -1487,6 +1487,9 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     updatedAt: 2,
                     ref: selection,
                 },
+                environmentVariables: {
+                    RUNNER_PROFILE_TOKEN: 'sealed-profile-secret',
+                },
                 resolveLateEnvironment: async () => ({
                     environmentVariables: {},
                     unsetEnvironmentVariables: [],
@@ -1534,6 +1537,8 @@ describe('representative public Provider-to-SVC09 handoff', () => {
             throw new Error('Expected the observed Agent Session to open');
         }
         const openJson = JSON.stringify(nativeOpenRequest);
+        expect(nativeOpenRequest.launchEnvironment?.values.RUNNER_PROFILE_TOKEN)
+            .toBe('sealed-profile-secret');
         const providerChild = spawned.find(isFixtureProviderChild);
         expect(providerChild).toBeDefined();
         expect(await realpath(providerChild!.command)).toBe(

@@ -1,4 +1,8 @@
-import type { ManagedConnectionSupervisor, ReadinessProbeResult } from '@happier-dev/connection-supervisor';
+import type {
+  ManagedConnectionSupervisor,
+  ManagedProbeReportScope,
+  ReadinessProbeResult,
+} from '@happier-dev/connection-supervisor';
 
 import { createAuthenticationHttpStatusError, isAuthenticationStatus, readHttpStatus } from '@/api/client/httpStatusError';
 import { isNetworkError, readNormalizedErrorCode } from '@/api/offline/serverConnectionErrors';
@@ -78,6 +82,7 @@ export function handleRequestAuthenticationFailure(params: Readonly<{
   statusCode?: number | null;
   error?: unknown;
   hadAuth: boolean;
+  scope: ManagedProbeReportScope | undefined;
 }>): boolean {
   const statusCode = params.statusCode ?? readHttpStatus(params.error);
   if (!params.hadAuth || !isAuthenticationStatus(statusCode)) {
@@ -90,6 +95,7 @@ export function handleRequestAuthenticationFailure(params: Readonly<{
       statusCode,
       error: params.error,
       hadAuth: params.hadAuth,
+      scope: params.scope,
     });
     return true;
   }

@@ -32,11 +32,39 @@ describe('rpcHandlers (direct transfer exports)', () => {
                         endpointCandidates: [],
                         expiresAt: 5_000,
                     }),
+                    releaseExportSession: () => undefined,
                 },
             },
         });
 
         expect(mgr.handlers.has(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE)).toBe(true);
+        expect(mgr.handlers.has(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE)).toBe(true);
+    });
+
+    it('delegates idempotent prepared-export release through the guarded export owner', async () => {
+        const releaseExportSession = vi.fn(() => undefined);
+        const mgr = createRpcHandlerManager();
+
+        registerMachineRpcHandlers({
+            rpcHandlerManager: mgr as any,
+            handlers: {
+                spawnSession: async () => ({ type: 'error', errorCode: 'unknown', errorMessage: 'not implemented' }) as any,
+                stopSession: async () => true,
+                requestShutdown: () => {},
+                directTransferExport: {
+                    prepareExportSession: async () => ({ transferId: 'transfer-release', endpointCandidates: [], expiresAt: 5_000 }),
+                    releaseExportSession,
+                },
+            },
+        });
+
+        const handler = mgr.handlers.get(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE);
+        if (!handler) throw new Error('expected direct transfer export release handler');
+
+        await expect(handler({ transferId: 'transfer-release' })).resolves.toEqual({ success: true });
+        await expect(handler({ transferId: 'transfer-release' })).resolves.toEqual({ success: true });
+        expect(releaseExportSession).toHaveBeenCalledTimes(2);
+        expect(releaseExportSession).toHaveBeenNthCalledWith(1, 'transfer-release');
     });
 
     it('delegates prompt asset export prepare through the registered direct transfer export handler', async () => {

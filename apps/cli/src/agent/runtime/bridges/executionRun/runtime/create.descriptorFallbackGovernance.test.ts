@@ -4,6 +4,11 @@ import type {
     ExecutionRunHostRuntime,
     ExecutionRunHostRuntimeMessageHandler,
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
+import { MissingBoundCliRuntimeCoreError } from '@/agent/runtime/registry/createCliRuntimeCore';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
 
 const resolveBackendEngineAdapterResolutionMock = vi.fn();
 const TEST_SECONDARY_BACKEND_ID = `${'secondary'}.${'backend'}` as never;
@@ -12,16 +17,23 @@ vi.mock('@/agent/runtime/registry/engineRegistry', () => ({
     resolveBackendEngineAdapterResolution: (...args: unknown[]) => resolveBackendEngineAdapterResolutionMock(...args),
 }));
 
+import { createExecutionRunRuntime } from './create';
+
 function createStubBackend(label: string): ExecutionRunHostRuntime {
     let handler: ExecutionRunHostRuntimeMessageHandler | null = null;
     return {
         async readResumeSupport() {
             return false;
         },
-        async provisionSession() {
-            return { sessionId: `s_${label}` };
+        async provisionRuntime() {
+            return { runtimeId: `runtime_${label}` };
         },
-        async sendPrompt() {},
+        async deliverInput() {
+            return { status: 'admitted' as const };
+        },
+        getRuntimeLifetimeSignal() {
+            return TEST_RUNTIME_LIFETIME_SIGNAL;
+        },
         async cancel() {},
         subscribeMessages(next) {
             handler = next;
@@ -33,18 +45,8 @@ function createStubBackend(label: string): ExecutionRunHostRuntime {
     };
 }
 
-function withFastFailure<T>(promise: Promise<T>): Promise<T> {
-    return Promise.race([
-        promise,
-        new Promise<T>((_resolve, reject) => {
-            setTimeout(() => reject(new Error('runtimeCore registry path did not settle')), 1_000);
-        }),
-    ]);
-}
-
 describe('createExecutionRunBackend (descriptor fallback governance)', () => {
     beforeEach(() => {
-        vi.resetModules();
         resolveBackendEngineAdapterResolutionMock.mockReset();
     });
 
@@ -52,22 +54,20 @@ describe('createExecutionRunBackend (descriptor fallback governance)', () => {
         const descriptorFactory = vi.fn(() => createStubBackend('descriptor'));
         resolveBackendEngineAdapterResolutionMock.mockResolvedValue(null);
 
-        const { createExecutionRunRuntime } = await import('./create');
         const backend = createExecutionRunRuntime({
             cwd: '/tmp',
+            scope: 'detached',
             backendId: TEST_SECONDARY_BACKEND_ID,
             backendTarget: { kind: 'builtInAgent', agentId: TEST_SECONDARY_BACKEND_ID as never },
             permissionMode: 'read_only',
         });
 
-        await expect(withFastFailure(backend.provisionSession({ initialPrompt: 'boot' }))).rejects.toThrow('Unsupported execution-run backend');
+        await expect(backend.provisionRuntime({ initialPrompt: 'boot' })).rejects.toThrow('Unsupported execution-run backend');
         expect(descriptorFactory).not.toHaveBeenCalled();
     });
 
     it('fails closed for review engines when runtimeCore is missing instead of using descriptor fallback', async () => {
         const reviewId = 'acme.review.backend';
-        const { MissingBoundCliRuntimeCoreError } = await import('@/agent/runtime/registry/createCliRuntimeCore');
-
         const descriptorFactory = vi.fn(() => createStubBackend('review'));
         resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
             backendId: reviewId,
@@ -91,14 +91,14 @@ describe('createExecutionRunBackend (descriptor fallback governance)', () => {
             diagnostics: [],
         });
 
-        const { createExecutionRunRuntime } = await import('./create');
         const backend = createExecutionRunRuntime({
             cwd: '/tmp',
+            scope: 'detached',
             backendId: reviewId,
             permissionMode: 'read_only',
         });
 
-        await expect(withFastFailure(backend.provisionSession({ initialPrompt: 'boot' }))).rejects.toThrow(/bound host runtimeCore|Unsupported execution-run backend/i);
+        await expect(backend.provisionRuntime({ initialPrompt: 'boot' })).rejects.toThrow(/bound host runtimeCore|Unsupported execution-run backend/i);
         expect(descriptorFactory).not.toHaveBeenCalled();
     });
 });

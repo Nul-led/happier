@@ -36,6 +36,7 @@ const apiTokenCredentials = {
 describe('happier session run streams (credential-aware Action executor)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    execute.mockReset();
     resolveSessionTarget.mockResolvedValue({ ok: true, sessionId: 'sess-factory' });
     resolveSessionTransportContext.mockResolvedValue({
       ok: true,
@@ -55,14 +56,23 @@ describe('happier session run streams (credential-aware Action executor)', () =>
         { readCredentialsFn: async () => apiTokenCredentials },
       );
 
-      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({ credentials: apiTokenCredentials });
+      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({
+        credentials: apiTokenCredentials,
+        readCredentials: expect.any(Function),
+        resolveServerFeaturesSnapshot: expect.any(Function),
+      });
       expect(resolveSessionTarget).toHaveBeenCalledWith('sess-prefix');
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
       expect(startExecutionRunStream).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stream.start',
         { sessionId: 'sess-factory', runId: 'run-1', message: 'continue', resume: true },
-        { surface: 'cli', defaultSessionId: 'sess-factory' },
+        {
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-factory',
+          actionRequestId: expect.any(String),
+        },
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,
@@ -75,7 +85,10 @@ describe('happier session run streams (credential-aware Action executor)', () =>
   });
 
   it('routes an API-token stream read through the credential-aware Action executor', async () => {
-    execute.mockResolvedValueOnce({ ok: true, result: { events: [], nextCursor: 1 } });
+    execute.mockResolvedValueOnce({
+      ok: true,
+      result: { streamId: 'stream-1', events: [], nextCursor: 1, done: false },
+    });
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     try {
@@ -90,7 +103,12 @@ describe('happier session run streams (credential-aware Action executor)', () =>
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stream.read',
         { sessionId: 'sess-factory', runId: 'run-1', streamId: 'stream-1', cursor: 0, maxEvents: 2 },
-        { surface: 'cli', defaultSessionId: 'sess-factory' },
+        {
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-factory',
+          actionRequestId: expect.any(String),
+        },
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,
@@ -118,7 +136,12 @@ describe('happier session run streams (credential-aware Action executor)', () =>
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stream.cancel',
         { sessionId: 'sess-factory', runId: 'run-1', streamId: 'stream-1' },
-        { surface: 'cli', defaultSessionId: 'sess-factory' },
+        {
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-factory',
+          actionRequestId: expect.any(String),
+        },
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,
@@ -130,7 +153,7 @@ describe('happier session run streams (credential-aware Action executor)', () =>
     }
   });
 
-  it('keeps a credentialed stream start on the Action spec’s RPC surface', async () => {
+  it('keeps every friendly stream command on the canonical CLI surface', async () => {
     execute.mockResolvedValueOnce({ ok: true, result: { streamId: 'stream-factory' } });
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
@@ -151,7 +174,12 @@ describe('happier session run streams (credential-aware Action executor)', () =>
       expect(execute).toHaveBeenCalledWith(
         'execution.run.stream.start',
         { sessionId: 'sess-factory', runId: 'run-1', message: 'continue' },
-        { surface: 'rpc', defaultSessionId: 'sess-factory' },
+        {
+          surface: 'cli',
+          authority: 'present_user',
+          defaultSessionId: 'sess-factory',
+          actionRequestId: expect.any(String),
+        },
       );
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_stream_start' }));
     } finally {

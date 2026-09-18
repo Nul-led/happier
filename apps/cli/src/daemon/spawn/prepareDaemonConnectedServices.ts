@@ -1,8 +1,7 @@
 import {
     CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES,
-    ConnectedServiceBindingsV1Schema,
     resolveConnectedServicesProviderStateSharingPolicyV1,
-    type ConnectedServiceBindingsV1,
+    type ConnectedServiceBindingsV2,
     type ConnectedServiceMaterializationIdentityV1,
 } from '@happier-dev/protocol';
 
@@ -52,6 +51,7 @@ import {
 } from '../connectedServices/runtimeAuth/sensitiveConnectedServiceDiagnosticFields';
 import { shouldResolveConnectedServiceAuthForSpawn } from '../connectedServices/shouldResolveConnectedServiceAuthForSpawn';
 import type { ConnectedAccountPurposeBindingOwner } from '../connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
+import { ConnectedServicesBindingsIngressSchema } from '../connectedServices/parseConnectedServicesBindings';
 
 type SpawnCredentials = NonNullable<Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['credentials']>;
 type SpawnApi = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['api'];
@@ -65,17 +65,18 @@ export type MissingConnectedServiceMaterializationIdentityRepair = Readonly<{
     persistAfterMaterialization: () => Promise<void>;
 }>;
 
-function readConnectedServiceBindingsOrNull(raw: unknown): ConnectedServiceBindingsV1 | null {
-    const parsed = ConnectedServiceBindingsV1Schema.safeParse(raw);
-    return parsed.success ? parsed.data : null;
+function readConnectedServiceBindingsOrNull(raw: unknown): ConnectedServiceBindingsV2 | null {
+    const parsed = ConnectedServicesBindingsIngressSchema.safeParse(raw);
+    return parsed.success ? parsed.data ?? null : null;
 }
 
 function connectedServiceBindingsRequireMaterializationIdentity(
-    bindings: ConnectedServiceBindingsV1 | null,
-): bindings is ConnectedServiceBindingsV1 {
+    bindings: ConnectedServiceBindingsV2 | null,
+): bindings is ConnectedServiceBindingsV2 {
     return Boolean(
         bindings
-        && Object.values(bindings.bindingsByServiceId).some((binding) => binding.source === 'connected'),
+        && Object.values(bindings.bindingsByServiceId)
+            .some((binding) => binding.source === 'connected' || binding.source === 'team_resource'),
     );
 }
 
@@ -139,21 +140,36 @@ export async function prepareDaemonConnectedServices(input: Readonly<{
     repairMissingMaterializationIdentity?: (repair: Readonly<{
         sessionId: string;
         agentId: CatalogAgentId;
-        connectedServices: ConnectedServiceBindingsV1;
+        connectedServices: ConnectedServiceBindingsV2;
         vendorResumeId: string | null;
     }>) => Promise<MissingConnectedServiceMaterializationIdentityRepair | null>;
 }>): Promise<PreparedDaemonConnectedServices | Readonly<{
     ok: false;
     result: Extract<SpawnSessionResult, { type: 'error' }>;
 }>> {
-    const shouldResolveAuth = shouldResolveConnectedServiceAuthForSpawn(input.options);
+    const admittedBindings = ConnectedServicesBindingsIngressSchema.safeParse(input.options.connectedServices);
+    if (!admittedBindings.success) {
+        return {
+            ok: false,
+            result: {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
+                errorMessage: 'connected_service_bindings_invalid',
+            },
+        };
+    }
+    const admittedOptions = {
+        ...input.options,
+        ...(admittedBindings.data ? { connectedServices: admittedBindings.data } : {}),
+    };
+    const shouldResolveAuth = shouldResolveConnectedServiceAuthForSpawn(admittedOptions);
     let materializationIdentity =
         readConnectedServiceMaterializationIdentityFromSpawnOptions(input.options)
         ?? readConnectedServiceMaterializationIdentityFromEnvironment(input.options.environmentVariables);
     let missingIdentityRepair: MissingConnectedServiceMaterializationIdentityRepair | null = null;
     if (shouldResolveAuth && !materializationIdentity) {
         if (input.normalizedExistingSessionId) {
-            const connectedServices = readConnectedServiceBindingsOrNull(input.options.connectedServices);
+            const connectedServices = admittedBindings.data ?? null;
             if (
                 input.catalogAgentId
                 && connectedServiceBindingsRequireMaterializationIdentity(connectedServices)
@@ -184,8 +200,8 @@ export async function prepareDaemonConnectedServices(input: Readonly<{
     }
 
     const options: SpawnSessionOptions = materializationIdentity
-        ? { ...input.options, connectedServiceMaterializationIdentityV1: materializationIdentity }
-        : { ...input.options };
+        ? { ...admittedOptions, connectedServiceMaterializationIdentityV1: materializationIdentity }
+        : admittedOptions;
     const materializationKey =
         materializationIdentity?.id
         || input.normalizedExistingSessionId
@@ -249,6 +265,9 @@ export async function prepareDaemonConnectedServices(input: Readonly<{
                                 },
                                 purposes: snapshot.purposes,
                                 bindings: snapshot.bindings,
+                                ...(snapshot.directMaterialOrigins
+                                    ? { directMaterialOrigins: snapshot.directMaterialOrigins }
+                                    : {}),
                             });
                         },
                     }

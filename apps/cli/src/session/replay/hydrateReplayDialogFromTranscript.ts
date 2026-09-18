@@ -1,8 +1,7 @@
 import type { StoredCredentials } from '@/persistence';
 
-import { openSessionDataEncryptionKey } from '@/api/client/openSessionDataEncryptionKey';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
-import { resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
+import { resolveSessionEncryptionContextFromCredentials, resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import { fetchEncryptedTranscriptMessages } from './fetchEncryptedTranscriptMessages';
 import { decryptTranscriptReplaySlice } from './decryptTranscriptReplaySlice';
@@ -62,25 +61,13 @@ export async function hydrateReplayDialogFromTranscript(params: Readonly<{
     };
   }
 
-  if (params.credentials.encryption?.type !== 'dataKey') {
-    return null;
-  }
-
-  const encryptedDekBase64 = typeof rawSession.dataEncryptionKey === 'string'
-    ? String(rawSession.dataEncryptionKey).trim()
-    : null;
-  if (!encryptedDekBase64) return null;
-
-  const dek = openSessionDataEncryptionKey({
-    credential: params.credentials,
-    encryptedDataEncryptionKeyBase64: encryptedDekBase64,
-  });
-  if (!dek) return null;
+  const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, session);
+  if (!ctx) return null;
 
   const slice = decryptTranscriptReplaySlice({
     rows,
-    encryptionKey: dek,
-    encryptionVariant: 'dataKey',
+    encryptionKey: ctx.encryptionKey,
+    encryptionVariant: ctx.encryptionVariant,
     maxTextChars: params.maxTextChars,
     maxDialogItems: params.limit,
   });

@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { FeaturesResponse, HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import {
+  computeHomeQrBindingProofV2,
+  encodeBase64,
+  type FeaturesResponse,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 import {
-  DirectHomeQrCompletionError,
   admitDirectHomeQrV2,
+  DirectHomeQrCompletionError,
   startDirectHomeQrLifecycle,
   type DirectHomeQrLifecycleAdapters,
   type DirectHomeQrPairingStatus,
@@ -32,13 +37,21 @@ function features(boundQrV2: unknown): FeaturesResponse {
 }
 
 function requested(overrides: Partial<Extract<DirectHomeQrPairingStatus, { state: 'requested' }>> = {}) {
+  const requesterPublicKey = new Uint8Array(32).fill(8);
   return {
     state: 'requested' as const,
     pairId: 'pair-1',
     expiresAt: new Date(NOW + 60_000).toISOString(),
-    requestedPublicKey: 'requester-key',
+    requestedPublicKey: encodeBase64(requesterPublicKey),
     requestedDeviceLabel: 'Phone',
-    bindingProof: 'binding-proof',
+    bindingProof: computeHomeQrBindingProofV2({
+      direction: 'trusted_home_displays',
+      qrSecret: new Uint8Array(32).fill(7),
+      pairId: 'pair-1',
+      homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+      requesterPublicKey,
+      expiresAtMs: NOW + 60_000,
+    }),
     homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
     ...overrides,
   };
@@ -48,18 +61,19 @@ function harness(input: Readonly<{
   status?: readonly DirectHomeQrPairingStatus[];
   qrAvailable?: boolean;
   nowValues?: readonly number[];
+  start?: DirectHomeQrLifecycleAdapters['start'];
   poll?: DirectHomeQrLifecycleAdapters['poll'];
   consume?: DirectHomeQrLifecycleAdapters['consume'];
   complete?: DirectHomeQrLifecycleAdapters['complete'];
 }> = {}) {
   const statuses = [...(input.status ?? [requested()])];
   const nowValues = [...(input.nowValues ?? [NOW, NOW, NOW])];
-  const start = vi.fn(async () => ({ ok: true as const, pairId: 'pair-1', expiresAt: new Date(NOW + 60_000).toISOString() }));
+  const start = vi.fn(input.start ?? (async () => ({ ok: true as const, pairId: 'pair-1', expiresAt: new Date(NOW + 60_000).toISOString() })));
   const poll = vi.fn(input.poll ?? (async () => ({ ok: true as const, status: statuses.shift() ?? requested() })));
-  const consume = vi.fn(input.consume ?? (async () => ({ ok: true as const })));
+  const consume = vi.fn(input.consume ?? (async () => ({ ok: true as const, outcome: 'cancelled' as const })));
   const complete = vi.fn(input.complete ?? (async () => 'completed' as const));
   const close = vi.fn(async () => undefined);
-  const sleep = vi.fn(async () => undefined);
+  const sleep = vi.fn<DirectHomeQrLifecycleAdapters['sleep']>(async () => undefined);
   const adapters: DirectHomeQrLifecycleAdapters = {
     randomBytes: () => new Uint8Array(32).fill(7),
     now: () => nowValues.shift() ?? NOW,
@@ -77,6 +91,52 @@ function harness(input: Readonly<{
 }
 
 describe('direct Home QR lifecycle', () => {
+  it('returns cancelled without starting pairing when the caller already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const h = harness();
+
+    await expect(startDirectHomeQrLifecycle({
+      features: features(true),
+      descriptor: DESCRIPTOR,
+      adapters: h.adapters,
+      signal: controller.signal,
+    })).resolves.toEqual({ kind: 'cancelled' });
+
+    expect(h.start).not.toHaveBeenCalled();
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it('returns cancelled when the caller aborts a pending pairing start', async () => {
+    const controller = new AbortController();
+    let startEntered!: () => void;
+    const startPending = new Promise<void>((resolve) => { startEntered = resolve; });
+    const h = harness({
+      start: async ({ signal }) => {
+        expect(signal).toBe(controller.signal);
+        startEntered();
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+          }, { once: true });
+        });
+        throw new Error('unreachable');
+      },
+    });
+
+    const result = startDirectHomeQrLifecycle({
+      features: features(true),
+      descriptor: DESCRIPTOR,
+      adapters: h.adapters,
+      signal: controller.signal,
+    });
+    await startPending;
+    controller.abort();
+
+    await expect(result).resolves.toEqual({ kind: 'cancelled' });
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['missing', features(undefined)],
     ['malformed', features('yes')],
@@ -138,12 +198,9 @@ describe('direct Home QR lifecycle', () => {
         });
         throw new Error('unreachable');
       },
-      consume: async ({ signal, timeoutMs }) => {
+      consume: async ({ timeoutMs }) => {
         expect(timeoutMs).toBe(1);
-        await new Promise<void>((_resolve, reject) => {
-          signal.addEventListener('abort', () => reject(Object.assign(new Error('timeout'), { name: 'AbortError' })), { once: true });
-        });
-        throw new Error('unreachable');
+        return { ok: true, outcome: 'cancelled' };
       },
     });
     const result = await startDirectHomeQrLifecycle({ features: features(true), descriptor: DESCRIPTOR, adapters: h.adapters });
@@ -155,6 +212,63 @@ describe('direct Home QR lifecycle', () => {
     expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ pairId: 'pair-1', intent: 'cancel' }));
     expect(h.complete).not.toHaveBeenCalled();
     expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it('adopts immutable completion when cancellation loses the server decision CAS', async () => {
+    let completionStarted!: () => void;
+    const startedCompleting = new Promise<void>((resolve) => { completionStarted = resolve; });
+    const completionSignals: AbortSignal[] = [];
+    const h = harness({
+      complete: async ({ signal }) => {
+        completionSignals.push(signal);
+        if (completionSignals.length === 1) {
+          completionStarted();
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new DirectHomeQrCompletionError('retryable')), { once: true });
+          });
+        }
+        return 'already_completed';
+      },
+      consume: async () => ({ ok: true, outcome: 'completion_won' }),
+    });
+    const result = await startDirectHomeQrLifecycle({ features: features(true), descriptor: DESCRIPTOR, adapters: h.adapters });
+    if (result.kind !== 'started') throw new Error('expected started lifecycle');
+
+    await startedCompleting;
+    await expect(result.cancel()).resolves.toEqual({ ok: true, outcome: 'completion_won' });
+    expect(completionSignals[0]?.aborted).toBe(true);
+
+    await expect(result.completion).resolves.toEqual({ kind: 'completed', requestedDeviceLabel: 'Phone' });
+    expect(h.complete).toHaveBeenCalledTimes(2);
+    expect(completionSignals[1]?.aborted).toBe(false);
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it('keeps polling after cancellation loses the CAS while an idle wait is being interrupted', async () => {
+    let sleepStarted!: () => void;
+    const startedSleeping = new Promise<void>((resolve) => { sleepStarted = resolve; });
+    const h = harness({
+      status: [
+        { state: 'pending', pairId: 'pair-1', expiresAt: new Date(NOW + 60_000).toISOString() },
+        requested(),
+      ],
+      consume: async () => ({ ok: true, outcome: 'completion_won' }),
+    });
+    h.sleep.mockImplementationOnce(async (_ms, signal) => {
+      sleepStarted();
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true });
+      });
+    });
+    const result = await startDirectHomeQrLifecycle({ features: features(true), descriptor: DESCRIPTOR, adapters: h.adapters });
+    if (result.kind !== 'started') throw new Error('expected started lifecycle');
+
+    await startedSleeping;
+    await expect(result.cancel()).resolves.toEqual({ ok: true, outcome: 'completion_won' });
+
+    await expect(result.completion).resolves.toEqual({ kind: 'completed', requestedDeviceLabel: 'Phone' });
+    expect(h.poll).toHaveBeenCalledTimes(2);
+    expect(h.complete).toHaveBeenCalledOnce();
   });
 
   it('bounds each poll by the owner-derived expiry deadline', async () => {
@@ -186,12 +300,29 @@ describe('direct Home QR lifecycle', () => {
   });
 
   it('rejects an invalid bound request and never enters terminal-pairing semantics', async () => {
-    const h = harness({ complete: async () => { throw new DirectHomeQrCompletionError('invalid'); } });
+    const h = harness({ status: [requested({ bindingProof: 'invalid-proof' })] });
     const result = await startDirectHomeQrLifecycle({ features: features(true), descriptor: DESCRIPTOR, adapters: h.adapters });
     if (result.kind !== 'started') throw new Error('expected started lifecycle');
 
     await expect(result.completion).resolves.toEqual({ kind: 'invalid_request' });
     expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ pairId: 'pair-1', intent: 'reject' }));
     expect(h.start).not.toHaveBeenCalledWith(expect.objectContaining({ direction: 'requester_displays' }));
+    expect(h.complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['malformed status', { ...requested(), extra: true }],
+    ['noncanonical requester key', requested({ requestedPublicKey: encodeBase64(new Uint8Array(32).fill(8)).replace(/={1,2}$/u, '') })],
+    ['wrong pair', requested({ pairId: 'pair-other' })],
+    ['wrong Home', requested({ homeServerIdentityId: 'srv_other' })],
+    ['wrong expiry', requested({ expiresAt: new Date(NOW + 59_999).toISOString() })],
+  ])('rejects %s before the platform completion callback', async (_label, status) => {
+    const h = harness({ status: [status as DirectHomeQrPairingStatus] });
+    const result = await startDirectHomeQrLifecycle({ features: features(true), descriptor: DESCRIPTOR, adapters: h.adapters });
+    if (result.kind !== 'started') throw new Error('expected started lifecycle');
+
+    await expect(result.completion).resolves.toEqual({ kind: 'invalid_request' });
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.consume).toHaveBeenCalledWith(expect.objectContaining({ intent: 'reject' }));
   });
 });

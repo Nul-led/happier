@@ -7,7 +7,7 @@ import type {
 import type {
   SessionEncryptionContext,
   SessionStoredContentEncryptionMode,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+} from '@/session/transport/encryption/sessionStoredContentCodec';
 import {
   fetchLatestSessionSystemRecord,
   fetchSessionSystemRecordsPage,

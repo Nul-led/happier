@@ -15,7 +15,8 @@ import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { configuration } from '@/configuration';
 import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type { ResolvedContributionRegistry, ResolvedAgentContribution } from '@/plugins/projection/registry/types';
-import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
+import { isInteractiveTerminal } from '@/terminal/prompts/promptInput';
+import { promptMultipleSelection } from '@/terminal/prompts/promptMultipleChoice';
 import { bullets, cmd, createOutputBuilder, dim, errorFrame, fail, kv, neutral, ok, renderHelpPage, sectionTitle } from '@happier-dev/cli-common/output';
 import type { CapabilityId } from '@happier-dev/protocol';
 import { resolveConnectTargetServiceIdsFromRegistry } from './connect/resolveConnectTargetServiceIds';
@@ -242,7 +243,7 @@ async function resolveAgentsSetupSelection(args: readonly string[], rows: readon
             .map((value) => value.trim())
             .filter(Boolean);
     })();
-    const combined = [...explicit, ...csv];
+    const combined = Array.from(new Set([...explicit, ...csv]));
     if (combined.length > 0) {
         const invalid = combined.filter((value) => !supportedById.has(value));
         if (invalid.length > 0) {
@@ -255,21 +256,30 @@ async function resolveAgentsSetupSelection(args: readonly string[], rows: readon
         if (!args.includes('--yes')) {
             throw new Error('Non-interactive mode: pass one or more --provider <id> flags (or --yes to install the recommended defaults).');
         }
-        return getAgentCliSetupRecommendedIds().filter((id) => supportedById.has(id));
+        return getAgentCliSetupRecommendedIds().filter(
+            (id) => supportedById.has(id) && !supportedById.get(id)?.installed,
+        );
     }
 
-    const recommended = getAgentCliSetupRecommendedIds().filter(
-        (id) => supportedById.has(id) && !supportedById.get(id)?.installed,
-    );
-    const hint = recommended.length > 0 ? ` (suggested: ${recommended.join(', ')})` : '';
-    const raw = (await promptInput(`Agents to install (comma-separated ids)${hint}: `)).trim();
-    if (!raw) return [];
-    const ids = raw.split(',').map((value) => value.trim()).filter(Boolean);
-    const invalid = ids.filter((value) => !supportedById.has(value));
-    if (invalid.length > 0) {
-        throw new UnsupportedAgentsSetupSelectionError(invalid);
-    }
-    return ids;
+    const missingRows = supportedRows.filter((row) => !row.installed);
+    const recommended = new Set<string>(getAgentCliSetupRecommendedIds());
+    const installedTitles = supportedRows.filter((row) => row.installed).map((row) => row.title);
+    const message = installedTitles.length > 0
+        ? `Choose optional coding agents to add. Already installed: ${installedTitles.join(', ')}.`
+        : 'Choose coding agents to install.';
+    return await promptMultipleSelection(message, [
+        ...missingRows.map((row) => ({
+            id: row.id,
+            label: `${row.title} (${row.id})`,
+            description: row.runtimeSpec.managedInstall
+                ? 'Happier-managed install'
+                : row.runtimeSpec.manualInstallKind === 'vendor_recipe'
+                    ? 'Runs the agent vendor installer'
+                    : 'Uses the catalog install command',
+            selected: recommended.has(row.id),
+        })),
+        { id: 'skip', label: 'Skip for now', kind: 'skip' as const },
+    ]);
 }
 
 export async function handleAgentsCommand(args: string[]): Promise<void> {
@@ -511,17 +521,35 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
             return;
         }
 
-        const results = [];
-        let allOk = true;
+        const installResults = [];
         for (const agentId of agentIds) {
             const agentRow = agentRowsById.get(agentId);
             if (!agentRow?.runtimeSpec) {
                 throw new Error(`Agent '${agentId}' does not publish a CLI installation recipe.`);
             }
             const result = await runAgentsInstall(agentRow.runtimeSpec, flags);
-            results.push({ agentId, title: agentRow.title, result });
-            if (!result.ok) allOk = false;
+            installResults.push({ agentId, title: agentRow.title, result });
         }
+        // Installer completion is not executable readiness. Resolve again from
+        // the canonical runtime catalog after every attempted installation.
+        const refreshedRowsById = new Map(
+            listAgentStatus(mergedRegistry!, process.env).map((row) => [row.id, row] as const),
+        );
+        const results = installResults.map((entry) => {
+            const installed = refreshedRowsById.get(entry.agentId)?.installed === true;
+            const detected = flags.dryRun || installed;
+            return {
+                ...entry,
+                installed,
+                ok: entry.result.ok && detected,
+                errorMessage: !entry.result.ok
+                    ? entry.result.errorMessage
+                    : detected
+                        ? null
+                        : `Installation completed, but '${entry.agentId}' is still not resolvable. Open a new shell or run happier agents status, then retry.`,
+            };
+        });
+        const allOk = results.every((entry) => entry.ok);
 
         if (json) {
             if (allOk) {
@@ -532,11 +560,12 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                         data: {
                             agents: results.map((entry) => ({
                                 agentId: entry.agentId,
-                                ok: true,
+                                ok: entry.ok,
+                                installed: entry.installed,
                                 alreadyInstalled: entry.result.ok ? entry.result.alreadyInstalled ?? false : null,
                                 plan: entry.result.ok ? entry.result.plan : null,
                                 logPath: entry.result.logPath ?? null,
-                                errorMessage: null,
+                                errorMessage: entry.errorMessage,
                             })),
                         },
                     },
@@ -552,11 +581,12 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                         code: 'install_failed',
                         agents: results.map((entry) => ({
                             agentId: entry.agentId,
-                            ok: entry.result.ok,
+                            ok: entry.ok,
+                            installed: entry.installed,
                             alreadyInstalled: entry.result.ok ? entry.result.alreadyInstalled ?? false : null,
                             plan: entry.result.ok ? entry.result.plan : null,
                             logPath: entry.result.logPath ?? null,
-                            errorMessage: entry.result.ok ? null : entry.result.errorMessage,
+                            errorMessage: entry.errorMessage,
                         })),
                     },
                 },
@@ -567,9 +597,9 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
 
         for (const entry of results) {
             const out = createOutputBuilder();
-            if (entry.result.ok) {
+            if (entry.result.ok && entry.ok) {
                 if (flags.dryRun) {
-                    out.line(`Dry run: would install ${entry.title} via ${entry.result.plan.installMode}.`);
+                    out.line(`Dry run: would install ${entry.title} via ${entry.result.plan?.installMode ?? 'its catalog recipe'}.`);
                 } else if (entry.result.alreadyInstalled) {
                     out.line(ok(`${entry.title} is already installed.`));
                 } else {
@@ -578,7 +608,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                 if (entry.result.logPath) out.line(`  ${kv('Install log:', entry.result.logPath)}`);
                 console.log(out.render());
             } else {
-                console.error(fail(`Failed to install ${entry.agentId}: ${entry.result.errorMessage}`));
+                console.error(fail(`Failed to install ${entry.agentId}: ${entry.errorMessage}`));
                 if (entry.result.logPath) {
                     console.log(`  ${kv('Install log:', entry.result.logPath)}`);
                 }

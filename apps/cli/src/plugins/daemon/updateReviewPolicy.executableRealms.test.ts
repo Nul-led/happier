@@ -32,6 +32,11 @@ const HOSTED_WEB_PANEL = Object.freeze({
   kind: 'hostedWeb',
   source: { kind: 'artifact', artifact: 'panel-web' },
 });
+const HOSTED_HTML_PANEL = Object.freeze({
+  id: 'panel',
+  kind: 'hostedHtml',
+  source: { kind: 'html', html: '<p>Hello</p>' },
+});
 const REACT_NATIVE_PANEL = Object.freeze({
   id: 'panel',
   kind: 'reactNative',
@@ -39,6 +44,18 @@ const REACT_NATIVE_PANEL = Object.freeze({
 });
 
 describe('hasReviewSensitivePluginUpdate executable realm expansion', () => {
+  it('requires review for inline HTML execution but not switching its hosted-web source form', () => {
+    expect(hasReviewSensitivePluginUpdate(
+      manifestWithRenderer(DECLARATIVE_PANEL),
+      manifestWithRenderer(HOSTED_HTML_PANEL, '1.0.1'),
+      [],
+    )).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(
+      manifestWithRenderer(HOSTED_WEB_PANEL),
+      manifestWithRenderer(HOSTED_HTML_PANEL, '1.0.1'),
+      [],
+    )).toBe(false);
+  });
   it('requires review when a retained renderer id expands from declarative to hosted-web execution', () => {
     expect(hasReviewSensitivePluginUpdate(
       manifestWithRenderer(DECLARATIVE_PANEL),

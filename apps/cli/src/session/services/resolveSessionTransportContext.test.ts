@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 import { encodeBase64, encrypt } from '@/api/encryption';
 
 const { resolveSessionIdOrPrefix, fetchSessionById, fetchAccountEncryptionCurrentness } = vi.hoisted(() => ({
@@ -30,30 +30,11 @@ const plainAccountEncryptionCurrentness = {
 } as const;
 
 describe('resolveSessionTransportContext', () => {
-    const prevRetryAttempts = process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_ATTEMPTS;
-    const prevRetryDelayMs = process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_DELAY_MS;
-
     beforeEach(() => {
         resolveSessionIdOrPrefix.mockReset();
         fetchSessionById.mockReset();
         fetchAccountEncryptionCurrentness.mockReset();
         fetchAccountEncryptionCurrentness.mockResolvedValue(plainAccountEncryptionCurrentness);
-        process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_ATTEMPTS = '2';
-        process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_DELAY_MS = '1';
-    });
-
-    afterEach(() => {
-        if (prevRetryAttempts === undefined) {
-            delete process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_ATTEMPTS;
-        } else {
-            process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_ATTEMPTS = prevRetryAttempts;
-        }
-
-        if (prevRetryDelayMs === undefined) {
-            delete process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_DELAY_MS;
-        } else {
-            process.env.HAPPIER_SESSION_E2EE_DEK_FETCH_RETRY_DELAY_MS = prevRetryDelayMs;
-        }
     });
 
     it('reuses an exact full-id session row returned by id resolution instead of fetching it again', async () => {
@@ -118,6 +99,7 @@ describe('resolveSessionTransportContext', () => {
             credentials: { token: 'token', encryption: null },
             idOrPrefix: 'sess-1',
             signal: cancellation.signal,
+            accountEncryptionMode: 'plain',
         });
         expect(fetchSessionById).toHaveBeenCalledWith({
             token: 'token',
@@ -130,7 +112,41 @@ describe('resolveSessionTransportContext', () => {
         });
     });
 
-    it('stops the e2ee key retry before issuing another session read after cancellation', async () => {
+    it('threads one exact-Home feature snapshot through resolution and fallback detail hydration', async () => {
+        const serverFeaturesSnapshot = {
+            status: 'unsupported' as const,
+            reason: 'endpoint_missing' as const,
+        };
+        resolveSessionIdOrPrefix.mockResolvedValue({ ok: true, sessionId: 'sess-1' });
+        fetchSessionById.mockResolvedValue({
+            id: 'sess-1',
+            active: false,
+            activeAt: 1,
+            encryptionMode: 'plain',
+            metadata: {},
+        });
+
+        const { resolveSessionTransportContext } = await import('./resolveSessionTransportContext');
+        await resolveSessionTransportContext({
+            credentials: { token: 'token', encryption: null },
+            idOrPrefix: 'sess-1',
+            serverFeaturesSnapshot,
+        });
+
+        expect(resolveSessionIdOrPrefix).toHaveBeenCalledWith({
+            credentials: { token: 'token', encryption: null },
+            idOrPrefix: 'sess-1',
+            serverFeaturesSnapshot,
+            accountEncryptionMode: 'plain',
+        });
+        expect(fetchSessionById).toHaveBeenCalledWith({
+            token: 'token',
+            sessionId: 'sess-1',
+            serverFeaturesSnapshot,
+        });
+    });
+
+    it('checks cancellation after the exact one-shot Session read', async () => {
         const cancellation = new AbortController();
         const machineKey = new Uint8Array(32).fill(7);
         const publicKey = deriveBoxPublicKeyFromSeed(machineKey);
@@ -168,7 +184,7 @@ describe('resolveSessionTransportContext', () => {
         expect(fetchSessionById).toHaveBeenCalledTimes(1);
     });
 
-    it('refetches active e2ee sessions when the published dataEncryptionKey is briefly missing', async () => {
+    it('settles a missing recipient envelope without an encryption-specific retry loop', async () => {
         const machineKey = new Uint8Array(32).fill(7);
         const publicKey = deriveBoxPublicKeyFromSeed(machineKey);
         const sessionDataKey = new Uint8Array(32).fill(9);
@@ -176,36 +192,19 @@ describe('resolveSessionTransportContext', () => {
             encrypt(sessionDataKey, 'dataKey', { path: '/tmp/project', permissionMode: 'safe-yolo' }),
             'base64',
         );
-        const publishedDataEncryptionKey = encodeBase64(
-            sealEncryptedDataKeyEnvelopeV1({
-                dataKey: sessionDataKey,
-                recipientPublicKey: publicKey,
-                randomBytes: (length) => new Uint8Array(length).fill(3),
-            }),
-            'base64',
-        );
-
         resolveSessionIdOrPrefix.mockResolvedValue({
             ok: true,
             sessionId: 'sess-1',
         });
-        fetchSessionById
-            .mockResolvedValueOnce({
-                id: 'sess-1',
-                active: true,
-                activeAt: 1,
-                encryptionMode: 'e2ee',
-                dataEncryptionKey: null,
-                metadata: encryptedMetadata,
-            })
-            .mockResolvedValueOnce({
-                id: 'sess-1',
-                active: true,
-                activeAt: 1,
-                encryptionMode: 'e2ee',
-                dataEncryptionKey: publishedDataEncryptionKey,
-                metadata: encryptedMetadata,
-            });
+        fetchSessionById.mockResolvedValueOnce({
+            id: 'sess-1',
+            active: true,
+            activeAt: 1,
+            encryptionMode: 'e2ee',
+            dataEncryptionKey: null,
+            share: { accessLevel: 'view', canApprovePermissions: false },
+            metadata: encryptedMetadata,
+        });
 
         const { resolveSessionTransportContext } = await import('./resolveSessionTransportContext');
 
@@ -221,19 +220,11 @@ describe('resolveSessionTransportContext', () => {
             idOrPrefix: 'sess-1',
         });
 
-        expect(fetchSessionById).toHaveBeenCalledTimes(2);
-        expect(result).toMatchObject({
-            ok: true,
+        expect(fetchSessionById).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({
+            ok: false,
+            code: 'encryption_material_unavailable',
             sessionId: 'sess-1',
-            mode: 'e2ee',
         });
-        if (!result.ok) {
-            throw new Error(`Expected resolved session transport context, got ${JSON.stringify(result)}`);
-        }
-        expect(result.mode).toBe('e2ee');
-        if (result.mode !== 'e2ee') {
-            throw new Error('Expected an encrypted Session transport context');
-        }
-        expect(Array.from(result.ctx.encryptionKey)).toEqual(Array.from(sessionDataKey));
     });
 });

@@ -24,6 +24,7 @@ import {
     type AgentProviderRequirementsV1,
     type SessionTurnMutationV1,
 } from '@happier-dev/protocol';
+import type { ProtocolJsonValue } from '@happier-dev/plugin-sdk/protocol';
 import { AgentSessionRuntimeEventSchema } from '@happier-dev/protocol/runtime';
 import {
     CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY,
@@ -96,6 +97,12 @@ import {
 import { configuration as happierConfiguration } from '@/configuration';
 import * as providerBindingRuntimeDiagnosticRedaction from '@/plugins/runtime/providerBindings/runtimeDiagnosticRedaction';
 import * as persistence from '@/persistence';
+
+function isProtocolJsonObject(
+    value: ProtocolJsonValue,
+): value is Readonly<Record<string, ProtocolJsonValue>> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 async function loadRealAgentRuntimeFactory(
     relativeRepoPath: string,
@@ -3878,14 +3885,22 @@ describe('native Agent session host adapter', () => {
         expect(currentSessionUi?.interactions.request).toEqual(expect.any(Function));
         expect(currentSessionUi?.presentation?.notify).toEqual(expect.any(Function));
 
+        const runtimeLifetime = created.operations.getRuntimeLifetimeSignal?.();
+        expect(runtimeLifetime?.aborted).toBe(false);
+        await created.operations.sendTurnPrompt('admitted input', {
+            localId: 'input-before-retirement', turnId: 'turn-before-retirement', userMessageSeq: 1,
+        });
+        expect(created.operations.readActiveTurnPermissionWitness?.()?.turnId).toBe('turn-before-retirement');
+        expect(created.operations.readActiveTurnInputId?.()).toBe('input-before-retirement');
         generationController.abort(new Error('plugin generation retired'));
+        expect(runtimeLifetime?.aborted).toBe(true);
         await vi.waitFor(() => expect(session.dispose).toHaveBeenCalledTimes(1));
         expect(resolveCurrentSessionUiBinding('session-live-retirement')).toBeNull();
         await created.operations.sendTurnPrompt('must not dispatch', {
             localId: 'input-after-retirement',
             userMessageSeq: 1,
         }).catch(() => undefined);
-        expect(send).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledTimes(1);
         await created.operations.resetOrDisposeRuntime();
         expect(session.dispose).toHaveBeenCalledTimes(1);
     });
@@ -4090,6 +4105,89 @@ describe('native Agent session host adapter', () => {
             .resolves.toMatchObject({ status: 'unsupported' });
         expect(updateConfiguration).not.toHaveBeenCalled();
         expect(compact).not.toHaveBeenCalled();
+    });
+
+    it('does not retain a permission snapshot rejected by the real Pi configuration owner', async () => {
+        const loader = createJiti(import.meta.url, { fsCache: false, interopDefault: false });
+        const { createPiRuntimeOperations } = await loader.import<
+            typeof import('../../../../../../../packages/plugins/pi/src/agent/runtime/rpc/operations')
+        >(resolve(dirname(fileURLToPath(import.meta.url)),
+            '../../../../../../../packages/plugins/pi/src/agent/runtime/rpc/operations.ts'));
+        const unavailable = createUnavailablePluginServices();
+        const written: unknown[] = [];
+        let listener: ((record: ProtocolJsonValue) => void | Promise<void>) | undefined;
+        const exit = new Promise<never>(() => undefined);
+        // Only the native JSON-stream process boundary is substituted; Pi and host config stay real.
+        const handle: PluginProtocolClientHandle<'jsonStream'> = {
+            client: {
+                subscribe(next) {
+                    listener = next;
+                    return { dispose: () => { listener = undefined; } };
+                },
+                async write(record) {
+                    written.push(record);
+                    if (isProtocolJsonObject(record)) {
+                        await listener?.({
+                            type: 'response',
+                            id: record.id,
+                            command: record.type,
+                            success: true,
+                        });
+                    }
+                },
+                async dispose() {},
+            },
+            process: {
+                async write() {},
+                async closeStdin() {},
+                wait: () => exit,
+                onOutput: () => ({ dispose: () => undefined }),
+                async dispose() {},
+            },
+            wait: () => exit,
+            async dispose() {},
+        };
+        const session = await createPiRuntimeOperations({
+            services: {
+                ...unavailable,
+                exec: {
+                    ...unavailable.exec,
+                    systemTools: {
+                        ...unavailable.exec.systemTools,
+                        resolve: async () => ({
+                            executable: { kind: 'systemTool', id: 'pi-cli' },
+                            executablePath: '/tmp/pi-cli',
+                        }),
+                    },
+                    // Pi opens only JSON-stream; isolate the generic client boundary cast here.
+                    clients: { spawn: async () => handle } as unknown as HostPluginServices['exec']['clients'],
+                },
+            },
+            logger: unavailable.logger,
+            cwd: '/tmp/pi-config',
+            env: {},
+            sessionId: 'pi-config',
+            permissionMode: 'yolo',
+        });
+        const runtime = createNativeAgentSessionOperations(session, 'pi-config',
+            undefined, undefined, undefined, {
+                mode: { value: null, updatedAtMs: 0 },
+                model: { value: null, updatedAtMs: 0 },
+                permissionIntent: { value: 'yolo', updatedAtMs: 1 },
+                options: {},
+            });
+        try {
+            await expect(runtime.updateSessionRuntimeConfig({ permissionMode: 'read-only' }))
+                .resolves.toMatchObject({ status: 'unsupported' });
+            expect(written).toEqual([]);
+            await expect(runtime.updateSessionRuntimeConfig({ modelId: 'openai/gpt-4o-mini' }))
+                .resolves.toMatchObject({ status: 'applied', timing: 'current_window' });
+            expect(written).toEqual([expect.objectContaining({
+                type: 'set_model', provider: 'openai', modelId: 'gpt-4o-mini',
+            })]);
+        } finally {
+            await runtime.resetOrDisposeRuntime();
+        }
     });
 
     it('passes the exact host-private Provider binding through a live configuration update', async () => {
@@ -4481,6 +4579,15 @@ describe('native Agent session host adapter', () => {
                 return createUnavailablePluginServices();
             });
         const prepareManagedProviderBinding = vi.fn(async () => null);
+        const exactAgentCliLaunch = {
+            localAgentId: agentId,
+            spec: {
+                source: 'managed' as const,
+                resolvedPath: '/managed/acme-runner-bootstrap-agent',
+                command: '/managed/acme-runner-bootstrap-agent',
+                args: [] as const,
+            },
+        };
         const prepareRuntimeSource = vi.fn(async (input: Readonly<{
             sessionId: string;
             signal: AbortSignal;
@@ -4513,6 +4620,7 @@ describe('native Agent session host adapter', () => {
                 createSessionHostServiceOwners(),
             sessionInput: buildPluginSessionBindingInput({
                 credentials,
+                agentCliLaunch: exactAgentCliLaunch,
                 directory: '/tmp/acme-runner-bootstrap-agent',
                 backendTarget: { kind: 'backend', backendId: agentId },
                 resolveLateEnvironment: async (
@@ -4571,6 +4679,7 @@ describe('native Agent session host adapter', () => {
                 environment: {
                     FOREGROUND_READY: 'yes',
                 },
+                agentCliLaunch: exactAgentCliLaunch,
             }),
         );
         expect(prepareManagedProviderBinding).not.toHaveBeenCalled();
@@ -5510,6 +5619,48 @@ describe('native Agent session host adapter', () => {
             expect(services.happierTools !== undefined).toBe(expected);
         },
     );
+
+    it('does not advertise feature-gated Action tools when the exact Session Home disables them', async () => {
+        const baseOwners = createSessionHostServiceOwners();
+        const services = createNativeAgentSessionHostServices({
+            owners: Object.freeze({
+                ...baseOwners,
+                features: Object.freeze({
+                    isEnabled: (featureId: string) => featureId !== 'sessions.conversations',
+                }),
+            }),
+            agentId: 'acme-tools-feature-agent',
+            sessionId: 'tools-feature-session',
+            directory: '/tmp/acme-tools-feature-agent',
+            signal: new AbortController().signal,
+            isCurrent: () => true,
+            session: {
+                sessionId: 'tools-feature-session',
+                updateMetadata: async () => undefined,
+                enqueueAgentMessageCommitted: async () => undefined,
+            } as never,
+            publications: {
+                models: Object.freeze({}),
+                activeInput: Object.freeze({}),
+            } as never,
+            readToolExecutionCapability: () => null,
+            toolsDelivery: 'shell_bridge',
+            accountSettings: {
+                actionsSettingsV1: {
+                    v: 1,
+                    actions: {
+                        'session.discussion.list': { toolExposureModes: { agent: 'direct' } },
+                        'session.board.get': { toolExposureModes: { agent: 'direct' } },
+                    },
+                },
+            },
+        });
+
+        const bridge = await services.happierTools?.resolveNativeBridge({ systemPrompt: '' });
+        const names = bridge?.tools.map((tool) => tool.name) ?? [];
+        expect(names).not.toContain('session_discussion_list');
+        expect(names).toContain('session_board_get');
+    });
 
     it('projects declared native-home reads and retires them with the Session scope', async () => {
         let current = true;
@@ -6654,7 +6805,7 @@ describe('native Agent session host adapter', () => {
             kind: 'resume',
             sessionId: 'session-1',
             cwd: '/tmp/acme-current-agent',
-            providerSessionId: 'provider-session-resume',
+            providerSessionId: ' provider-session-resume ',
             launchEnvironment: {
                 values: {},
                 unset: [],
@@ -7070,7 +7221,7 @@ describe('native Agent session host adapter', () => {
             throw new Error('subscriber failed');
         });
         runtime.subscribeRuntimeEvents(laterListener);
-        runtime.setOnPromptDeliveryOutcome?.(deliveryOutcome);
+        runtime.setOnPromptDeliveryOutcome(deliveryOutcome);
 
         await runtime.sendTurnPrompt('hello', {
             localId: 'input-listener-isolation',
@@ -7262,6 +7413,7 @@ describe('native Agent session host adapter', () => {
                 admittedPermissionCeiling: 'yolo',
             },
         })).rejects.toThrow("rejected steer with status 'unavailable'");
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).rejects.toThrow('did not complete');
         expect(requireActiveTurnAdmissionWitnessReader(
             readActiveTurnAdmissionWitness,
         )()).toEqual({
@@ -9009,6 +9161,152 @@ describe('native Agent session host adapter', () => {
         await runtime.resetOrDisposeRuntime('runtime_recovery');
     });
 
+    it.each([
+        { next: 'successor', cleanupRejects: false },
+        { next: 'runtime-ended', cleanupRejects: false },
+        { next: 'successor', cleanupRejects: true },
+        { next: 'runtime-ended', cleanupRejects: true },
+    ] as const)('preserves accepted terminal publication before $next when cleanupRejects=$cleanupRejects', async ({ next, cleanupRejects }) => {
+        let publish!: (event: AgentSessionRuntimeEvent) => void;
+        const session: AgentSessionRuntime = {
+            send: async () => ({ status: 'admitted' }),
+            watch(listener) {
+                publish = listener;
+                return { dispose() {} };
+            },
+            dispose: async () => undefined,
+        };
+        let releaseCleanup!: () => void;
+        // The boundary's durable interaction cleanup may settle after the next native event.
+        const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+        const runtime = createNativeAgentSessionOperations(
+            session, 'session-1', undefined, undefined, undefined, undefined,
+            undefined, undefined, undefined, [], {
+                onTurnTerminal: async () => {
+                    await cleanup;
+                    if (cleanupRejects) throw new Error('interaction custody unavailable');
+                },
+            },
+        );
+        const mutations: SessionTurnMutationV1[] = [];
+        const lifecycle = createSessionTurnLifecycle({
+            session: {
+                sessionId: 'session-1',
+                enqueueSessionTurnMutation: (mutation) => { mutations.push(mutation); },
+            },
+        });
+        const events: AgentSessionRuntimeEvent[] = [];
+        runtime.subscribeRuntimeEvents((event) => {
+            events.push(event);
+            lifecycle.observeRuntimeEvent(event);
+        });
+        try {
+            publish({ sequence: 1, sessionId: 'session-1', emittedAtMs: 1, kind: 'turn-start', turnId: 'turn-1', startedBy: 'provider' });
+            publish({ sequence: 2, sessionId: 'session-1', emittedAtMs: 2, kind: 'turn-complete', turnId: 'turn-1' });
+            publish(next === 'successor'
+                ? { sequence: 3, sessionId: 'session-1', emittedAtMs: 3, kind: 'turn-start', turnId: 'turn-2', startedBy: 'provider', causedByTurnId: 'turn-1' }
+                : { sequence: 3, sessionId: 'session-1', emittedAtMs: 3, kind: 'runtime-ended', cause: 'connectionLost', retryable: true });
+            expect(events.map((event) => event.sequence)).toEqual([1]);
+            releaseCleanup();
+            await vi.waitFor(() => expect(events.map((event) => event.sequence)).toEqual([1, 2, 3]));
+            expect(mutations.map(({ action, turnId }) => [action, turnId])).toEqual([
+                ['begin', 'turn-1'], ['complete', 'turn-1'],
+                ...(next === 'successor' ? [['begin', 'turn-2']] : []),
+            ]);
+        } finally {
+            releaseCleanup();
+            await runtime.resetOrDisposeRuntime('runtime_recovery');
+        }
+    });
+
+    it('retires pending terminal publication without waiting for cleanup or publishing to a later subscriber', async () => {
+        let publish!: (event: AgentSessionRuntimeEvent) => void;
+        const session: AgentSessionRuntime = {
+            send: async () => ({ status: 'admitted' }),
+            watch(listener) {
+                publish = listener;
+                return { dispose() {} };
+            },
+            dispose: async () => undefined,
+        };
+        let releaseCleanup!: () => void;
+        const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+        const runtime = createNativeAgentSessionOperations(
+            session, 'session-1', undefined, undefined, undefined, undefined,
+            undefined, undefined, undefined, [], { onTurnTerminal: () => cleanup },
+        );
+        const events: AgentSessionRuntimeEvent[] = [];
+        runtime.subscribeRuntimeEvents((event) => { events.push(event); });
+        publish({ sequence: 1, sessionId: 'session-1', emittedAtMs: 1, kind: 'turn-start', turnId: 'turn-1', startedBy: 'provider' });
+        let completionError: unknown;
+        const completion = runtime.waitForTurnCompletion({ timeoutMs: null }).catch((error: unknown) => { completionError = error; });
+        publish({ sequence: 2, sessionId: 'session-1', emittedAtMs: 2, kind: 'turn-complete', turnId: 'turn-1' });
+        let disposed = false;
+        const disposing = runtime.resetOrDisposeRuntime('session_closed').then(() => { disposed = true; });
+        try {
+            await vi.waitFor(() => expect(disposed).toBe(true));
+            await vi.waitFor(() => expect(completionError).toMatchObject({ name: 'AbortError' }));
+            await completion;
+            const lateEvents: AgentSessionRuntimeEvent[] = [];
+            runtime.subscribeRuntimeEvents((event) => { lateEvents.push(event); });
+            releaseCleanup();
+            await cleanup;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(events.map((event) => event.sequence)).toEqual([1]);
+            expect(lateEvents).toEqual([]);
+        } finally {
+            releaseCleanup();
+            await disposing;
+        }
+    });
+
+    it.each(['active', 'idle', 'completed'] as const)('settles completion waits on silent disposal of a session in state %s', async (state) => {
+        let publish!: (event: AgentSessionRuntimeEvent) => void;
+        const session: AgentSessionRuntime = {
+            send: async () => ({ status: 'admitted' }),
+            watch(listener) {
+                publish = listener;
+                return { dispose() {} };
+            },
+            dispose: async () => undefined,
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        const events: AgentSessionRuntimeEvent[] = [];
+        runtime.subscribeRuntimeEvents((event) => { events.push(event); });
+        let outcome: 'completed' | Error | undefined;
+        const completion = state === 'idle' ? undefined : runtime.waitForTurnCompletion().then(
+            () => { outcome = 'completed'; },
+            (error: Error) => { outcome = error; },
+        );
+        if (state !== 'idle') {
+            publish({ sequence: 1, sessionId: 'session-1', emittedAtMs: 1, kind: 'turn-start', turnId: 'turn-1', startedBy: 'provider' });
+        }
+        if (state === 'completed') {
+            publish({ sequence: 2, sessionId: 'session-1', emittedAtMs: 2, kind: 'turn-complete', turnId: 'turn-1' });
+            await completion;
+        }
+        await runtime.resetOrDisposeRuntime('session_closed');
+        await runtime.resetOrDisposeRuntime('session_closed');
+        if (state === 'active') {
+            await vi.waitFor(() => expect(outcome).toMatchObject({ name: 'AbortError' }));
+            await completion;
+        }
+        runtime.beginTurnLifecycle();
+        let lateOutcome: 'completed' | Error | undefined;
+        const lateCompletion = runtime.waitForTurnCompletion({ timeoutMs: null }).then(
+            () => { lateOutcome = 'completed'; },
+            (error: Error) => { lateOutcome = error; },
+        );
+        await vi.waitFor(() => {
+            if (state === 'completed') expect(lateOutcome).toBe('completed');
+            else expect(lateOutcome).toMatchObject({ name: 'AbortError' });
+        });
+        await lateCompletion;
+        expect(events.map((event) => event.kind)).toEqual(
+            state === 'idle' ? [] : state === 'active' ? ['turn-start'] : ['turn-start', 'turn-complete'],
+        );
+    });
+
     it('cancels host-owned current-session interactions on every accepted native turn terminal', async () => {
         const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
         const session: AgentSessionRuntime = {
@@ -9103,7 +9401,7 @@ describe('native Agent session host adapter', () => {
         const deliveryOutcomes: unknown[] = [];
         const canonicalEvents: AgentSessionRuntimeEvent[] = [];
         const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
         runtime.subscribeRuntimeEvents((event) => {
             if ('kind' in event) canonicalEvents.push(event);
         });
@@ -9217,7 +9515,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt('hello', {
             localId: 'queue-local-acceptance',
@@ -9314,7 +9612,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
         const opaqueLocalId = ' queue-local-opaque ';
 
         await expect(runtime.sendTurnPrompt(
@@ -9402,7 +9700,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'write then lose process',
@@ -9446,7 +9744,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'custody becomes unknown',
@@ -9532,7 +9830,7 @@ describe('native Agent session host adapter', () => {
             },
         );
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await runtime.sendTurnPrompt(
             'start turn before steer',
@@ -9647,7 +9945,7 @@ describe('native Agent session host adapter', () => {
             },
         );
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await runtime.sendTurnPrompt(
             'start turn before failed steer',
@@ -9733,7 +10031,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'delivery outcome failed',
@@ -9780,7 +10078,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await runtime.sendTurnPrompt(
             'accepted before reset',
@@ -9825,12 +10123,13 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'uncertain then rejected',
             { localId: 'queue-local-uncertain-rejected', turnId: 'turn-uncertain-rejected' },
         )).rejects.toThrow("rejected prompt with status 'rejected'");
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).rejects.toThrow('did not complete');
 
         expect(deliveryOutcomes).toEqual([{
             type: 'input-custody-unknown',
@@ -9850,6 +10149,7 @@ describe('native Agent session host adapter', () => {
                 retryable: false,
             });
         }
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).resolves.toBeUndefined();
 
         expect(deliveryOutcomes).toEqual([{
             type: 'input-custody-unknown',
@@ -9867,6 +10167,9 @@ describe('native Agent session host adapter', () => {
 
     it('settles synchronous native rejection exactly once when send also returns rejected', async () => {
         const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const cancel = vi.fn<NonNullable<AgentSessionRuntime['cancel']>>(async (request) => ({
+            status: 'requested', turnId: request.turnId,
+        }));
         const send = vi.fn<AgentSessionRuntime['send']>(async (request) => {
             for (const listener of listeners) {
                 listener({
@@ -9887,6 +10190,7 @@ describe('native Agent session host adapter', () => {
         });
         const session: AgentSessionRuntime = {
             send,
+            cancel,
             watch(listener) {
                 listeners.add(listener);
                 return { dispose: () => { listeners.delete(listener); } };
@@ -9895,12 +10199,15 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'reject before write',
             { localId: 'queue-local-rejected', turnId: 'turn-rejected' },
         )).rejects.toThrow("rejected prompt with status 'rejected'");
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).resolves.toBeUndefined();
+        await runtime.cancelTurn();
+        expect(cancel).not.toHaveBeenCalled();
 
         expect(deliveryOutcomes).toEqual([{
             type: 'input-rejected',
@@ -9923,6 +10230,20 @@ describe('native Agent session host adapter', () => {
         }
         expect(deliveryOutcomes).toHaveLength(2);
         expect(deliveryOutcomes[1]).toEqual(deliveryOutcomes[0]);
+
+        runtime.beginTurnLifecycle();
+        for (const listener of listeners) {
+            listener({
+                sequence: 3,
+                sessionId: 'session-1',
+                emittedAtMs: 3,
+                kind: 'input-rejected',
+                inputIds: ['queue-local-rejected'],
+                diagnostic: { code: 'native_rejected', severity: 'error' },
+                retryable: false,
+            });
+        }
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).rejects.toThrow('did not complete');
     });
 
     it('preserves retryable native pre-effect rejection for Queue-owned disposition', async () => {
@@ -9955,7 +10276,7 @@ describe('native Agent session host adapter', () => {
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+        runtime.setOnPromptDeliveryOutcome((outcome) => deliveryOutcomes.push(outcome));
 
         await expect(runtime.sendTurnPrompt(
             'retry later',
@@ -10234,7 +10555,7 @@ describe('native Agent session host adapter', () => {
             },
         );
         const deliveryOutcomes: unknown[] = [];
-        runtime.setOnPromptDeliveryOutcome?.((outcome) => {
+        runtime.setOnPromptDeliveryOutcome((outcome) => {
             deliveryOutcomes.push(outcome);
         });
 
@@ -10264,6 +10585,7 @@ describe('native Agent session host adapter', () => {
             retireLocalCustodyAfterDurableBlock: true,
         }]);
         expect(send).not.toHaveBeenCalled();
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).resolves.toBeUndefined();
     });
 
     it('aborts in-flight daemon admission and never crosses the Provider boundary after cancellation', async () => {
@@ -10329,6 +10651,7 @@ describe('native Agent session host adapter', () => {
             .toBe(true);
         expect(send).not.toHaveBeenCalled();
         expect(cancel).not.toHaveBeenCalled();
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).resolves.toBeUndefined();
     });
 
     it('does not resurrect a synchronously terminal native turn after send resolves', async () => {
@@ -10548,6 +10871,65 @@ describe('native Agent session host adapter', () => {
             expect(send).toHaveBeenCalledOnce();
         },
     );
+
+    it('projects the exact Session-owned Team credential binding into Run controls', async () => {
+        const session: AgentSessionRuntime = {
+            send: vi.fn(async () => ({ status: 'admitted' as const })),
+            watch: () => ({ dispose: () => undefined }),
+            dispose: vi.fn(),
+        };
+        const prepareRunTeamCredentialProviderBinding: NonNullable<
+            NativeAgentSessionOperationsTestDirectFacets['prepareRunTeamCredentialProviderBinding']
+        > = vi.fn(async () => ({
+            providerBinding: {
+                source: { kind: 'team_resource' as const, resourceId: 'resource-1', resourceRevision: 3 },
+                model: { id: 'model-1', name: 'Model 1' },
+                upstream: { protocol: 'openai-responses' as const, normalizedUrl: 'http://127.0.0.1:43123/v1', credential: 'apiKey' as const },
+                materialization: { v: 1 as const, kind: 'spawnEnv' as const },
+            },
+            environmentOverlay: [],
+            additionalRedactionValues: [],
+            cleanup: vi.fn(),
+        }));
+        const runtime = createNativeAgentSessionOperations(
+            session,
+            'session-qualified-home',
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+                prepareRunTeamCredentialProviderBinding,
+                context: { signal: new AbortController().signal } as AgentSessionRuntimeContext,
+                cwd: '/qualified-home/repo',
+                connectedAccounts: [],
+                capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
+            },
+        );
+
+        const controls = runtime as typeof runtime & Readonly<{
+            prepareRunTeamCredentialProviderBinding(request: Readonly<{
+                runId: string;
+                resourceId: string;
+                modelId: string;
+            }>): Promise<unknown>;
+        }>;
+        await expect(controls.prepareRunTeamCredentialProviderBinding({
+            runId: 'run-1',
+            resourceId: 'resource-1',
+            modelId: 'team-model',
+        })).resolves.toMatchObject({
+            providerBinding: {
+                source: { kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 3 },
+            },
+        });
+        expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledWith({
+            runId: 'run-1',
+            resourceId: 'resource-1',
+            modelId: 'team-model',
+        });
+    });
 });
 
 describe('native Agent terminal transcript follow admission (ES-PEP-03/ES-PEP-05)', () => {
@@ -10562,6 +10944,7 @@ describe('native Agent terminal transcript follow admission (ES-PEP-03/ES-PEP-05
 
     async function createTerminalFollowHarness(options: Readonly<{
         agentId: string;
+        providerSessionId?: string;
         declaresTerminalFollow?: boolean;
         loadCommittedBaseline?: () => Promise<Readonly<{
             localIds: Set<string>;
@@ -10661,7 +11044,9 @@ describe('native Agent terminal transcript follow admission (ES-PEP-03/ES-PEP-05
                     sessionId: `session-${options.agentId}`,
                     emittedAtMs: 1,
                     kind: 'provider-session-id',
-                    providerSessionId: `provider-${options.agentId}`,
+                    providerSessionId:
+                        options.providerSessionId
+                        ?? `provider-${options.agentId}`,
                 });
                 return { dispose: () => undefined };
             },
@@ -11042,6 +11427,87 @@ describe('native Agent terminal transcript follow admission (ES-PEP-03/ES-PEP-05
         status: 'following' as const,
         startingCursor: 'cursor-0',
         subscription: { dispose: async () => undefined },
+    });
+
+    it('passes a non-blank opaque provider session id byte-exactly into terminal follow', async () => {
+        const providerSessionId = '  provider\nses/AB+cd==  ';
+        const harness = await createTerminalFollowHarness({
+            agentId: 'acme-opaque-provider-session-agent',
+            providerSessionId,
+            declaresTerminalFollow: true,
+            providerSessionFollow: followingProviderSession,
+            launch: async () => ({
+                type: 'control_returned' as const,
+                reason: 'pending_input' as const,
+            }),
+        });
+
+        await expect(
+            harness.modeLoop.runTerminal({ entry: 'initial' }),
+        ).resolves.toEqual({ type: 'switch' });
+        expect(harness.executeProviderSessionFollow).toHaveBeenCalledWith(
+            expect.objectContaining({ providerSessionId }),
+        );
+        expect(harness.executeProviderSessionFollow).not.toHaveBeenCalledWith(
+            expect.objectContaining({ providerSessionId: providerSessionId.trim() }),
+        );
+        expect(harness.terminalLaunch).toHaveBeenCalledWith(
+            expect.objectContaining({
+                metadata: expect.objectContaining({ providerSessionId }),
+            }),
+        );
+    });
+
+    it('rejects a blank-only provider session id before required terminal follow', async () => {
+        const harness = await createTerminalFollowHarness({
+            agentId: 'acme-blank-required-provider-session-agent',
+            providerSessionId: ' \n\t ',
+            declaresTerminalFollow: true,
+            providerSessionFollow: followingProviderSession,
+            launch: async () => ({
+                type: 'control_returned' as const,
+                reason: 'pending_input' as const,
+            }),
+        });
+
+        await expect(
+            harness.modeLoop.runTerminal({ entry: 'initial' }),
+        ).rejects.toMatchObject({
+            name: 'HostTerminalTranscriptFollowAdmissionError',
+            followCode: 'native_agent_terminal_provider_session_unavailable',
+            phase: 'bind',
+        });
+        expect(harness.executeProviderSessionFollow).not.toHaveBeenCalled();
+        expect(harness.terminalLaunch).not.toHaveBeenCalled();
+    });
+
+    it('degrades a blank-only provider session id for optional terminal follow', async () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        try {
+            const harness = await createTerminalFollowHarness({
+                agentId: 'acme-blank-optional-provider-session-agent',
+                providerSessionId: ' \n\t ',
+                providerSessionFollow: followingProviderSession,
+                launch: async () => ({
+                    type: 'control_returned' as const,
+                    reason: 'pending_input' as const,
+                }),
+            });
+
+            await expect(
+                harness.modeLoop.runTerminal({ entry: 'initial' }),
+            ).resolves.toEqual({ type: 'switch' });
+            expect(harness.executeProviderSessionFollow).not.toHaveBeenCalled();
+            expect(harness.terminalLaunch).toHaveBeenCalledOnce();
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining('transcript follow'),
+                expect.objectContaining({
+                    code: 'native_agent_terminal_provider_session_unavailable',
+                }),
+            );
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it('creates no child when a declaring Agent\'s committed baseline load throws', async () => {

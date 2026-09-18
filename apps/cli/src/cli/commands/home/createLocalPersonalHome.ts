@@ -19,7 +19,7 @@ import {
   removeStoredCredentialsForServerId,
   writeCredentialsTokenOnlyForServerId,
 } from '@/persistence';
-import { adoptServerProfileHomeConnectionDescriptor, useServerProfile } from '@/server/serverProfiles';
+import { adoptServerProfileHomeConnectionDescriptor, getServerProfile, useServerProfile } from '@/server/serverProfiles';
 import { getLiveSystemTasksRunnerAdapter } from '@/capabilities/systemTasks/liveSystemTasksRunner';
 import {
   readProtectedLocalStateFile,
@@ -109,6 +109,17 @@ export async function createLocalPersonalHome(runtime: RuntimeTarget) {
     const runner = getLiveSystemTasksRunnerAdapter({ personalHomeRuntime: runtime });
     let completedDescriptor: HomeConnectionDescriptorV1 | undefined;
     let observedServerIdentityId = '';
+    const readBootstrapCredentials = async (serverIdentityId: string) => {
+      const profile = await getServerProfile(serverIdentityId).catch((error: unknown) => {
+        if (error instanceof Error && error.message === `Server profile not found: ${serverIdentityId}`) return null;
+        throw error;
+      });
+      if (profile?.homeConnectionDescriptor?.homeServerIdentityId === serverIdentityId) {
+        const credentials = await readStoredCredentialsForServerId(profile.id);
+        if (credentials) return credentials;
+      }
+      return await readStoredCredentialsForServerId(serverIdentityId);
+    };
     const result = await runPersonalHomeBootstrapFromSystemTasks({
       deps: {
         runRelayTask: async (kind, options) => await runSystemTaskToCompletion({
@@ -127,7 +138,7 @@ export async function createLocalPersonalHome(runtime: RuntimeTarget) {
           }
           return snapshot;
         },
-        readCredentials: async ({ serverIdentityId }) => await readStoredCredentialsForServerId(serverIdentityId),
+        readCredentials: async ({ serverIdentityId }) => await readBootstrapCredentials(serverIdentityId),
         preparePendingBootstrapSeed: async ({ serverUrl, serverIdentityId, allowCreate }) => {
           let seed = await readSeed(serverUrl, serverIdentityId) ?? await readSeed(serverUrl);
           if (!seed && allowCreate) {
@@ -182,14 +193,17 @@ export async function createLocalPersonalHome(runtime: RuntimeTarget) {
             use: false,
           });
           if (adopted.profile.id !== serverIdentityId) {
-            const credentials = await readStoredCredentialsForServerId(serverIdentityId);
+            const provisionalCredentials = await readStoredCredentialsForServerId(serverIdentityId);
+            const credentials = provisionalCredentials ?? await readStoredCredentialsForServerId(adopted.profile.id);
             if (!credentials?.token || credentials.encryption !== null) throw new Error('Verified Personal Home credentials are unavailable.');
-            await writeCredentialsTokenOnlyForServerId(adopted.profile.id, { token: credentials.token });
-            const copied = await readStoredCredentialsForServerId(adopted.profile.id);
-            if (copied?.token !== credentials.token || copied.encryption !== null) {
-              throw new Error('Personal Home profile credential move could not be verified.');
+            if (provisionalCredentials) {
+              await writeCredentialsTokenOnlyForServerId(adopted.profile.id, { token: credentials.token });
+              const copied = await readStoredCredentialsForServerId(adopted.profile.id);
+              if (copied?.token !== credentials.token || copied.encryption !== null) {
+                throw new Error('Personal Home profile credential move could not be verified.');
+              }
+              await removeStoredCredentialsForServerId(serverIdentityId);
             }
-            await removeStoredCredentialsForServerId(serverIdentityId);
           }
           return { id: adopted.profile.id };
         },

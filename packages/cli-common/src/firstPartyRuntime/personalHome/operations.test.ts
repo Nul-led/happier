@@ -13,11 +13,12 @@ import {
 } from './operations.js';
 import * as tar from 'tar';
 
-import { createPersonalHomeBackup, PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS } from './backup.js';
+import { createPersonalHomeBackup, listPersonalHomeBackupArchives } from './backup.js';
 import { createPersonalHomeArchive, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES, verifyPersonalHomeArchive } from './archive.js';
 import { resolvePersonalHomeRuntimeLayout, type PersonalHomeRuntimeLayout } from './layout.js';
 import { fingerprintMasterSecret, serializePersonalHomeManifest, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import { acquirePersonalHomeOperationLock } from './lock.js';
+import { assertPersonalHomeBootAdmission } from './bootAdmission.js';
 import type { ManagedRelayPurpose } from './personalHomeRuntimeSpec.js';
 
 const sqliteOk = {
@@ -227,8 +228,7 @@ describe('PersonalHomeOperations facade', () => {
         ...input,
         status: 'quarantined',
         homeServerIdentityId: input.expectedHomeServerIdentityId,
-        canonicalServerUrl: 'http://127.0.0.1:43110',
-        minimumOuterRevisionExclusive: 1,
+        connectionDescriptor: publishedDestinationDescriptor,
         authenticated: true,
         accountCount: 1,
         sessionCount: 0,
@@ -241,8 +241,7 @@ describe('PersonalHomeOperations facade', () => {
         expectedCanonicalServerUrl: 'http://127.0.0.1:43110',
         sourceDescriptorRevision: 1,
         homeServerIdentityId: 'srv_home_identity',
-        canonicalServerUrl: 'http://127.0.0.1:43110',
-        minimumOuterRevisionExclusive: 1,
+        connectionDescriptor: publishedDestinationDescriptor,
       }),
       commit: async ({ operationId }) => ({
         operationId,
@@ -252,8 +251,7 @@ describe('PersonalHomeOperations facade', () => {
         expectedCanonicalServerUrl: 'http://127.0.0.1:43110',
         sourceDescriptorRevision: 1,
         homeServerIdentityId: 'srv_home_identity',
-        canonicalServerUrl: 'http://127.0.0.1:43110',
-        minimumOuterRevisionExclusive: 1,
+        connectionDescriptor: publishedDestinationDescriptor,
       }),
       abort: async (operationId) => ({
         operationId,
@@ -728,16 +726,15 @@ describe('PersonalHomeOperations facade', () => {
   it('refuses erase before stop when the confirmed Home identity becomes unreadable', async () => {
     const { root, layout } = await fixture('erase-identity-unreadable-after-confirmation');
     try {
-      let identityReads = 0;
+      let confirmed = false;
       const { deps, events, setRunning } = makeDeps(layout, {
         readIdentity: async () => {
-          identityReads += 1;
-          if (identityReads > 1) throw new Error('identity database became unavailable');
+          if (confirmed) throw new Error('identity database became unavailable');
           return { homeServerIdentityId: 'home-identity', schemaVersion: '1' };
         },
       });
       setRunning(true);
-      const confirm = vi.fn(async () => true);
+      const confirm = vi.fn(async () => { confirmed = true; return true; });
 
       await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
         code: 'identity_unavailable',
@@ -773,6 +770,8 @@ describe('PersonalHomeOperations facade', () => {
           expect(facts.paths).toContain(layout.databasePath);
           expect(facts.paths).toContain(layout.publicFilesDir);
           expect(facts.estimatedBytes).toBeGreaterThan(0);
+          expect(facts.previewComplete).toBe(true);
+          expect(facts.previewReason).toBeNull();
           await expect(stat(join(layout.dataDir, '.operations', 'lock'))).resolves.toBeTruthy();
           await expect(stat(layout.databasePath)).resolves.toBeTruthy();
           return true;
@@ -794,14 +793,96 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it('blocks erase before confirmation or stop while update recovery is uncommitted', async () => {
+  it('aborts without confirmation when the erase preview cannot be completed', async () => {
+    const { root, layout } = await fixture('erase-preview-incomplete');
+    try {
+      await symlink(join(root, 'outside'), join(layout.publicFilesDir, 'unsafe-link'));
+      const confirm = vi.fn(async () => true);
+      await expect(createPersonalHomeOperations(makeDeps(layout).deps).erase({ confirm })).rejects.toMatchObject({
+        code: 'erase_preview_incomplete',
+      });
+      expect(confirm).not.toHaveBeenCalled();
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['running to stopped', true, false],
+    ['stopped to running', false, true],
+  ] as const)('aborts erase before stop or deletion when the Home writer changes from %s during confirmation', async (_label, initiallyRunning, runningAfterConfirmation) => {
+    const { root, layout } = await fixture(`erase-writer-change-${initiallyRunning}-${runningAfterConfirmation}`);
+    try {
+      let running = initiallyRunning;
+      const stop = vi.fn(async () => { running = false; });
+      const { deps } = makeDeps(layout, {
+        lifecycle: {
+          isRunning: async () => running,
+          stop,
+          start: async () => { running = true; },
+          healthCheck: async () => true,
+        },
+      });
+
+      await expect(createPersonalHomeOperations(deps).erase({
+        confirm: async () => {
+          running = runningAfterConfirmation;
+          return true;
+        },
+      })).rejects.toMatchObject({ code: 'purpose_not_personal_home' });
+
+      expect(stop).not.toHaveBeenCalled();
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+      await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('streams an exact erase preview for a large Home without stopping it before confirmation', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('erase-large-preview');
+    const { deps, events, setRunning } = makeDeps(layout);
+    setRunning(true);
+    try {
+      for (let offset = 0; offset <= 4096; offset += 64) {
+        await Promise.all(Array.from({ length: 64 }, (_, index) => writeFile(join(layout.publicFilesDir, `entry-${offset + index}`), 'x')));
+      }
+      let estimatedBytes: number | null | undefined;
+      await expect(createPersonalHomeOperations(deps).erase({ confirm: async (facts) => {
+        estimatedBytes = facts.estimatedBytes;
+        expect(await deps.lifecycle.isRunning()).toBe(true);
+        return false;
+      } })).rejects.toMatchObject({ code: 'confirmation_required' });
+      expect(estimatedBytes).toBe(14 + 21 + 6 + 7 + 65 * 64);
+      expect(events).toEqual([]);
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the streamed inspect size projection cancellable without a fixed entry ceiling', async () => {
+    const { root, layout } = await fixture('inspect-size-projection-cancelled');
+    const controller = new AbortController();
+    try {
+      await expect(createPersonalHomeOperations(makeDeps(layout).deps).inspect({
+        signal: controller.signal,
+        progress: (step) => {
+          if (step === 'inspecting') controller.abort();
+        },
+      })).rejects.toMatchObject({ code: 'operation_cancelled' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['prepared', 'committed'] as const)('blocks erase before confirmation or stop while update recovery still owns a %s record', async (phase) => {
     const { root, layout } = await fixture('erase-update-recovery');
     const operationDir = join(layout.dataDir, '.operations');
     const recoveryPath = join(operationDir, 'runtime-update-recovery.v1.json');
     await mkdir(operationDir, { recursive: true });
     await writeFile(recoveryPath, JSON.stringify({
       version: 1,
-      phase: 'prepared',
+      phase,
       priorRunning: true,
       previousServiceDefinitionExisted: true,
       runtimeBackup: {
@@ -828,7 +909,7 @@ describe('PersonalHomeOperations facade', () => {
       });
       expect(confirm).not.toHaveBeenCalled();
       expect(events).not.toContain('home:stop');
-      await expect(readFile(recoveryPath, 'utf8')).resolves.toContain('"phase":"prepared"');
+      await expect(readFile(recoveryPath, 'utf8')).resolves.toContain(`"phase":"${phase}"`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -935,6 +1016,52 @@ describe('PersonalHomeOperations facade', () => {
       expect(confirm).toHaveBeenCalledTimes(1);
       await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
       await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['cancelled', 'preflight', 'restart_failed'] as const)('recovers an intact Home when erase is %s after stop', async (failure) => {
+    const { root, layout } = await fixture(`erase-after-stop-${failure}`);
+    const controller = new AbortController();
+    let running = true;
+    const { deps } = makeDeps(layout, {
+      lifecycle: {
+        isRunning: async () => running,
+        stop: async () => {
+          running = false;
+          if (failure === 'preflight') {
+            // A new unsafe target appears after confirmation and before destructive preflight.
+            await mkdir(dirname(layout.irohEndpointKeyPath), { recursive: true });
+            await symlink(layout.masterSecretPath, layout.irohEndpointKeyPath);
+          } else controller.abort();
+        },
+        start: async () => {
+          if (failure === 'restart_failed') throw new Error('service restart refused');
+          running = true;
+        },
+        healthCheck: async () => true,
+      },
+    });
+    try {
+      await expect(createPersonalHomeOperations(deps).erase({ confirm: async () => true, signal: controller.signal }))
+        .rejects.toMatchObject({ code: failure === 'restart_failed' ? 'home_restart_failed' : failure === 'preflight' ? 'unsafe_data_root' : 'operation_cancelled' });
+      expect(running).toBe(failure !== 'restart_failed');
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+      await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('restarts the intact Home if the progress transport fails immediately before deletion', async () => {
+    const { root, layout } = await fixture('erase-progress-failed');
+    const { deps, events, setRunning } = makeDeps(layout);
+    setRunning(true);
+    try {
+      await expect(createPersonalHomeOperations(deps).erase({
+        confirm: async () => true,
+        progress: (step) => { if (step === 'erasing') throw new Error('progress transport failed'); },
+      })).rejects.toThrow('progress transport failed');
+      expect(events).toEqual(['home:stop', 'home:start']);
+      expect(await deps.lifecycle.isRunning()).toBe(true);
+      expect(await readFile(layout.databasePath, 'utf8')).toBe('sqlite-fixture');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -1064,6 +1191,12 @@ describe('PersonalHomeOperations facade', () => {
       expect(publishDestination).toHaveBeenCalledWith(expect.objectContaining({ homeServerIdentityId: 'srv_home_identity' }));
       const marker = JSON.parse(await readFile(join(source.layout.dataDir, '.operations', 'relocation-source.json'), 'utf8')) as { phase: string };
       expect(marker.phase).toBe('committed');
+      await expect(assertPersonalHomeBootAdmission(source.layout)).rejects.toMatchObject({ reason: 'relocation_source_blocked' });
+      const confirmErase = vi.fn(async () => true);
+      await expect(ops.erase({ confirm: confirmErase })).resolves.toMatchObject({ outcome: 'completed', stoppedRunningHome: false });
+      expect(confirmErase).toHaveBeenCalledOnce();
+      await expect(readFile(source.layout.databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(join(source.layout.dataDir, 'user-marker.txt'), 'utf8')).resolves.toBe('home-data');
     } finally {
       await rm(source.root, { recursive: true, force: true });
     }
@@ -1421,12 +1554,11 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it('bounds inspect backup inventory to an explicitly truncated truthful projection across many archives', { timeout: 120_000 }, async () => {
-    const { root, layout } = await fixture('inspect-backup-inventory-bounded');
+  it('streams the complete backup inventory beyond the former manifest-count ceiling', { timeout: 120_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-inventory-complete');
     try {
       const { deps } = makeDeps(layout);
-      const budget = PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS;
-      const total = budget + 2;
+      const total = 34;
       const created: Array<Readonly<{ path: string; createdAt: string; archiveBytes: number }>> = [];
       for (let index = 0; index < total; index += 1) {
         const createdAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index * 7)).toISOString();
@@ -1437,16 +1569,57 @@ describe('PersonalHomeOperations facade', () => {
           mtimeMs: Date.parse(createdAt),
         }));
       }
-      // Creation order equals directory-metadata order, so the two oldest archives fall outside
-      // the newest-candidate window and a bounded inventory must stop reading manifests before
-      // reaching them.
       const inspection = await createPersonalHomeOperations(deps).inspect();
-      expect(inspection.storage.backupsCountComplete).toBe(false);
-      expect(inspection.storage.backupsCount).toBe(budget);
-      expect(inspection.storage.latestBackup).toBeNull();
-      // Bounded inspection never deletes or rewrites user-created backups.
+      expect(inspection.storage.backupsCountComplete).toBe(true);
+      expect(inspection.storage.backupsCount).toBe(total);
+      expect(inspection.storage.latestBackup).toEqual(created.at(-1));
+      // Inventory never deletes or rewrites user-created backups.
       await expect(stat(created[0]!.path)).resolves.toMatchObject({ size: created[0]!.archiveBytes });
       await expect(stat(created[1]!.path)).resolves.toMatchObject({ size: created[1]!.archiveBytes });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('enumerates backup archives after releasing the common mutation lease', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-outside-mutation-lease');
+    try {
+      await writeInventoryFixtureArchive({
+        backupsDir: layout.backupsDir,
+        name: 'personal-home-valid.tar',
+        createdAt: '2026-02-02T03:04:05.006Z',
+        mtimeMs: Date.parse('2026-02-02T03:04:05.006Z'),
+      });
+      let competingLease: Promise<() => Promise<void>> | undefined;
+      const inspection = await createPersonalHomeOperations(makeDeps(layout).deps).inspect({
+        progress: (stepId) => {
+          if (stepId === 'inspecting') {
+            competingLease = acquirePersonalHomeOperationLock(layout.dataDir, 'backup');
+          }
+        },
+      });
+
+      expect(inspection.storage.backupsCount).toBe(1);
+      const release = await competingLease;
+      expect(release).toBeTypeOf('function');
+      await release!();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the latest same-time archive with locale-independent artifact ordering', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-ordering');
+    try {
+      const createdAt = '2026-02-02T03:04:05.006Z';
+      await writeInventoryFixtureArchive({ backupsDir: layout.backupsDir, name: 'z.tar', createdAt, mtimeMs: Date.parse(createdAt) });
+      const expected = await writeInventoryFixtureArchive({ backupsDir: layout.backupsDir, name: 'ä.tar', createdAt, mtimeMs: Date.parse(createdAt) });
+
+      await expect(listPersonalHomeBackupArchives(layout.backupsDir)).resolves.toMatchObject({
+        complete: true,
+        count: 2,
+        latest: expected,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1470,20 +1643,44 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it('bounds directory traversal even when the backup directory contains only unrelated entries', { timeout: 60_000 }, async () => {
-    const { root, layout } = await fixture('inspect-backup-directory-bounded');
+  it('does not let unrelated directory entries hide a valid backup from inventory', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-directory-complete');
     try {
       await mkdir(layout.backupsDir, { recursive: true });
       for (let index = 0; index < 65; index += 1) {
         await writeFile(join(layout.backupsDir, `unrelated-${String(index).padStart(3, '0')}.txt`), 'not a backup');
       }
+      const created = await writeInventoryFixtureArchive({
+        backupsDir: layout.backupsDir,
+        name: 'zz-personal-home-valid.tar',
+        createdAt: '2026-02-02T03:04:05.006Z',
+        mtimeMs: Date.parse('2026-02-02T03:04:05.006Z'),
+      });
 
       const inspection = await createPersonalHomeOperations(makeDeps(layout).deps).inspect();
       expect(inspection.storage).toMatchObject({
-        backupsCount: 0,
-        backupsCountComplete: false,
-        latestBackup: null,
+        backupsCount: 1,
+        backupsCountComplete: true,
+        latestBackup: created,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a streamed backup inventory cancellable without a fixed entry ceiling', async () => {
+    const { root, layout } = await fixture('inspect-backup-directory-cancelled');
+    const cancelled = new Error('cancelled by operation owner');
+    try {
+      await mkdir(layout.backupsDir, { recursive: true });
+      for (let index = 0; index < 20; index += 1) {
+        await writeFile(join(layout.backupsDir, `unrelated-${String(index).padStart(3, '0')}.txt`), 'not a backup');
+      }
+      let observations = 0;
+      await expect(listPersonalHomeBackupArchives(layout.backupsDir, () => {
+        observations += 1;
+        if (observations === 10) throw cancelled;
+      })).rejects.toBe(cancelled);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

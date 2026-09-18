@@ -44,6 +44,89 @@ function createRegistryWithDetectedProvider(
 }
 
 describe('SCM hosting provider registry', () => {
+    it('hands each provider only its own configured connected-account deployment bases', () => {
+        const detections: Array<Readonly<Record<string, unknown>>> = [];
+        const compares: Array<Readonly<Record<string, unknown>>> = [];
+        const createRegistration = (
+            id: string,
+            baseUrl: string,
+            recognizes: boolean,
+        ): ScmHostingProviderRuntimeRegistration => ({
+            id,
+            adapter: {
+                routing: {
+                    detectRemote: (input) => {
+                        detections.push({ id, ...input });
+                        return recognizes ? {
+                            id,
+                            kind: 'gitlab',
+                            displayName: id,
+                            baseUrl,
+                            nameWithOwner: 'team/repository',
+                        } : null;
+                    },
+                    buildCompareUrl: (input) => {
+                        compares.push({ id, ...input });
+                        return `${baseUrl}/team/repository/-/compare/main...topic`;
+                    },
+                },
+            },
+        });
+
+        const registry = createScmHostingProviderRegistry({
+            providers: [{
+                id: 'gitlab',
+                pluginId: 'happier.scm.forge.gitlab',
+                kind: 'gitlab',
+                displayName: 'GitLab',
+                capabilities: [],
+            }, {
+                id: 'github',
+                pluginId: 'happier.scm.forge.github',
+                kind: 'github',
+                displayName: 'GitHub',
+                capabilities: [],
+            }],
+            runtimeRegistrations: [{
+                pluginId: 'happier.scm.forge.gitlab',
+                generation: 'test-generation',
+                registration: createRegistration('gitlab', 'https://gitlab.example.test:8443', true),
+            }, {
+                pluginId: 'happier.scm.forge.github',
+                generation: 'test-generation',
+                registration: createRegistration('github', 'https://github.com', false),
+            }],
+            configuredDeploymentsByProviderId: new Map([
+                ['happier.scm.forge.gitlab/gitlab', {
+                    bases: ['https://gitlab.example.test:8443'],
+                    status: 'complete' as const,
+                }],
+            ]),
+        });
+
+        const detected = registry.detectRemote({
+            remoteName: 'origin',
+            remoteUrl: 'https://gitlab.example.test:8443/team/repository.git',
+        });
+        expect(detected).toMatchObject({ kind: 'resolved' });
+        if (detected.kind !== 'resolved') return;
+        registry.buildCompareUrl({ provider: detected.provider, base: 'main', head: 'topic' });
+
+        // The provider that declares the configured accounts sees their bases; a provider that
+        // declares none must not inherit another provider's deployments.
+        expect(detections.find((entry) => entry.id === 'github'))
+            .not.toHaveProperty('connectedAccountBases');
+        expect(detections).toContainEqual(expect.objectContaining({
+            id: 'gitlab',
+            connectedAccountBases: ['https://gitlab.example.test:8443'],
+        }));
+        expect(compares).toEqual([expect.objectContaining({
+            id: 'gitlab',
+            connectedAccountBases: ['https://gitlab.example.test:8443'],
+        })]);
+    });
+
+
     it('uses a committed hosting callback without reconstructing its runtime topology', () => {
         class Adapter {
             calls = 0;

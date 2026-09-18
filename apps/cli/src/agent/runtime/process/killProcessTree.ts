@@ -218,6 +218,9 @@ export async function killProcessTree(
       for (const targetPid of remaining) bestEffortKillPid(targetPid, 'SIGKILL');
     }
     await waitForAllGone(remaining, Math.min(250, graceMs));
+    if (remaining.some((targetPid) => isPidPresent(targetPid))) {
+      throw terminationIncomplete();
+    }
     return;
   }
 

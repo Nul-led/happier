@@ -12,7 +12,7 @@ vi.mock('@/ui/logger', () => ({
 
 import { fetchTranscriptSemanticPage, type FetchTranscriptRawPage } from './fetchTranscriptSemanticPage';
 
-const ctx = { encryptionKey: new Uint8Array([1]), encryptionVariant: 'legacy' as const };
+const contentContext = { mode: 'plain', ctx: null } as const;
 
 describe('fetchTranscriptSemanticPage', () => {
   beforeEach(() => {
@@ -49,7 +49,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 1,
       rawPageLimit: 20,
       maxRawRowsToScan: 20,
@@ -95,7 +95,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 1,
       rawPageLimit: 2,
       maxRawRowsToScan: 2,
@@ -146,7 +146,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 1,
       rawPageLimit: 1,
       maxRawRowsToScan: 1,
@@ -210,7 +210,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 1,
       rawPageLimit: 2,
       maxRawRowsToScan: 2,
@@ -300,7 +300,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 10,
       rawPageLimit: 10,
       maxRawRowsToScan: 10,
@@ -364,7 +364,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 10,
       rawPageLimit: 10,
       maxRawRowsToScan: 10,
@@ -422,7 +422,7 @@ describe('fetchTranscriptSemanticPage', () => {
     const page = await fetchTranscriptSemanticPage({
       token: 'token',
       sessionId: 'session-1',
-      ctx,
+      contentContext,
       limit: 10,
       rawPageLimit: 10,
       maxRawRowsToScan: 10,

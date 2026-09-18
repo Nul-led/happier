@@ -71,6 +71,7 @@ const plainAccountEncryptionCurrentness = Object.freeze({
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
   updatedAt: 1,
+  recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 }) satisfies AccountEncryptionCurrentnessResponse;
 
 accountCurrentnessMocks.fetchAccountEncryptionCurrentness.mockResolvedValue(

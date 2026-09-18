@@ -9,13 +9,16 @@ import {
   type AgentExecutionTargetV1,
   type AgentSessionStartupInstructionsV1,
   type BackendTargetRefV2,
+  type MachinePoolSelectionOriginV1,
   type ConnectedServiceMaterializationIdentityV1,
   type RuntimeDescriptorV1,
   type SessionAttachMetadataIdentityPolicy,
   type SessionMcpSelectionV1,
+  type SessionInitialAccessDraftV1,
   type SessionModelSelectionV1,
   type SessionProviderBindingMetadataV1,
   type SessionProviderBindingSecurityChangeConfirmationV1,
+  type SecretReferenceOverlayV1,
   type SpawnSessionExecutionAuthorization,
   type SpawnSessionErrorCode,
   type SpawnSessionErrorDetail,
@@ -130,16 +133,21 @@ export interface SpawnSessionOptions {
   sessionCreationTag?: import('@happier-dev/protocol').SessionCreationTagV1;
   /** Full immutable create-or-rejoin recipe carried with the admitted tag. */
   sessionCreationCorrespondence?: import('@happier-dev/protocol').SessionCreationCorrespondenceV1;
+  /** Informational creation origin; never an execution target or runtime authority. */
+  placementOrigin?: MachinePoolSelectionOriginV1;
   /** Mutable presentation state committed inside the fresh Session create transaction. */
   initialTitle?: string;
+  initialAccess?: SessionInitialAccessDraftV1;
+  primaryTeamId?: string | null;
+  teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
   /** Ephemeral producer custody promoted by the child after the real session exists. */
   pendingFirstInput?: {
     text: string;
     localId: string;
     meta?: Record<string, unknown>;
     inputAdmission?: Readonly<{
-      provenance: import('@happier-dev/protocol').SessionMessageProvenanceV1;
-      request: import('@happier-dev/protocol').SessionInputRequestV1;
+      provenance: import('@happier-dev/protocol').SessionMessageProvenance;
+      request: import('@happier-dev/protocol').SessionInputRequest;
     }>;
   };
   /**
@@ -192,6 +200,8 @@ export interface SpawnSessionOptions {
    * profile-owned environment names stay canonical.
    */
   profileId?: string;
+  /** Value-free Saved Secret binding overrides for this launch only. */
+  secretReferenceOverlay?: SecretReferenceOverlayV1;
   environmentVariables?: Record<string, string>;
   /** Secret-free bindings resolved and materialized by the daemon. */
   connectedServices?: unknown;

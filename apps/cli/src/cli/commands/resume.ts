@@ -20,11 +20,11 @@ import type { ResolvedContributionRegistry } from '@/plugins/projection/registry
 import type {
   AccountEncryptionCurrentnessResponse,
   AccountSettings,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   readAcpConfiguredBackendV1FromMetadata,
   readLegacyConfiguredAcpBackendId,
   serializeSessionModelSelectionV1,
@@ -109,9 +109,9 @@ function resolveConfiguredAcpBackendIdFromMetadata(metadata: Record<string, unkn
   return readLegacyConfiguredAcpBackendId(metadata.flavor);
 }
 
-function readConnectedServicesFromMetadata(metadata: Record<string, unknown> | null): ConnectedServiceBindingsV1 | null {
+function readConnectedServicesFromMetadata(metadata: Record<string, unknown> | null): ConnectedServiceBindingsV2 | null {
   if (!metadata) return null;
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(metadata.connectedServices);
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(metadata.connectedServices);
   return parsed.success ? parsed.data : null;
 }
 
@@ -216,7 +216,11 @@ export async function handleResumeCommand(
 
   let rawSession = await fetchSessionByIdFn({ token: credentials.token, sessionId: sessionIdOrPrefix });
   if (!rawSession) {
-    const resolved = await resolveSessionIdOrPrefix({ credentials, idOrPrefix: sessionIdOrPrefix });
+    const resolved = await resolveSessionIdOrPrefix({
+      credentials,
+      idOrPrefix: sessionIdOrPrefix,
+      accountEncryptionMode: accountEncryptionCurrentness.mode,
+    });
     if (!resolved.ok) {
       if (resolved.code === 'session_id_ambiguous') {
         throw new Error(`Session id is ambiguous (${resolved.candidates?.join(', ') ?? 'multiple matches'})`);

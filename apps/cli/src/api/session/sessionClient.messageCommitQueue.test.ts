@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 
@@ -146,7 +147,7 @@ describe('ApiSessionClient message commit queue', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
 
     sessionSocketStub.trigger('update', {
       id: 'update-1',
@@ -201,7 +202,7 @@ describe('ApiSessionClient message commit queue', () => {
 
     try {
       const { ApiSessionClient } = await import('./sessionClient');
-      const client = trackClient(new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' })));
+      const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
       await flushMicrotasks();
 
       const enqueuePromise = client.enqueueSessionTurnMutation({

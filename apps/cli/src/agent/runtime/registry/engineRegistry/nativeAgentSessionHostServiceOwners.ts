@@ -6,9 +6,12 @@ import {
     isFeatureId,
     type PluginExecutionInterceptionCapability,
     type AccountSettings,
+    type PluginExecutionScopeV1,
+    type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type {
+    AgentExecutionRunHostServicesV1,
     AgentSessionHostServices,
     AgentToolExecutionBeforeRequest,
     AgentToolExecutionBeforeResult,
@@ -17,7 +20,10 @@ import type {
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
-import { resolvePluginMcpServersForSession } from '@/mcp/servers/resolvePluginMcpServersForSession';
+import {
+    resolvePluginMcpServersForExecutionScope,
+    resolvePluginMcpServersForSession,
+} from '@/mcp/servers/resolvePluginMcpServersForSession';
 import type {
     McpSessionResolutionInput,
     PluginMcpSessionResolver,
@@ -90,6 +96,249 @@ export type NativeAgentSessionHostServiceOwners = Readonly<{
 
 type Disposable = Readonly<{ dispose(): void | Promise<void> }>;
 
+function createNativeAgentFeatureService(
+    runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null,
+): AgentSessionHostServices['features'] {
+    return Object.freeze({
+        // Decided at every read through the canonical CLI feature-decision owner.
+        // An unknown id is permanently unsupported, but a known id's decision is a
+        // property of the current environment and policy, not of one Session or Run.
+        isEnabled: (featureId: string): boolean => {
+            if (!isFeatureId(featureId)) return false;
+            const serverSnapshot = runtimeRegistry?.resolveServerFeaturesSnapshot?.();
+            return resolveCliFeatureDecision({
+                featureId,
+                env: process.env,
+                ...(serverSnapshot ? { serverSnapshot } : {}),
+            }).state === 'enabled';
+        },
+    });
+}
+
+function createNativeAgentToolExecutionOwner(params: Readonly<{
+    runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null;
+    pluginId: string;
+    agentId: string;
+    sessionId?: string;
+    signal?: AbortSignal;
+}>): NativeAgentToolExecutionOwner {
+    return Object.freeze({
+        async before(request, options) {
+            params.signal?.throwIfAborted();
+            options?.signal?.throwIfAborted();
+            const payload = AgentToolExecuteBeforeHookPayloadSchema.parse({
+                agentId: params.agentId,
+                runtimeFamily: 'hostSession',
+                capability: 'interceptable',
+                ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+                ...(request.turnId ? { turnId: request.turnId } : {}),
+                tool: {
+                    callId: request.callId,
+                    name: request.name,
+                    input: request.input,
+                },
+                timestampMs: Date.now(),
+            });
+            if (!params.runtimeRegistry) {
+                return { status: 'continue', input: payload.tool.input };
+            }
+            const result = await interceptAgentToolExecutionThroughRuntimeRegistry({
+                runtimeRegistry: params.runtimeRegistry,
+                payload,
+                ...(options?.signal ? { signal: options.signal } : {}),
+            });
+            if (result.status !== 'continue') return result;
+            const transformed = AgentToolExecuteBeforeHookPayloadSchema.parse({
+                ...payload,
+                tool: { ...payload.tool, input: result.input },
+            });
+            return { status: 'continue', input: transformed.tool.input };
+        },
+        async observeAfter(request) {
+            params.signal?.throwIfAborted();
+            if (!params.runtimeRegistry) return;
+            const payload = AgentToolExecuteAfterHookPayloadSchema.parse({
+                agentId: params.agentId,
+                runtimeFamily: 'hostSession',
+                capability: request.capability,
+                caller: { kind: 'plugin', pluginId: params.pluginId },
+                ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+                turnId: request.turnId,
+                tool: {
+                    callId: request.callId,
+                    name: request.name,
+                    input: request.input,
+                },
+                outcome: request.outcome,
+                timestampMs: request.timestampMs,
+            });
+            await observeAgentToolExecutionThroughRuntimeRegistry({
+                runtimeRegistry: params.runtimeRegistry,
+                payload,
+            });
+        },
+    });
+}
+
+/**
+ * Supplies the host-owned services that are meaningful for a detached Agent Run.
+ * Session-persistent projections stay explicitly unavailable: a Run id is not a
+ * Happier Session id and must never be used to manufacture Session custody.
+ */
+export function createNativeAgentExecutionRunHostServices(params: Readonly<{
+    signal: AbortSignal;
+    executionRunId: string;
+    directory: string;
+    machineId: string;
+    accountSettings: AccountSettings | null;
+    mcpSelection?: SessionMcpSelectionV1;
+    runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null;
+    runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
+    pluginId: string;
+    agentId: string;
+    happyHomeDir?: string;
+}>): AgentExecutionRunHostServicesV1 & Disposable {
+    const assertActive = (): void => params.signal.throwIfAborted();
+    const runtimeId = `native-agent-run:${params.pluginId}:${params.agentId}:${randomUUID()}`;
+    const storePaths = resolvePluginStorePaths({ happyHomeDir: params.happyHomeDir });
+    const authority = materializePluginRuntimeAuthority(
+        params.runtimeAuthority
+        ?? snapshotActivatedPluginRuntimeAuthority(params.runtimeRegistry, params.pluginId),
+    );
+    const disposables = new Set<Disposable>();
+    let disposePromise: Promise<void> | null = null;
+    const addDisposable = (candidate: Disposable): Disposable => {
+        disposables.add(candidate);
+        return candidate;
+    };
+    const scope: PluginExecutionScopeV1 = Object.freeze({
+        kind: 'execution_run',
+        executionRunId: params.executionRunId,
+    });
+    const fileFollowPathGrants = createTranscriptFileFollowPathGrantRegistry();
+    addDisposable({
+        dispose: () => fileFollowPathGrants.revokeScope({
+            pluginId: params.pluginId,
+            runtimeId,
+            scope,
+        }),
+    });
+    const sessionHooksOwner = createSessionHooksService({
+        happyHomeDir: storePaths.happyHomeDir,
+        hasCapability: (capability) => authority.capabilities.has(capability),
+        addDisposable,
+        grantTranscriptFileFollowPath: async (request) => {
+            await fileFollowPathGrants.grant({
+                pluginId: params.pluginId,
+                runtimeId,
+                scope,
+                path: request.transcriptPath,
+                reason: 'providerTranscriptSource',
+                evidence: {
+                    kind: 'sessionStartTranscriptPath',
+                    providerSessionId: request.providerSessionId,
+                },
+            });
+        },
+    });
+    const fileFollow = createPluginTranscriptFileFollowService({
+        addDisposable,
+        pluginId: params.pluginId,
+        runtimeId,
+        readScope: () => scope,
+        fileFollowPathGrants,
+    });
+    const featureOwner = createNativeAgentFeatureService(params.runtimeRegistry);
+    const toolExecutionOwner = createNativeAgentToolExecutionOwner({
+        runtimeRegistry: params.runtimeRegistry,
+        pluginId: params.pluginId,
+        agentId: params.agentId,
+        signal: params.signal,
+    });
+    const dispose = (): Promise<void> => {
+        disposePromise ??= (async () => {
+            const results = await Promise.allSettled(
+                [...disposables].reverse().map(async (candidate) => {
+                    await candidate.dispose();
+                }),
+            );
+            disposables.clear();
+            const failure = results.find(
+                (result): result is PromiseRejectedResult => result.status === 'rejected',
+            );
+            if (failure) throw failure.reason;
+        })();
+        return disposePromise;
+    };
+    const disposeOnAbort = () => {
+        void dispose().catch(() => undefined);
+    };
+    if (params.signal.aborted) disposeOnAbort();
+    else params.signal.addEventListener('abort', disposeOnAbort, { once: true });
+    return Object.freeze({
+        features: Object.freeze({
+            isEnabled: (featureId: string) => (
+                !params.signal.aborted && featureOwner.isEnabled(featureId)
+            ),
+        }),
+        hooks: Object.freeze({
+            async startServer(request: Parameters<AgentExecutionRunHostServicesV1['hooks']['startServer']>[0]) {
+                assertActive();
+                return await sessionHooksOwner.startServer({
+                    ...request,
+                    providerId: params.agentId,
+                    scope,
+                });
+            },
+            async resolveForwarderAssets() {
+                assertActive();
+                return await sessionHooksOwner.resolveForwarderAssets();
+            },
+            async createPluginDir(request: Parameters<AgentExecutionRunHostServicesV1['hooks']['createPluginDir']>[0]) {
+                assertActive();
+                return await sessionHooksOwner.createPluginDir({
+                    ...request,
+                    providerId: params.agentId,
+                    scope,
+                });
+            },
+            async disposePluginDir(pluginDir: Parameters<HostSessionHooksOwner['disposePluginDir']>[0]) {
+                return await sessionHooksOwner.disposePluginDir(pluginDir);
+            },
+        }),
+        fileFollow: Object.freeze({
+            async follow(input: Parameters<typeof fileFollow.follow>[0]) {
+                assertActive();
+                return await fileFollow.follow(input);
+            },
+        }),
+        mcp: Object.freeze({
+            async resolveServers(options: Parameters<AgentSessionHostServices['mcp']['resolveServers']>[0]) {
+                assertActive();
+                options?.signal?.throwIfAborted();
+                const servers = resolvePluginMcpServersForExecutionScope({
+                    scope,
+                    accountSettings: params.accountSettings,
+                    machineId: params.machineId,
+                    directory: params.directory,
+                    selection: params.mcpSelection ?? null,
+                });
+                return Object.freeze(servers.map((server) => Object.freeze({
+                    id: server.id,
+                    name: server.name,
+                    transport: server.transport.kind === 'http' || server.transport.kind === 'sse'
+                        ? Object.freeze({ kind: server.transport.kind, url: server.transport.url })
+                        : Object.freeze({ kind: server.transport.kind }),
+                })));
+            },
+        }),
+        toolExecution: Object.freeze({
+            before: toolExecutionOwner.before,
+        }),
+        dispose,
+    });
+}
+
 function declaresTerminalSurface(agent: EngineResolutionAgent): boolean {
     return agent.richDefinition?.definition.capabilities.surfaces?.includes('terminal') === true;
 }
@@ -140,7 +389,7 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         dispose: () => fileFollowPathGrants.revokeScope({
             pluginId: params.identity.pluginId,
             runtimeId,
-            sessionId: params.sessionId,
+            scope: { kind: 'session', sessionId: params.sessionId },
         }),
     });
     const sessionHooks = createSessionHooksService({
@@ -151,7 +400,7 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
             await fileFollowPathGrants.grant({
                 pluginId: params.identity.pluginId,
                 runtimeId,
-                sessionId: params.sessionId,
+                scope: { kind: 'session', sessionId: params.sessionId },
                 path: request.transcriptPath,
                 reason: 'providerTranscriptSource',
                 evidence: {
@@ -168,26 +417,7 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         readSessionId: () => params.sessionId,
         fileFollowPathGrants,
     });
-    const features = Object.freeze({
-        // Decided at every read through the canonical CLI feature-decision owner.
-        // An unknown id is permanently unsupported, but a known id's decision is a
-        // property of the current environment and policy, not of this session
-        // runtime: caching the first answer would report a decision that was
-        // merely unavailable at open time as unavailable for the whole session.
-        isEnabled: (featureId: string): boolean => {
-            if (!isFeatureId(featureId)) return false;
-            // A server-represented feature is undecidable without the daemon's retained
-            // snapshot, so omitting it would report every such feature as permanently
-            // disabled to plugins. The resolved runtime carries the one daemon snapshot
-            // resolver; this reads it fresh so a later refresh is observed.
-            const serverSnapshot = params.runtimeRegistry?.resolveServerFeaturesSnapshot?.();
-            return resolveCliFeatureDecision({
-                featureId,
-                env: process.env,
-                ...(serverSnapshot ? { serverSnapshot } : {}),
-            }).state === 'enabled';
-        },
-    });
+    const features = createNativeAgentFeatureService(params.runtimeRegistry);
     const catalogEntry = params.runtimeRegistry?.contributes.catalogEntriesById[
         params.agent.id
     ];
@@ -257,58 +487,11 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
     const mcp: PluginMcpSessionResolver = Object.freeze({
         resolveForSession: pluginMcp?.resolveForSession ?? (async (input) => resolveBaseMcpServers(input)),
     });
-    const toolExecution: NativeAgentToolExecutionOwner = Object.freeze({
-        async before(request, options) {
-            const payload = AgentToolExecuteBeforeHookPayloadSchema.parse({
-                agentId: params.identity.agentId,
-                runtimeFamily: 'hostSession',
-                capability: 'interceptable',
-                sessionId: params.sessionId,
-                ...(request.turnId ? { turnId: request.turnId } : {}),
-                tool: {
-                    callId: request.callId,
-                    name: request.name,
-                    input: request.input,
-                },
-                timestampMs: Date.now(),
-            });
-            if (!params.runtimeRegistry) {
-                return { status: 'continue', input: payload.tool.input };
-            }
-            const result = await interceptAgentToolExecutionThroughRuntimeRegistry({
-                runtimeRegistry: params.runtimeRegistry,
-                payload,
-                ...(options?.signal ? { signal: options.signal } : {}),
-            });
-            if (result.status !== 'continue') return result;
-            const transformed = AgentToolExecuteBeforeHookPayloadSchema.parse({
-                ...payload,
-                tool: { ...payload.tool, input: result.input },
-            });
-            return { status: 'continue', input: transformed.tool.input };
-        },
-        async observeAfter(request) {
-            if (!params.runtimeRegistry) return;
-            const payload = AgentToolExecuteAfterHookPayloadSchema.parse({
-                agentId: params.identity.agentId,
-                runtimeFamily: 'hostSession',
-                capability: request.capability,
-                caller: { kind: 'plugin', pluginId: params.identity.pluginId },
-                sessionId: params.sessionId,
-                turnId: request.turnId,
-                tool: {
-                    callId: request.callId,
-                    name: request.name,
-                    input: request.input,
-                },
-                outcome: request.outcome,
-                timestampMs: request.timestampMs,
-            });
-            await observeAgentToolExecutionThroughRuntimeRegistry({
-                runtimeRegistry: params.runtimeRegistry,
-                payload,
-            });
-        },
+    const toolExecution = createNativeAgentToolExecutionOwner({
+        runtimeRegistry: params.runtimeRegistry,
+        pluginId: params.identity.pluginId,
+        agentId: params.identity.agentId,
+        sessionId: params.sessionId,
     });
     const accountUsage = createNativeAgentAccountUsageService({
         sessionId: params.sessionId,

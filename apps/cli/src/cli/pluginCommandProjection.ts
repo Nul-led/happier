@@ -8,6 +8,7 @@ import {
   resolveInvocationContributionPolicyFacts,
   type ContributionPolicyFacts,
 } from '@/plugins/runtime/policy/evaluate';
+import { findCliCommandPathConflicts } from './commandPathClaims';
 
 export type PluginCommandProjectionEntry = Readonly<{
   qualifiedId: string;
@@ -112,17 +113,16 @@ export function resolvePluginCommandProjection(params: Readonly<{
     }));
   }
 
-  const commandsByPath = new Map<string, PluginCommandProjectionEntry[]>();
-  for (const command of admitted) {
-    const key = command.path.join('\u0000');
-    const atPath = commandsByPath.get(key) ?? [];
-    atPath.push(command);
-    commandsByPath.set(key, atPath);
-  }
+  const ambiguousQualifiedIds = new Set(
+    findCliCommandPathConflicts(admitted.map((command) => ({
+      source: 'plugin' as const,
+      ownerId: command.qualifiedId,
+      path: command.path,
+    }))).flatMap((conflict) => [conflict.left.ownerId, conflict.right.ownerId]),
+  );
 
   const commands = admitted.map((command) => {
-    const atPath = commandsByPath.get(command.path.join('\u0000')) ?? [];
-    if (atPath.length < 2) return command;
+    if (!ambiguousQualifiedIds.has(command.qualifiedId)) return command;
     diagnostics.push(Object.freeze({
       code: 'plugin_command_path_ambiguous',
       qualifiedId: command.qualifiedId,

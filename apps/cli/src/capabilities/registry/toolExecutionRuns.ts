@@ -12,6 +12,7 @@ import {
 import { resolveCliEngineRegistry } from '../../agent/runtime/registry/engineRegistry';
 import type { ResolvedAgentContribution } from '../../plugins/projection/registry/types';
 import { readAgentExecutionRunCapabilities } from '../../plugins/projection/registry/agentContributionDefinition';
+import { readAgentSessionCapabilities } from '../../plugins/projection/registry/agentContributionDefinition';
 import {
   evaluateContributionAvailability,
   resolveInvocationContributionPolicyFacts,
@@ -32,6 +33,10 @@ function resolveExecutionRunBackendAvailability(params: Readonly<{
   if (readAgentExecutionRunCapabilities(
     params.agentContribution?.richDefinition?.definition,
   )) {
+    return true;
+  }
+
+  if (readAgentSessionCapabilities(params.agentContribution?.richDefinition?.definition)) {
     return true;
   }
 
@@ -96,9 +101,10 @@ export const executionRunsCapability: Capability = {
           ...(decision.outcome === 'visible' ? {} : { unavailableCode: decision.code }),
         }];
       });
+    const activatableIntents = listExecutionRunSupportedIntents();
     const intents = voiceAgentEnabled
-      ? listExecutionRunSupportedIntents()
-      : listExecutionRunSupportedIntents().filter((intent) => intent !== 'voice_agent');
+      ? activatableIntents
+      : activatableIntents.filter((intent) => intent !== 'voice_agent');
     const contributedBackendIds = listEngineRuntimeContributionIds(cliEngineRegistry.contributions);
     const catalogBackendIds = Object.keys(cliEngineRegistry.contributions.catalogEntriesById);
     const knownBuiltInAgentIds = AGENT_IDS;
@@ -143,7 +149,13 @@ export const executionRunsCapability: Capability = {
       // facts from their selected daemon before they send detached scope or
       // start-and-wait fields; the outer capabilities protocol remains V1.
       protocolVersion: 2,
-      features: { detachedScope: true, startAndWait: true },
+      features: {
+        detachedScope: true,
+        startAndWait: true,
+        exactInputResults: true,
+        runScopedAgentBindings: true,
+        secretReferenceOverlay: true,
+      },
       intents,
       ...(voiceAgentEnabled
         ? {}

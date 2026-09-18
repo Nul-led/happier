@@ -1,9 +1,11 @@
 import {
   buildQualifiedPluginContributionKey,
+  type ApprovalRequestV2,
   type TargetActionApprovalRequestV1,
 } from '@happier-dev/protocol';
 import {
   parseQualifiedPluginActionId,
+  signExternalActionApprovalInputV1,
   type ActionExecuteResult,
   type ActionExecutorDeps,
 } from '@happier-dev/protocol/actions';
@@ -28,35 +30,13 @@ import type {
   TargetActionCurrentIntentRequest,
   TargetActionCurrentIntentResult,
 } from '@/plugins/runtime/invocation/actionExecutor';
+import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
+import type { PluginExternalActionContext } from '@/plugins/runtime/invocation/services/types';
 
 type TargetActionApprovalStore = Pick<
   ReturnType<typeof createCliApprovalsArtifactStore>,
   'targetActionApprovalsGet' | 'targetActionApprovalsUpdate'
 >;
-
-type InFlightApprovalReplay = Readonly<{
-  decision: 'approve' | 'reject';
-  promise: Promise<ActionExecuteResult | null>;
-}>;
-
-function awaitReplayWithCallerSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 function buildTargetActionApprovalDecisionResult(
   request: TargetActionApprovalRequestV1,
@@ -112,8 +92,10 @@ export function createDaemonExternalActionContributedInvoker(input: Readonly<{
  */
 export function createDaemonExternalActionContributedApprovalReplay(input: Readonly<{
   credentials: StoredCredentials;
+  isApprovalExecutionOriginCurrent?: NonNullable<ActionExecutorDeps['isApprovalExecutionOriginCurrent']>;
   acquireRuntimeRegistryLease?: typeof acquireAuthoritativePluginRuntimeRegistryLease;
   targetActionApprovals?: TargetActionApprovalStore;
+  readInstallationIdentity?: typeof readInstallationIdentityIfExistsSync;
   now?: () => number;
 }>): NonNullable<ActionExecutorDeps['targetActionApprovalReplay']> {
   const acquireRuntimeRegistryLease = input.acquireRuntimeRegistryLease
@@ -121,8 +103,8 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
   const targetActionApprovals = input.targetActionApprovals
     ?? createCliApprovalsArtifactStore({ credentials: input.credentials });
   const now = input.now ?? Date.now;
-  const inFlightReplays = new Map<string, InFlightApprovalReplay>();
-
+  const readInstallationIdentity = input.readInstallationIdentity
+    ?? readInstallationIdentityIfExistsSync;
   const replayArtifact = async ({
     artifactId,
     decision,
@@ -180,6 +162,9 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
       && existing.decision?.kind === 'approve') {
       return buildTargetActionApprovalDecisionResult(existing);
     }
+    if (existing.status === 'executing' && existing.decision?.kind === 'approve') {
+      return targetActionReplayFailure('approval_execution_outcome_unknown');
+    }
     if (existing.status !== 'open'
       && (existing.status !== 'approved' || existing.decision?.kind !== 'approve')) {
       return targetActionReplayFailure('approval_not_open');
@@ -194,70 +179,187 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
         updatedAtMs: approvedAtMs,
         decision: { kind: 'approve', decidedAtMs: approvedAtMs },
       };
+      // A lost or conflicting decision write is reconciled from the durable
+      // row rather than assumed: another decider may already have committed
+      // the same approval, or carried it through to a terminal outcome.
       const persistenceFailure = await persist(nextApproved);
-      if (persistenceFailure) return persistenceFailure;
-      let reread: TargetActionApprovalRequestV1 | null;
+      let persisted: TargetActionApprovalRequestV1 | null;
       try {
-        reread = await targetActionApprovals.targetActionApprovalsGet({ artifactId });
+        persisted = await targetActionApprovals.targetActionApprovalsGet({ artifactId });
       } catch {
         return targetActionReplayFailure('approval_unavailable');
       }
-      if (!reread) return targetActionReplayFailure('approval_not_found');
-      approved = reread;
-      if ((approved.status === 'executed' || approved.status === 'failed')
-        && approved.decision?.kind === 'approve') {
-        return buildTargetActionApprovalDecisionResult(approved);
+      if (!persisted) {
+        return persistenceFailure ?? targetActionReplayFailure('approval_not_found');
       }
-      if (approved.status !== 'approved' || approved.decision?.kind !== 'approve') {
-        return targetActionReplayFailure('approval_not_open');
+      if ((persisted.status === 'executed' || persisted.status === 'failed')
+        && persisted.decision?.kind === 'approve') {
+        return buildTargetActionApprovalDecisionResult(persisted);
       }
+      if (persisted.status !== 'approved' || persisted.decision?.kind !== 'approve') {
+        return persistenceFailure ?? targetActionReplayFailure('approval_not_open');
+      }
+      approved = persisted;
     }
     if (approved.requestedSurface !== 'api' || approved.replayPlacement === undefined) {
       return targetActionReplayFailure('approval_invalid');
     }
-
+    // The durable placement is stamped once at admission; later status writes
+    // below carry it forward unchanged, so it is captured here rather than
+    // re-read from a reassigned request.
+    const replayPlacement = approved.replayPlacement;
     const action = parseQualifiedPluginActionId(approved.qualifiedActionId);
     if (!action) return targetActionReplayFailure('approval_invalid');
+    const origin = approved.executionOriginV1;
+    if (!origin) return targetActionReplayFailure('approval_invalid');
+
+    const executionClaim: TargetActionApprovalRequestV1 = {
+      ...approved,
+      status: 'executing',
+      updatedAtMs: nextTimestamp(approved),
+    };
+    const claimFailure = await persist(executionClaim);
+    if (claimFailure) {
+      let persisted: TargetActionApprovalRequestV1 | null;
+      try {
+        persisted = await targetActionApprovals.targetActionApprovalsGet({ artifactId });
+      } catch {
+        return targetActionReplayFailure('approval_unavailable');
+      }
+      if (persisted && (persisted.status === 'executed' || persisted.status === 'failed')
+        && persisted.decision?.kind === 'approve') {
+        return buildTargetActionApprovalDecisionResult(persisted);
+      }
+      if (persisted?.status === 'executing' && persisted.decision?.kind === 'approve') {
+        return targetActionReplayFailure('approval_execution_outcome_unknown');
+      }
+      return claimFailure;
+    }
+    approved = executionClaim;
+
+    const approvalRequest: ApprovalRequestV2 = {
+      v: 2,
+      status: approved.status,
+      createdAtMs: approved.createdAtMs,
+      updatedAtMs: approved.updatedAtMs,
+      createdBy: approved.createdBy,
+      requestedSurface: 'api',
+      executionOriginV1: origin,
+      actionId: 'action.invoke',
+      actionArgs: {
+        action: {
+          pluginId: action.pluginId,
+          localId: action.localId,
+          immutableGenerationId: approved.generation,
+        },
+        input: approved.input,
+      },
+      summary: approved.summary,
+      ...(approved.detail ? { preview: { detail: approved.detail } } : {}),
+      ...(approved.decision ? { decision: approved.decision } : {}),
+    };
+    const originCurrent = input.isApprovalExecutionOriginCurrent
+      ? await input.isApprovalExecutionOriginCurrent({
+      origin,
+      request: approvalRequest,
+      ...(signal ? { signal } : {}),
+        }).catch(() => false)
+      : false;
+    let executionResult: ActionExecuteResult | undefined = originCurrent
+      ? undefined
+      : targetActionReplayFailure('approval_stale');
+    let externalActionContext: PluginExternalActionContext | undefined;
+    if (executionResult === undefined && origin.externalActionExecutionAuthorization !== undefined) {
+      const installationIdentity = readInstallationIdentity();
+      if (
+        !installationIdentity
+        || !origin.serverIdentityId
+        || !origin.accountId
+        || !origin.principalId
+        || !origin.credentialId
+        || !origin.target
+      ) {
+        executionResult = targetActionReplayFailure('approval_stale');
+      } else {
+        const authorization = origin.externalActionExecutionAuthorization;
+        const externalActionCredential = Object.freeze({
+          accountId: origin.accountId,
+          principalId: origin.principalId,
+          credentialId: origin.credentialId,
+        });
+        const authorizedTarget = Object.freeze({ ...authorization.binding.target });
+        const externalActionExecutionAuthorization = Object.freeze({
+          ...authorization,
+          binding: Object.freeze({
+            ...authorization.binding,
+            target: authorizedTarget,
+          }),
+        });
+        const externalActionTarget = Object.freeze({ ...origin.target });
+        externalActionContext = Object.freeze({
+          authority: 'account_automation',
+          serverId: origin.serverId,
+          serverIdentityId: origin.serverIdentityId,
+          actionRequestId: origin.requestId,
+          externalActionCredential,
+          externalActionExecutionAuthorization,
+          externalActionTarget,
+          signExternalActionApprovalInput: ({ actionId, input: actionInput, target }) =>
+            signExternalActionApprovalInputV1({
+              authorizationToken: externalActionExecutionAuthorization.token,
+              actionId,
+              target,
+              input: actionInput,
+              privateKey: installationIdentity.privateKey,
+            }),
+        });
+      }
+    }
     const invocationSignal = signal ?? new AbortController().signal;
-    let executionResult: ActionExecuteResult;
-    try {
-      invocationSignal.throwIfAborted();
-      const lease = await acquireRuntimeRegistryLease({
-        happyHomeDir: configuration.happyHomeDir,
-      });
+    if (executionResult === undefined) {
       try {
         invocationSignal.throwIfAborted();
-        const attempt = await executeContributedAction({
-          runtimeRegistry: lease.registry,
-          actionId: buildQualifiedPluginContributionKey(action),
-          input: approved.input,
-          expectedApprovalReplayPlacement: approved.replayPlacement,
-          requestCurrentIntent: async (currentIntent) => (
-            targetActionApprovalMatchesCurrentIntent(approved, currentIntent)
-              ? { status: 'approved', fingerprint: currentIntent.fingerprint }
-              : { status: 'unavailable', code: 'plugin_action_current_intent_mismatch' }
-          ),
-          context: {
-            surface: 'api',
-            invocationSurface: 'api',
-            ...(approved.replayPlacement.defaultSessionId === undefined
-              ? {}
-              : { defaultSessionId: approved.replayPlacement.defaultSessionId }),
-            signal: invocationSignal,
-          },
+        const lease = await acquireRuntimeRegistryLease({
+          happyHomeDir: configuration.happyHomeDir,
         });
-        if (!attempt.matched) {
-          executionResult = targetActionReplayFailure('contributed_action_unavailable');
-        } else if (attempt.result.ok && attempt.result.deferredApprovalArtifactId !== undefined) {
-          executionResult = targetActionReplayFailure('plugin_action_current_intent_mismatch');
-        } else {
-          executionResult = attempt.result;
+        try {
+          invocationSignal.throwIfAborted();
+          const attempt = await executeContributedAction({
+            runtimeRegistry: lease.registry,
+            actionId: buildQualifiedPluginContributionKey(action),
+            input: approved.input,
+            expectedApprovalReplayPlacement: replayPlacement,
+            requestCurrentIntent: async (currentIntent) => (
+              targetActionApprovalMatchesCurrentIntent(approved, {
+                ...currentIntent,
+                executionOriginV1: origin,
+              })
+                ? { status: 'approved', fingerprint: currentIntent.fingerprint }
+                : { status: 'unavailable', code: 'plugin_action_current_intent_mismatch' }
+            ),
+            context: {
+              surface: 'api',
+              invocationSurface: 'api',
+              ...(externalActionContext ? { externalActionContext } : {}),
+              ...(replayPlacement.defaultSessionId === undefined
+                ? {}
+                : { defaultSessionId: replayPlacement.defaultSessionId }),
+              signal: invocationSignal,
+            },
+          });
+          if (!attempt.matched) {
+            executionResult = targetActionReplayFailure('contributed_action_unavailable');
+          } else if (attempt.result.ok && attempt.result.deferredApprovalArtifactId !== undefined) {
+            executionResult = targetActionReplayFailure('plugin_action_current_intent_mismatch');
+          } else {
+            executionResult = attempt.result;
+          }
+        } finally {
+          await lease.release();
         }
-      } finally {
-        await lease.release();
+      } catch {
+        executionResult = targetActionReplayFailure('plugin_action_execution_failed');
       }
-    } catch {
-      executionResult = targetActionReplayFailure('plugin_action_execution_failed');
     }
 
     const executedAtMs = nextTimestamp(approved);
@@ -280,7 +382,9 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
           },
         };
     const persistenceFailure = await persist(terminal);
-    if (persistenceFailure) return persistenceFailure;
+    // Once the durable claim is admitted, a lost terminal write leaves later
+    // callers unable to distinguish an in-flight effect from an unknown one.
+    if (persistenceFailure) return targetActionReplayFailure('approval_execution_outcome_unknown');
     return executionResult.ok
       ? buildTargetActionApprovalDecisionResult(terminal)
       : executionResult;
@@ -290,34 +394,7 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
     const artifactId = rawArtifactId.trim();
     if (!artifactId) return null;
     signal?.throwIfAborted();
-
-    while (true) {
-      const inFlight = inFlightReplays.get(artifactId);
-      if (inFlight) {
-        if (inFlight.decision === decision) {
-          return await awaitReplayWithCallerSignal(inFlight.promise, signal);
-        }
-        // Preserve one execution for the Artifact, then evaluate this caller's
-        // different decision against the retained terminal state instead of
-        // aliasing it to the first caller's result.
-        await awaitReplayWithCallerSignal(inFlight.promise, signal);
-        continue;
-      }
-
-      let replay!: Promise<ActionExecuteResult | null>;
-      replay = Promise.resolve()
-        // Once a decision begins, an individual HTTP caller only owns waiting
-        // for its result. It cannot cancel the shared accepted mutation for
-        // another caller.
-        .then(() => replayArtifact({ artifactId, decision }))
-        .finally(() => {
-          if (inFlightReplays.get(artifactId)?.promise === replay) {
-            inFlightReplays.delete(artifactId);
-          }
-        });
-      inFlightReplays.set(artifactId, { decision, promise: replay });
-      return await awaitReplayWithCallerSignal(replay, signal);
-    }
+    return await replayArtifact({ artifactId, decision, ...(signal ? { signal } : {}) });
   };
 }
 

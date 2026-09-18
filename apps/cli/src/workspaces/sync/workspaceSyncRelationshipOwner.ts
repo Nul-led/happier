@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import {
-  WorkspaceRefV1Schema,
+  accountSettingsParse,
   areWorkspaceSyncRelationshipDefinitionsEqual,
   type AccountSettingsMutationResult,
   type WorkspaceContentPolicyV1,
@@ -18,7 +18,7 @@ import {
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import type { StoredCredentials } from '@/persistence';
 import { deriveWorkspaceSyncRelationshipId } from './workspaceSyncRelationshipIdentity';
-import { validateWorkspaceSyncRelationship, validateWorkspaceSyncRelationships } from './workspaceSyncSettings';
+import { validateWorkspaceSyncRelationship } from './workspaceSyncSettings';
 
 export type WorkspaceSyncRelationshipSettingsMutation = (
   mutate: (settings: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>> | Promise<Readonly<Record<string, unknown>>>,
@@ -39,6 +39,8 @@ export type PrepareWorkspaceSyncRelationshipInput = Readonly<{
   contentPolicy: WorkspaceContentPolicyV1;
   targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
   targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+  targetReplacementApprovalReceiptId?: string;
+  targetReplacementApprovalActionInput?: unknown;
   flushBeforeCommit: true;
   signal?: AbortSignal;
 }>;
@@ -82,6 +84,8 @@ export type WorkspaceSyncRelationshipOwnerOptions = Readonly<{
       transient: true;
       targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
       targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+      targetReplacementApprovalReceiptId?: string;
+      targetReplacementApprovalActionInput?: unknown;
     }>,
   ): Promise<WorkspaceSyncStatusV1>;
   flushRelationship(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
@@ -104,19 +108,16 @@ function isSettledMutation(
 }
 
 function parseRefs(settings: SettingsDocument): readonly WorkspaceRefV1[] {
-  const parsed = WorkspaceRefV1Schema.array().safeParse(settings.workspaceRefsV1 ?? []);
-  if (!parsed.success) throw ownerError('workspace_sync_settings_invalid', 'Workspace references are invalid');
-  const ids = new Set<string>();
-  for (const ref of parsed.data) {
-    if (ids.has(ref.id)) throw ownerError('workspace_sync_settings_invalid', 'Workspace reference ids must be unique');
-    ids.add(ref.id);
+  try {
+    return accountSettingsParse(settings).workspaceRefsV1;
+  } catch (cause) {
+    throw ownerError('workspace_sync_settings_invalid', cause instanceof Error ? cause.message : 'Workspace references are invalid');
   }
-  return parsed.data;
 }
 
 function parseRelationships(settings: SettingsDocument): readonly WorkspaceSyncRelationshipV1[] {
   try {
-    return validateWorkspaceSyncRelationships(settings.workspaceSyncRelationshipsV1 ?? []);
+    return accountSettingsParse(settings).workspaceSyncRelationshipsV1;
   } catch (cause) {
     throw ownerError('workspace_sync_settings_invalid', cause instanceof Error ? cause.message : 'Workspace relationships are invalid');
   }
@@ -131,23 +132,24 @@ function unorderedPairMatches(
     || (relationship.alphaWorkspaceRefId === betaRefId && relationship.betaWorkspaceRefId === alphaRefId);
 }
 
-function definitionsMatchAllowingTwoWayReverse(
-  relationship: WorkspaceSyncRelationshipV1,
-  requested: WorkspaceSyncRelationshipV1,
-): boolean {
-  if (areWorkspaceSyncRelationshipDefinitionsEqual(relationship, requested)) return true;
-  return relationship.mode === 'keep_both_in_sync'
-    && requested.mode === 'keep_both_in_sync'
-    && relationship.controllerMachineId === requested.controllerMachineId
-    && relationship.alphaWorkspaceRefId === requested.betaWorkspaceRefId
-    && relationship.betaWorkspaceRefId === requested.alphaWorkspaceRefId
-    && relationship.contentPolicy.policyDigest === requested.contentPolicy.policyDigest;
-}
-
 function resolveEndpointPair(
   relationships: readonly WorkspaceSyncRelationshipV1[],
   requested: WorkspaceSyncRelationshipV1,
 ): WorkspaceSyncRelationshipV1 | null {
+  const identityMatches = relationships.filter((relationship) => (
+    relationship.relationshipId === requested.relationshipId
+  ));
+  if (identityMatches.length > 1) {
+    throw ownerError('relationship_definition_conflict', 'Workspace relationship identity is duplicated');
+  }
+  const identityMatch = identityMatches[0];
+  if (identityMatch) {
+    if (!areWorkspaceSyncRelationshipDefinitionsEqual(identityMatch, requested)) {
+      throw ownerError('relationship_definition_conflict', 'Workspace relationship identity has a different immutable definition');
+    }
+    return identityMatch;
+  }
+
   const matches = relationships.filter((relationship) => unorderedPairMatches(
     relationship,
     requested.alphaWorkspaceRefId,
@@ -156,10 +158,7 @@ function resolveEndpointPair(
   if (matches.length > 1) throw ownerError('relationship_definition_conflict', 'Multiple relationships own this workspace pair');
   const existing = matches[0];
   if (!existing) return null;
-  if (!definitionsMatchAllowingTwoWayReverse(existing, requested)) {
-    throw ownerError('relationship_replacement_required', 'This workspace pair already has a different relationship');
-  }
-  return existing;
+  throw ownerError('relationship_replacement_required', 'This workspace pair is owned by a different relationship');
 }
 
 function mutationFailure(result: AccountSettingsMutationResult): Error & { code: string } {
@@ -392,12 +391,61 @@ export function createWorkspaceSyncRelationshipOwner(
       });
       const existing = resolveEndpointPair(parseRelationships(current), candidate);
       const relationship = existing ?? candidate;
+      const runtimeRelationship = relationship.enabled
+        ? relationship
+        : validateWorkspaceSyncRelationship({ ...relationship, enabled: true });
       const reused = existing !== null;
       const runtimeOwnedByTransaction = existing?.enabled !== true;
+      let closed = false;
+      let published = false;
+      let publishedRelationship = relationship;
+      let durableIntentStaged = existing?.enabled === true;
+      let stagedSettingsVersion: number | null = null;
+      let stagedReconciliationComplete = existing?.enabled === true;
+      let publishedSettingsVersion: number | null = null;
+      let reconciliationComplete = false;
+      let targetCommitted = false;
+
+      const stageDurableIntent = async (): Promise<void> => {
+        if (!durableIntentStaged) {
+          let stagedRelationship: WorkspaceSyncRelationshipV1 | null = null;
+          const result = await options.mutateSettings((settings) => {
+            const relationships = parseRelationships(settings);
+            const winner = resolveEndpointPair(relationships, relationship);
+            const staged = validateWorkspaceSyncRelationship(winner
+              ? { ...winner, enabled: false, updatedAtMs: nowMs() }
+              : { ...relationship, enabled: false });
+            stagedRelationship = staged;
+            return {
+              ...settings,
+              workspaceSyncRelationshipsV1: winner
+                ? relationships.map((value) => value.relationshipId === winner.relationshipId ? staged : value)
+                : [...relationships, staged],
+            };
+          }, input.signal);
+          if (!isSettledMutation(result)) {
+            const observed = resolveEndpointPair(parseRelationships(await options.readSettings()), relationship);
+            if (!observed || observed.enabled) throw mutationFailure(result);
+            durableIntentStaged = true;
+            publishedRelationship = observed;
+            stagedSettingsVersion = result.status === 'outcomeUnknown' ? result.lastKnownVersion : null;
+          } else {
+            durableIntentStaged = true;
+            publishedRelationship = stagedRelationship ?? publishedRelationship;
+            stagedSettingsVersion = result.version;
+          }
+        }
+        if (!stagedReconciliationComplete && stagedSettingsVersion !== null) {
+          await options.waitForSettingsReconciliation(stagedSettingsVersion, input.signal);
+          stagedReconciliationComplete = true;
+        }
+      };
+
+      await stageDurableIntent();
       let status: WorkspaceSyncStatusV1;
       try {
         status = await options.ensureRelationship(
-          relationship,
+          runtimeRelationship,
           input.signal,
           existing?.enabled === true
             ? undefined
@@ -407,6 +455,10 @@ export function createWorkspaceSyncRelationshipOwner(
                 ...(input.targetReplacementApproval
                   ? { targetReplacementApproval: input.targetReplacementApproval }
                   : {}),
+                ...(input.targetReplacementApprovalReceiptId ? {
+                  targetReplacementApprovalReceiptId: input.targetReplacementApprovalReceiptId,
+                  targetReplacementApprovalActionInput: input.targetReplacementApprovalActionInput,
+                } : {}),
               },
         );
         status = await options.flushRelationship(relationship.relationshipId, input.signal);
@@ -414,13 +466,6 @@ export function createWorkspaceSyncRelationshipOwner(
         if (runtimeOwnedByTransaction && !isIndeterminate(error)) await options.terminateRelationshipRuntime(relationship);
         throw error;
       }
-
-      let closed = false;
-      let published = false;
-      let publishedRelationship = relationship;
-      let publishedSettingsVersion: number | null = null;
-      let reconciliationComplete = false;
-      let targetCommitted = false;
       return Object.freeze({
         relationship,
         status,
@@ -429,32 +474,34 @@ export function createWorkspaceSyncRelationshipOwner(
           if (closed) return publishedRelationship;
           let outcomeUnknownThisAttempt = false;
           try {
+            await stageDurableIntent();
+            if (!targetCommitted) {
+              await options.commitRelationshipTarget(runtimeRelationship);
+              targetCommitted = true;
+            }
             if (!published) {
               const result = await options.mutateSettings((settings) => {
                 const relationships = parseRelationships(settings);
                 const winner = resolveEndpointPair(relationships, relationship);
-                if (winner && winner.relationshipId !== relationship.relationshipId) return settings;
                 if (winner?.enabled) return settings;
-                const committed = winner
-                  ? { ...winner, enabled: true, updatedAtMs: nowMs() }
-                  : relationship;
+                if (!winner) {
+                  throw ownerError('relationship_not_ready', 'Workspace relationship staging intent is unavailable');
+                }
+                const committed = { ...winner, enabled: true, updatedAtMs: nowMs() };
                 return {
                   ...settings,
-                  workspaceSyncRelationshipsV1: winner
-                    ? relationships.map((value) => value.relationshipId === winner.relationshipId ? committed : value)
-                    : [...relationships, committed],
+                  workspaceSyncRelationshipsV1: relationships.map((value) => (
+                    value.relationshipId === winner.relationshipId ? committed : value
+                  )),
                 };
               }, input.signal);
               if (!isSettledMutation(result)) {
                 outcomeUnknownThisAttempt = result.status === 'outcomeUnknown';
                 const observed = resolveEndpointPair(parseRelationships(await options.readSettings()), relationship);
-                if (!observed) throw mutationFailure(result);
+                if (!observed?.enabled) throw mutationFailure(result);
                 published = true;
                 publishedRelationship = observed;
                 publishedSettingsVersion = result.status === 'outcomeUnknown' ? result.lastKnownVersion : null;
-                if (observed.relationshipId !== relationship.relationshipId && runtimeOwnedByTransaction) {
-                  await options.terminateRelationshipRuntime(relationship);
-                }
               } else {
                 published = true;
                 publishedSettingsVersion = result.version;
@@ -466,22 +513,13 @@ export function createWorkspaceSyncRelationshipOwner(
             }
             const committedSettings = await options.readSettings();
             publishedRelationship = resolveEndpointPair(parseRelationships(committedSettings), relationship) ?? publishedRelationship;
-            if (publishedRelationship.relationshipId !== relationship.relationshipId && runtimeOwnedByTransaction) {
-              await options.terminateRelationshipRuntime(relationship);
-              closed = true;
-              return publishedRelationship;
-            }
-            if (!targetCommitted) {
-              await options.commitRelationshipTarget(relationship);
-              targetCommitted = true;
-            }
             return publishedRelationship;
           } catch (error) {
             const failure = !published && outcomeUnknownThisAttempt && !isIndeterminate(error)
               ? ownerError('indeterminate', 'Workspace relationship settings outcome is unknown')
               : error;
             if (!published && runtimeOwnedByTransaction && !isIndeterminate(failure)) {
-              await options.terminateRelationshipRuntime(relationship);
+              await options.terminateRelationshipRuntime(runtimeRelationship);
               closed = true;
             }
             throw failure;
@@ -489,7 +527,7 @@ export function createWorkspaceSyncRelationshipOwner(
         },
         async abort(): Promise<void> {
           if (closed) return;
-          if (published && runtimeOwnedByTransaction && publishedRelationship.relationshipId === relationship.relationshipId) {
+          if (durableIntentStaged && runtimeOwnedByTransaction && publishedRelationship.relationshipId === relationship.relationshipId) {
             const rollbackVersion = await mutateDesiredRelationships(relationship.relationshipId, (relationships) => {
               const current = relationships.find((value) => value.relationshipId === relationship.relationshipId);
               if (!current) return relationships;
@@ -500,7 +538,7 @@ export function createWorkspaceSyncRelationshipOwner(
             });
             await options.waitForSettingsReconciliation(rollbackVersion);
           }
-          if (runtimeOwnedByTransaction) await options.terminateRelationshipRuntime(relationship);
+          if (runtimeOwnedByTransaction) await options.terminateRelationshipRuntime(runtimeRelationship);
           closed = true;
         },
       });

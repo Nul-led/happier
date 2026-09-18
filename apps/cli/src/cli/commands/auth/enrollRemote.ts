@@ -16,6 +16,14 @@ import {
 const MAX_HOME_TARGET_STDIN_BYTES = 64 * 1024;
 const DEFAULT_REMOTE_ENROLLMENT_TIMEOUT_MS = 10 * 60_000;
 
+type EnrollRemoteDeps = Readonly<{
+  readHomeTargetInput: () => Promise<HomeTargetInput>;
+  prepareHomeTarget: typeof prepareRemoteEnrollmentHomeTarget;
+  runEnrollment: typeof runRemoteTerminalEnrollment;
+  useHomeProfile: typeof useServerProfile;
+  writeOutput: typeof writeJsonStdout;
+}>;
+
 async function readBoundedStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -28,6 +36,17 @@ async function readBoundedStdin(): Promise<string> {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readHomeTargetInputFromStdin(): Promise<HomeTargetInput> {
+  const rawInput = await readBoundedStdin();
+  let parsedInput: unknown;
+  try {
+    parsedInput = JSON.parse(rawInput);
+  } catch {
+    throw new Error('Home target input is not valid JSON.');
+  }
+  return parseHomeTargetInput(parsedInput);
 }
 
 function parseTimeoutMs(args: readonly string[]): number {
@@ -74,7 +93,11 @@ export async function prepareRemoteEnrollmentHomeTarget(input: HomeTargetInput):
 }
 
 /** Internal SSH automation command. Public split request/wait remains compatibility-only. */
-export async function handleAuthEnrollRemote(args: string[]): Promise<void> {
+export async function handleAuthEnrollRemote(
+  args: string[],
+  parentSignal?: AbortSignal,
+  dependencies: Partial<EnrollRemoteDeps> = {},
+): Promise<void> {
   if (!args.includes('--json-lines') || !args.includes('--home-target-stdin')) {
     throw new Error('auth enroll-remote requires --json-lines --home-target-stdin.');
   }
@@ -88,34 +111,43 @@ export async function handleAuthEnrollRemote(args: string[]): Promise<void> {
     throw new Error(`Unknown auth enroll-remote arguments: ${unexpected.join(' ')}`);
   }
   const timeoutMs = parseTimeoutMs(args);
-  const rawInput = await readBoundedStdin();
-  let parsedInput: unknown;
-  try {
-    parsedInput = JSON.parse(rawInput);
-  } catch {
-    throw new Error('Home target input is not valid JSON.');
-  }
-  const input = parseHomeTargetInput(parsedInput);
-  const prepared = await prepareRemoteEnrollmentHomeTarget(input);
+  const deps: EnrollRemoteDeps = {
+    readHomeTargetInput: readHomeTargetInputFromStdin,
+    prepareHomeTarget: prepareRemoteEnrollmentHomeTarget,
+    runEnrollment: runRemoteTerminalEnrollment,
+    useHomeProfile: useServerProfile,
+    writeOutput: writeJsonStdout,
+    ...dependencies,
+  };
   const controller = new AbortController();
+  const signal = parentSignal
+    ? AbortSignal.any([parentSignal, controller.signal])
+    : controller.signal;
   const onSignal = () => controller.abort();
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
   try {
-    const result = await runRemoteTerminalEnrollment({
+    signal.throwIfAborted();
+    const input = await deps.readHomeTargetInput();
+    signal.throwIfAborted();
+    const prepared = await deps.prepareHomeTarget(input);
+    signal.throwIfAborted();
+    const result = await deps.runEnrollment({
       target: prepared.target,
-      signal: controller.signal,
+      signal,
       timeoutMs,
       onPairingRequest: async (request) => {
-        await writeJsonStdout({
+        await deps.writeOutput({
           kind: 'remote_home_enrollment_pairing_request',
           protocolVersion: 1,
           ...request,
         });
       },
     });
-    await useServerProfile(prepared.profileId);
-    await writeJsonStdout({
+    signal.throwIfAborted();
+    await deps.useHomeProfile(prepared.profileId);
+    signal.throwIfAborted();
+    await deps.writeOutput({
       kind: 'remote_home_enrollment_result',
       protocolVersion: 1,
       ...result,

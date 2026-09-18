@@ -68,6 +68,7 @@ export {
   type RemoteSshBootstrapMachineDeps,
 } from './remoteSshBootstrapMachineKind.js';
 export {
+  createRemoteSshPersonalHomeRelocationDestination,
   createRemoteSshManageHostTaskKind,
   redactRemoteSshManageHostPayload,
   parseRemotePersonalHomeApprovalInput,
@@ -75,15 +76,6 @@ export {
   type RemoteSshManageHostAction,
   type RemoteSshManageHostDeps,
 } from './remoteSshManageHostKind.js';
-export {
-  createSetupRepairThisComputerTaskKind,
-  parseSetupRepairThisComputerParams,
-  type SetupRepairThisComputerAuthStatus,
-  type SetupRepairThisComputerDaemonStatus,
-  type SetupRepairThisComputerDeps,
-  type SetupRepairThisComputerParams,
-  type SetupRepairThisComputerRelayProfile,
-} from './setupRepairThisComputerKind.js';
 export {
   createRelayAccessConfigureTaskKind,
   createRelayAccessDisableTaskKind,

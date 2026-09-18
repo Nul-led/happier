@@ -6,6 +6,7 @@ import {
   type SessionServerStartDispatchResultV1,
   type SessionServerStartIngressRequestV1,
 } from '@happier-dev/protocol';
+import type { Update } from '@/api/types';
 
 const { mockGet, mockPost, mockIsAxiosError, mockCreate } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -155,9 +156,8 @@ describe('automationWorker', () => {
       `happier-automation-worker-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`,
     );
 
-    mockGet
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
-      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))));
+    mockGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    mockPost.mockResolvedValue({ data: { run: null, automation: null } });
 
     const { reloadConfiguration } = await import('@/configuration');
     reloadConfiguration();
@@ -199,6 +199,59 @@ describe('automationWorker', () => {
 
     worker.stop();
   }, 60_000);
+
+  it('drives exact-row Workflow cancellation recovery from the existing machine update when no live claim owns it', async () => {
+    mockGet.mockReset();
+    mockPost.mockReset();
+    process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
+    process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
+    process.env.HAPPIER_HOME_DIR = join(
+      os.tmpdir(),
+      `happier-automation-worker-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`,
+    );
+    mockGet
+      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))))
+      .mockImplementationOnce((url: unknown) => Promise.reject(createAxios404(String(url))));
+    const recoverWorkflowRuns = vi.fn(async () => {});
+
+    const { reloadConfiguration } = await import('@/configuration');
+    reloadConfiguration();
+    const { startAutomationWorker } = await import('./automationWorker');
+    const worker = startAutomationWorker({
+      token: 'token-1',
+      machineId: 'machine-1',
+      recoverWorkflowRuns,
+      spawnSession: vi.fn(async () => ({ type: 'error' as const, errorCode: 'SPAWN_FAILED' as const, errorMessage: 'noop' })),
+      env: {
+        HAPPIER_AUTOMATION_CLAIM_POLL_MS: '1000',
+        HAPPIER_AUTOMATION_ASSIGNMENT_REFRESH_MS: '5000',
+      } as NodeJS.ProcessEnv,
+    });
+
+    try {
+      worker.handleServerUpdate({
+        id: 'u-workflow-cancel',
+        seq: 1,
+        createdAt: Date.now(),
+        body: {
+          t: 'automation-run-updated',
+          runId: 'workflow-run-1',
+          automationId: null,
+          state: 'running',
+          scheduledAt: Date.now(),
+          startedAt: Date.now(),
+          finishedAt: null,
+          updatedAt: Date.now(),
+          machineId: 'machine-1',
+          targetMachineId: 'machine-1',
+          workflowControl: 'cancel_requested',
+        },
+      } satisfies Update);
+      await vi.waitFor(() => expect(recoverWorkflowRuns).toHaveBeenCalledOnce());
+    } finally {
+      worker.stop();
+    }
+  });
 
   it('does not call claim when there are no enabled assignments', async () => {
     vi.useFakeTimers();

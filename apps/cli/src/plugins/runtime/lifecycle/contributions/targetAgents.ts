@@ -14,6 +14,7 @@ import type {
     AgentRuntime,
     AgentRuntimeFactoryContext,
     AgentSessionStartupContributionV1,
+    AgentTerminalSurface,
     AgentTerminalPromptSubmitVerificationPolicyV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import {
@@ -30,6 +31,7 @@ import {
     type AgentExternalSessionObservationReconcileResourceRequest,
     type AgentExternalSessionsContribution,
     type AgentExternalSessionsManagedEndpointRead,
+    type AgentExternalSessionsResult,
 } from '@happier-dev/plugin-sdk/sessions/external';
 import {
     AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS,
@@ -49,6 +51,7 @@ import {
     ExternalAgentObservationResourceGroupingV1Schema,
     ExternalAgentObservationResourceKeyV1Schema,
 } from '@happier-dev/protocol';
+import { declaresHostSynthesizedAgentResumeOnlyExternalSources } from '@happier-dev/protocol/plugins/contributions/agent-resume-only-sources';
 import { logExternalSessionsInternalError } from '@/session/actions/externalSessions/responseErrors';
 import { readValidatedAgentSessionRunnerFactory } from '../../api/registrationRightsHost';
 import {
@@ -62,6 +65,10 @@ import {
 import {
     normalizePluginDeclarativeAcpRuntime,
 } from '@/agent/acp/runtime/definition/plugin';
+import {
+    createAcpSessionListingOwner,
+    type AcpSessionListingOwner,
+} from '@/agent/acp/runtime/sessionListing/createAcpSessionListingContribution';
 import type { ResolvedAgentContribution } from '../../../projection/registry/types';
 import {
     indexAgentRoutingIdsByContributionIdentity,
@@ -127,6 +134,24 @@ type GenerationBoundExternalSessionHooks = Readonly<{
     >>>;
 }>;
 
+export type GenerationBoundExternalSessionCandidateLifecycle = Readonly<{
+    /**
+     * Runs one candidate-listing request and reports the delete support the
+     * connection that served *that* request negotiated, under this generation.
+     * The capability is request-local and generation-local: it never survives
+     * the request that proved it, and a retired generation reports `false`.
+     */
+    runListingRequest<T>(run: () => Promise<T>): Promise<Readonly<{
+        value: T;
+        negotiatedDeleteSupport: boolean;
+    }>>;
+    deleteCandidate(request: Readonly<{
+        source: AgentExternalSessionSource;
+        remoteSessionId: string;
+        signal?: AbortSignal;
+    }>): Promise<AgentExternalSessionsResult<void>>;
+}>;
+
 type GenerationBoundExternalSessionTakeover = Readonly<{
     resolveLaunch(
         request: AgentExternalSessionTakeoverResolveLaunchRequest,
@@ -173,9 +198,18 @@ type AgentRuntimeRegistrationLeaseBase = Readonly<{
     immutableGenerationId?: string | null;
     startupInstructionsVersions?: readonly [1];
     externalSessions?: BoundedAgentExternalSessionsContribution;
+    /**
+     * Host-synthesized Agent session-lifecycle controls for a resume-only ACP
+     * source. Deliberately outside `externalSessions`: the public External
+     * Sessions contribution owns discovery and transcripts, never destructive
+     * control of an Agent's own session records, so a plugin can never supply
+     * this facet.
+     */
+    externalSessionCandidateLifecycle?: GenerationBoundExternalSessionCandidateLifecycle;
     externalSessionHooks?: GenerationBoundExternalSessionHooks;
     externalSessionObservation?: GenerationBoundExternalSessionObservation;
     externalSessionTakeover?: GenerationBoundExternalSessionTakeover;
+    terminal?: AgentTerminalSurface;
     daemonSpawnHooks?: AgentDaemonSpawnHooks;
     providerCliAttach?: AgentProviderCliAttachDeclarationV1;
     cliSessionCommand?: AgentCliSessionCommandDeclarationV1;
@@ -419,6 +453,7 @@ function isAgentRegistration(
 function assertValidAgentRuntime(
     value: AgentRuntime,
     declaredPrimary: 'sessions' | 'executionRuns' | null,
+    declaresExecutionRunContextV1: boolean,
 ): AgentRuntime {
     if (typeof value !== 'object' || value === null) {
         throw new Error('Agent factory returned an invalid Agent runtime');
@@ -446,6 +481,16 @@ function assertValidAgentRuntime(
     }
     if (declaredPrimary === 'executionRuns' && !hasExecutionRuns) {
         throw new Error('Agent declaration is execution-run primary but the factory returned no execution-run runtime');
+    }
+    const hasExecutionRunContextV1 = hasSessions
+        && typeof sessions.executionRunContextV1 === 'object'
+        && sessions.executionRunContextV1 !== null
+        && typeof sessions.executionRunContextV1.open === 'function';
+    if (declaresExecutionRunContextV1 && !hasExecutionRunContextV1) {
+        throw new Error('Agent declaration declares detached execution-run context v1 but returned no matching runtime facet');
+    }
+    if (!declaresExecutionRunContextV1 && hasExecutionRunContextV1) {
+        throw new Error('Agent runtime returned a detached execution-run context facet without declaring the matching manifest capability');
     }
     return value;
 }
@@ -1240,12 +1285,14 @@ function createLease(params: Readonly<{
     generation: string;
     immutableGenerationId: string | null;
     declaredPrimary?: 'sessions' | 'executionRuns' | null;
+    declaresExecutionRunContextV1?: boolean;
     startupInstructionsVersions?: readonly [1];
     registration: AgentContributionRuntimeRegistration;
     runnerBinding?: AgentSessionRunnerBindingV1;
     isGenerationActive(): boolean;
     retirementSignal: AbortSignal;
     boundedExternalSessions?: BoundedAgentExternalSessionsContribution;
+    acpSessionListingOwner?: AcpSessionListingOwner;
     boundedExternalSessionHooks?: GenerationBoundExternalSessionHooks;
     boundedExternalSessionObservation?: GenerationBoundExternalSessionObservation;
     boundedExternalSessionTakeover?: GenerationBoundExternalSessionTakeover;
@@ -1390,6 +1437,53 @@ function createLease(params: Readonly<{
                     )
             )
             : params.managedEndpointRead;
+    /**
+     * Bound to this generation exactly like the External Sessions contribution
+     * beside it: a retired generation can neither advertise nor perform a
+     * destructive Agent-side deletion.
+     */
+    const externalSessionCandidateLifecycle: GenerationBoundExternalSessionCandidateLifecycle | undefined =
+        params.acpSessionListingOwner
+            ? Object.freeze({
+                async runListingRequest(run) {
+                    const listed = await params.acpSessionListingOwner!.runListingRequest(run);
+                    return Object.freeze({
+                        value: listed.value,
+                        negotiatedDeleteSupport: listed.negotiatedDeleteSupport
+                            && params.isGenerationActive()
+                            && !params.retirementSignal.aborted,
+                    });
+                },
+                async deleteCandidate(request) {
+                    if (!params.isGenerationActive() || params.retirementSignal.aborted) {
+                        return { ok: false, code: 'unavailable' };
+                    }
+                    const controller = new AbortController();
+                    const abort = () => controller.abort();
+                    request.signal?.addEventListener('abort', abort, { once: true });
+                    params.retirementSignal.addEventListener('abort', abort, { once: true });
+                    try {
+                        if (request.signal?.aborted) return { ok: false, code: 'cancelled' };
+                        const exec = (await createInvocationServices(controller.signal)).exec;
+                        if (!params.isGenerationActive() || params.retirementSignal.aborted) {
+                            return { ok: false, code: 'unavailable' };
+                        }
+                        return await params.acpSessionListingOwner!.deleteCandidate({
+                            source: request.source,
+                            remoteSessionId: request.remoteSessionId,
+                            exec,
+                            signal: controller.signal,
+                            deadlineAtMs: Date.now() + EXTERNAL_SESSIONS_INVOCATION_POLICY.deadlineMs,
+                            maxSerializedBytes:
+                                EXTERNAL_SESSIONS_INVOCATION_POLICY.resolveSource.maxSerializedBytes,
+                        });
+                    } finally {
+                        request.signal?.removeEventListener('abort', abort);
+                        params.retirementSignal.removeEventListener('abort', abort);
+                    }
+                },
+            })
+            : undefined;
     const externalSessionObservation = params.boundedExternalSessionObservation
         ?? (params.registration.externalSessionObservation
             ? createGenerationBoundExternalSessionObservation({
@@ -1437,6 +1531,18 @@ function createLease(params: Readonly<{
                 retirementSignal: params.retirementSignal,
             })
             : undefined);
+    const terminal = params.registration.terminal
+        ? Object.freeze({
+            async resolveLaunch(
+                request: Parameters<AgentTerminalSurface['resolveLaunch']>[0],
+            ) {
+                assertCurrent();
+                const result = await params.registration.terminal!.resolveLaunch(request);
+                assertCurrent();
+                return result;
+            },
+        }) satisfies AgentTerminalSurface
+        : undefined;
     const daemonSpawnHooks = params.boundedDaemonSpawnHooks
         ?? (params.registration.daemonSpawnHooks
             ? createGenerationBoundAgentDaemonSpawnHooks({
@@ -1458,6 +1564,9 @@ function createLease(params: Readonly<{
         ...(externalSessions
             ? { externalSessions }
             : {}),
+        ...(externalSessionCandidateLifecycle
+            ? { externalSessionCandidateLifecycle }
+            : {}),
         ...(externalSessionHooks
             ? { externalSessionHooks }
             : {}),
@@ -1467,6 +1576,7 @@ function createLease(params: Readonly<{
         ...(externalSessionTakeover
             ? { externalSessionTakeover }
             : {}),
+        ...(terminal ? { terminal } : {}),
         ...(daemonSpawnHooks
             ? { daemonSpawnHooks }
             : {}),
@@ -1589,7 +1699,11 @@ function createLease(params: Readonly<{
                 });
                 const runtime = await factory(context);
                 assertCurrent();
-                return assertValidAgentRuntime(runtime, params.declaredPrimary ?? null);
+                return assertValidAgentRuntime(
+                    runtime,
+                    params.declaredPrimary ?? null,
+                    params.declaresExecutionRunContextV1 === true,
+                );
             })();
             const runtime = await awaitRuntime(runtimePromise, signal);
             assertCurrent();
@@ -1685,6 +1799,8 @@ export function createTargetAgentRuntimeRegistry(params: Readonly<{
             && isPrimaryAgentContributionDefinition(selectedDefinition)
             ? selectedDefinition.primary
             : null;
+        const declaresExecutionRunContextV1 = readAgentSessionCapabilities(selectedDefinition)
+            ?.executionRunContext?.versions.includes(1) === true;
         registry.set(agentId, createLease({
             pluginId: candidate.pluginId,
             pluginVersion: target.manifest.version,
@@ -1693,6 +1809,7 @@ export function createTargetAgentRuntimeRegistry(params: Readonly<{
             generation: candidate.generation,
             immutableGenerationId: params.immutableGenerationIdsByPluginId?.get(candidate.pluginId) ?? null,
             declaredPrimary,
+            declaresExecutionRunContextV1,
             ...(startupInstructionsVersions
                 ? { startupInstructionsVersions }
                 : {}),
@@ -1736,6 +1853,7 @@ const AGENT_AUXILIARY_RUNTIME_REGISTRATION_KEYS = Object.freeze([
     'terminalPromptSubmitVerification',
     'sessionStartup',
     'vendorResumeSupport',
+    'terminal',
     'externalSessions',
     'externalSessionHooks',
     'externalSessionObservation',
@@ -1834,10 +1952,46 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
         const runtime = normalizePluginDeclarativeAcpRuntime(
             declaration.runtime,
         );
+        const declaresExecutionRunContextV1 = readAgentSessionCapabilities(
+            declaration.agent.richDefinition?.definition,
+        )?.executionRunContext?.versions.includes(1) === true;
         const retainedFacets = retainAgentAuxiliaryRuntimeFacets(existing);
+        const externalSessionSources = declaration.agent.richDefinition
+            ?.definition.surfaces?.externalSession.sources ?? [];
+        // The protocol Agent contribution schema owns the resume-only source
+        // contract; this defensive re-check keeps malformed or bypassed
+        // installed data from synthesizing a resume listing the Agent's
+        // declared Session capabilities cannot fulfill.
+        const resumeOnlySourceKinds = new Set(
+            declaresHostSynthesizedAgentResumeOnlyExternalSources(
+                declaration.agent.richDefinition?.definition,
+            )
+                ? externalSessionSources.map((source) => source.sourceKind)
+                : [],
+        );
+        if (resumeOnlySourceKinds.size > 0 && retainedFacets.registration.externalSessions) {
+            throw new Error(
+                `Declarative ACP Agent '${declaration.agent.id}' has competing External Sessions owners`,
+            );
+        }
+        const acpSessionListingOwner = resumeOnlySourceKinds.size > 0
+            ? createAcpSessionListingOwner({
+                pluginId: declaration.pluginId,
+                agentId: declaration.agent.id,
+                runtime,
+                sourceKinds: resumeOnlySourceKinds,
+            })
+            : null;
         const registration: AgentContributionRuntimeRegistration = Object.freeze({
-            factory: createHostDeclarativeAcpAgentRuntimeFactory(runtime),
+            factory: createHostDeclarativeAcpAgentRuntimeFactory(runtime, {
+                executionRunContextV1: declaresExecutionRunContextV1,
+            }),
             ...retainedFacets.registration,
+            ...(acpSessionListingOwner
+                ? {
+                    externalSessions: acpSessionListingOwner.contribution,
+                }
+                : {}),
         });
         const pluginVersion = existing?.pluginVersion
             ?? declaration.agent.sourceSpec?.resolvedVersion
@@ -1868,6 +2022,8 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
             pluginId: declaration.pluginId,
             pluginVersion: pluginVersion ?? '0.0.0',
             agentId: declaration.agent.id,
+            declaresExecutionRunContextV1,
+            ...(acpSessionListingOwner ? { acpSessionListingOwner } : {}),
             declaredPrimary: declaration.agent.richDefinition?.definition !== undefined
                 && isPrimaryAgentContributionDefinition(declaration.agent.richDefinition.definition)
                 ? declaration.agent.richDefinition.definition.primary
@@ -1894,6 +2050,7 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
                         : {}),
                 }),
             ...retainedFacets.boundedLeaseFacets,
+            ...(acpSessionListingOwner ? { acpSessionListingOwner } : {}),
             ...(params.createAgentInvocationServices
                 ? {
                     createAgentInvocationServices:

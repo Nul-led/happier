@@ -18,7 +18,7 @@ describe('runSelectionPostSwitchRecovery', () => {
       },
       sessionId: 'sess_1',
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'next-profile' },
         },
@@ -61,7 +61,7 @@ describe('runSelectionPostSwitchRecovery', () => {
       },
       sessionId: 'sess_1',
       normalizedBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected', selection: 'profile', profileId: 'next-profile' },
         },

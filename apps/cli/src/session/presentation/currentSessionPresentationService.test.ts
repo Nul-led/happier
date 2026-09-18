@@ -11,13 +11,16 @@ import {
   CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
   CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY,
   CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+  CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD,
   CurrentSessionPresentationStateV1Schema,
 } from '@happier-dev/protocol/sessions';
+import { SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
 
 import { createCurrentSessionPresentationService } from './currentSessionPresentationService';
 
 function createHarness(options?: Readonly<{
   recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
+  ackTimeoutMs?: number;
 }>) {
   let agentState: AgentState = {};
   const handlers = new Map<string, RpcHandler>();
@@ -27,7 +30,18 @@ function createHarness(options?: Readonly<{
   const session = {
     sessionId: 'session-1',
     rpcHandlerManager: {
-      registerHandler: (method: string, handler: RpcHandler) => handlers.set(method, handler),
+      registerHandler: (method: string, handler: RpcHandler) => handlers.set(method, (data, context) => handler(
+        data,
+        context ?? {
+          signal: new AbortController().signal,
+          authorization: {
+            kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN,
+            sessionId: 'session-1',
+            accountId: 'owner-1',
+            connectionId: 'connection-1',
+          },
+        },
+      )),
       invokeLocal: async (method: string, params: unknown) => await handlers.get(method)?.(params),
     },
     updateAgentState: async (updater: (state: AgentState) => AgentState) => {
@@ -41,7 +55,7 @@ function createHarness(options?: Readonly<{
     session,
     signal: controller.signal,
     isCurrent: () => true,
-    ackTimeoutMs: 20,
+    ackTimeoutMs: options?.ackTimeoutMs ?? 20,
     ...(options?.recordRuntimeLimitMeasurement
       ? { recordRuntimeLimitMeasurement: options.recordRuntimeLimitMeasurement }
       : {}),
@@ -68,6 +82,18 @@ function createHarness(options?: Readonly<{
   };
 }
 
+function presentationContext(connectionId: string, accountId = 'owner-1') {
+  return {
+    signal: new AbortController().signal,
+    authorization: {
+      kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN,
+      sessionId: 'session-1',
+      accountId,
+      connectionId,
+    },
+  } as const;
+}
+
 const defaultOwner = {
   pluginId: 'acme.default',
   contributionId: 'presentation',
@@ -76,6 +102,21 @@ const defaultOwner = {
 } as const;
 
 describe('current-session presentation service', () => {
+  it('refuses local or forwarded custody calls without the private authenticated origin', async () => {
+    const harness = createHarness();
+    const contextWithoutOrigin = { signal: new AbortController().signal };
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'asserted-client', focused: true, draftRevision: 0,
+    }, contextWithoutOrigin)).resolves.toEqual({ status: 'rejected', reason: 'unavailable' });
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.({
+      hostNonce: 'asserted-host',
+      clientId: 'asserted-client',
+      commandId: 'asserted-command',
+      result: { status: 'applied' },
+    }, contextWithoutOrigin)).resolves.toEqual({ status: 'ignored' });
+    expect(harness.readStateWriteAttemptCount()).toBe(0);
+  });
+
   it('records the exact UTF-8 aggregate only after the canonical snapshot accepts it', async () => {
     const samples: HostRuntimeLimitMeasurementSample[] = [];
     const harness = createHarness({
@@ -415,7 +456,7 @@ describe('current-session presentation service', () => {
   it('publishes a notification to the bound client without a generic acknowledgement', async () => {
     const harness = createHarness();
     await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
-      clientId: 'client-1', focused: false, draftRevision: 2,
+      clientId: 'client-1', focused: true, draftRevision: 2,
     });
     let published = 0;
     harness.setAfterStateWrite(() => {
@@ -471,14 +512,38 @@ describe('current-session presentation service', () => {
       .resolves.toMatchObject({ status: 'conflict' });
   });
 
+  it('publishes one focused Board intent and settles only its matching typed acknowledgement', async () => {
+    const harness = createHarness();
+    const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-1', focused: true, draftRevision: 7,
+    }) as { hostNonce: string };
+    harness.setAfterStateWrite(() => {
+      const command = harness.readState().command;
+      if (command?.kind !== 'presentation.apply') return;
+      expect(command.intent).toEqual({ kind: 'board.item.reveal', widgetId: 'note-1' });
+      void harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.({
+        hostNonce: bound.hostNonce,
+        clientId: 'client-1',
+        commandId: command.id,
+        result: { status: 'applied' },
+      });
+    });
+    await expect(harness.presentation.present({
+      operationId: 'present-1',
+      intent: { kind: 'board.item.reveal', widgetId: 'note-1' },
+    })).resolves.toMatchObject({ status: 'applied' });
+    expect(harness.readState().command).toBeUndefined();
+  });
+
   it('does not let an unfocused client steal composer authority from the focused bound client', async () => {
     const harness = createHarness();
     const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
       clientId: 'focused-client', focused: true, draftRevision: 9,
     }) as { hostNonce: string };
-    await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+    expect(bound).toMatchObject({ status: 'bound' });
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
       clientId: 'background-client', focused: false, draftRevision: 2,
-    });
+    })).resolves.toEqual({ status: 'rejected', reason: 'notCurrent' });
     harness.setAfterStateWrite(() => {
       const command = harness.readState().command;
       if (!command) return;
@@ -501,10 +566,146 @@ describe('current-session presentation service', () => {
       .resolves.toMatchObject({ status: 'applied' });
   });
 
+  it('keeps an in-flight command with focused A when unfocused B is rejected, then accepts only A acknowledgement', async () => {
+    const harness = createHarness({ ackTimeoutMs: 1_000 });
+    const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 9,
+    }, presentationContext('connection-a')) as { hostNonce: string };
+    const pending = harness.presentation.present({
+      operationId: 'present-a',
+      intent: { kind: 'board.open', mode: 'beside_chat' },
+    });
+    await vi.waitFor(() => expect(harness.readState().command?.id).toBe('present-a'));
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-b', focused: false, draftRevision: 1,
+    }, presentationContext('connection-b'))).resolves.toEqual({
+      status: 'rejected',
+      reason: 'notCurrent',
+    });
+    expect(harness.readState().command?.id).toBe('present-a');
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.({
+      hostNonce: bound.hostNonce,
+      clientId: 'client-a',
+      commandId: 'present-a',
+      result: { status: 'applied' },
+    }, presentationContext('connection-a'))).resolves.toEqual({ status: 'accepted' });
+    await expect(pending).resolves.toMatchObject({ status: 'applied' });
+  });
+
+  it('keeps the incumbent origin and in-flight command when a replacement bind cannot publish its snapshot', async () => {
+    const harness = createHarness({ ackTimeoutMs: 1_000 });
+    const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 9,
+    }, presentationContext('connection-a')) as { hostNonce: string };
+    const pending = harness.presentation.present({
+      operationId: 'present-before-failed-bind',
+      intent: { kind: 'board.open', mode: 'beside_chat' },
+    });
+    await vi.waitFor(() => expect(harness.readState().command?.id).toBe('present-before-failed-bind'));
+
+    harness.setFailStateWrite(new Error('replacement bind snapshot unavailable'));
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-b', focused: true, draftRevision: 1,
+    }, presentationContext('connection-b'))).rejects.toThrow('replacement bind snapshot unavailable');
+    harness.setFailStateWrite(null);
+    expect(harness.readState().command?.id).toBe('present-before-failed-bind');
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.({
+      hostNonce: bound.hostNonce,
+      clientId: 'client-a',
+      commandId: 'present-before-failed-bind',
+      result: { status: 'applied' },
+    }, presentationContext('connection-a'))).resolves.toEqual({ status: 'accepted' });
+    await expect(pending).resolves.toMatchObject({ status: 'applied' });
+  });
+
+  it('does not erase an in-flight command when the same origin refreshes its binding', async () => {
+    const harness = createHarness({ ackTimeoutMs: 1_000 });
+    const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 3,
+    }, presentationContext('connection-a')) as { hostNonce: string };
+    const pending = harness.presentation.present({
+      operationId: 'same-origin-refresh',
+      intent: { kind: 'companion.show' },
+    });
+    await vi.waitFor(() => expect(harness.readState().command?.id).toBe('same-origin-refresh'));
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 4,
+    }, presentationContext('connection-a'))).resolves.toMatchObject({ status: 'bound' });
+    expect(harness.readState().command?.id).toBe('same-origin-refresh');
+
+    await harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.({
+      hostNonce: bound.hostNonce,
+      clientId: 'client-a',
+      commandId: 'same-origin-refresh',
+      result: { status: 'applied' },
+    }, presentationContext('connection-a'));
+    await expect(pending).resolves.toMatchObject({ status: 'applied' });
+  });
+
+  it('refuses acknowledgement from every different connection or principal', async () => {
+    const harness = createHarness({ ackTimeoutMs: 1_000 });
+    const bound = await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 3,
+    }, presentationContext('connection-a')) as { hostNonce: string };
+    const pending = harness.presentation.present({
+      operationId: 'origin-fenced-ack',
+      intent: { kind: 'chat.return' },
+    });
+    await vi.waitFor(() => expect(harness.readState().command?.id).toBe('origin-fenced-ack'));
+    const ack = {
+      hostNonce: bound.hostNonce,
+      clientId: 'client-a',
+      commandId: 'origin-fenced-ack',
+      result: { status: 'applied' },
+    } as const;
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.(
+      ack,
+      presentationContext('connection-b'),
+    )).resolves.toEqual({ status: 'ignored' });
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.(
+      ack,
+      presentationContext('connection-a', 'other-owner'),
+    )).resolves.toEqual({ status: 'ignored' });
+    expect(harness.readState().command?.id).toBe('origin-fenced-ack');
+
+    await harness.handlers.get(CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD)?.(
+      ack,
+      presentationContext('connection-a'),
+    );
+    await expect(pending).resolves.toMatchObject({ status: 'applied' });
+  });
+
+  it('retires the exact mounted origin and makes subsequent presentation unavailable before publication', async () => {
+    const harness = createHarness();
+    await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
+      clientId: 'client-a', focused: true, draftRevision: 3,
+    }, presentationContext('connection-a'));
+    const writesBeforeRetirement = harness.readStateWriteAttemptCount();
+
+    await expect(harness.handlers.get(CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD)?.({
+      clientId: 'client-a',
+    }, presentationContext('connection-a'))).resolves.toEqual({ status: 'retired' });
+    const writesAfterRetirement = harness.readStateWriteAttemptCount();
+    expect(writesAfterRetirement).toBeGreaterThanOrEqual(writesBeforeRetirement);
+    await expect(harness.presentation.present({
+      operationId: 'after-unmount',
+      intent: { kind: 'companion.show' },
+    })).resolves.toMatchObject({
+      status: 'unavailable',
+      diagnostic: { code: 'current_session_presentation_not_current' },
+    });
+    expect(harness.readStateWriteAttemptCount()).toBe(writesAfterRetirement);
+  });
+
   it('distinguishes known pre-publication loss from a successful notification publication', async () => {
     const harness = createHarness();
     await harness.handlers.get(CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD)?.({
-      clientId: 'client-1', focused: false, draftRevision: 0,
+      clientId: 'client-1', focused: true, draftRevision: 0,
     });
     const preIssueError = Object.assign(new Error('socket is not connected'), { code: 'socket_not_connected' });
     harness.setFailStateWrite(preIssueError);

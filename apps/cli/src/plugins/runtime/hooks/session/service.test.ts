@@ -581,6 +581,7 @@ describe('createSessionHooksService', () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-session-hooks-'));
     const transcriptDir = await mkdtemp(join(tmpdir(), 'happier-session-hooks-transcript-'));
     const transcriptPath = join(transcriptDir, 'provider-session.jsonl');
+    const paddedProviderSessionId = ' provider/session+1=\n';
     await writeFile(transcriptPath, '{"kind":"ready"}\n', 'utf8');
 
     const fileFollowPathGrants = createTranscriptFileFollowPathGrantRegistry();
@@ -596,14 +597,14 @@ describe('createSessionHooksService', () => {
       hasCapability: hasSessionHooksCapability,
       grantTranscriptFileFollowPath: async (request: Readonly<{
         providerSessionId: string;
-        sessionId: string;
+        scope: { kind: 'session'; sessionId: string };
         transcriptPath: string;
       }>) => {
         grantRequests.push(request);
         await fileFollowPathGrants.grant({
           pluginId: 'acme.sample',
           runtimeId: 'runtime-1',
-          sessionId: request.sessionId,
+          scope: request.scope,
           path: request.transcriptPath,
           reason: 'providerTranscriptSource',
           evidence: {
@@ -615,18 +616,20 @@ describe('createSessionHooksService', () => {
     } as Parameters<typeof createSessionHooksService>[0] & {
       grantTranscriptFileFollowPath: (request: Readonly<{
         providerSessionId: string;
-        sessionId: string;
+        scope: { kind: 'session'; sessionId: string };
         transcriptPath: string;
       }>) => Promise<void>;
     });
 
     const followedLines: string[] = [];
+    const hookProviderSessionIds: string[] = [];
     let followError: unknown = null;
     const server = await service.startServer({
       providerId: 'claude',
       sessionId: 'happy-session-grant',
       sessionHookSecret: 'trusted-session-hook-secret',
-      onSessionHook: async (_providerSessionId, data) => {
+      onSessionHook: async (providerSessionId, data) => {
+        hookProviderSessionIds.push(providerSessionId);
         try {
           const handle = await fileFollow.follow({
             path: String(data.transcript_path),
@@ -648,19 +651,20 @@ describe('createSessionHooksService', () => {
         port: server.port,
         body: {
           hook_event_name: 'SessionStart',
-          session_id: 'provider-session-1',
+          session_id: paddedProviderSessionId,
           transcript_path: transcriptPath,
         },
         sessionHookSecret: 'trusted-session-hook-secret',
       })).resolves.toEqual({ status: 200, text: 'ok' });
 
       expect(followError).toBeNull();
+      expect(hookProviderSessionIds).toEqual([paddedProviderSessionId]);
       expect(followedLines).toEqual(['{"kind":"ready"}']);
       expect(grantRequests).toEqual([
         expect.objectContaining({
           providerId: 'claude',
-          sessionId: 'happy-session-grant',
-          providerSessionId: 'provider-session-1',
+          scope: { kind: 'session', sessionId: 'happy-session-grant' },
+          providerSessionId: paddedProviderSessionId,
           eventName: 'SessionStart',
           transcriptPath,
         }),
@@ -733,14 +737,14 @@ describe('createSessionHooksService', () => {
       hasCapability: hasSessionHooksCapability,
       grantTranscriptFileFollowPath: async (request: Readonly<{
         providerSessionId: string;
-        sessionId: string;
+        scope: { kind: 'session'; sessionId: string };
         transcriptPath: string;
       }>) => {
         grantRequests.push(request);
         await fileFollowPathGrants.grant({
           pluginId: 'acme.sample',
           runtimeId: 'runtime-1',
-          sessionId: request.sessionId,
+          scope: request.scope,
           path: request.transcriptPath,
           reason: 'providerTranscriptSource',
           evidence: {
@@ -752,7 +756,7 @@ describe('createSessionHooksService', () => {
     } as Parameters<typeof createSessionHooksService>[0] & {
       grantTranscriptFileFollowPath: (request: Readonly<{
         providerSessionId: string;
-        sessionId: string;
+        scope: { kind: 'session'; sessionId: string };
         transcriptPath: string;
       }>) => Promise<void>;
     });

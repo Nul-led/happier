@@ -5,6 +5,9 @@ import type { SocketRpcRequestPayload as ProtocolSocketRpcRequestPayload } from 
 import {
   ACCEPTED_PENDING_SETTLEMENT_EVENT_V1,
   SESSION_PENDING_ADMISSION_SETTLEMENT_EVENT_V1,
+  SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2,
+  SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2,
+  SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2,
   SentFromSchema,
 } from '@happier-dev/protocol'
 import type {
@@ -41,7 +44,7 @@ import {
 import type {
   AcpConfigOptionOverridesV1,
   AcpSessionModeOverrideV1,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
   ExternalSessionsSource,
   ModelOverrideV1,
   SessionAppliedModelV1,
@@ -187,6 +190,18 @@ export interface ServerToClientEvents {
  * Socket events from client to server
  */
 export interface ClientToServerEvents {
+  [SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2]: (
+    data: import('@happier-dev/protocol').SessionPendingExecutionRunMaterializeNextRequestV2,
+    cb?: (answer: import('@happier-dev/protocol').SessionPendingExecutionRunMaterializeNextResponseV2) => void,
+  ) => void
+  [SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2]: (
+    data: import('@happier-dev/protocol').SessionPendingExecutionRunAcceptedRequestV2,
+    cb?: (answer: import('@happier-dev/protocol').SessionPendingExecutionRunAcceptedResponseV2) => void,
+  ) => void
+  [SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2]: (
+    data: import('@happier-dev/protocol').SessionPendingExecutionRunBlockRequestV2,
+    cb?: (answer: import('@happier-dev/protocol').SessionPendingExecutionRunBlockResponseV2) => void,
+  ) => void
   [SESSION_PENDING_ADMISSION_SETTLEMENT_EVENT_V1]: (
     data: SessionPendingAdmissionSettlementRequestV1,
     cb?: (answer: SessionPendingAdmissionSettlementResponseV1) => void
@@ -278,6 +293,7 @@ export interface ClientToServerEvents {
       pendingPermissionRequestCount: number,
       pendingUserActionRequestCount: number,
       pendingRequestNewestCreatedAt: number | null,
+      ownerActivityDelivery?: 'rich_sender' | 'home_required',
       newUserActionRequiredOccurrences?: ReadonlyArray<{
         requestId: string,
         sourceTurnId: string,
@@ -331,6 +347,7 @@ type SessionSharedFields = Readonly<{
   pendingCount?: number;
   pendingBlockedCount?: number;
   pendingVersion?: number;
+  pendingExecutionRunIds?: readonly string[];
   latestTurnStatus?: PrimaryTurnStatusV1 | null;
   latestTurnStatusObservedAt?: number | null;
   runtimeActivityState?: 'active' | 'idle' | 'unknown';
@@ -680,6 +697,8 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
   sessionWorkspaceLocationV1?: SessionWorkspaceLocationV1,
   /** Immutable create-or-rejoin recipe supplied only by the Session creation owner. */
   sessionCreationCorrespondenceV1?: import('@happier-dev/protocol').SessionCreationCorrespondenceV1,
+  /** Informational creation origin; never execution authority. */
+  placementOrigin?: import('@happier-dev/protocol').MachinePoolSelectionOriginV1,
   /** Durable connected-service generation reconciliation state; parsed fail-closed by its owner. */
   connectedServicePendingAuthGroupGenerationsV1?: unknown,
   locallyConsumedUserMessageSeqsV1?: number[],
@@ -702,6 +721,7 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
   kimiSessionId?: string, // Kimi ACP session ID (opaque)
   kiloSessionId?: string, // Kilo ACP session ID (opaque)
   kiroSessionId?: string, // Kiro ACP session ID (opaque)
+  devinSessionId?: string, // Devin ACP session ID (opaque)
   ohMyPiSessionId?: string, // oh-my-pi ACP session ID (opaque)
   piSessionId?: string, // Pi RPC session ID (opaque)
   copilotSessionId?: string, // Copilot ACP session ID (opaque)
@@ -895,7 +915,7 @@ export type Metadata = Readonly<Partial<RuntimeDescriptorMetadataCarrier>> & {
    * Non-secret; spawn paths use this to rematerialize the correct account/group across
    * forks, resumes, and runtime-auth recovery.
    */
-  connectedServices?: ConnectedServiceBindingsV1,
+  connectedServices?: ConnectedServiceBindingsV2,
   connectedServicesUpdatedAt?: number,
   /**
    * Desired model override selected by the user (UI/CLI), if supported by the agent.

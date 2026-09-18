@@ -117,6 +117,7 @@ function createAgentFixture(): ResolvedAgentContribution {
 
 function createRuntimeTurnOperations(): RuntimeTurnOperations & Readonly<{
   sendTurnPrompt: ReturnType<typeof vi.fn>;
+  setOnPromptDeliveryOutcome: ReturnType<typeof vi.fn>;
 }> {
   return {
     beginTurnLifecycle: vi.fn(),
@@ -128,6 +129,7 @@ function createRuntimeTurnOperations(): RuntimeTurnOperations & Readonly<{
     readSessionIdentity: vi.fn(() => ({ sessionId: 'plugin-session-1' })),
     updateSessionRuntimeConfig: vi.fn(async () => undefined),
     resetOrDisposeRuntime: vi.fn(async () => undefined),
+    setOnPromptDeliveryOutcome: vi.fn(),
   };
 }
 
@@ -248,6 +250,14 @@ describe('plugin session runtime adapters', () => {
       credentials,
       resume: '   ',
     })).toThrow(/non-empty provider continuation id/i);
+  });
+
+  it('preserves opaque Agent resume bytes through the plugin session binding round trip', () => {
+    const opaqueResumeId = ' provider\nsession ';
+    const input = buildPluginSessionBindingInput({ credentials, resume: opaqueResumeId });
+
+    expect(input.resume.resumeSessionId).toBe(opaqueResumeId);
+    expect(buildPluginHostSessionRuntimeOptions(input)).toMatchObject({ resume: opaqueResumeId });
   });
 
   it('preserves explicit terminal-mode intent through the plugin session binding', () => {
@@ -943,6 +953,34 @@ describe('plugin session runtime adapters', () => {
     });
   });
 
+  it('hands the Agent its own opaque resume bytes through the native open intent', async () => {
+    // The Agent minted this id; `session/load` must receive it byte for byte.
+    const opaqueResumeId = ' provider\nsession ';
+    let capturedOpenIntent: unknown = null;
+    const runtime = createRuntimeTurnOperations();
+    const plan = await createPublicPluginSessionRuntimePlan({
+      backend: createBackendFixture(),
+      agent: createAgentFixture(),
+      createSessionRuntime: async (params) => {
+        capturedOpenIntent = params;
+        return runtime;
+      },
+      sessionInput: buildPluginSessionBindingInput({
+        credentials,
+        directory: '/tmp/plugin-backend',
+        resume: opaqueResumeId,
+      }),
+    });
+
+    await plan.config.createSessionRuntime?.(createHostFactoryParams());
+
+    expect(capturedOpenIntent).toEqual({
+      kind: 'resume',
+      providerSessionId: opaqueResumeId,
+      importHistory: true,
+    });
+  });
+
   it('carries strict native-return identity only from the matching host intent', async () => {
     let capturedOpenIntent: unknown = null;
     const runtime = createRuntimeTurnOperations();
@@ -973,26 +1011,22 @@ describe('plugin session runtime adapters', () => {
     });
   });
 
-  it('does not advertise unsupported public provider-acceptance hook setters', async () => {
-    const runtime = createRuntimeTurnOperations();
+  it('rejects a hookless public plugin Session runtime before host admission', async () => {
+    const { setOnPromptDeliveryOutcome: _omittedOutcomePort, ...runtime } = createRuntimeTurnOperations();
     const plan = await createPublicPluginSessionRuntimePlan({
       backend: createBackendFixture(),
       agent: createAgentFixture(),
-      createSessionRuntime: async () => runtime,
+      createSessionRuntime: async () => runtime as never,
       sessionInput: buildPluginSessionBindingInput({
         credentials,
         directory: '/tmp/plugin-backend',
       }),
     });
 
-    const created = await plan.config.createSessionRuntime?.(createHostFactoryParams());
-
-    const operations = (created as Readonly<{
-      operations: RuntimeTurnOperations & Record<string, unknown>;
-    }>).operations;
-
-    expect(operations.setOnPromptAcceptedByProvider).toBeUndefined();
-    expect(typeof operations.setOnPromptTerminallyRejectedBeforeProvider).toBe('function');
+    await expect(
+      plan.config.createSessionRuntime?.(createHostFactoryParams()),
+    ).rejects.toThrow(/provider delivery outcome/i);
+    expect(runtime.resetOrDisposeRuntime).toHaveBeenCalledOnce();
   });
 
   it('rebinds canonical native operations after reset and fences stale predecessor events', async () => {
@@ -1296,13 +1330,13 @@ describe('plugin session runtime adapters', () => {
     expect(createSessionRuntime).toHaveBeenCalledOnce();
   });
 
-  it('fails closed when a successor drops an activated prompt-delivery outcome seam', async () => {
+  it('fails closed when a successor omits the mandatory provider delivery outcome port', async () => {
     const firstSetOutcome = vi.fn();
     const first = {
       ...createRuntimeTurnOperations(),
       setOnPromptDeliveryOutcome: firstSetOutcome,
     };
-    const second = createRuntimeTurnOperations();
+    const { setOnPromptDeliveryOutcome: _omittedOutcomePort, ...second } = createRuntimeTurnOperations();
     const createSessionRuntime = vi.fn()
       .mockResolvedValueOnce(first)
       .mockResolvedValueOnce(second);
@@ -1325,7 +1359,7 @@ describe('plugin session runtime adapters', () => {
       providerSessionId: 'provider-successor',
       importHistory: false,
     }))
-      .rejects.toThrow(/dropped its prompt-delivery-outcome seam/i);
+      .rejects.toThrow(/provider delivery outcome/i);
 
     expect(firstSetOutcome).toHaveBeenCalledOnce();
     expect(second.resetOrDisposeRuntime).toHaveBeenCalledOnce();

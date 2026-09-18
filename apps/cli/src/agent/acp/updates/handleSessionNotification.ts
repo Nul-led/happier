@@ -64,6 +64,13 @@ export async function handleAcpSessionNotification(params: Readonly<{
   setSessionModeState: (state: SessionModeState) => void;
   sessionModelState: SessionModelState | null;
   setSessionModelState: (state: SessionModelState) => void;
+  projectModelId?: (input: Readonly<{
+    modelId: string;
+    modelState: Readonly<SessionModelState> | null;
+  }>) => string;
+  deriveSessionModelState?: (
+    configOptions: ReadonlyArray<SessionConfigOption>,
+  ) => SessionModelState | null;
   sessionConfigOptionsState: ReadonlyArray<SessionConfigOption> | null;
   setSessionConfigOptionsState: (state: ReadonlyArray<SessionConfigOption>) => void;
 }>): Promise<void> {
@@ -239,14 +246,21 @@ export async function handleAcpSessionNotification(params: Readonly<{
           : (typeof (update as { currentModel?: unknown }).currentModel === 'string'
             ? (update as { currentModel: string }).currentModel
             : null);
-      if (modelId && sessionModelState) {
+      const projectedModelId = modelId
+        ? params.projectModelId?.({ modelId, modelState: sessionModelState }) ?? modelId
+        : null;
+      if (projectedModelId && sessionModelState) {
         sessionModelState = {
           ...sessionModelState,
-          currentModelId: modelId,
+          currentModelId: projectedModelId,
         };
         params.setSessionModelState(sessionModelState);
       }
-      params.emit({ type: 'event', name: 'current_model_update', payload: { currentModelId: modelId ?? '' } });
+      params.emit({
+        type: 'event',
+        name: 'current_model_update',
+        payload: { currentModelId: projectedModelId ?? '' },
+      });
       return;
     }
 
@@ -256,6 +270,12 @@ export async function handleAcpSessionNotification(params: Readonly<{
       if (configOptionsRaw) {
         sessionConfigOptionsState = normalizeSessionConfigOptions(configOptionsRaw);
         params.setSessionConfigOptionsState(sessionConfigOptionsState);
+        const projectedModelState = params.deriveSessionModelState?.(sessionConfigOptionsState) ?? null;
+        if (projectedModelState) {
+          sessionModelState = projectedModelState;
+          params.setSessionModelState(projectedModelState);
+          params.emit({ type: 'event', name: 'session_models_state', payload: projectedModelState });
+        }
       }
       params.emit({
         type: 'event',

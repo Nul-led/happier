@@ -34,6 +34,7 @@ function resolveExtractedEntryName(params: Readonly<{
 async function moveExtractedEntryIntoPlace(params: Readonly<{
   archiveName: string;
   extractDir: string;
+  signal?: AbortSignal;
   outputPath: string;
 }>): Promise<void> {
   const entries = await readdir(params.extractDir);
@@ -47,6 +48,7 @@ async function moveExtractedEntryIntoPlace(params: Readonly<{
   }
   const extractedPath = join(params.extractDir, selectedEntry);
   await mkdir(dirname(params.outputPath), { recursive: true });
+  params.signal?.throwIfAborted();
   await rename(extractedPath, params.outputPath);
 }
 
@@ -70,6 +72,7 @@ function resolveDeclaredPath(rootDir: string, relativePath: string): string {
 async function publishDeclaredArchiveEntries(params: Readonly<{
   archiveEntries: ReadonlyArray<DeclaredArchiveEntry>;
   extractDir: string;
+  signal?: AbortSignal;
   outputDir: string;
 }>): Promise<void> {
   const resolvedEntries = await Promise.all(params.archiveEntries.map(async (entry) => {
@@ -89,6 +92,7 @@ async function publishDeclaredArchiveEntries(params: Readonly<{
 
   for (const entry of resolvedEntries) {
     await mkdir(dirname(entry.destinationPath), { recursive: true });
+    params.signal?.throwIfAborted();
     await copyFile(entry.sourcePath, entry.destinationPath);
     if (process.platform !== 'win32') {
       await chmod(entry.destinationPath, 0o755);
@@ -100,6 +104,7 @@ export async function extractGitHubReleaseAsset(params: Readonly<{
   archivePath: string;
   archiveName: string;
   extractDir: string;
+  signal?: AbortSignal;
   outputPath: string;
   outputDir?: string;
   archiveEntries?: ReadonlyArray<DeclaredArchiveEntry>;
@@ -109,11 +114,13 @@ export async function extractGitHubReleaseAsset(params: Readonly<{
   }>;
   skipTarLinks?: boolean;
 }>): Promise<void> {
+  params.signal?.throwIfAborted();
   const archiveName = params.archiveName.toLowerCase();
 
   if (archiveName.endsWith('.tar.gz') || archiveName.endsWith('.tar.xz') || archiveName.endsWith('.zip')) {
     await mkdir(params.extractDir, { recursive: true });
     await extractArchivePayloadToDirectory({
+      signal: params.signal,
       archiveName: params.archiveName,
       archivePath: params.archivePath,
       extractDir: params.extractDir,
@@ -124,12 +131,14 @@ export async function extractGitHubReleaseAsset(params: Readonly<{
     });
     if (params.archiveEntries) {
       await publishDeclaredArchiveEntries({
+        signal: params.signal,
         archiveEntries: params.archiveEntries,
         extractDir: params.extractDir,
         outputDir: params.outputDir ?? join(dirname(params.outputPath), '..'),
       });
     } else {
       await moveExtractedEntryIntoPlace({
+        signal: params.signal,
         archiveName: params.archiveName,
         extractDir: params.extractDir,
         outputPath: params.outputPath,
@@ -142,6 +151,7 @@ export async function extractGitHubReleaseAsset(params: Readonly<{
   }
 
   await mkdir(dirname(params.outputPath), { recursive: true });
+  params.signal?.throwIfAborted();
   await rename(params.archivePath, params.outputPath);
   if (process.platform !== 'win32') {
     await chmod(params.outputPath, 0o755);

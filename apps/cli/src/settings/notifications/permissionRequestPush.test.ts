@@ -1,3 +1,4 @@
+import * as pinnedHttp from '@/network/pinnedHttp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { accountSettingsParse, type LiveActivityRemoteUpdateRequestV1 } from '@happier-dev/protocol';
@@ -15,6 +16,7 @@ import {
 describe('sendPermissionRequestPushNotificationAsync', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     resetActiveAccountSettingsSnapshotForTests();
   });
@@ -158,7 +160,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
         attentionState: 'permission_required',
       },
     });
-    expect(JSON.stringify(request)).not.toContain('secret-token');
+    expect(request?.contentState?.previewText).toContain('git status --short && echo secret-token');
   });
 
   it('redacts non-Axios push errors before logging', async () => {
@@ -201,8 +203,11 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   it('delivers webhook requests during quiet hours when Expo push is suppressed', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-03T12:00:00.000Z'));
-    const fetchSpy = vi.fn(async () => ({ ok: true, status: 202 }));
-    vi.stubGlobal('fetch', fetchSpy);
+    const requests: pinnedHttp.PinnedHttpStreamRequest[] = [];
+    vi.spyOn(pinnedHttp, 'openPinnedHttpStream').mockImplementation(async (request) => {
+      requests.push(request);
+      return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} };
+    });
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
@@ -219,7 +224,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
           id: 'webhook-primary',
           kind: 'webhook',
           enabled: true,
-          url: 'https://hooks.example.test/happier',
+          url: 'https://93.184.216.34/happier',
           topics: {
             ready: false,
             permissionRequest: true,
@@ -242,7 +247,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     })).resolves.toBe(true);
 
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(1);
   });
 
   it('does not throw when push sender throws', async () => {

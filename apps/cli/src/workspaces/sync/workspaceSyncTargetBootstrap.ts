@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 
-import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
+import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { inspectWorkspaceLocationWithScmWorkspace } from '@/scm/workspace/workspaceLocationInspection';
 import { realizeWorkspaceCheckoutWithScmWorkspace } from '@/scm/workspace/workspaceCheckoutOperations';
 import type { ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult } from '@/scm/workspace/workspaceCheckoutRealization';
@@ -14,10 +14,12 @@ import {
   recoverInterruptedWorkspaceTargetMaterialization,
   rehydrateWorkspaceTargetMaterializationFromReceiptPath,
   type WorkspaceExportMaterializationCustody,
+  type WorkspaceTargetMaterializationFence,
 } from '@/scm/workspace/workspaceExportMaterialization';
 import {
   computeWorkspaceSyncAbsentRootFingerprint,
   computeWorkspaceSyncRootFingerprint,
+  readWorkspaceSyncRootObjectIdentity,
 } from './workspaceSyncRootIdentity';
 
 export type WorkspaceSyncTargetBootstrapInput = Readonly<{
@@ -26,6 +28,7 @@ export type WorkspaceSyncTargetBootstrapInput = Readonly<{
   sourceRootPath?: string;
   relationshipId: string;
   endpointRole: 'alpha' | 'beta';
+  targetWorkspaceRefId: string;
   policyDigest: string;
   contentSelection: 'git_worktree' | 'all_files';
   /** Host-private Action approval, reinspected at this target under root custody. */
@@ -35,7 +38,8 @@ export type WorkspaceSyncTargetBootstrapInput = Readonly<{
    * target-only files even when the destination is missing or empty today.
    */
   activatesExactMirror?: boolean;
-  stagingDirectory: string;
+  /** Out-of-tree owner for the canonical finite materialization receipt. */
+  materializationDirectory: string;
   rootOwnershipManager: WorkspaceRootOwnershipManager;
   createIfMissing?: boolean;
   /** Explicit user intent for this target; never inferred from target contents. */
@@ -50,6 +54,7 @@ export type WorkspaceSyncTargetBootstrapInput = Readonly<{
     targetState: 'missing' | 'empty' | 'nonempty';
     targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
     materializationReceiptPath: string;
+    targetFence: WorkspaceTargetMaterializationFence;
   }>) => Promise<WorkspaceExportMaterializationCustody | void>;
   materializeSeed?: (input: Readonly<{
     canonicalRoot: string;
@@ -58,6 +63,7 @@ export type WorkspaceSyncTargetBootstrapInput = Readonly<{
     policyDigest: string;
     materializationReceiptPath: string;
     originalTargetExists: boolean;
+    targetFence: WorkspaceTargetMaterializationFence;
   }>) => Promise<WorkspaceExportMaterializationCustody | void>;
 }>;
 
@@ -67,56 +73,76 @@ export type WorkspaceSyncTargetBootstrapResult = Readonly<{
   state: 'READY';
   rootFingerprint: string;
   policyDigest: string;
-  markerPath: string;
   ownershipHandles: readonly WorkspaceRootOwnershipHandle[];
   materializationCustody?: WorkspaceExportMaterializationCustody;
+  /** True only when the exact durable READY fact was already observed or published. */
+  readyPublished: boolean;
+  publishReady(): Promise<void>;
   release(): Promise<void>;
 }>;
 
-type WorkspaceSyncTargetBootstrapMarker = Readonly<{
-  v: 1;
-  state: 'READY';
-  relationshipId: string;
-  endpointRole: 'alpha' | 'beta';
-  canonicalRoot: string;
-  rootFingerprint: string;
-  policyDigest: string;
-  contentSelection: 'git_worktree' | 'all_files';
-  engineVersion: typeof WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION;
-}>;
-
-const WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION = 'happier-mutagen-external-v1' as const;
-
-function bootstrapPaths(stagingDirectory: string, relationshipId: string, endpointRole: 'alpha' | 'beta') {
-  const operationKey = createHash('sha256')
+function bootstrapOperationKey(relationshipId: string, endpointRole: 'alpha' | 'beta'): string {
+  return createHash('sha256')
     .update('workspace-sync-bootstrap-v1\0')
     .update(relationshipId)
     .update('\0')
     .update(endpointRole)
     .digest('hex');
-  const operationDirectory = join(resolve(stagingDirectory), operationKey);
-  return {
-    operationDirectory,
-    markerPath: join(operationDirectory, 'ready.json'),
-    materializationReceiptPath: join(operationDirectory, 'materialization.json'),
-  };
 }
 
-function isExactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && Object.keys(value).sort().join('\0') === [...keys].sort().join('\0'));
+function materializationReceiptPath(materializationDirectory: string, relationshipId: string, endpointRole: 'alpha' | 'beta') {
+  return join(resolve(materializationDirectory), `${bootstrapOperationKey(relationshipId, endpointRole)}.json`);
 }
 
-async function readBootstrapJson(path: string): Promise<unknown | null> {
-  const raw = await readFile(path, 'utf8').catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  });
-  if (raw === null) return null;
+function finalReadyPath(materializationDirectory: string, relationshipId: string, endpointRole: 'alpha' | 'beta'): string {
+  return join(resolve(materializationDirectory), `${bootstrapOperationKey(relationshipId, endpointRole)}.ready.json`);
+}
+
+export type WorkspaceSyncFinalReadyFact = Readonly<{
+  v: 1;
+  relationshipId: string;
+  endpointRole: 'alpha' | 'beta';
+  targetWorkspaceRefId: string;
+  canonicalRoot: string;
+  rootFingerprint: string;
+  policyDigest: string;
+  completedAtMs: number;
+}>;
+
+export type WorkspaceSyncTargetBootstrapDependencies = Readonly<{
+  writeReadyFact?(path: string, fact: Omit<WorkspaceSyncFinalReadyFact, 'completedAtMs'>): Promise<void>;
+  rehydrateMaterializationFromReceiptPath?: typeof rehydrateWorkspaceTargetMaterializationFromReceiptPath;
+}>;
+
+function isExactReadyFact(value: unknown, expected: Omit<WorkspaceSyncFinalReadyFact, 'completedAtMs'>): value is WorkspaceSyncFinalReadyFact {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const expectedKeys = ['canonicalRoot', 'completedAtMs', 'endpointRole', 'policyDigest', 'relationshipId', 'rootFingerprint', 'targetWorkspaceRefId', 'v'];
+  return keys.length === expectedKeys.length
+    && keys.every((key, index) => key === expectedKeys[index])
+    && record.v === expected.v
+    && record.relationshipId === expected.relationshipId
+    && record.endpointRole === expected.endpointRole
+    && record.targetWorkspaceRefId === expected.targetWorkspaceRefId
+    && record.canonicalRoot === expected.canonicalRoot
+    && record.rootFingerprint === expected.rootFingerprint
+    && record.policyDigest === expected.policyDigest
+    && typeof record.completedAtMs === 'number'
+    && Number.isFinite(record.completedAtMs);
+}
+
+async function writeReadyFact(path: string, fact: Omit<WorkspaceSyncFinalReadyFact, 'completedAtMs'>): Promise<void> {
+  await writeJsonAtomic(path, { ...fact, completedAtMs: Date.now() });
+}
+
+async function hasExactReadyFact(path: string, expected: Omit<WorkspaceSyncFinalReadyFact, 'completedAtMs'>): Promise<boolean> {
+  const raw = await readFile(path, 'utf8').catch(() => null);
+  if (raw === null) return false;
   try {
-    return JSON.parse(raw) as unknown;
+    return isExactReadyFact(JSON.parse(raw) as unknown, expected);
   } catch {
-    throw bootstrapError('target_bootstrap_required', 'Workspace sync target bootstrap marker is malformed');
+    return false;
   }
 }
 
@@ -172,6 +198,7 @@ export async function prepareWorkspaceSyncGitTarget(input: Readonly<{
   targetState: 'missing' | 'empty' | 'nonempty';
   targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
   materializationReceiptPath: string;
+  targetFence: WorkspaceTargetMaterializationFence;
 }>, dependencies: Readonly<{
   realizeWorkspaceCheckout(input: Readonly<{
     sourcePath: string;
@@ -203,6 +230,7 @@ export async function prepareWorkspaceSyncGitTarget(input: Readonly<{
     backupDirectoryPrefix: '.happier-sync-backup',
     receiptPath: input.materializationReceiptPath,
     originalTargetExists: input.targetState !== 'missing',
+    targetFence: input.targetFence,
   });
   try {
     const realization = await dependencies.realizeWorkspaceCheckout({
@@ -238,45 +266,32 @@ export async function prepareWorkspaceSyncGitTarget(input: Readonly<{
 export { computeWorkspaceSyncRootFingerprint } from './workspaceSyncRootIdentity';
 
 /**
- * Rebuilds process-local target custody from the settings-owned relationship
- * and the target bootstrap owner's verified READY marker. The marker is only
- * restart evidence; current root identity and ownership are reacquired before
- * it can authorize an agent ingress.
+ * Rebuilds process-local target custody from the settings-owned relationship,
+ * current root identity, and the canonical finite materialization receipt.
  */
 export async function rehydrateWorkspaceSyncTargetBootstrap(input: Readonly<{
   rootPath: string;
   relationshipId: string;
   endpointRole: 'alpha' | 'beta';
+  targetWorkspaceRefId: string;
   policyDigest: string;
   contentSelection: 'git_worktree' | 'all_files';
-  stagingDirectory: string;
+  materializationDirectory: string;
   rootOwnershipManager: WorkspaceRootOwnershipManager;
-}>): Promise<WorkspaceSyncTargetBootstrapResult | null> {
-  const { markerPath, materializationReceiptPath } = bootstrapPaths(
-    input.stagingDirectory,
-    input.relationshipId,
-    input.endpointRole,
-  );
-  const marker = await readBootstrapJson(markerPath);
-  if (marker === null) return null;
+  /** Restart cleanup probe: do nothing unless the finite receipt exists. */
+  requireMaterializationReceipt?: boolean;
+  prepareGitTarget?: WorkspaceSyncTargetBootstrapInput['prepareGitTarget'];
+}>, dependencies: Pick<WorkspaceSyncTargetBootstrapDependencies, 'rehydrateMaterializationFromReceiptPath'> = {}): Promise<WorkspaceSyncTargetBootstrapResult | null> {
+  const receiptPath = materializationReceiptPath(input.materializationDirectory, input.relationshipId, input.endpointRole);
+  const readyPath = finalReadyPath(input.materializationDirectory, input.relationshipId, input.endpointRole);
+  if (input.requireMaterializationReceipt
+    && !(await lstat(receiptPath).catch(() => null))?.isFile()) return null;
   const canonicalRoot = await realpath(input.rootPath).catch(() => {
     throw bootstrapError('root_changed', 'Workspace sync target root is unavailable');
   });
   const fingerprint = await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => {
     throw bootstrapError('root_changed', 'Workspace sync target root identity changed');
   });
-  if (!isExactObject(marker, ['v', 'engineVersion', 'state', 'relationshipId', 'endpointRole', 'canonicalRoot', 'rootFingerprint', 'policyDigest', 'contentSelection'])
-    || marker.v !== 1
-    || marker.engineVersion !== WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION
-    || marker.state !== 'READY'
-    || marker.relationshipId !== input.relationshipId
-    || marker.endpointRole !== input.endpointRole
-    || marker.canonicalRoot !== canonicalRoot
-    || marker.rootFingerprint !== fingerprint
-    || marker.policyDigest !== input.policyDigest
-    || marker.contentSelection !== input.contentSelection) {
-    throw bootstrapError('root_changed', 'Workspace sync target bootstrap no longer matches settings or root identity');
-  }
   const ownership = await input.rootOwnershipManager.tryAcquire({
     ownerId: input.relationshipId,
     canonicalRoot,
@@ -285,33 +300,95 @@ export async function rehydrateWorkspaceSyncTargetBootstrap(input: Readonly<{
   if ('kind' in ownership) {
     throw bootstrapError('workspace_root_in_use', 'Workspace sync target root overlaps an active operation');
   }
-  const fingerprintAfterOwnership = await computeWorkspaceSyncRootFingerprint(await realpath(input.rootPath)).catch(() => null);
+  let fingerprintAfterOwnership: string;
+  try {
+    const canonicalRootAfterOwnership = await realpath(input.rootPath);
+    fingerprintAfterOwnership = await computeWorkspaceSyncRootFingerprint(canonicalRootAfterOwnership);
+  } catch {
+    await ownership.release();
+    throw bootstrapError('root_changed', 'Workspace sync target root identity changed during restart rehydration');
+  }
   if (fingerprintAfterOwnership !== fingerprint) {
     await ownership.release();
     throw bootstrapError('root_changed', 'Workspace sync target root identity changed during restart rehydration');
   }
-  const materializationCustody = await rehydrateWorkspaceTargetMaterializationFromReceiptPath({
+  const materializationCustody = await (dependencies.rehydrateMaterializationFromReceiptPath
+    ?? rehydrateWorkspaceTargetMaterializationFromReceiptPath)({
     targetPath: canonicalRoot,
     backupDirectoryPrefix: '.happier-sync-backup',
-    receiptPath: materializationReceiptPath,
+    receiptPath,
   }).catch(async () => {
     await ownership.release();
     throw bootstrapError('target_bootstrap_required', 'Workspace sync target rollback receipt is unsafe');
   });
+  const readyFact = {
+    v: 1,
+    relationshipId: input.relationshipId,
+    endpointRole: input.endpointRole,
+    targetWorkspaceRefId: input.targetWorkspaceRefId,
+    canonicalRoot,
+    rootFingerprint: fingerprint,
+    policyDigest: input.policyDigest,
+  } as const;
+  const exactReady = await hasExactReadyFact(readyPath, readyFact);
+  const publishReady = async (): Promise<void> => await writeReadyFact(readyPath, readyFact);
+  if (materializationCustody && !exactReady) {
+    try {
+      await materializationCustody.abort();
+    } catch (error) {
+      await ownership.release();
+      throw error;
+    }
+    await ownership.release();
+    return null;
+  }
+  if (input.contentSelection === 'git_worktree') {
+    try {
+      if (input.prepareGitTarget) {
+        await input.prepareGitTarget({
+          canonicalRoot,
+          relationshipId: input.relationshipId,
+          endpointRole: input.endpointRole,
+          policyDigest: input.policyDigest,
+          targetState: 'nonempty',
+          targetBootstrap: 'use_existing',
+          materializationReceiptPath: receiptPath,
+          targetFence: {
+            state: 'nonempty',
+            identity: await readWorkspaceSyncRootObjectIdentity(canonicalRoot),
+          },
+        });
+      } else {
+        await prepareExistingGitWorkspaceSyncTarget({ canonicalRoot, targetState: 'nonempty' });
+      }
+    } catch (error) {
+      await ownership.release();
+      throw error;
+    }
+  }
+  if (!materializationCustody && !exactReady) {
+    await ownership.release();
+    return null;
+  }
   return {
     canonicalRoot,
     created: false,
     state: 'READY',
     rootFingerprint: fingerprint,
     policyDigest: input.policyDigest,
-    markerPath,
     ownershipHandles: [ownership],
     ...(materializationCustody ? { materializationCustody } : {}),
+    readyPublished: true,
+    publishReady,
     release: ownership.release,
   };
 }
 
-export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBootstrapInput): Promise<WorkspaceSyncTargetBootstrapResult> {
+export async function workspaceSyncTargetBootstrap(
+  input: WorkspaceSyncTargetBootstrapInput,
+  dependencies: WorkspaceSyncTargetBootstrapDependencies = { writeReadyFact },
+): Promise<WorkspaceSyncTargetBootstrapResult> {
+  const persistReadyFact = dependencies.writeReadyFact ?? writeReadyFact;
   if (!input.rootPath.trim()) throw bootstrapError('workspace_root_unsafe', 'workspace sync target root is blank');
   let sourceRoot: string | undefined;
   if (input.sourceRootPath !== undefined) {
@@ -324,15 +401,12 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
   if (!input.relationshipId.trim() || !/^[a-f0-9]{64}$/u.test(input.policyDigest)) {
     throw bootstrapError('target_bootstrap_rejected', 'workspace sync target bootstrap is not authorized');
   }
-  if (!input.stagingDirectory.trim()) throw bootstrapError('target_bootstrap_rejected', 'workspace sync staging directory is blank');
+  if (!input.materializationDirectory.trim()) throw bootstrapError('target_bootstrap_rejected', 'workspace sync materialization directory is blank');
 
   const requested = normalize(resolve(input.rootPath));
   if (requested === resolve('/')) throw bootstrapError('workspace_root_unsafe', 'workspace sync target root is invalid');
-  const { operationDirectory, markerPath, materializationReceiptPath } = bootstrapPaths(
-    input.stagingDirectory,
-    input.relationshipId,
-    input.endpointRole,
-  );
+  const receiptPath = materializationReceiptPath(input.materializationDirectory, input.relationshipId, input.endpointRole);
+  const readyPath = finalReadyPath(input.materializationDirectory, input.relationshipId, input.endpointRole);
   let created = false;
   let existingBeforeFence = await lstat(requested).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -370,14 +444,64 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
   if ('kind' in ownership) throw bootstrapError('workspace_root_in_use', 'workspace sync target root overlaps an active operation');
   let materializationCustody: WorkspaceExportMaterializationCustody | undefined;
   try {
-    if (!(await lstat(markerPath).catch(() => null))) {
-      await recoverInterruptedWorkspaceTargetMaterialization({
-        targetPath: requested,
-        backupDirectoryPrefix: '.happier-sync-backup',
-        receiptPath: materializationReceiptPath,
-      }).catch((error: unknown) => {
-        throw bootstrapError('target_bootstrap_required', `Workspace sync target recovery failed: ${(error as Error).message}`);
-      });
+    const interruptedCustody = await (dependencies.rehydrateMaterializationFromReceiptPath
+      ?? rehydrateWorkspaceTargetMaterializationFromReceiptPath)({
+      targetPath: requested,
+      backupDirectoryPrefix: '.happier-sync-backup',
+      receiptPath,
+    }).catch((error: unknown) => {
+      throw bootstrapError('target_bootstrap_required', `Workspace sync target recovery failed: ${(error as Error).message}`);
+    });
+    if (interruptedCustody) {
+      const restartRoot = await realpath(requested).catch(() => null);
+      const restartFingerprint = restartRoot
+        ? await computeWorkspaceSyncRootFingerprint(restartRoot).catch(() => null)
+        : null;
+      const restartReadyFact = restartRoot === canonicalRoot && restartFingerprint !== null
+        ? {
+          v: 1,
+          relationshipId: input.relationshipId,
+          endpointRole: input.endpointRole,
+          targetWorkspaceRefId: input.targetWorkspaceRefId,
+          canonicalRoot,
+          rootFingerprint: restartFingerprint,
+          policyDigest: input.policyDigest,
+        } as const
+        : null;
+      const restartReady = restartReadyFact !== null
+        && await hasExactReadyFact(readyPath, restartReadyFact);
+      if (restartReady && restartReadyFact) {
+        if (input.contentSelection === 'git_worktree') {
+          await input.prepareGitTarget!({
+            canonicalRoot,
+            ...(canonicalSourceRoot === undefined ? {} : { sourceRootPath: canonicalSourceRoot }),
+            relationshipId: input.relationshipId,
+            endpointRole: input.endpointRole,
+            policyDigest: input.policyDigest,
+            targetState: 'nonempty',
+            targetBootstrap: 'use_existing',
+            materializationReceiptPath: receiptPath,
+            targetFence: {
+              state: 'nonempty',
+              identity: await readWorkspaceSyncRootObjectIdentity(canonicalRoot),
+            },
+          });
+        }
+        await ownership.bindCurrentRootIdentity();
+        return {
+          canonicalRoot,
+          created: false,
+          state: 'READY',
+          rootFingerprint: restartReadyFact.rootFingerprint,
+          policyDigest: input.policyDigest,
+          ownershipHandles: [ownership],
+          materializationCustody: interruptedCustody,
+          readyPublished: true,
+          publishReady: async () => await persistReadyFact(readyPath, restartReadyFact),
+          release: ownership.release,
+        };
+      }
+      await interruptedCustody.abort();
     }
     existingBeforeFence = await lstat(requested).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -386,6 +510,7 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
     if (existingBeforeFence && (!existingBeforeFence.isDirectory() || existingBeforeFence.isSymbolicLink())) {
       throw bootstrapError('workspace_root_unsafe', 'workspace sync target root must be a real directory');
     }
+    let targetFence: WorkspaceTargetMaterializationFence = { state: 'missing', identity: null };
     if (existingBeforeFence || input.activatesExactMirror || input.targetReplacementApproval) {
       let approvalFingerprint = computeWorkspaceSyncAbsentRootFingerprint(canonicalRoot);
       if (existingBeforeFence) {
@@ -394,30 +519,22 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
           throw bootstrapError('root_changed', 'workspace sync target root changed before approval replay');
         }
         approvalFingerprint = await computeWorkspaceSyncRootFingerprint(canonicalRoot);
+        targetFence = {
+          state: (await readdir(canonicalRoot)).length === 0 ? 'empty' : 'nonempty',
+          identity: await readWorkspaceSyncRootObjectIdentity(canonicalRoot),
+        };
       }
-      const approvalMarker = await readFile(markerPath, 'utf8').then((raw) => JSON.parse(raw) as unknown).catch(() => null);
-      const alreadyReady = Boolean(isExactObject(approvalMarker, ['v', 'engineVersion', 'state', 'relationshipId', 'endpointRole', 'canonicalRoot', 'rootFingerprint', 'policyDigest', 'contentSelection'])
-        && approvalMarker.v === 1
-        && approvalMarker.engineVersion === WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION
-        && approvalMarker.state === 'READY'
-        && approvalMarker.relationshipId === input.relationshipId
-        && approvalMarker.endpointRole === input.endpointRole
-        && approvalMarker.canonicalRoot === canonicalRoot
-        && approvalMarker.rootFingerprint === approvalFingerprint
-        && approvalMarker.policyDigest === input.policyDigest
-        && approvalMarker.contentSelection === input.contentSelection);
       // The complete consequence set is derived here, from the target this
       // daemon actually observes, and compared exactly. A proof that is
       // missing, stale, stamped elsewhere, or carries a consequence the
       // current state does not require authorizes nothing and mutates nothing.
-      const replacesNonEmptyTarget = existingBeforeFence !== null
-        && input.targetBootstrap === 'materialize_from_source_workspace'
-        && (await readdir(canonicalRoot)).length > 0;
-      const requiredConsequences = alreadyReady ? [] : [
+      const replacesNonEmptyTarget = targetFence.state === 'nonempty'
+        && input.targetBootstrap === 'materialize_from_source_workspace';
+      const requiredConsequences = [
         ...(replacesNonEmptyTarget ? ['replace_nonempty_workspace_target'] as const : []),
         ...(input.activatesExactMirror ? ['delete_target_only_files_during_exact_mirror'] as const : []),
       ];
-      if (!alreadyReady && (requiredConsequences.length > 0 || input.targetReplacementApproval)) {
+      if (requiredConsequences.length > 0 || input.targetReplacementApproval) {
         const approval = input.targetReplacementApproval;
         if (!approval
           || approval.canonicalRoot !== canonicalRoot
@@ -428,7 +545,8 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
         }
       }
     }
-    await mkdir(operationDirectory, { recursive: true, mode: 0o700 });
+    await mkdir(input.materializationDirectory, { recursive: true, mode: 0o700 });
+    await rm(readyPath, { force: true });
     if (!existingBeforeFence && !input.createIfMissing) {
       throw bootstrapError('target_bootstrap_required', 'workspace sync target root does not exist');
     }
@@ -446,8 +564,9 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
       const createdTargetMaterialization = await beginWorkspaceTargetMaterialization({
         targetPath: canonicalRoot,
         backupDirectoryPrefix: '.happier-sync-backup',
-        receiptPath: materializationReceiptPath,
+        receiptPath,
         originalTargetExists: false,
+        targetFence,
       });
       await mkdir(canonicalRoot);
       await createdTargetMaterialization.custody.bindPromotedTarget();
@@ -458,20 +577,6 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) {
       throw bootstrapError('workspace_root_unsafe', 'workspace sync target root must be a real directory');
     }
-    const priorMarker = await readFile(markerPath, 'utf8').then((raw) => JSON.parse(raw) as unknown).catch(() => null);
-    const fingerprintBeforeMarker = existing
-      ? await computeWorkspaceSyncRootFingerprint(canonicalRoot)
-      : computeWorkspaceSyncAbsentRootFingerprint(canonicalRoot);
-    const priorReady = Boolean(isExactObject(priorMarker, ['v', 'engineVersion', 'state', 'relationshipId', 'endpointRole', 'canonicalRoot', 'rootFingerprint', 'policyDigest', 'contentSelection'])
-      && priorMarker.v === 1
-      && priorMarker.engineVersion === WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION
-      && priorMarker.state === 'READY'
-      && priorMarker.relationshipId === input.relationshipId
-      && priorMarker.endpointRole === input.endpointRole
-      && priorMarker.canonicalRoot === canonicalRoot
-      && priorMarker.rootFingerprint === fingerprintBeforeMarker
-      && priorMarker.policyDigest === input.policyDigest
-      && priorMarker.contentSelection === input.contentSelection);
     const targetState = existingBeforeFence === null
       ? 'missing'
       : (await readdir(canonicalRoot)).length === 0 ? 'empty' : 'nonempty';
@@ -484,7 +589,8 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
         policyDigest: input.policyDigest,
         targetState,
         targetBootstrap: input.targetBootstrap,
-        materializationReceiptPath,
+        materializationReceiptPath: receiptPath,
+        targetFence,
       });
       if (gitMaterializationCustody) materializationCustody = gitMaterializationCustody;
       const preparedIdentity = await realpath(requested);
@@ -493,7 +599,7 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
         || !(await lstat(preparedIdentity)).isDirectory()) {
         throw bootstrapError('root_changed', 'workspace sync target root changed during SCM bootstrap');
       }
-    } else if (!priorReady && targetState === 'nonempty') {
+    } else if (targetState === 'nonempty') {
       if (input.targetBootstrap === 'materialize_from_source_workspace') {
         if (!input.materializeSeed) {
           throw bootstrapError('target_bootstrap_seed_required', 'workspace sync target requires the selected source seed');
@@ -503,8 +609,9 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
           relationshipId: input.relationshipId,
           endpointRole: input.endpointRole,
           policyDigest: input.policyDigest,
-          materializationReceiptPath,
+          materializationReceiptPath: receiptPath,
           originalTargetExists: existingBeforeFence !== null,
+          targetFence,
         });
         if (seedMaterializationCustody) materializationCustody = seedMaterializationCustody;
       }
@@ -520,22 +627,17 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
     }
     await ownership.bindCurrentRootIdentity();
     const fingerprint = await computeWorkspaceSyncRootFingerprint(canonicalRoot);
-    const marker: WorkspaceSyncTargetBootstrapMarker = {
+    const verifiedFingerprint = await computeWorkspaceSyncRootFingerprint(await realpath(requested));
+    if (verifiedFingerprint !== fingerprint) throw bootstrapError('root_changed', 'workspace sync target root changed during bootstrap');
+    const publishReady = async (): Promise<void> => await persistReadyFact(readyPath, {
       v: 1,
-      state: 'READY',
       relationshipId: input.relationshipId,
       endpointRole: input.endpointRole,
+      targetWorkspaceRefId: input.targetWorkspaceRefId,
       canonicalRoot,
       rootFingerprint: fingerprint,
       policyDigest: input.policyDigest,
-      contentSelection: input.contentSelection,
-      engineVersion: WORKSPACE_SYNC_BOOTSTRAP_ENGINE_VERSION,
-    };
-    const verifiedFingerprint = await computeWorkspaceSyncRootFingerprint(await realpath(requested));
-    if (verifiedFingerprint !== fingerprint) throw bootstrapError('root_changed', 'workspace sync target root changed during bootstrap');
-    // This is the only durable bootstrap authority. An interrupted attempt has
-    // no READY record, so restart performs a fresh root/policy inspection.
-    await writeJsonAtomic(markerPath, marker);
+    });
     let materializationSettled = false;
     const unsettledMaterializationCustody = materializationCustody ?? null;
     const retainedMaterializationCustody = unsettledMaterializationCustody
@@ -550,14 +652,14 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
           abort: async () => {
             if (materializationSettled) return;
             await unsettledMaterializationCustody.abort();
-            await rm(markerPath, { force: true });
             materializationSettled = true;
           },
         })
       : undefined;
     return {
-      canonicalRoot, created, state: 'READY', rootFingerprint: fingerprint, policyDigest: input.policyDigest, markerPath,
-      ownershipHandles: [ownership], release: ownership.release,
+      canonicalRoot, created, state: 'READY', rootFingerprint: fingerprint, policyDigest: input.policyDigest,
+      ownershipHandles: [ownership], publishReady, release: ownership.release,
+      readyPublished: false,
       ...(retainedMaterializationCustody ? { materializationCustody: retainedMaterializationCustody } : {}),
     };
   } catch (error) {
@@ -575,10 +677,9 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
       await recoverInterruptedWorkspaceTargetMaterialization({
         targetPath: canonicalRoot,
         backupDirectoryPrefix: '.happier-sync-backup',
-        receiptPath: materializationReceiptPath,
+        receiptPath,
       }).catch(() => undefined);
     }
-    await rm(markerPath, { force: true }).catch(() => undefined);
     await ownership.release();
     throw error;
   }

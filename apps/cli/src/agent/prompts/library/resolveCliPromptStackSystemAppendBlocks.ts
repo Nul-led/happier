@@ -10,7 +10,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { ArtifactEncryptionMaterialUnavailableError } from '@/session/actions/approvals/artifactStore';
+import { ArtifactEncryptionMaterialUnavailableError } from '@/api/artifacts/accountArtifactStore';
 
 import { decodeBase64, decryptWithDataKey } from '../../../api/encryption';
 import type { Credentials, StoredCredentials } from '../../../persistence';

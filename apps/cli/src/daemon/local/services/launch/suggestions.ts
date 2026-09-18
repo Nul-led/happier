@@ -348,7 +348,7 @@ function matchesWorkspaceScope(
     return scopePaths.some((scopePath) => isWorkspacePathWithin(scopePath, candidatePath));
 }
 
-function entryMatchesWorkspaceScope(
+export function localServiceInventoryEntryMatchesWorkspaceScope(
     entry: NormalizedLocalServiceInventoryEntry,
     scopePaths: readonly string[] | undefined,
 ): boolean {
@@ -363,7 +363,7 @@ export function buildLocalServiceLauncherSnapshot(
     const scopePaths = input.workspaceScopePaths;
     const previews = [...input.previewResources].sort((a, b) => a.previewId.localeCompare(b.previewId));
     const inventoryEntries = [...input.inventoryEntries]
-        .filter((entry) => entryMatchesWorkspaceScope(entry, scopePaths))
+        .filter((entry) => localServiceInventoryEntryMatchesWorkspaceScope(entry, scopePaths))
         .sort((a, b) => a.port - b.port || a.id.localeCompare(b.id));
     const terminalUrlCandidates = [...(input.terminalUrlCandidates ?? [])].sort((a, b) => a.sourceId.localeCompare(b.sourceId));
     const workspaceFileAssetCandidates = [...(input.workspaceFileAssetCandidates ?? [])].sort((a, b) => a.assetRef.localeCompare(b.assetRef));

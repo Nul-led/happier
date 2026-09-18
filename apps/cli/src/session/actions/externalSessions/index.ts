@@ -3,6 +3,7 @@ export {
     type ExternalSessionTakeoverActionInput,
 } from './externalSessionActionContext';
 export {
+    executeExternalSessionCandidateDeleteAction,
     executeExternalSessionCandidatesListAction,
     executeExternalSessionLinkEnsureAction,
 } from './discoveryLinkActions';

@@ -12,6 +12,7 @@ import {
 import { logger } from '@/ui/logger';
 import type { VoiceInferenceWorkerHandle } from '@/daemon/voiceInference/voiceInferenceWorker';
 import { resolveSessionClientDurableMutationJournalPaths } from './session/client/transport/mutations/sessionClientDurableMutationPersistence';
+import { ApiMachineClient } from './apiMachine';
 import type { Machine } from './types';
 
 const { configurationMock, mockAxiosIsAxiosError, mockAxiosPost, mockIo } = vi.hoisted(() => ({
@@ -115,8 +116,6 @@ describe('ApiMachineClient transports', () => {
   });
 
   it('uses polling-first transports by default (upgrade to websocket when available)', async () => {
-    const mod = await import('./apiMachine');
-
     const machine: Machine = {
       id: 'test-machine',
       encryptionKey: new Uint8Array(32),
@@ -127,7 +126,7 @@ describe('ApiMachineClient transports', () => {
       daemonStateVersion: 0,
     };
 
-    const client = new mod.ApiMachineClient('fake-token', machine);
+    const client = new ApiMachineClient('fake-token', machine);
     client.connect();
 
     const opts = mockIo.mock.calls[0]?.[1] as any;
@@ -135,6 +134,7 @@ describe('ApiMachineClient transports', () => {
     expect(opts.transports).toEqual(['polling', 'websocket']);
     expect(opts.reconnection).toBe(false);
     expect(opts.autoConnect).toBe(false);
+    await client.shutdown();
   });
 
   it('routes a descriptor replacement through the existing connection supervisor', async () => {
@@ -144,8 +144,7 @@ describe('ApiMachineClient transports', () => {
       const replacementSocket = createApiSessionSocketStub();
       bindApiSessionSocketSequenceMock(mockIo, [firstSocket, replacementSocket]);
       const prepareServerTransportForReconnect = vi.fn(async () => ({ status: 'ready' as const }));
-      const mod = await import('./apiMachine');
-      const client = new mod.ApiMachineClient('fake-token', {
+      const client = new ApiMachineClient('fake-token', {
         id: 'test-machine',
         encryptionKey: new Uint8Array(32),
         encryptionVariant: 'legacy',
@@ -885,6 +884,21 @@ describe('ApiMachineClient transports', () => {
       binding: expect.objectContaining({ sessionId: 'session-1' }),
     }));
     expect(machineSocket.emit.mock.calls.at(-1)?.[1]).not.toHaveProperty('items');
+
+    client.emitExternalSessionSourceUnavailableOccurrence({
+      v: 1,
+      type: 'external-session-source-unavailable',
+      sessionId: 'session-1',
+      machineId: 'test-machine',
+      observedAtMs: 123,
+    });
+    expect(machineSocket.emit).toHaveBeenLastCalledWith('external-session-source-unavailable', {
+      v: 1,
+      type: 'external-session-source-unavailable',
+      sessionId: 'session-1',
+      machineId: 'test-machine',
+      observedAtMs: 123,
+    });
   });
 
   it('forwards voice inference workers into machine RPC registration', async () => {

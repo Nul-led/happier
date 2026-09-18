@@ -1,21 +1,49 @@
-import type {
-  PluginSettingsAdministrationActionIdV1,
-  PluginSettingsAdministrationActionOutputV1,
-  PluginSettingsAdministrationDaemonTargetV1,
-} from '@happier-dev/protocol';
+import { randomUUID } from 'node:crypto';
 
+import {
+  PluginSettingsAdministrationActionOutputV1Schema,
+  getActionSpec,
+  zodSchemaToJsonSchemaObject,
+  type ActionExecuteResult,
+  type ActionSpec,
+  type PluginSettingsAdministrationActionIdV1,
+  type PluginSettingsAdministrationActionOutputV1,
+  type PluginSettingsAdministrationDaemonTargetV1,
+} from '@happier-dev/protocol';
+import { renderHelpPage } from '@happier-dev/cli-common/output';
+
+import {
+  compileActionCliFieldsFromJsonSchema,
+  type ActionCliField,
+} from '@/cli/actions/compiledCommands';
+import {
+  composeActionCliInput,
+  parseActionCliInput,
+  stripCliOwnedFlags,
+  type ActionCliParseTarget,
+} from '@/cli/actions/parseCommandInput';
+import { argvBeforeOptionTerminator } from '@/cli/commands/shared/argvFlags';
 import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/jsonEnvelope';
+import { resolveInvokerName } from '@/cli/runtime/resolveInvokerName';
+import {
+  normalizeActionExecuteResult,
+  unwrapCliActionSuccessPayload,
+  type NormalizedCliActionExecuteResult,
+} from '@/cli/commands/session/shared/normalizeActionExecuteResult';
+import { tryHandleApprovalRequestCreated } from '@/cli/commands/session/shared/tryHandleApprovalRequestCreated';
+import { readStoredCredentials, type StoredCredentials } from '@/persistence';
 import {
   resolvePluginInvocationLogTarget,
   type PluginInvocationLogTargetResolution,
 } from './pluginInvocationLogsMachine';
-import {
-  executePluginSettingsAdministrationAction,
-  type ExecutePluginSettingsAdministrationAction,
-} from '@/plugins/settings/administration';
+import type { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
+
+type Executor = Pick<ReturnType<typeof createCliActionExecutorFromCredentials>, 'execute'>;
+type ExecutorParams = Parameters<typeof createCliActionExecutorFromCredentials>[0];
 
 export type PluginsSettingsCommandDeps = Readonly<{
-  executeSettingsAdministrationAction?: ExecutePluginSettingsAdministrationAction;
+  readCredentialsFn?: () => Promise<StoredCredentials | null>;
+  createExecutorFn?: (params: ExecutorParams) => Executor | Promise<Executor>;
   resolvePluginInvocationLogTarget?: (params: Readonly<{
     requestedMachineId?: string;
     signal?: AbortSignal;
@@ -26,8 +54,45 @@ export type PluginsSettingsCommandRuntime = Readonly<{
   signal?: AbortSignal;
 }>;
 
+const DEFAULT_EXECUTION_DEPS = {
+  readCredentialsFn: readStoredCredentials,
+  createExecutorFn: async (params: ExecutorParams) => (
+    await import('@/session/actions/createCliActionExecutorFromCredentials')
+  ).createCliActionExecutorFromCredentials(params),
+} as const;
+
+export function pluginSettingsHelpRows(pluginCommand: string): readonly Readonly<{
+  label: string;
+  description: string;
+}>[] {
+  return Object.freeze([
+    { label: `${pluginCommand} settings list <pluginId> --scope <account|daemon> [--machine <id>] [--json]`, description: 'List declared Plugin Settings from one exact Account or daemon scope' },
+    { label: `${pluginCommand} settings get <pluginId> <localId> --scope <account|daemon> [--machine <id>] [--json]`, description: 'Read one declared non-secret Plugin Setting' },
+    { label: `${pluginCommand} settings set <pluginId> <localId> --scope <account|daemon> --value <json> [--expected-revision <revision>] [--machine <id>] [--json]`, description: 'Compare-and-set one declared non-secret Plugin Setting' },
+    { label: `${pluginCommand} settings reset <pluginId> <localId> --scope <account|daemon> [--expected-revision <revision>] [--machine <id>] [--json]`, description: 'Reset one declared non-secret Plugin Setting to its default' },
+    { label: `${pluginCommand} settings secret status <pluginId> <localId> [--scope <account|daemon>] [--machine <id>] [--json]`, description: 'Read safe configured status for one declared Plugin secret' },
+    { label: `${pluginCommand} settings secret bind <pluginId> <localId> --saved-secret-id <id> [--scope <account|daemon>] [--expected-revision <revision>] [--json]`, description: 'Bind an Account-custodied Plugin secret to an existing Saved Secret' },
+    { label: `${pluginCommand} settings secret unbind <pluginId> <localId> [--scope <account|daemon>] [--expected-revision <revision>] [--json]`, description: 'Remove an Account-custodied Plugin secret binding' },
+    { label: `${pluginCommand} settings secret delete <pluginId> <localId> [--scope <account|daemon>] [--machine <id>] [--expected-revision <revision>] [--json]`, description: 'Delete a declared Plugin secret through its existing custody owner' },
+  ]);
+}
+
+function renderPluginSettingsHelp(): string {
+  const pluginCommand = `${resolveInvokerName() ?? 'happier'} plugins`;
+  return renderHelpPage({
+    title: `${pluginCommand} settings`,
+    subtitle: 'Read and update declared Plugin Settings through canonical Actions',
+    usage: [...pluginSettingsHelpRows(pluginCommand)],
+    notes: [
+      'Daemon Settings require one exact --machine target.',
+      'Secret commands never accept raw secret material.',
+    ],
+  });
+}
+
 class PluginSettingsCommandInputError extends Error {
   constructor(
+    readonly actionId: PluginSettingsAdministrationActionIdV1,
     readonly code: string,
     message: string,
   ) {
@@ -36,93 +101,140 @@ class PluginSettingsCommandInputError extends Error {
   }
 }
 
-type ParsedFlags = Readonly<{
-  json: boolean;
-  scope: 'account' | 'daemon' | null;
-  machineId: string | null;
-  expectedRevision: string | null;
-  value: string | null;
-  savedSecretId: string | null;
+/**
+ * The exact `{serverIdentityId, machineId}` daemon target needs the existing
+ * asynchronous Machine resolver, which the intentionally pure/synchronous
+ * `ActionSpec.cli.bindInput` contract may never run. These canonical fields are
+ * therefore workflow-owned in this adapter: no argv flag supplies them (their
+ * compiled `--…-json` spellings stay rejected), the resolver runs here, and the
+ * resolved values are handed to the shared binder after resolution.
+ */
+const WORKFLOW_TARGET_FIELD_PATHS: ReadonlySet<string> = new Set(['scope', 'target', 'secretDaemonTarget']);
+
+/**
+ * The established caller spelling of the JSON `value` field, declared to the
+ * shared compiler through its alias parameter rather than a local parser.
+ */
+const SETTINGS_FIELD_FLAG_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['value', Object.freeze(['--value'])],
+]);
+
+/** Workflow-only target-selection options; they never become Action input. */
+const WORKFLOW_VALUE_FLAGS: readonly string[] = Object.freeze(['--scope', '--machine']);
+
+type SettingsCommandShape = ActionCliParseTarget & Readonly<{
+  actionId: PluginSettingsAdministrationActionIdV1;
+  spec: ActionSpec;
 }>;
 
-function readFlagValue(args: readonly string[], flag: string): string | null {
-  const indexes = args.flatMap((value, index) => value === flag ? [index] : []);
-  if (indexes.length > 1) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', `${flag} may be supplied only once.`);
-  }
-  const index = indexes[0];
-  if (index === undefined) return null;
-  const value = args[index + 1];
-  if (typeof value !== 'string' || !value.trim() || value.startsWith('--')) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', `${flag} requires a value.`);
-  }
-  return value.trim();
+const SECRET_SETTING_COMMANDS = ['status', 'bind', 'unbind', 'delete'] as const;
+
+type SecretSettingCommand = typeof SECRET_SETTING_COMMANDS[number];
+
+function isSecretSettingCommand(value: string | undefined): value is SecretSettingCommand {
+  return (SECRET_SETTING_COMMANDS as readonly string[]).includes(value ?? '');
 }
 
-function parseFlags(args: readonly string[]): ParsedFlags {
-  const allowedValueFlags = new Set([
-    '--scope',
-    '--machine',
-    '--expected-revision',
-    '--value',
-    '--saved-secret-id',
-  ]);
-  const allowedFlags = new Set([...allowedValueFlags, '--json']);
-  for (const value of args) {
-    if (value.startsWith('--') && !allowedFlags.has(value)) {
-      throw new PluginSettingsCommandInputError('invalid_arguments', `Unknown Settings option: ${value}`);
+function settingsActionIdForCommand(
+  command: string,
+  secretCommand: SecretSettingCommand | null,
+): PluginSettingsAdministrationActionIdV1 | null {
+  if (secretCommand) return `plugins.settings.secret.${secretCommand}`;
+  switch (command) {
+    case 'list': return 'plugins.settings.list';
+    case 'get': return 'plugins.settings.get';
+    case 'set': return 'plugins.settings.set';
+    case 'reset': return 'plugins.settings.reset';
+    default: return null;
+  }
+}
+
+function compileSettingsCommand(
+  actionId: PluginSettingsAdministrationActionIdV1,
+  positionalPaths: readonly string[],
+): SettingsCommandShape {
+  const spec = getActionSpec(actionId);
+  const fields = compileActionCliFieldsFromJsonSchema({
+    jsonSchema: zodSchemaToJsonSchemaObject(spec.inputSchema),
+    hints: spec.inputHints,
+    aliasesByPath: SETTINGS_FIELD_FLAG_ALIASES,
+  }).filter((field) => !WORKFLOW_TARGET_FIELD_PATHS.has(field.path));
+  const fieldsByPath = new Map(fields.map((field) => [field.path, field]));
+  const positionals = positionalPaths.map((path): ActionCliField => {
+    const field = fieldsByPath.get(path);
+    if (!field) {
+      throw new Error(`Plugin Settings positional ${path} is not a compiled field of ${actionId}.`);
     }
-  }
-  const scopeValue = readFlagValue(args, '--scope');
-  if (scopeValue !== null && scopeValue !== 'account' && scopeValue !== 'daemon') {
-    throw new PluginSettingsCommandInputError('invalid_scope', '--scope must be account or daemon.');
-  }
+    return field;
+  });
   return Object.freeze({
-    json: args.includes('--json'),
-    scope: scopeValue,
-    machineId: readFlagValue(args, '--machine'),
-    expectedRevision: readFlagValue(args, '--expected-revision'),
-    value: readFlagValue(args, '--value'),
-    savedSecretId: readFlagValue(args, '--saved-secret-id'),
+    actionId,
+    spec,
+    fields: Object.freeze(fields),
+    positionals: Object.freeze(positionals),
   });
 }
 
-function positionalArgs(args: readonly string[]): readonly string[] {
-  const valueFlags = new Set([
-    '--scope',
-    '--machine',
-    '--expected-revision',
-    '--value',
-    '--saved-secret-id',
-  ]);
-  const positional: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const value = args[index]!;
-    if (value === '--json') continue;
-    if (valueFlags.has(value)) {
-      index += 1;
-      continue;
-    }
-    if (!value.startsWith('--')) positional.push(value);
-  }
-  return Object.freeze(positional);
+let settingsCommandShapesCache: ReadonlyMap<string, SettingsCommandShape> | null = null;
+
+/** One compiled shape per settings command, derived from the canonical Action specs. */
+function settingsCommandShapes(): ReadonlyMap<string, SettingsCommandShape> {
+  settingsCommandShapesCache ??= new Map(Object.entries({
+    'list': compileSettingsCommand('plugins.settings.list', ['pluginId']),
+    'get': compileSettingsCommand('plugins.settings.get', ['pluginId', 'localId']),
+    'set': compileSettingsCommand('plugins.settings.set', ['pluginId', 'localId']),
+    'reset': compileSettingsCommand('plugins.settings.reset', ['pluginId', 'localId']),
+    'secret status': compileSettingsCommand('plugins.settings.secret.status', ['pluginId', 'localId']),
+    'secret bind': compileSettingsCommand('plugins.settings.secret.bind', ['pluginId', 'localId']),
+    'secret unbind': compileSettingsCommand('plugins.settings.secret.unbind', ['pluginId', 'localId']),
+    'secret delete': compileSettingsCommand('plugins.settings.secret.delete', ['pluginId', 'localId']),
+  }));
+  return settingsCommandShapesCache;
 }
 
-function requireScope(flags: ParsedFlags): 'account' | 'daemon' {
-  if (flags.scope) return flags.scope;
+/**
+ * Reads one workflow-only target-selection option. Action fields are never read
+ * here: from the compiled shape down, they belong to the shared parser.
+ */
+function readWorkflowFlagValue(
+  args: readonly string[],
+  actionId: PluginSettingsAdministrationActionIdV1,
+  flag: '--scope' | '--machine',
+): string | null {
+  const exactIndexes = args.flatMap((value, index) => value === flag ? [index] : []);
+  const inlineValues = args.flatMap((value) => value.startsWith(`${flag}=`) ? [value.slice(flag.length + 1)] : []);
+  if (exactIndexes.length + inlineValues.length > 1) {
+    throw new PluginSettingsCommandInputError(actionId, 'invalid_arguments', `${flag} may be supplied only once.`);
+  }
+  if (exactIndexes.length === 0 && inlineValues.length === 0) return null;
+  const raw = exactIndexes.length === 1 ? args[exactIndexes[0]! + 1] : inlineValues[0]!;
+  if (typeof raw !== 'string' || !raw.trim() || raw.startsWith('--')) {
+    throw new PluginSettingsCommandInputError(actionId, 'invalid_arguments', `${flag} requires a value.`);
+  }
+  return raw.trim();
+}
+
+function requireScope(
+  scope: 'account' | 'daemon' | null,
+  actionId: PluginSettingsAdministrationActionIdV1,
+): 'account' | 'daemon' {
+  if (scope) return scope;
   throw new PluginSettingsCommandInputError(
+    actionId,
     'scope_required',
     'Select one Settings scope with --scope <account|daemon>.',
   );
 }
 
 async function resolveDaemonTarget(params: Readonly<{
+  actionId: PluginSettingsAdministrationActionIdV1;
   machineId: string | null;
   resolveTarget: NonNullable<PluginsSettingsCommandDeps['resolvePluginInvocationLogTarget']>;
   signal?: AbortSignal;
 }>): Promise<PluginSettingsAdministrationDaemonTargetV1> {
   if (!params.machineId) {
     throw new PluginSettingsCommandInputError(
+      params.actionId,
       'machine_selection_required',
       'Daemon Settings require one exact current machine: --machine <id>.',
     );
@@ -142,42 +254,73 @@ async function resolveDaemonTarget(params: Readonly<{
   }
   if (resolution.kind === 'selection_required') {
     throw new PluginSettingsCommandInputError(
+      params.actionId,
       'machine_selection_required',
       'Daemon Settings require one exact current machine: --machine <id>.',
     );
   }
-  throw new PluginSettingsCommandInputError(resolution.code, resolution.message);
+  throw new PluginSettingsCommandInputError(params.actionId, resolution.code, resolution.message);
 }
 
 async function targetForScope(params: Readonly<{
+  actionId: PluginSettingsAdministrationActionIdV1;
   scope: 'account' | 'daemon';
-  flags: ParsedFlags;
+  machineId: string | null;
   resolveTarget: NonNullable<PluginsSettingsCommandDeps['resolvePluginInvocationLogTarget']>;
   signal?: AbortSignal;
-}>) {
+}>): Promise<PluginSettingsAdministrationDaemonTargetV1 | { kind: 'account' }> {
   if (params.scope === 'account') return Object.freeze({ kind: 'account' as const });
   return await resolveDaemonTarget({
-    machineId: params.flags.machineId,
+    actionId: params.actionId,
+    machineId: params.machineId,
     resolveTarget: params.resolveTarget,
     ...(params.signal ? { signal: params.signal } : {}),
   });
 }
 
-function expectedRevision(flags: ParsedFlags): Readonly<Record<string, string>> {
-  return flags.expectedRevision === null ? {} : { expectedRevision: flags.expectedRevision };
-}
-
 function actionFailure(
-  kind: string,
+  kind: PluginSettingsAdministrationActionIdV1,
   code: string,
   message: string,
 ): PluginSettingsAdministrationActionOutputV1 {
   return {
     ok: false,
-    kind: kind as PluginSettingsAdministrationActionIdV1,
+    kind,
     errorCode: code,
     error: message,
   };
+}
+
+async function executeThroughCanonicalActionExecutor(params: Readonly<{
+  actionId: PluginSettingsAdministrationActionIdV1;
+  input: unknown;
+  deps: PluginsSettingsCommandDeps;
+  signal?: AbortSignal;
+}>): Promise<NormalizedCliActionExecuteResult> {
+  params.signal?.throwIfAborted();
+  const readCredentialsFn = params.deps.readCredentialsFn ?? DEFAULT_EXECUTION_DEPS.readCredentialsFn;
+  const credentials = await readCredentialsFn();
+  params.signal?.throwIfAborted();
+  if (!credentials) {
+    return {
+      ok: false,
+      errorCode: 'not_authenticated',
+      errorMessage: 'Sign in before administering Plugin Settings.',
+    };
+  }
+
+  const createExecutorFn = params.deps.createExecutorFn ?? DEFAULT_EXECUTION_DEPS.createExecutorFn;
+  const executor = await createExecutorFn({ credentials });
+  params.signal?.throwIfAborted();
+  const actionResult: ActionExecuteResult = await executor.execute(params.actionId, params.input, {
+    surface: 'cli',
+    authority: 'present_user',
+    defaultSessionId: null,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+  params.signal?.throwIfAborted();
+
+  return normalizeActionExecuteResult(actionResult);
 }
 
 async function printOutcome(args: readonly string[], outcome: PluginSettingsAdministrationActionOutputV1): Promise<void> {
@@ -204,149 +347,109 @@ async function printOutcome(args: readonly string[], outcome: PluginSettingsAdmi
   await writeJsonStdout(outcome.data ?? {}, { pretty: true });
 }
 
-function parseJsonValue(raw: string | null): unknown {
-  if (raw === null) {
-    throw new PluginSettingsCommandInputError('value_required', 'Setting a value requires --value <JSON>.');
-  }
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new PluginSettingsCommandInputError('invalid_json', '--value must be valid JSON.');
-  }
-}
-
-function requirePositionals(
-  positional: readonly string[],
-  expected: number,
-  usage: string,
-): void {
-  if (positional.length === expected && positional.every((value) => value.trim().length > 0)) return;
-  throw new PluginSettingsCommandInputError('invalid_arguments', usage);
-}
-
-async function parseSettingsAction(params: Readonly<{
+async function parseSettingsInvocation(params: Readonly<{
   args: readonly string[];
-  flags: ParsedFlags;
   resolveTarget: NonNullable<PluginsSettingsCommandDeps['resolvePluginInvocationLogTarget']>;
   signal?: AbortSignal;
 }>): Promise<Readonly<{
   actionId: PluginSettingsAdministrationActionIdV1;
-  input: unknown;
+  input: Readonly<Record<string, unknown>>;
 }>> {
-  const positional = positionalArgs(params.args);
-  const command = positional[0];
+  const args = params.args;
+  const command = args[0];
   if (!command) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', 'Select a Plugin Settings command.');
+    throw new PluginSettingsCommandInputError('plugins.settings.list', 'invalid_arguments', 'Select a Plugin Settings command.');
   }
 
-  if (command === 'list') {
-    requirePositionals(positional, 2, 'Usage: happier plugins settings list <pluginId> --scope <account|daemon>.');
-    const scope = requireScope(params.flags);
-    if (params.flags.value || params.flags.savedSecretId || params.flags.expectedRevision) {
-      throw new PluginSettingsCommandInputError('invalid_arguments', 'list accepts only target-selection options.');
-    }
-    return {
-      actionId: 'plugins.settings.list',
-      input: {
-        pluginId: positional[1],
-        scope: { kind: scope },
-        target: await targetForScope({ scope, flags: params.flags, resolveTarget: params.resolveTarget, signal: params.signal }),
-      },
-    };
-  }
-
-  if (command === 'get' || command === 'set' || command === 'reset') {
-    requirePositionals(positional, 3, `Usage: happier plugins settings ${command} <pluginId> <localId> --scope <account|daemon>.`);
-    const scope = requireScope(params.flags);
-    if (params.flags.savedSecretId) {
-      throw new PluginSettingsCommandInputError('invalid_arguments', '--saved-secret-id is only valid for secret bind.');
-    }
-    if (command !== 'set' && params.flags.value !== null) {
-      throw new PluginSettingsCommandInputError('invalid_arguments', '--value is only valid for settings set.');
-    }
-    if (command === 'get' && params.flags.expectedRevision !== null) {
-      throw new PluginSettingsCommandInputError('invalid_arguments', '--expected-revision is only valid for mutations.');
-    }
-    const base = {
-      pluginId: positional[1],
-      scope: { kind: scope },
-      target: await targetForScope({ scope, flags: params.flags, resolveTarget: params.resolveTarget, signal: params.signal }),
-      localId: positional[2],
-    };
-    if (command === 'get') return { actionId: 'plugins.settings.get', input: base };
-    if (command === 'set') {
-      return {
-        actionId: 'plugins.settings.set',
-        input: { ...base, value: parseJsonValue(params.flags.value), ...expectedRevision(params.flags) },
-      };
-    }
-    return {
-      actionId: 'plugins.settings.reset',
-      input: { ...base, ...expectedRevision(params.flags) },
-    };
-  }
-
-  if (command !== 'secret') {
-    throw new PluginSettingsCommandInputError('invalid_arguments', `Unknown Plugin Settings command: ${command}`);
-  }
-
-  const secretCommand = positional[1];
-  requirePositionals(
-    positional,
-    4,
-    'Usage: happier plugins settings secret status|bind|unbind|delete <pluginId> <localId> [--scope <account|daemon>] [--machine <id>].',
-  );
-  if (!['status', 'bind', 'unbind', 'delete'].includes(secretCommand ?? '')) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', `Unknown Plugin Settings secret command: ${secretCommand ?? ''}`);
-  }
-  if (params.flags.value !== null) {
+  // Command-word dispatch stays workflow-owned; the selected canonical Action
+  // owns every remaining Action field through the shared compiled parser below.
+  const secretCommand = command === 'secret' && isSecretSettingCommand(args[1]) ? args[1] : null;
+  if (command === 'secret' && !secretCommand) {
     throw new PluginSettingsCommandInputError(
-      'secret_material_not_accepted',
-      'Secret material cannot be supplied to Plugin Settings administration.',
+      'plugins.settings.secret.status',
+      'invalid_arguments',
+      `Unknown Plugin Settings secret command: ${args[1] ?? ''}`,
     );
   }
-  if (secretCommand !== 'bind' && params.flags.savedSecretId !== null) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', '--saved-secret-id is only valid for secret bind.');
+  const actionId = settingsActionIdForCommand(command, secretCommand);
+  if (!actionId) {
+    throw new PluginSettingsCommandInputError('plugins.settings.list', 'invalid_arguments', `Unknown Plugin Settings command: ${command}`);
   }
-  if (secretCommand === 'bind' && params.flags.savedSecretId === null) {
-    throw new PluginSettingsCommandInputError('saved_secret_id_required', 'secret bind requires --saved-secret-id <id>.');
+  const shape = settingsCommandShapes().get(secretCommand ? `secret ${secretCommand}` : command);
+  if (!shape) throw new Error(`Uncompiled Plugin Settings command: ${secretCommand ? `secret ${secretCommand}` : command}`);
+
+  // Workflow-only target selection stays visibly separate from Action fields.
+  // Option scanning stops at the first `--`, exactly like the shared parser.
+  const optionArgs = argvBeforeOptionTerminator(args);
+  const scopeValue = readWorkflowFlagValue(optionArgs, actionId, '--scope');
+  if (scopeValue !== null && scopeValue !== 'account' && scopeValue !== 'daemon') {
+    throw new PluginSettingsCommandInputError(actionId, 'invalid_scope', '--scope must be account or daemon.');
   }
-  if (secretCommand === 'status' && params.flags.expectedRevision !== null) {
-    throw new PluginSettingsCommandInputError('invalid_arguments', '--expected-revision is only valid for secret mutations.');
+  const scope: 'account' | 'daemon' | null = scopeValue;
+  const machineId = readWorkflowFlagValue(optionArgs, actionId, '--machine');
+
+  // Unknown flags, duplicate sources, surplus positionals, inline values and
+  // the JSON escape hatches are owned by the shared compiled field parser.
+  const parsed = parseActionCliInput(
+    shape,
+    stripCliOwnedFlags(args.slice(secretCommand ? 2 : 1), { valueFlags: WORKFLOW_VALUE_FLAGS }),
+  );
+  if (!parsed.ok) {
+    throw new PluginSettingsCommandInputError(actionId, parsed.code, parsed.message);
   }
 
-  const scope = params.flags.scope;
-  const target = scope
-    ? await targetForScope({ scope, flags: params.flags, resolveTarget: params.resolveTarget, signal: params.signal })
-    : undefined;
-  const secretDaemonTarget = scope !== 'daemon' && params.flags.machineId
-    ? await resolveDaemonTarget({
-      machineId: params.flags.machineId,
+  // Resolve the exact daemon target through the existing asynchronous resolver,
+  // then hand the workflow-owned canonical fields to the shared binder.
+  const overlay: Record<string, unknown> = { ...parsed.callerOverlay };
+  if (command === 'secret') {
+    const target = scope
+      ? await targetForScope({
+        actionId,
+        scope,
+        machineId,
+        resolveTarget: params.resolveTarget,
+        ...(params.signal ? { signal: params.signal } : {}),
+      })
+      : undefined;
+    const secretDaemonTarget = scope !== 'daemon' && machineId
+      ? await resolveDaemonTarget({
+        actionId,
+        machineId,
+        resolveTarget: params.resolveTarget,
+        ...(params.signal ? { signal: params.signal } : {}),
+      })
+      : undefined;
+    if (scope) overlay.scope = { kind: scope };
+    if (target) overlay.target = target;
+    if (secretDaemonTarget) overlay.secretDaemonTarget = secretDaemonTarget;
+  } else {
+    const selectedScope = requireScope(scope, actionId);
+    overlay.scope = { kind: selectedScope };
+    overlay.target = await targetForScope({
+      actionId,
+      scope: selectedScope,
+      machineId,
       resolveTarget: params.resolveTarget,
       ...(params.signal ? { signal: params.signal } : {}),
-    })
-    : undefined;
-  const base = {
-    pluginId: positional[2],
-    localId: positional[3],
-    ...(scope ? { scope: { kind: scope } } : {}),
-    ...(target ? { target } : {}),
-    ...(secretDaemonTarget ? { secretDaemonTarget } : {}),
-    ...expectedRevision(params.flags),
-  };
-  if (secretCommand === 'status') return { actionId: 'plugins.settings.secret.status', input: base };
-  if (secretCommand === 'bind') {
-    return {
-      actionId: 'plugins.settings.secret.bind',
-      input: { ...base, savedSecretId: params.flags.savedSecretId! },
-    };
+    });
   }
-  return {
-    actionId: secretCommand === 'unbind'
-      ? 'plugins.settings.secret.unbind'
-      : 'plugins.settings.secret.delete',
-    input: base,
-  };
+
+  // The shared binder validates the friendly overlay and the whole-input JSON
+  // escape hatch and composes one canonical input; no local validation remains.
+  const composed = composeActionCliInput({
+    parsed: { ok: true, canonicalBase: parsed.canonicalBase, callerOverlay: overlay },
+    canonicalSchema: shape.spec.inputSchema,
+    callerSchema: shape.spec.inputSchema,
+    context: {
+      actionId,
+      invocationId: randomUUID(),
+      output: wantsJson(args) ? 'json' : 'human',
+    },
+  });
+  if (!composed.ok) {
+    throw new PluginSettingsCommandInputError(actionId, composed.code, composed.message);
+  }
+  return { actionId, input: composed.input };
 }
 
 export async function handlePluginsSettingsCommand(
@@ -355,37 +458,71 @@ export async function handlePluginsSettingsCommand(
   runtime: PluginsSettingsCommandRuntime = {},
 ): Promise<void> {
   if (runtime.signal?.aborted) return;
-  const flags = parseFlags(args);
+  if (
+    args.length === 0
+    || args[0] === 'help'
+    || args.includes('--help')
+    || args.includes('-h')
+  ) {
+    const help = renderPluginSettingsHelp();
+    if (wantsJson(args)) {
+      await printJsonEnvelope({ ok: true, kind: 'plugins.settings', data: { help } });
+      return;
+    }
+    console.log(help);
+    return;
+  }
   const resolveTarget = deps.resolvePluginInvocationLogTarget ?? resolvePluginInvocationLogTarget;
-  let parsed: Awaited<ReturnType<typeof parseSettingsAction>>;
+  let invocation: Awaited<ReturnType<typeof parseSettingsInvocation>>;
   try {
-    parsed = await parseSettingsAction({
+    invocation = await parseSettingsInvocation({
       args,
-      flags,
       resolveTarget,
       ...(runtime.signal ? { signal: runtime.signal } : {}),
     });
   } catch (error) {
     if (runtime.signal?.aborted) return;
     if (error instanceof PluginSettingsCommandInputError) {
-      await printOutcome(args, actionFailure('plugins.settings.list', error.code, error.message));
+      await printOutcome(args, actionFailure(error.actionId, error.code, error.message));
       return;
     }
     await printOutcome(args, actionFailure('plugins.settings.list', 'plugin_settings_unavailable', 'Plugin Settings target resolution is unavailable.'));
     return;
   }
   if (runtime.signal?.aborted) return;
-  const execute = deps.executeSettingsAdministrationAction ?? executePluginSettingsAdministrationAction;
   let outcome: PluginSettingsAdministrationActionOutputV1;
   try {
-    outcome = await execute({
-      actionId: parsed.actionId,
-      input: parsed.input,
-      signal: runtime.signal,
+    const result = await executeThroughCanonicalActionExecutor({
+      actionId: invocation.actionId,
+      input: invocation.input,
+      deps,
+      ...(runtime.signal ? { signal: runtime.signal } : {}),
     });
+    if (!result.ok) {
+      outcome = actionFailure(
+        invocation.actionId,
+        result.errorCode,
+        result.errorMessage ?? 'Plugin Settings administration is unavailable.',
+      );
+    } else {
+      const approvalPayload = unwrapCliActionSuccessPayload(result.data);
+      if (await tryHandleApprovalRequestCreated({
+        envelopeKind: invocation.actionId,
+        json: wantsJson(args),
+        result: approvalPayload,
+      })) return;
+      const parsedOutput = PluginSettingsAdministrationActionOutputV1Schema.safeParse(result.data);
+      outcome = parsedOutput.success
+        ? parsedOutput.data
+        : actionFailure(
+          invocation.actionId,
+          'plugin_settings_unavailable',
+          'Plugin Settings administration returned an invalid result.',
+        );
+    }
   } catch {
     if (runtime.signal?.aborted) return;
-    outcome = actionFailure(parsed.actionId, 'plugin_settings_unavailable', 'Plugin Settings administration is unavailable.');
+    outcome = actionFailure(invocation.actionId, 'plugin_settings_unavailable', 'Plugin Settings administration is unavailable.');
   }
   if (runtime.signal?.aborted) return;
   await printOutcome(args, outcome);

@@ -8,7 +8,48 @@ import {
   type HomeCredentialDestinationSelectionV1,
   type HomeLoginAssertionV1,
   type HomeLoginRedemptionResultV1,
+  type HomeSignInServicePolicyV1,
 } from '@happier-dev/protocol';
+import type { HomeTargetInput } from '../homeTarget/homeTarget.js';
+
+export type EffectiveSignInService =
+  | Readonly<{ kind: 'not_offered' }>
+  | Readonly<{ kind: 'self'; target: HomeTargetInput }>
+  | Readonly<{
+      kind: 'external' | 'no_target_default';
+      endpoint: string;
+      expectedServerIdentityId?: string;
+    }>;
+
+export function resolveEffectiveSignInService(input: Readonly<{
+  targetContext:
+    | Readonly<{ kind: 'home'; target: HomeTargetInput; policy?: HomeSignInServicePolicyV1 }>
+    | Readonly<{ kind: 'none' }>;
+  deviceSelection?: Readonly<{ endpoint: string; expectedServerIdentityId?: string }>;
+  builtInNoTargetDefault?: Readonly<{ endpoint: string; expectedServerIdentityId?: string }>;
+}>): EffectiveSignInService {
+  if (input.targetContext.kind === 'home') {
+    const policy = input.targetContext.policy;
+    if (!policy || policy.mode === 'disabled') return { kind: 'not_offered' };
+    if (policy.mode === 'self') return { kind: 'self', target: input.targetContext.target };
+    return {
+      kind: 'external',
+      endpoint: policy.endpoint,
+      ...(policy.expectedServerIdentityId
+        ? { expectedServerIdentityId: policy.expectedServerIdentityId }
+        : {}),
+    };
+  }
+  const selected = input.deviceSelection ?? input.builtInNoTargetDefault;
+  if (!selected) return { kind: 'not_offered' };
+  return {
+    kind: 'no_target_default',
+    endpoint: selected.endpoint,
+    ...(selected.expectedServerIdentityId
+      ? { expectedServerIdentityId: selected.expectedServerIdentityId }
+      : {}),
+  };
+}
 
 export type AccountServiceRequestedAuthenticationMethod =
   | Readonly<{ kind: 'key' }>
@@ -66,6 +107,24 @@ export type AccountServiceDirectoryProjection = Readonly<{
   homes: readonly AccountDirectoryHomeEntryV1[];
   preferredHomeServerIdentityId: string | null;
 }>;
+
+export type AccountContinuationIntent =
+  | Readonly<{ kind: 'refresh' }>
+  | Readonly<{
+      kind: 'enter';
+      target:
+        | Readonly<{ kind: 'automatic' }>
+        | Readonly<{ kind: 'explicit'; homeServerIdentityId: string }>;
+    }>
+  | Readonly<{ kind: 'link'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'enroll'; homeServerIdentityId: string }>;
+
+export type AccountServiceHomeTargetResolution =
+  | Readonly<{ kind: 'invalid_directory'; reason: Extract<AccountServiceDirectoryClassification, { kind: 'invalid' }>['reason'] }>
+  | Readonly<{ kind: 'selected'; basis: 'explicit' | 'preferred' | 'sole'; home: AccountDirectoryHomeEntryV1 }>
+  | Readonly<{ kind: 'choose_home'; homes: AccountDirectoryHomeEntryV1[] }>
+  | Readonly<{ kind: 'no_homes' }>
+  | Readonly<{ kind: 'explicit_target_not_linked'; homeServerIdentityId: string }>;
 
 export type AccountServiceDirectoryClassification =
   | Readonly<{
@@ -127,16 +186,44 @@ export function classifyAccountServiceDirectory(
   return { kind: 'ready', homes: directory.homes, preferredHome };
 }
 
+export function resolveAccountServiceHomeTarget(input: Readonly<{
+  directory: AccountServiceDirectoryProjection;
+  explicitHomeServerIdentityId?: string;
+}>): AccountServiceHomeTargetResolution {
+  const directory = classifyAccountServiceDirectory(input.directory);
+  if (directory.kind === 'invalid') return { kind: 'invalid_directory', reason: directory.reason };
+  if (input.explicitHomeServerIdentityId !== undefined) {
+    const home = directory.homes.find((entry) => entry.homeServerIdentityId === input.explicitHomeServerIdentityId);
+    return home
+      ? { kind: 'selected', basis: 'explicit', home }
+      : { kind: 'explicit_target_not_linked', homeServerIdentityId: input.explicitHomeServerIdentityId };
+  }
+  if (directory.preferredHome) return { kind: 'selected', basis: 'preferred', home: directory.preferredHome };
+  if (directory.homes.length === 1) return { kind: 'selected', basis: 'sole', home: directory.homes[0]! };
+  if (directory.homes.length > 1) return { kind: 'choose_home', homes: [...directory.homes] };
+  return { kind: 'no_homes' };
+}
+
 export type AccountServiceDirectoryAdoptionTarget = Readonly<{
   homeServerIdentityId: string;
   label: string;
 }>;
 
+export type AccountServiceDirectoryAdoptionFailure = AccountServiceDirectoryAdoptionTarget
+  & Readonly<{ error: unknown }>;
+
 export type AccountServiceDirectoryAdoptionResult = Readonly<{
-  kind: 'completed' | 'cancelled';
+  kind: 'completed' | 'partial' | 'failed' | 'cancelled';
   adopted: readonly AccountServiceDirectoryAdoptionTarget[];
-  failures: readonly (AccountServiceDirectoryAdoptionTarget & Readonly<{ error: unknown }>)[];
+  failures: readonly AccountServiceDirectoryAdoptionFailure[];
 }>;
+
+export function findAccountServiceDirectoryAdoptionFailure(
+  adoption: AccountServiceDirectoryAdoptionResult,
+  homeServerIdentityId: string,
+): AccountServiceDirectoryAdoptionFailure | null {
+  return adoption.failures.find((failure) => failure.homeServerIdentityId === homeServerIdentityId) ?? null;
+}
 
 /** Adopts every valid Directory Home without owning or consulting client focus. */
 export async function adoptAccountServiceDirectoryHomes(input: Readonly<{
@@ -156,7 +243,17 @@ export async function adoptAccountServiceDirectoryHomes(input: Readonly<{
       failures.push({ ...target, error });
     }
   }
-  return { kind: input.shouldCancel?.() ? 'cancelled' : 'completed', adopted, failures };
+  return {
+    kind: input.shouldCancel?.()
+      ? 'cancelled'
+      : failures.length === 0
+        ? 'completed'
+        : adopted.length === 0
+          ? 'failed'
+          : 'partial',
+    adopted,
+    failures,
+  };
 }
 
 export type AccountServiceAssertionVerificationFailureReason =
@@ -210,6 +307,8 @@ export function verifyAccountServiceHomeAssertionRequest(input: Readonly<{
 export type AccountServiceAuthenticatedHomeObservation = Readonly<{
   homeServerIdentityId: string;
   connectionDescriptor: HomeConnectionDescriptorV1;
+  /** Authority of the feature projection that supplied this observation. */
+  provenance: 'authenticated' | 'public';
 }>;
 
 export function verifyAccountServiceAuthenticatedHomeObservation(input: Readonly<{
@@ -292,7 +391,7 @@ export type AccountServiceHomeApproval<SecretKey> = Readonly<{
 export type AccountServiceHomeEnrollmentResult<SecretKey, Commit> =
   | Readonly<{ kind: 'enrolled'; commit: Commit }>
   | Readonly<{ kind: 'approval_required'; approval: AccountServiceHomeApproval<SecretKey> }>
-  | Readonly<{ kind: 'verification_failed'; reason: AccountServiceAssertionVerificationFailureReason | 'transport_destination_mismatch' | 'redemption_identity_mismatch' | 'approval_mismatch' | 'redemption_expired' | 'credential_invalid' }>
+  | Readonly<{ kind: 'verification_failed'; reason: AccountServiceAssertionVerificationFailureReason | 'transport_destination_mismatch' | 'redemption_identity_mismatch' | 'approval_mismatch' | 'redemption_expired' | 'credential_invalid' | 'authenticated_observation_required' }>
   | Readonly<{ kind: 'cancelled' }>
   | Readonly<{ kind: 'unavailable'; error: unknown }>;
 
@@ -310,8 +409,11 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
   try {
     opened = await input.adapters.openHomeTransport(input.home);
   } catch (error) {
-    return { kind: 'unavailable', error };
+    return input.shouldCancel?.()
+      ? { kind: 'cancelled' }
+      : { kind: 'unavailable', error };
   }
+  let credentialCommitStarted = false;
   try {
     if (input.shouldCancel?.()) return { kind: 'cancelled' };
     if (input.assertion.audienceHomeServerIdentityId !== input.home.homeServerIdentityId) {
@@ -387,6 +489,9 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
       credential,
       home: input.home,
     });
+    if (observation.provenance !== 'authenticated') {
+      return { kind: 'verification_failed', reason: 'authenticated_observation_required' };
+    }
     const verifiedObservation = verifyAccountServiceAuthenticatedHomeObservation({
       home: input.home,
       assertion: input.assertion,
@@ -400,6 +505,7 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
       observation,
     });
     if (input.shouldCancel?.()) return { kind: 'cancelled' };
+    credentialCommitStarted = true;
     const commit = await input.adapters.commitHomeCredential({
       transport: opened.transport,
       home: input.home,
@@ -409,13 +515,15 @@ export async function continueAccountServiceHomeEnrollment<SecretKey, Transport,
     });
     return { kind: 'enrolled', commit };
   } catch (error) {
-    return { kind: 'unavailable', error };
+    return !credentialCommitStarted && input.shouldCancel?.()
+      ? { kind: 'cancelled' }
+      : { kind: 'unavailable', error };
   } finally {
     await input.adapters.closeHomeTransport(opened.transport).catch(() => {});
   }
 }
 
-export async function enrollPreferredAccountServiceHome<SecretKey, Transport, HomeCredential, Commit>(input: Readonly<{
+export async function enrollAccountServiceHome<SecretKey, Transport, HomeCredential, Commit>(input: Readonly<{
   home: AccountDirectoryHomeEntryV1;
   issuerServerIdentityId: string;
   adapters: AccountServiceHomeEnrollmentAdapters<SecretKey, Transport, HomeCredential, Commit>;
@@ -475,25 +583,35 @@ export async function observeAccountServiceHomeApproval<SecretKey, Transport, Ho
 
 export type AccountServiceDirectoryJourneyResult<SecretKey, Commit> =
   | Readonly<{
-      kind: 'preferred_home_enrolled';
+      kind: 'home_enrolled';
+      selection: 'explicit' | 'preferred' | 'sole';
       homeServerIdentityId: string;
       adoption: AccountServiceDirectoryAdoptionResult;
       enrollment: Extract<AccountServiceHomeEnrollmentResult<SecretKey, Commit>, { kind: 'enrolled' }>;
     }>
   | Readonly<{
-      kind: 'preferred_home_awaiting_approval';
+      kind: 'home_awaiting_approval';
+      selection: 'explicit' | 'preferred' | 'sole';
       homeServerIdentityId: string;
       adoption: AccountServiceDirectoryAdoptionResult;
       enrollment: Extract<AccountServiceHomeEnrollmentResult<SecretKey, Commit>, { kind: 'approval_required' }>;
     }>
   | Readonly<{
-      kind: 'preferred_home_failed';
+      kind: 'home_failed';
       homeServerIdentityId: string | null;
       adoption: AccountServiceDirectoryAdoptionResult;
       enrollment: Exclude<AccountServiceHomeEnrollmentResult<SecretKey, Commit>, { kind: 'enrolled' | 'approval_required' }>;
     }>
+  | Readonly<{
+      kind: 'home_adoption_failed';
+      selection: 'explicit' | 'preferred' | 'sole';
+      homeServerIdentityId: string;
+      adoption: AccountServiceDirectoryAdoptionResult;
+      failure: AccountServiceDirectoryAdoptionFailure;
+    }>
   | Readonly<{ kind: 'no_linked_homes'; adoption: AccountServiceDirectoryAdoptionResult }>
-  | Readonly<{ kind: 'no_preferred_home'; adoption: AccountServiceDirectoryAdoptionResult }>
+  | Readonly<{ kind: 'choose_home'; homes: AccountDirectoryHomeEntryV1[]; adoption: AccountServiceDirectoryAdoptionResult }>
+  | Readonly<{ kind: 'explicit_target_not_linked'; homeServerIdentityId: string; adoption: AccountServiceDirectoryAdoptionResult }>
   | Readonly<{ kind: 'cancelled'; adoption: AccountServiceDirectoryAdoptionResult }>
   | Readonly<{
       kind: 'invalid_directory';
@@ -508,32 +626,47 @@ export type AccountServiceDirectoryJourneyResult<SecretKey, Commit> =
 
 export async function runAccountServiceDirectoryJourney<SecretKey, Transport, HomeCredential, Commit>(input: Readonly<{
   directory: AccountServiceDirectoryProjection;
+  explicitHomeServerIdentityId?: string;
   issuerServerIdentityId: string;
   adoptHome: (home: AccountDirectoryHomeEntryV1) => Promise<unknown>;
   enrollmentAdapters: AccountServiceHomeEnrollmentAdapters<SecretKey, Transport, HomeCredential, Commit>;
   nowMs?: number;
   shouldCancel?: () => boolean;
 }>): Promise<AccountServiceDirectoryJourneyResult<SecretKey, Commit>> {
-  const classification = classifyAccountServiceDirectory(input.directory);
-  if (classification.kind === 'invalid') {
+  const target = resolveAccountServiceHomeTarget(input);
+  if (target.kind === 'invalid_directory') {
     const adoption = { kind: 'completed', adopted: [], failures: [] } as const;
     return {
-      kind: classification.homeServerIdentityId ? 'preferred_home_failed' : 'invalid_directory',
-      homeServerIdentityId: classification.homeServerIdentityId,
+      kind: 'invalid_directory',
+      reason: target.reason,
+      homeServerIdentityId: null,
       adoption,
-      enrollment: { kind: 'verification_failed', reason: classification.reason },
-    } as AccountServiceDirectoryJourneyResult<SecretKey, Commit>;
+      enrollment: { kind: 'verification_failed', reason: target.reason },
+    };
   }
   const adoption = await adoptAccountServiceDirectoryHomes({
-    homes: classification.homes,
+    homes: input.directory.homes,
     adoptHome: input.adoptHome,
     shouldCancel: input.shouldCancel,
   });
   if (adoption.kind === 'cancelled') return { kind: 'cancelled', adoption };
-  if (classification.homes.length === 0) return { kind: 'no_linked_homes', adoption };
-  if (!classification.preferredHome) return { kind: 'no_preferred_home', adoption };
-  const enrollment = await enrollPreferredAccountServiceHome({
-    home: classification.preferredHome,
+  if (target.kind === 'no_homes') return { kind: 'no_linked_homes', adoption };
+  if (target.kind !== 'selected') return { ...target, adoption };
+  const adoptionFailure = findAccountServiceDirectoryAdoptionFailure(
+    adoption,
+    target.home.homeServerIdentityId,
+  );
+  if (adoptionFailure) {
+    return {
+      kind: 'home_adoption_failed',
+      selection: target.basis,
+      homeServerIdentityId: target.home.homeServerIdentityId,
+      adoption,
+      failure: adoptionFailure,
+    };
+  }
+  const enrollment = await enrollAccountServiceHome({
+    home: target.home,
     issuerServerIdentityId: input.issuerServerIdentityId,
     adapters: input.enrollmentAdapters,
     nowMs: input.nowMs,
@@ -541,23 +674,25 @@ export async function runAccountServiceDirectoryJourney<SecretKey, Transport, Ho
   });
   if (enrollment.kind === 'enrolled') {
     return {
-      kind: 'preferred_home_enrolled',
-      homeServerIdentityId: classification.preferredHome.homeServerIdentityId,
+      kind: 'home_enrolled',
+      selection: target.basis,
+      homeServerIdentityId: target.home.homeServerIdentityId,
       adoption,
       enrollment,
     };
   }
   if (enrollment.kind === 'approval_required') {
     return {
-      kind: 'preferred_home_awaiting_approval',
-      homeServerIdentityId: classification.preferredHome.homeServerIdentityId,
+      kind: 'home_awaiting_approval',
+      selection: target.basis,
+      homeServerIdentityId: target.home.homeServerIdentityId,
       adoption,
       enrollment,
     };
   }
   return {
-    kind: 'preferred_home_failed',
-    homeServerIdentityId: classification.preferredHome.homeServerIdentityId,
+    kind: 'home_failed',
+    homeServerIdentityId: target.home.homeServerIdentityId,
     adoption,
     enrollment,
   };

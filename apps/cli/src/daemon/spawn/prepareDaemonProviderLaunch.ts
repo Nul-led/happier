@@ -6,7 +6,7 @@ import type {
     SessionProviderBindingMetadataV1,
 } from '@happier-dev/protocol';
 import {
-    ConnectedServiceBindingsV1Schema,
+    ConnectedServiceBindingsV2IngressSchema,
     createProviderErrorV1,
 } from '@happier-dev/protocol';
 
@@ -128,7 +128,7 @@ export async function prepareDaemonProviderLaunch(input: Readonly<{
         previousBinding: input.persistedProviderBinding,
         confirmation: input.options.providerBindingSecurityChangeConfirmationV1 ?? null,
         connectedServices: (() => {
-            const parsed = ConnectedServiceBindingsV1Schema.safeParse(input.options.connectedServices);
+            const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(input.options.connectedServices);
             return parsed.success ? parsed.data : null;
         })(),
         featureEnabled: input.modelSelection?.ref.providerConnectionId != null

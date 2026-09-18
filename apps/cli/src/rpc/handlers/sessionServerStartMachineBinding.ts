@@ -3,7 +3,7 @@ import { SessionServerStartDispatchResultV1Schema } from '@happier-dev/protocol'
 import {
     createAutomationAccountEncryptionMaterialSnapshotV1,
 } from '@/plugins/runtime/automations/automationAccountCurrentness';
-import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
+import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import type { SessionSpawnDirectTargetTransport } from '@/session/actions/createCliActionDeps';
 import type { SessionLifecycleActionHandler } from '@/session/actions/lifecycle/sessionLifecycleTypes';
 import type { SpawnSessionNonceResolver } from '@/session/services/awaitSpawnedSessionId';
@@ -77,12 +77,9 @@ export function registerMachineSessionServerStartRpcHandler(
             if (context.signal.aborted) {
                 return { type: 'error', code: 'cancelled', retryable: true };
             }
-            const executor = createCliActionExecutor({
-                token: credentials.token,
+            const executor = createCliActionExecutorFromCredentials({
                 credentials,
-                sessionId: 'cli-global',
-                mode: 'plain',
-                ctx: null,
+                machineId: options.machineId,
                 sessionSpawnDirectTargetTransport: directTargetTransport,
                 ...(options.machineAdmissionTransport
                     ? { machineAdmissionTransport: options.machineAdmissionTransport }

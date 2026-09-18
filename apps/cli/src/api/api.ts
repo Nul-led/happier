@@ -1,4 +1,46 @@
+import { resolvePublishedMachineEncryptionContext } from './machine/machineDataEncryptionKey';
+import { createMachineContentCodec } from './machine/machineStoredContent';
 import axios from 'axios'
+import {
+  PROVIDER_BROKER_MODEL_CATALOG_AUTHORIZE_HTTP_PATH_V1,
+  PROVIDER_BROKER_READINESS_AUTHORIZE_HTTP_PATH_V1,
+  PROVIDER_BROKER_REQUEST_ADMISSION_HTTP_PATH_V1,
+  ProviderBrokerModelCatalogAuthorizationV1Schema,
+  ProviderBrokerModelCatalogAuthorizationResponseV1Schema,
+  ProviderBrokerRequestAdmissionV1Schema,
+  ProviderBrokerRequestAdmissionResponseV1Schema,
+  type ProviderBrokerOpenRequestV1,
+  type ProviderBrokerOpenResponseV1,
+  type ProviderBrokerModelCatalogAuthorizationV1,
+  type ProviderBrokerModelCatalogAuthorizationResponseV1,
+  type ProviderBrokerRequestAdmissionV1,
+  type ProviderBrokerRequestAdmissionResponseV1,
+} from '@happier-dev/protocol';
+import {
+  RunnerBrokerReadinessResponseV1Schema,
+  TEAM_CREDENTIAL_EXTERNAL_PROVIDER_ADMISSION_HTTP_PATH_V1,
+  TEAM_CREDENTIAL_EXTERNAL_PROVIDER_TERMINAL_USAGE_HTTP_PATH_V1,
+  TEAM_CREDENTIAL_RESOURCE_TEST_ADMISSION_HTTP_PATH_V1,
+  TeamCredentialExternalProviderAdmissionResponseV1Schema,
+  TeamCredentialExternalProviderAdmissionV1Schema,
+  TeamCredentialExternalProviderTerminalUsageResponseV1Schema,
+  TeamCredentialExternalProviderTerminalUsageV1Schema,
+  TeamCredentialExternalProviderModelCatalogAuthorizationV1Schema,
+  TeamCredentialResourceTestAdmissionResponseV1Schema,
+  TeamCredentialResourceTestAdmissionV1Schema,
+  TEAM_CREDENTIAL_ACTION_PATHS_V1,
+  TeamCredentialResourceSummaryV1Schema,
+  type RunnerBrokerReadinessRequestV1,
+  type RunnerBrokerReadinessResponseV1,
+  type TeamCredentialExternalProviderAdmissionResponseV1,
+  type TeamCredentialExternalProviderAdmissionV1,
+  type TeamCredentialExternalProviderTerminalUsageResponseV1,
+  type TeamCredentialExternalProviderTerminalUsageV1,
+  type TeamCredentialExternalProviderModelCatalogAuthorizationV1,
+  type TeamCredentialResourceTestAdmissionResponseV1,
+  type TeamCredentialResourceTestAdmissionV1,
+  type TeamCredentialResourceSummaryV1,
+} from '@happier-dev/protocol/teams';
 import {
   buildCurrentAccountStoredContentCompatibilityHttpHeaders,
   readCliClientUpgradeRequired,
@@ -21,6 +63,8 @@ import type {
 } from '@/api/types'
 import { MachineRegistrationIdentitySchema } from '@/api/types'
 import { ApiSessionClient, type ApiSessionClientOptions } from './session/sessionClient';
+import { createAccountSessionClientTransport } from './client/createAccountSessionClientTransport';
+import { openTeamCredentialProviderBroker } from './client/providerBrokerApi';
 import {
   ApiMachineClient,
   type ApiMachineClientLifecycleDependencies,
@@ -46,7 +90,8 @@ import {
 import { decodeBase64, encodeBase64, encrypt, decrypt } from './encryption';
 import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
-import type { Credentials, StoredCredentials } from '@/persistence';
+import { assertSessionEncryptionModeAllowedByEffectiveClientRequirement } from '@/settings/accountSettings/resolveEffectiveClientEncryptionRequirement';
+import { readStoredCredentials, type Credentials, type StoredCredentials } from '@/persistence';
 import {
   readSessionMetadataLayoutVersion,
   tryReadApiSessionMetadataForLayout,
@@ -57,7 +102,6 @@ import {
   resolveMachineEncryptionContext,
   resolveSessionEncryptionContext,
 } from './client/encryptionKey';
-import { openSessionDataEncryptionKey } from './client/openSessionDataEncryptionKey';
 import { serializeAxiosErrorForLog } from './client/serializeAxiosErrorForLog';
 import { logServerEndpointFailure } from './client/serverEndpointFailureLog';
 import { resolveServerHttpBaseUrl } from './client/serverHttpBaseUrl';
@@ -67,9 +111,16 @@ import {
 import { resolveConnectedServicesServerApiTimeoutMs } from './client/connectedServicesServerApiTimeout';
 import { SessionCreationPlacementError } from './session/sessionCreationPlacementError';
 import {
+  buildSessionInitialAccessCreateFields,
+  materializeSessionInitialAccessCreateFields,
+  readSessionInitialAccessUpdateRequiredError,
+  readSessionInitialAccessServerError,
+} from './session/sessionCreationInitialAccess';
+import {
   SessionCreationCorrespondenceConflictError,
 } from './session/sessionCreationCorrespondenceConflictError';
 import { transformSessionInputThroughPluginHooks } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
+import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
 import {
   createConnectedServiceCredentialApi,
   type ConnectedServiceAccountEncryptionMode,
@@ -145,7 +196,7 @@ import type {
 import { resolveSessionCreateEncryptionMode } from '@/api/session/resolveSessionCreateEncryptionMode';
 import { consumeMachineReplacementCandidateAfterRegistration } from '@/daemon/machineIdentity/machineReplacementCandidates';
 import { resolveMachineRegistrationIdentity } from '@/daemon/machineIdentity/resolveMachineRegistrationIdentity';
-import { tryDecryptSessionOwnerMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
+import { resolveSessionEncryptionContextFromCredentials, tryDecryptSessionOwnerMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   buildSessionMetadataEnvelopeCreateFields,
   SessionMetadataPrivacyUpgradeRequiredError,
@@ -237,6 +288,7 @@ export class ApiClient {
   // runtime-action front door's feature gate reads the LIVE server bits cold instead of failing
   // closed for lack of a daemon-wide source.
   private getCachedServerFeaturesSnapshot: (() => CliServerFeaturesSnapshot | undefined) | null = null;
+  private refreshCachedServerFeaturesSnapshot: (() => Promise<CliServerFeaturesSnapshot | undefined>) | null = null;
   private localMachineId: string | null = null;
 
   private constructor(credential: StoredCredentials) {
@@ -300,8 +352,12 @@ export class ApiClient {
   // G9-E: the machine-sync bootstrap publishes the daemon-wide cached server-features snapshot
   // accessor here so the runtime-action dispatch (read-path owner) reads the same live bits the
   // daemon already fetches/caches.
-  setServerFeaturesSnapshotProvider(provider: (() => CliServerFeaturesSnapshot | undefined) | null): void {
+  setServerFeaturesSnapshotProvider(
+    provider: (() => CliServerFeaturesSnapshot | undefined) | null,
+    refresh?: (() => Promise<CliServerFeaturesSnapshot | undefined>) | null,
+  ): void {
     this.getCachedServerFeaturesSnapshot = provider;
+    this.refreshCachedServerFeaturesSnapshot = refresh ?? null;
   }
 
   /**
@@ -332,12 +388,57 @@ export class ApiClient {
     options?: Readonly<{ refresh?: boolean; signal?: AbortSignal }>,
   ): Promise<CliServerFeaturesSnapshot | undefined> {
     if (options?.refresh === true) {
+      const sharedRefresh = this.refreshCachedServerFeaturesSnapshot;
+      if (sharedRefresh) {
+        const request = sharedRefresh();
+        const signal = options.signal;
+        if (!signal) return await request;
+        signal.throwIfAborted();
+        return await new Promise<CliServerFeaturesSnapshot | undefined>((resolve, reject) => {
+          const onAbort = () => {
+            signal.removeEventListener('abort', onAbort);
+            reject(signal.reason);
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+          void request.then(
+            (snapshot) => {
+              signal.removeEventListener('abort', onAbort);
+              resolve(snapshot);
+            },
+            (error) => {
+              signal.removeEventListener('abort', onAbort);
+              reject(error);
+            },
+          );
+        });
+      }
       return await fetchServerFeaturesSnapshot({
         serverUrl: resolveServerHttpBaseUrl(),
         signal: options.signal,
       });
     }
     return this.getCachedServerFeaturesSnapshot?.();
+  }
+
+  /** Home remains the credential custodian; this forwards only the signed, content-free proof envelope. */
+  async authorizeRunnerBrokerReadiness(
+    request: RunnerBrokerReadinessRequestV1,
+    signal: AbortSignal,
+  ): Promise<RunnerBrokerReadinessResponseV1> {
+    signal.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${PROVIDER_BROKER_READINESS_AUTHORIZE_HTTP_PATH_V1.replace(':resourceId', encodeURIComponent(request.resourceId))}`,
+      request,
+      {
+        headers: {
+          Authorization: `Bearer ${this.credential.token}`,
+          'Content-Type': 'application/json',
+        },
+        signal,
+        timeout: 30_000,
+      },
+    );
+    return RunnerBrokerReadinessResponseV1Schema.parse(response.data);
   }
 
   setLocalMachineId(machineId: string | null | undefined): void {
@@ -352,24 +453,83 @@ export class ApiClient {
     metadata: Metadata,
     state: AgentState | null,
     organizationPlacement?: import('@happier-dev/protocol').SessionOrganizationPlacementV1,
+    initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1,
+    primaryTeamId?: string | null,
+    teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1,
     signal?: AbortSignal,
   }): Promise<SessionCreateOrLoadResult | null> {
     opts.signal?.throwIfAborted();
     const sessionsUrl = `${resolveServerHttpBaseUrl()}/v1/sessions`;
 
+    // One terminal classification for every failure this call can meet on its
+    // way to a Session: the Account currentness preflight and the sessions
+    // request share transport, credentials and the offline/auth contract.
+    const settleGetOrCreateSessionFailure = (error: unknown): null => {
+      // Never log raw Axios errors: they can contain bearer tokens or vendor keys.
+      logger.debug('[API] [ERROR] Failed to get or create session:', serializeAxiosErrorForLog(error));
+
+      const terminalAuthStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (terminalAuthStatus === 401 || terminalAuthStatus === 403) {
+        // Preserve status for offline reconnection stop conditions without leaking request config.
+        throw new HttpStatusError(terminalAuthStatus, 'Authentication failed');
+      }
+
+      if (
+        axios.isAxiosError(error)
+        && error.response?.status === 400
+        && error.response.data
+        && typeof error.response.data === 'object'
+        && !Array.isArray(error.response.data)
+        && (error.response.data as Readonly<Record<string, unknown>>).error === 'invalid-params'
+        && (error.response.data as Readonly<Record<string, unknown>>).code
+          === 'invalid-session-organization-placement'
+      ) {
+        // This is the sole server-originated creation-placement result. Do
+        // not broaden it to generic 4xx/network failures: callers use the
+        // bounded code as an actionable final outcome.
+        throw new SessionCreationPlacementError();
+      }
+
+      if (shouldTreatGetOrCreateSessionErrorAsOffline(error, { url: sessionsUrl })) {
+        return null;
+      }
+
+      throw new Error(`Failed to get or create session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    };
+
     const serverBaseUrl = resolveServerHttpBaseUrl();
-    const {
-      desiredSessionEncryptionMode,
-      accountEncryptionCurrentness,
-      serverSupportsFeatureSnapshot,
-    } = await resolveSessionCreateEncryptionMode({
+    const encryptionModeResolution = await resolveSessionCreateEncryptionMode({
       token: this.credential.token,
       serverBaseUrl,
       accountTimeoutMs: 10_000,
     });
+    if (encryptionModeResolution.status === 'currentness_unavailable') {
+      // The read failed before any Session request; classify the transport
+      // failure it wraps exactly as the sessions request's own would be. An
+      // unavailable currentness is never reinterpreted as a Plain Account.
+      const { error } = encryptionModeResolution;
+      return settleGetOrCreateSessionFailure(error.cause ?? error);
+    }
+    const {
+      desiredSessionEncryptionMode,
+      accountEncryptionCurrentness,
+      serverSupportsFeatureSnapshot,
+      serverFeaturesSnapshot,
+    } = encryptionModeResolution;
+    const initialAccessCreateFields = buildSessionInitialAccessCreateFields(opts, serverFeaturesSnapshot);
     const encryptionContext = desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(this.credential)
       : null;
+    const materializedInitialAccessCreateFields = await materializeSessionInitialAccessCreateFields({
+      fields: initialAccessCreateFields,
+      sessionEncryptionMode: desiredSessionEncryptionMode,
+      sessionDataKey: encryptionContext?.encryptionVariant === 'dataKey'
+        ? encryptionContext.encryptionKey
+        : null,
+      token: this.credential.token,
+      serverHttpBaseUrl: serverBaseUrl,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
 
     const resolvePositiveIntEnv = (raw: string | undefined, fallback: number, bounds: { min: number; max: number }): number => {
       const value = (raw ?? '').trim();
@@ -442,6 +602,7 @@ export class ApiClient {
           sessionsUrl,
           {
             tag: opts.tag,
+            ...materializedInitialAccessCreateFields,
             ...metadataEnvelopeFields,
             dataEncryptionKey:
               desiredSessionEncryptionMode === 'plain'
@@ -451,6 +612,7 @@ export class ApiClient {
                   : null,
             ...(serverSupportsFeatureSnapshot ? { encryptionMode: desiredSessionEncryptionMode } : {}),
             ...(opts.organizationPlacement ? { organizationPlacement: opts.organizationPlacement } : {}),
+            ...(opts.teamCredentialBindings !== undefined ? { teamCredentialBindings: opts.teamCredentialBindings } : {}),
           },
           {
             headers: {
@@ -478,6 +640,7 @@ export class ApiClient {
 
         const sessionEncryptionMode: 'e2ee' | 'plain' =
           (raw as any)?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+        assertSessionEncryptionModeAllowedByEffectiveClientRequirement(sessionEncryptionMode);
         const metadataLayoutVersion = readSessionMetadataLayoutVersion(raw.metadataLayoutVersion);
         const rawOwnerMetadata =
           (raw as Readonly<{ ownerMetadata?: unknown }>).ownerMetadata;
@@ -552,31 +715,10 @@ export class ApiClient {
           };
         }
 
-        const responseEncryptionContext =
-          encryptionContext ?? resolveSessionEncryptionContext(this.credential);
         const keyedCredential = requireAccountEncryptionCredentials(this.credential);
-
-        // Prefer the Session's published data key, but retain the released
-        // machine-key fallback for older E2EE Sessions without a published DEK.
-        let sessionEncryptionKey = responseEncryptionContext.encryptionKey;
-        if (keyedCredential.encryption.type === 'dataKey') {
-          const serverEncryptedDataKeyRaw = (raw as any).dataEncryptionKey;
-          const opened = openSessionDataEncryptionKey({
-            credential: keyedCredential,
-            encryptedDataEncryptionKeyBase64: serverEncryptedDataKeyRaw,
-          });
-          if (
-            typeof serverEncryptedDataKeyRaw === 'string'
-            && serverEncryptedDataKeyRaw.trim().length > 0
-            && !opened
-          ) {
-            logger.debug('[API] Failed to open session dataEncryptionKey (dataKey account)', {
-              sessionId: raw.id,
-            });
-            throw new Error('Failed to open session dataEncryptionKey');
-          }
-          sessionEncryptionKey = opened ?? keyedCredential.encryption.machineKey;
-        }
+        const responseEncryptionContext = resolveSessionEncryptionContextFromCredentials(keyedCredential, raw);
+        if (!responseEncryptionContext) throw new Error('Failed to open session dataEncryptionKey');
+        const sessionEncryptionKey = responseEncryptionContext.encryptionKey;
         const decodedMetadata = decrypt(
           sessionEncryptionKey,
           responseEncryptionContext.encryptionVariant,
@@ -651,6 +793,14 @@ export class ApiClient {
           );
         }
         const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        const initialAccessUpdateRequired = readSessionInitialAccessUpdateRequiredError(
+          axios.isAxiosError(error) ? error.response?.data : undefined,
+        );
+        if (initialAccessUpdateRequired) throw initialAccessUpdateRequired;
+        const initialAccessServerError = axios.isAxiosError(error) && typeof status === 'number'
+          ? readSessionInitialAccessServerError(error.response?.data, status)
+          : null;
+        if (initialAccessServerError) throw initialAccessServerError;
         if (
           error
           instanceof AccountStoredContentClientUpgradeRequiredError
@@ -666,36 +816,7 @@ export class ApiClient {
           continue;
         }
 
-        // Never log raw Axios errors: they can contain bearer tokens or vendor keys.
-        logger.debug('[API] [ERROR] Failed to get or create session:', serializeAxiosErrorForLog(error));
-
-        const terminalAuthStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
-        if (terminalAuthStatus === 401 || terminalAuthStatus === 403) {
-          // Preserve status for offline reconnection stop conditions without leaking request config.
-          throw new HttpStatusError(terminalAuthStatus, 'Authentication failed');
-        }
-
-        if (
-          axios.isAxiosError(error)
-          && error.response?.status === 400
-          && error.response.data
-          && typeof error.response.data === 'object'
-          && !Array.isArray(error.response.data)
-          && (error.response.data as Readonly<Record<string, unknown>>).error === 'invalid-params'
-          && (error.response.data as Readonly<Record<string, unknown>>).code
-            === 'invalid-session-organization-placement'
-        ) {
-          // This is the sole server-originated creation-placement result. Do
-          // not broaden it to generic 4xx/network failures: callers use the
-          // bounded code as an actionable final outcome.
-          throw new SessionCreationPlacementError();
-        }
-
-        if (shouldTreatGetOrCreateSessionErrorAsOffline(error, { url: sessionsUrl })) {
-          return null;
-        }
-
-        throw new Error(`Failed to get or create session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        return settleGetOrCreateSessionFailure(error);
       }
     }
 
@@ -711,14 +832,6 @@ export class ApiClient {
     options?.signal?.throwIfAborted();
     const accountMode = await this.getAccountEncryptionMode({ signal: options?.signal });
     const machineStorageMode = accountMode === 'plain' ? 'plain' : 'e2ee';
-    const encryptionContext = machineStorageMode === 'e2ee'
-      ? resolveMachineEncryptionContext(this.credential)
-      : null;
-    const decodeMachineContent = (value: string): unknown => {
-      if (machineStorageMode === 'plain') return decodePlainMachineStoredContent(value);
-      if (!encryptionContext) throw new Error('Machine encryption context is unavailable for encrypted storage');
-      return decrypt(encryptionContext.encryptionKey, encryptionContext.encryptionVariant, decodeBase64(value));
-    };
     try {
       const response = await axios.get(
         `${resolveServerHttpBaseUrl()}/v1/machines/${encodeURIComponent(machineId)}`,
@@ -728,22 +841,35 @@ export class ApiClient {
         },
       );
       const raw = response.data.machine;
+      const encryptionContext = resolvePublishedMachineEncryptionContext({
+        credentials: this.credential,
+        machineId,
+        publishedDataEncryptionKey: raw.dataEncryptionKey,
+        machineKind: raw.kind,
+        installationId: raw.installationId,
+        runnerContentKeyBinding: raw.runnerContentKeyBinding,
+      });
+      if ((encryptionContext.encryptionMode ?? 'e2ee') !== machineStorageMode) {
+        throw new Error('Machine storage mode does not match Account encryption mode');
+      }
+      const machineCodec = createMachineContentCodec(encryptionContext);
+
       const common = {
         id: raw.id,
-        metadata: raw.metadata ? decodeMachineContent(raw.metadata) as MachineMetadata : null,
+        metadata: raw.metadata ? machineCodec.decodeStored(raw.metadata) as MachineMetadata : null,
         metadataVersion: raw.metadataVersion || 0,
-        daemonState: raw.daemonState ? decodeMachineContent(raw.daemonState) as DaemonState : null,
+        daemonState: raw.daemonState ? machineCodec.decodeStored(raw.daemonState) as DaemonState : null,
         daemonStateVersion: raw.daemonStateVersion || 0,
         operationProtocolCapabilities: null,
         operationProtocolCapabilitiesRevision: null,
       };
-      return machineStorageMode === 'plain'
+      return encryptionContext.encryptionMode === 'plain'
         ? { ...common, encryptionMode: 'plain' }
         : {
             ...common,
             encryptionMode: 'e2ee',
-            encryptionKey: encryptionContext!.encryptionKey,
-            encryptionVariant: encryptionContext!.encryptionVariant,
+            encryptionKey: encryptionContext.encryptionKey,
+            encryptionVariant: encryptionContext.encryptionVariant,
           };
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 404) return null;
@@ -765,6 +891,116 @@ export class ApiClient {
       throw new Error('Peer mediation route grant is unavailable');
     }
     return response.data.grant;
+  }
+
+  async openTeamCredentialProviderBroker(
+    request: ProviderBrokerOpenRequestV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<ProviderBrokerOpenResponseV1> {
+    return await openTeamCredentialProviderBroker({
+      token: this.credential.token,
+      request,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  async getTeamCredentialResource(
+    resourceId: string,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TeamCredentialResourceSummaryV1> {
+    options?.signal?.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${TEAM_CREDENTIAL_ACTION_PATHS_V1['teams.credentials.get']}`,
+      { resourceId },
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        timeout: 10_000,
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return TeamCredentialResourceSummaryV1Schema.parse(response.data);
+  }
+
+  async admitTeamCredentialProviderBrokerRequest(
+    request: ProviderBrokerRequestAdmissionV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<ProviderBrokerRequestAdmissionResponseV1> {
+    options?.signal?.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${PROVIDER_BROKER_REQUEST_ADMISSION_HTTP_PATH_V1}`,
+      ProviderBrokerRequestAdmissionV1Schema.parse(request),
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        timeout: 10_000,
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return ProviderBrokerRequestAdmissionResponseV1Schema.parse(response.data);
+  }
+
+  async authorizeTeamCredentialProviderModelCatalog(
+    request: ProviderBrokerModelCatalogAuthorizationV1 | TeamCredentialExternalProviderModelCatalogAuthorizationV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<ProviderBrokerModelCatalogAuthorizationResponseV1> {
+    options?.signal?.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${PROVIDER_BROKER_MODEL_CATALOG_AUTHORIZE_HTTP_PATH_V1}`,
+      ('authority' in request
+        ? ProviderBrokerModelCatalogAuthorizationV1Schema
+        : TeamCredentialExternalProviderModelCatalogAuthorizationV1Schema).parse(request),
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return ProviderBrokerModelCatalogAuthorizationResponseV1Schema.parse(response.data);
+  }
+
+  async admitTeamCredentialExternalProviderRequest(
+    request: TeamCredentialExternalProviderAdmissionV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TeamCredentialExternalProviderAdmissionResponseV1> {
+    options?.signal?.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${TEAM_CREDENTIAL_EXTERNAL_PROVIDER_ADMISSION_HTTP_PATH_V1}`,
+      TeamCredentialExternalProviderAdmissionV1Schema.parse(request),
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return TeamCredentialExternalProviderAdmissionResponseV1Schema.parse(response.data);
+  }
+
+  async recordTeamCredentialExternalProviderTerminalUsage(
+    request: TeamCredentialExternalProviderTerminalUsageV1,
+  ): Promise<TeamCredentialExternalProviderTerminalUsageResponseV1> {
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${TEAM_CREDENTIAL_EXTERNAL_PROVIDER_TERMINAL_USAGE_HTTP_PATH_V1}`,
+      TeamCredentialExternalProviderTerminalUsageV1Schema.parse(request),
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        timeout: 10_000,
+      },
+    );
+    return TeamCredentialExternalProviderTerminalUsageResponseV1Schema.parse(response.data);
+  }
+
+  async admitTeamCredentialResourceTestRequest(
+    request: TeamCredentialResourceTestAdmissionV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TeamCredentialResourceTestAdmissionResponseV1> {
+    options?.signal?.throwIfAborted();
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}${TEAM_CREDENTIAL_RESOURCE_TEST_ADMISSION_HTTP_PATH_V1}`,
+      TeamCredentialResourceTestAdmissionV1Schema.parse(request),
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        timeout: 10_000,
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return TeamCredentialResourceTestAdmissionResponseV1Schema.parse(response.data);
   }
 
   async getOrCreateMachine(opts: {
@@ -1018,10 +1254,14 @@ export class ApiClient {
       | 'transformSessionInputBeforeCommit'
       | 'afterComposerAttachmentMessageAccepted'
       | 'machineAdmissionTransport'
-    > = {},
+      | 'actionsSettingsProvider'
+    > & Partial<Pick<ApiSessionClientOptions, 'metadataAuthority'>> = {},
   ): ApiSessionClient {
     return new ApiSessionClient(this.credential.token, session, {
-      credentials: this.credential,
+      transport: createAccountSessionClientTransport(this.credential.token),
+      metadataAuthority: sessionOptions.metadataAuthority
+        ?? { kind: 'owner', credentials: this.credential, readCurrentCredentials: readStoredCredentials },
+      ...(sessionOptions.actionsSettingsProvider ? { actionsSettingsProvider: sessionOptions.actionsSettingsProvider } : {}),
       getAccountEncryptionCurrentness: async () => await this.getAccountEncryptionCurrentness(),
       getBrowserDaemonControlRoutes: this.getBrowserDaemonControlRoutes,
       getBrowserDaemonContextRoutes: this.getBrowserDaemonContextRoutes,
@@ -1042,6 +1282,7 @@ export class ApiClient {
       machineAdmissionTransport:
         sessionOptions.machineAdmissionTransport,
       localMachineId: this.localMachineId,
+      onSessionFollowInvalidated: publishSessionFollowWakeInvalidation,
       initialRegisteredSessionStateFieldMutations: sessionOptions.initialRegisteredSessionStateFieldMutations,
       durableMutationDeliveryInitiallyActive: sessionOptions.durableMutationDeliveryInitiallyActive,
     });

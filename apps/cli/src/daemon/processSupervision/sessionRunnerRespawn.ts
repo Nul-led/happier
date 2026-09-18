@@ -5,6 +5,8 @@
  * while ensuring stop requests never trigger restart loops.
  */
 
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import {
   SESSION_RUNNER_EXIT_CODES,
   SPAWN_SESSION_ERROR_CODES,
@@ -53,10 +55,6 @@ export type SessionRunnerRespawnTerminalReason =
   | 'stop_requested';
 
 function normalizeSessionId(raw: unknown): string {
-  return typeof raw === 'string' ? raw.trim() : '';
-}
-
-function normalizeOptionalString(raw: unknown): string {
   return typeof raw === 'string' ? raw.trim() : '';
 }
 
@@ -123,8 +121,10 @@ function buildRespawnOptions(params: Readonly<{
   sessionId: string;
   vendorResumeId: string;
 }>): SpawnSessionOptions {
-  const resumeFromOptions = normalizeOptionalString(params.spawnOptions.resume);
-  const resumeFromTracked = normalizeOptionalString(params.vendorResumeId);
+  // A resume id is the Agent's own opaque session identity. Respawn hands these
+  // bytes straight back to it, so only presence is decided here.
+  const resumeFromOptions = readNonBlankOpaqueIdentifier(params.spawnOptions.resume);
+  const resumeFromTracked = readNonBlankOpaqueIdentifier(params.vendorResumeId);
   const effectiveResume = resumeFromOptions || resumeFromTracked;
   const { resume: _resume, ...spawnOptionsWithoutResume } = params.spawnOptions;
   return {
@@ -554,7 +554,7 @@ export function createSessionRunnerRespawnManager(params: Readonly<{
         return 'terminal';
       }
 
-      const vendorResumeId = normalizeOptionalString(trackedSession.vendorResumeId);
+      const vendorResumeId = readNonBlankOpaqueIdentifier(trackedSession.vendorResumeId) ?? '';
       const controller = getOrCreateController(sessionId);
       if (forceRestart) {
         // Mark this as an intended (connected-service-initiated) restart cycle so its whole storm —

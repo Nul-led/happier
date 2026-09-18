@@ -22,6 +22,11 @@
       "require": "./cliDistBuildManifest.cjs",
       "default": "./cliDistBuildManifest.cjs"
     },
+    "./numericPlanetFrame": {
+      "types": "./numericPlanetFrame.d.mts",
+      "import": "./numericPlanetFrame.mjs",
+      "default": "./numericPlanetFrame.mjs"
+    },
     "./bundledPluginResources": {
       "types": "./bundledPluginResources.d.mts",
       "import": "./bundledPluginResources.mjs",
@@ -87,6 +92,11 @@
       "import": "./dist/links.js",
       "default": "./dist/links.js"
     },
+    "./happierCloud": {
+      "types": "./dist/happierCloud.d.ts",
+      "import": "./dist/happierCloud.js",
+      "default": "./dist/happierCloud.js"
+    },
     "./update": {
       "types": "./dist/update/index.d.ts",
       "import": "./dist/update/index.js",
@@ -107,6 +117,11 @@
       "import": "./dist/firstPartyRuntime/serverRuntimeArtifactLayout.js",
       "default": "./dist/firstPartyRuntime/serverRuntimeArtifactLayout.js"
     },
+    "./firstPartyRuntime/server": {
+      "types": "./dist/firstPartyRuntime/serverRuntime.d.ts",
+      "import": "./dist/firstPartyRuntime/serverRuntime.js",
+      "default": "./dist/firstPartyRuntime/serverRuntime.js"
+    },
     "./firstPartyRuntime/sqliteMigrationCatalog": {
       "types": "./dist/firstPartyRuntime/sqliteMigrationCatalog.d.ts",
       "import": "./dist/firstPartyRuntime/sqliteMigrationCatalog.js",
@@ -121,6 +136,21 @@
       "types": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.d.ts",
       "import": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.js",
       "default": "./dist/firstPartyRuntime/personalHome/bootstrapSystemTasks.js"
+    },
+    "./firstPartyRuntime/personalHome/readiness": {
+      "types": "./dist/firstPartyRuntime/personalHome/readiness.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/readiness.js",
+      "default": "./dist/firstPartyRuntime/personalHome/readiness.js"
+    },
+    "./firstPartyRuntime/personalHome/productionAdapters": {
+      "types": "./dist/firstPartyRuntime/personalHome/productionAdapters.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/productionAdapters.js",
+      "default": "./dist/firstPartyRuntime/personalHome/productionAdapters.js"
+    },
+    "./firstPartyRuntime/personalHome/configuration": {
+      "types": "./dist/firstPartyRuntime/personalHome/configuration.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/configuration.js",
+      "default": "./dist/firstPartyRuntime/personalHome/configuration.js"
     },
     "./firstPartyRuntime/personalHome/runtimeSpec": {
       "types": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.d.ts",
@@ -192,6 +222,11 @@
       "import": "./dist/happierRuntime/index.js",
       "default": "./dist/happierRuntime/index.js"
     },
+    "./happierRuntime/runtimePathMatching": {
+      "types": "./dist/happierRuntime/runtimePathMatching.d.ts",
+      "import": "./dist/happierRuntime/runtimePathMatching.js",
+      "default": "./dist/happierRuntime/runtimePathMatching.js"
+    },
     "./homeTarget": {
       "types": "./dist/homeTarget/index.d.ts",
       "import": "./dist/homeTarget/index.js",
@@ -201,6 +236,11 @@
       "types": "./dist/accountService/index.d.ts",
       "import": "./dist/accountService/index.js",
       "default": "./dist/accountService/index.js"
+    },
+    "./authentication/authMethodCatalog": {
+      "types": "./dist/authentication/authMethodCatalog.d.ts",
+      "import": "./dist/authentication/authMethodCatalog.js",
+      "default": "./dist/authentication/authMethodCatalog.js"
     },
     "./homeEnrollment": {
       "types": "./dist/homeEnrollment/index.d.ts",
@@ -270,8 +310,6 @@
     "test:dist:local": "node --test processInstance.test.mjs tests/componentArtifacts.cliDistBuildLock.test.mjs tests/componentArtifacts.test.mjs tests/downloadGitHubReleaseAsset.test.mjs tests/exports.test.mjs tests/firstPartyRuntime.componentCatalog.test.mjs tests/firstPartyRuntime.installLayout.test.mjs tests/firstPartyRuntime.installVersionedPayload.test.mjs tests/firstPartyRuntime.promoteVersionedPayload.test.mjs tests/firstPartyRuntime.pruneRetainedVersions.test.mjs tests/firstPartyRuntime.relayRuntime.test.mjs tests/firstPartyRuntime.retentionPolicy.test.mjs tests/firstPartyRuntime.syncInstalledShims.test.mjs tests/links.test.mjs tests/nodeRelease.test.mjs tests/pinnedRunnerSnapshot.test.mjs tests/service.test.mjs tests/update.test.mjs tests/vendorBundledPackageRuntimeDependencies.test.mjs tests/workspaces.test.mjs"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.0",
-    "@noble/hashes": "^1.8.0",
     "@happier-dev/agents": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
     "@happier-dev/release-runtime": "0.0.0",

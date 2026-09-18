@@ -44,12 +44,6 @@ export type BackgroundServiceDiagnostic = BackgroundServiceDiagnosticBase & Read
     reason: BackgroundServiceUnavailableReason;
 }>;
 
-export type BackgroundServiceUnexpectedSettlement = BackgroundServiceDiagnosticBase & Readonly<{
-    outcome: 'resolved' | 'rejected' | 'unavailable';
-    error?: unknown;
-    reason?: BackgroundServiceUnavailableReason;
-}>;
-
 type RunningBackgroundService = Readonly<{
     registration: BackgroundServiceRunnerRegistration;
     controller: AbortController;
@@ -76,14 +70,6 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
     }>): BackgroundServiceContextCreation;
     settlementTimeoutMs?: number;
     onDiagnostic?(event: BackgroundServiceDiagnostic): void;
-    /**
-     * A declared background service is generation-long work. Resolution,
-     * rejection, or required-context unavailability while that generation is
-     * still current therefore changes host-owned runtime availability; it is
-     * not merely a log line. Retirement/abort is the expected terminal path
-     * and is deliberately excluded.
-     */
-    onUnexpectedSettlement?(event: BackgroundServiceUnexpectedSettlement): void;
 }>): Readonly<{
     start(): void;
     retire(pluginIds: readonly string[]): void;
@@ -119,12 +105,6 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
             if (running.has(key) || retiredPluginIds.has(registration.pluginId)) continue;
             const controller = new AbortController();
             let complete = (): void => {};
-            let unexpectedSettlement: BackgroundServiceUnexpectedSettlement = Object.freeze({
-                pluginId: registration.pluginId,
-                generation: registration.generation,
-                localId: registration.localId,
-                outcome: 'resolved',
-            });
             const task = Promise.resolve().then(async () => {
                 if (!isCurrent(registration) || controller.signal.aborted) return;
                 const created = params.createContext({
@@ -137,13 +117,6 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
                 });
                 if ('unavailable' in created) {
                     if (!isCurrent(registration) || controller.signal.aborted) return;
-                    unexpectedSettlement = Object.freeze({
-                        pluginId: registration.pluginId,
-                        generation: registration.generation,
-                        localId: registration.localId,
-                        outcome: 'unavailable',
-                        reason: created.unavailable,
-                    });
                     diagnose(Object.freeze({
                         code: 'background_service_unavailable',
                         pluginId: registration.pluginId,
@@ -158,13 +131,6 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
                 await registration.runner(created.context);
             }).catch((error: unknown) => {
                 if (controller.signal.aborted) return;
-                unexpectedSettlement = Object.freeze({
-                    pluginId: registration.pluginId,
-                    generation: registration.generation,
-                    localId: registration.localId,
-                    outcome: 'rejected',
-                    error,
-                });
                 diagnose(Object.freeze({
                     code: 'background_service_failed',
                     pluginId: registration.pluginId,
@@ -174,13 +140,7 @@ export function createBackgroundServiceRunnerHost(params: Readonly<{
                 }));
             }).finally(() => {
                 settled.add(key);
-                try {
-                    complete();
-                } finally {
-                    if (isCurrent(registration) && !controller.signal.aborted) {
-                        params.onUnexpectedSettlement?.(unexpectedSettlement);
-                    }
-                }
+                complete();
             });
             running.set(key, Object.freeze({ registration, controller, task }));
         }

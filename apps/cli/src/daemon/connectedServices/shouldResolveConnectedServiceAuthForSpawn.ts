@@ -1,27 +1,11 @@
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasConnectedServiceBinding(payload: unknown): boolean {
-  if (!isRecord(payload)) return false;
-  if (payload.v !== 1) return false;
-  if (!isRecord(payload.bindingsByServiceId)) return false;
-
-  for (const binding of Object.values(payload.bindingsByServiceId)) {
-    if (!isRecord(binding)) continue;
-    if (binding.source !== 'connected') continue;
-    const profileId = binding.profileId;
-    if (typeof profileId === 'string' && profileId.trim().length > 0) return true;
-    // Treat "connected" with no explicit profile as a connected-services request;
-    // selection defaults may be applied later in the UI/client.
-    return true;
-  }
-
-  return false;
-}
+import { ConnectedServicesBindingsIngressSchema } from './parseConnectedServicesBindings';
 
 export function shouldResolveConnectedServiceAuthForSpawn(
   options: Readonly<{ connectedServices?: unknown }>,
 ): boolean {
-  return hasConnectedServiceBinding(options.connectedServices);
+  const admitted = ConnectedServicesBindingsIngressSchema.safeParse(options.connectedServices);
+  // Invalid explicit input still requires admission; it must not bypass resolution as native.
+  if (!admitted.success) return true;
+  return Object.values(admitted.data?.bindingsByServiceId ?? {})
+    .some((binding) => binding.source === 'connected' || binding.source === 'team_resource');
 }

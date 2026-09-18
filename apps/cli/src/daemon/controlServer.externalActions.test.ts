@@ -30,7 +30,10 @@ function createApp(
     requestShutdown: () => {},
     onHappySessionWebhook: () => {},
     controlToken: 'private-control-token',
-    externalActionApi,
+    externalActionApi: {
+      ...externalActionApi,
+      resolvePatExecutor: () => externalActionApi.executor,
+    },
     ...(options.enablePluginActionRoute
       ? {
           pluginChangeService: {
@@ -68,6 +71,7 @@ describe('createDaemonControlApp external Action ingress', () => {
           actionId: 'action.spec.search',
           input: { query: 'review' },
           surface: 'cli',
+          authority: 'present_user',
         },
       });
 
@@ -86,6 +90,7 @@ describe('createDaemonControlApp external Action ingress', () => {
   });
 
   it('mounts the PAT-only external Action route outside the private control-token guard', async () => {
+    const pat = `hap_v1_11111111-1111-4111-8111-111111111111_${'A'.repeat(43)}`;
     const verifyPat = vi.fn<DaemonPatVerifier>(async () => ({
       ok: true as const,
       accountId: 'account-1',
@@ -94,7 +99,12 @@ describe('createDaemonControlApp external Action ingress', () => {
       expiresAt: null,
       authority: 'account_automation' as const,
     }));
-    const execute = vi.fn(async () => ({ ok: true as const, result: { accepted: true } }));
+    const pending = {
+      type: 'pending' as const,
+      retryWithSameCreationKey: true,
+      outcome: 'accepted' as const,
+    };
+    const execute = vi.fn(async () => ({ ok: true as const, result: pending }));
     const resolveTarget = vi.fn<ResolveExternalActionTarget>(async ({ target, currentMachineId }) => (
       target ?? { kind: 'machine' as const, machineId: currentMachineId }
     ));
@@ -109,7 +119,7 @@ describe('createDaemonControlApp external Action ingress', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/v1/actions/session.spawn_new',
-        headers: { authorization: 'Bearer pat-secret' },
+        headers: { authorization: `Bearer ${pat}` },
         payload: { v: 1, input: { directory: '/workspace' } },
       });
 
@@ -117,9 +127,9 @@ describe('createDaemonControlApp external Action ingress', () => {
       expect(response.json()).toEqual({
         v: 1,
         actionId: 'session.spawn_new',
-        execution: { ok: true, result: { accepted: true } },
+        execution: { ok: true, result: pending },
       });
-      expect(verifyPat).toHaveBeenCalledWith('pat-secret', expect.any(AbortSignal));
+      expect(verifyPat).toHaveBeenCalledWith(pat, expect.any(AbortSignal));
       expect(execute).toHaveBeenCalledOnce();
       expect(execute).toHaveBeenCalledWith(
         'session.spawn_new',
@@ -148,7 +158,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         payload: {
           actionId: 'session.open',
           input: { sessionId: 'session-from-input' },
-          targetMachineId: 'machine-local',
+          target: { kind: 'machine', machineId: 'machine-local' },
           defaultSessionId: 'session-from-context',
         },
       });
@@ -192,7 +202,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         payload: {
           actionId: 'machines.list',
           input: {},
-          targetMachineId: 'machine-local',
+          target: { kind: 'machine', machineId: 'machine-local' },
           actionRequestId: 'corrélation-☃',
         },
       });
@@ -203,6 +213,19 @@ describe('createDaemonControlApp external Action ingress', () => {
         {},
         expect.objectContaining({ actionRequestId: 'corrélation-☃' }),
       );
+
+      const splitProjectTargetResponse = await app.inject({
+        method: 'POST',
+        url: '/actions/root/execute',
+        headers: { 'x-happier-daemon-token': 'private-control-token' },
+        payload: {
+          actionId: 'workflow.run.start',
+          input: {},
+          target: { kind: 'machine', machineId: 'machine-local' },
+          projectTarget: { machineId: 'machine-local', directory: '/repo' },
+        },
+      });
+      expect(splitProjectTargetResponse.statusCode).toBe(400);
     } finally {
       await app.close();
     }
@@ -228,7 +251,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         payload: {
           actionId: 'machines.list',
           input: { limit: 10 },
-          targetMachineId: 'machine-local',
+          target: { kind: 'machine', machineId: 'machine-local' },
           actionRequestId: 'request-1',
         },
       });
@@ -243,7 +266,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         'machines.list',
         { limit: 10 },
         expect.objectContaining({
-          surface: 'api',
+          surface: 'cli',
           authority: 'present_user',
           actionCaller: { kind: 'host' },
           actionRequestId: 'request-1',
@@ -279,7 +302,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         payload: {
           actionId: 'machines.list',
           input: { limit: 10 },
-          targetMachineId: 'machine-elsewhere',
+          target: { kind: 'machine', machineId: 'machine-elsewhere' },
         },
       });
 
@@ -319,7 +342,7 @@ describe('createDaemonControlApp external Action ingress', () => {
         payload: {
           actionId: 'memory.ensure_up_to_date',
           input: { machineId: 'machine-elsewhere' },
-          targetMachineId: 'machine-local',
+          target: { kind: 'machine', machineId: 'machine-local' },
         },
       });
 

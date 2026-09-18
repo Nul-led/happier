@@ -190,6 +190,8 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
     const {
         initialTranscriptAfterSeq: _initialTranscriptAfterSeq,
         pendingFirstInput: _pendingFirstInput,
+        initialAccess: _initialAccess,
+        primaryTeamId: _primaryTeamId,
         persistedTakeoverAdmission: _persistedTakeoverAdmission,
         modelSelection: _requestedModelSelection,
         providerBindingMetadataV1: _priorProviderBindingMetadataV1,

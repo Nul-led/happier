@@ -1,3 +1,5 @@
+import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol';
+
 import { fetchSessionsPage as fetchSessionsPageDefault } from '@/session/transport/http/sessionsHttp';
 
 export type PendingSessionActivationInput = Readonly<{
@@ -6,6 +8,21 @@ export type PendingSessionActivationInput = Readonly<{
   pendingVersion: number;
   source: 'live' | 'changes' | 'scan';
 }>;
+
+/**
+ * Owner-only pending-activation eligibility through the canonical access projection.
+ * Valid current effectiveAccess wins. Released share fallback only when absent.
+ * Malformed current projection fails closed, so Team/Group-only recipients never activate.
+ */
+function isOwnedSessionForPendingActivation(
+  session: Readonly<{
+    effectiveAccess?: unknown;
+    share?: unknown;
+    metadataLayoutVersion?: unknown;
+  }>,
+): boolean {
+  return readSessionAccessProjectionRoleV1(session) === 'owner';
+}
 
 export async function recoverPendingSessionActivations(params: Readonly<{
   token: string;
@@ -23,7 +40,7 @@ export async function recoverPendingSessionActivations(params: Readonly<{
       ...(cursor ? { cursor } : {}),
     });
     for (const session of page.sessions) {
-      if (session.share !== null && session.share !== undefined) continue;
+      if (!isOwnedSessionForPendingActivation(session)) continue;
       const authorization = session.pendingActivationAuthorization;
       if (!authorization || authorization.status !== 'waiting') continue;
       const input: PendingSessionActivationInput = {

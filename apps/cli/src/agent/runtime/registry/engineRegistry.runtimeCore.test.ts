@@ -45,6 +45,8 @@ import type {
     ResolvedContributionRegistry,
 } from '@/plugins/projection/registry/types';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
+import { createPluginInteractionsService } from '@/plugins/runtime/invocation/services/interactions';
+import type { CreateAgentInvocationServices } from '@/plugins/runtime/invocation/services/types';
 import {
     resolveBackendEngineAdapterResolution,
     resolveCliEngineRegistry,
@@ -55,6 +57,10 @@ import type {
     ResolveEngineRegistryParams,
     RunnerAgentSessionRuntimeSource,
 } from './engineRegistry/types';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
 
 const {
     resolveMergedContributionRegistryMock,
@@ -1131,6 +1137,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         );
         const runtime = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
             cwd: '/repo',
+            scope: 'detached',
             runId: 'run-1',
             backendId: 'acme.sample.backend',
             permissionMode: 'read_only',
@@ -1143,9 +1150,9 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         const messages: unknown[] = [];
         runtime.subscribeMessages((message) => messages.push(message));
 
-        await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'run-1' });
+        await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'run-1' });
         expect(open).not.toHaveBeenCalled();
-        await expect(runtime.sendPrompt('run-1', 'Review these changes')).resolves.toBeUndefined();
+        await expect(runtime.deliverInput('run-1', { text: 'Review these changes' })).resolves.toEqual({ status: 'admitted' });
         expect(open).toHaveBeenCalledWith({
             kind: 'create',
             runId: 'run-1',
@@ -1648,9 +1655,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             })),
             createExecutionRunBackend: vi.fn((params: unknown) => ({
                 source: 'custom-runtimeCore',
-                provisionSession: vi.fn(async () => ({ sessionId: 'run-session-1' })),
+                provisionRuntime: vi.fn(async () => ({ runtimeId: 'run-runtime-1' })),
                 readResumeSupport: vi.fn(async () => false),
-                sendPrompt: vi.fn(async () => undefined),
+                deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+                getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
                 cancel: vi.fn(async () => undefined),
                 subscribeMessages: vi.fn(() => () => undefined),
                 dispose: vi.fn(async () => undefined),
@@ -1697,6 +1705,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         expect(() =>
             resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
                 cwd: '/tmp/codex',
+                scope: 'detached',
                 backendId: 'codex',
                 permissionMode: 'read_only',
             }),
@@ -1712,9 +1721,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             createSessionRuntime: vi.fn(async () => ({ owner: 'legacy-host-session' })),
             createExecutionRunBackend: vi.fn(() => ({
                 owner: 'legacy-host-execution',
-                provisionSession: vi.fn(async () => ({ sessionId: 'run-session-1' })),
+                provisionRuntime: vi.fn(async () => ({ runtimeId: 'run-runtime-1' })),
                 readResumeSupport: vi.fn(async () => false),
-                sendPrompt: vi.fn(async () => undefined),
+                deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+                getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
                 cancel: vi.fn(async () => undefined),
                 subscribeMessages: vi.fn(() => () => undefined),
                 dispose: vi.fn(async () => undefined),
@@ -1747,6 +1757,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             .rejects.toThrow(/bound host runtimeCore/i);
         expect(() => resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
             cwd: '/repo',
+            scope: 'detached',
             backendId,
             permissionMode: 'read_only',
         })).toThrow(/bound host runtimeCore/i);
@@ -1962,6 +1973,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             });
         const executionRuntime = resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
             cwd: '/repo',
+            scope: 'detached',
             runId: 'run-plugin-owner',
             backendId,
             permissionMode: 'read_only',
@@ -2707,6 +2719,61 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         },
     );
 
+    it('binds retained Run services to their own live admitted turn', async () => {
+        const { agentId, backendId, pluginId, contributes } = seedExternalPrimaryAgentRegistry({
+            sessions: true, executionRuns: false, sessionOpen: ['create', 'resume'],
+        });
+        const seeds: Parameters<CreateAgentInvocationServices>[0][] = [];
+        const createAgentInvocationServices: CreateAgentInvocationServices = async (seed) => {
+            seeds.push(seed);
+            return createUnavailablePluginServices();
+        };
+        const inputs: AgentSessionSendRequest[] = [];
+        const eventSource: { emit?: (event: AgentSessionRuntimeEvent) => void } = {};
+        const runtime: AgentRuntime = { sessions: { async open() { return {
+            async send(request) { inputs.push(request); return { status: 'admitted' as const }; },
+            async cancel() { return { status: 'notRunning' as const }; },
+            watch(handler) { eventSource.emit = handler; return { dispose() {} }; },
+            async dispose() {},
+        }; } } };
+        const runtimeRegistry = completeLeaseRuntimeRegistryFixture({
+            ...createRuntimeRegistry({ contributes, backendId, agentId, pluginId, createRuntime: () => runtime }),
+            createAgentInvocationServices,
+        }, contributes);
+        const registry = await resolveCliEngineRegistry({
+            contributes,
+            runtimeRegistry: runtimeRegistry as unknown as NonNullable<ResolveEngineRegistryParams['runtimeRegistry']>,
+        });
+        const resolution = await registry.resolveForBackendId(backendId);
+        const parentSession = {
+            ...createRuntimePlacementSessionClient('parent-context'),
+            enqueueAgentMessageCommitted: async () => ({ persisted: true, delivered: false }),
+        };
+        const host = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+            cwd: '/repo', runId: 'run-context', scope: 'session_owned', backendId, permissionMode: 'read_only',
+            start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' },
+            sessionInteractionHost: { session: parentSession, machineId: 'machine-1',
+                permissionHandler: { async handleToolCall() { return { decision: 'denied' as const }; } } },
+        });
+        try {
+            await host.provisionRuntime();
+            await host.deliverInput('run-context', { text: 'One exact Run input' }, { localId: 'run-local-input' });
+            const seed = seeds.find((entry) => entry.correlationId === 'run-context' && entry.session?.id === 'parent-context');
+            expect(seed?.readActiveTurnAdmissionWitness?.()).toMatchObject({
+                inputId: 'run-local-input', turnId: inputs[0]!.delivery.turnId,
+            });
+            eventSource.emit?.({ kind: 'input-accepted', sessionId: 'parent-context', sequence: 1,
+                emittedAtMs: 1, inputIds: inputs[0]!.inputIds, delivery: inputs[0]!.delivery });
+            eventSource.emit?.({ kind: 'turn-start', sessionId: 'parent-context', sequence: 2,
+                emittedAtMs: 2, turnId: inputs[0]!.delivery.turnId, startedBy: 'host' });
+            eventSource.emit?.({ kind: 'turn-complete', sessionId: 'parent-context', sequence: 3,
+                emittedAtMs: 3, turnId: inputs[0]!.delivery.turnId });
+            expect(seed?.readActiveTurnAdmissionWitness?.()).toBeNull();
+        } finally {
+            await host.dispose();
+        }
+    });
+
     it('keeps an external execution-run-only Agent on its daemon-owned runtime', async () => {
         const {
             agentId,
@@ -2718,23 +2785,43 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             executionRuns: true,
             executionRunOpen: ['create', 'resume'],
         });
-        const openExecutionRun = vi.fn(async () => ({
-            send: vi.fn(async () => ({ status: 'admitted' as const })),
-            stop: vi.fn(async () => ({ status: 'requested' as const })),
-            watch: () => ({ dispose: () => {} }),
-            dispose: vi.fn(async () => undefined),
-        }));
+        const openExecutionRun = vi.fn(async (
+            _request: AgentExecutionRunOpenRequest,
+            context: AgentRuntimeContext,
+        ) => {
+            return ({
+                send: vi.fn(async () => ({ status: 'admitted' as const })),
+                stop: vi.fn(async () => ({ status: 'requested' as const })),
+                watch: () => ({ dispose: () => {} }),
+                dispose: vi.fn(async () => undefined),
+            });
+        });
         const daemonCreateRuntime = vi.fn(async (): Promise<AgentRuntime> => ({
             executionRuns: { open: openExecutionRun },
         }));
         const runtimeRegistry = completeLeaseRuntimeRegistryFixture(
-            createRuntimeRegistry({
-                contributes,
-                backendId,
-                agentId,
-                pluginId,
-                createRuntime: daemonCreateRuntime,
-            }),
+            {
+                ...createRuntimeRegistry({
+                    contributes,
+                    backendId,
+                    agentId,
+                    pluginId,
+                    createRuntime: daemonCreateRuntime,
+                }),
+                createAgentInvocationServices: vi.fn(async (
+                    seed: Parameters<CreateAgentInvocationServices>[0],
+                ) => {
+                    const unavailable = createUnavailablePluginServices();
+                    return Object.freeze({
+                        ...unavailable,
+                        interactions: createPluginInteractionsService({
+                            currentSession: seed.currentSession ?? null,
+                            signal: seed.signal,
+                            isGenerationCurrent: seed.isGenerationCurrent,
+                        }),
+                    });
+                }) satisfies CreateAgentInvocationServices,
+            },
             contributes,
         );
         pluginReloadControllerStateMock.mockReturnValue({
@@ -2758,21 +2845,37 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             contributes,
         });
         const resolution = await registry.resolveForBackendId(backendId);
+        const permissionRequestStore = {
+            publishRequest: vi.fn(),
+            registerResponseTargetHandler: vi.fn(() => () => undefined),
+            readOutstandingRequest: vi.fn(() => null),
+            completeRequest: vi.fn(async () => true),
+        };
         const executionRuntime = resolution?.engineAdapter.runtimeCore
             .createExecutionRunBackend({
                 cwd: '/repo',
                 runId: 'execution-only-run',
+                controllerOccurrenceId: 'execution-only-occurrence',
+                callId: 'execution-only-call',
+                sidechainId: 'execution-only-sidechain',
+                scope: 'detached',
                 backendId,
-                permissionMode: 'read_only',
-                start: { intent: 'review' },
+                permissionMode: 'default',
+                start: {
+                    intent: 'delegate',
+                    runClass: 'bounded',
+                    ioMode: 'request_response',
+                    retentionPolicy: 'ephemeral',
+                },
+                getPermissionRequestStore: () => permissionRequestStore as never,
             });
 
         expect(daemonCreateRuntime).toHaveBeenCalledOnce();
         await expect(executionRuntime?.readResumeSupport()).resolves.toBe(true);
-        await expect(executionRuntime?.provisionSession({
-            resumeSessionId: 'finite-provider-session-1',
+        await expect(executionRuntime?.provisionRuntime({
+            resumeRuntimeId: 'finite-provider-session-1',
         })).resolves.toEqual({
-            sessionId: 'execution-only-run',
+            runtimeId: 'execution-only-run',
         });
         expect(openExecutionRun).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -2782,12 +2885,36 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             expect.any(Object),
         );
         await expect(
-            executionRuntime?.sendPrompt(
+            executionRuntime?.deliverInput(
                 'execution-only-run',
-                'Review these changes',
+                { text: 'Review these changes' },
             ),
-        ).resolves.toBeUndefined();
+        ).resolves.toEqual({ status: 'admitted' });
         expect(openExecutionRun).toHaveBeenCalledOnce();
+        const executionContext = openExecutionRun.mock.calls[0]?.[1];
+        expect(executionContext?.session).toBeUndefined();
+        if (!executionContext) throw new Error('Expected execution-only runtime context');
+        const approval = executionContext.services.interactions.requestApproval({
+            kind: 'approval',
+            title: 'Allow external write?',
+            subject: { kind: 'tool', name: 'Write', input: { path: '/repo/a.txt' } },
+        });
+        await vi.waitFor(() => expect(permissionRequestStore.publishRequest).toHaveBeenCalledOnce());
+        const published = permissionRequestStore.publishRequest.mock.calls[0]![0] as {
+            responseTarget: { providerRequestId: string };
+        };
+        await expect(executionRuntime?.respondToPermission?.(
+            published.responseTarget.providerRequestId,
+            true,
+        )).resolves.toEqual({ delivered: true });
+        await expect(approval).resolves.toMatchObject({
+            kind: 'approval',
+            status: 'approved',
+        });
+        await expect(executionRuntime?.respondToPermission?.(
+            published.responseTarget.providerRequestId,
+            true,
+        )).resolves.toEqual({ delivered: false, reason: 'unknown_request' });
         await executionRuntime?.dispose();
     });
 
@@ -2971,81 +3098,22 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         const daemonResolution = await daemonRegistry.resolveForBackendId(
             backendId,
         );
-        const detachedExecutionRuntime = daemonResolution?.engineAdapter.runtimeCore
+        expect(() => daemonResolution?.engineAdapter.runtimeCore
             .createExecutionRunBackend({
                 cwd: '/repo',
                 runId: 'session-derived-detached-run',
+                scope: 'detached',
                 backendId,
                 permissionMode: 'read_only',
                 start: { intent: 'review' },
-            });
-        const detachedMessages: unknown[] = [];
-        detachedExecutionRuntime?.subscribeMessages((message) => detachedMessages.push(message));
-
-        await expect(detachedExecutionRuntime?.readResumeSupport()).resolves.toBe(supportsResume);
-        await expect(detachedExecutionRuntime?.provisionSession(
-            resumeSessionId ? { resumeSessionId } : undefined,
-        )).resolves.toEqual({
-            sessionId: 'session-derived-detached-run',
-        });
-        await detachedExecutionRuntime?.sendPrompt(
-            'session-derived-detached-run',
-            'Review these detached changes',
-        );
-        await detachedExecutionRuntime?.waitForTurnCompletion?.();
-
-        expect(daemonSessionOpen).toHaveBeenCalledOnce();
-        expect(daemonSessionOpen.mock.calls[0]?.[0]).toMatchObject({
-            kind: resumeSessionId ? 'resume' : 'create',
-            sessionId: 'session-derived-detached-run',
-            cwd: '/repo',
-            ...(resumeSessionId ? { providerSessionId: resumeSessionId } : {}),
-        });
-        expect(openedSessionContext).toMatchObject({
-            plugin: { id: pluginId, version: '0.0.0' },
-            contribution: {
-                id: agentId,
-                qualifiedId: `${pluginId}/agents/${agentId}`,
-            },
-            surface: 'agent',
-            agent: { id: agentId },
-            session: {
-                id: 'session-derived-detached-run',
-                services: {
-                    features: { isEnabled: expect.any(Function) },
-                    models: { bind: expect.any(Function) },
-                    activeInput: {
-                        bind: expect.any(Function),
-                        publishStatus: expect.any(Function),
-                    },
-                    sessionHooks: { startServer: expect.any(Function) },
-                    transcripts: {
-                        publishSessionEvent: expect.any(Function),
-                        fileFollow: { follow: expect.any(Function) },
-                    },
-                    accountUsage: {
-                        resolveSourceContext: expect.any(Function),
-                        recordSnapshot: expect.any(Function),
-                        adoptProvisionalRecord: expect.any(Function),
-                    },
-                    mcp: { resolveServers: expect.any(Function) },
-                    workflowActivity: expect.any(Object),
-                    toolExecution: { before: expect.any(Function) },
-                },
-            },
-            workState: { publisher: expect.any(Function) },
-            protocols: { acp: { open: expect.any(Function) } },
-        });
-        expect(detachedMessages).toEqual([
-            { type: 'status', status: 'running' },
-            { type: 'model-output', textDelta: 'Session-derived result' },
-            { type: 'status', status: 'stopped' },
-        ]);
-        await expect(openedSessionContext!.session.services.transcripts.publishSessionEvent({} as never))
-            .rejects
-            .toMatchObject({ code: 'agent_run_session_projection_unavailable' });
-        await detachedExecutionRuntime?.dispose();
-        await detachedExecutionRuntime?.dispose();
+            })).toThrow(expect.objectContaining({
+                executionRunErrorCode: 'execution_run_protocol_unsupported',
+            }));
+        // Runtime factory construction is side-effect-free capability discovery;
+        // provider open remains forbidden for an undeclared detached facet.
+        expect(daemonCreateRuntime).toHaveBeenCalledOnce();
+        expect(daemonSessionOpen).not.toHaveBeenCalled();
+        expect(openedSessionContext).toBeNull();
 
         const parentSession = {
             ...createRuntimePlacementSessionClient('parent-session'),
@@ -3058,6 +3126,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             .createExecutionRunBackend({
                 cwd: '/repo',
                 runId: 'session-derived-run',
+                controllerOccurrenceId: 'session-derived-controller-1',
+                callId: 'session-derived-call-1',
+                sidechainId: 'session-derived-sidechain-1',
+                scope: 'session_owned',
                 backendId,
                 permissionMode: 'read_only',
                 start: { intent: 'review' },
@@ -3071,19 +3143,19 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         executionRuntime?.subscribeMessages((message) => messages.push(message));
 
         await expect(executionRuntime?.readResumeSupport()).resolves.toBe(supportsResume);
-        await expect(executionRuntime?.provisionSession(
-            resumeSessionId ? { resumeSessionId } : undefined,
+        await expect(executionRuntime?.provisionRuntime(
+            resumeSessionId ? { resumeRuntimeId: resumeSessionId } : undefined,
         )).resolves.toEqual({
-            sessionId: 'session-derived-run',
+            runtimeId: 'session-derived-run',
         });
-        await executionRuntime?.sendPrompt(
+        await executionRuntime?.deliverInput(
             'session-derived-run',
-            'Review these changes',
+            { text: 'Review these changes' },
         );
         await executionRuntime?.waitForTurnCompletion?.();
 
-        expect(daemonSessionOpen).toHaveBeenCalledTimes(2);
-        expect(daemonSessionOpen.mock.calls[1]?.[0]).toMatchObject({
+        expect(daemonSessionOpen).toHaveBeenCalledOnce();
+        expect(daemonSessionOpen.mock.calls[0]?.[0]).toMatchObject({
             kind: resumeSessionId ? 'resume' : 'create',
             sessionId: 'parent-session',
             cwd: '/repo',
@@ -3134,7 +3206,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         await executionRuntime?.dispose();
         await executionRuntime?.dispose();
         await createdSessionRuntime.operations.resetOrDisposeRuntime();
-        expect(sessionRuntimeDispose).toHaveBeenCalledTimes(2);
+        expect(sessionRuntimeDispose).toHaveBeenCalledOnce();
         expect(modelSourceDispose).toHaveBeenCalledOnce();
         expect(runnerSessionDispose).toHaveBeenCalledOnce();
     });
@@ -3227,9 +3299,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         };
         const createSessionRuntime = vi.fn(async (_params: unknown) => createdPlan);
         const executionBackend = {
-            provisionSession: vi.fn(async () => ({ sessionId: 'run-session-1' })),
+            provisionRuntime: vi.fn(async () => ({ runtimeId: 'run-runtime-1' })),
             readResumeSupport: vi.fn(async () => false),
-            sendPrompt: vi.fn(async () => undefined),
+            deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+            getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
             cancel: vi.fn(async () => undefined),
             subscribeMessages: vi.fn(() => () => undefined),
             dispose: vi.fn(async () => undefined),
@@ -3267,6 +3340,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             resolution?.engineAdapter.runtimeCore
                 .createExecutionRunBackend({
                     cwd: '/tmp/codex',
+                    scope: 'detached',
                     backendId: 'codex',
                     permissionMode: 'read_only',
                 }),
@@ -3285,9 +3359,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             config: {},
         };
         const executionBackend = {
-            provisionSession: vi.fn(async () => ({ sessionId: 'plugin-run-session-1' })),
+            provisionRuntime: vi.fn(async () => ({ runtimeId: 'plugin-run-runtime-1' })),
             readResumeSupport: vi.fn(async () => false),
-            sendPrompt: vi.fn(async () => undefined),
+            deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+            getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
             cancel: vi.fn(async () => undefined),
             subscribeMessages: vi.fn(() => () => undefined),
             dispose: vi.fn(async () => undefined),
@@ -3327,6 +3402,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         expect(() =>
             resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
                 cwd: '/tmp/plugin',
+                scope: 'detached',
                 backendId: 'acme.sample.backend',
                 permissionMode: 'read_only',
             }),
@@ -3346,9 +3422,10 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         const runtimeCore = {
             createSessionRuntime: vi.fn(async () => createdPlan),
             createExecutionRunBackend: vi.fn(() => ({
-                provisionSession: vi.fn(async () => ({ sessionId: 'plugin-run-session-2' })),
+                provisionRuntime: vi.fn(async () => ({ runtimeId: 'plugin-run-runtime-2' })),
                 readResumeSupport: vi.fn(async () => false),
-                sendPrompt: vi.fn(async () => undefined),
+                deliverInput: vi.fn(async () => ({ status: 'admitted' as const })),
+                getRuntimeLifetimeSignal: vi.fn(() => TEST_RUNTIME_LIFETIME_SIGNAL),
                 cancel: vi.fn(async () => undefined),
                 subscribeMessages: vi.fn(() => () => undefined),
                 dispose: vi.fn(async () => undefined),

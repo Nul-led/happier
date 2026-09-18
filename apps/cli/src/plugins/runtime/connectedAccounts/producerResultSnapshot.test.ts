@@ -7,6 +7,21 @@ import {
 } from './producerResultSnapshot';
 
 describe('connected-account producer result snapshots', () => {
+    it('snapshots reset inventory and rejects unknown authority fields in inventory and receipts', () => {
+        const read = { kind: 'recoveryCredits.read' } as const;
+        const consume = { kind: 'recoveryCredits.consume', request: { idempotencyKey: 'reset-1' } } as const;
+        const inventory = { observedAtMs: 100, availableCount: 1, credits: [{ providerCreditId: 'credit-1', status: 'available', expiresAtMs: 200 }] };
+        expect(snapshotConnectedAccountEstablishedResult(read, inventory, { quotaLeafUnavailable: false })).toEqual(inventory);
+        expect(snapshotConnectedAccountEstablishedResult(consume, { status: 'consumed' }, { quotaLeafUnavailable: false })).toEqual({ status: 'consumed' });
+        for (const value of [
+            { ...inventory, accountId: 'other' },
+            { ...inventory, credits: [{ ...inventory.credits[0], authority: true }] },
+            { ...inventory, credits: [{ ...inventory.credits[0], providerCreditId: 'x'.repeat(257) }] },
+        ]) {
+            expect(() => snapshotConnectedAccountEstablishedResult(read, value, { quotaLeafUnavailable: false })).toThrow('Connected-account producer result is invalid');
+        }
+        expect(() => snapshotConnectedAccountEstablishedResult(consume, { status: 'consumed', accountId: 'other' }, { quotaLeafUnavailable: false })).toThrow('Connected-account producer result is invalid');
+    });
     it('projects a bounded protocol diagnostic with health facts', () => {
         const result = snapshotConnectedAccountEstablishedResult(
             Object.freeze({ kind: 'status' as const }),

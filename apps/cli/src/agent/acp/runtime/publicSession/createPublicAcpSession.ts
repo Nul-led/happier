@@ -1,5 +1,6 @@
 import {
   PluginAgentAcpTransportSchema,
+  readNonBlankOpaqueIdentifier,
   type PluginAgentAcpTransport,
 } from '@happier-dev/protocol';
 import {
@@ -8,11 +9,21 @@ import {
   AgentSessionConfigurationSnapshotV1Schema,
   AgentSessionProviderCheckpointV1Schema,
 } from '@happier-dev/protocol/runtime';
+import {
+  isWorkflowInteractionCapacityError,
+  WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+} from '@/agent/permissions/interactionPersistenceError';
+import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
   AgentAcpCompletionEvidenceOutcome,
   AgentAcpModel,
+  AgentAcpModelState,
   AgentAcpRuntimeDefinition,
   AgentAcpRuntimeOptions,
+  AgentExecutionRunConversationEventV1,
+  AgentExecutionRunConversationRuntimeV1,
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntime,
   AgentSessionCancelResult,
   AgentSessionConfigurationResult,
   AgentSessionConfigurationSnapshot,
@@ -43,7 +54,7 @@ import type {
   AcpPromptSubmissionResult,
   AcpPromptSubmissionSettledResult,
 } from '@/agent/acp/runtime/acpRuntimeBackendContract';
-import type { SessionModel } from '@/agent/acp/sessionSettings/sessionSettingsState';
+import type { SessionModel, SessionModelState } from '@/agent/acp/sessionSettings/sessionSettingsState';
 import {
   defineAcpExtensionNotification,
   defineAcpExtensionRequest,
@@ -56,6 +67,19 @@ import { createAgentSessionRuntimeEventStream } from '@/agent/runtime/session/ev
 import type { McpServerConfig } from '@/agent/core/AgentTypes';
 import type { AcpReplayHistorySessionClient } from '@/agent/acp/sessionClient';
 import { createAcpTransportHandlerFromDefinition } from '@/agent/acp/runtime/definition/transport';
+import {
+  resolveAcpTransportLaunch,
+  type PublicAcpHostLaunch,
+  type PublicAcpManagedDependencies,
+  type PublicAcpResolvedTransport,
+  type PublicAcpSystemTools,
+  type PublicAcpTransportTimeouts,
+} from '@/agent/acp/runtime/launch/acpTransportLaunch';
+import {
+  prepareNativeSessionMcpConfig,
+  type NativeSessionMcpConfigDelivery,
+} from '@/agent/acp/runtime/definition/nativeSessionMcpConfig';
+import { buildScopedProcessEnv } from '@/utils/processEnv/buildScopedProcessEnv';
 import { buildAcpToolNameResolverInput } from '@/agent/acp/toolCalls';
 import { importAcpReplayHistoryV1 } from '@/agent/acp/history/importAcpReplayHistory';
 import {
@@ -69,6 +93,7 @@ import {
   applyAcpRuntimeSessionModel,
 } from '@/agent/acp/runtime/sessionControls/applySessionControls';
 import {
+  readSessionModelStateFromSessionResponse,
   readSessionModelStateFromSessionResponseAwaitable,
 } from '@/agent/acp/sessionSettings/sessionSettingsState';
 
@@ -79,39 +104,13 @@ import {
 } from './buildAcpPromptContentBlocks';
 import { createPublicAcpPreAcknowledgementBuffer } from './publicAcpPreAcknowledgementBuffer';
 import { createAcpToolUpdatePolicy } from './acpToolUpdatePolicy';
+import { buildUsageObservedMeasurementFromTokenCountMessage } from '../tokenCountForwarding';
 
-type PublicAcpSystemToolGrant = Readonly<{
-  toolId: string;
-  launch: Readonly<{
-    kind: string;
-    executablePath: string;
-    args?: readonly string[];
-    env?: Readonly<Record<string, string>>;
-  }>;
-}>;
-
-export type PublicAcpSystemTools = Readonly<{
-  resolve(request: Readonly<{
-    toolId: string;
-    purpose: string;
-    cwd: string;
-    preferredPath?: string | null;
-    signal?: AbortSignal;
-  }>): Promise<PublicAcpSystemToolGrant>;
-}>;
-
-export type PublicAcpManagedDependencies = Readonly<{
-  resolve(request: Readonly<{
-    pluginId: string;
-    dependencyId: string;
-    signal?: AbortSignal;
-  }>): Promise<Readonly<{
-    command: string;
-    args?: readonly string[];
-    env?: Readonly<Record<string, string>>;
-    release(): void;
-  }>>;
-}>;
+export type {
+  PublicAcpHostLaunch,
+  PublicAcpManagedDependencies,
+  PublicAcpSystemTools,
+} from '@/agent/acp/runtime/launch/acpTransportLaunch';
 
 export type PublicAcpComposerDependencies = Readonly<{
   pluginId: string;
@@ -228,21 +227,11 @@ type AgentAcpGeneratedMediaDescriptor = NonNullable<
 >[number];
 
 type ProcessExit = Readonly<{ code: number | null; signal: NodeJS.Signals | null }>;
-type PublicAcpTransportTimeouts = Readonly<{
-  initializeMs?: number;
-  idleMs?: number;
-  toolCallMs?: number;
-}>;
-export type PublicAcpHostLaunch = Readonly<{
-  command: string;
-  args: readonly string[];
-  env: Readonly<Record<string, string>>;
-  unsetEnv: readonly string[];
-  timeouts: PublicAcpTransportTimeouts;
-  release?: () => void;
-}>;
+type AcpTransportTermination =
+  | Readonly<{ kind: 'processExit'; exit: ProcessExit }>
+  | Readonly<{ kind: 'connectionLost'; detail: string }>;
 export type PublicAcpHostLaunchResolver = (
-  request: AgentSessionOpenRequest,
+  request: Readonly<Pick<AgentSessionOpenRequest, 'cwd' | 'launchEnvironment'>>,
 ) => PublicAcpHostLaunch | Promise<PublicAcpHostLaunch>;
 type ActiveTurn = {
   turnId: string;
@@ -259,8 +248,15 @@ type WithoutEventBase<T> = T extends unknown
   ? Omit<T, 'sequence' | 'sessionId' | 'emittedAtMs'>
   : never;
 type UnsequencedAgentSessionRuntimeEvent = WithoutEventBase<AgentSessionRuntimeEvent>;
+type PublicAcpOpenRequest = AgentSessionOpenRequest | AgentExecutionRunOpenRequest;
+type PublicAcpConversationRuntime = Omit<PublicAcpSessionRuntime, 'watch'> & Readonly<{
+  watch: AgentExecutionRunConversationRuntimeV1['watch'];
+}>;
 export type PublicAcpSessionRuntime = AgentSessionRuntime & Readonly<{
   getProviderSessionId(): string | null;
+  listSessions(params?: Readonly<{ cwd?: string | null; cursor?: string }>): ReturnType<AcpBackend['listSessions']>;
+  closeSession(sessionId: string): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
   drainPendingPublications(): Promise<void>;
   requestExtension(
     method: string,
@@ -344,21 +340,6 @@ function assertComposerCurrent(dependencies: PublicAcpComposerDependencies): voi
   }
 }
 
-function readLocalExecutableId(
-  executable: Extract<PluginAgentAcpTransport, { kind: 'stdio' }>['executable'],
-  pluginId: string,
-): string {
-  if (typeof executable.id === 'string') return executable.id;
-  if (executable.id.pluginId !== pluginId) {
-    throw new Error(
-      `Public ACP composition cannot launch another plugin's ${
-        executable.kind === 'systemTool' ? 'system tool' : 'managed dependency'
-      }`,
-    );
-  }
-  return executable.id.localId;
-}
-
 class PublicAcpTransport extends DefaultTransport {
   constructor(
     agentName: string,
@@ -440,13 +421,11 @@ function validateProjectedModelUpdate(
     modelId: string;
     requestMeta?: Readonly<Record<string, JsonValue>>;
   }> | null | undefined,
-  expectedModelId: string,
 ): Readonly<{ modelId: string; requestMeta?: Readonly<Record<string, unknown>> }> | null {
   if (value === null || value === undefined) return null;
-  if (value.modelId !== expectedModelId) {
-    throw new Error('ACP model update projector changed the active model identity');
-  }
-  if (value.requestMeta === undefined) return { modelId: value.modelId };
+  const modelId = value.modelId.trim();
+  if (!modelId) throw new Error('ACP model update projector returned an invalid model id');
+  if (value.requestMeta === undefined) return { modelId };
   const parsed = AgentRuntimeJsonValueV1Schema.safeParse(value.requestMeta);
   if (
     !parsed.success
@@ -457,11 +436,20 @@ function validateProjectedModelUpdate(
   ) {
     throw new Error('ACP model update projector returned invalid request metadata');
   }
-  return { modelId: value.modelId, requestMeta: Object.freeze({ ...parsed.data }) };
+  return { modelId, requestMeta: Object.freeze({ ...parsed.data }) };
+}
+
+function validateProjectedModelState(value: AgentAcpModelState): SessionModelState {
+  const normalized = readSessionModelStateFromSessionResponse({ models: value });
+  if (!normalized) {
+    throw new Error('ACP model-state projector returned an invalid model state');
+  }
+  return normalized;
 }
 
 function createExtensionRegistrations(
   options: AgentAcpRuntimeOptions,
+  dispatchNotification: (notification: () => void | Promise<void>) => void | Promise<void>,
 ): ReadonlyArray<AcpExtensionRegistration> {
   const registrations: AcpExtensionRegistration[] = [];
   for (const [method, handler] of Object.entries(options.extensions?.requests ?? {})) {
@@ -477,116 +465,51 @@ function createExtensionRegistrations(
     registrations.push(defineAcpExtensionNotification({
       method,
       params: { parse: parseExtensionJson },
-      handler,
+      handler: (params, context) => dispatchNotification(() => handler(params, context)),
     }));
   }
   return Object.freeze(registrations);
 }
 
-async function resolveLaunch(
+async function resolveTransport(
   transport: PluginAgentAcpTransport,
-  request: AgentSessionOpenRequest,
+  request: PublicAcpOpenRequest,
   dependencies: PublicAcpComposerDependencies,
-): Promise<PublicAcpHostLaunch> {
-  const launchEnvironment = AgentLaunchEnvironmentV1Schema.parse(
-    request.launchEnvironment ?? { values: {}, unset: [] },
-  );
-  if (dependencies.resolveHostLaunch) {
-    const resolved = await dependencies.resolveHostLaunch(request);
-    assertComposerCurrent(dependencies);
-    const command = resolved.command.trim();
-    if (!command) {
-      resolved.release?.();
-      throw new Error('Host-resolved ACP launch requires a non-empty command');
-    }
-    const environment = {
-      ...resolved.env,
-      ...launchEnvironment.values,
-    };
-    for (const key of [...resolved.unsetEnv, ...launchEnvironment.unset]) {
-      delete environment[key];
-    }
-    return Object.freeze({
-      command,
-      args: Object.freeze([...resolved.args]),
-      env: Object.freeze(environment),
-      unsetEnv: Object.freeze([
-        ...new Set([...resolved.unsetEnv, ...launchEnvironment.unset]),
-      ]),
-      timeouts: resolved.timeouts,
-      ...(resolved.release ? { release: resolved.release } : {}),
-    });
-  }
-  if (transport.kind !== 'stdio') {
-    throw new Error(`Public ACP ${transport.kind} transport is not available in this host`);
-  }
-  const executableId = readLocalExecutableId(transport.executable, dependencies.pluginId);
-  let command: string;
-  let args: readonly string[] | undefined;
-  let env: Readonly<Record<string, string>> | undefined;
-  let release: (() => void) | undefined;
-  if (transport.executable.kind === 'systemTool') {
-    const grant = await dependencies.systemTools.resolve({
-      toolId: executableId,
-      purpose: `agent-acp:${dependencies.agentId}`,
-      cwd: request.cwd,
-      preferredPath: transport.preferredPath,
-      signal: dependencies.signal,
-    });
-    assertComposerCurrent(dependencies);
-    if (grant.toolId !== executableId || grant.launch.kind !== 'binary') {
-      throw new Error(`ACP system tool '${executableId}' did not resolve to its exact binary grant`);
-    }
-    command = grant.launch.executablePath;
-    args = grant.launch.args;
-    env = grant.launch.env;
-  } else {
-    if (transport.preferredPath !== undefined && transport.preferredPath !== null) {
-      throw new Error('Managed-dependency ACP transports cannot override their resolved executable path');
-    }
-    if (!dependencies.managedDependencies) {
-      throw new Error('Managed-dependency ACP resolution is unavailable in this host');
-    }
-    const resolved = await dependencies.managedDependencies.resolve({
-      pluginId: dependencies.pluginId,
-      dependencyId: executableId,
-      signal: dependencies.signal,
-    });
-    try {
-      assertComposerCurrent(dependencies);
-      if (!isAbsolute(resolved.command)) {
-        throw new Error(`ACP managed dependency '${executableId}' did not resolve to an absolute executable path`);
-      }
-    } catch (error) {
-      resolved.release();
-      throw error;
-    }
-    command = resolved.command;
-    args = resolved.args;
-    env = resolved.env;
-    release = resolved.release;
-  }
-  const environment = {
-    ...(env ?? {}),
-    ...(transport.env ?? {}),
-    ...launchEnvironment.values,
-  };
-  for (const key of launchEnvironment.unset) {
-    delete environment[key];
-  }
-  return Object.freeze({
-    command,
-    args: Object.freeze([...(args ?? []), ...(transport.args ?? [])]),
-    env: Object.freeze(environment),
-    unsetEnv: launchEnvironment.unset,
-    timeouts: transport.timeouts ?? Object.freeze({}),
-    ...(release ? { release } : {}),
+): Promise<PublicAcpResolvedTransport> {
+  return await resolveAcpTransportLaunch({
+    transport,
+    pluginId: dependencies.pluginId,
+    purpose: `agent-acp:${dependencies.agentId}`,
+    cwd: request.cwd,
+    launchEnvironment: AgentLaunchEnvironmentV1Schema.parse(
+      request.launchEnvironment ?? { values: {}, unset: [] },
+    ),
+    systemTools: dependencies.systemTools,
+    ...(dependencies.managedDependencies
+      ? { managedDependencies: dependencies.managedDependencies }
+      : {}),
+    signal: dependencies.signal,
+    assertCurrent: () => assertComposerCurrent(dependencies),
+    ...(dependencies.resolveHostLaunch
+      ? {
+          resolveHostLaunch: () => dependencies.resolveHostLaunch!({
+            cwd: request.cwd,
+            ...(request.launchEnvironment ? { launchEnvironment: request.launchEnvironment } : {}),
+          }),
+        }
+      : {}),
   });
 }
 
 function processExitMessage(exit: ProcessExit): string {
   if (exit.signal) return `ACP process exited with signal ${exit.signal}`;
   return `ACP process exited with code ${exit.code ?? 'unknown'}`;
+}
+
+function transportTerminationMessage(termination: AcpTransportTermination): string {
+  return termination.kind === 'processExit'
+    ? processExitMessage(termination.exit)
+    : termination.detail;
 }
 
 function configurationFieldChanged<T>(
@@ -621,23 +544,87 @@ function mergeConfigurationSnapshot(
   });
 }
 
-export async function createPublicAcpSessionFromAwaitableAdapter(
-  request: AgentSessionOpenRequest,
+async function createPublicAcpConversationFromAwaitableAdapter(
+  request: PublicAcpOpenRequest,
   options: AgentAcpRuntimeOptions,
   dependencies: PublicAcpComposerDependencies,
   awaitableAdapter: PublicAcpAwaitableAdapter,
-): Promise<PublicAcpSessionRuntime> {
+): Promise<PublicAcpSessionRuntime | PublicAcpConversationRuntime> {
+  const executionRunRequest = 'runId' in request ? request : null;
   assertComposerCurrent(dependencies);
   const transport = PluginAgentAcpTransportSchema.parse(options.transport);
-  const launch = await resolveLaunch(transport, request, dependencies);
+  const resolvedLaunch = await resolveTransport(transport, request, dependencies);
+  let nativeMcpDelivery: NativeSessionMcpConfigDelivery | null = null;
   let launchReleased = false;
   const releaseLaunch = (): void => {
     if (launchReleased) return;
     launchReleased = true;
-    launch.release?.();
+    nativeMcpDelivery?.cleanup();
+    if (resolvedLaunch.kind === 'stdio') resolvedLaunch.release?.();
   };
+  let launch = resolvedLaunch;
   try {
-  const extensions = createExtensionRegistrations(options);
+    const nativeSessionConfig = options.definition?.mcp.nativeSessionConfig;
+    if (nativeSessionConfig && resolvedLaunch.kind === 'stdio') {
+      nativeMcpDelivery = await prepareNativeSessionMcpConfig({
+        declaration: nativeSessionConfig,
+        cwd: request.cwd,
+        // The Agent resolves its config root from the environment it will
+        // actually run with: the host process environment, the resolved launch
+        // overrides, then this Session's unset keys.
+        env: buildScopedProcessEnv({
+          baseEnv: process.env,
+          explicitEnv: resolvedLaunch.env,
+          unsetEnvKeys: resolvedLaunch.unsetEnv,
+        }),
+        mcpServers: dependencies.mcpServers,
+      });
+      assertComposerCurrent(dependencies);
+      launch = Object.freeze({
+        ...resolvedLaunch,
+        env: Object.freeze({ ...resolvedLaunch.env, ...nativeMcpDelivery.env }),
+        unsetEnv: Object.freeze(resolvedLaunch.unsetEnv.filter(
+          (key) => !Object.prototype.hasOwnProperty.call(nativeMcpDelivery!.env, key),
+        )),
+      });
+    }
+  } catch (error) {
+    releaseLaunch();
+    throw error;
+  }
+  try {
+  type ExtensionNotificationGateState = 'pending' | 'committing' | 'committed' | 'discarded';
+  let extensionNotificationGateState: ExtensionNotificationGateState = request.kind === 'resume'
+    ? 'pending'
+    : 'committed';
+  const pendingExtensionNotifications: Array<() => void | Promise<void>> = [];
+  const dispatchExtensionNotification = (
+    notification: () => void | Promise<void>,
+  ): void | Promise<void> => {
+    if (extensionNotificationGateState === 'discarded') return;
+    if (
+      extensionNotificationGateState === 'pending'
+      || extensionNotificationGateState === 'committing'
+    ) {
+      pendingExtensionNotifications.push(notification);
+      return;
+    }
+    return notification();
+  };
+  const commitPendingExtensionNotifications = async (): Promise<void> => {
+    if (extensionNotificationGateState !== 'pending') return;
+    extensionNotificationGateState = 'committing';
+    while (pendingExtensionNotifications.length > 0) {
+      const notification = pendingExtensionNotifications.shift();
+      if (notification) await notification();
+    }
+    extensionNotificationGateState = 'committed';
+  };
+  const discardPendingExtensionNotifications = (): void => {
+    extensionNotificationGateState = 'discarded';
+    pendingExtensionNotifications.length = 0;
+  };
+  const extensions = createExtensionRegistrations(options, dispatchExtensionNotification);
   const transportHandler = options.definition
     ? createAcpTransportHandlerFromDefinition({
         backendId: dependencies.agentId,
@@ -670,7 +657,7 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
   let bufferedMessageFailure: Exclude<AgentSessionPreAdmissionBufferResult, { status: 'accepted' }> | null = null;
   const readBufferedMessageFailure = () => bufferedMessageFailure;
   let emittedToolCallIds = new Set<string>();
-  let pendingProcessExit: ProcessExit | null = null;
+  let pendingTransportTermination: AcpTransportTermination | null = null;
   let providerSessionId: string | null = null;
   let publishTail: Promise<void> = Promise.resolve();
   let disposePromise: Promise<void> | null = null;
@@ -705,6 +692,9 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
             id: model.id,
             name: model.name,
             ...(model.description === undefined ? {} : { description: model.description }),
+            ...(model.contextWindowTokens === undefined
+              ? {}
+              : { contextWindowTokens: model.contextWindowTokens }),
             ...(model.modelOptions
               ? { modelOptions: Object.freeze(model.modelOptions.map((option) => Object.freeze({ ...option }))) }
               : {}),
@@ -725,28 +715,43 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
     bufferedMessages?.dispose();
     bufferedMessages = null;
     bufferedMessageFailure = null;
-    pendingProcessExit = null;
+    pendingTransportTermination = null;
     publicationFailureDisposePromise ??= backend.dispose().catch(() => {
       // The stream failure remains the canonical public terminal diagnostic.
     });
   };
-  const stream = createAgentSessionRuntimeEventStream({
-    onFailure(failure) {
-      terminalizeForPublicationFailure(failure.diagnostic);
-    },
-  });
+  const sessionStream = executionRunRequest
+    ? null
+    : createAgentSessionRuntimeEventStream({
+        onFailure(failure) {
+          terminalizeForPublicationFailure(failure.diagnostic);
+        },
+      });
+  const conversationHistory: AgentExecutionRunConversationEventV1[] = [];
+  const conversationListeners = new Set<Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0]>();
 
   const publish = <Event extends UnsequencedAgentSessionRuntimeEvent>(event: Event): void => {
     if (disposed || runtimeEnded && event.kind !== 'runtime-ended') return;
     if (event.kind === 'runtime-ended') runtimeEnded = true;
+    const emittedAtMs = Date.now();
+    if (executionRunRequest) {
+      // The host stamps the only field the scope-neutral SDK event leaves optional.
+      const normalized = Object.freeze(Object.assign({}, event, { emittedAtMs })) as unknown as AgentExecutionRunConversationEventV1;
+      conversationHistory.push(normalized);
+      for (const listener of Array.from(conversationListeners)) listener(normalized);
+      return;
+    }
+    if (!('sessionId' in request)) {
+      throw new Error('ACP Session publication requires a real Session identity');
+    }
     const normalized = {
       ...event,
       sequence: ++sequence,
       sessionId: request.sessionId,
-      emittedAtMs: Date.now(),
+      emittedAtMs,
     } as AgentSessionRuntimeEvent;
     publishTail = publishTail.then(async () => {
-      const result = await stream.publish(normalized);
+      const result = await sessionStream!.publish(normalized);
       if (result.status !== 'accepted' && !disposed) {
         terminalizeForPublicationFailure(result.diagnostic);
       }
@@ -822,6 +827,12 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         }
         return;
       case 'event': {
+        if (message.name === 'thinking') {
+          const payload = isRecord(message.payload) ? message.payload : null;
+          const text = typeof payload?.text === 'string' ? payload.text : '';
+          if (text) publish({ kind: 'message-delta', turnId, channel: 'reasoning', text });
+          return;
+        }
         if (
           message.name !== 'user_message_chunk'
           || !options.definition?.history
@@ -857,40 +868,73 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         turn.providerCheckpoint = parsedCheckpoint.data;
         return;
       }
+      case 'token-count': {
+        const observedAtMs = Date.now();
+        const measurement = buildUsageObservedMeasurementFromTokenCountMessage({
+          provider: dependencies.agentId,
+          body: message,
+          observedAtMs,
+          defaultSource: 'acp-token-count',
+        });
+        if (measurement) {
+          publish({
+            kind: 'usage-observed',
+            observationId: `acp-usage-${randomUUID()}`,
+            turnId,
+            ...measurement,
+          });
+        }
+        return;
+      }
       default:
         return;
     }
   };
 
-  const publishRuntimeEndedForProcessExit = (exit: ProcessExit): void => {
+  const publishRuntimeEndedForTransportTermination = (
+    termination: AcpTransportTermination,
+  ): void => {
+    const isProcessExit = termination.kind === 'processExit';
     publish({
       kind: 'runtime-ended',
-      cause: 'processExited',
+      cause: isProcessExit ? 'processExited' : 'connectionLost',
       retryable: true,
-      diagnostic: diagnostic('acp_process_exited', processExitMessage(exit)),
+      diagnostic: diagnostic(
+        isProcessExit ? 'acp_process_exited' : 'acp_connection_lost',
+        transportTerminationMessage(termination),
+      ),
     });
   };
-  const observeProcessExit = (exit: ProcessExit): void => {
+  const observeTransportTermination = (termination: AcpTransportTermination): void => {
     if (disposed || runtimeEnded) return;
+    const diagnosticCode = termination.kind === 'processExit'
+      ? 'acp_process_exited'
+      : 'acp_connection_lost';
     const turn = activeTurn;
     if (turn?.submissionSettled && backend.getLastTurnOutcome() === null) {
       publish({
         kind: 'turn-failed',
         turnId: turn.turnId,
-        diagnostic: diagnostic('acp_process_exited', processExitMessage(exit)),
+        diagnostic: diagnostic(diagnosticCode, transportTerminationMessage(termination)),
       });
       activeTurn = null;
       bufferedMessages?.dispose();
       bufferedMessages = null;
       bufferedMessageFailure = null;
-      publishRuntimeEndedForProcessExit(exit);
+      publishRuntimeEndedForTransportTermination(termination);
       return;
     }
     if (turn) {
-      pendingProcessExit = exit;
+      pendingTransportTermination = termination;
       return;
     }
-    publishRuntimeEndedForProcessExit(exit);
+    publishRuntimeEndedForTransportTermination(termination);
+  };
+  const observeProcessExit = (exit: ProcessExit): void => {
+    observeTransportTermination({ kind: 'processExit', exit });
+  };
+  const observeConnectionLost: NonNullable<AcpBackendOptions['onConnectionLost']> = (loss) => {
+    observeTransportTermination({ kind: 'connectionLost', detail: loss.detail });
   };
 
   const authMethodId = readAuthMethodId(options);
@@ -997,26 +1041,46 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
       logger.debug(`[${dependencies.agentId}] Generated-media publication failed closed`, error);
     });
   };
+  const modelControls = options.definition?.models;
+  const hasSessionModelAdapter = Boolean(
+    modelControls?.projectModelState
+    || modelControls?.projectModelId
+    || modelControls?.resolveModelUpdate,
+  );
   backend = createAcpBackend({
     agentName: dependencies.agentId,
     cwd: request.cwd,
-    command: launch.command,
-    args: [...launch.args],
-    env: { ...launch.env },
-    unsetEnv: launch.unsetEnv,
-    ...(dependencies.transformAgentChildLaunchEnvironment
+    ...(launch.kind === 'stdio'
       ? {
-          transformAgentChildLaunchEnvironment:
-            dependencies.transformAgentChildLaunchEnvironment,
+          command: launch.command,
+          args: [...launch.args],
+          env: { ...launch.env },
+          unsetEnv: launch.unsetEnv,
+          ...(dependencies.transformAgentChildLaunchEnvironment
+            ? {
+                transformAgentChildLaunchEnvironment:
+                  dependencies.transformAgentChildLaunchEnvironment,
+              }
+            : {}),
         }
-      : {}),
+      : {
+          networkTransport: launch.kind === 'webSocket'
+            ? {
+                kind: launch.kind,
+                url: launch.url,
+                ...(launch.headers ? { headers: launch.headers } : {}),
+              }
+            : { kind: launch.kind, host: launch.host, port: launch.port },
+        }),
     ...(dependencies.transformAgentRequest
       ? {
           transformPromptRequest: async (rawRequest, transformOptions) => {
             const priorPayload = Object.freeze({
-              sessionId: request.sessionId,
+              ...('runId' in request
+                ? { executionRunId: request.runId }
+                : { sessionId: request.sessionId }),
               agentId: dependencies.agentId,
-              runtimeFamily: 'acpSession' as const,
+              runtimeFamily: executionRunRequest ? 'acpExecutionRun' as const : 'acpSession' as const,
               method: 'session/prompt',
               request: rawRequest,
               timestampMs: Date.now(),
@@ -1055,6 +1119,9 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         }
       : {}),
     ...(typeof parameterizedModelPicker === 'boolean' ? { parameterizedModelPicker } : {}),
+    ...(options.definition?.modelConfigOptionId
+      ? { modelConfigOptionId: options.definition.modelConfigOptionId }
+      : {}),
     ...(options.definition?.models?.projectModel && !awaitableAdapter.projectModel
       ? {
           projectModel: (
@@ -1079,6 +1146,51 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
                   })) }
                 : {}),
             };
+          },
+        }
+      : {}),
+    ...(hasSessionModelAdapter
+      ? {
+          sessionModelAdapter: {
+            ...(modelControls?.projectModelState
+              ? {
+                  projectModelState: ({ normalizedModelState }: Readonly<{
+                    normalizedModelState: Readonly<SessionModelState>;
+                  }>): SessionModelState => validateProjectedModelState(
+                    modelControls.projectModelState!({
+                      normalizedModelState: normalizedModelState as AgentAcpModelState,
+                    }),
+                  ),
+                }
+              : {}),
+            ...(modelControls?.projectModelId
+              ? {
+                  projectModelId: ({ modelId, modelState }: Readonly<{
+                    modelId: string;
+                    modelState: Readonly<SessionModelState> | null;
+                  }>): string => {
+                    const projectedId = modelControls.projectModelId!({
+                      modelId,
+                      modelState: modelState as AgentAcpModelState | null,
+                    }).trim();
+                    if (!projectedId) {
+                      throw new Error('ACP model-id projector returned an invalid model id');
+                    }
+                    return projectedId;
+                  },
+                }
+              : {}),
+            ...(modelControls?.resolveModelUpdate
+              ? {
+                  resolveModelUpdate: ({ modelId, modelState }: Readonly<{
+                    modelId: string;
+                    modelState: Readonly<SessionModelState> | null;
+                  }>) => validateProjectedModelUpdate(modelControls.resolveModelUpdate!({
+                    modelId,
+                    modelState: modelState as AgentAcpModelState | null,
+                  })),
+                }
+              : {}),
           },
         }
       : {}),
@@ -1197,11 +1309,16 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         }
       : {}),
     ...(extensions.length > 0 ? { extensions } : {}),
-    createExtensionContext: (method, sdkSignal, requestId) => Object.freeze({
+    createExtensionContext: (method, sdkSignal, requestId) => {
+      const extensionProviderSessionId = providerSessionId
+        ?? (request.kind === 'resume' && 'providerSessionId' in request
+          ? request.providerSessionId
+          : null);
+      return Object.freeze({
       method,
       ...(requestId === undefined ? {} : { requestId: String(requestId) }),
       signal: AbortSignal.any([dependencies.signal, sdkSignal]),
-      ...(providerSessionId ? { providerSessionId } : {}),
+      ...(extensionProviderSessionId ? { providerSessionId: extensionProviderSessionId } : {}),
       ...(providerSessionId && activeTurn
         ? {
             currentTurn: Object.freeze({
@@ -1230,8 +1347,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
             }),
           }
         : {}),
-    }),
+      });
+    },
     onProcessExit: observeProcessExit,
+    onConnectionLost: observeConnectionLost,
     onPublishedTerminalToolResult: observePublishedTerminalToolResult,
   });
   const modelBinding = dependencies.models.bind(modelSource);
@@ -1326,13 +1445,25 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         await applyAcpRuntimeSessionMode(controlContext, update.mode.value);
         changed.push('mode');
       }
+      if (applyOptions?.initial && permissionChanged && update.permissionIntent.value !== null) {
+        const mappedMode = options.definition?.permissionModeMapping?.[update.permissionIntent.value];
+        if (typeof mappedMode === 'string' && mappedMode.trim().length > 0) {
+          await applyAcpRuntimeSessionMode(controlContext, mappedMode);
+        }
+      }
       if (modelChanged && update.model.value !== null) {
         const modelConfigOptionId = options.definition?.modelConfigOptionId;
         if (modelConfigOptionId) {
+          const modelState = backend.getSessionModelState();
+          const resolved = modelControls?.resolveModelUpdate?.({
+            modelId: update.model.value,
+            modelState: modelState as AgentAcpModelState | null,
+          });
+          const validated = validateProjectedModelUpdate(resolved);
           await applyAcpRuntimeSessionConfigOption(
             controlContext,
             modelConfigOptionId,
-            update.model.value,
+            validated?.modelId ?? update.model.value,
           );
         } else {
           await applyAcpRuntimeSessionModel(controlContext, update.model.value);
@@ -1349,35 +1480,59 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         ? modelState?.availableModels.find((model) => model.id === targetModelId) ?? null
         : null;
       const projectedOptionUpdates = [];
+      let projectionModel = targetModel;
       for (const [id, value] of applicableOptions) {
         if (
           (!options.definition?.models?.projectUpdate
             && !awaitableAdapter.projectUpdate)
-          || !targetModel
+          || !projectionModel
         ) {
           continue;
         }
         const projectionInput = {
           configId: id,
           value: value.value,
-          currentModel: targetModel as AgentAcpModel,
+          currentModel: projectionModel as AgentAcpModel,
         };
         const projected = awaitableAdapter.projectUpdate
           ? await awaitableAdapter.projectUpdate(projectionInput)
           : options.definition!.models!.projectUpdate!(projectionInput);
-        const validated = validateProjectedModelUpdate(projected, targetModel.id);
-        if (validated) projectedOptionUpdates.push({ id, update: validated });
+        const validated = validateProjectedModelUpdate(projected);
+        if (validated) {
+          projectedOptionUpdates.push({ id, update: validated });
+          const projectedValue = value.value;
+          if (typeof projectedValue === 'string') {
+            projectionModel = {
+              ...projectionModel,
+              modelOptions: projectionModel.modelOptions?.map((option) => option.id === id
+                ? { ...option, currentValue: projectedValue }
+                : option),
+            };
+          }
+        }
       }
-      if (projectedOptionUpdates.length > 1) {
-        throw new Error('ACP model update projector handled more than one option at once');
+      if (
+        projectedOptionUpdates.length > 1
+        && projectedOptionUpdates.some((entry) => entry.update.requestMeta !== undefined)
+      ) {
+        throw new Error('ACP model option request metadata cannot be composed implicitly');
       }
-      const projectedModelUpdate = projectedOptionUpdates[0]?.update;
+      const projectedModelUpdate = projectedOptionUpdates.at(-1)?.update;
       if (projectedModelUpdate) {
-        await applyAcpRuntimeSessionModel(
-          controlContext,
-          projectedModelUpdate.modelId,
-          projectedModelUpdate.requestMeta,
-        );
+        const modelConfigOptionId = options.definition?.modelConfigOptionId;
+        if (modelConfigOptionId && !projectedModelUpdate.requestMeta) {
+          await applyAcpRuntimeSessionConfigOption(
+            controlContext,
+            modelConfigOptionId,
+            projectedModelUpdate.modelId,
+          );
+        } else {
+          await applyAcpRuntimeSessionModel(
+            controlContext,
+            projectedModelUpdate.modelId,
+            projectedModelUpdate.requestMeta,
+          );
+        }
       }
       for (const [id, value] of applicableOptions) {
         applyOptions?.signal?.throwIfAborted();
@@ -1401,22 +1556,36 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
   };
   const session: PublicAcpSessionRuntime = Object.freeze({
     ...(conversationRollback ? { conversationRollback } : {}),
-    runtimeCapabilities: {
-      localControl: null,
-      sessionCapabilities: {
-        sessionListing: 'supported',
-        sessionFork: {
-          conversation: 'supported',
-          fromMessage: options.definition?.history?.fork ? 'supported' : 'unsupported',
-          protocol: 'acp',
+    get runtimeCapabilities() {
+      const capabilities = backend.getNegotiatedSessionCapabilities();
+      return {
+        localControl: null,
+        sessionCapabilities: {
+          sessionListing: capabilities.listSessions ? 'supported' : 'unsupported',
+          sessionFork: {
+            conversation: capabilities.forkSession || options.definition?.history?.fork
+              ? 'supported'
+              : 'unsupported',
+            fromMessage: options.definition?.history?.fork ? 'supported' : 'unsupported',
+            protocol: 'acp',
+          },
+          sessionRollback: {
+            conversation: conversationRollback ? 'supported' : 'unsupported',
+          },
         },
-        sessionRollback: {
-          conversation: conversationRollback ? 'supported' : 'unsupported',
-        },
-      },
-    } as const,
+      } as const;
+    },
     getProviderSessionId(): string | null {
       return providerSessionId;
+    },
+    async listSessions(params = {}) {
+      return await backend.listSessions(params);
+    },
+    async closeSession(sessionId: string): Promise<void> {
+      await backend.closeSession(sessionId);
+    },
+    async deleteSession(sessionId: string): Promise<void> {
+      await backend.deleteSession(sessionId);
     },
     async drainPendingPublications(): Promise<void> {
       while (true) {
@@ -1467,13 +1636,36 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
             retryable: true,
           };
         }
+        const providerSteer = options.definition?.delivery?.steer;
+        let promptContent: readonly ContentBlock[] | null = null;
+        if (!providerSteer) {
+          try {
+            promptContent = await buildAcpPromptContentBlocks({
+              cwd: request.cwd,
+              text: sendRequest.input.text,
+              ...(sendRequest.input.structuredInput === undefined
+                ? {}
+                : { structuredInput: sendRequest.input.structuredInput }),
+              acceptsImageInput: backend.supportsImagePrompts()
+                || options.definition?.acceptsVerifiedImageInput === true,
+            });
+          } catch (error) {
+            if (error instanceof AcpPromptProjectionError) {
+              return {
+                status: error.code === 'acp_image_input_unsupported' ? 'unsupported' : 'rejected',
+                diagnostic: diagnostic(error.code, error.message),
+                retryable: false,
+              };
+            }
+            throw error;
+          }
+        }
         // A steer is a new admitted input. Install its exact carrier before the
         // transport call, because ACP may request permission while that call is
         // still awaiting its prompt acknowledgement. Earlier requests already
         // hold their own copied context at the permission owner.
         turn.causalPermissionAuthority = sendRequest.causalPermissionAuthority;
         try {
-          const providerSteer = options.definition?.delivery?.steer;
           if (providerSteer) {
             const extensionParams = AgentRuntimeJsonValueV1Schema.parse(providerSteer.buildParams({
               providerSessionId,
@@ -1487,7 +1679,7 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
               throw new Error('ACP provider steer extension did not accept input');
             }
           } else {
-            await backend.sendSteerPrompt(providerSessionId, sendRequest.input.text);
+            await backend.sendSteerPrompt(providerSessionId, promptContent!);
           }
         } catch (error) {
           publish({
@@ -1573,10 +1765,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
               : error instanceof Error ? error.message : 'ACP prompt admission failed',
           ),
         });
-        if (pendingProcessExit) {
-          const exit = pendingProcessExit;
-          pendingProcessExit = null;
-          observeProcessExit(exit);
+        if (pendingTransportTermination) {
+          const termination = pendingTransportTermination;
+          pendingTransportTermination = null;
+          observeTransportTermination(termination);
         }
         return { status: 'admitted' as const };
       }
@@ -1597,10 +1789,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
             `ACP pre-admission buffer rejected a provider message (${admissionFailure.status}${admissionFailure.status === 'overflow' ? `:${admissionFailure.reason}` : ''})`,
           ),
         });
-        if (pendingProcessExit) {
-          const exit = pendingProcessExit;
-          pendingProcessExit = null;
-          observeProcessExit(exit);
+        if (pendingTransportTermination) {
+          const termination = pendingTransportTermination;
+          pendingTransportTermination = null;
+          observeTransportTermination(termination);
         }
         return;
       }
@@ -1619,10 +1811,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           ),
           retryable: true,
         });
-        if (pendingProcessExit) {
-          const exit = pendingProcessExit;
-          pendingProcessExit = null;
-          observeProcessExit(exit);
+        if (pendingTransportTermination) {
+          const termination = pendingTransportTermination;
+          pendingTransportTermination = null;
+          observeTransportTermination(termination);
         }
         return;
       }
@@ -1689,7 +1881,11 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
             kind: 'turn-failed',
             turnId: turn.turnId,
             diagnostic: diagnostic(
-              outcome.kind === 'timed_out' ? 'acp_turn_timed_out' : 'acp_turn_failed',
+              outcome.kind === 'timed_out'
+                ? 'acp_turn_timed_out'
+                : isWorkflowInteractionCapacityError(outcome.error)
+                  ? WORKFLOW_INTERACTION_CAPACITY_EXCEEDED
+                  : 'acp_turn_failed',
               outcome.kind === 'failed' ? outcome.error.message : undefined,
             ),
           });
@@ -1704,10 +1900,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           publish({ kind: 'turn-complete', turnId: turn.turnId });
         }
         activeTurn = null;
-        if (pendingProcessExit) {
-          const exit = pendingProcessExit;
-          pendingProcessExit = null;
-          observeProcessExit(exit);
+        if (pendingTransportTermination) {
+          const termination = pendingTransportTermination;
+          pendingTransportTermination = null;
+          observeTransportTermination(termination);
         }
       }).catch(async (error) => {
         await backendMessageProjectionTail;
@@ -1718,13 +1914,20 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           turnId: turn.turnId,
           ...(current.cancelCause
             ? { cause: current.cancelCause }
-            : { diagnostic: diagnostic('acp_turn_failed', error instanceof Error ? error.message : undefined) }),
+            : {
+                diagnostic: diagnostic(
+                  isWorkflowInteractionCapacityError(error)
+                    ? WORKFLOW_INTERACTION_CAPACITY_EXCEEDED
+                    : 'acp_turn_failed',
+                  error instanceof Error ? error.message : undefined,
+                ),
+              }),
         } as UnsequencedAgentSessionRuntimeEvent);
         activeTurn = null;
-        if (pendingProcessExit) {
-          const exit = pendingProcessExit;
-          pendingProcessExit = null;
-          observeProcessExit(exit);
+        if (pendingTransportTermination) {
+          const termination = pendingTransportTermination;
+          pendingTransportTermination = null;
+          observeTransportTermination(termination);
         }
       });
       };
@@ -1747,7 +1950,13 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         return { status: 'notRunning' as const };
       }
       turn.cancelCause = cancelRequest.reason;
-      await backend.cancel(providerSessionId ?? request.sessionId);
+      if (!providerSessionId) {
+        return {
+          status: 'unavailable' as const,
+          diagnostic: diagnostic('acp_provider_session_unavailable'),
+        };
+      }
+      await backend.cancel(providerSessionId);
       return { status: 'requested' as const, turnId: cancelRequest.turnId };
     },
     async updateConfiguration(
@@ -1792,7 +2001,16 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
       return await result;
     },
     watch(listener: Parameters<AgentSessionRuntime['watch']>[0]) {
-      return stream.watch(listener);
+      if (executionRunRequest) {
+        for (const event of conversationHistory) listener(event as AgentSessionRuntimeEvent);
+        conversationListeners.add(listener as Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0]);
+        return Object.freeze({
+          dispose() {
+            conversationListeners.delete(listener as Parameters<AgentExecutionRunConversationRuntimeV1['watch']>[0]);
+          },
+        });
+      }
+      return sessionStream!.watch(listener);
     },
     dispose() {
       disposePromise ??= (async () => {
@@ -1800,12 +2018,13 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         // Lifecycle listeners are downstream observers. Closing admission is
         // synchronous, but joining the listener drain here can deadlock when a
         // listener is itself waiting for this session retirement to complete.
-        void stream.dispose();
+        if (sessionStream) void sessionStream.dispose();
+        conversationListeners.clear();
         activeTurn = null;
         bufferedMessages?.dispose();
         bufferedMessages = null;
         bufferedMessageFailure = null;
-        pendingProcessExit = null;
+        pendingTransportTermination = null;
         modelSubscribers.clear();
         await modelBinding.dispose();
         dependencies.signal.removeEventListener('abort', disposeOnAbort);
@@ -1827,6 +2046,9 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
     const openFork = async (): Promise<Readonly<{ sessionId: string }>> => {
       if (request.kind !== 'fork') {
         throw new Error('ACP fork opener requires a fork request');
+      }
+      if ('runId' in request) {
+        throw new Error('ACP execution-run V1 cannot fork from a source Run id');
       }
       const fork = options.definition?.history?.fork;
       if (!fork) {
@@ -1865,29 +2087,40 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
       const forkedProviderSessionId = awaitableAdapter.readForkProviderSessionId
         ? await awaitableAdapter.readForkProviderSessionId(response)
         : fork.readProviderSessionId(response);
-      if (!forkedProviderSessionId || forkedProviderSessionId !== forkedProviderSessionId.trim()) {
+      const validatedForkedProviderSessionId = readNonBlankOpaqueIdentifier(
+        forkedProviderSessionId,
+      );
+      if (!validatedForkedProviderSessionId) {
         throw new Error('ACP history fork response did not include a valid provider session id');
       }
-      return await backend.loadExtensionForkSession(forkedProviderSessionId, response);
+      return await backend.loadExtensionForkSession(validatedForkedProviderSessionId, response);
     };
     const opened = request.kind === 'create'
       ? await backend.startSession()
       : request.kind === 'resume'
         ? dependencies.resumeHistorySession
-          ? await backend.loadSessionWithReplayCapture(request.providerSessionId).then((loaded) => {
+          ? await backend.loadSessionWithReplayCapture(
+              'runId' in request ? request.checkpointId : request.providerSessionId,
+            ).then((loaded) => {
               replay = loaded.replay;
               return loaded;
             })
-          : await backend.loadSession(request.providerSessionId)
+          : await backend.loadSession(
+              'runId' in request ? request.checkpointId : request.providerSessionId,
+            )
         : await openFork();
     assertComposerCurrent(dependencies);
     providerSessionId = opened.sessionId;
+    await commitPendingExtensionNotifications();
+    assertComposerCurrent(dependencies);
     if (request.kind === 'resume' && dependencies.resumeHistorySession && replay) {
       try {
         await importAcpReplayHistoryV1({
           session: dependencies.resumeHistorySession,
           provider: dependencies.agentId,
-          remoteSessionId: request.providerSessionId,
+          remoteSessionId: 'runId' in request
+            ? request.checkpointId
+            : request.providerSessionId,
           replay,
           permissionHandler,
         });
@@ -1916,6 +2149,7 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
     else dependencies.signal.addEventListener('abort', disposeOnAbort, { once: true });
     return session;
   } catch (error) {
+    discardPendingExtensionNotifications();
     disposed = true;
     await modelBinding.dispose();
     try {
@@ -1923,7 +2157,7 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
     } finally {
       releaseLaunch();
     }
-    await stream.dispose();
+    if (sessionStream) await sessionStream.dispose();
     throw error;
   }
   } catch (error) {
@@ -1942,5 +2176,48 @@ export async function createPublicAcpSession(
     options,
     dependencies,
     Object.freeze({}),
-  );
+  ) as PublicAcpSessionRuntime;
+}
+
+export async function createPublicAcpSessionFromAwaitableAdapter(
+  request: AgentSessionOpenRequest,
+  options: AgentAcpRuntimeOptions,
+  dependencies: PublicAcpComposerDependencies,
+  awaitableAdapter: PublicAcpAwaitableAdapter,
+): Promise<PublicAcpSessionRuntime> {
+  return await createPublicAcpConversationFromAwaitableAdapter(
+    request,
+    options,
+    dependencies,
+    awaitableAdapter,
+  ) as PublicAcpSessionRuntime;
+}
+
+/**
+ * Opens the same canonical ACP transport/parser for a truthful detached Run.
+ * The core publishes scope-neutral turn facts; the SDK's single Run lifecycle
+ * owner stamps only the Execution Run identity.
+ */
+export async function createPublicAcpExecutionRun(
+  request: AgentExecutionRunOpenRequest,
+  options: AgentAcpRuntimeOptions,
+  dependencies: PublicAcpComposerDependencies,
+): Promise<AgentExecutionRunRuntime> {
+  if (request.kind === 'fork') {
+    throw new Error('ACP execution-run V1 cannot derive a provider checkpoint from a source Run id');
+  }
+  return await createExecutionRunHostBackendFromConversationRuntime({
+    request,
+    async openConversation() {
+      return await createPublicAcpConversationFromAwaitableAdapter(
+        request,
+        options,
+        dependencies,
+        Object.freeze({}),
+      ) as PublicAcpConversationRuntime;
+    },
+    readCheckpointId(event) {
+      return event.kind === 'provider-session-id' ? event.providerSessionId : null;
+    },
+  });
 }

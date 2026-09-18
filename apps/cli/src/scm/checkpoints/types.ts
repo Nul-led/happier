@@ -1,4 +1,4 @@
-import type { FileChangeEvidence, TurnChangeSet } from '@happier-dev/protocol';
+import type { CheckpointAttributionScope, FileChangeEvidence, TurnChangeSet } from '@happier-dev/protocol';
 
 import type { ScmBackendContext } from '../types';
 
@@ -118,10 +118,7 @@ export type RepositoryCheckpointDiffBaseRefSource =
     | 'previous_final'
     | 'unavailable';
 
-export type RepositoryCheckpointAttributionScope =
-    | 'exclusive_worktree'
-    | 'shared_worktree'
-    | 'unknown';
+export type RepositoryCheckpointAttributionScope = CheckpointAttributionScope;
 
 export type RepositoryCheckpointDiffRequest = Readonly<{
     context: ScmBackendContext;

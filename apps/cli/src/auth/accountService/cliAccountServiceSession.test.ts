@@ -39,6 +39,14 @@ function service(overrides: Partial<CliAccountServiceSelection> = {}): CliAccoun
   };
 }
 
+function selectionAuthority(serviceValue: CliAccountServiceSelection) {
+  return {
+    endpoint: serviceValue.endpoint.replace(/\/+$/u, ''),
+    serverIdentityId: serviceValue.serverIdentityId,
+    canonicalServerUrl: serviceValue.canonicalServerUrl.replace(/\/+$/u, ''),
+  };
+}
+
 function deferred<T>(): Readonly<{
   promise: Promise<T>;
   resolve(value: T): void;
@@ -80,11 +88,6 @@ describe('CLI Account Service session owner', () => {
         endpoint: 'https://accounts.example.test',
         serverIdentityId: 'srv_account_service_a',
         canonicalServerUrl: 'https://canonical.accounts.example.test',
-        advertisedMethods: {
-          keyLoginAvailable: true,
-          oauthProviderIds: ['github', 'google'],
-          preferredProvisionProviderId: 'github',
-        },
       },
       restrictedCredential: { token: 'restricted-account-service-token' },
     });
@@ -114,7 +117,7 @@ describe('CLI Account Service session owner', () => {
     await owner.replaceCredential({ service: selectedA, credential: { token: 'token-a' } });
     await owner.selectService(selectedB);
 
-    await expect(owner.readSelection()).resolves.toEqual(selectedB);
+    await expect(owner.readSelection()).resolves.toEqual(selectionAuthority(selectedB));
     await expect(owner.readCredential(selectedB)).resolves.toBeNull();
     await expect(owner.replaceCredential({
       service: selectedA,
@@ -123,7 +126,7 @@ describe('CLI Account Service session owner', () => {
     await expect(owner.readCredential(selectedB)).resolves.toBeNull();
   });
 
-  it('refreshes advertised methods for the same Account Service without clearing its credential', async () => {
+  it('does not persist discovered methods and retains the credential for the same Account Service authority', async () => {
     const happyHomeDir = await createHome();
     const owner = createCliAccountServiceSessionOwner({ happyHomeDir });
     const selected = service();
@@ -139,7 +142,7 @@ describe('CLI Account Service session owner', () => {
     await owner.replaceCredential({ service: selected, credential: { token: 'still-valid-token' } });
     await owner.selectService(refreshed);
 
-    await expect(owner.readSelection()).resolves.toEqual(refreshed);
+    await expect(owner.readSelection()).resolves.toEqual(selectionAuthority(refreshed));
     await expect(owner.readCredential(refreshed)).resolves.toEqual({ token: 'still-valid-token' });
   });
 
@@ -156,37 +159,13 @@ describe('CLI Account Service session owner', () => {
       timeoutMs: 30_000,
       acquireCredential: async () => await acquired.promise,
     });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
-
     await owner.selectService(selectedB);
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
     acquired.resolve({ token: 'late-token-a' });
     await settleLateCompletion();
 
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(false);
-    await expect(owner.readSelection()).resolves.toEqual(selectedB);
+    await expect(owner.readSelection()).resolves.toEqual(selectionAuthority(selectedB));
     await expect(owner.readCredential(selectedB)).resolves.toBeNull();
-  });
-
-  it('explicit cancellation clears pending state and blocks late credential commit', async () => {
-    const happyHomeDir = await createHome();
-    const owner = createCliAccountServiceSessionOwner({ happyHomeDir });
-    const selected = service();
-    const acquired = deferred<Readonly<{ token: string }>>();
-
-    await owner.selectService(selected);
-    const attempt = owner.authenticate({
-      service: selected,
-      timeoutMs: 25,
-      acquireCredential: async () => await acquired.promise,
-    });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
-    await expect(owner.cancelPendingAuthentication()).resolves.toBe(true);
-    await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
-
-    acquired.resolve({ token: 'late-after-cancel' });
-    await settleLateCompletion();
-    await expect(owner.readCredential(selected)).resolves.toBeNull();
   });
 
   it('binds caller cancellation to the one pending authentication attempt', async () => {
@@ -208,7 +187,6 @@ describe('CLI Account Service session owner', () => {
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
     acquired.resolve({ token: 'late-after-caller-abort' });
     await settleLateCompletion();
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(false);
     await expect(owner.readCredential(selected)).resolves.toBeNull();
   });
 
@@ -226,7 +204,6 @@ describe('CLI Account Service session owner', () => {
     });
 
     await expect(attempt).resolves.toEqual({ kind: 'timed_out' });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(false);
     acquired.resolve({ token: 'late-after-timeout' });
     await settleLateCompletion();
     await expect(owner.readCredential(selected)).resolves.toBeNull();
@@ -245,15 +222,12 @@ describe('CLI Account Service session owner', () => {
       timeoutMs: 30_000,
       acquireCredential: async () => await acquired.promise,
     });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
-
     await owner.rejectCredential(selected);
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
     acquired.resolve({ token: 'late-after-rejection' });
     await settleLateCompletion();
 
     await expect(owner.readCredential(selected)).resolves.toBeNull();
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(false);
   });
 
   it('logout clears pending Account Service state but never reads or changes Home credentials', async () => {
@@ -276,14 +250,12 @@ describe('CLI Account Service session owner', () => {
       timeoutMs: 30_000,
       acquireCredential: async () => await acquired.promise,
     });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
-
     await owner.logout();
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
     acquired.resolve({ token: 'late-after-logout' });
     await settleLateCompletion();
 
-    await expect(owner.readSelection()).resolves.toEqual(selected);
+    await expect(owner.readSelection()).resolves.toEqual(selectionAuthority(selected));
     await expect(owner.readCredential(selected)).resolves.toBeNull();
     await expect(readFile(homeCredentialPath, 'utf8')).resolves.toBe('home-token');
     await expect(readFile(legacyHomeCredentialPath, 'utf8')).resolves.toBe('legacy-home-token');
@@ -301,8 +273,6 @@ describe('CLI Account Service session owner', () => {
       timeoutMs: 30_000,
       acquireCredential: async () => await acquired.promise,
     });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
-
     await owner.clear();
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
     acquired.resolve({ token: 'late-after-clear' });
@@ -318,28 +288,28 @@ describe('CLI Account Service session owner', () => {
     const owner = createCliAccountServiceSessionOwner({ happyHomeDir });
     const selected = service();
     const acquired = deferred<Readonly<{ token: string }>>();
+    const controller = new AbortController();
     await owner.selectService(selected);
 
     const attempt = owner.authenticate({
       service: selected,
       timeoutMs: 30_000,
+      signal: controller.signal,
       acquireCredential: async () => await acquired.promise,
     });
-    await expect(owner.hasPendingAuthentication()).resolves.toBe(true);
     const rawWhilePending = await readFile(resolveCliAccountServiceSessionRecordPath(happyHomeDir), 'utf8');
     const storedWhilePending = JSON.parse(rawWhilePending) as Record<string, unknown>;
     expect(storedWhilePending).toMatchObject({
       v: 1,
       restrictedCredential: null,
-      selectedService: {
-        advertisedMethods: { oauthProviderIds: selected.advertisedMethods.oauthProviderIds },
-      },
+      selectedService: selectionAuthority(selected),
     });
+    expect(storedWhilePending.selectedService).not.toHaveProperty('advertisedMethods');
     expect(storedWhilePending).not.toHaveProperty('pendingAuthentication');
     expect(storedWhilePending).not.toHaveProperty('continuation');
     expect(storedWhilePending).not.toHaveProperty('credential');
 
-    await owner.cancelPendingAuthentication();
+    controller.abort();
     await expect(attempt).resolves.toEqual({ kind: 'cancelled' });
   });
 
@@ -355,6 +325,21 @@ describe('CLI Account Service session owner', () => {
     await expect(owner.readSelection()).rejects.toMatchObject({ code: 'account_service_storage_corrupt' });
     await expect(owner.selectService(selected)).rejects.toMatchObject({ code: 'account_service_storage_corrupt' });
     await expect(readFile(recordPath, 'utf8')).resolves.toBe(corrupt);
+  });
+
+  it('rejects the unreleased development selection shape instead of retaining a compatibility shim', async () => {
+    const happyHomeDir = await createHome();
+    const owner = createCliAccountServiceSessionOwner({ happyHomeDir });
+    const selected = service();
+    await owner.selectService(selected);
+    const recordPath = resolveCliAccountServiceSessionRecordPath(happyHomeDir);
+    await writeFile(recordPath, JSON.stringify({
+      v: 1,
+      selectedService: selected,
+      restrictedCredential: null,
+    }), { mode: 0o600 });
+
+    await expect(owner.readSelection()).rejects.toMatchObject({ code: 'account_service_storage_corrupt' });
   });
 
   it.runIf(posixOnly)('fails closed on a symbolic-link record', async () => {

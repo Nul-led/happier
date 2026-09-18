@@ -10,6 +10,9 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { SessionHandoffLocalMetadataSource } from '@/session/handoff/metadata/runtimeLocalSessionHandoffMetadata';
 import { listExecutionRunMarkers } from '@/daemon/executionRunRegistry';
+import { listExecutionRunMarkersForRehydration } from '@/daemon/executionRunRegistry';
+import { resolveDaemonExecutionRunBrokerAuthority } from '@/daemon/executionRunBrokerAuthority';
+import { isPidPresent } from '@happier-dev/cli-common/process';
 import { listProcessSnapshot } from '@/daemon/processSnapshotCache';
 import {
   StopSessionResultSchema,
@@ -19,6 +22,11 @@ import type {
   DaemonExecutionRunEntry,
   DaemonExecutionRunProcessInfo,
   SpawnSessionNonceResolution,
+} from '@happier-dev/protocol';
+import {
+  DaemonExecutionRunBrokerAuthorityRequestV1Schema,
+  DaemonExecutionRunBrokerAuthorityResponseV1Schema,
+  StructuredQuestionAnswersV1Schema,
 } from '@happier-dev/protocol';
 
 import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
@@ -122,6 +130,9 @@ import type { MachineSessionServerStartRpcRegistrationOptions } from '@/rpc/hand
 import { registerApprovalRpcHandlers } from '@/rpc/handlers/approvals';
 import { registerCapabilitiesHandlers } from '@/rpc/handlers/capabilities';
 import { registerExecutionRunHandlers } from '@/rpc/handlers/executionRuns';
+import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
+import type { ExecutionRunHostBridge } from '@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import { registerSessionPermissionRpcHandlers } from '@/rpc/handlers/sessionPermissions';
 import { registerSessionLifecycleRpcHandlers } from '@/rpc/handlers/sessionLifecycle';
 import { MACHINE_SESSION_STOP_RPC_SCOPES } from '@/rpc/handlers/actionSpecRpcRegistration';
@@ -137,7 +148,7 @@ import type {
   AccountPetCreateRequestV1,
   AccountPetCreateResponseV1,
   ConnectedAccountServiceKey,
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2,
   ExternalSessionOperationSocketCommandV1,
   ExternalSessionOperationSocketResponseV1,
   ExternalSessionTranscriptInvalidationV1,
@@ -145,6 +156,7 @@ import type {
   MachineTransferSendEnvelope,
   TransferEndpointCandidate,
   TransferRelayV2SendEnvelope,
+  SessionConnectedServiceAuthSwitchRpcParams,
 } from '@happier-dev/protocol';
 import {
   RestartAllSessionRunnersRequestV1Schema,
@@ -188,18 +200,15 @@ import {
   registerExternalActionRpcHandler,
   type ExternalActionRpcRegistrationOptions,
 } from '@/rpc/handlers/externalAction';
+import { registerActionSpecRpcHandlers } from '@/rpc/handlers/registerActionSpecRpcHandlers';
+import { WORKFLOW_ACTION_IDS_V1 } from '@happier-dev/protocol/workflows/actionsV1';
 
 const transferRelayV2DownloadResponderCleanupByManager = new WeakMap<RpcHandlerManager, () => void>();
 const MACHINE_RPC_HANDLER_OWNER = 'machine-rpc-surface';
 
-function parseSessionConnectedServiceAuthSwitchRpcParams(raw: unknown): Readonly<{
-  sessionId: string;
-  agentId: string;
-  bindings: ConnectedServiceBindingsV1;
-  rematerializeServiceId?: ConnectedAccountServiceKey;
-  expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
-  accountSettingsVersionHint?: number;
-}> | null {
+function parseSessionConnectedServiceAuthSwitchRpcParams(
+  raw: unknown,
+): SessionConnectedServiceAuthSwitchRpcParams | null {
   const parsed = SessionConnectedServiceAuthSwitchRpcParamsSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
@@ -230,10 +239,6 @@ export type MachineRpcHandlers = {
   stopSession: (sessionId: string) => Promise<MachineStopSessionHandlerResult>;
   isSessionActive?: (sessionId: string) => Promise<boolean>;
   loadLocalSessionMetadata?: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
-  savePreparedTargetLocalMetadata?: (input: Readonly<{
-    remoteSessionId: string;
-    exportMetadataOverlay: Record<string, unknown>;
-  }>) => Promise<void> | void;
   requestShutdown: () => void;
   memory?: MemoryWorkerHandle;
   daemonServerWorkScheduler?: Pick<DaemonServerWorkScheduler, 'getSnapshot'>;
@@ -268,6 +273,7 @@ export type MachineRpcHandlers = {
       endpointCandidates: readonly TransferEndpointCandidate[];
       expiresAt: number;
     }>>;
+    releaseExportSession?: (transferId: string) => Promise<void> | void;
   }>;
 };
 
@@ -316,6 +322,7 @@ export type MachineRpcHandlerDeps = Readonly<{
   transientMediaReadAllowance?: TransientSessionMediaReadAllowance;
   extraTransferRelayV2DownloadOwners?: readonly TransferRelayV2DownloadSessionOwner[];
   emitExternalSessionTranscriptUpdate?: (payload: ExternalSessionTranscriptInvalidationV1) => void | Promise<void>;
+  emitExternalSessionSourceUnavailableOccurrence?: (payload: import('@happier-dev/protocol').ExternalSessionSourceUnavailableOccurrenceV1) => void | Promise<void>;
   deviceLocalSecretStorage?: DeviceLocalSecretStorage;
   executeExternalSessionHistoricalImportCommand?: (
     command: ExternalSessionOperationSocketCommandV1,
@@ -335,6 +342,20 @@ export type MachineRpcHandlerDeps = Readonly<{
   cancelConnectedServiceRuntimeAuthRecovery?: CancelConnectedServiceRuntimeAuthRecovery;
   retryTemporaryThrottleNow?: RetryTemporaryThrottleNow;
   currentMachineId?: string;
+  executionRunRuntimeAccountId?: string;
+  /** Daemon-owned exact Team binding opener for detached explicit Runs. */
+  prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
+  /** Routes marker-located requests into the exact live Session runtime owner. */
+  resolveExecutionRunLiveBrokerAuthority?: (
+    input: Readonly<{
+      sessionId: string;
+      executionRunId: string;
+      expectedIntent?: import('@happier-dev/protocol').ExecutionRunIntent;
+      expectedOccurrenceId: string | null;
+    }>,
+  ) => Promise<import('@happier-dev/protocol').SessionExecutionRunBrokerAuthorityResponseV1>;
+  /** Exact authenticated Account policy shared with detached execution-run Actions. */
+  actionsSettingsProvider?: RuntimeActionSettingsProvider;
   externalSessionStatusDemandChannel?: ExternalSessionStatusDemandChannel;
   subscribeSessionArchivedStateChanges?: (
     listener: (
@@ -414,6 +435,9 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
   registerMachineWorkspaceSyncRpcHandlers({
     rpcHandlerManager,
     ...(params.deps?.workspaceSync ? { service: params.deps.workspaceSync } : {}),
+    ...(params.deps?.actionOperations
+      ? { observeExecution: params.deps.actionOperations.observeExecution }
+      : {}),
   });
 
   const sessionRpcRegistration = registerMachineSessionRpcHandlers({
@@ -421,8 +445,20 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     handlers,
     deps: params.deps,
   });
-  if (params.deps?.externalAction) {
-    registerExternalActionRpcHandler(rpcHandlerManager, params.deps.externalAction);
+  const externalAction = params.deps?.externalAction;
+  if (externalAction) {
+    registerExternalActionRpcHandler(rpcHandlerManager, externalAction);
+    registerActionSpecRpcHandlers({
+      rpcHandlerManager,
+      actionIds: WORKFLOW_ACTION_IDS_V1,
+      actionExecutor: {
+        execute: async (actionId, input, context) => await externalAction.executor.execute(
+          actionId as Parameters<typeof externalAction.executor.execute>[0],
+          input,
+          context,
+        ),
+      },
+    });
   }
   registerMachineSessionGoalRpcHandlers({
     rpcHandlerManager,
@@ -447,15 +483,51 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
       ? { createApiClient: params.deps.createCapabilitiesApiClient }
       : {}),
   });
+  let detachedExecutionRunManager: ExecutionRunHostBridge | null = null;
   registerExecutionRunHandlers(rpcHandlerManager, {
     sessionId: null,
+    serverId: configuration.activeServerId,
+    ...(params.deps?.executionRunRuntimeAccountId
+      ? { runtimeAccountId: params.deps.executionRunRuntimeAccountId }
+      : {}),
     cwd: params.deps?.workingDirectory ?? process.cwd(),
     ...(params.deps?.currentMachineId ? { machineId: params.deps.currentMachineId } : {}),
     ...(params.deps?.getServerFeaturesSnapshot
       ? { getServerFeaturesSnapshot: params.deps.getServerFeaturesSnapshot }
       : {}),
+    ...(params.deps?.actionsSettingsProvider
+      ? { actionsSettingsProvider: params.deps.actionsSettingsProvider }
+      : {}),
+    ...(params.deps?.prepareRunTeamCredentialProviderBinding
+      ? { prepareRunTeamCredentialProviderBinding: params.deps.prepareRunTeamCredentialProviderBinding }
+      : {}),
     parentProvider: 'daemon.executionRuns',
     sendAcp: async () => {},
+    onManagerCreated: (manager) => {
+      detachedExecutionRunManager = manager;
+    },
+  });
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND, async (raw: unknown) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid params' };
+    }
+    const input = raw as Record<string, unknown>;
+    const runId = typeof input.runId === 'string' ? input.runId.trim() : '';
+    const requestId = typeof input.requestId === 'string' ? input.requestId.trim() : '';
+    const booleanDecision = typeof input.approved === 'boolean' && input.answers === undefined;
+    const structuredAnswer = input.approved === undefined
+      ? StructuredQuestionAnswersV1Schema.safeParse(input.answers)
+      : null;
+    if (!runId || !requestId || (!booleanDecision && !structuredAnswer?.success)) {
+      return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid params' };
+    }
+    if (!detachedExecutionRunManager) {
+      return { ok: false, errorCode: 'execution_run_target_unavailable', error: 'Execution-run target unavailable' };
+    }
+    return await detachedExecutionRunManager.completePermissionRequest(runId, {
+      requestId,
+      ...(structuredAnswer?.success ? { answers: structuredAnswer.data } : { approved: input.approved as boolean }),
+    });
   });
   registerSessionPermissionRpcHandlers({ rpcHandlerManager });
   registerSubagentRpcHandlers({ rpcHandlerManager });
@@ -604,6 +676,7 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
       normalizeMachineStopSessionResult(await stopSession(sessionId)).status === 'stopped'
     ),
     emitExternalSessionTranscriptUpdate: params.deps?.emitExternalSessionTranscriptUpdate,
+    emitExternalSessionSourceUnavailableOccurrence: params.deps?.emitExternalSessionSourceUnavailableOccurrence,
     ...(params.deps?.deviceLocalSecretStorage
       ? { deviceLocalSecretStorage: params.deps.deviceLocalSecretStorage }
       : {}),
@@ -719,6 +792,7 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     registerMachineDirectTransferExportRpcHandlers({
       rpcHandlerManager,
       prepareExportSession: handlers.directTransferExport.prepareExportSession,
+      releaseExportSession: handlers.directTransferExport.releaseExportSession,
     });
   }
   registerMachineSessionHandoffRpcHandlers({
@@ -735,7 +809,6 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
         : 'failed';
     },
     ...(handlers.loadLocalSessionMetadata ? { loadLocalSessionMetadata: handlers.loadLocalSessionMetadata } : {}),
-    ...(handlers.savePreparedTargetLocalMetadata ? { savePreparedTargetLocalMetadata: handlers.savePreparedTargetLocalMetadata } : {}),
     ...(handlers.machineTransferChannel ? { machineTransferChannel: handlers.machineTransferChannel } : {}),
     ...(handlers.directPeerTransfer ? { directPeerTransfer: handlers.directPeerTransfer } : {}),
     ...(params.deps?.actionOperations
@@ -775,6 +848,51 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
 
     return { runs };
   });
+
+  rpcHandlerManager.registerHandler(
+    RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE,
+    async (raw: unknown) => {
+      const request = DaemonExecutionRunBrokerAuthorityRequestV1Schema.parse(raw);
+      const snapshot = params.deps?.getServerFeaturesSnapshot?.();
+      const serverIdentityId = snapshot?.status === 'ready'
+        ? snapshot.features.capabilities.serverIdentity.serverIdentityId
+        : null;
+      const result = await resolveDaemonExecutionRunBrokerAuthority(request, {
+        currentIdentity: serverIdentityId && params.deps?.executionRunRuntimeAccountId && params.deps.currentMachineId
+          ? {
+              serverIdentityId,
+              accountId: params.deps.executionRunRuntimeAccountId,
+              machineId: params.deps.currentMachineId,
+            }
+          : null,
+        listMarkers: listExecutionRunMarkersForRehydration,
+        isPidAlive: isPidPresent,
+        resolveLiveAuthority: async (input) => {
+          if (input.sessionId === null) {
+            return detachedExecutionRunManager?.resolveLiveBrokerAuthority({
+              v: 1,
+              executionRunId: input.executionRunId,
+              ...(input.expectedIntent !== undefined ? { expectedIntent: input.expectedIntent } : {}),
+              expectedOccurrenceId: input.expectedOccurrenceId,
+              ...(input.expectedDirectMaterialUse
+                ? { expectedDirectMaterialUse: input.expectedDirectMaterialUse }
+                : {}),
+            }) ?? { status: 'not_current', reason: 'runtime_unavailable' };
+          }
+          if (!params.deps?.resolveExecutionRunLiveBrokerAuthority) {
+            return { status: 'not_current', reason: 'runtime_unavailable' };
+          }
+          return await params.deps.resolveExecutionRunLiveBrokerAuthority({
+            sessionId: input.sessionId,
+            executionRunId: input.executionRunId,
+            ...(input.expectedIntent !== undefined ? { expectedIntent: input.expectedIntent } : {}),
+            expectedOccurrenceId: input.expectedOccurrenceId,
+          });
+        },
+      });
+      return DaemonExecutionRunBrokerAuthorityResponseV1Schema.parse(result);
+    },
+  );
 
   registerSessionLifecycleRpcHandlers({
     rpcHandlerManager,
@@ -822,11 +940,14 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     dispose: async () => {
       const cleanup = transferRelayV2ResponderCleanup;
       transferRelayV2ResponderCleanup = null;
+      const executionRunManager = detachedExecutionRunManager;
+      detachedExecutionRunManager = null;
       cleanup?.();
       if (cleanup && transferRelayV2DownloadResponderCleanupByManager.get(rpcHandlerManager) === cleanup) {
         transferRelayV2DownloadResponderCleanupByManager.delete(rpcHandlerManager);
       }
       await Promise.all([
+        ...(executionRunManager ? [executionRunManager.dispose()] : []),
         Promise.resolve(terminalRegistration.dispose()),
         Promise.resolve(externalSessionsRegistration.dispose()),
         promptAssetTransfers.dispose(),

@@ -114,11 +114,15 @@ type Invocation = Readonly<{
 
 function normalizeActionCallsForParity(actionCalls: readonly unknown[][]): unknown[][] {
   return actionCalls.map((call) => call.map((value, index) => {
-    if (index !== 2 || !value || typeof value !== 'object' || !('signal' in value)) return value;
+    if (index !== 2 || !value || typeof value !== 'object') return value;
     const context = value as Record<string, unknown>;
-    // Each equivalent list invocation owns a fresh deadline signal. Its
-    // identity is deliberately not part of the projected command contract.
-    return { ...context, signal: '<abort-signal>' };
+    // Each equivalent invocation owns fresh transport/retry identities. Their
+    // values are deliberately not part of the projected command contract.
+    return {
+      ...context,
+      ...('actionRequestId' in context ? { actionRequestId: '<action-request-id>' } : {}),
+      ...('signal' in context ? { signal: '<abort-signal>' } : {}),
+    };
   }));
 }
 
@@ -294,8 +298,9 @@ describe('first-class session command parity', () => {
       nestedPath: ['list'],
       args: ['--definitely-invalid'],
     };
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const previousExitCode = process.exitCode;
     try {
+      process.exitCode = undefined;
       const nestedOutput = captureConsoleText();
       let nestedText: string;
       try {
@@ -308,9 +313,11 @@ describe('first-class session command parity', () => {
       } finally {
         nestedOutput.restore();
       }
+      const nestedExitCode = process.exitCode;
 
       const command = FIRST_CLASS_SESSION_COMMANDS.find((entry) => entry.command === parityCase.command);
       expect(command).toBeDefined();
+      process.exitCode = undefined;
       const firstClassOutput = captureConsoleText();
       let firstClassText: string;
       try {
@@ -323,16 +330,17 @@ describe('first-class session command parity', () => {
       } finally {
         firstClassOutput.restore();
       }
+      const firstClassExitCode = process.exitCode;
 
-      expect(nestedText).toBe(firstClassText);
+      expect(nestedText).toContain('happier session list [options]');
+      expect(firstClassText).toContain('happier list [options]');
       expect(nestedText).toContain('Unknown option: --definitely-invalid');
-      expect(nestedText).toContain('Usage: happier session list');
-      expect(exitSpy).toHaveBeenCalledTimes(2);
-      expect(exitSpy).toHaveBeenNthCalledWith(1, 1);
-      expect(exitSpy).toHaveBeenNthCalledWith(2, 1);
+      expect(firstClassText).toContain('Unknown option: --definitely-invalid');
+      expect(nestedExitCode).toBe(1);
+      expect(firstClassExitCode).toBe(1);
       expect(readStoredCredentials).not.toHaveBeenCalled();
     } finally {
-      exitSpy.mockRestore();
+      process.exitCode = previousExitCode;
     }
   });
 
@@ -356,9 +364,6 @@ describe('first-class session command parity', () => {
           code: 'invalid_arguments',
           message: expect.stringContaining('Unknown option: --definitely-invalid'),
         },
-      });
-      expect(output.json()).toMatchObject({
-        error: { message: expect.stringContaining('Usage: happier session list') },
       });
       expect(process.exitCode).toBe(1);
       expect(readStoredCredentials).not.toHaveBeenCalled();

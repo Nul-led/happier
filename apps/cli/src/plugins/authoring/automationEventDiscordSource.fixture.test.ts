@@ -74,7 +74,7 @@ function createUnrelatedActionExecutorDeps(): ActionExecutorDeps {
     executionRunStart: empty,
     executionRunList: empty,
     executionRunGet: empty,
-    executionRunSend: empty,
+    detachedExecutionRunSend: empty,
     executionRunStop: empty,
     executionRunAction: empty,
     executionRunWait: empty,

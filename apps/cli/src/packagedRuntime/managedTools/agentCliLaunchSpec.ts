@@ -54,6 +54,23 @@ export function resolveAgentCliLaunchSpecForRuntime(
     currentExecPath: process.execPath,
   });
   if (!resolved) return null;
+  return buildAgentCliLaunchSpecFromResolution(resolved, { processEnv });
+}
+
+/**
+ * Builds the launch spec for one already-admitted CLI resolution.
+ *
+ * A composition that resolved its executable under a request-scoped policy —
+ * the temporary-computer Runner's `managed_only` preparation — launches through
+ * this entry so the admitted command survives unchanged. Resolving again at
+ * launch would let an endpoint override or system install substitute itself
+ * between readiness and launch.
+ */
+export function buildAgentCliLaunchSpecFromResolution(
+  resolved: AgentCliCommandResolution,
+  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+): AgentCliLaunchSpec | null {
+  const processEnv = opts.processEnv ?? process.env;
 
   if (process.platform === 'win32' && isWindowsShellShimPath(resolved.command)) {
     const runnerPath = resolveCliRuntimeAssetPath(

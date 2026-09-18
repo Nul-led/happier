@@ -167,16 +167,215 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it('bounds a shutdown command that never settles from the moment it is dispatched', async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async (input: { t: string }) => {
+          if (input.t === 'shutdown') {
+            events.push('shutdown');
+            return await new Promise<never>(() => {});
+          }
+          return [];
+        },
+        close: async () => { events.push('broker-close'); },
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => await new Promise<never>(() => {}),
+        stop: async () => { events.push('child-stop'); },
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 25,
+    });
+
+    try {
+      await lifecycle.start();
+      let outcome = 'pending';
+      void lifecycle.stop().then(
+        () => { outcome = 'stopped'; },
+        () => { outcome = 'failed'; },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(outcome).toBe('stopped');
+      expect(events).toEqual(['shutdown', 'broker-close', 'child-stop']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the broker alive while the sidecar exits naturally during shutdown grace', async () => {
+    let terminate!: () => void;
+    const termination = new Promise<void>((resolve) => { terminate = resolve; });
+    const command = vi.fn(async () => []);
+    const close = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command,
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => { await termination; return { type: 'exited' as const, code: 0 }; },
+        stop,
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 1_000,
+    });
+
+    await lifecycle.start();
+    const stopping = lifecycle.stop();
+    await vi.waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ t: 'shutdown' })));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(close).not.toHaveBeenCalled();
+    terminate();
+    await expect(stopping).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('closes broker streams before force-stopping the child when shutdown grace expires', async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async (input: { t: string }) => {
+          if (input.t === 'shutdown') events.push('shutdown');
+          return [];
+        },
+        close: async () => { events.push('broker-close'); },
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => await new Promise<never>(() => {}),
+        stop: async () => { events.push('child-stop'); },
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 25,
+    });
+
+    try {
+      await lifecycle.start();
+      const stopping = lifecycle.stop();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(events).toEqual(['shutdown']);
+
+      await vi.advanceTimersByTimeAsync(25);
+      await stopping;
+      expect(events).toEqual(['shutdown', 'broker-close', 'child-stop']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports every shutdown cleanup failure and retains broker and process custody for retry', async () => {
+    const shutdownFailure = new Error('shutdown command failed');
+    const brokerFailure = new Error('broker close failed');
+    const processFailure = new Error('process stop failed');
+    let shutdownAttempts = 0;
+    const command = vi.fn(async (input: { t: string }) => {
+      if (input.t !== 'shutdown') return [];
+      shutdownAttempts += 1;
+      if (shutdownAttempts === 1) throw shutdownFailure;
+      return [];
+    });
+    const close = vi.fn()
+      .mockRejectedValueOnce(brokerFailure)
+      .mockResolvedValueOnce(undefined);
+    const stop = vi.fn()
+      .mockRejectedValueOnce(processFailure)
+      .mockResolvedValueOnce(undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command,
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => await new Promise<never>(() => {}),
+        stop,
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 0,
+    });
+
+    await lifecycle.start();
+    const failure = await lifecycle.stop().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      shutdownFailure,
+      brokerFailure,
+      processFailure,
+    ]);
+
+    await expect(lifecycle.stop()).resolves.toBeUndefined();
+    expect(command.mock.calls.filter(([input]) => input.t === 'shutdown')).toHaveLength(2);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
+
   it('returns a typed engine_unavailable error when artifact resolution fails', async () => {
+    const onReadinessChanged = vi.fn();
     const lifecycle = new WorkspaceSyncSidecarLifecycle({
       resolveRuntime: vi.fn(async () => { throw new Error('missing artifact'); }),
       createBroker: vi.fn(), spawn: vi.fn(), ensurePrivateDirectory: vi.fn(),
       openExternalStream: vi.fn(),
       randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
       onRestartReady: async () => undefined,
+      onReadinessChanged,
       shutdownGraceMs: 0,
     });
     await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+    expect(onReadinessChanged.mock.calls.map(([state]) => state)).toEqual([
+      { state: 'starting' },
+      { state: 'unavailable', errorCode: 'engine_unavailable' },
+    ]);
   });
 
   it('fails startup when the spawned sidecar exits before authenticating', async () => {
@@ -412,6 +611,98 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('retries crashed broker cleanup before publishing a replacement broker', async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const exits: Array<(event: { type: 'exited'; code: number }) => void> = [];
+    const events: string[] = [];
+    let oldCloseAttempts = 0;
+    const createBroker = vi.fn(async () => {
+      const brokerNumber = createBroker.mock.calls.length;
+      events.push(`broker-create:${brokerNumber}`);
+      return {
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async () => [],
+        close: async () => {
+          if (brokerNumber !== 1) return;
+          oldCloseAttempts += 1;
+          events.push(`old-close:${oldCloseAttempts}`);
+          if (oldCloseAttempts === 1) throw new Error('close failed');
+        },
+      };
+    });
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({ managerPath: '/verified/manager', agentPath: '/verified/agent', dataDir: '/private/data', brokerDir: '/private/broker', manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' } })),
+      createBroker,
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 40 + exits.length,
+        waitForTermination: async () => await new Promise<{ type: 'exited'; code: number }>((resolve) => exits.push(resolve)),
+        stop: async () => undefined,
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: vi.fn(async () => undefined), shutdownGraceMs: 0,
+    });
+    try {
+      await lifecycle.start();
+      exits[0]?.({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(events).toEqual([
+        'broker-create:1',
+        'old-close:1',
+        'old-close:2',
+        'broker-create:2',
+      ]);
+      await lifecycle.stop();
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reset the crash-loop budget merely because each replacement reaches readiness', async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const exits: Array<(event: { type: 'exited'; code: number }) => void> = [];
+    const spawn = vi.fn<SpawnWorkspaceSyncSidecar>(async () => {
+      let terminate!: (event: { type: 'exited'; code: number }) => void;
+      const termination = new Promise<{ type: 'exited'; code: number }>((resolve) => { terminate = resolve; });
+      exits.push(terminate);
+      return {
+        pid: 40 + exits.length,
+        waitForTermination: async () => await termination,
+        stop: async () => terminate({ type: 'exited', code: 0 }),
+      };
+    });
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({ managerPath: '/verified/manager', agentPath: '/verified/agent', dataDir: '/private/data', brokerDir: '/private/broker', manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' } })),
+      createBroker: vi.fn(async () => ({ bootstrapDescriptor: new Uint8Array([1]), waitForReady: async () => undefined, command: async () => [], close: async () => undefined })),
+      openExternalStream: vi.fn(), spawn, ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 0,
+    });
+
+    try {
+      await lifecycle.start();
+      for (const delayMs of [250, 500, 1_000, 2_000, 4_000]) {
+        exits.at(-1)?.({ type: 'exited', code: 1 });
+        await vi.advanceTimersByTimeAsync(delayMs);
+      }
+      expect(spawn).toHaveBeenCalledTimes(6);
+
+      exits.at(-1)?.({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(spawn).toHaveBeenCalledTimes(6);
+    } finally {
+      await lifecycle.stop();
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('stops and closes a replacement sidecar when restart reconciliation fails', async () => {
     vi.useFakeTimers();
     const random = vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -463,6 +754,68 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       expect(stops[1]).toHaveBeenCalledTimes(1);
       expect(brokerCloses[1]).toHaveBeenCalledTimes(1);
     } finally {
+      await lifecycle.stop();
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains failed replacement cleanup custody and retries it before spawning again', async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const exits: Array<(event: { type: 'exited'; code: number }) => void> = [];
+    const stops: Array<ReturnType<typeof vi.fn>> = [];
+    const cleanupFailure = new Error('replacement cleanup failed');
+    let releaseRetainedCleanup!: () => void;
+    const retainedCleanup = new Promise<void>((resolve) => { releaseRetainedCleanup = resolve; });
+    let markThirdSpawned!: () => void;
+    const thirdSpawned = new Promise<void>((resolve) => { markThirdSpawned = resolve; });
+    let replacementStopAttempts = 0;
+    const spawn = vi.fn<SpawnWorkspaceSyncSidecar>(async () => {
+      let terminate!: (event: { type: 'exited'; code: number }) => void;
+      const termination = new Promise<{ type: 'exited'; code: number }>((resolve) => { terminate = resolve; });
+      exits.push(terminate);
+      const processNumber = exits.length;
+      if (processNumber === 3) markThirdSpawned();
+      const stop = vi.fn(async () => {
+        if (processNumber === 2) {
+          replacementStopAttempts += 1;
+          if (replacementStopAttempts === 1) throw cleanupFailure;
+          await retainedCleanup;
+        }
+        terminate({ type: 'exited', code: 0 });
+      });
+      stops.push(stop);
+      return { pid: 40 + processNumber, waitForTermination: async () => await termination, stop };
+    });
+    const onRestartReady = vi.fn(async () => undefined);
+    onRestartReady.mockRejectedValueOnce(new Error('settings reconciliation failed'));
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({ managerPath: '/verified/manager', agentPath: '/verified/agent', dataDir: '/private/data', brokerDir: '/private/broker', manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' } })),
+      createBroker: vi.fn(async () => ({ bootstrapDescriptor: new Uint8Array([1]), waitForReady: async () => undefined, command: async () => [], close: async () => undefined })),
+      openExternalStream: vi.fn(), spawn, ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady,
+      shutdownGraceMs: 0,
+    });
+
+    try {
+      await lifecycle.start();
+      exits[0]?.({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(stops[1]).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stops[1]).toHaveBeenCalledTimes(2);
+      expect(spawn).toHaveBeenCalledTimes(2);
+
+      releaseRetainedCleanup();
+      await thirdSpawned;
+      expect(spawn).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseRetainedCleanup();
       await lifecycle.stop();
       random.mockRestore();
       vi.useRealTimers();

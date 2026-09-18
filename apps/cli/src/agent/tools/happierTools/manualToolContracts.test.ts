@@ -95,10 +95,26 @@ describe('normalizeExecutionRunStartToolInput', () => {
       request: expect.objectContaining({
         connectedServices: expect.objectContaining({
           bindingsByServiceId: expect.objectContaining({
-            'openai-codex': expect.objectContaining({ groupId: 'happier' }),
+            'happier.agent.codex/openai-codex': expect.objectContaining({ groupId: 'happier' }),
           }),
         }),
       }),
+    });
+  });
+
+  it('preserves the global native shorthand as an explicit connected-services opt-out', () => {
+    const result = normalizeExecutionRunStartToolInput({
+      sessionId: 'sess_mcp_1',
+      args: {
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: 'pi' },
+        connectedServices: 'native',
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: expect.objectContaining({ connectedServices: null }),
     });
   });
 

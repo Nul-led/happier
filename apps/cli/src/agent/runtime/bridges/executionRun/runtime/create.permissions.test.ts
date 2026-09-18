@@ -1,10 +1,154 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createExecutionRunPermissionHandler } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
+import {
+  createRunScopedExecutionPermissionHandler,
+  readRunScopedExecutionProviderRequestId,
+} from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
 
 const TEST_RECOVERY_BACKEND_ID = `${'recovery'}.${'backend'}`;
 
 describe('execution run permission handler', () => {
+  it.each(['auto', 'safe-yolo', 'acceptEdits'])(
+    'deterministically approves residual tool calls for the %s Auto alias within its causal ceiling',
+    async (permissionMode) => {
+      const published: string[] = [];
+      const handler = createExecutionRunPermissionHandler({
+        backendId: 'copilot',
+        permissionMode,
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'safe-yolo',
+        },
+        publishPendingRequest: ({ requestId }) => {
+          published.push(requestId);
+        },
+      });
+
+      await expect(handler.handleToolCall(`tool-${permissionMode}`, 'bash', {
+        command: 'bash -lc "echo hi"',
+      })).resolves.toEqual({ decision: 'approved_for_session' });
+      expect(published).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['default', 'default'],
+    ['read-only', 'read-only'],
+    ['plan', 'plan'],
+  ] as const)(
+    'does not let Auto bypass an admitted %s causal ceiling',
+    async (_label, admittedPermissionCeiling) => {
+      const handler = createExecutionRunPermissionHandler({
+        backendId: 'copilot',
+        permissionMode: 'auto',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling,
+        },
+      });
+
+      if (admittedPermissionCeiling === 'default') {
+        await expect(handler.handleToolCall('tool-auto-narrower', 'bash', {
+          command: 'bash -lc "echo hi"',
+        })).rejects.toMatchObject({ code: 'execution_run_interaction_unavailable' });
+        return;
+      }
+
+      await expect(handler.handleToolCall('tool-auto-narrower', 'bash', {
+        command: 'bash -lc "echo hi"',
+      })).resolves.toEqual({ decision: 'denied' });
+    },
+  );
+
+  it('fails Auto closed when supplied causal authority is malformed', async () => {
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'auto',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'not-a-mode',
+      } as never,
+    });
+
+    await expect(handler.handleToolCall('tool-auto-malformed', 'bash', {
+      command: 'bash -lc "echo hi"',
+    })).resolves.toEqual({ decision: 'denied' });
+  });
+
+  it('keeps provider ids only in response routing while host request ids and disposal are controller-occurrence-scoped', async () => {
+    const published: Array<{ requestId: string; providerRequestId: string }> = [];
+    const canceled: string[] = [];
+    const createRun = (runId: string, controllerOccurrenceId: string) => {
+      const base = createExecutionRunPermissionHandler({
+        backendId: 'copilot',
+        permissionMode: 'default',
+        publishPendingRequest: ({ requestId }) => {
+          const providerRequestId = readRunScopedExecutionProviderRequestId({
+            runId,
+            controllerOccurrenceId,
+            requestId,
+          });
+          if (!providerRequestId) throw new Error('missing provider request id');
+          published.push({ requestId, providerRequestId });
+        },
+      });
+      return createRunScopedExecutionPermissionHandler({
+        runId,
+        controllerOccurrenceId,
+        handler: base,
+        onPendingRequestAborted: ({ requestId }) => {
+          canceled.push(requestId);
+        },
+      });
+    };
+    const runA = createRun('run-shared', 'occurrence-a');
+    const runB = createRun('run-shared', 'occurrence-b');
+
+    expect(runA.respondToPermissionRequest('provider-call-1', true)).toBe(false);
+
+    const pendingA = runA.handler.handleToolCall('provider-call-1', 'bash', { command: 'echo a' });
+    const pendingB = runB.handler.handleToolCall('provider-call-1', 'bash', { command: 'echo b' });
+    expect(published).toEqual([
+      { requestId: 'execution-run:run-shared:occurrence-a:provider-call-1', providerRequestId: 'provider-call-1' },
+      { requestId: 'execution-run:run-shared:occurrence-b:provider-call-1', providerRequestId: 'provider-call-1' },
+    ]);
+
+    expect(runA.respondToPermissionRequest('provider-call-1', true)).toBe(true);
+    await expect(pendingA).resolves.toEqual({ decision: 'approved' });
+    expect(runA.respondToPermissionRequest('provider-call-1', true)).toBe(false);
+    await runA.dispose('Execution run stopped');
+    expect(canceled).toEqual([]);
+
+    await runB.dispose('Execution run stopped');
+    await expect(pendingB).resolves.toEqual({ decision: 'denied' });
+    expect(canceled).toEqual(['execution-run:run-shared:occurrence-b:provider-call-1']);
+  });
+
+  it('keeps exact cancellation retriable when durable run cleanup fails', async () => {
+    let attempts = 0;
+    const base = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest: () => undefined,
+    });
+    const run = createRunScopedExecutionPermissionHandler({
+      runId: 'run-retry',
+      controllerOccurrenceId: 'run-retry-occurrence',
+      handler: base,
+      onPendingRequestAborted: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('persistence unavailable');
+      },
+    });
+    const pending = run.handler.handleToolCall('provider-call', 'bash', { command: 'echo hi' });
+
+    await expect(run.dispose('Execution run settled')).rejects.toThrow('persistence unavailable');
+    await expect(pending).resolves.toEqual({ decision: 'denied' });
+    await expect(run.dispose('Execution run disposed')).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+  });
+
   it('does not let a broader execution-run mode exceed its admitted causal ceiling', () => {
     const handler = createExecutionRunPermissionHandler({
       backendId: 'copilot',
@@ -17,10 +161,26 @@ describe('execution run permission handler', () => {
     })).toBeNull();
   });
 
-  it('blocks write-like ACP tools for safe-yolo execution runs until a response is provided', async () => {
+  it('does not let Auto approve writes above a read-only causal ceiling', async () => {
     const handler = createExecutionRunPermissionHandler({
       backendId: 'copilot',
-      permissionMode: 'safe-yolo',
+      permissionMode: 'auto',
+      causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
+    });
+
+    await expect(handler.handleToolCall('tool-auto-ceiling', 'bash', {
+      command: 'bash -lc "echo hi"',
+    })).resolves.toEqual({ decision: 'denied' });
+  });
+
+  it('blocks write-like ACP tools for default execution runs until a response is provided', async () => {
+    const published: string[] = [];
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest: ({ requestId }) => {
+        published.push(requestId);
+      },
     });
 
     let resolved = false;
@@ -31,12 +191,134 @@ describe('execution run permission handler', () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(resolved).toBe(false);
+    expect(published).toEqual(['tool-1']);
 
-    const responder = handler as unknown as { respondToPermissionRequest?: (id: string, approved: boolean) => void };
-    expect(typeof responder.respondToPermissionRequest).toBe('function');
-    responder.respondToPermissionRequest?.('tool-1', true);
+    expect(handler.respondToPermissionRequest('tool-1', true)).toBe(true);
 
     await expect(pending).resolves.toEqual({ decision: 'approved' });
+  });
+
+  it('surfaces a durable interaction publication failure instead of waiting on an unanswerable request', async () => {
+    const persistenceError = Object.assign(new Error('workflow interaction exceeds durable content capacity'), {
+      code: 'workflow_invocation_content_too_large',
+    });
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest: async () => {
+        throw persistenceError;
+      },
+    });
+
+    await expect(handler.handleToolCall('tool-too-large', 'bash', { command: 'large command' }))
+      .rejects.toBe(persistenceError);
+  });
+
+  it('preserves the exact admitted turn id when publishing an interactive request', async () => {
+    const publishPendingRequest = vi.fn(async () => undefined);
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest,
+    });
+    const pending = handler.handleToolCall(
+      'tool-turn',
+      'bash',
+      { command: 'echo hi' },
+      { turnId: 'native-turn-b' },
+    );
+    await Promise.resolve();
+    expect(publishPendingRequest).toHaveBeenCalledWith(expect.objectContaining({ turnId: 'native-turn-b' }));
+    handler.respondToPermissionRequest('tool-turn', false);
+    await expect(pending).resolves.toEqual({ decision: 'denied' });
+  });
+
+  it('reports an unavailable interaction target instead of denying an interactive request', async () => {
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+    });
+
+    await expect(handler.handleToolCall('tool-no-target', 'bash', { command: 'echo hi' }))
+      .rejects.toMatchObject({ code: 'execution_run_interaction_unavailable' });
+  });
+
+  it.each(['deterministic', 'fail_closed'] as const)(
+    'denies without publishing when the canonical interaction mode is %s',
+    async (interactionMode) => {
+      const published: string[] = [];
+      const base = createExecutionRunPermissionHandler({
+        backendId: 'copilot',
+        permissionMode: 'default',
+        publishPendingRequest: ({ requestId }) => {
+          published.push(requestId);
+        },
+      });
+      const handler = createRunScopedExecutionPermissionHandler({
+        runId: 'run-policy',
+        controllerOccurrenceId: 'run-policy-occurrence',
+        handler: base,
+        readInteractionMode: () => interactionMode,
+      }).handler;
+
+      await expect(handler.handleToolCall('tool-no-prompt', 'bash', { command: 'echo hi' }))
+        .resolves.toEqual({ decision: 'denied' });
+      expect(published).toEqual([]);
+    },
+  );
+
+  it('reports canonical interaction_unavailable without publishing', async () => {
+    const published: string[] = [];
+    const base = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest: ({ requestId }) => {
+        published.push(requestId);
+      },
+    });
+    const handler = createRunScopedExecutionPermissionHandler({
+      runId: 'run-unavailable',
+      controllerOccurrenceId: 'run-unavailable-occurrence',
+      handler: base,
+      readInteractionMode: () => 'interaction_unavailable',
+    }).handler;
+
+    await expect(handler.handleToolCall('tool-no-target-policy', 'bash', { command: 'echo hi' }))
+      .rejects.toMatchObject({ code: 'execution_run_interaction_unavailable' });
+    expect(published).toEqual([]);
+  });
+
+  it('keeps a detached request pending until an explicit denial is delivered', async () => {
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest: () => undefined,
+    });
+    const pending = handler.handleToolCall('tool-deny', 'bash', { command: 'echo hi' });
+    expect(handler.respondToPermissionRequest('tool-deny', false)).toBe(true);
+    await expect(pending).resolves.toEqual({ decision: 'denied' });
+  });
+
+  it('rejects an unsolicited response and does not apply it to a later request reusing that id', async () => {
+    const publishPendingRequest = vi.fn();
+    const handler = createExecutionRunPermissionHandler({
+      backendId: 'copilot',
+      permissionMode: 'default',
+      publishPendingRequest,
+    });
+
+    expect(handler.respondToPermissionRequest('reused-provider-id', true)).toBe(false);
+
+    const pending = handler.handleToolCall('reused-provider-id', 'bash', { command: 'echo hi' });
+    await vi.waitFor(() => expect(publishPendingRequest).toHaveBeenCalledOnce());
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    expect(handler.respondToPermissionRequest('reused-provider-id', false)).toBe(true);
+    await expect(pending).resolves.toEqual({ decision: 'denied' });
+    expect(handler.respondToPermissionRequest('reused-provider-id', true)).toBe(false);
   });
 
   it('denies write-like ACP tools for read-only execution runs', async () => {
@@ -50,14 +332,14 @@ describe('execution run permission handler', () => {
     });
   });
 
-  it('does not let a buffered approval bypass a narrower effective mode', async () => {
+  it('does not let an unsolicited approval bypass a narrower effective mode', async () => {
     const handler = createExecutionRunPermissionHandler({
       backendId: 'copilot',
       permissionMode: 'read_only',
       causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
     });
 
-    handler.respondToPermissionRequest('tool-buffered-read-only', true);
+    expect(handler.respondToPermissionRequest('tool-buffered-read-only', true)).toBe(false);
 
     await expect(handler.handleToolCall(
       'tool-buffered-read-only',
@@ -66,13 +348,13 @@ describe('execution run permission handler', () => {
     )).resolves.toEqual({ decision: 'denied' });
   });
 
-  it('does not let a buffered approval authorize malformed causal authority', async () => {
+  it('does not let an unsolicited approval authorize malformed causal authority', async () => {
     const handler = createExecutionRunPermissionHandler({
       backendId: 'copilot',
       permissionMode: 'yolo',
     });
 
-    handler.respondToPermissionRequest('tool-buffered-malformed-authority', true);
+    expect(handler.respondToPermissionRequest('tool-buffered-malformed-authority', true)).toBe(false);
 
     await expect(handler.handleToolCall(
       'tool-buffered-malformed-authority',
@@ -87,13 +369,13 @@ describe('execution run permission handler', () => {
     )).resolves.toEqual({ decision: 'denied' });
   });
 
-  it('does not let a buffered approval authorize a missing active-turn authority', async () => {
+  it('does not let an unsolicited approval authorize a missing active-turn authority', async () => {
     const handler = createExecutionRunPermissionHandler({
       backendId: 'copilot',
       permissionMode: 'yolo',
     });
 
-    handler.respondToPermissionRequest('tool-buffered-missing-authority', true);
+    expect(handler.respondToPermissionRequest('tool-buffered-missing-authority', true)).toBe(false);
 
     await expect(handler.handleToolCall(
       'tool-buffered-missing-authority',

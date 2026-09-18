@@ -133,6 +133,20 @@ export type SessionProviderInputOutcome =
         detail?: string;
     }>);
 
+/**
+ * Whether a correlated listener can release its exact-input subscription. Ambiguous delivery and
+ * retryable pre-effect rejection may still be upgraded by later exact provider acceptance.
+ */
+export function isSessionProviderInputOutcomeTerminal(
+    outcome: SessionProviderInputOutcome,
+): outcome is Extract<
+    SessionProviderInputOutcome,
+    Readonly<{ kind: 'accepted' | 'rejected_before_effect' }>
+> {
+    return outcome.kind === 'accepted'
+        || (outcome.kind === 'rejected_before_effect' && !outcome.retryable);
+}
+
 type HostMappedExactProviderInputOutcome = RuntimeExactProviderInputOutcome extends infer Outcome
     ? Outcome extends Readonly<{ localInputId: string }>
         ? Omit<Outcome, 'localInputId'> & Readonly<{ localId: string }>
@@ -143,8 +157,9 @@ export type HostExactProviderInputOutcome =
     | RuntimeExactProviderInputOutcome
     | HostMappedExactProviderInputOutcome;
 
-export type HostLegacyProviderInputOutcome = Readonly<{
-    type: 'custody_observed' | 'provider_accepted' | 'rejected_before_write' | 'possible_write';
+/** Host-owned evidence produced before exact provider delivery is available. */
+export type HostLocalProviderInputOutcome = Readonly<{
+    type: 'custody_observed' | 'rejected_before_write' | 'possible_write';
     localId?: string;
     localIds?: readonly string[];
     localInputId?: string | null;
@@ -156,7 +171,7 @@ export type HostLegacyProviderInputOutcome = Readonly<{
 
 export type HostProviderInputOutcomeEvidence =
     | HostExactProviderInputOutcome
-    | HostLegacyProviderInputOutcome;
+    | HostLocalProviderInputOutcome;
 
 /**
  * The durable, restart-surviving answer to "did the provider durably accept this exact Pending
@@ -266,8 +281,6 @@ export function normalizeHostProviderInputOutcome(
                 duplicateRisk: outcome.duplicateRisk,
             };
         }
-        case 'provider_accepted':
-            return { kind: 'accepted', ...identity };
         case 'rejected_before_write':
             const rejectionReason = readSessionProviderInputRejectedBeforeEffectReason(outcome.reason);
             return {
@@ -291,6 +304,7 @@ export function normalizeHostProviderInputOutcome(
                 ...(outcome.reason ? { detail: outcome.reason } : {}),
             };
     }
+    return null;
 }
 
 /**
@@ -318,26 +332,33 @@ export function createSessionProviderInputOutcomeNormalizer(params: Readonly<{
         const outcome = normalizeHostProviderInputOutcome(evidence);
         if (!outcome) return;
         const target = params.getTarget();
-        if (!target.hasPendingProviderInput(outcome.localId)) return;
+        if (!target.hasPendingProviderInput(outcome.localId)) {
+            if (outcome.kind === 'accepted') {
+                // Context-only host effects, such as a committed Follow wake event, deliberately
+                // have no Pending user-input row. The exact-id registry remains the authority:
+                // an unregistered provider id is a no-op and cannot manufacture an effect.
+                params.observeAcceptedEffect?.(outcome.localId);
+            } else if (
+                outcome.kind === 'rejected_before_effect'
+                && isSessionProviderInputOutcomeTerminal(outcome)
+            ) {
+                params.discardAcceptedEffect?.(outcome.localId);
+            }
+            return;
+        }
         const key = outcomeKey(target.sessionId, outcome.localId);
         const decisiveOutcome = decisiveOutcomeBySessionAndLocalId.get(key);
         if (decisiveOutcome === 'accepted' || decisiveOutcome === 'rejected_before_effect') return;
         if (decisiveOutcome === 'effect_may_have_occurred' && outcome.kind !== 'accepted') return;
         if (outcome.kind === 'custody_observed') return;
-        if (
-            outcome.kind === 'accepted'
-            || outcome.kind === 'effect_may_have_occurred'
-        ) {
+        if (isSessionProviderInputOutcomeTerminal(outcome)) {
             decisiveOutcomeBySessionAndLocalId.set(key, outcome.kind);
-        } else if (
-            outcome.kind === 'rejected_before_effect'
-            && !isReversibleSessionProviderInputBlockReason(outcome.reason)
-        ) {
+        } else if (outcome.kind === 'effect_may_have_occurred') {
             decisiveOutcomeBySessionAndLocalId.set(key, outcome.kind);
         }
         if (
             outcome.kind === 'rejected_before_effect'
-            && !isReversibleSessionProviderInputBlockReason(outcome.reason)
+            && isSessionProviderInputOutcomeTerminal(outcome)
         ) {
             params.discardAppliedModel?.(outcome.localId);
             params.discardAcceptedEffect?.(outcome.localId);

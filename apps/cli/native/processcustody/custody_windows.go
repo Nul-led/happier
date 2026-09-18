@@ -115,6 +115,28 @@ type processInformation struct {
 	DwThreadId  uint32
 }
 
+// releaseInheritedStandardHandles closes only this custody helper's standard
+// pipe endpoints after the target has inherited its own handles. Keeping the
+// helper copies open while it waits would hide target half-close semantics:
+// upstream writers would not observe a broken stdin pipe and readers would not
+// observe stdout/stderr EOF until the helper itself exited.
+func releaseInheritedStandardHandles(si startupInfoW) error {
+	closed := make(map[uintptr]struct{}, 3)
+	for _, handle := range []uintptr{si.HStdInput, si.HStdOutput, si.HStdError} {
+		if handle == 0 || handle == invalidHandleValue {
+			continue
+		}
+		if _, alreadyClosed := closed[handle]; alreadyClosed {
+			continue
+		}
+		closed[handle] = struct{}{}
+		if result, _, callErr := procCloseHandle.Call(handle); result == 0 {
+			return fmt.Errorf("CloseHandle for inherited standard handle failed: %v", callErr)
+		}
+	}
+	return nil
+}
+
 // errnoOf extracts the raw errno from a LazyProc.Call error. A nil error is
 // Errno(0) for this purpose.
 func errnoOf(callErr error) syscall.Errno {
@@ -334,6 +356,15 @@ func runCustodyCommand(args []string) error {
 			procTerminateJobObject.Call(jobHandle, 1)
 			return fmt.Errorf("handshake write failed: %w", err)
 		}
+	}
+
+	// The target now owns its inherited stdio handles and custody establishment
+	// (when requested) is durably published. Release the helper's redundant
+	// endpoints before waiting so the target alone controls EOF/broken-pipe
+	// behavior. All establishment failures above retain stderr diagnostics.
+	if err := releaseInheritedStandardHandles(si); err != nil {
+		procTerminateJobObject.Call(jobHandle, 1)
+		return err
 	}
 
 	if result, _, callErr := procWaitForSingleObject.Call(pi.HProcess, waitInfinite); result != waitObject0 {

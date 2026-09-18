@@ -1,8 +1,11 @@
 import {
+  computeExternalActionRequestEnvelopeDigestV1,
   EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   parseExternalActionDaemonDispatchResultV1,
+  type ExternalActionDaemonDispatchRequest,
   type ExternalActionDaemonDispatchRequestV1,
 } from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
 import {
   ACTION_API_SERVER_ORIGIN,
   isSocketRpcActionApiServerOriginAuthorizationContext,
@@ -18,6 +21,36 @@ import type {
   ExternalActionExecutor,
   ResolveExternalActionTarget,
 } from '@/daemon/externalActions/executeExternalAction';
+
+const SESSION_SPAWN_PENDING_RESULT = {
+  type: 'pending',
+  retryWithSameCreationKey: true,
+  outcome: 'accepted',
+} as const;
+const installationIdentity = tweetnacl.sign.keyPair();
+
+function authorizedDispatch<T extends ExternalActionDaemonDispatchRequest>(request: T): T & {
+  executionAuthorization: NonNullable<ExternalActionDaemonDispatchRequest['executionAuthorization']>;
+} {
+  return {
+    ...request,
+    executionAuthorization: {
+      v: 1,
+      token: `authorization-${request.actionId}`,
+      binding: {
+        serverIdentityId: 'server-reserved-rpc',
+        accountId: request.principal.accountId,
+        principalId: request.principal.principalId,
+        credentialId: request.principal.credentialId,
+        machineId: request.placement.machineId,
+        actionId: request.actionId,
+        requestId: request.envelope.requestId ?? 'server-generated-request-id',
+        requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(request.envelope),
+        target: request.envelope.target ?? { kind: 'machine', machineId: request.placement.machineId },
+      },
+    },
+  };
+}
 
 function registerHandlerForTest() {
   const handlers = new Map<string, RpcHandler>();
@@ -44,7 +77,7 @@ describe('registerExternalActionRpcHandler', () => {
       { kind: 'machine', machineId: 'machine-1' }
     ));
     const execute = vi.fn<ExternalActionExecutor['execute']>(async () => (
-      { ok: true, result: { sessionId: 'session-1' } }
+      { ok: true, result: SESSION_SPAWN_PENDING_RESULT }
     ));
     const executor = { execute } satisfies ExternalActionExecutor;
     registerExternalActionRpcHandler(registrar, {
@@ -53,6 +86,7 @@ describe('registerExternalActionRpcHandler', () => {
       resolveAccountId: async () => 'account-1',
       resolveTarget,
       executor,
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
     });
     const handler = handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1);
     expect(handler).toBeDefined();
@@ -78,14 +112,14 @@ describe('registerExternalActionRpcHandler', () => {
         target: { kind: 'machine', machineId: 'machine-1' },
       },
     };
-    expectPreparedRelayResponse(await handler?.(request, {
+    expectPreparedRelayResponse(await handler?.(authorizedDispatch(request), {
       authorization: ACTION_API_SERVER_ORIGIN,
       signal,
     }), {
       v: 1,
       actionId: 'session.spawn_new',
       requestId: 'request-1',
-      execution: { ok: true, result: { sessionId: 'session-1' } },
+      execution: { ok: true, result: SESSION_SPAWN_PENDING_RESULT },
     });
     expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({
       actionId: 'session.spawn_new',
@@ -112,6 +146,7 @@ describe('registerExternalActionRpcHandler', () => {
       resolveAccountId: async () => 'account-1',
       resolveTarget,
       executor: { execute },
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
     });
     const signal = new AbortController().signal;
     const request: ExternalActionDaemonDispatchRequestV1 = {
@@ -136,7 +171,7 @@ describe('registerExternalActionRpcHandler', () => {
       },
     };
 
-    expectPreparedRelayResponse(await handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)?.(request, {
+    expectPreparedRelayResponse(await handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)?.(authorizedDispatch(request), {
       authorization: ACTION_API_SERVER_ORIGIN,
       signal,
     }), {
@@ -178,6 +213,7 @@ describe('registerExternalActionRpcHandler', () => {
       resolveAccountId: async () => 'account-1',
       resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
       executor,
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
     });
     const request: ExternalActionDaemonDispatchRequestV1 = {
       actionId: 'session.spawn_new',
@@ -217,9 +253,10 @@ describe('registerExternalActionRpcHandler', () => {
       resolveAccountId: async () => 'account-1',
       resolveTarget,
       executor,
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
     });
 
-    await expect(handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)?.({
+    await expect(handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)?.(authorizedDispatch({
       actionId: 'not-a-public-action',
       envelope: { v: 1, input: {} },
       principal: {
@@ -232,12 +269,54 @@ describe('registerExternalActionRpcHandler', () => {
         machineId: 'machine-1',
         target: { kind: 'machine', machineId: 'machine-1' },
       },
-    }, {
+    }), {
       authorization: ACTION_API_SERVER_ORIGIN,
       signal: new AbortController().signal,
     })).resolves.toEqual({
       kind: 'invalid_request',
       errorCode: 'invalid_action',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('never turns a protected pre-open placement rejection into a V1 Action envelope', async () => {
+    const { handlers, registrar } = registerHandlerForTest();
+    const execute = vi.fn<ExternalActionExecutor['execute']>();
+    registerExternalActionRpcHandler(registrar, {
+      machineId: 'machine-1',
+      currentServerId: 'server-reserved-rpc',
+      resolveAccountId: async () => 'account-1',
+      resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
+      executor: { execute },
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
+    });
+    const request: ExternalActionDaemonDispatchRequest = {
+      actionId: 'session.message.send',
+      envelope: {
+        v: 2,
+        requestId: 'rpc-wrong-placement',
+        target: { kind: 'machine', machineId: 'machine-2' },
+        payload: { t: 'encrypted', c: 'opaque' },
+      },
+      principal: {
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+        authority: 'account_automation',
+      },
+      placement: {
+        machineId: 'machine-2',
+        target: { kind: 'machine', machineId: 'machine-2' },
+      },
+    };
+
+    await expect(handlers.get(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)?.(request, {
+      authorization: ACTION_API_SERVER_ORIGIN,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      kind: 'invalid_request',
+      errorCode: 'target_not_local',
+      requestId: 'rpc-wrong-placement',
     });
     expect(execute).not.toHaveBeenCalled();
   });

@@ -9,8 +9,14 @@ import {
   DaemonProviderProbeResponseV1Schema,
   DaemonProviderModelProjectionRequestV1Schema,
   DaemonProviderModelProjectionResponseV1Schema,
+  DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema,
+  DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema,
   DaemonProviderModelSettingsMutationRequestV1Schema,
   DaemonProviderModelSettingsMutationResponseV1Schema,
+  DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema,
+  DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema,
+  DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema,
+  DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema,
   DaemonProviderBindingStatusRequestV1Schema,
   DaemonProviderBindingStatusResponseV1Schema,
   DaemonProviderProfileMigrationPreviewRequestV1Schema,
@@ -44,8 +50,14 @@ import type {
   DaemonProviderConnectionsDescribeResponseV1,
   DaemonProviderModelProjectionRequestV1,
   DaemonProviderModelProjectionResponseV1,
+  DaemonProviderTeamCredentialRequestPolicySupportRequestV1,
+  DaemonProviderTeamCredentialRequestPolicySupportResponseV1,
   DaemonProviderModelSettingsMutationRequestV1,
   DaemonProviderModelSettingsMutationResponseV1,
+  DaemonProviderTeamCredentialResourceTestCandidateRequestV1,
+  DaemonProviderTeamCredentialResourceTestCandidateResponseV1,
+  DaemonProviderTeamCredentialBrokerEligibilityRequestV1,
+  DaemonProviderTeamCredentialBrokerEligibilityResponseV1,
   DaemonProviderBindingStatusRequestV1,
   DaemonProviderBindingStatusResponseV1,
   DaemonProviderProfileMigrationPreviewRequestV1,
@@ -71,6 +83,17 @@ export type MachineProviderRpcServices = Readonly<{
   describeConnections(input: DaemonProviderConnectionsDescribeRequestV1): Promise<DaemonProviderConnectionsDescribeResponseV1>;
   mutateConnection(input: DaemonProviderConnectionMutationRequestV1): Promise<DaemonProviderConnectionMutationResponseV1>;
   projectModels(input: DaemonProviderModelProjectionRequestV1): Promise<DaemonProviderModelProjectionResponseV1>;
+  resolveTeamCredentialRequestPolicySupport(
+    input: DaemonProviderTeamCredentialRequestPolicySupportRequestV1,
+  ): Promise<DaemonProviderTeamCredentialRequestPolicySupportResponseV1>;
+  resolveTeamCredentialResourceTestCandidate(
+    input: DaemonProviderTeamCredentialResourceTestCandidateRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialResourceTestCandidateResponseV1>;
+  resolveTeamCredentialBrokerEligibility?(
+    input: DaemonProviderTeamCredentialBrokerEligibilityRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialBrokerEligibilityResponseV1>;
   mutateModelSettings(input: DaemonProviderModelSettingsMutationRequestV1): Promise<DaemonProviderModelSettingsMutationResponseV1>;
   resolveBindingStatus(input: DaemonProviderBindingStatusRequestV1): Promise<DaemonProviderBindingStatusResponseV1>;
   previewProfileMigration(input: DaemonProviderProfileMigrationPreviewRequestV1): Promise<DaemonProviderProfileMigrationPreviewResponseV1>;
@@ -237,6 +260,38 @@ export function registerMachineProviderRpcHandlers(input: Readonly<{
             }) }
           : await input.services.projectModels(request);
       return DaemonProviderModelProjectionResponseV1Schema.parse(result);
+    },
+  );
+  input.rpcHandlerManager.registerHandler(
+    RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_REQUEST_POLICY_SUPPORT,
+    async (raw) => {
+      const request = DaemonProviderTeamCredentialRequestPolicySupportRequestV1Schema.parse(raw);
+      const result = !input.featureGate.isEnabled('providers') || request.machineId !== input.machineId
+        ? { status: 'unavailable' as const, reason: 'source_unavailable' as const }
+        : await input.services.resolveTeamCredentialRequestPolicySupport(request);
+      return DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.parse(result);
+    },
+  );
+  input.rpcHandlerManager.registerHandler(
+    RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_RESOURCE_TEST_CANDIDATE,
+    async (raw, context) => {
+      const request = DaemonProviderTeamCredentialResourceTestCandidateRequestV1Schema.parse(raw);
+      const result = !input.featureGate.isEnabled('providers') || request.machineId !== input.machineId
+        ? { status: 'unavailable' as const, reason: 'source_unavailable' as const }
+        : await input.services.resolveTeamCredentialResourceTestCandidate(request, context?.signal);
+      return DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema.parse(result);
+    },
+  );
+  input.rpcHandlerManager.registerHandler(
+    RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY,
+    async (raw, context) => {
+      const request = DaemonProviderTeamCredentialBrokerEligibilityRequestV1Schema.parse(raw);
+      const result = !input.featureGate.isEnabled('providers') || request.machineId !== input.machineId
+        ? { status: 'unavailable' as const, reason: 'source_unavailable' as const }
+        : input.services.resolveTeamCredentialBrokerEligibility
+          ? await input.services.resolveTeamCredentialBrokerEligibility(request, context?.signal)
+          : { status: 'unavailable' as const, reason: 'source_unavailable' as const };
+      return DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.parse(result);
     },
   );
   input.rpcHandlerManager.registerHandler(

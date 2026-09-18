@@ -1,10 +1,17 @@
 import {
+  normalizeActionsSettingsV1,
   type AccountSettings,
   type ActionsSettingsV1,
 } from '@happier-dev/protocol';
 
 import { getActiveAccountSettingsSnapshot } from './accountSettings/activeAccountSettingsSnapshot';
 import { resolveActionsSettingsWithEnvironmentOverride } from './actionsSettings';
+
+/** Narrow host-reviewed policy accepted by ordinary and restricted runtime constructors. */
+export type RuntimeActionSettingsProvider = Readonly<{
+  getActionsSettings: () => ActionsSettingsV1;
+  getAccountSettings?: () => AccountSettings | null;
+}>;
 
 export type ActionSettingsProvider = Readonly<{
   getAccountSettings: () => AccountSettings | null;
@@ -21,26 +28,41 @@ function readAccountSettingsSafely(getAccountSettings?: (() => AccountSettings |
 }
 
 /**
- * Resolves one precedence order for every CLI consumer: an explicit environment
- * override, then the live Account snapshot, then the injected snapshot/defaults.
+ * Credential-scoped runtimes consume only their bound Account policy. Unscoped
+ * ordinary CLI consumers retain the explicit environment override, then the
+ * live/injected Account snapshot and defaults.
  */
 export function createActionSettingsProvider(params: Readonly<{
   accountSettings?: AccountSettings | null;
   getAccountSettings?: (() => AccountSettings | null) | null;
+  /** Credential-derived Account scope for long-lived runtime policy. */
+  scopeKey?: string | null;
 }> = {}): ActionSettingsProvider {
+  const initialSnapshot = getActiveAccountSettingsSnapshot();
+  const scopeKey = params.scopeKey ?? null;
+  let boundSettings = scopeKey && initialSnapshot?.scopeKey === scopeKey
+    ? initialSnapshot.settings
+    : params.accountSettings ?? null;
+  const getAccountSettings = (): AccountSettings | null => {
+    const current = getActiveAccountSettingsSnapshot();
+    // A different active Account cannot retarget an already constructed runtime.
+    // Unscoped snapshots cannot prove correspondence with a later publication.
+    if (scopeKey) {
+      if (current?.scopeKey === scopeKey) boundSettings = current.settings;
+      return boundSettings;
+    }
+    return readAccountSettingsSafely(params.getAccountSettings)
+      ?? current?.settings
+      ?? params.accountSettings
+      ?? null;
+  };
   return {
-    getAccountSettings: () =>
-      readAccountSettingsSafely(params.getAccountSettings)
-        ?? getActiveAccountSettingsSnapshot()?.settings
-        ?? params.accountSettings
-        ?? null,
+    getAccountSettings,
     getActionsSettings: () => {
-      const accountSettings =
-        readAccountSettingsSafely(params.getAccountSettings)
-          ?? getActiveAccountSettingsSnapshot()?.settings
-          ?? params.accountSettings
-          ?? null;
-      return resolveActionsSettingsWithEnvironmentOverride(accountSettings ?? {});
+      const accountSettings = getAccountSettings();
+      return scopeKey
+        ? normalizeActionsSettingsV1(accountSettings?.actionsSettingsV1)
+        : resolveActionsSettingsWithEnvironmentOverride(accountSettings ?? {});
     },
   };
 }

@@ -124,6 +124,38 @@ export type ConnectedAccountConfigurationConsequence = Readonly<{
     runtimeConfigurationRevision: string;
 }>;
 
+export function createConnectedAccountDaemonConfigurationOwner(params: Readonly<{
+    reloadController: Pick<PluginReloadController, 'tryAcquireRuntimeRegistry'>;
+    persistence: ConnectedAccountDaemonPersistence['configuration'];
+}>): ConnectedAccountConfigurationOwner {
+    const isPluginGenerationCurrent = async (input: Readonly<{
+        pluginId: string;
+        generation: string;
+        immutableGenerationId: string;
+    }>): Promise<boolean> => {
+        const lease = params.reloadController.tryAcquireRuntimeRegistry();
+        if (!lease) return false;
+        try {
+            if (String(lease.registry.generation) !== input.generation) return false;
+            // Currentness is a host fact the cold projection already carries; asking it
+            // must not boot the plugin whose currentness is in question.
+            const entry = lease.registry.connectedAccountContributions?.list()
+                .find((candidate) => candidate.ref.pluginId === input.pluginId);
+            if (!entry) return false;
+            return entry.immutableGenerationId === input.immutableGenerationId
+                && entry.isCurrent();
+        } catch {
+            return false;
+        } finally {
+            await lease.release();
+        }
+    };
+    return createConnectedAccountConfigurationOwner({
+        ...params.persistence,
+        isGenerationCurrent: isPluginGenerationCurrent,
+    });
+}
+
 function configurationConsequenceError(
     code: string,
     message: string,
@@ -137,6 +169,7 @@ function configurationConsequenceError(
 export function createConnectedAccountDaemonRuntime(params: Readonly<{
     reloadController: PluginReloadController;
     persistence: ConnectedAccountDaemonPersistence;
+    configurationOwner?: ConnectedAccountConfigurationOwner;
     resolvePeerOperationTransport?(input: Readonly<{
         service: PluginContributionRef;
         operation: BuiltInLegacyConnectedAccountOperation;
@@ -162,32 +195,11 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
         legacyCredentialApi?: RevisionedLegacyRevocationInput['api'];
     }>;
 }>): ConnectedAccountDaemonRuntime & Readonly<{ dispose(): void }> {
-    const isPluginGenerationCurrent = async (input: Readonly<{
-        pluginId: string;
-        generation: string;
-        immutableGenerationId: string;
-    }>): Promise<boolean> => {
-        const lease = params.reloadController.tryAcquireRuntimeRegistry();
-        if (!lease) return false;
-        try {
-            if (String(lease.registry.generation) !== input.generation) return false;
-            // Currentness is a host fact the cold projection already carries; asking it
-            // must not boot the plugin whose currentness is in question.
-            const entry = lease.registry.connectedAccountContributions?.list()
-                .find((candidate) => candidate.ref.pluginId === input.pluginId);
-            if (!entry) return false;
-            return entry.immutableGenerationId === input.immutableGenerationId
-                && entry.isCurrent();
-        } catch {
-            return false;
-        } finally {
-            await lease.release();
-        }
-    };
-    const configuration = createConnectedAccountConfigurationOwner({
-        ...params.persistence.configuration,
-        isGenerationCurrent: isPluginGenerationCurrent,
-    });
+    const configuration = params.configurationOwner
+        ?? createConnectedAccountDaemonConfigurationOwner({
+            reloadController: params.reloadController,
+            persistence: params.persistence.configuration,
+        });
     const runtime: AttemptOwnerParams['runtime'] = Object.freeze({
         async admit(input) {
             const registryLease = await params.reloadController.acquireRuntimeRegistry();

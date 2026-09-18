@@ -12,10 +12,12 @@ import {
 import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import {
   admitCurrentRunnerSessionInput,
+  closeCurrentRunnerTeamCredentialProviderBinding,
   dispatchCurrentAgentRuntimeDaemonServiceRequest,
   dispatchCurrentRunnerDaemonPluginService,
   attestCurrentRunnerAgentSessionOpen,
   isCurrentRunnerAgentRuntimeDaemonServiceAuthorityTransition,
+  openCurrentRunnerTeamCredentialProviderBinding,
   RUNNER_AGENT_RUNTIME_DAEMON_SERVICE_AUTHORITY_TRANSITION_CODE,
   resolveCurrentAgentRuntimeDaemonTurnContributions,
 } from './agentRuntimeDaemonServiceAuthorityClient';
@@ -87,6 +89,124 @@ async function createTestAuthority(input: Readonly<{
 }
 
 describe('current Agent runtime daemon service authority client', () => {
+  it('opens the exact Team credential binding through the current daemon Session authority', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-agent-team-provider-'));
+    roots.push(happyHomeDir);
+    const command = 'happier runner';
+    const runner = {
+      pid: process.pid,
+      processStartTimeMs: 1_717_171_717_000,
+      processCommandHash: hashProcessCommand(command),
+      snapshotIdentity: 'snapshot:runner-a',
+    };
+    processIdentityMock.mockResolvedValue({
+      pid: process.pid,
+      processStartTimeMs: runner.processStartTimeMs,
+      command,
+    });
+    runnerIdentityMock.mockReturnValue({ status: 'known', comparableId: runner.snapshotIdentity });
+    const authority = await createTestAuthority({ happyHomeDir, runner });
+    await publishAgentRuntimeDaemonServiceAuthority({
+      ...authority,
+      httpPort: 31_001,
+      capability: 'A'.repeat(43),
+    });
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { operation: Record<string, unknown> };
+      if (request.operation.kind === 'provider_broker.binding.close') {
+        expect(request.operation).toMatchObject({ bindingId: 'binding-run-1' });
+        return new Response(JSON.stringify({
+          ok: true,
+          result: { kind: 'provider_broker.binding.closed', status: 'closed' },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      expect(request.operation).toMatchObject({
+        kind: 'provider_broker.binding.open',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 3,
+        agentTargetKey: 'agent:acme.plugin/acme-agent',
+        modelId: 'model-1',
+      });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          kind: 'provider_broker.binding',
+          status: 'opened',
+          providerBinding: {
+            source: { kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 3 },
+            model: { id: 'model-1', name: 'Model 1' },
+            upstream: { protocol: 'openai-responses', normalizedUrl: 'http://127.0.0.1:43123/v1', credential: 'apiKey' },
+            materialization: { v: 1, kind: 'spawnEnv' },
+          },
+          environmentOverlay: [{ name: 'OPENAI_API_KEY', value: 'broker-authority', source: 'provider' }],
+          additionalRedactionValues: ['broker-authority'],
+          bindingId: 'binding-run-1',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(openCurrentRunnerTeamCredentialProviderBinding({
+      authority,
+      operation: {
+        kind: 'provider_broker.binding.open',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 3,
+        agentTargetKey: 'agent:acme.plugin/acme-agent',
+        modelId: 'model-1',
+      },
+    })).resolves.toMatchObject({
+      providerBinding: { source: { kind: 'team_resource', resourceId: 'resource-1' } },
+    });
+    await expect(closeCurrentRunnerTeamCredentialProviderBinding({
+      authority,
+      operation: { kind: 'provider_broker.binding.close', bindingId: 'binding-run-1' },
+    })).resolves.toBeUndefined();
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      error: {
+        code: 'provider_endpoint_unavailable',
+        message: 'provider_endpoint_unavailable',
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(openCurrentRunnerTeamCredentialProviderBinding({
+      authority,
+      operation: {
+        kind: 'provider_broker.binding.open',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 3,
+        agentTargetKey: 'agent:acme.plugin/acme-agent',
+        modelId: 'model-1',
+      },
+    })).rejects.toMatchObject({
+      code: 'provider_endpoint_unavailable',
+      retryable: true,
+      action: 'retry',
+      connectionId: 'resource-1',
+    });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      error: {
+        code: 'team_authentication_required',
+        message: 'team_authentication_required',
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(openCurrentRunnerTeamCredentialProviderBinding({
+      authority,
+      operation: {
+        kind: 'provider_broker.binding.open',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 3,
+        agentTargetKey: 'agent:acme.plugin/acme-agent',
+        modelId: 'model-1',
+      },
+    })).rejects.toMatchObject({
+      name: 'TeamCredentialDirectMaterialOperationError',
+      code: 'team_authentication_required',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('preserves durable Session admission truth and classifies a lost daemon response as outcome unknown', async () => {
     const happyHomeDir = await mkdtemp(
       join(tmpdir(), 'happier-agent-input-admission-'),

@@ -2,10 +2,17 @@ import {
   serializeSessionCreationCorrespondenceV1,
   serializeSessionModelSelectionV1,
   SessionCreationTagV1Schema,
+  MachinePoolSelectionOriginV1Schema,
   type BackendTargetRefV2,
+  type MachinePoolSelectionOriginV1,
   type SessionCreationCorrespondenceV1,
   type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import {
+  SessionTeamCredentialBindingIntentsV1Schema,
+  type SessionTeamCredentialBindingIntentListV1,
+} from '@happier-dev/protocol/teams';
 import {
   serializeNativeForkSourceV1,
   type NativeForkSource,
@@ -24,14 +31,20 @@ export function buildHappySessionControlArgs(opts: Readonly<{
   sessionCreationTag?: string;
   /** Immutable recipe used to reject a same-key create with different meaning. */
   sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
+  /** Informational origin written only by the fresh Session creation owner. */
+  placementOrigin?: MachinePoolSelectionOriginV1;
   /** Mutable presentation state that must reach only the fresh create envelope. */
   initialTitle?: string;
+  initialAccessFilePath?: string;
+  primaryTeamId?: string | null;
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
   existingSessionId?: string;
   backendTarget?: BackendTargetRefV2;
 }>): string[] {
   const args: string[] = [];
 
-  const resume = typeof opts.resume === 'string' ? opts.resume.trim() : '';
+  // The Agent minted this id; the runner receives the exact bytes.
+  const resume = readNonBlankOpaqueIdentifier(opts.resume);
   if (resume && opts.nativeForkSource) {
     throw new Error('Native fork source cannot be combined with provider resume');
   }
@@ -57,11 +70,30 @@ export function buildHappySessionControlArgs(opts: Readonly<{
       serializeSessionCreationCorrespondenceV1(correspondence),
     );
   }
+  if (opts.placementOrigin !== undefined) {
+    const placementOrigin = MachinePoolSelectionOriginV1Schema.parse(opts.placementOrigin);
+    args.push('--session-placement-origin-v1', JSON.stringify(placementOrigin));
+  }
   const initialTitle = typeof opts.initialTitle === 'string' ? opts.initialTitle.trim() : '';
   if (initialTitle) {
     args.push('--session-initial-title-v1', initialTitle);
   }
   const existingSessionId = typeof opts.existingSessionId === 'string' ? opts.existingSessionId.trim() : '';
+  if (
+    opts.initialAccessFilePath !== undefined
+    || opts.primaryTeamId !== undefined
+    || opts.teamCredentialBindings !== undefined
+  ) {
+    if (existingSessionId) throw new Error('Initial access and Team context require fresh Session creation');
+    if (opts.initialAccessFilePath !== undefined) args.push('--session-initial-access-file-v1', opts.initialAccessFilePath);
+    if (opts.primaryTeamId !== undefined) args.push('--session-primary-team-id-v1', JSON.stringify(opts.primaryTeamId));
+    if (opts.teamCredentialBindings !== undefined) {
+      args.push(
+        '--session-team-credential-bindings-v1',
+        JSON.stringify(SessionTeamCredentialBindingIntentsV1Schema.parse(opts.teamCredentialBindings)),
+      );
+    }
+  }
   if (existingSessionId) {
     args.push('--existing-session', existingSessionId);
   }

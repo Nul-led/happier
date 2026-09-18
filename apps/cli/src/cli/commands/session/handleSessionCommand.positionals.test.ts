@@ -37,8 +37,8 @@ describe('handleSessionCommand required positionals', () => {
   });
 
   it.each([
-    ['unknown list options', ['list', '--definitely-invalid', '--json'], 'Usage: happier session list'],
-    ['invalid list limits', ['list', '--limit', '0', '--json'], 'Invalid --limit'],
+    ['unknown list options', ['list', '--definitely-invalid', '--json'], 'Unknown option: --definitely-invalid'],
+    ['invalid list limits', ['list', '--limit', '0', '--json'], 'limit:'],
   ] as const)('rejects %s with a truthful JSON error and exit code', async (_label, argv, expectedMessage) => {
     const readCredentialsFn = vi.fn(async () => {
       throw new Error('credentials must not be read for invalid arguments');

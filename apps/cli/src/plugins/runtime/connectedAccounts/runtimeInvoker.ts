@@ -105,6 +105,11 @@ export type ConnectedAccountRuntimeEstablishedOperation =
     }>
     | Readonly<{ kind: 'status' }>
     | Readonly<{ kind: 'quota' }>
+    | Readonly<{ kind: 'recoveryCredits.read' }>
+    | Readonly<{
+        kind: 'recoveryCredits.consume';
+        request: Readonly<{ idempotencyKey: string; providerCreditId?: string }>;
+    }>
     | Readonly<{ kind: 'revoke' }>
     | Readonly<{
         kind: 'materialize';
@@ -135,7 +140,11 @@ export type ConnectedAccountRuntimeEstablishedInvocation<
 export type ConnectedAccountRuntimeEstablishedResult<
     TOperation extends ConnectedAccountRuntimeEstablishedOperation,
 > =
-    TOperation['kind'] extends 'refresh'
+    TOperation['kind'] extends 'recoveryCredits.read'
+        ? Awaited<ReturnType<NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>['read']>> | null
+        : TOperation['kind'] extends 'recoveryCredits.consume'
+            ? Awaited<ReturnType<NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>['consume']>> | null
+    : TOperation['kind'] extends 'refresh'
         ? Awaited<ReturnType<PluginConnectedAccountRuntime['refresh']>>
         : TOperation['kind'] extends 'status'
             ? Awaited<ReturnType<PluginConnectedAccountRuntime['status']>>
@@ -742,6 +751,25 @@ export function createConnectedAccountHostRuntimeInvoker(params: Readonly<{
                 let result: unknown;
                 let quotaLeafUnavailable = false;
                 switch (operation.kind) {
+                    case 'recoveryCredits.read':
+                    case 'recoveryCredits.consume': {
+                        const facet = lease.descriptor.recoveryCredits?.supported === true
+                            ? lease.runtime.recoveryCredits
+                            : undefined;
+                        quotaLeafUnavailable = !facet;
+                        result = await invokeCurrentConnectedAccountCallback(assertCurrent, async () => {
+                            if (!facet) return null;
+                            if (operation.kind === 'recoveryCredits.read') return await facet.read(context, options);
+                            if (!operation.request.idempotencyKey.trim()) throw new Error('Recovery credit idempotency key is required');
+                            return await facet.consume(Object.freeze({
+                                idempotencyKey: operation.request.idempotencyKey.trim(),
+                                ...(operation.request.providerCreditId?.trim()
+                                    ? { providerCreditId: operation.request.providerCreditId.trim() }
+                                    : {}),
+                            }), context, options);
+                        });
+                        break;
+                    }
                     case 'refresh':
                         result = await invokeCurrentConnectedAccountCallback(
                             assertCurrent,

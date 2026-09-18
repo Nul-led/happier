@@ -1,4 +1,4 @@
-import type { AcpConfigOptionOverridesV1, ConnectedServiceBindingsV1, ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, ConnectedServiceBindingsV2, ProviderBoundModelRef, SecretReferenceOverlayV1, TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 
 import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
 import type { ExecutionRunState } from './executionRunTypes';
@@ -22,8 +22,10 @@ import type { ExecutionRunState } from './executionRunTypes';
 export type ExecutionRunResumeBackendOptions = Readonly<{
   modelId?: string;
   modelSelection?: ProviderBoundModelRef;
+  teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
-  connectedServices?: ConnectedServiceBindingsV1 | null;
+  connectedServices?: ConnectedServiceBindingsV2 | null;
+  secretReferenceOverlay?: SecretReferenceOverlayV1;
   /** The run's immutable admitted start intent, rebuilt so a recreated backend is the SAME kind of backend. */
   start?: ExecutionRunBackendStartContext;
 }>;
@@ -37,15 +39,25 @@ export function resolveExecutionRunResumeBackendOptions(args: Readonly<{
   return {
     ...(launch?.modelId ? { modelId: launch.modelId } : {}),
     ...(launch?.modelSelection ? { modelSelection: launch.modelSelection } : {}),
+    ...(launch?.teamCredentialModel ? { teamCredentialModel: launch.teamCredentialModel } : {}),
     ...(launch?.sessionConfigOptionOverrides
       ? { sessionConfigOptionOverrides: launch.sessionConfigOptionOverrides }
       : {}),
     ...(launch && launch.connectedServicesSelection !== undefined
       ? { connectedServices: launch.connectedServicesSelection }
       : {}),
+    ...(launch?.secretReferenceOverlay
+      ? { secretReferenceOverlay: launch.secretReferenceOverlay }
+      : {}),
     start: {
+      ...(launch?.cwd ? { cwd: launch.cwd } : {}),
+      ...(launch?.mcpSelection ? { mcpSelection: launch.mcpSelection } : {}),
+      ...(launch?.acpSessionModeId ? { acpSessionModeId: launch.acpSessionModeId } : {}),
+      ...(launch?.runtimeDescriptorV1 ? { runtimeDescriptorV1: launch.runtimeDescriptorV1 } : {}),
       intent: run.intent,
       retentionPolicy: run.retentionPolicy,
+      runClass: run.runClass,
+      ioMode: run.ioMode,
       ...(run.profileId ? { profileId: run.profileId } : {}),
       ...(typeof run.intentInput !== 'undefined' ? { intentInput: run.intentInput } : {}),
     },

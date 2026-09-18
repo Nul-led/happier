@@ -41,7 +41,7 @@ describe('happier session run action (action executor)', () => {
       expect(execute).toHaveBeenCalledWith(
         'execution.run.action',
         { sessionId: 'sess-1', runId: 'run-1', actionId: 'action-1', input: { a: 1 } },
-        { surface: 'cli', defaultSessionId: null },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: null },
       );
 
       expect(output.json()).toEqual(expect.objectContaining({

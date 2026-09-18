@@ -27,7 +27,6 @@ function createBaseRuntimeParams(
     awaitAgentSessionOpen: vi.fn(),
     isSessionAlreadyRunning: vi.fn(),
     loadLocalSessionMetadataForHandoff: vi.fn(),
-    savePreparedTargetLocalMetadata: vi.fn(),
     beforeShutdown: vi.fn(),
     requestShutdown: vi.fn(),
     directPeerServerLifecycle: null,

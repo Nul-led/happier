@@ -2,12 +2,22 @@ import { Buffer } from 'node:buffer';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { parseAccountApiTokenBearerV1 } from '@happier-dev/protocol';
 import {
-  EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
-  projectExternalActionHttpErrorV1,
-  type ExternalActionHttpErrorCodeV1,
-  type PreparedExternalActionResponseEnvelopeV1,
+  ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1,
+  AccountApiTokenEncryptionAccessRequestV1Schema,
+  ExternalActionRequestEnvelopeSchema,
+  parseAccountApiTokenBearerV1,
+  type ExternalActionExecutionAuthorizationV1,
+  type ExternalActionRequestEnvelope,
+} from '@happier-dev/protocol';
+import type { AccountServerPatEncryptionAccessReader } from '../auth/accountServerPatEncryptionAccess';
+import {
+  EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
+  EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1,
+  projectExternalActionHttpError,
+  type ExternalActionHttpErrorCode,
+  type PreparedExternalActionResponseEnvelope,
+  readExternalActionProtectedRequestId,
 } from '@happier-dev/protocol/actions';
 
 import type { DaemonPatVerifier, VerifiedDaemonPat } from '../auth/daemonPatVerifier';
@@ -15,6 +25,7 @@ import {
   executeExternalAction,
   type ExternalActionExecutor,
   type ResolveExternalActionTarget,
+  type ResolveExternalActionEncryption,
 } from './executeExternalAction';
 
 type ExternalActionRouteParams = Readonly<{
@@ -52,16 +63,17 @@ function sendExternalActionSerializedJson(
 
 function sendExternalActionResponse(
   reply: FastifyReply,
-  prepared: PreparedExternalActionResponseEnvelopeV1,
+  prepared: PreparedExternalActionResponseEnvelope,
 ): FastifyReply {
   return sendExternalActionSerializedJson(reply, 200, prepared.body, prepared.byteLength);
 }
 
 function sendExternalActionHttpError(
   reply: FastifyReply,
-  code: ExternalActionHttpErrorCodeV1,
+  code: ExternalActionHttpErrorCode,
+  requestId?: string,
 ): FastifyReply {
-  const error = projectExternalActionHttpErrorV1(code);
+  const error = projectExternalActionHttpError(code, requestId);
   return sendExternalActionJson(reply, error.statusCode, error.payload);
 }
 
@@ -111,6 +123,7 @@ function createRequestLifetime(
 const externalActionRequestAdmission = Symbol('externalActionRequestAdmission');
 
 type ExternalActionRequestAdmission = Readonly<{
+  token: string;
   principal: VerifiedDaemonPat;
   lifetime: ReturnType<typeof createRequestLifetime>;
 }>;
@@ -144,7 +157,29 @@ export function registerDaemonExternalActionRoute(
     currentServerId: string;
     verifyPat: DaemonPatVerifier;
     executor: ExternalActionExecutor;
+    /**
+     * Retained as a source-compatible constructor seam for older embeddings.
+     * PAT-bound executors are intentionally never selected: Home-bound work
+     * requires the opaque execution authorization below.
+     */
+    resolvePatExecutor?: (input: Readonly<{
+      token: string;
+      principal: VerifiedDaemonPat;
+    }>) => ExternalActionExecutor | Promise<ExternalActionExecutor>;
+    mintExecutionAuthorization?: (input: Readonly<{
+      actionId: string;
+      envelope: ExternalActionRequestEnvelope;
+      machineId: string;
+      pat: string;
+      signal?: AbortSignal;
+    }>) => Promise<
+      | Readonly<{ ok: true; authorization: ExternalActionExecutionAuthorizationV1 }>
+      | Readonly<{ ok: false; code: 'invalid_token' | 'auth_unavailable' | 'server_unavailable' }>
+    >;
+    externalActionMachineRequestPrivateKey?: string | Uint8Array;
     resolveTarget: ResolveExternalActionTarget;
+    resolveEncryption?: ResolveExternalActionEncryption;
+    readEncryptionAccess?: AccountServerPatEncryptionAccessReader;
   }>,
 ): void {
   if (!input.currentMachineId.trim()) {
@@ -157,13 +192,32 @@ export function registerDaemonExternalActionRoute(
   // The daemon control listener does not register a global CORS hook. This
   // explicit shadow keeps public Action preflight fail-closed without adding a
   // route-local config field that this Fastify context does not support.
-  app.options('/v1/actions/:actionId', async (_request, reply) => reply.header('cache-control', 'no-store').code(404).send());
+  app.options(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, async (_request, reply) => reply.header('cache-control', 'no-store').code(404).send());
+
+  app.options(ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1, async (_request, reply) => reply.header('cache-control', 'no-store').code(404).send());
+  app.post(ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1, async (request, reply) => {
+    if (!AccountApiTokenEncryptionAccessRequestV1Schema.safeParse(request.body).success) {
+      return sendExternalActionJson(reply, 400, { error: 'invalid_request' });
+    }
+    const token = readBearerAuthorization(request.headers.authorization);
+    if (!token) return sendExternalActionJson(reply, 401, { error: 'invalid_token' });
+    const lifetime = createRequestLifetime(request, reply);
+    try {
+      const principal = await input.verifyPat(token, lifetime.signal);
+      if (!principal.ok) return sendExternalActionJson(reply, principal.code === 'invalid_token' ? 401 : 503, { error: principal.code });
+      if (!input.readEncryptionAccess) return sendExternalActionJson(reply, 409, { error: 'api_token_encryption_unavailable' });
+      const result = await input.readEncryptionAccess(token, lifetime.signal);
+      return sendExternalActionJson(reply, result.statusCode, result.body);
+    } catch {
+      return sendExternalActionJson(reply, 503, { error: 'auth_unavailable' });
+    } finally { lifetime.dispose(); }
+  });
 
   app.post<{
     Params: ExternalActionRouteParams;
     Body: unknown;
-  }>('/v1/actions/:actionId', {
-    bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+  }>(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, {
+    bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
     errorHandler: (error, request, reply) => {
       disposeExternalActionRequestAdmission(request);
       if (isFastifyBodyLimitError(error)) {
@@ -181,46 +235,65 @@ export function registerDaemonExternalActionRoute(
       const token = readBearerAuthorization(request.headers.authorization);
       if (!token) {
         lifetime.dispose();
-        return sendExternalActionJson(reply, 401, { error: 'invalid_token' });
+        return sendExternalActionHttpError(reply, 'invalid_token');
       }
 
       try {
         const principal = await input.verifyPat(token, lifetime.signal);
         if (!principal.ok) {
           lifetime.dispose();
-          return sendExternalActionJson(
-            reply,
-            principal.code === 'invalid_token' ? 401 : 503,
-            { error: principal.code },
-          );
+          return sendExternalActionHttpError(reply, principal.code);
         }
         (request as ExternalActionAdmittedRequest)[externalActionRequestAdmission] = {
+          token,
           principal,
           lifetime,
         };
-      } catch (error) {
+      } catch {
         lifetime.dispose();
-        throw error;
+        return sendExternalActionHttpError(reply, 'auth_unavailable');
       }
     },
   }, async (request, reply) => {
     const admission = readExternalActionRequestAdmission(request);
     if (!admission) {
-      return sendExternalActionJson(reply, 401, { error: 'invalid_token' });
+      return sendExternalActionHttpError(reply, 'invalid_token');
     }
     try {
+      const envelope = ExternalActionRequestEnvelopeSchema.safeParse(request.body);
+      const minted = envelope.success && input.mintExecutionAuthorization
+        ? await input.mintExecutionAuthorization({
+            actionId: request.params.actionId,
+            envelope: envelope.data,
+            machineId: input.currentMachineId,
+            pat: admission.token,
+            signal: admission.lifetime.signal,
+          })
+        : null;
+      if (minted && !minted.ok && minted.code === 'invalid_token') {
+        return sendExternalActionHttpError(reply, 'invalid_token');
+      }
       const result = await executeExternalAction({
         actionId: request.params.actionId,
         envelope: request.body,
         principal: admission.principal,
         currentMachineId: input.currentMachineId,
         currentServerId: input.currentServerId,
+        resolveEncryption: input.resolveEncryption,
         resolveTarget: input.resolveTarget,
         executor: input.executor,
+        ...(minted?.ok ? { executionAuthorization: minted.authorization } : {}),
+        ...(input.externalActionMachineRequestPrivateKey
+          ? { externalActionMachineRequestPrivateKey: input.externalActionMachineRequestPrivateKey }
+          : {}),
         signal: admission.lifetime.signal,
       });
       if (result.kind === 'invalid_request') {
-        return sendExternalActionHttpError(reply, result.errorCode);
+        return sendExternalActionHttpError(
+          reply,
+          result.errorCode,
+          result.requestId ?? readExternalActionProtectedRequestId(request.body),
+        );
       }
       return sendExternalActionResponse(reply, result.prepared);
     } finally {

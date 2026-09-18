@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { SessionId } from '@/agent/core/AgentMessage';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
@@ -17,23 +17,30 @@ import {
   resolveScmPullRequestReviewScope,
   type AcpConfigOptionOverridesV1,
   type BackendTargetRefV1,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ProviderBoundModelRef,
+  type ExecutionRunResultContractV1,
+  type SessionInputAdmissionResultV1,
   type SessionInputCausalPermissionAuthorityV1,
   withExecutionRunStartFailureDetails,
+  projectExecutionRunRequestedConfiguration,
 } from '@happier-dev/protocol';
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type {
   ExecutionRunManagerStartParams,
   ExecutionRunStartResult,
   ExecutionRunState,
+  AttachRetainedRunSessionInput,
 } from './executionRunTypes';
 import type {
   ExecutionRunBackendController,
   ExecutionRunController,
   ExecutionRunVoiceAgentController,
 } from '@/agent/executionRuns/controllers/types';
-import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
+import {
+  appendExecutionRunControllerHostBarrier,
+  failureSignal,
+} from '@/agent/executionRuns/controllers/failureSignal';
 import { VoiceAgentError, type VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import { writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
@@ -52,6 +59,7 @@ import { permissionMode } from '@/agent/executionRuns/policy/permissionMode';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
 import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
+import { createExactTurnUsageAccumulator } from '@/usage/exactTurnUsage';
 
 type SendAcp = ExecutionRunTranscriptPublisher;
 
@@ -135,6 +143,25 @@ function executionRunNotAllowed(message: string): Error & { code: string; detail
   }), 'noRunCreated');
 }
 
+function deriveExecutionRunIdFromActionRequestId(actionRequestId: string): string {
+  return `run_request_${createHash('sha256').update(actionRequestId, 'utf8').digest('hex')}`;
+}
+
+function projectExistingExecutionRunStartResult(run: ExecutionRunState): ExecutionRunStartResult {
+  const requestedConfiguration = projectExecutionRunRequestedConfiguration({
+    modelId: run.launch?.teamCredentialModel?.modelId
+      ?? run.launch?.modelSelection?.modelId
+      ?? run.launch?.modelId,
+    sessionConfigOptionOverrides: run.launch?.sessionConfigOptionOverrides,
+  });
+  return {
+    runId: run.runId,
+    callId: run.callId,
+    sidechainId: run.sidechainId,
+    ...(requestedConfiguration ? { requestedConfiguration } : {}),
+  };
+}
+
 function assertPreparedReviewRunStartAllowed(params: ExecutionRunManagerStartParams): void {
   if (params.intent !== 'review') return;
   const intentInput = readRecord(params.intentInput);
@@ -170,9 +197,9 @@ type ExecuteBoundedRun = (args: {
   params: ExecutionRunManagerStartParams;
 }) => Promise<void>;
 
-async function retireProvisionedChildWithoutDispatch(params: Readonly<{
+async function retireProvisionedRuntimeWithoutDispatch(params: Readonly<{
   runId: string;
-  childSessionId: string;
+  runtimeId: string;
   controller: ExecutionRunBackendController;
   controllers: Map<string, ExecutionRunController>;
 }>): Promise<boolean> {
@@ -180,7 +207,7 @@ async function retireProvisionedChildWithoutDispatch(params: Readonly<{
     return false;
   }
   try {
-    await params.controller.backend.cancel(params.childSessionId);
+    await params.controller.backend.cancel(params.runtimeId);
   } catch {
     // best effort
   }
@@ -204,18 +231,27 @@ export async function startExecutionRun(args: Readonly<{
   streamedTranscriptSession: StreamedTranscriptWriterSession | null;
   createRuntime: (opts: {
     runId?: string;
+    controllerOccurrenceId?: string;
+    callId?: string;
+    sidechainId?: string;
+    getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider;
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
+    teamCredentialModel?: import('@happier-dev/protocol').TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
+    secretReferenceOverlay?: import('@happier-dev/protocol').SecretReferenceOverlayV1;
+    secretReferenceEnvironment?: Readonly<Record<string, string>>;
     accountSettings?: Readonly<Record<string, unknown>> | null;
-    connectedServices?: ConnectedServiceBindingsV1 | null;
+    connectedServices?: ConnectedServiceBindingsV2 | null;
     connectedServicesDefaultServiceIds?: readonly string[];
     start?: ExecutionRunBackendStartContext;
   }) => ExecutionRunHostRuntime;
+  /** Resolve the value-free overlay before this owner publishes a Run. */
+  admitSecretReferenceOverlay?: () => Promise<Readonly<Record<string, string>>>;
   getNowMs: () => number;
   budgetRegistry: ExecutionBudgetRegistry | null;
   getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider | null;
@@ -227,11 +263,31 @@ export async function startExecutionRun(args: Readonly<{
   executeBoundedRun: ExecuteBoundedRun;
   send: (
     runId: string,
-    params: Readonly<{ message: string; resume?: boolean; delivery?: unknown }>,
+    params: Readonly<{
+      message: string;
+      resume?: boolean;
+      delivery?: unknown;
+      localInputId?: string;
+      resultContract?: ExecutionRunResultContractV1;
+      structuredInput?: import('@happier-dev/protocol').HappierStructuredInputV1;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    }>,
   ) => Promise<{ ok: boolean; errorCode?: string; error?: string }>;
+  enqueueRetainedRunInitialInput?: (input: Readonly<{
+    runId: string;
+    text: string;
+    localId: string;
+    requestedAction: Readonly<{ v: 1; kind: 'enqueue' }>;
+  }>) => Promise<SessionInputAdmissionResultV1>;
   voiceAgentManager: VoiceAgentManager;
   getDepthByCallId: (callId: string) => number | null;
   onPublicStateUpdated?: (runId: string) => void;
+  /**
+   * Attach this exact retained Run occurrence to canonical target-aware Session
+   * input. The bridge owns the composition; start only knows when a retained
+   * occurrence became current. It returns the occurrence's release operation.
+   */
+  attachRetainedRunSessionInput?: AttachRetainedRunSessionInput;
 }>): Promise<ExecutionRunStartResult> {
   assertPreparedReviewRunStartAllowed(args.params);
 
@@ -241,6 +297,38 @@ export async function startExecutionRun(args: Readonly<{
   if (args.params.sessionId === null && profile.supportsDetached !== true) {
     throw executionRunNotAllowed(`Execution-run intent '${args.params.intent}' requires a Session scope`);
   }
+  const actionRequestId = typeof args.params.actionRequestId === 'string'
+    ? args.params.actionRequestId.trim()
+    : '';
+  const requestBoundRunId = actionRequestId
+    ? deriveExecutionRunIdFromActionRequestId(actionRequestId)
+    : null;
+  if (requestBoundRunId) {
+    const existing = args.runs.get(requestBoundRunId);
+    if (existing) return projectExistingExecutionRunStartResult(existing);
+  }
+  let initialSecretReferenceEnvironment:
+    Readonly<Record<string, string>> | undefined;
+  if (args.params.secretReferenceOverlay) {
+    if (!args.admitSecretReferenceOverlay) {
+      throw markExecutionRunStartFailure(
+        Object.assign(new Error('Execution-run Saved Secret admission is unavailable'), {
+          code: 'provider_secret_unavailable',
+        }),
+        'noRunCreated',
+      );
+    }
+    try {
+      initialSecretReferenceEnvironment =
+        await args.admitSecretReferenceOverlay();
+    } catch (error) {
+      throw markExecutionRunStartFailure(error, 'noRunCreated');
+    }
+  }
+  if (requestBoundRunId) {
+    const existing = args.runs.get(requestBoundRunId);
+    if (existing) return projectExistingExecutionRunStartResult(existing);
+  }
   const shouldMaterializeInTranscript = args.params.sessionId !== null
     && profile.transcriptMaterialization !== 'none';
   const sendAcp: ExecutionRunTranscriptPublisher = shouldMaterializeInTranscript
@@ -248,9 +336,20 @@ export async function startExecutionRun(args: Readonly<{
     : async () => {};
   const computeSidechainStreamText = createExecutionRunSidechainStreamText(profile);
 
-  const runId = `run_${randomUUID()}`;
+  const runId = requestBoundRunId ?? `run_${randomUUID()}`;
+  const controllerOccurrenceId = randomUUID();
   const callId = `subagent_run_${randomUUID()}`;
   const sidechainId = callId;
+  const requestedConfiguration = projectExecutionRunRequestedConfiguration({
+    modelId: args.params.teamCredentialModel?.modelId ?? args.params.modelSelection?.modelId ?? args.params.modelId,
+    sessionConfigOptionOverrides: args.params.sessionConfigOptionOverrides,
+  });
+  const startResult: ExecutionRunStartResult = {
+    runId,
+    callId,
+    sidechainId,
+    ...(requestedConfiguration ? { requestedConfiguration } : {}),
+  };
 
   const depth = (() => {
     const parentRunId = typeof args.params.parentRunId === 'string' ? args.params.parentRunId.trim() : '';
@@ -265,16 +364,6 @@ export async function startExecutionRun(args: Readonly<{
     }
     return 0;
   })();
-
-  const acquiredBudget = args.params.intent === 'scm_commit_message'
-    ? args.budgetRegistry?.tryAcquireOneShotTask(runId, 'scm_commit_message') ?? true
-    : args.budgetRegistry?.tryAcquireExecutionRun(runId, args.params.intent) ?? true;
-  if (!acquiredBudget) {
-    const err = markExecutionRunStartFailure(Object.assign(new Error('Execution run budget exceeded'), {
-      code: 'execution_run_budget_exceeded',
-    }), 'noRunCreated');
-    throw err;
-  }
 
   const startedAtMs = args.getNowMs();
   const backendId = resolveExecutionRunRuntimeBackendId(args.params.backendTarget);
@@ -294,10 +383,19 @@ export async function startExecutionRun(args: Readonly<{
       ? args.params.modelId.trim()
       : undefined;
   const launch = {
+    ...(args.params.cwd ? { cwd: args.params.cwd } : {}),
+    ...(args.params.mcpSelection ? { mcpSelection: args.params.mcpSelection } : {}),
+    ...(args.params.acpSessionModeId ? { acpSessionModeId: args.params.acpSessionModeId } : {}),
+    ...(args.params.runtimeDescriptorV1
+      ? { runtimeDescriptorV1: args.params.runtimeDescriptorV1 }
+      : {}),
     ...(args.params.launchOrigin ? { launchOrigin: args.params.launchOrigin } : {}),
     ...(launchModelId ? { modelId: launchModelId } : {}),
     ...(args.params.modelSelection
       ? { modelSelection: args.params.modelSelection }
+      : {}),
+    ...(args.params.teamCredentialModel
+      ? { teamCredentialModel: args.params.teamCredentialModel }
       : {}),
     ...(args.params.sessionConfigOptionOverrides
       ? { sessionConfigOptionOverrides: args.params.sessionConfigOptionOverrides }
@@ -305,105 +403,128 @@ export async function startExecutionRun(args: Readonly<{
     ...(args.params.connectedServices !== undefined
       ? { connectedServicesSelection: args.params.connectedServices }
       : {}),
+    ...(args.params.secretReferenceOverlay
+      ? { secretReferenceOverlay: args.params.secretReferenceOverlay }
+      : {}),
   };
-  args.runs.set(runId, {
-    runId,
-    callId,
-    sidechainId,
-    sessionId: args.params.sessionId,
-    depth,
-    intent: args.params.intent,
-    ...(profileId ? { profileId } : {}),
-    backendTarget: args.params.backendTarget,
-    backendId,
-    instructions: args.params.instructions ?? '',
-    ...(typeof args.params.intentInput !== 'undefined' ? { intentInput: args.params.intentInput } : {}),
-    ...(args.params.display ? { display: args.params.display } : {}),
-    permissionMode: args.params.permissionMode,
-    retentionPolicy: args.params.retentionPolicy,
-    runClass: args.params.runClass,
-    ioMode: args.params.ioMode,
-    ...(runtimeSettings ? { runtimeSettings } : {}),
-    ...(Object.keys(launch).length > 0 ? { launch } : {}),
-    status: 'running',
-    startedAtMs,
-    resumeHandle: null,
-  });
-  args.onPublicStateUpdated?.(runId);
-
-  // Persist a daemon-visible marker so machine-wide UIs can see the run immediately.
-  const startMarkerPayload = {
-    pid: process.pid,
-    happySessionId: args.params.sessionId,
-    runId,
-    callId,
-    sidechainId,
-    intent: args.params.intent,
-    backendTarget: readBackendTargetRefV2(args.params.backendTarget),
-    ...(args.params.launchOrigin ? { launchOrigin: args.params.launchOrigin } : {}),
-    permissionMode: args.params.permissionMode,
-    retentionPolicy: args.params.retentionPolicy,
-    runClass: args.params.runClass,
-    ioMode: args.params.ioMode,
-    status: 'running',
-    startedAtMs,
-    updatedAtMs: startedAtMs,
-  } as const;
-  await args.enqueueMarkerWrite(runId, () => writeExecutionRunMarker(startMarkerPayload)).catch(() => {});
-  if (args.runs.get(runId)?.status !== 'running') {
-    return { runId, callId, sidechainId };
-  }
-
-  // Materialize the run in transcript (tool-call).
-  if (shouldMaterializeInTranscript) {
-    await sendAcp(args.parentProvider, {
-      type: 'tool-call',
-      callId,
-      name: 'SubAgentRun',
-      input: {
-        runId,
-        intent: args.params.intent,
-        backendTarget: args.params.backendTarget,
-        instructions: args.params.instructions ?? '',
-        ...(typeof args.params.intentInput !== 'undefined' ? { intentInput: args.params.intentInput } : {}),
-        ...(args.params.display ? { display: args.params.display } : {}),
-        ...(args.params.launchOrigin ? { launchOrigin: args.params.launchOrigin } : {}),
-        permissionMode: args.params.permissionMode,
-        retentionPolicy: args.params.retentionPolicy,
-        runClass: args.params.runClass,
-        ioMode: args.params.ioMode,
-      },
-      id: randomUUID(),
-    });
-    if (args.runs.get(runId)?.status !== 'running') {
-      return { runId, callId, sidechainId };
-    }
-  }
-
-  const cachedScmDiffSummaryOutput = readScmDiffSummaryCachedOutput(args.params);
-  if (cachedScmDiffSummaryOutput) {
-    const finishedAtMs = args.getNowMs();
-    const status = cachedScmDiffSummaryOutput.success === true ? 'succeeded' : 'failed';
-    await args.finishRun(
-      runId,
-      {
-        status,
-        summary: status === 'succeeded' ? 'Diff summary restored from cache.' : 'Cached diff summary failure restored.',
-        finishedAtMs,
-        ...(status === 'failed'
-          ? { error: { code: 'cached_diff_summary_failed', message: 'Cached diff summary failure restored.' } }
-          : {}),
-      },
-      { output: cachedScmDiffSummaryOutput, meta: { cache: 'hit' } },
-      { kind: 'scm_diff_summary.v1', payload: cachedScmDiffSummaryOutput },
-    );
-    return { runId, callId, sidechainId };
+  const acquiredBudget = args.params.intent === 'scm_commit_message'
+    ? args.budgetRegistry?.tryAcquireOneShotTask(runId, 'scm_commit_message') ?? true
+    : args.budgetRegistry?.tryAcquireExecutionRun(runId, args.params.intent) ?? true;
+  if (!acquiredBudget) {
+    const err = markExecutionRunStartFailure(Object.assign(new Error('Execution run budget exceeded'), {
+      code: 'execution_run_budget_exceeded',
+    }), 'noRunCreated');
+    throw err;
   }
 
   let backendBeforeControllerRegistration: ExecutionRunHostRuntime | null = null;
   let registeredController: ExecutionRunController | null = null;
+  let retainedInitialPendingCustodyAttempted = false;
+  let retainedInitialPendingCustodyOutcomeUnknown = false;
 
   try {
+    args.runs.set(runId, {
+      runId,
+      callId,
+      sidechainId,
+      sessionId: args.params.sessionId,
+      depth,
+      intent: args.params.intent,
+      ...(profileId ? { profileId } : {}),
+      backendTarget: args.params.backendTarget,
+      backendId,
+      instructions: args.params.instructions ?? '',
+      ...(typeof args.params.intentInput !== 'undefined' ? { intentInput: args.params.intentInput } : {}),
+      ...(args.params.display ? { display: args.params.display } : {}),
+      permissionMode: args.params.permissionMode,
+      retentionPolicy: args.params.retentionPolicy,
+      runClass: args.params.runClass,
+      ioMode: args.params.ioMode,
+      notifyParentOnCompletion: args.params.notifyParentOnCompletion
+        ?? (args.params.accountSettings?.executionRunsNotifyParentOnCompletionDefault === true),
+      ...(runtimeSettings ? { runtimeSettings } : {}),
+      ...(Object.keys(launch).length > 0 ? { launch } : {}),
+      status: 'running',
+      startedAtMs,
+      resumeHandle: null,
+    });
+    args.onPublicStateUpdated?.(runId);
+
+    // Persist a daemon-visible marker so machine-wide UIs can see the run immediately.
+    const startMarkerPayload = {
+      pid: process.pid,
+      happySessionId: args.params.sessionId,
+      runId,
+      callId,
+      sidechainId,
+      intent: args.params.intent,
+      backendTarget: readBackendTargetRefV2(args.params.backendTarget),
+      ...(args.params.launchOrigin ? { launchOrigin: args.params.launchOrigin } : {}),
+      ...(requestedConfiguration ? { requestedConfiguration } : {}),
+      permissionMode: args.params.permissionMode,
+      retentionPolicy: args.params.retentionPolicy,
+      runClass: args.params.runClass,
+      ioMode: args.params.ioMode,
+      status: 'running',
+      ...(args.params.notifyParentOnCompletion
+        ?? (args.params.accountSettings?.executionRunsNotifyParentOnCompletionDefault === true)
+        ? { notifyParentOnCompletion: true }
+        : {}),
+      startedAtMs,
+      updatedAtMs: startedAtMs,
+    } as const;
+    await args.enqueueMarkerWrite(runId, () => writeExecutionRunMarker(startMarkerPayload)).catch(() => {});
+    if (args.runs.get(runId)?.status !== 'running') {
+      return startResult;
+    }
+
+    // Materialize the run in transcript (tool-call).
+    if (shouldMaterializeInTranscript) {
+      await sendAcp(args.parentProvider, {
+        type: 'tool-call',
+        callId,
+        name: 'SubAgentRun',
+        input: {
+          runId,
+          intent: args.params.intent,
+          backendTarget: args.params.backendTarget,
+          instructions: args.params.instructions ?? '',
+          ...(typeof args.params.intentInput !== 'undefined' ? { intentInput: args.params.intentInput } : {}),
+          ...(args.params.display ? { display: args.params.display } : {}),
+          ...(args.params.launchOrigin ? { launchOrigin: args.params.launchOrigin } : {}),
+          ...(requestedConfiguration ? { requestedConfiguration } : {}),
+          permissionMode: args.params.permissionMode,
+          retentionPolicy: args.params.retentionPolicy,
+          runClass: args.params.runClass,
+          ioMode: args.params.ioMode,
+        },
+        id: randomUUID(),
+      });
+      if (args.runs.get(runId)?.status !== 'running') {
+        return startResult;
+      }
+    }
+
+    const cachedScmDiffSummaryOutput = readScmDiffSummaryCachedOutput(args.params);
+    if (cachedScmDiffSummaryOutput) {
+      const finishedAtMs = args.getNowMs();
+      const status = cachedScmDiffSummaryOutput.success === true ? 'succeeded' : 'failed';
+      await args.finishRun(
+        runId,
+        {
+          status,
+          summary: status === 'succeeded' ? 'Diff summary restored from cache.' : 'Cached diff summary failure restored.',
+          finishedAtMs,
+          ...(status === 'failed'
+            ? { error: { code: 'cached_diff_summary_failed', message: 'Cached diff summary failure restored.' } }
+            : {}),
+        },
+        { output: cachedScmDiffSummaryOutput, meta: { cache: 'hit' } },
+        { kind: 'scm_diff_summary.v1', payload: cachedScmDiffSummaryOutput },
+      );
+      return startResult;
+    }
+
     if (args.params.intent === 'voice_agent' && args.params.ioMode === 'streaming') {
       let resolveTerminal!: () => void;
       const terminalPromise = new Promise<void>((resolve) => {
@@ -445,6 +566,7 @@ export async function startExecutionRun(args: Readonly<{
       // reach that exact start occurrence while provision/READY awaits are live.
       const ctrl: ExecutionRunVoiceAgentController = {
         kind: 'voice_agent',
+        controllerOccurrenceId,
         voiceAgentId: runId,
         cancelled: false,
         lastMarkerWriteAtMs: 0,
@@ -496,16 +618,27 @@ export async function startExecutionRun(args: Readonly<{
           try {
             return args.createRuntime({
               runId,
+              controllerOccurrenceId,
               backendId: runtimeBackendId,
               backendTarget,
               modelId,
               ...(modelSelection ? { modelSelection } : {}),
               ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
+              ...(args.params.secretReferenceOverlay
+                ? { secretReferenceOverlay: args.params.secretReferenceOverlay }
+                : {}),
+              ...(initialSecretReferenceEnvironment
+                ? { secretReferenceEnvironment: initialSecretReferenceEnvironment }
+                : {}),
               permissionMode: permissionIntent,
               ...(args.params.causalPermissionAuthority
                 ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
                 : {}),
-              ...(start ? { start } : {}),
+              start: {
+                ...startParams,
+                profileId: profileId ?? undefined,
+                ...(start ?? {}),
+              },
               ...(connectedServices !== undefined ? { connectedServices } : {}),
             });
           } catch (error) {
@@ -528,7 +661,7 @@ export async function startExecutionRun(args: Readonly<{
         } catch {
           // best effort
         }
-        return { runId, callId, sidechainId };
+        return startResult;
       }
 
       const resumeHandle = args.voiceAgentManager.getResumeHandle(startedVoice.voiceAgentId);
@@ -558,11 +691,15 @@ export async function startExecutionRun(args: Readonly<{
       }
 
       await args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
-      return { runId, callId, sidechainId };
+      return startResult;
     }
 
+    let ctrl: ExecutionRunBackendController | null = null;
     const backend = args.createRuntime({
       runId,
+      controllerOccurrenceId,
+      callId,
+      sidechainId,
       backendId,
       backendTarget: args.params.backendTarget,
       permissionMode: args.params.permissionMode,
@@ -575,8 +712,17 @@ export async function startExecutionRun(args: Readonly<{
       ...(args.params.modelSelection
         ? { modelSelection: args.params.modelSelection }
         : {}),
+      ...(args.params.teamCredentialModel
+        ? { teamCredentialModel: args.params.teamCredentialModel }
+        : {}),
       ...(args.params.sessionConfigOptionOverrides
         ? { sessionConfigOptionOverrides: args.params.sessionConfigOptionOverrides }
+        : {}),
+      ...(args.params.secretReferenceOverlay
+        ? { secretReferenceOverlay: args.params.secretReferenceOverlay }
+        : {}),
+      ...(initialSecretReferenceEnvironment
+        ? { secretReferenceEnvironment: initialSecretReferenceEnvironment }
         : {}),
       accountSettings: args.params.accountSettings ?? null,
       ...(args.params.connectedServices !== undefined
@@ -588,6 +734,26 @@ export async function startExecutionRun(args: Readonly<{
       start: {
         ...startParams,
         profileId: profileId ?? undefined,
+        observeWorkflowUsage: ({ turnId, observation }) => {
+          const current = ctrl;
+          const binding = current?.workflowObservation;
+          const inputTurn = current?.currentInputTurn;
+          if (!current || !binding || !inputTurn) return;
+          if (!inputTurn.inputIds.includes(binding.localInputId)) return;
+          if (turnId !== null && turnId !== inputTurn.turnId) return;
+          binding.usage.observe(observation);
+          const usage = binding.usage.current();
+          if (!usage) return;
+          current.pendingHostBarrier = appendExecutionRunControllerHostBarrier(
+            current.pendingHostBarrier,
+            () => binding.sink.commit({
+              kind: 'usage',
+              runId,
+              localInputId: binding.localInputId,
+              usage,
+            }),
+          );
+        },
       },
     });
     backendBeforeControllerRegistration = backend;
@@ -595,11 +761,12 @@ export async function startExecutionRun(args: Readonly<{
     const terminalPromise = new Promise<void>((resolve) => {
       resolveTerminal = resolve;
     });
-    const ctrl: ExecutionRunBackendController = {
+    ctrl = {
       kind: 'backend',
+      controllerOccurrenceId,
       backend,
       backendSupportsResume: false,
-      childSessionId: null,
+      runtimeId: null,
       buffer: '',
       sidechainStreamBuffer: '',
       sidechainStreamKey: '',
@@ -616,11 +783,20 @@ export async function startExecutionRun(args: Readonly<{
       turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
-      pendingExternalMessages: [],
-      pendingExternalMessagesSignal: null,
+      admittedLiveInterventions: [],
+      admittedLiveInterventionsSignal: null,
       lastMarkerWriteAtMs: 0,
       failureSignal: failureSignal(),
       pendingHostBarrier: Promise.resolve(),
+      ...(args.params.workflowObservationSink && args.params.localInputId
+        ? {
+            workflowObservation: {
+              localInputId: args.params.localInputId,
+              sink: args.params.workflowObservationSink,
+              usage: createExactTurnUsageAccumulator(),
+            },
+          }
+        : {}),
       terminalPromise,
       resolveTerminal,
     };
@@ -628,46 +804,59 @@ export async function startExecutionRun(args: Readonly<{
     registeredController = ctrl;
     backendBeforeControllerRegistration = null;
     // A lazy host runtime may have to spawn/connect to the native backend before it can
-    // answer its resume capabilities. Keep that readiness work inside the same bounded
-    // provisioning owner. The accepted run is already registered with the lifecycle owner
-    // so stop can cancel it while this readiness work is pending.
-    const [backendSupportsResume, backendSupportsInitialResume] = await (async () => {
-        const supportsResume = await backend.readResumeSupport({
-          captureReplay: args.params.runClass === 'long_lived',
-        });
+    // answer its resume capabilities. The run is already accepted and registered, so keep
+    // that optional discovery inside controller-owned provisioning instead of withholding
+    // the recovery handle from the caller.
+    const backendReadinessPromise = (async (): Promise<Readonly<{
+      backendSupportsResume: boolean;
+      backendSupportsInitialResume: boolean;
+    }> | null> => {
         const supportsInitialResume = await backend.readResumeSupport();
-        return [supportsResume, supportsInitialResume] as const;
+        const supportsResume = args.params.runClass === 'long_lived'
+          ? await backend.readResumeSupport({ captureReplay: true })
+          : supportsInitialResume;
+        if (!isExecutionRunControllerCurrent({ runId, controller: ctrl, controllers: args.controllers })) {
+          await settleExecutionRunController({ runId, controller: ctrl, controllers: args.controllers });
+          return null;
+        }
+        ctrl.backendSupportsResume = supportsResume;
+
+        const onMessage = createExecutionRunControllerMessageHandler({
+          ctrl,
+          runId,
+          sidechainId,
+          ioMode: args.params.ioMode,
+          computeSidechainStreamText,
+          sendAcp,
+          parentProvider: args.parentProvider,
+          runs: args.runs,
+          backendSupportsResume: supportsResume,
+          writeActivityMarker: args.writeActivityMarker,
+          getNowMs: args.getNowMs,
+          getPermissionRequestStore: args.getPermissionRequestStore,
+          onPublicStateUpdated: args.onPublicStateUpdated,
+        });
+
+        backend.subscribeMessages(onMessage);
+        return {
+          backendSupportsResume: supportsResume,
+          backendSupportsInitialResume: supportsInitialResume,
+        };
       })();
-    if (!isExecutionRunControllerCurrent({ runId, controller: ctrl, controllers: args.controllers })) {
-      await settleExecutionRunController({ runId, controller: ctrl, controllers: args.controllers });
-      return { runId, callId, sidechainId };
-    }
-    ctrl.backendSupportsResume = backendSupportsResume;
-
-    const onMessage = createExecutionRunControllerMessageHandler({
-      ctrl,
-      runId,
-      sidechainId,
-      ioMode: args.params.ioMode,
-      computeSidechainStreamText,
-      sendAcp,
-      parentProvider: args.parentProvider,
-      runs: args.runs,
-      backendSupportsResume,
-      writeActivityMarker: args.writeActivityMarker,
-      getNowMs: args.getNowMs,
-      getPermissionRequestStore: args.getPermissionRequestStore,
-      onPublicStateUpdated: args.onPublicStateUpdated,
-    });
-
-    backend.subscribeMessages(onMessage);
+    // Synchronous retained-input custody may still reject the start call before the
+    // controller-owned provisioning branch consumes readiness. Observe that concurrent
+    // rejection immediately; the owning branch still awaits and handles the same promise.
+    void backendReadinessPromise.catch(() => undefined);
 
     if (args.params.runClass === 'bounded') {
       // Provision the backend session and run kickoff asynchronously so the caller can dismiss
       // the UI draft card immediately after the SubAgentRun tool-call is injected.
       void (async () => {
         try {
-          const childSessionId = await (async () => {
+          const readiness = await backendReadinessPromise;
+          if (!readiness) return;
+          const { backendSupportsResume, backendSupportsInitialResume } = readiness;
+          const runtimeId = await (async () => {
             const handle = args.params.retentionPolicy === 'resumable' ? (args.params.resumeHandle ?? null) : null;
             const wantsResume =
               handle?.kind === 'provider_session.v1' && areExecutionRunBackendTargetsEqual(handle.backendTarget, args.params.backendTarget)
@@ -679,31 +868,31 @@ export async function startExecutionRun(args: Readonly<{
                 err.code = 'execution_run_not_allowed';
                 throw err;
               }
-              const loaded = await backend.provisionSession({ resumeSessionId: wantsResume });
-              return loaded.sessionId;
+              const loaded = await backend.provisionRuntime({ resumeRuntimeId: wantsResume });
+              return loaded.runtimeId;
             }
-            const started = await backend.provisionSession();
-            return started.sessionId;
+            const started = await backend.provisionRuntime();
+            return started.runtimeId;
           })();
 
           // Stop may settle and remove this controller while backend provisioning is still in
-          // flight. A child that appears afterwards must not receive the queued prompt or escape
+          // flight. A runtime that appears afterwards must not receive the queued prompt or escape
           // the stopped run's lifecycle.
-          if (await retireProvisionedChildWithoutDispatch({
+          if (await retireProvisionedRuntimeWithoutDispatch({
             runId,
-            childSessionId,
+            runtimeId,
             controller: ctrl,
             controllers: args.controllers,
           })) {
             return;
           }
-          ctrl.childSessionId = childSessionId;
+          ctrl.runtimeId = runtimeId;
 
           const existing = args.runs.get(runId);
           if (existing && args.params.retentionPolicy === 'resumable' && backendSupportsResume) {
               args.runs.set(runId, {
                 ...existing,
-                resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(args.params.backendTarget), providerSessionId: childSessionId },
+                resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(args.params.backendTarget), providerSessionId: runtimeId },
               });
             void args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
             args.onPublicStateUpdated?.(runId);
@@ -746,75 +935,281 @@ export async function startExecutionRun(args: Readonly<{
         }
       })();
 
-      return { runId, callId, sidechainId };
+      return startResult;
     }
 
-    // Long-lived runs are expected to be usable immediately after start(); await session provisioning
-    // so follow-up execution.run.send calls don't race the vendor session startup. The controller is
-    // already registered, so the incumbent stop/disposal owner remains addressable while this waits.
-    const childSessionId = await (async () => {
-      const handle = args.params.retentionPolicy === 'resumable' ? (args.params.resumeHandle ?? null) : null;
-      const wantsResume =
-        handle?.kind === 'provider_session.v1' && areExecutionRunBackendTargetsEqual(handle.backendTarget, args.params.backendTarget)
-          ? handle.providerSessionId
-          : null;
-      if (wantsResume) {
-        if (!backendSupportsInitialResume) {
-          const err: any = new Error('Backend does not support resume');
-          err.code = 'execution_run_not_allowed';
-          throw err;
-        }
-        const loaded = await backend.provisionSession({
-          resumeSessionId: wantsResume,
-        });
-        return loaded.sessionId;
-      }
-      const started = await backend.provisionSession();
-      return started.sessionId;
-    })();
-    if (await retireProvisionedChildWithoutDispatch({
-      runId,
-      childSessionId,
-      controller: ctrl,
-      controllers: args.controllers,
-    })) {
-      return { runId, callId, sidechainId };
-    }
-    ctrl.childSessionId = childSessionId;
-
-    const existing = args.runs.get(runId);
-    if (existing && args.params.retentionPolicy === 'resumable' && backendSupportsResume) {
+    const initialInstructions = typeof args.params.instructions === 'string'
+      ? args.params.instructions
+      : '';
+    const retainedInitialInputLocalId = args.params.localInputId ?? `execution-run-initial:${runId}`;
+    const retainedSessionInputWasKnownAtStart = ctrl.backend.interaction != null && args.params.sessionId != null;
+    let retainedInitialPendingCustodyError: unknown;
+    let retainedInitialPendingCustodyFailed = false;
+    const createRetainedInitialAdmissionError = (
+      disposition: Extract<SessionInputAdmissionResultV1, Readonly<{ status: 'rejected' | 'outcomeUnknown' }>>,
+    ): Error & { definitiveAdmissionRejection?: true } => Object.assign(
+      new Error(`Initial Session input admission ${disposition.status}: ${disposition.code}`),
+      disposition.status === 'rejected'
+        ? { code: disposition.code, definitiveAdmissionRejection: true as const }
+        : { code: disposition.code },
+    );
+    const recordRetainedInitialPendingOutcomeUnknown = (error: unknown): void => {
+      const current = args.runs.get(runId);
+      if (!current) return;
+      const message = error instanceof Error ? error.message : 'Initial Session input admission outcome is unknown';
       args.runs.set(runId, {
-        ...existing,
-        resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(args.params.backendTarget), providerSessionId: childSessionId },
+        ...current,
+        summary: message,
+        error: { code: 'execution_run_initial_input_outcome_unknown', message },
       });
-      await args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
       args.onPublicStateUpdated?.(runId);
+    };
+    if (initialInstructions.trim().length > 0 && retainedSessionInputWasKnownAtStart) {
+      retainedInitialPendingCustodyAttempted = true;
+      if (!args.enqueueRetainedRunInitialInput) {
+        throw new Error('Canonical target-aware Session input admission is unavailable');
+      }
+      try {
+        const disposition = await args.enqueueRetainedRunInitialInput({
+          runId,
+          text: initialInstructions,
+          localId: retainedInitialInputLocalId,
+          requestedAction: { v: 1, kind: 'enqueue' },
+        });
+        if (disposition.status === 'rejected' || disposition.status === 'outcomeUnknown') {
+          throw createRetainedInitialAdmissionError(disposition);
+        }
+      } catch (error: unknown) {
+        if ((error as { definitiveAdmissionRejection?: unknown } | null)?.definitiveAdmissionRejection === true) {
+          throw error;
+        }
+        retainedInitialPendingCustodyFailed = true;
+        retainedInitialPendingCustodyOutcomeUnknown = true;
+        retainedInitialPendingCustodyError = error;
+        recordRetainedInitialPendingOutcomeUnknown(error);
+      }
+    }
+    const provisioningPromise = (async (): Promise<void> => {
+      try {
+        const readiness = await backendReadinessPromise;
+        if (!readiness) return;
+        const { backendSupportsResume, backendSupportsInitialResume } = readiness;
+        const usesRetainedSessionInput = ctrl.backend.interaction != null && args.params.sessionId != null;
+        if (
+          initialInstructions.trim().length > 0
+          && usesRetainedSessionInput
+          && !retainedSessionInputWasKnownAtStart
+        ) {
+          if (!args.enqueueRetainedRunInitialInput) {
+            throw new Error('Canonical target-aware Session input admission is unavailable');
+          }
+          try {
+            const disposition = await args.enqueueRetainedRunInitialInput({
+              runId,
+              text: initialInstructions,
+              localId: retainedInitialInputLocalId,
+              requestedAction: { v: 1, kind: 'enqueue' },
+            });
+            if (disposition.status === 'rejected' || disposition.status === 'outcomeUnknown') {
+              throw createRetainedInitialAdmissionError(disposition);
+            }
+          } catch (error: unknown) {
+            if ((error as { definitiveAdmissionRejection?: unknown } | null)?.definitiveAdmissionRejection === true) {
+              throw error;
+            }
+            retainedInitialPendingCustodyOutcomeUnknown = true;
+            // The caller already owns the exact run handle, while the Session admission
+            // boundary cannot distinguish not-sent from acknowledged-with-lost-response.
+            // Keep this occurrence recoverable and surface the ambiguity on its running
+            // projection; never start a replacement or terminalize a possibly queued input.
+            recordRetainedInitialPendingOutcomeUnknown(error);
+          }
+        }
+        const runtimeId = await (async () => {
+          const handle = args.params.retentionPolicy === 'resumable' ? (args.params.resumeHandle ?? null) : null;
+          const wantsResume =
+            handle?.kind === 'provider_session.v1' && areExecutionRunBackendTargetsEqual(handle.backendTarget, args.params.backendTarget)
+              ? handle.providerSessionId
+              : null;
+          if (wantsResume) {
+            if (!backendSupportsInitialResume) {
+              const error: Error & { code?: string } = new Error('Backend does not support resume');
+              error.code = 'execution_run_not_allowed';
+              throw error;
+            }
+            const loaded = await backend.provisionRuntime({ resumeRuntimeId: wantsResume });
+            return loaded.runtimeId;
+          }
+          const started = await backend.provisionRuntime();
+          return started.runtimeId;
+        })();
+        if (await retireProvisionedRuntimeWithoutDispatch({
+          runId,
+          runtimeId,
+          controller: ctrl,
+          controllers: args.controllers,
+        })) {
+          return;
+        }
+        ctrl.runtimeId = runtimeId;
+
+        // Only the retained Session-owned occurrence consumes canonical Pending.
+        // Detached runs retain the direct execution.run.send boundary below.
+        if (usesRetainedSessionInput) {
+          const attachment = args.attachRetainedRunSessionInput?.({
+            runId,
+            sidechainId,
+            controller: ctrl,
+          }) ?? null;
+          ctrl.releaseSessionInputAttachment = attachment?.release;
+          if (initialInstructions.trim().length > 0) {
+            const admission = attachment
+              ? attachment.awaitInputAdmission(retainedInitialInputLocalId)
+              : Promise.resolve('unknown' as const);
+            ctrl.initialPendingInputAdmission = admission.then((outcome) => {
+              if (
+                outcome !== 'unknown'
+                && isExecutionRunControllerCurrent({
+                  runId,
+                  controller: ctrl,
+                  controllers: args.controllers,
+                })
+              ) {
+                const current = args.runs.get(runId);
+                if (current?.error?.code === 'execution_run_initial_input_outcome_unknown') {
+                  args.runs.set(runId, {
+                    ...current,
+                    ...(current.summary === current.error.message ? { summary: undefined } : {}),
+                    error: undefined,
+                  });
+                  args.onPublicStateUpdated?.(runId);
+                }
+              }
+              return outcome;
+            });
+          }
+        }
+
+        if (
+          usesRetainedSessionInput
+          && initialInstructions.trim().length > 0
+          && retainedInitialPendingCustodyOutcomeUnknown
+          && args.enqueueRetainedRunInitialInput
+        ) {
+          try {
+            const disposition = await args.enqueueRetainedRunInitialInput({
+              runId,
+              text: initialInstructions,
+              localId: retainedInitialInputLocalId,
+              requestedAction: { v: 1, kind: 'enqueue' },
+            });
+            if (disposition.status === 'rejected') {
+              throw createRetainedInitialAdmissionError(disposition);
+            }
+          } catch (error: unknown) {
+            if ((error as { definitiveAdmissionRejection?: unknown } | null)?.definitiveAdmissionRejection === true) {
+              throw error;
+            }
+            // The first ambiguous admission already published the diagnostic.
+            // Do not rewrite it after attachment: the exact durable admission
+            // barrier may have accepted and cleared it while this idempotent
+            // rejoin was awaiting its response.
+          }
+        }
+
+        const existing = args.runs.get(runId);
+        if (existing && args.params.retentionPolicy === 'resumable' && backendSupportsResume) {
+          args.runs.set(runId, {
+            ...existing,
+            resumeHandle: {
+              kind: 'provider_session.v1',
+              backendTarget: readBackendTargetRefV2(args.params.backendTarget),
+              providerSessionId: runtimeId,
+            },
+          });
+          await args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
+          args.onPublicStateUpdated?.(runId);
+        }
+
+        if (initialInstructions.trim().length > 0 && !usesRetainedSessionInput) {
+          const start = {
+            sessionId: args.params.sessionId,
+            runId,
+            callId,
+            sidechainId,
+            intent: args.params.intent,
+            backendId,
+            backendTarget: args.params.backendTarget,
+            instructions: initialInstructions,
+            ...(args.params.intentInput !== undefined ? { intentInput: args.params.intentInput } : {}),
+            ...(args.params.resultContract ? { resultContract: args.params.resultContract } : {}),
+            ...(args.params.structuredInput ? { structuredInput: args.params.structuredInput } : {}),
+            permissionMode: args.params.permissionMode,
+            retentionPolicy: args.params.retentionPolicy,
+            runClass: args.params.runClass,
+            ioMode: args.params.ioMode,
+            startedAtMs,
+          } as const;
+          const result = await args.send(runId, {
+            message: profile.buildPrompt({ ...start, resultContract: undefined }),
+            ...(args.params.localInputId ? { localInputId: args.params.localInputId } : {}),
+            ...(args.params.resultContract ? { resultContract: args.params.resultContract } : {}),
+            ...(args.params.causalPermissionAuthority
+              ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+              : {}),
+          });
+          if (!result.ok) {
+            throw Object.assign(new Error(result.error ?? 'Execution Run initial delivery failed'), {
+              code: result.errorCode ?? 'execution_run_failed',
+            });
+          }
+        }
+      } catch (error: unknown) {
+        if (ctrl.cancelled || !isExecutionRunControllerCurrent({ runId, controller: ctrl, controllers: args.controllers })) {
+          await settleExecutionRunController({ runId, controller: ctrl, controllers: args.controllers });
+          return;
+        }
+        const message = error instanceof Error ? error.message : 'Execution failed';
+        const finishedAtMs = args.getNowMs();
+        const code = error instanceof VoiceAgentError
+          ? error.code
+          : (error as { code?: unknown } | null)?.code === 'execution_run_not_allowed'
+            ? 'execution_run_not_allowed'
+            : 'execution_run_failed';
+        try {
+          await args.finishRun(
+            runId,
+            { status: 'failed', summary: message, finishedAtMs, error: { code, message } },
+            {
+              output: {
+                status: 'failed',
+                summary: message,
+                runId,
+                callId,
+                sidechainId,
+                backendId,
+                intent: args.params.intent,
+                startedAtMs,
+                finishedAtMs,
+                error: { code, message },
+              },
+              isError: true,
+            },
+          );
+        } catch {
+          // best effort
+        }
+        await settleExecutionRunController({ runId, controller: ctrl, controllers: args.controllers });
+      }
+    })();
+    ctrl.provisioningPromise = provisioningPromise;
+    void provisioningPromise;
+
+    if (retainedInitialPendingCustodyFailed) {
+      throw retainedInitialPendingCustodyError;
     }
 
-    if (typeof args.params.instructions === 'string' && args.params.instructions.trim().length > 0) {
-      const start = {
-        sessionId: args.params.sessionId,
-        runId,
-        callId,
-        sidechainId,
-        intent: args.params.intent,
-        backendId,
-        backendTarget: args.params.backendTarget,
-        instructions: args.params.instructions ?? '',
-        permissionMode: args.params.permissionMode,
-        retentionPolicy: args.params.retentionPolicy,
-        runClass: args.params.runClass,
-        ioMode: args.params.ioMode,
-        startedAtMs,
-      } as const;
-      const profile = args.profileCatalog
-        ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.params.intent, args.params.profileId)
-        : resolveExecutionRunIntentProfile(args.params.intent);
-      await args.send(runId, { message: profile.buildPrompt(start) });
-    }
-
-    return { runId, callId, sidechainId };
+    return startResult;
   } catch (e: any) {
     if (registeredController?.cancelled) {
       await settleExecutionRunController({
@@ -822,7 +1217,16 @@ export async function startExecutionRun(args: Readonly<{
         controller: registeredController,
         controllers: args.controllers,
       });
-      return { runId, callId, sidechainId };
+      return startResult;
+    }
+    // The retained Run already exists before its initial canonical Pending
+    // admission. An outcome-unknown enqueue must leave that exact Run and
+    // durable input identity available for normal observation/rejoin;
+    // terminalizing here would turn a lost response into a blocked target and
+    // encourage a duplicate Run start. A typed definitive rejection follows
+    // normal failure settlement below.
+    if (retainedInitialPendingCustodyAttempted && retainedInitialPendingCustodyOutcomeUnknown) {
+      throw markExecutionRunStartFailure(e, 'outcomeUnknown');
     }
     args.budgetRegistry?.releaseExecutionRun(runId);
     const message = e instanceof Error ? e.message : 'Execution failed';

@@ -8,6 +8,18 @@ export type GeneratorOptions = Readonly<{
   scope: GeneratorScope;
   workspaceNames: readonly string[];
   aggregateOnly: boolean;
+  /**
+   * Publish only the manifest-derived generated TypeScript *compiler inputs*.
+   *
+   * These outputs (`packages/agents/src/generated/agentIds.ts` and the Protocol
+   * provider-id projection) are compiled by workspaces the full publication run
+   * itself depends on, so they must be publishable before any workspace `dist`
+   * exists. This mode therefore reads only committed plugin manifest artifacts
+   * plus the Protocol/Agents runtime, and never loads the plugin authoring
+   * runtime, stages a daemon bundle with esbuild, or touches any other emitted
+   * artifact.
+   */
+  compilerInputsOnly: boolean;
 }>;
 
 export function resolveGeneratorAuthoringPreparationPolicy({
@@ -35,17 +47,26 @@ export type PluginAuthorRuntimeLoadScope = 'none' | 'manifest' | 'full';
 
 export function resolvePluginAuthorRuntimeLoadScope({
   aggregateOnly,
+  compilerInputsOnly,
   scope,
-}: Pick<GeneratorOptions, 'aggregateOnly' | 'scope'>): PluginAuthorRuntimeLoadScope {
-  if (aggregateOnly) return 'none';
+}: Pick<GeneratorOptions, 'aggregateOnly' | 'compilerInputsOnly' | 'scope'>): PluginAuthorRuntimeLoadScope {
+  // Compiler-input publication reads committed manifest artifacts only. Loading
+  // the authoring runtime would import the very `plugin-sdk`/`cli-common`
+  // output this mode exists to unblock.
+  if (aggregateOnly || compilerInputsOnly) return 'none';
   return scope === 'projections' ? 'manifest' : 'full';
 }
 
 export function printGeneratorUsage(): void {
   console.log([
-    'Usage: node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts [--root DIR] [--mode write|check] [--scope all|projections] [--workspace plugins-<id>] [--aggregate]',
+    'Usage: node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts [--root DIR] [--mode write|check] [--scope all|projections] [--workspace plugins-<id>] [--aggregate] [--compiler-inputs]',
     '',
     'Generates/patches bundled plugin entry maps from packages/plugins/*.',
+    '',
+    '--compiler-inputs publishes only the manifest-derived generated TypeScript compiler',
+    'inputs (bundled Agent ids/identities and the Protocol provider-id projection) from the',
+    'committed plugin manifest artifacts. It is the pre-build step the shared-dependency',
+    'build owner runs before compiling the workspaces that consume those inputs.',
     '',
     '--scope projections (check only) compares the generated projections against the',
     'bundled plugin sources and the installed bundle bytes. --scope all (default) also',
@@ -60,6 +81,7 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
   let mode: GeneratorMode = 'write';
   let scope: GeneratorScope = 'all';
   let aggregateOnly = false;
+  let compilerInputsOnly = false;
   const workspaceNames: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -110,16 +132,30 @@ export function parseGeneratorCliArgs(argv: readonly string[]): GeneratorOptions
       aggregateOnly = true;
       continue;
     }
+    if (arg === '--compiler-inputs') {
+      compilerInputsOnly = true;
+      continue;
+    }
     throw new Error(`Unknown arg: ${arg}`);
   }
 
   if (aggregateOnly && workspaceNames.length > 0) {
     throw new Error('--aggregate cannot be combined with --workspace');
   }
+  if (compilerInputsOnly && (aggregateOnly || workspaceNames.length > 0)) {
+    throw new Error('--compiler-inputs cannot be combined with --aggregate or --workspace');
+  }
   if (mode === 'write' && scope !== 'all') {
     throw new Error('--scope projections is a check-only scope; --mode write always publishes --scope all');
   }
-  return { rootDir, mode, scope, workspaceNames: Object.freeze(workspaceNames), aggregateOnly };
+  return {
+    rootDir,
+    mode,
+    scope,
+    workspaceNames: Object.freeze(workspaceNames),
+    aggregateOnly,
+    compilerInputsOnly,
+  };
 }
 
 export function resolveSelectedBundledPluginPackageNames(

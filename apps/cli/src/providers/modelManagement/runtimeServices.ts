@@ -1,14 +1,28 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   PROVIDER_ENDPOINT_SAFETY_LIMITS,
+  buildBackendTargetKeyV2,
+  computeCanonicalDomainSeparatedDigest,
   createProviderErrorV1,
   parseBackendTargetKeyV2,
+  sameQualifiedConnectedAccountGroupRef,
+  sameQualifiedConnectedAccountRef,
+  selectProviderRuntimeCredentialTransportV1,
+  pluginJsonValuesEqual,
+  ProviderModelDescriptorV1Schema,
   type ProviderCatalogDeclarationV1,
   type ProviderBoundModelRef,
   type ProviderConnectionId,
+  type ProviderCredentialTransportV1,
+  type ProviderBrokerApplicationBindingV1,
+  type ProviderModelDescriptorV1,
+  type ProviderWireProtocol,
   type PersistedBackendTargetRefV2,
   type ProviderRuntimeStateFileV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
+import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
 import type {
   DaemonProviderBindingStatusRequestV1,
   DaemonProviderBindingStatusResponseV1,
@@ -16,10 +30,22 @@ import type {
   DaemonProviderModelProjectionRefreshFailureV1,
   DaemonProviderModelProjectionRequestV1,
   DaemonProviderModelProjectionResponseV1,
+  DaemonProviderTeamCredentialRequestPolicySupportV1,
+  DaemonProviderTeamCredentialRequestPolicySupportRequestV1,
+  DaemonProviderTeamCredentialRequestPolicySupportResponseV1,
   DaemonProviderModelSettingsMutationRequestV1,
   DaemonProviderModelSettingsMutationResponseV1,
+  DaemonProviderTeamCredentialResourceTestCandidateRequestV1,
+  DaemonProviderTeamCredentialResourceTestCandidateResponseV1,
+  DaemonProviderTeamCredentialBrokerEligibilityRequestV1,
+  DaemonProviderTeamCredentialBrokerEligibilityResponseV1,
 } from '@happier-dev/protocol/rpc';
-import { DaemonProviderModelProjectionResponseV1Schema } from '@happier-dev/protocol/rpc';
+import type { TeamCredentialSourceBindingV1 } from '@happier-dev/protocol/teams';
+import {
+  DaemonProviderModelProjectionResponseV1Schema,
+  DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema,
+  DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema,
+} from '@happier-dev/protocol/rpc';
 import type { ProviderContributionRegistryView } from '@/providers/registry';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import { getProviderContribution } from '@/providers/registry/lookup';
@@ -71,6 +97,8 @@ import {
   ProviderOperationAbandonedError,
 } from '@/providers/operationLifetime';
 import { selectCurrentProviderEndpointHealthByTemplateId } from '@/providers/connections/runtimeSummary';
+import { projectProviderBrokerApplication } from '@/providers/broker/applicationProjection';
+import { resolveProviderSourceFacts } from '@/providers/registry/sourceFacts';
 import { activateAgentRuntimeContributionOnDemand } from '@/agent/runtime/registry/activationDemand';
 import {
   indexAgentRoutingIdsByContributionIdentity,
@@ -81,10 +109,68 @@ import {
   resolveManagedProviderPurposeBindingSnapshot,
   type ResolveManagedProviderPurposeBindingIntent,
 } from '@/providers/managed/resolvePurposeBindingSnapshot';
+import {
+  projectTeamCredentialSourceModelFilter,
+  resolveTeamCredentialBrokerEligibility,
+  resolveTeamCredentialResourceTestCandidate,
+} from '@/providers/broker/resourceTestCandidate';
 
 export type ProviderModelManagementFeatureGate = Readonly<{
   isEnabled(featureId: 'providers' | 'providers.localModelManagement'): boolean;
 }>;
+
+type TeamCredentialRequestPolicyProtocolKind =
+  DaemonProviderTeamCredentialRequestPolicySupportV1['protocolKind'];
+
+function resolveTeamCredentialRequestPolicyProtocolKind(
+  protocol: ProviderWireProtocol,
+): TeamCredentialRequestPolicyProtocolKind | null {
+  if (protocol === 'openai-responses') return 'openai_responses';
+  if (protocol === 'openai-chat') return 'openai_chat_completions';
+  if (protocol === 'anthropic') return 'anthropic_messages';
+  return null;
+}
+
+export function projectDaemonProviderTeamCredentialRequestPolicySupportV1(input: Readonly<{
+  application: ProviderBrokerApplicationBindingV1;
+  sourceRevision: string;
+  descriptor: ProviderModelDescriptorV1;
+}>): DaemonProviderTeamCredentialRequestPolicySupportV1 | null {
+  const protocolKind = resolveTeamCredentialRequestPolicyProtocolKind(input.application.protocol);
+  if (protocolKind === null) return null;
+
+  const reasoningOption = input.descriptor.capabilities?.reasoningControls === 'supported'
+    ? input.descriptor.modelOptions?.find((option) => (
+        option.id === 'reasoning_effort'
+        && option.type === 'select'
+      ))
+    : undefined;
+  const reasoningValues = reasoningOption?.options?.map((option) => option.value) ?? [];
+  const reasoningEffort = reasoningOption
+    && reasoningValues.length > 0
+    && new Set(reasoningValues).size === reasoningValues.length
+    && reasoningValues.includes(reasoningOption.currentValue)
+    ? {
+        supported: true as const,
+        allowedValues: reasoningValues,
+        defaultValue: reasoningOption.currentValue,
+      }
+    : { supported: false as const };
+
+  return {
+    descriptor: ProviderModelDescriptorV1Schema.parse(input.descriptor),
+    application: input.application,
+    sourceRevision: input.sourceRevision,
+    protocolKind,
+    model: {
+      canonicalId: input.descriptor.id,
+      aliases: [...(input.descriptor.aliases ?? [])],
+    },
+    reasoningEffort,
+    maxOutputTokens: { supported: false },
+    maxThinkingBudgetTokens: { supported: false },
+  };
+}
 
 function resolveAgentRoutingIdForTarget(
   registry: Pick<ResolvedContributionRegistry, 'agentDefinitionsById'>,
@@ -106,6 +192,32 @@ export type RuntimeProviderModelManagementServices = Readonly<{
   projectModels(
     request: DaemonProviderModelProjectionRequestV1,
   ): Promise<DaemonProviderModelProjectionResponseV1>;
+  resolveTeamCredentialRequestPolicySupport(
+    request: DaemonProviderTeamCredentialRequestPolicySupportRequestV1,
+  ): Promise<DaemonProviderTeamCredentialRequestPolicySupportResponseV1>;
+  resolveTeamCredentialResourceTestCandidate(
+    request: DaemonProviderTeamCredentialResourceTestCandidateRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialResourceTestCandidateResponseV1>;
+  resolveTeamCredentialBrokerEligibility(
+    request: DaemonProviderTeamCredentialBrokerEligibilityRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialBrokerEligibilityResponseV1>;
+  resolveTeamCredentialBrokerSourceSelection(request: Readonly<{
+    machineId: string;
+    teamId: string;
+    resourceId: string;
+    expectedResourceRevision: number;
+    source: Extract<TeamCredentialSourceBindingV1, { kind: 'provider_connection' }>;
+    application: ProviderBrokerApplicationBindingV1;
+    modelId: string;
+    sourceRevision: string;
+    signal: AbortSignal;
+  }>): Promise<Readonly<{
+    endpointTemplateId: string;
+    protocol: ProviderWireProtocol;
+    credentialTransport: ProviderCredentialTransportV1;
+  }> | null>;
   mutateModelSettings(
     request: DaemonProviderModelSettingsMutationRequestV1,
   ): Promise<DaemonProviderModelSettingsMutationResponseV1>;
@@ -213,6 +325,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
     typeof createRuntimeProviderServices
   >[0]['managedCatalogRuntime'];
   resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
+  openTeamDirect?: Parameters<typeof createRuntimeProviderServices>[0]['openTeamDirect'];
 }>): RuntimeProviderModelManagementServices {
   const client = input.client ?? createProviderProbeHttpClient({});
   const sharedRuntime = createRuntimeProviderServices({
@@ -240,6 +353,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
             input.resolveManagedPurposeBindingIntent,
         }
       : {}),
+    ...(input.openTeamDirect ? { openTeamDirect: input.openTeamDirect } : {}),
     modelLoadEnabled: () => input.featureGate.isEnabled('providers.localModelManagement'),
   });
   const resolveManagementRegistry = async (): Promise<ProviderContributionRegistryView> => {
@@ -419,6 +533,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       // admitted operation boundary.
       const presentationSettingsBasis: RuntimeProviderPresentationResolutionBasis = Object.freeze({
         accountSettings: snapshot.settings,
+        savedSecretResources: snapshot.savedSecretResources,
         settingsRead,
       });
       const assemble = async (runtimeState: ProviderRuntimeStateFileV1) => {
@@ -474,6 +589,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
           preflightPolicy: 'advisory' | 'required' | null;
         }>>();
         const confirmedByRef = new Map<string, boolean>();
+        const resolvedConnectionById = new Map<string, Parameters<typeof projectProviderBrokerApplication>[0]['connection']>();
         const pickerDemand: Array<Readonly<{
           connectionId: ProviderConnectionId;
           machineId: string;
@@ -484,6 +600,31 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
         }>> = [];
         for (const { connection, connectionRuntimeState, context } of resolvedContexts) {
           if (context.status === 'error') continue;
+          if (request.providerConnection && (
+            connection.id !== request.providerConnection.connectionId
+            || context.connection.connectionSecurityFingerprint
+              !== request.providerConnection.expectedConnectionSecurityFingerprint
+          )) continue;
+          if (request.connectedAccountTarget) {
+            if (context.connection.deployment.kind !== 'managedLocal') continue;
+            const expectedTarget = request.connectedAccountTarget;
+            const expectedConsumer = request.application?.implementationIdentity
+              ?? context.connection.deployment.implementationIdentity;
+            const targetMatches = context.connection.deployment.purposeBindingIntents.bindings.some((binding) => {
+              if (
+                binding.purpose.consumer.pluginId !== expectedConsumer.pluginId
+                || binding.purpose.consumer.localId !== expectedConsumer.localId
+                || binding.target.kind !== expectedTarget.kind
+              ) return false;
+              return expectedTarget.kind === 'account'
+                ? binding.target.kind === 'account'
+                  && sameQualifiedConnectedAccountRef(binding.target.account, expectedTarget.account)
+                : binding.target.kind === 'group'
+                  && sameQualifiedConnectedAccountGroupRef(binding.target, expectedTarget);
+            });
+            if (!targetMatches) continue;
+          }
+          resolvedConnectionById.set(connection.id, context.connection);
           const authorizedForDemand = context.connection.authorization.authorized;
           if (authorizedForDemand) {
             pickerDemand.push({
@@ -564,7 +705,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
             coldDemand.push({ connectionId: connection.id, machineId: request.machineId });
           }
         }
-        return { catalogs, modelLoadProjectionByConnectionId, confirmedByRef, pickerDemand, coldDemand };
+        return { catalogs, modelLoadProjectionByConnectionId, confirmedByRef, resolvedConnectionById, pickerDemand, coldDemand };
       };
 
       let assembly = await assemble(await sharedRuntime.runtimeStore.read());
@@ -572,7 +713,9 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       // explicit user Retry waits for every eligible connection and enters the
       // scheduler's existing forced branch; no consumer retry loop or cache is
       // introduced here.
-      const awaitedDemand = request.forceRefresh ? assembly.pickerDemand : assembly.coldDemand;
+      const awaitedDemand = request.refreshPolicy === 'current_only'
+        ? []
+        : request.forceRefresh ? assembly.pickerDemand : assembly.coldDemand;
       const refreshFailures: DaemonProviderModelProjectionRefreshFailureV1[] = [];
       if (awaitedDemand.length > 0) {
         const outcomes = await Promise.all(awaitedDemand.map(async (identity) => ({
@@ -590,7 +733,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
         }
         assembly = await assemble(await sharedRuntime.runtimeStore.read());
       }
-      const { catalogs, modelLoadProjectionByConnectionId, confirmedByRef, pickerDemand } = assembly;
+      const { catalogs, modelLoadProjectionByConnectionId, confirmedByRef, resolvedConnectionById, pickerDemand } = assembly;
       const awaitedConnectionIds = new Set(awaitedDemand.map((identity) => identity.connectionId));
       const projection = projectProviderCatalogForPicker({
         catalogs,
@@ -609,6 +752,37 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
           if (!catalog) throw new TypeError('Projected Provider catalog is absent');
           const connection = connectionById.get(group.connectionId);
           if (!connection) throw new TypeError('Projected Provider connection is absent');
+          const resolvedConnection = resolvedConnectionById.get(group.connectionId);
+          if (!resolvedConnection) throw new TypeError('Resolved Provider connection is absent');
+          const sourceAuthority = resolvedConnection.source.kind === 'contribution'
+            ? {
+                provider: {
+                  identity: {
+                    pluginId: resolvedConnection.source.pluginId,
+                    localId: resolvedConnection.source.definition.id,
+                  },
+                  definitionRevision: resolvedConnection.source.definition.v,
+                },
+                connectionSecurityFingerprint: resolvedConnection.connectionSecurityFingerprint,
+              } as const
+            : null;
+          const sourceRevision = computeCanonicalDomainSeparatedDigest(
+            'happier.team-credential-provider-model-catalog.v1',
+            [
+              resolvedConnection.connectionSecurityFingerprint,
+              resolvedConnection.endpointSetFingerprint,
+              String(connection.revision),
+              String(registry.runtimeRegistryGeneration ?? 'no-runtime-generation'),
+              JSON.stringify(group.rows.map((row) => ({
+                descriptor: row.descriptor,
+                catalog: row.presentation.catalog,
+                compatibilityFingerprint: row.presentation.compatibility?.compatibilityFingerprint ?? null,
+                selectedProtocol: row.presentation.compatibility?.result.status === 'incompatible'
+                  ? null
+                  : row.presentation.compatibility?.result.selectedProtocol ?? null,
+              }))),
+            ],
+          );
           return {
             connectionId: group.connectionId,
             providerName: group.providerName,
@@ -616,6 +790,8 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
             connectionRole: catalog.connectionRole,
             connectionDisplayNameMode: catalog.connectionDisplayNameMode,
             connectionRevision: connection.revision,
+            ...(sourceAuthority ? { sourceAuthority } : {}),
+            sourceRevision,
             modelLoadAction:
               modelLoadProjectionByConnectionId.get(group.connectionId)?.action
               ?? 'descriptor_absent',
@@ -631,9 +807,74 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
             manualModelPolicy: catalog.manualModelPolicy,
             supportsFreeformModelIds: adapter.support.supportsFreeformModelIds,
             suppressedConnectedServiceIds: adapter.support.authIsolation.suppressConnectedServiceIds,
-            rows: group.rows.map((row) => ({
+            rows: group.rows.map((row) => {
+              const brokeredProviderConnection = request.providerConnection !== undefined
+                && request.includeDirectMaterialization !== true;
+              const selectedProtocol = row.presentation.compatibility!.result.status === 'incompatible'
+                ? null
+                : row.presentation.compatibility!.result.selectedProtocol;
+              const sourceApplication = selectedProtocol
+                ? projectProviderBrokerApplication({
+                    connection: resolvedConnection,
+                    agentTargetKey: request.agentTargetKey,
+                    protocol: selectedProtocol,
+                    ...(!brokeredProviderConnection && request.application
+                      ? { expectedApplication: request.application }
+                      : {}),
+                  })
+                : null;
+              // A Team Provider Connection keeps the external Provider as the
+              // endpoint/catalog/credential authority, but the executable on
+              // the broker Machine is the existing managed CLIProxyAPI
+              // gateway. Publishing the source Provider identity here made
+              // the canonical source opener reject every otherwise-valid
+              // broker request. Project the executable application once at
+              // this owner and still bind it to the source-selected protocol.
+              const application = sourceApplication && brokeredProviderConnection
+                ? projectCLIProxyAPIProviderConnectionApplication({
+                    agentTargetKey: request.agentTargetKey,
+                    protocol: sourceApplication.protocol,
+                  })
+                : sourceApplication;
+              const exactApplication = application && request.application
+                && !pluginJsonValuesEqual(application, request.application)
+                ? null
+                : application;
+              const requestPolicySupport = request.includeTeamCredentialRequestPolicySupport
+                && exactApplication
+                ? projectDaemonProviderTeamCredentialRequestPolicySupportV1({
+                    application: exactApplication,
+                    sourceRevision,
+                    descriptor: row.descriptor,
+                  })
+                : null;
+              const sourceFacts = resolveProviderSourceFacts(resolvedConnection);
+              const directEndpoint = selectedProtocol && resolvedConnection.deployment.kind !== 'managedLocal'
+                ? resolvedConnection.endpoints.find((candidate) => candidate.protocol === selectedProtocol)
+                : null;
+              const directCredentialTransport = selectedProtocol && sourceFacts.credential && directEndpoint
+                ? selectProviderRuntimeCredentialTransportV1({
+                    transports: sourceFacts.credential.transports,
+                    protocol: selectedProtocol,
+                    agent: adapter.support,
+                  })
+                : null;
+              return ({
               ref: row.ref,
               descriptor: row.descriptor,
+              ...(exactApplication ? { application: exactApplication } : {}),
+              ...(requestPolicySupport ? { requestPolicySupport } : {}),
+              ...(request.includeDirectMaterialization && directEndpoint && directCredentialTransport ? {
+                directMaterialization: {
+                  endpoint: {
+                    endpointTemplateId: directEndpoint.endpointTemplateId,
+                    normalizedUrl: directEndpoint.normalizedUrl,
+                    protocol: directEndpoint.protocol,
+                    publicHeaders: directEndpoint.publicHeaders,
+                  },
+                  credentialTransport: directCredentialTransport,
+                },
+              } : {}),
               sources: row.sources,
               confidence: row.confidence,
               compatibility: {
@@ -645,7 +886,14 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
               catalog: row.presentation.catalog,
               loadState: row.presentation.loadState,
               visibility: row.visibility,
-            })),
+              });
+            }).filter((row) => !request.application || (
+              row.application?.agentTargetKey === request.application.agentTargetKey
+              && row.application.implementationIdentity.pluginId === request.application.implementationIdentity.pluginId
+              && row.application.implementationIdentity.localId === request.application.implementationIdentity.localId
+              && row.application.endpointTemplateId === request.application.endpointTemplateId
+              && row.application.protocol === request.application.protocol
+            )),
           };
         });
       const currentSelectionRecovery = resolveCurrentSelectionRecovery({
@@ -659,9 +907,11 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       // refresh goes straight to the sole probe scheduler, which owns admission,
       // coalescing and the typed capacity refusal. A consumer-side queue here would be
       // a second work owner retaining work the canonical scheduler already refused.
-      for (const identity of pickerDemand) {
-        if (awaitedConnectionIds.has(identity.connectionId)) continue;
-        void sharedRuntime.scheduleDemandRefresh(identity, 'picker_open', operationScope);
+      if (request.refreshPolicy !== 'current_only') {
+        for (const identity of pickerDemand) {
+          if (awaitedConnectionIds.has(identity.connectionId)) continue;
+          void sharedRuntime.scheduleDemandRefresh(identity, 'picker_open', operationScope);
+        }
       }
       return DaemonProviderModelProjectionResponseV1Schema.parse({
         status: 'success',
@@ -673,6 +923,164 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
     } finally {
       await lease.release();
     }
+  };
+
+  const resolveAgentTargetKeys = async (): Promise<string[]> => {
+    const lease = await (input.acquireRuntimeLease
+      ? input.acquireRuntimeLease()
+      : acquireAuthoritativePluginRuntimeRegistryLease({
+          happyHomeDir: input.happyHomeDir ?? configuration.happyHomeDir,
+        }));
+    try {
+      return [...lease.registry.contributes.agentDefinitionsById.values()]
+        .flatMap((agent) => agent.identity
+          ? [buildBackendTargetKeyV2({ kind: 'agent', identity: agent.identity })]
+          : []);
+    } finally {
+      await lease.release();
+    }
+  };
+
+  const resolveTeamCredentialRequestPolicySupport: RuntimeProviderModelManagementServices['resolveTeamCredentialRequestPolicySupport'] = async (request) => {
+    const agentTargetKeys = await resolveAgentTargetKeys();
+    if (agentTargetKeys.length === 0) {
+      return { status: 'unavailable', reason: 'application_unavailable' };
+    }
+    const models = new Map<string, DaemonProviderTeamCredentialRequestPolicySupportV1>();
+    let sourceFound = false;
+    let applicationFound = false;
+    for (const agentTargetKey of [...new Set(agentTargetKeys)].sort()) {
+      const projection = await projectModels({
+        machineId: request.machineId,
+        agentTargetKey,
+        includeTeamCredentialRequestPolicySupport: true,
+        ...(request.refreshPolicy ? { refreshPolicy: request.refreshPolicy } : {}),
+        ...projectTeamCredentialSourceModelFilter(request.source),
+      });
+      if (projection.status !== 'success') continue;
+      for (const group of projection.groups) {
+        if (!group.authorization.authorized || !group.sourceRevision) continue;
+        sourceFound = true;
+        for (const row of group.rows) {
+          if (row.application) applicationFound = true;
+          if (row.visibility !== 'visible'
+            || row.catalog.stale
+            || row.compatibility.result.status === 'incompatible'
+            || (row.compatibility.result.status === 'experimental' && !row.compatibility.confirmed)
+            || !row.requestPolicySupport) continue;
+          const support = row.requestPolicySupport;
+          models.set(JSON.stringify([
+            support.application,
+            support.sourceRevision,
+            support.model.canonicalId,
+          ]), support);
+        }
+      }
+    }
+    if (models.size > 0) {
+      return { status: 'success', models: [...models.values()] };
+    }
+    return {
+      status: 'unavailable',
+      reason: !sourceFound
+        ? 'source_unavailable'
+        : !applicationFound
+          ? 'application_unavailable'
+          : 'model_unavailable',
+    };
+  };
+
+  const resolveResourceTestCandidate = async (
+    request: DaemonProviderTeamCredentialResourceTestCandidateRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialResourceTestCandidateResponseV1> => {
+    if (!input.featureGate.isEnabled('providers') || request.machineId !== input.machineId) {
+      return { status: 'unavailable', reason: 'source_unavailable' };
+    }
+    const agentTargetKeys = await resolveAgentTargetKeys();
+    const candidate = await resolveTeamCredentialResourceTestCandidate({
+      machineId: request.machineId,
+      teamId: request.teamId,
+      resourceId: request.resourceId,
+      expectedResourceRevision: request.expectedResourceRevision,
+      source: request.source,
+      agentTargetKeys,
+      projectModels: projectionRequest => projectModels({
+        ...projectionRequest,
+        ...(request.refreshPolicy === 'current_only' ? { refreshPolicy: 'current_only' as const } : {}),
+      }),
+      createRequestId: randomUUID,
+      ...(signal ? { signal } : {}),
+    });
+    return DaemonProviderTeamCredentialResourceTestCandidateResponseV1Schema.parse(candidate
+      ? { status: 'success', ...candidate }
+      : {
+          status: 'unavailable',
+          reason: agentTargetKeys.length === 0 ? 'application_unavailable' : 'model_unavailable',
+        });
+  };
+
+  const resolveBrokerEligibility = async (
+    request: DaemonProviderTeamCredentialBrokerEligibilityRequestV1,
+    signal?: AbortSignal,
+  ): Promise<DaemonProviderTeamCredentialBrokerEligibilityResponseV1> => {
+    const projectCurrentModels = (projectionRequest: DaemonProviderModelProjectionRequestV1) => (
+      projectModels({ ...projectionRequest, refreshPolicy: 'current_only' })
+    );
+    const result = 'scope' in request
+      ? await resolveTeamCredentialBrokerEligibility({
+          ...request,
+          agentTargetKeys: await resolveAgentTargetKeys(),
+          projectModels: projectCurrentModels,
+          ...(signal ? { signal } : {}),
+        })
+      : await resolveTeamCredentialBrokerEligibility({
+          ...request,
+          projectModels: projectCurrentModels,
+          ...(signal ? { signal } : {}),
+        });
+    return DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.parse(result);
+  };
+
+  const resolveBrokerSourceSelection: RuntimeProviderModelManagementServices['resolveTeamCredentialBrokerSourceSelection'] = async (request) => {
+    request.signal.throwIfAborted();
+    const projection = await projectModels({
+      machineId: request.machineId,
+      agentTargetKey: request.application.agentTargetKey,
+      providerConnection: {
+        connectionId: request.source.connectionId,
+        expectedConnectionSecurityFingerprint: request.source.connectionSecurityFingerprint,
+      },
+      includeDirectMaterialization: true,
+      refreshPolicy: 'current_only',
+    });
+    request.signal.throwIfAborted();
+    if (projection.status !== 'success') return null;
+    const candidates = projection.groups.flatMap((group) => {
+      if (
+        group.connectionId !== request.source.connectionId
+        || group.sourceRevision !== request.sourceRevision
+        || !group.authorization.authorized
+      ) return [];
+      return group.rows.flatMap((row) => {
+        if (
+          row.ref.modelId !== request.modelId
+          || !row.application
+          || !row.directMaterialization
+        ) return [];
+        const brokerApplication = projectCLIProxyAPIProviderConnectionApplication({
+          agentTargetKey: request.application.agentTargetKey,
+          protocol: row.application.protocol,
+        });
+        if (!brokerApplication || !pluginJsonValuesEqual(brokerApplication, request.application)) return [];
+        return [{
+          endpointTemplateId: row.directMaterialization.endpoint.endpointTemplateId,
+          protocol: row.directMaterialization.endpoint.protocol,
+          credentialTransport: row.directMaterialization.credentialTransport,
+        }];
+      });
+    });
+    return candidates.length === 1 ? Object.freeze(candidates[0]!) : null;
   };
 
   const mutateModelSettings = async (
@@ -900,6 +1308,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
         selection: request.selection,
         machineId: request.machineId,
         accountSettings: snapshot.settings,
+        savedSecretResources: snapshot.savedSecretResources,
         providerSettings,
         registry,
         dnsEvidenceByEndpointUrl,
@@ -974,6 +1383,10 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
     summary: sharedRuntime.summary,
     resolveCatalogContext: sharedRuntime.resolveCatalogContext,
     projectModels,
+    resolveTeamCredentialRequestPolicySupport,
+    resolveTeamCredentialResourceTestCandidate: resolveResourceTestCandidate,
+    resolveTeamCredentialBrokerEligibility: resolveBrokerEligibility,
+    resolveTeamCredentialBrokerSourceSelection: resolveBrokerSourceSelection,
     mutateModelSettings,
     resolveBindingStatus,
     runtimeStore: sharedRuntime.runtimeStore,

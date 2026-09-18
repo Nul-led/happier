@@ -228,7 +228,19 @@ describe('createLocalPersonalHome production adapter', () => {
       await expect(readStoredCredentialsForServerId(preexisting.profile.id)).resolves.toMatchObject({ token: 'home-token', encryption: null });
       await expect(readStoredCredentialsForServerId(serverIdentityId)).resolves.toBeNull();
       await expect(readdir(join(homeDir, 'personal-home-bootstrap'))).resolves.toEqual([]);
-      expect(cleanup).toHaveBeenCalledOnce();
+
+      const repeated = await createLocalPersonalHome({ channel: 'dev', mode: 'user' });
+      expect(repeated).toEqual({
+        profileId: preexisting.profile.id,
+        homeServerIdentityId: serverIdentityId,
+        canonicalServerUrl,
+        accountCreated: false,
+        descriptor,
+      });
+      expect(authRequests).toBe(3);
+      await expect(readStoredCredentialsForServerId(preexisting.profile.id)).resolves.toMatchObject({ token: 'home-token', encryption: null });
+      await expect(readStoredCredentialsForServerId(serverIdentityId)).resolves.toBeNull();
+      expect(cleanup).toHaveBeenCalledTimes(2);
     });
   }, 90_000);
 

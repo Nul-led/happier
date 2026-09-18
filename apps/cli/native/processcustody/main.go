@@ -22,6 +22,9 @@
 //   - windows: `secure-pipe-relay` creates a current-user-only named pipe,
 //     witnesses each exact client PID, and relays opaque bytes to one fixed
 //     TypeScript-owned loopback broker. It never parses broker messages.
+//   - darwin/windows: `workspace-confined-read` and `workspace-confined-delete` hold
+//     a no-follow root-to-leaf handle chain across a two-phase authorization
+//     exchange before disclosing bytes or mutating the exact held object.
 //   - any other platform: every subcommand fails closed; Linux SVC09 custody
 //     stays on its process-group owner and never consumes this helper.
 //
@@ -64,7 +67,9 @@ usage:
   happier-process-custody query --job=<name>
   happier-process-custody pid-startidentity <pid>
   happier-process-custody peer-identity [--pipe-handle=<handle>]
-  happier-process-custody secure-pipe-relay --pipe-name=<name> --target-port=<port>`))
+  happier-process-custody secure-pipe-relay --pipe-name=<name> --target-port=<port>
+  happier-process-custody workspace-confined-read
+  happier-process-custody workspace-confined-delete`))
 }
 
 func main() {
@@ -88,6 +93,10 @@ func main() {
 		err = peerIdentityCommand(rest)
 	case "secure-pipe-relay":
 		err = securePipeRelayCommand(rest)
+	case "workspace-confined-read":
+		err = workspaceConfinedReadCommand(rest, os.Stdin, os.Stdout)
+	case "workspace-confined-delete":
+		err = workspaceConfinedDeleteCommand(rest, os.Stdin, os.Stdout)
 	default:
 		usage()
 		os.Exit(exitUsage)

@@ -6,11 +6,13 @@ import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 const mocks = vi.hoisted(() => ({
   createExecutor: vi.fn(),
   readCredentials: vi.fn(),
+  readSettings: vi.fn(),
   readStoredCredentials: vi.fn(),
 }));
 
 vi.mock('@/persistence', () => ({
   readCredentials: mocks.readCredentials,
+  readSettings: mocks.readSettings,
   readStoredCredentials: mocks.readStoredCredentials,
 }));
 
@@ -40,6 +42,7 @@ describe('plain-account RPC action ingress', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readCredentials.mockResolvedValue(null);
+    mocks.readSettings.mockResolvedValue({ machineId: 'machine-1' });
     mocks.readStoredCredentials.mockResolvedValue({
       token: 'token-only',
       encryption: null,
@@ -99,6 +102,22 @@ describe('plain-account RPC action ingress', () => {
       },
     }));
     expect(mocks.readCredentials).not.toHaveBeenCalled();
+  });
+
+  it('binds approval decisions to the daemon currentness owner for authenticated Account credentials', async () => {
+    const accountPayload = Buffer.from(JSON.stringify({ sub: 'account-1' })).toString('base64url');
+    mocks.readStoredCredentials.mockResolvedValue({
+      token: `header.${accountPayload}.signature`,
+      encryption: null,
+      credentialProvenance: 'stored_session',
+    });
+    const { handlers, rpcHandlerManager } = createRegistrar();
+    registerApprovalRpcHandlers({ rpcHandlerManager });
+
+    await expect(handlers.get(RPC_METHODS.APPROVAL_REQUEST_LIST)?.({})).resolves.toBeDefined();
+    expect(mocks.createExecutor).toHaveBeenCalledWith(expect.objectContaining({
+      isApprovalExecutionOriginCurrent: expect.any(Function),
+    }));
   });
 
   it('threads the exact daemon spawn transport into public session-spawn Action replay', async () => {

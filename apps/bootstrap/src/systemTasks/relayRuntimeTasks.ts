@@ -100,6 +100,7 @@ export async function installOrUpdateRelayRuntimeDefault(
       knownHostsMode?: 'app' | 'system';
       installerBinaryPath?: string;
       remoteHomeDir?: string;
+      signal?: AbortSignal;
     }>) => Promise<Readonly<{ binaryPath: string; versionId: string; source: string | null }>>;
   }> = {},
 ): Promise<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>> {
@@ -168,7 +169,12 @@ function resolveKnownHostsConfig(ssh: SshConnectionConfig, knownHostsMode?: 'app
     : { mode: 'system' as const };
 }
 
-async function runRemoteTextCapture(ssh: SshConnectionConfig, remoteCommand: string, knownHostsMode?: 'app' | 'system'): Promise<CommandExecutionResult> {
+async function runRemoteTextCapture(
+  ssh: SshConnectionConfig,
+  remoteCommand: string,
+  knownHostsMode?: 'app' | 'system',
+  signal?: AbortSignal,
+): Promise<CommandExecutionResult> {
   const sshWithPassword = ssh as SshConnectionWithPasswordConfig;
   const knownHosts = resolveKnownHostsConfig(sshWithPassword, knownHostsMode);
   return await runOpenSshRemoteCommand({
@@ -183,6 +189,7 @@ async function runRemoteTextCapture(ssh: SshConnectionConfig, remoteCommand: str
     knownHostsMode: knownHosts.mode,
     knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
     remoteCommand: ['bash', '-lc', safeBashSingleQuote(remoteCommand)],
+    ...(signal ? { signal } : {}),
     rejectOnNonZero: false,
     errorPrefix: `SSH command failed for ${sshWithPassword.target}`,
   });
@@ -193,6 +200,7 @@ async function copyLocalDirectoryToRemoteCapture(params: Readonly<{
   localPath: string;
   remotePath: string;
   knownHostsMode?: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<void> {
   const ssh = params.ssh as SshConnectionWithPasswordConfig;
   const invocation = buildScpCommand({
@@ -211,6 +219,7 @@ async function copyLocalDirectoryToRemoteCapture(params: Readonly<{
     command: invocation.command,
     args: invocation.args,
     ...(invocation.env ? { env: invocation.env } : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   if (result.status !== 0) {
     throw new Error(redactSshText(result.stderr || result.stdout || `SCP command failed for ${params.ssh.target}.`));
@@ -225,13 +234,14 @@ function buildRelayHostEngineDeps(params: Readonly<{
     knownHostsMode?: 'app' | 'system';
     installerBinaryPath?: string;
     remoteHomeDir?: string;
+    signal?: AbortSignal;
   }>) => Promise<Readonly<{ binaryPath: string; versionId: string; source: string | null }>>;
   localInstallPolicy?: RelayHostEngineDeps['localInstallPolicy'];
   resolveLocalInstallVersion?: RelayHostEngineDeps['resolveLocalInstallVersion'];
 }> = {}): RelayHostEngineDeps {
   const installRemoteFirstPartyComponent = params.installRemoteFirstPartyComponent
     ?? (async (installParams) => await installRemoteFirstPartyComponentShared(installParams, {
-      resolveRemoteReleaseTarget: async ({ ssh, knownHostsMode }) => {
+      resolveRemoteReleaseTarget: async ({ ssh, knownHostsMode, signal }) => {
         const preflight = await runRemoteTextCapture(
           ssh,
           [
@@ -240,6 +250,7 @@ function buildRelayHostEngineDeps(params: Readonly<{
             '"$(uname -m | tr \'[:upper:]\' \'[:lower:]\')"',
           ].join(' '),
           knownHostsMode,
+          signal,
         );
         if (preflight.status !== 0) {
           throw new Error(redactSshText(preflight.stderr || preflight.stdout || `SSH command failed for ${ssh.target}.`));
@@ -250,17 +261,17 @@ function buildRelayHostEngineDeps(params: Readonly<{
           arch: normalizeRemoteReleaseArch(parsed?.arch),
         };
       },
-      runRemoteText: async ({ ssh, remoteCommand, knownHostsMode }) => {
-        const result = await runRemoteTextCapture(ssh, remoteCommand, knownHostsMode);
+      runRemoteText: async ({ ssh, remoteCommand, knownHostsMode, signal }) => {
+        const result = await runRemoteTextCapture(ssh, remoteCommand, knownHostsMode, signal);
         return result;
       },
-      copyLocalDirectoryToRemote: async ({ ssh, localPath, remotePath, knownHostsMode }) => {
-        await copyLocalDirectoryToRemoteCapture({ ssh, localPath, remotePath, knownHostsMode });
+      copyLocalDirectoryToRemote: async ({ ssh, localPath, remotePath, knownHostsMode, signal }) => {
+        await copyLocalDirectoryToRemoteCapture({ ssh, localPath, remotePath, knownHostsMode, signal });
       },
     }));
 
   return {
-    resolveRemoteReleaseTarget: async ({ ssh, knownHostsMode }) => {
+    resolveRemoteReleaseTarget: async ({ ssh, knownHostsMode, signal }) => {
       const preflight = await runRemoteTextCapture(
         ssh,
         [
@@ -269,6 +280,7 @@ function buildRelayHostEngineDeps(params: Readonly<{
           '"$(uname -m | tr \'[:upper:]\' \'[:lower:]\')"',
         ].join(' '),
         knownHostsMode,
+        signal,
       );
       if (preflight.status !== 0) {
         throw new Error(redactSshText(preflight.stderr || preflight.stdout || `SSH command failed for ${ssh.target}.`));
@@ -279,9 +291,9 @@ function buildRelayHostEngineDeps(params: Readonly<{
         arch: normalizeRemoteReleaseArch(parsed?.arch),
       };
     },
-    runRemoteText: async ({ ssh, remoteCommand, knownHostsMode }) => await runRemoteTextCapture(ssh, remoteCommand, knownHostsMode),
-    copyLocalDirectoryToRemote: async ({ ssh, localPath, remotePath, knownHostsMode }) => await copyLocalDirectoryToRemoteCapture({ ssh, localPath, remotePath, knownHostsMode }),
-    installRemoteComponent: async ({ componentId, channel, ssh, knownHostsMode, installerBinaryPath, remoteHomeDir }) => {
+    runRemoteText: async ({ ssh, remoteCommand, knownHostsMode, signal }) => await runRemoteTextCapture(ssh, remoteCommand, knownHostsMode, signal),
+    copyLocalDirectoryToRemote: async ({ ssh, localPath, remotePath, knownHostsMode, signal }) => await copyLocalDirectoryToRemoteCapture({ ssh, localPath, remotePath, knownHostsMode, signal }),
+    installRemoteComponent: async ({ componentId, channel, ssh, knownHostsMode, installerBinaryPath, remoteHomeDir, signal }) => {
       const result = await installRemoteFirstPartyComponent({
         componentId,
         channel,
@@ -289,6 +301,7 @@ function buildRelayHostEngineDeps(params: Readonly<{
         knownHostsMode,
         installerBinaryPath,
         remoteHomeDir,
+        ...(signal ? { signal } : {}),
       });
       return {
         binaryPath: result.binaryPath,

@@ -4,6 +4,7 @@ import { PluginError } from '@happier-dev/plugin-sdk';
 
 import {
   PluginInstallReviewPrincipalDigestSchema,
+  sealSavedSecretResourceStoredContentV1,
   type PluginPermissionGrantAuthoritySourceV1,
   type PluginPermissionGrantListActionInputV1,
   type PluginPermissionGrantListActionOutputV1,
@@ -78,6 +79,15 @@ function manifest() {
             schema: { type: 'string', minLength: 1, maxLength: 256 },
             default: 'test-voice',
             presentation: { control: 'text' },
+          }, {
+            id: 'format',
+            title: 'Format',
+            schema: { type: 'string', enum: ['mp3', 'wav'] },
+            default: 'mp3',
+            presentation: {
+              control: 'select',
+              options: [{ value: 'mp3', title: 'MP3' }, { value: 'wav', title: 'WAV' }],
+            },
           }],
         },
         credentials: {
@@ -127,18 +137,44 @@ function snapshot(params: Readonly<{
   settingsVersion?: number;
   groupId?: string;
   unrelatedVoiceProvider?: boolean;
+  sharedSecret?: boolean;
 }> = {}): ActiveAccountSettingsSnapshot {
   const accountId = params.accountId ?? 'account-a';
   const source = params.source ?? 'connectedAccount';
   const secretId = params.secretId ?? 'saved-secret';
+  const sharedSecret = params.sharedSecret === true;
+  const effectiveSecretId = sharedSecret
+    ? 'happier:shared-secret:v1:resource_plugin_voice'
+    : secretId;
   return {
     source: 'network',
     scopeKey: params.scopeKey ?? 'account-scope',
     settingsVersion: params.settingsVersion ?? (accountId === 'account-a' ? 1 : 2),
     loadedAtMs: 1,
     settingsSecretsReadKeys: [],
+    ...(sharedSecret ? {
+      savedSecretResources: [{
+        resourceId: 'resource_plugin_voice',
+        ownerAccountId: 'owner-account',
+        displayName: 'Shared plugin Voice key',
+        kind: 'apiKey',
+        encryptionMode: 'plain',
+        revision: 1,
+        storedContent: sealSavedSecretResourceStoredContentV1({
+          resourceId: 'resource_plugin_voice',
+          mode: 'plain',
+          content: {
+            v: 1,
+            name: 'Shared plugin Voice key',
+            kind: 'apiKey',
+            value: 'shared-plugin-raw',
+          },
+        }),
+        materialStatus: 'ready',
+      }],
+    } : {}),
     settings: {
-      secrets: params.includeSecret === false ? [] : [{
+      secrets: params.includeSecret === false || sharedSecret ? [] : [{
         id: secretId,
         name: 'Voice API key',
         kind: 'apiKey',
@@ -151,7 +187,7 @@ function snapshot(params: Readonly<{
           contribution,
           credentialSlotId: 'api_key',
           credentialSource: { kind: source },
-          credentialBindings: { account: { api_key: secretId } },
+          credentialBindings: { account: { api_key: effectiveSecretId } },
         }],
         ...(params.unrelatedVoiceProvider
           ? {
@@ -1123,6 +1159,37 @@ describe('plugin raw credential materializer', () => {
     });
     expect(JSON.stringify(failure)).not.toContain(leaked);
     expect(String(failure)).not.toContain(leaked);
+  });
+
+  it('materializes a selected shared Saved Secret through the same plugin capability', async () => {
+    const saved = createHarness({
+      initialSnapshot: snapshot({ source: 'savedSecret', sharedSecret: true }),
+    });
+
+    await expect(saved.materializer.materialize({
+      kind: 'environment', keys: ['VOICE_TOKEN'],
+    })).resolves.toEqual({
+      kind: 'environment', env: { VOICE_TOKEN: 'shared-plugin-raw' },
+    });
+  });
+
+  it('fails a shared Saved Secret closed when its Home material is unavailable', async () => {
+    const initialSnapshot = snapshot({ source: 'savedSecret', sharedSecret: true });
+    const saved = createHarness({
+      initialSnapshot: {
+        ...initialSnapshot,
+        savedSecretResources: initialSnapshot.savedSecretResources?.map((resource) => ({
+          ...resource,
+          materialStatus: 'update_required' as const,
+        })),
+      },
+    });
+
+    await expect(saved.materializer.materialize({
+      kind: 'environment', keys: ['VOICE_TOKEN'],
+    })).rejects.toMatchObject({
+      code: 'plugin_voice_credential_access_unavailable',
+    });
   });
 
   it('uses semantic SavedSecret currentness across unrelated Account Settings mutations and revokes real changes', async () => {

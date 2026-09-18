@@ -1,3 +1,5 @@
+import { normalizePersonalHomeIrohRelayEnvironment } from './personalHomeRuntimeSpec.js';
+
 export type PersonalHomeRestorableConfigurationV1 = Readonly<{
   homeServerIdentityId: string;
   canonicalServerUrl?: string;
@@ -7,6 +9,9 @@ export type PersonalHomeRestorableConfigurationV1 = Readonly<{
   plainAccountCredentialsAtRest: 'none' | 'server_sealed';
   plainAccountArtifactsAtRest: 'none' | 'server_sealed';
   anonymousSignupPhase: 'loopback-bootstrap-then-disabled';
+  homeDeviceApprovalRequired: boolean;
+  irohRelayPolicy?: 'automatic' | 'disabled';
+  irohRelayUrls?: readonly string[];
 }>;
 
 export const PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS = Object.freeze({
@@ -17,6 +22,9 @@ export const PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS = Object.freeze({
   plainAccountCredentialsAtRest: 'HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_CREDENTIALS_AT_REST',
   plainAccountArtifactsAtRest: 'HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST',
   anonymousSignupPhase: 'AUTH_ANONYMOUS_SIGNUP_ENABLED',
+  homeDeviceApprovalRequired: 'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED',
+  irohRelayPolicy: 'HAPPIER_IROH_RELAY_POLICY',
+  irohRelayUrls: 'HAPPIER_IROH_RELAY_URLS',
 } as const);
 
 const REQUIRED_FIELDS = Object.freeze([
@@ -27,8 +35,9 @@ const REQUIRED_FIELDS = Object.freeze([
   'plainAccountCredentialsAtRest',
   'plainAccountArtifactsAtRest',
   'anonymousSignupPhase',
+  'homeDeviceApprovalRequired',
 ] as const);
-const OPTIONAL_FIELDS = Object.freeze(['canonicalServerUrl'] as const);
+const OPTIONAL_FIELDS = Object.freeze(['canonicalServerUrl', 'irohRelayPolicy', 'irohRelayUrls'] as const);
 const ALLOWED_FIELDS = new Set<string>([...REQUIRED_FIELDS, ...OPTIONAL_FIELDS]);
 
 function normalizeCanonicalServerUrl(value: unknown): string | undefined {
@@ -47,6 +56,27 @@ function assertSealingPolicy(value: unknown, field: string): asserts value is 'n
   if (value !== 'none' && value !== 'server_sealed') {
     throw new Error(`Invalid Personal Home ${field} configuration`);
   }
+}
+
+function normalizeIrohRelayConfiguration(source: Readonly<Record<string, unknown>>): Readonly<{
+  irohRelayPolicy?: 'automatic' | 'disabled';
+  irohRelayUrls?: readonly string[];
+}> {
+  const rawRelayUrls = Array.isArray(source.irohRelayUrls)
+    ? source.irohRelayUrls.map((value) => typeof value === 'string' ? value : String(value)).join(',')
+    : source.irohRelayUrls;
+  const environment = normalizePersonalHomeIrohRelayEnvironment({
+    HAPPIER_IROH_RELAY_POLICY: source.irohRelayPolicy,
+    HAPPIER_IROH_RELAY_URLS: rawRelayUrls,
+  });
+  return {
+    ...(environment.HAPPIER_IROH_RELAY_POLICY
+      ? { irohRelayPolicy: environment.HAPPIER_IROH_RELAY_POLICY }
+      : {}),
+    ...(environment.HAPPIER_IROH_RELAY_URLS
+      ? { irohRelayUrls: Object.freeze(environment.HAPPIER_IROH_RELAY_URLS.split(',')) }
+      : {}),
+  };
 }
 
 export function parsePersonalHomeRestorableConfigurationV1(value: unknown): PersonalHomeRestorableConfigurationV1 {
@@ -71,7 +101,11 @@ export function parsePersonalHomeRestorableConfigurationV1(value: unknown): Pers
   if (configuration.anonymousSignupPhase !== 'loopback-bootstrap-then-disabled') {
     throw new Error('Invalid Personal Home anonymous signup phase');
   }
+  if (typeof configuration.homeDeviceApprovalRequired !== 'boolean') {
+    throw new Error('Invalid Personal Home device approval policy');
+  }
   const canonicalServerUrl = normalizeCanonicalServerUrl(configuration.canonicalServerUrl);
+  const irohRelayConfiguration = normalizeIrohRelayConfiguration(configuration);
   return Object.freeze({
     homeServerIdentityId: configuration.homeServerIdentityId,
     ...(canonicalServerUrl === undefined ? {} : { canonicalServerUrl }),
@@ -81,7 +115,14 @@ export function parsePersonalHomeRestorableConfigurationV1(value: unknown): Pers
     plainAccountCredentialsAtRest: configuration.plainAccountCredentialsAtRest,
     plainAccountArtifactsAtRest: configuration.plainAccountArtifactsAtRest,
     anonymousSignupPhase: 'loopback-bootstrap-then-disabled',
+    homeDeviceApprovalRequired: configuration.homeDeviceApprovalRequired,
+    ...irohRelayConfiguration,
   });
+}
+
+/** Canonical normalization for the Home auth owner's process-level approval policy. */
+export function resolveHomeDeviceApprovalRequiredFromEnv(source: Readonly<Record<string, unknown>>): boolean {
+  return source[PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.homeDeviceApprovalRequired] === '1';
 }
 
 export function normalizePersonalHomeRestorableConfigurationV1(
@@ -105,6 +146,9 @@ export function normalizePersonalHomeRestorableConfigurationV1(
     plainAccountCredentialsAtRest: source.plainAccountCredentialsAtRest === 'none' ? 'none' : 'server_sealed',
     plainAccountArtifactsAtRest: source.plainAccountArtifactsAtRest === 'none' ? 'none' : 'server_sealed',
     anonymousSignupPhase: 'loopback-bootstrap-then-disabled',
+    homeDeviceApprovalRequired: source.homeDeviceApprovalRequired === true,
+    irohRelayPolicy: source.irohRelayPolicy,
+    irohRelayUrls: source.irohRelayUrls,
   });
 }
 
@@ -137,5 +181,12 @@ export function personalHomeRestorableConfigurationEnvOverrides(
     [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.plainAccountCredentialsAtRest]: validated.plainAccountCredentialsAtRest,
     [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.plainAccountArtifactsAtRest]: validated.plainAccountArtifactsAtRest,
     [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.anonymousSignupPhase]: '0',
+    [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.homeDeviceApprovalRequired]: validated.homeDeviceApprovalRequired ? '1' : '0',
+    ...(validated.irohRelayPolicy ? {
+      [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.irohRelayPolicy]: validated.irohRelayPolicy,
+    } : {}),
+    ...(validated.irohRelayUrls ? {
+      [PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.irohRelayUrls]: validated.irohRelayUrls.join(','),
+    } : {}),
   });
 }

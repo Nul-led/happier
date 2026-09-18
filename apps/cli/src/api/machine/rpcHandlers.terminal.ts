@@ -21,7 +21,7 @@ import {
   type TerminalStreamReadResponse,
 } from '@happier-dev/protocol';
 
-import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
+import type { RpcHandlerRegistrar } from '../rpc/types';
 import { validatePath } from '@/rpc/handlers/pathSecurity';
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
 import { resolveMachineRpcWorkingDirectory } from './resolveMachineRpcWorkingDirectory';
@@ -54,6 +54,22 @@ export type MachineTerminalRpcRegistration = Readonly<{
   dispose: () => void;
 }>;
 
+export type MachineTerminalRpcHandlerDeps = Readonly<{
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  workingDirectory?: string;
+  accessPolicy?: FilesystemAccessPolicy;
+  sessionManager?: TerminalBridgeSessionManager;
+  terminalRegistry?: TerminalProcessRegistry;
+  resolveLaunch?: (launch: import('@happier-dev/protocol').DaemonTerminalLaunchIntent) => TerminalLaunchProcess;
+  /**
+   * Narrows the canonical terminal owner to one Session-scoped Machine runtime.
+   * Omitted attribution is stamped with this value; an explicit sibling Session
+   * is rejected before a terminal is opened.
+   */
+  requiredSessionId?: string;
+}>;
+
 function terminalStreamUnavailable(): { ok: false; code: 'terminal_byte_stream_unavailable'; message: string } {
   return {
     ok: false,
@@ -79,16 +95,8 @@ function terminalStreamDisabled(): { ok: false; code: 'terminal_disabled'; messa
 }
 
 export function registerMachineTerminalRpcHandlers(params: Readonly<{
-  rpcHandlerManager: RpcHandlerManager;
-  deps?: Readonly<{
-    env?: NodeJS.ProcessEnv;
-    platform?: NodeJS.Platform;
-    workingDirectory?: string;
-    accessPolicy?: FilesystemAccessPolicy;
-    sessionManager?: TerminalBridgeSessionManager;
-    terminalRegistry?: TerminalProcessRegistry;
-    resolveLaunch?: (launch: import('@happier-dev/protocol').DaemonTerminalLaunchIntent) => TerminalLaunchProcess;
-  }>;
+  rpcHandlerManager: RpcHandlerRegistrar;
+  deps?: MachineTerminalRpcHandlerDeps;
 }>): MachineTerminalRpcRegistration {
   const { rpcHandlerManager } = params;
   const env = params.deps?.env ?? process.env;
@@ -132,6 +140,13 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     if (!config.enabled) return err('terminal_disabled');
     const parsed = DaemonTerminalEnsureRequestSchema.safeParse(raw);
     if (!parsed.success) return err('terminal_invalid_request');
+    if (
+      params.deps?.requiredSessionId
+      && (
+        (parsed.data.sessionId !== undefined && parsed.data.sessionId !== params.deps.requiredSessionId)
+        || (parsed.data.launch?.kind === 'session_attach' && parsed.data.launch.sessionId !== params.deps.requiredSessionId)
+      )
+    ) return err('terminal_invalid_request');
 
     const cwd = resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
@@ -145,7 +160,9 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       ...(parsed.data.launch ? { launchProcess: resolveLaunch(parsed.data.launch) } : {}),
       // Attribution only: stamped onto the terminal->port registration, never used to
       // gate resolveCwd/spawn.
-      ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+      ...(params.deps?.requiredSessionId || parsed.data.sessionId
+        ? { sessionId: params.deps?.requiredSessionId ?? parsed.data.sessionId }
+        : {}),
     });
   });
 
@@ -226,6 +243,11 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     if (!config.enabled) return err('terminal_disabled');
     const parsed = DaemonTerminalRestartRequestSchema.safeParse(raw);
     if (!parsed.success) return err('terminal_invalid_request');
+    if (
+      params.deps?.requiredSessionId
+      && parsed.data.launch?.kind === 'session_attach'
+      && parsed.data.launch.sessionId !== params.deps.requiredSessionId
+    ) return err('terminal_invalid_request');
 
     const cwd = resolveCwd(parsed.data.cwd);
     if (!cwd.ok) return cwd;
@@ -237,6 +259,7 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
       rows: parsed.data.rows,
       initialCommand: parsed.data.initialCommand,
       ...(parsed.data.launch ? { launchProcess: resolveLaunch(parsed.data.launch) } : {}),
+      ...(params.deps?.requiredSessionId ? { sessionId: params.deps.requiredSessionId } : {}),
     });
   });
 

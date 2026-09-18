@@ -20,7 +20,12 @@ export function mapUnknownErrorToControlError(error: unknown): ControlCliMappedE
     return { code: rawCode, unexpected: false, ...(error instanceof Error && error.message ? { message: error.message } : {}) };
   }
 
-  if (rawCode === 'unknown_subcommand' || rawCode === 'machine_inventory_unavailable') {
+  if (
+    rawCode === 'invalid_arguments'
+    || rawCode === 'unknown_subcommand'
+    || rawCode === 'machine_inventory_unavailable'
+    || rawCode === 'server_identity_unavailable'
+  ) {
     return { code: rawCode, unexpected: false, ...(error instanceof Error && error.message ? { message: error.message } : {}) };
   }
 

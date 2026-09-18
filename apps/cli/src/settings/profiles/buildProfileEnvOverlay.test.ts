@@ -130,6 +130,28 @@ describe('buildProfileEnvOverlay', () => {
     expect(result.permissionModeSeed).toBe('default');
   });
 
+  it('preserves exact secret whitespace from environment and interactive entry', async () => {
+    const { buildProfileEnvOverlay } = await import('./buildProfileEnvOverlay.js');
+    const profile = makeDeepSeekProfile();
+
+    const fromEnv = await buildProfileEnvOverlay({
+      agentId: 'claude', profile,
+      processEnv: { DEEPSEEK_AUTH_TOKEN: '  env-secret\n' },
+      promptSecretFn: null,
+      reservedEnvironmentVariableNames: new Set(),
+      requiredSecretRequirementNamesMissingBinding: new Set(['DEEPSEEK_AUTH_TOKEN']),
+    });
+    expect(fromEnv.envOverlayRaw.DEEPSEEK_AUTH_TOKEN).toBe('  env-secret\n');
+
+    const fromPrompt = await buildProfileEnvOverlay({
+      agentId: 'claude', profile, processEnv: {},
+      promptSecretFn: async () => '   ',
+      reservedEnvironmentVariableNames: new Set(),
+      requiredSecretRequirementNamesMissingBinding: new Set(['DEEPSEEK_AUTH_TOKEN']),
+    });
+    expect(fromPrompt.envOverlayRaw.DEEPSEEK_AUTH_TOKEN).toBe('   ');
+  });
+
   it('defers a saved secret binding to the daemon without prompting or decrypting', async () => {
     const { buildProfileEnvOverlay } = await import('./buildProfileEnvOverlay.js');
 

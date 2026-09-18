@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { logger } from "@/ui/logger";
-import { ApiSessionClient } from "@/api/session/sessionClient";
+import type { ApiSessionClient } from "@/api/session/sessionClient";
 import { AgentState } from "@/api/types";
 import { updateAgentStateBestEffort as updateAgentStateBestEffortShared } from "@/api/session/sessionWritesBestEffort";
 import { isToolAllowedForSession, makeToolIdentifier } from './permissionToolIdentifier';
@@ -66,7 +66,7 @@ import type { RpcHandlerContext } from '@/api/rpc/types';
 import type {
     PermissionRequestPushSender as PermissionRequestPushSenderFromSettings,
 } from '@/settings/notifications/permissionRequestPush';
-import { resolveAgentRequestKind } from './requestKind';
+import { HAPPIER_ACTION_REQUEST_SOURCE, resolveAgentRequestKind } from './requestKind';
 import { AgentStateRequestStore } from './agentStateRequestStore';
 import type {
     AgentStateOutstandingRequest,
@@ -94,6 +94,10 @@ import { createPermissionMediationRecordStore } from './mediation/permissionMedi
 
 type AgentStateRequestStoreBindableSession = Readonly<{
     bindAgentStateRequestStore?: (store: AgentStateRequestStore) => void;
+    respondToSessionActionConfirmation?: (
+        response: PermissionResponse,
+        actor: SocketRpcSessionPermissionRespondAuthorizationContext['actor'],
+    ) => Promise<'resolved' | 'not_found' | 'invalid'>;
 }>;
 
 export type PermissionRequestPushSender = PermissionRequestPushSenderFromSettings;
@@ -517,6 +521,7 @@ function isPermissionResponseAuthorityValid(params: Readonly<{
     context: Readonly<{
         toolName: string;
         toolInput: unknown;
+        source?: string;
         permissionSuggestions?: readonly unknown[];
     }>;
 }>): boolean {
@@ -532,6 +537,12 @@ function isPermissionResponseAuthorityValid(params: Readonly<{
     const deniedDecision = response.decision === 'denied' || response.decision === 'abort';
 
     if ((response.approved && deniedDecision) || (!response.approved && approvedDecision)) return false;
+
+    if (context.source === HAPPIER_ACTION_REQUEST_SOURCE) {
+        return !hasAllowedTools && !hasUpdatedPermissions && !hasExecPolicyAmendment && !hasAnswers
+            && (response.decision === undefined || response.decision === 'approved'
+                || response.decision === 'denied' || response.decision === 'abort');
+    }
 
     if (!response.approved) {
         return !hasAllowedTools && !hasUpdatedPermissions && !hasExecPolicyAmendment && !hasAnswers;
@@ -1323,6 +1334,7 @@ export abstract class BasePermissionHandler {
                 if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
                 const entry = value as Record<string, unknown>;
                 if (entry.status !== 'approved') continue;
+                if (entry.source === HAPPIER_ACTION_REQUEST_SOURCE) continue;
 
                 const toolName = typeof entry.tool === 'string' ? entry.tool : '';
                 if (!toolName) continue;
@@ -1520,6 +1532,18 @@ export abstract class BasePermissionHandler {
                     errorCode: 'permission_actor_unattributable',
                     requestId: requestIdFor(response),
                 } as const;
+            }
+            if (expectedRequestKind === 'permission') {
+                const actionOutcome = await (this.session as AgentStateRequestStoreBindableSession)
+                    .respondToSessionActionConfirmation?.(response, permissionDecisionActorV1);
+                if (actionOutcome === 'resolved') return undefined;
+                if (actionOutcome === 'invalid') {
+                    return {
+                        ok: false,
+                        errorCode: 'permission_response_invalid',
+                        requestId: requestIdFor(response),
+                    } as const;
+                }
             }
             const outcome = await this.handleIncomingPermissionResponse(response, {
                 ...(expectedRequestKind ? { expectedRequestKind } : {}),
@@ -3384,7 +3408,8 @@ export abstract class BasePermissionHandler {
             remoteMediationSettlementId,
             isCurrent,
         } = params;
-        const recoveredCurrentDecision = !legacyPending && context.status === 'agent_state_only'
+        const recoveredCurrentDecision = context.source !== HAPPIER_ACTION_REQUEST_SOURCE
+            && !legacyPending && context.status === 'agent_state_only'
             ? this.resolveCurrentPermissionDecisionForOutstandingRequest(context)
             : null;
         const resolveCurrentPermissionDecision = legacyPending?.resolveCurrentPermissionDecision
@@ -3449,7 +3474,7 @@ export abstract class BasePermissionHandler {
         // as a stale rejection (notably for remote AskUserQuestion answers).
         if (!completed && isCurrent && !isCurrent()) return false;
 
-        this.applyPermissionResponseSideEffects({
+        if (context.source !== HAPPIER_ACTION_REQUEST_SOURCE) this.applyPermissionResponseSideEffects({
             response: effectiveResponse,
             result,
             responseAllowedTools,
@@ -3467,7 +3492,7 @@ export abstract class BasePermissionHandler {
             legacyPending?.resolve(result);
         }
 
-        if (effectiveResponse.approved) {
+        if (effectiveResponse.approved && context.source !== HAPPIER_ACTION_REQUEST_SOURCE) {
             this.autoApproveNowAllowedPendingRequests(effectiveResponse.id);
         }
 
@@ -3848,6 +3873,20 @@ export abstract class BasePermissionHandler {
 
     async abortPendingRequestsAndFlush(reason: string = 'Aborted by user'): Promise<void> {
         await this.cancelPendingRequests(reason);
+        try {
+            await this.session.flush?.();
+        } catch (error) {
+            logger.debug(`${this.getLogPrefix()} Failed to flush session after permission abort (non-fatal)`, error);
+        }
+    }
+
+    async abortPendingRequestAndFlush(requestId: string, reason: string = 'Aborted by user'): Promise<void> {
+        const pending = this.pendingRequests.get(requestId);
+        await this.requestCoordinator.cancelRequests([requestId], reason);
+        if (pending && !pending.coordinatorManaged && this.pendingRequests.get(requestId) === pending) {
+            this.pendingRequests.delete(requestId);
+            pending.reject(new Error(reason));
+        }
         try {
             await this.session.flush?.();
         } catch (error) {

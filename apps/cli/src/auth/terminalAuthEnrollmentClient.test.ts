@@ -43,10 +43,12 @@ const STRICT_TARGET = {
 function readyFeatures(params: Readonly<{
   identity?: string;
   descriptor?: typeof DESCRIPTOR;
+  provenance?: 'authenticated' | 'public';
 }> = {}): CliServerFeaturesSnapshot {
   const descriptor = 'descriptor' in params ? params.descriptor : DESCRIPTOR;
   return {
     status: 'ready',
+    provenance: params.provenance ?? 'authenticated',
     features: {
       ...FeaturesResponseSchema.parse({
         features: {},
@@ -146,7 +148,7 @@ describe('terminal auth enrollment client', () => {
           applicationUrl: 'https://legacy.example.test',
         },
       },
-      snapshot: readyFeatures({ descriptor: undefined }),
+      snapshot: readyFeatures({ descriptor: undefined, provenance: 'public' }),
     })).toEqual({
       homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
       credentialDestination: {

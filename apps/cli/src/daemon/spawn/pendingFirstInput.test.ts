@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildPluginSessionInputAdmissionV1 } from '@/session/services/sessionInputAdmissionIdentity';
+import {
+  buildPluginSessionInputAdmissionV1,
+  buildWorkflowSessionInputAdmissionV2,
+} from '@/session/services/sessionInputAdmissionIdentity';
 
 import {
   HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY,
@@ -77,6 +80,30 @@ describe('pendingFirstInput', () => {
       meta: { source: 'ui', sentFrom: 'cli', ...meta },
       inputAdmission,
     });
+  });
+
+  it('round-trips Workflow V2 first-input provenance through the child handoff', async () => {
+    const inputAdmission = buildWorkflowSessionInputAdmissionV2({
+      purpose: 'invocation',
+      runId: 'run-1',
+      invocationRecordId: 'invocation-1',
+    });
+    const env: NodeJS.ProcessEnv = {
+      [HAPPIER_DAEMON_PENDING_FIRST_INPUT_ENV_KEY]: serializePendingFirstInputForEnv({
+        text: 'workflow first turn',
+        localId: 'workflow-input-v2:stable',
+        inputAdmission,
+      }),
+    };
+    const enqueueSessionUserMessage = vi.fn(async () => undefined);
+
+    await createPendingFirstInputCommitter({ env }).commit({ enqueueSessionUserMessage });
+
+    expect(enqueueSessionUserMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: 'workflow first turn',
+      localId: 'workflow-input-v2:stable',
+      inputAdmission,
+    }));
   });
 
   it('retains custody after a failed commit and clears the handoff only after a retry succeeds', async () => {

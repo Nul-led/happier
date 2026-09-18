@@ -9,29 +9,29 @@ import {
 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoredCredentials } from '@/persistence';
+import { buildSessionMetadataEnvelopeFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
+import { deriveExternalSessionPluginOperationDurableKey } from '@/session/external/pluginOperationDurableKey';
 
 const mocks = vi.hoisted(() => ({
-  loadPersistedLinkedExternalSession: vi.fn(),
-  authenticateOwnedExternalSessionRecord: vi.fn(),
-  readPersistedLinkedExternalSessionFromRaw: vi.fn(),
+  fetchSessionById: vi.fn(),
+  fetchAccountEncryptionCurrentness: vi.fn(),
   callMachineRpc: vi.fn(),
-  resolveExternalSessionPluginOperationPreflightAdmission: vi.fn(),
 }));
 
-vi.mock('@/api/session/external/takeover/loadLinkedExternalSession', () => ({
-  loadPersistedLinkedExternalSession: mocks.loadPersistedLinkedExternalSession,
-  authenticateOwnedExternalSessionRecord:
-    mocks.authenticateOwnedExternalSessionRecord,
-  readPersistedLinkedExternalSessionFromRaw:
-    mocks.readPersistedLinkedExternalSessionFromRaw,
+// Only HTTP/RPC and persisted-credential boundaries are replaced; metadata and durable
+// admission decisions run through their production owners.
+vi.mock('@/session/transport/http/sessionsHttp', () => ({
+  fetchSessionById: mocks.fetchSessionById,
+}));
+vi.mock('@/api/client/connectedServiceCredentialApi', () => ({
+  fetchAccountEncryptionCurrentness: mocks.fetchAccountEncryptionCurrentness,
 }));
 vi.mock('@/session/transport/rpc/machineRpc', () => ({
   callMachineRpc: mocks.callMachineRpc,
 }));
-vi.mock('./operationRecordStore', async (importOriginal) => ({
-  ...await importOriginal<typeof import('./operationRecordStore')>(),
-  resolveExternalSessionPluginOperationPreflightAdmission:
-    mocks.resolveExternalSessionPluginOperationPreflightAdmission,
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/persistence')>(),
+  readStoredCredentials: async () => credentials,
 }));
 
 import { executePluginExternalSessionAction } from './pluginExternalSessionActionExecutor';
@@ -44,9 +44,36 @@ import {
 // This boundary fixture carries a stable Account subject while still exposing
 // the opaque token as an external transport value.
 const credentials = {
-  token: `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: 'plugin-test-account' })).toString('base64url')}.`,
-} as unknown as StoredCredentials;
+  token: `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: 'vitest' })).toString('base64url')}.`,
+  encryption: null,
+} satisfies StoredCredentials;
 const roots: string[] = [];
+
+function sessionRecord(metadata: Record<string, unknown> = {
+  externalSessionV1: {
+    v: 1,
+    machineId: 'machine-private',
+    agentId: 'codex',
+    remoteSessionId: 'remote-private',
+    source: { kind: 'codexHome', home: '/private/home' },
+    linkedAtMs: 1,
+  },
+}) {
+  const fields = buildSessionMetadataEnvelopeFields({
+    credentials,
+    accountEncryptionMode: 'plain',
+    storedContentMode: 'plain',
+    metadata,
+    agentState: null,
+  });
+  return {
+    id: 'session-1',
+    encryptionMode: 'plain',
+    metadataLayoutVersion: fields.metadataLayoutVersion,
+    metadata: fields.sharedMetadata.ciphertext,
+    ownerMetadata: fields.ownerMetadata,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, {
@@ -57,32 +84,8 @@ afterEach(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.authenticateOwnedExternalSessionRecord.mockResolvedValue({
-    ok: true,
-    rawSession: { id: 'session-1' },
-    accountEncryptionMode: 'plain',
-  });
-  mocks.readPersistedLinkedExternalSessionFromRaw.mockResolvedValue({
-    ok: true,
-    session: {
-      machineId: 'machine-private',
-      agentId: 'codex',
-      remoteSessionId: 'remote-private',
-      source: { kind: 'codexHome', home: '/private/home' },
-    },
-  });
-  mocks.loadPersistedLinkedExternalSession.mockResolvedValue({
-    ok: true,
-    session: {
-      machineId: 'machine-private',
-      agentId: 'codex',
-      remoteSessionId: 'remote-private',
-      source: { kind: 'codexHome', home: '/private/home' },
-    },
-  });
-  mocks.resolveExternalSessionPluginOperationPreflightAdmission.mockResolvedValue({
-    kind: 'miss',
-  });
+  mocks.fetchSessionById.mockResolvedValue(sessionRecord());
+  mocks.fetchAccountEncryptionCurrentness.mockResolvedValue({ mode: 'plain' });
 });
 
 function materializeInput(idempotencyKey: string) {
@@ -200,6 +203,42 @@ async function seedTerminalReceipt(input: Readonly<{
   return compacted.receipt;
 }
 
+async function seedMaterializeRecord(activeServerDir: string, callerKey: string, sessionId = 'session-1') {
+  const base = terminalOperationRecord({ sessionId });
+  const request = {
+    v: 1 as const,
+    sessionId,
+    source: base.request.source,
+    idempotencyKey: deriveExternalSessionPluginOperationDurableKey({
+      pluginId: 'author.example', callerKey,
+    }),
+    plan: 'materialize' as const,
+    targetStorageMode: 'external-linked' as const,
+    targetRuntimeMode: null,
+  };
+  const record = ExternalSessionOperationRecordV1Schema.parse({
+    ...base,
+    request,
+    timeline: resolveExternalSessionOperationTimelineV1(request),
+    phase: 'publishing',
+    currentStorageState: 'snapshot_complete',
+    publication: {
+      materializationPublicationId: 'publication-1',
+      materializedThroughSourceAt: 25_000,
+      publishedThroughServerSeq: 0,
+    },
+    authorIntent: {
+      v: 1,
+      surface: 'plugin',
+      kind: 'materialize',
+      sessionId,
+      targetStorageMode: 'external-linked',
+    },
+  });
+  await writeExternalSessionOperationRecord(activeServerDir, record);
+  return record;
+}
+
 function storedOperationPath(activeServerDir: string, operationId: string): string {
   const key = createHash('sha256').update(operationId, 'utf8').digest('hex');
   return join(
@@ -225,8 +264,8 @@ describe('plugin External Session action executor', () => {
       signal,
     });
 
-    expect(mocks.loadPersistedLinkedExternalSession).toHaveBeenCalledWith({
-      credentials,
+    expect(mocks.fetchSessionById).toHaveBeenCalledWith({
+      token: credentials.token,
       sessionId: 'session-1',
       signal,
     });
@@ -302,8 +341,8 @@ describe('plugin External Session action executor', () => {
         'v',
       ]);
       expect(receipt.presentation.status).toBe(status);
-      expect(mocks.loadPersistedLinkedExternalSession).toHaveBeenCalledWith({
-        credentials,
+      expect(mocks.fetchSessionById).toHaveBeenCalledWith({
+        token: credentials.token,
         sessionId: receipt.reference.sessionId,
       });
       expect(mocks.callMachineRpc).not.toHaveBeenCalled();
@@ -316,11 +355,7 @@ describe('plugin External Session action executor', () => {
     const path = storedOperationPath(activeServerDir, operationId);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, '{', 'utf8');
-    mocks.loadPersistedLinkedExternalSession.mockResolvedValueOnce({
-      ok: false,
-      errorCode: 'invalid_request',
-      error: 'Session is unavailable.',
-    });
+    mocks.fetchSessionById.mockResolvedValueOnce(null);
 
     const result = await executePluginExternalSessionAction({
       actionId: 'sessions.external.operation.status.get',
@@ -332,7 +367,7 @@ describe('plugin External Session action executor', () => {
     expect(result).toEqual({
       ok: false,
       errorCode: 'invalid_request',
-      error: 'Session is unavailable.',
+      error: 'session_not_found',
     });
     expect(mocks.callMachineRpc).not.toHaveBeenCalled();
   });
@@ -425,29 +460,30 @@ describe('plugin External Session action executor', () => {
     'x'.repeat(257),
   ])('rejects a non-canonical materialize key before durable admission: %j', async (idempotencyKey) => {
     const materializeStart = vi.fn();
+    const activeServerDir = await createOperationRoot();
 
     const result = await executePluginExternalSessionAction({
       actionId: 'sessions.external.materialize.start',
       input: materializeInput(idempotencyKey),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' });
+    }, { materializeStart, activeServerDir });
 
     expect(result).toEqual({
       ok: false,
       errorCode: 'invalid_parameters',
       error: 'invalid_parameters',
     });
-    expect(mocks.resolveExternalSessionPluginOperationPreflightAdmission).not.toHaveBeenCalled();
-    expect(mocks.loadPersistedLinkedExternalSession).not.toHaveBeenCalled();
+    expect(mocks.fetchSessionById).not.toHaveBeenCalled();
     expect(materializeStart).not.toHaveBeenCalled();
   });
 
   it('authorizes the current Session owner before consulting the durable author-intent owner', async () => {
-    mocks.authenticateOwnedExternalSessionRecord.mockResolvedValueOnce({
-      ok: false,
-      errorCode: 'agent_unavailable',
-      error: 'session_metadata_unavailable',
+    const activeServerDir = await createOperationRoot();
+    await seedMaterializeRecord(activeServerDir, 'authorized-before-preflight');
+    mocks.fetchSessionById.mockResolvedValueOnce({
+      ...sessionRecord(),
+      ownerMetadata: null,
     });
     const materializeStart = vi.fn();
 
@@ -456,37 +492,20 @@ describe('plugin External Session action executor', () => {
       input: materializeInput('authorized-before-preflight'),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' })).resolves.toEqual({
+    }, { materializeStart, activeServerDir })).resolves.toEqual({
       ok: false,
       errorCode: 'agent_unavailable',
       error: 'session_metadata_unavailable',
     });
 
-    expect(mocks.authenticateOwnedExternalSessionRecord).toHaveBeenCalledWith({
-      credentials,
-      sessionId: 'session-1',
-    });
-    expect(mocks.resolveExternalSessionPluginOperationPreflightAdmission)
-      .not.toHaveBeenCalled();
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).not.toHaveBeenCalled();
     expect(materializeStart).not.toHaveBeenCalled();
   });
 
   it('replays the durable operation before parsing the mutable current link', async () => {
-    mocks.resolveExternalSessionPluginOperationPreflightAdmission.mockResolvedValue({
-      kind: 'existing_record',
-      record: {
-        request: { sessionId: 'session-1' },
-        operationId: 'operation-committed',
-        revision: 3,
-      },
-    } as Awaited<ReturnType<typeof mocks.resolveExternalSessionPluginOperationPreflightAdmission>>);
-    // The current link has since become unavailable: replay must still win.
-    mocks.readPersistedLinkedExternalSessionFromRaw.mockResolvedValue({
-      ok: false,
-      errorCode: 'invalid_request',
-      error: 'session_is_not_external',
-    });
+    const activeServerDir = await createOperationRoot();
+    const record = await seedMaterializeRecord(activeServerDir, 'replay-before-link-parse');
+    // Valid owner metadata remains readable, but it no longer has an external link.
+    mocks.fetchSessionById.mockResolvedValue(sessionRecord({}));
     const materializeStart = vi.fn();
 
     await expect(executePluginExternalSessionAction({
@@ -494,183 +513,132 @@ describe('plugin External Session action executor', () => {
       input: materializeInput('replay-before-link-parse'),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' })).resolves.toEqual({
+    }, { materializeStart, activeServerDir })).resolves.toEqual({
       ok: true,
       result: {
         ok: true,
         operation: {
-          sessionId: 'session-1',
-          operationId: 'operation-committed',
-          revision: 3,
+          sessionId: record.request.sessionId,
+          operationId: record.operationId,
+          revision: record.revision,
         },
       },
     });
-
-    expect(mocks.resolveExternalSessionPluginOperationPreflightAdmission)
-      .toHaveBeenCalledTimes(1);
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).not.toHaveBeenCalled();
     expect(materializeStart).not.toHaveBeenCalled();
   });
 
   it('separates opaque keys and host-stamped plugin identities before direct Start', async () => {
+    const activeServerDir = await createOperationRoot();
     const materializeStart = vi.fn().mockResolvedValue({
       ok: false,
       error: { code: 'operation_unavailable', message: 'not started' },
     });
 
-    await executePluginExternalSessionAction({
-      actionId: 'sessions.external.materialize.start',
-      input: materializeInput('\uD800'),
-      credentials,
-      pluginId: 'author.one',
-    }, { materializeStart, activeServerDir: '/unused' });
-    await executePluginExternalSessionAction({
-      actionId: 'sessions.external.materialize.start',
-      input: materializeInput('\uD801'),
-      credentials,
-      pluginId: 'author.one',
-    }, { materializeStart, activeServerDir: '/unused' });
-    await executePluginExternalSessionAction({
-      actionId: 'sessions.external.materialize.start',
-      input: materializeInput('\uD800'),
-      credentials,
-      pluginId: 'author.two',
-    }, { materializeStart, activeServerDir: '/unused' });
+    for (const [key, pluginId] of [
+      ['\uD800', 'author.one'],
+      ['\uD801', 'author.one'],
+      ['\uD800', 'author.two'],
+    ] as const) {
+      await executePluginExternalSessionAction({
+        actionId: 'sessions.external.materialize.start',
+        input: materializeInput(key),
+        credentials,
+        pluginId,
+      }, { materializeStart, activeServerDir });
+    }
 
-    const firstKey = mocks.resolveExternalSessionPluginOperationPreflightAdmission.mock.calls[0]?.[0]
-      .durableIdempotencyKey;
-    const secondKey = mocks.resolveExternalSessionPluginOperationPreflightAdmission.mock.calls[1]?.[0]
-      .durableIdempotencyKey;
-    const thirdKey = mocks.resolveExternalSessionPluginOperationPreflightAdmission.mock.calls[2]?.[0]
-      .durableIdempotencyKey;
-    expect(firstKey).toMatch(/^plugin-operation:v1:[0-9a-f]{64}$/);
-    expect(secondKey).toMatch(/^plugin-operation:v1:[0-9a-f]{64}$/);
-    expect(firstKey).not.toBe(secondKey);
-    expect(thirdKey).toMatch(/^plugin-operation:v1:[0-9a-f]{64}$/);
-    expect(firstKey).not.toBe(thirdKey);
-    expect(materializeStart).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      sessionId: 'session-1',
-      durableIdempotencyKey: firstKey,
-      authorIntent: {
-        v: 1,
-        surface: 'plugin',
-        kind: 'materialize',
+    expect(materializeStart).toHaveBeenCalledTimes(3);
+    const keys = materializeStart.mock.calls.map(([input]) => input.durableIdempotencyKey);
+    expect(new Set(keys).size).toBe(3);
+    for (const key of keys) expect(key).toMatch(/^plugin-operation:v1:[0-9a-f]{64}$/);
+    for (let index = 0; index < 3; index++) {
+      expect(materializeStart).toHaveBeenNthCalledWith(index + 1, expect.objectContaining({
         sessionId: 'session-1',
-        targetStorageMode: 'external-linked',
-      },
-    }));
-    expect(materializeStart).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      sessionId: 'session-1',
-      durableIdempotencyKey: secondKey,
-    }));
-    expect(materializeStart).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      sessionId: 'session-1',
-      durableIdempotencyKey: thirdKey,
-    }));
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).toHaveBeenCalledTimes(3);
+        durableIdempotencyKey: keys[index],
+        authorIntent: {
+          v: 1,
+          surface: 'plugin',
+          kind: 'materialize',
+          sessionId: 'session-1',
+          targetStorageMode: 'external-linked',
+        },
+      }));
+    }
     expect(mocks.callMachineRpc).not.toHaveBeenCalled();
   });
 
   it('returns a changed-intent conflict only after current linked-Session authorization', async () => {
-    mocks.resolveExternalSessionPluginOperationPreflightAdmission.mockResolvedValue({
-      kind: 'conflict',
-    });
+    const activeServerDir = await createOperationRoot();
+    await seedMaterializeRecord(activeServerDir, 'changed-intent', 'session-other');
+    mocks.fetchSessionById.mockResolvedValue(sessionRecord({}));
     const materializeStart = vi.fn();
-
-    const result = await executePluginExternalSessionAction({
-      actionId: 'sessions.external.materialize.start',
-      input: materializeInput('\uD800'),
+    const args = {
+      actionId: 'sessions.external.materialize.start' as const,
+      input: materializeInput('changed-intent'),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' });
+    };
 
-    expect(result).toEqual({
+    mocks.fetchSessionById.mockResolvedValueOnce({ ...sessionRecord(), ownerMetadata: null });
+    await expect(executePluginExternalSessionAction(args, {
+      materializeStart, activeServerDir,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'agent_unavailable' });
+
+    await expect(executePluginExternalSessionAction(args, {
+      materializeStart, activeServerDir,
+    })).resolves.toMatchObject({
       ok: true,
-      result: {
-        ok: false,
-        error: {
-          code: 'operation_conflict',
-          message: 'Materialization idempotency request changed.',
-        },
-      },
+      result: { ok: false, error: { code: 'operation_conflict' } },
     });
-    expect(mocks.authenticateOwnedExternalSessionRecord).toHaveBeenCalledWith({
-      credentials,
-      sessionId: 'session-1',
-    });
-    expect(
-      mocks.authenticateOwnedExternalSessionRecord.mock.invocationCallOrder[0],
-    ).toBeLessThan(
-      mocks.resolveExternalSessionPluginOperationPreflightAdmission
-        .mock.invocationCallOrder[0]!,
-    );
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).not.toHaveBeenCalled();
     expect(materializeStart).not.toHaveBeenCalled();
     expect(mocks.callMachineRpc).not.toHaveBeenCalled();
   });
 
   it('converges repeated same-plugin intent to the retained public operation reference', async () => {
-    const retained = {
-      operation: {
-        sessionId: 'session-1',
-        operationId: 'operation-retained',
-        revision: 7,
-      },
-      presentation: {
-        v: 1 as const,
-        operationId: 'operation-retained',
-        revision: 7,
-        kind: 'materialize' as const,
-        status: 'completed' as const,
-        phase: 'publishing' as const,
-      },
-    };
-    mocks.resolveExternalSessionPluginOperationPreflightAdmission.mockResolvedValue({
-      kind: 'terminal_receipt',
-      receipt: {
-        reference: retained.operation,
-        presentation: retained.presentation,
-      },
+    const activeServerDir = await createOperationRoot();
+    const record = await seedMaterializeRecord(activeServerDir, 'same-key');
+    await acknowledgeExternalSessionOperationProgressProjection({
+      activeServerDir, operationId: record.operationId, projectedRevision: record.revision,
     });
+    const compacted = await compactExternalSessionOperationRecordToTerminalReceipt({
+      activeServerDir,
+      operationId: record.operationId,
+      expectedRevision: record.revision,
+      stagingDisposition: 'missing',
+    });
+    if (compacted.status === 'not_eligible') throw new Error(compacted.reason);
+    const receipt = compacted.receipt;
+    mocks.fetchSessionById.mockResolvedValue(sessionRecord({}));
     const materializeStart = vi.fn();
 
-    const first = await executePluginExternalSessionAction({
+    const run = () => executePluginExternalSessionAction({
       actionId: 'sessions.external.materialize.start',
       input: materializeInput('same-key'),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' });
-    const second = await executePluginExternalSessionAction({
-      actionId: 'sessions.external.materialize.start',
-      input: materializeInput('same-key'),
-      credentials,
-      pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' });
+    }, { materializeStart, activeServerDir, nowMs: () => receipt.expiresAtMs - 1 });
+    const first = await run();
+    const second = await run();
 
     expect(first).toEqual({
       ok: true,
-      result: {
-        ok: true,
-        operation: retained.operation,
-      },
+      result: { ok: true, operation: receipt.reference },
     });
     expect(first).not.toHaveProperty('result.presentation');
     expect(second).toEqual(first);
-    expect(mocks.resolveExternalSessionPluginOperationPreflightAdmission.mock.calls[0]?.[0]
-      .durableIdempotencyKey).toBe(
-      mocks.resolveExternalSessionPluginOperationPreflightAdmission.mock.calls[1]?.[0]
-        .durableIdempotencyKey,
-    );
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).not.toHaveBeenCalled();
     expect(materializeStart).not.toHaveBeenCalled();
     expect(mocks.callMachineRpc).not.toHaveBeenCalled();
   });
 
   it('refuses a true miss whose current link no longer resolves before Start', async () => {
-    mocks.readPersistedLinkedExternalSessionFromRaw.mockResolvedValue({
-      ok: false,
-      errorCode: 'invalid_request',
-      error: 'linked_session_metadata_invalid',
+    const activeServerDir = await createOperationRoot();
+    // A malformed linked-metadata payload remains owner-readable in the
+    // supported legacy layout, so this reaches the link parser, not decryption.
+    mocks.fetchSessionById.mockResolvedValue({
+      id: 'session-1',
+      encryptionMode: 'plain',
+      metadataLayoutVersion: 0,
+      metadata: JSON.stringify({ externalSessionV1: { v: 1 } }),
     });
     const materializeStart = vi.fn();
 
@@ -679,16 +647,10 @@ describe('plugin External Session action executor', () => {
       input: materializeInput('miss-requires-valid-link'),
       credentials,
       pluginId: 'author.example',
-    }, { materializeStart, activeServerDir: '/unused' })).resolves.toEqual({
+    }, { materializeStart, activeServerDir })).resolves.toEqual({
       ok: false,
       errorCode: 'invalid_request',
       error: 'linked_session_metadata_invalid',
-    });
-
-    expect(mocks.readPersistedLinkedExternalSessionFromRaw).toHaveBeenCalledWith({
-      credentials,
-      rawSession: { id: 'session-1' },
-      accountEncryptionMode: 'plain',
     });
     expect(materializeStart).not.toHaveBeenCalled();
   });

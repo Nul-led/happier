@@ -1,7 +1,7 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { resolveRuntimeCheckpointToolProtocol } from '@happier-dev/agents/session/controls/checkpoints';
 import {
   buildBackendTargetKeyV2,
-  readBackendTargetRefV2,
   AgentSessionRuntimeEventSchema,
   validatePluginHookPayloadV1,
   type AgentSessionRuntimeEvent,
@@ -30,6 +30,7 @@ import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/erro
 import { surfacePrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/surfacePrimarySessionRuntimeIssue';
 import {
   runPermissionModePromptLoop,
+  projectSessionComposerAttachmentDispatchInput,
   type PromptLoopPermissionHandler,
   type PermissionModePromptLoopTurnOperations,
   type PromptLoopOverrideSynchronizer,
@@ -55,6 +56,7 @@ import {
 import { logger } from '@/ui/logger';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
+import { NormalizedToolTurnChangeTracker } from '@/agent/tools/diff/normalizedToolTurnChangeTracker';
 import { isSessionAgentChangeTitleToolAvailable } from '@/agent/tools/happierTools/resolveSessionNativeToolBridge';
 import { createRepositoryCheckpointPromptLifecycle } from '@/agent/runtime/checkpoints/repositoryCheckpointPromptLifecycle';
 import { notifyDaemonConnectedServiceTurnLifecycle } from '@/daemon/controlClient';
@@ -102,6 +104,7 @@ import type {
   HostSessionKeepAliveMode,
   HostSessionRuntimeHookRuntime,
   HostSessionRuntimeLoopApi,
+  CanonicalHostSessionRuntimeRunOptions,
   HostSessionRuntimeRunOptions,
   HostSessionRuntimeSessionSwapStrategy,
 } from '@/agent/runtime/session/loop/runHostSessionRuntime';
@@ -350,12 +353,16 @@ async function observeAgentStreamTokenEvent(params: Readonly<{
 }
 
 export type SessionLoopLifecycleParams = Readonly<{
-  opts: HostSessionRuntimeRunOptions;
+  opts: CanonicalHostSessionRuntimeRunOptions;
   config: HostSessionRuntimeConfig;
   api: HostSessionRuntimeLoopApi;
   session: ApiSessionClient;
   runtime: RuntimeTurnOperations;
-  hookRuntime?: HostSessionRuntimeHookRuntime | null;
+  hookRuntime: HostSessionRuntimeHookRuntime;
+  registerProviderAcceptedEffect: (
+    localId: string,
+    onAccepted: (() => void) | null,
+  ) => void;
   terminalRemoteModeLoop?: HostSessionTerminalRemoteModeLoop | null;
   messageBuffer: MessageBuffer;
   permissionHandler: PromptLoopPermissionHandler;
@@ -467,8 +474,8 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     terminalMode: params.opts.terminalRuntime?.mode ?? null,
   });
   const toolDelivery = resolveAgentToolsDelivery(params.policyAgentId);
-  const hookRuntime = params.hookRuntime ?? null;
-  const hookRuntimeForCallbacks: HostSessionRuntimeHookRuntime = hookRuntime ?? params.runtime;
+  const hookRuntime = params.hookRuntime;
+  const hookRuntimeForCallbacks = hookRuntime;
   // The foreground Runner owns current-generation Composer callbacks through its authenticated
   // daemon bridge. The prompt loop only receives these narrow dispatch operations; it never
   // gains registry or PluginInvocationContext authority of its own.
@@ -485,6 +492,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
             }),
         })
       : hookRuntimeForCallbacks;
+  const toolNormalizationProtocol = resolveRuntimeCheckpointToolProtocol(params.config.checkpointToolProtocol);
   const configuredCheckpointLifecycle = await params.config.lifecycleHooks?.createCheckpointLifecycle?.({
     session: params.session,
     runtime: hookRuntimeForCallbacks,
@@ -495,7 +503,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     session: params.session,
     runtimeDirectory: params.runtimeDirectory,
     provider: params.config.agentMessageType,
-    protocol: resolveRuntimeCheckpointToolProtocol(params.config.checkpointToolProtocol),
+    protocol: toolNormalizationProtocol,
   });
   const terminalRemoteModeLoop = params.terminalRemoteModeLoop ?? null;
   const resolvedStartingMode = resolveStartingMode({
@@ -698,6 +706,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       : {}),
   });
   const runtimeTranscriptProvider = normalizeAcpProvider(params.config.agentMessageType, 'agent');
+  const normalizedToolTurnChangeTracker = new NormalizedToolTurnChangeTracker({
+    provider: runtimeTranscriptProvider,
+  });
   const runtimeMessageDeltaBridge = createKeyedStreamedTranscriptBridge({
     provider: runtimeTranscriptProvider,
     createSessionForStream: () => params.session,
@@ -740,6 +751,8 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
           session: params.session,
           provider: runtimeTranscriptProvider,
           runtimeMessageDeltaBridge,
+          normalizedToolTurnChangeTracker,
+          toolNormalizationProtocol,
           event: message,
         });
       } catch (error) {
@@ -980,6 +993,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
   const terminationHandlers = registerRunnerTerminationHandlersFn({
     process,
     exit: (code) => process.exit(code),
+    ...(params.config.processLifecycleOwnership
+      ? { processLifecycleOwnership: params.config.processLifecycleOwnership }
+      : {}),
     sessionExitReport: { sessionId: params.session.sessionId },
     onTerminate: (event, outcome) => {
       const work = (async () => {
@@ -1012,7 +1028,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
   });
 
   params.session.rpcHandlerManager.registerHandler('abort', handleAbort);
-  registerKillSessionHandlerFn(params.session.rpcHandlerManager, async () => {
+  const requestRuntimeStop = async () => {
     logger.debug(`${params.config.uiLogPrefix} Kill session requested`);
     await requestExplicitRunnerStop({
       abortActiveTurn: handleAbort,
@@ -1020,7 +1036,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       requestTermination: terminationHandlers.requestTermination,
       whenTerminated: terminationHandlers.whenTerminated,
     });
-  });
+  };
+  params.config.onRuntimeStopReady?.(requestRuntimeStop);
+  registerKillSessionHandlerFn(params.session.rpcHandlerManager, requestRuntimeStop);
 
   if (hasTTY && shouldRenderTerminalDisplay) {
     mountTerminalDisplay();
@@ -1060,7 +1078,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
         sendReadyWithPushNotificationFn,
       });
 
-  const initialResumeId = params.initialResumeId.trim();
+  // Opaque Agent identity: presence gates the strict-resume path below, and
+  // the value itself reaches the prompt loop byte for byte.
+  const initialResumeId = readNonBlankOpaqueIdentifier(params.initialResumeId) ?? '';
   const resolvePendingCountForHandoff = async (): Promise<number> => {
     const pendingQueueState = params.session.getPendingQueueState?.();
     if (pendingQueueState?.known) {
@@ -1262,7 +1282,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       runtime: runtimeForPromptLoop,
       createOverrideSynchronizer: (isStarted): PromptLoopOverrideSynchronizer | RuntimeOverrideSynchronizers => createRuntimeOverrideSynchronizersFn({
         agentTargetKey: buildBackendTargetKeyV2(params.opts.backendTarget
-          ? readBackendTargetRefV2(params.opts.backendTarget)
+          ? params.opts.backendTarget
           : { kind: 'backend', backendId: params.policyAgentId, sourceKind: 'built_in' }),
         session: params.session,
         runtime: runtimeOverrideTarget,
@@ -1277,6 +1297,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       currentPermissionModeUpdatedAt: params.permissionModeState.getCurrentPermissionModeUpdatedAt(),
       setCurrentPermissionMode: params.permissionModeState.setCurrentPermissionMode,
       setCurrentPermissionModeUpdatedAt: params.permissionModeState.setCurrentPermissionModeUpdatedAt,
+      registerProviderAcceptedEffect: params.registerProviderAcceptedEffect,
       releaseRejectedBeforeProviderPromptIdentity: (session, message) =>
         params.permissionModeState.releaseRejectedBeforeProviderPromptIdentity(session, message),
       initialResumeId: initialResumeId || undefined,
@@ -1304,7 +1325,9 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       ...(daemonTurnContributionsBridge
         ? {
             resolveComposerAttachmentForDispatch: async (input) =>
-              await daemonTurnContributionsBridge.resolveComposerAttachment(input),
+              await daemonTurnContributionsBridge.resolveComposerAttachment(
+                projectSessionComposerAttachmentDispatchInput(input, params.session.sessionId),
+              ),
           }
         : {}),
       resolveFreshSessionSystemPrompt: async ({ baseOverride, excludePluginIds }) => {

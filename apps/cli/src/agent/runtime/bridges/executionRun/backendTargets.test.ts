@@ -1,8 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol';
 
-import { areExecutionRunBackendTargetsEqual } from './backendTargets';
+const catalog = vi.hoisted(() => ({
+  agentDefinitionsById: new Map<string, Readonly<{
+    id: string;
+    identity: Readonly<{ pluginId: string; localId: string }>;
+  }>>(),
+}));
+
+vi.mock('@/agent/catalog/snapshot', () => ({
+  readAgentCatalogSnapshot: () => ({
+    agentDefinitionsById: catalog.agentDefinitionsById,
+    catalogEntriesById: {},
+    executionRunProfiles: [],
+  }),
+}));
+
+import {
+  areExecutionRunBackendTargetsEqual,
+  resolveExecutionRunRuntimeBackendTarget,
+} from './backendTargets';
 
 const canonicalOpenCodeTargetKey = buildBackendTargetKeyV2({
   kind: 'agent',
@@ -10,6 +28,14 @@ const canonicalOpenCodeTargetKey = buildBackendTargetKeyV2({
 });
 
 describe('areExecutionRunBackendTargetsEqual', () => {
+  beforeEach(() => {
+    catalog.agentDefinitionsById.clear();
+    catalog.agentDefinitionsById.set('opencode', {
+      id: 'opencode',
+      identity: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+    });
+  });
+
   it('equates the canonical contributed-Agent key with its executable built-in target', () => {
     expect(areExecutionRunBackendTargetsEqual(
       canonicalOpenCodeTargetKey,
@@ -32,5 +58,43 @@ describe('areExecutionRunBackendTargetsEqual', () => {
       canonicalOpenCodeTargetKey,
       { kind: 'configuredAcpBackend', backendId: 'opencode' },
     )).toBe(false);
+  });
+});
+
+describe('resolveExecutionRunRuntimeBackendTarget', () => {
+  beforeEach(() => {
+    catalog.agentDefinitionsById.clear();
+    catalog.agentDefinitionsById.set('opencode', {
+      id: 'opencode',
+      identity: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+    });
+    catalog.agentDefinitionsById.set('acme-runtime-routing-id', {
+      id: 'acme-runtime-routing-id',
+      identity: { pluginId: 'acme.review-plugin', localId: 'review-agent' },
+    });
+  });
+
+  it('resolves a canonical installed Agent identity to the retained runtime target', () => {
+    expect(resolveExecutionRunRuntimeBackendTarget({
+      kind: 'agent',
+      identity: { pluginId: 'happier.agent.opencode', localId: 'opencode' },
+    })).toEqual({ kind: 'builtInAgent', agentId: 'opencode' });
+  });
+
+  it('fails closed for a canonical Agent identity absent from the current catalog', () => {
+    expect(resolveExecutionRunRuntimeBackendTarget({
+      kind: 'agent',
+      identity: { pluginId: 'missing.plugin', localId: 'missing-agent' },
+    })).toBeNull();
+  });
+
+  it('gives a trusted external Agent the same catalog-based runtime resolution', () => {
+    expect(resolveExecutionRunRuntimeBackendTarget({
+      kind: 'agent',
+      identity: { pluginId: 'acme.review-plugin', localId: 'review-agent' },
+    })).toEqual({
+      kind: 'builtInAgent',
+      agentId: 'acme-runtime-routing-id',
+    });
   });
 });

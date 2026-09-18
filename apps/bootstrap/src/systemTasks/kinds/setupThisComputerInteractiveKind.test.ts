@@ -4,6 +4,9 @@ import { createSystemTasksRunner, type SetupMachineRecipeExecutor } from '@happi
 
 import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
 
+/** The CLI acquisition the executor reports: managed install path, with the command it resolved. */
+const MANAGED_CLI = { provenance: 'managed', command: '/home/tester/.happier/bin/happier' } as const;
+
 async function waitForPendingPrompt(
   runner: ReturnType<typeof createSystemTasksRunner>,
   params: Readonly<{ taskId: string; cursor: number }>,
@@ -39,8 +42,12 @@ function createRecipeExecutor(invocations: string[]): SetupMachineRecipeExecutor
     configureRelay: async () => {
       invocations.push('configureRelay');
     },
+    // Already paired: valid credentials and a server-confirmed machine, so the recipe
+    // attempts no pairing. Pairing is covered by the pairing-approval tests.
     readAuthStatus: async () => ({
       authenticated: true,
+      credentialState: 'valid' as const,
+      machineRegistrationState: 'server-confirmed' as const,
       machineId: 'machine-1',
     }),
     requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
@@ -64,8 +71,10 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('ensures the local Happier tools before running the rest of setup', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       ensureLocalHappierTools: async ({ releaseChannel }) => {
         invocations.push(`ensureLocalHappierTools:${releaseChannel}`);
+        return MANAGED_CLI;
       },
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
@@ -83,6 +92,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         conflictingServices: [],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: true,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: false,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: false,
@@ -104,6 +114,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
         channel: 'preview',
       },
     });
@@ -118,11 +130,149 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     ]);
   });
 
-  it('emits command-level diagnostics on the shared step ids used by the checklist', async () => {
+  it('exposes the managed CLI on PATH beside the service work, reports a failure on the stream, and never fails setup or the result', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
+        return MANAGED_CLI;
+      },
+      readActiveRelayProfile: async () => ({
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        localServerUrl: null,
+      }),
+      createRecipeExecutor: () => createRecipeExecutor(invocations),
+      readBackgroundServiceSetupGuidance: async () => ({
+        targetReleaseChannel: 'stable',
+        targetServerUrl: 'https://relay.example.test',
+        currentHappierHomeDir: null,
+        currentDefaultReleaseChannel: 'stable',
+        managedReleaseChannels: [],
+        manualRelayOwner: null,
+        conflictingServices: [],
+        foreignHomeConflictingServices: [],
+        exactDefaultServiceExists: true,
+        exactDefaultServiceRunning: false,
+        shouldOfferDefaultReleaseChannelSwitch: false,
+        shouldPromptForManualRelayTakeover: false,
+        shouldPromptForServiceReplacement: false,
+      }),
+      readCurrentRelayOwner: async () => null,
+      switchDefaultReleaseChannel: async () => undefined,
+      uninstallExistingDaemonServices: async () => undefined,
+      exposeHappierCliOnPath: async () => {
+        invocations.push('exposeHappierCliOnPath');
+        // A read-only shell profile is the real failure mode this must survive.
+        throw new Error('Could not update shell profile /home/example/.zshrc: EACCES');
+      },
+    });
+
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({
+      taskId: 'setup-task-path',
+      kind: 'setup.thisComputer.v1',
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
+      },
+    });
+
+    const finalPoll = await waitForResult(runner, { taskId: 'setup-task-path', cursor: 0 });
+
+    // This computer is ready even though terminal exposure failed, and the outcome is not part of
+    // the result: nothing reads it, and awaiting a shell-profile write would gate the reveal on it.
+    expect(finalPoll.result).toMatchObject({ ok: true, data: { machineId: 'machine-1' } });
+    expect((finalPoll.result as { data?: Record<string, unknown> }).data).not.toHaveProperty('pathExposure');
+    // The failure is still said out loud on the run's own event stream.
+    expect(finalPoll.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'progress',
+        message: expect.stringContaining('Could not add happier to your PATH'),
+      }),
+    ]));
+    // It runs alongside the remaining service work, not after it.
+    expect(invocations.indexOf('exposeHappierCliOnPath')).toBeGreaterThan(-1);
+    expect(invocations.indexOf('exposeHappierCliOnPath')).toBeLessThan(invocations.indexOf('installDaemonService'));
+  });
+
+  it('does not write the shell profile when a consent prompt is declined', async () => {
+    const invocations: string[] = [];
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => {
+        invocations.push('exposeHappierCliOnPath');
+        return { changed: true, shellReloadHint: null, failure: null };
+      },
+      readActiveRelayProfile: async () => ({
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        localServerUrl: null,
+      }),
+      createRecipeExecutor: () => createRecipeExecutor(invocations),
+      readBackgroundServiceSetupGuidance: async () => ({
+        targetReleaseChannel: 'stable',
+        targetServerUrl: 'https://relay.example.test',
+        currentHappierHomeDir: null,
+        currentDefaultReleaseChannel: 'stable',
+        managedReleaseChannels: [],
+        manualRelayOwner: null,
+        conflictingServices: [
+          {
+            label: 'com.happier.cli.daemon.default',
+            releaseChannel: 'stable',
+            targetMode: 'pinned',
+            running: true,
+            serverUrl: 'https://relay.example.test',
+            happierHomeDir: null,
+          },
+        ],
+        foreignHomeConflictingServices: [],
+        exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
+        shouldOfferDefaultReleaseChannelSwitch: false,
+        shouldPromptForManualRelayTakeover: false,
+        shouldPromptForServiceReplacement: true,
+      }),
+      readCurrentRelayOwner: async () => null,
+      switchDefaultReleaseChannel: async () => undefined,
+      uninstallExistingDaemonServices: async () => undefined,
+    });
+
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({
+      taskId: 'setup-task-path-consent',
+      kind: 'setup.thisComputer.v1',
+      params: {
+        surface: 'desktop.ui',
+        target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
+      },
+    });
+
+    const promptPoll = await waitForPendingPrompt(runner, { taskId: 'setup-task-path-consent', cursor: 0 });
+    // Nothing outside Happier's own directories may have been touched at the moment the question
+    // is asked (D4/R12) — the shell profile is the one such write this task makes.
+    expect(invocations).not.toContain('exposeHappierCliOnPath');
+
+    await runner.respond({ taskId: 'setup-task-path-consent', answer: { replaceExistingServices: false } });
+    const finalPoll = await waitForResult(runner, { taskId: 'setup-task-path-consent', cursor: promptPoll.nextCursor });
+
+    expect(finalPoll.result).toMatchObject({ ok: false, error: { code: 'background_service_conflict_declined' } });
+    // …and the declined run leaves the user's shell startup files exactly as they were.
+    expect(invocations).not.toContain('exposeHappierCliOnPath');
+  });
+
+  it('emits command-level diagnostics on the shared step ids used by the checklist', async () => {
+    const invocations: string[] = [];
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      ensureLocalHappierTools: async () => {
+        invocations.push('ensureLocalHappierTools');
+        return MANAGED_CLI;
       },
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
@@ -140,6 +290,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         conflictingServices: [],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: false,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: false,
@@ -161,6 +312,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
       },
     });
 
@@ -200,6 +353,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('prompts to switch the default release channel and replace conflicting local background services before setup completes', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -246,6 +401,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         ],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: true,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: true,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: true,
@@ -271,6 +427,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
         channel: 'preview',
       },
     });
@@ -359,7 +517,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       localServerUrl: string | null;
     }> = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
-      ensureLocalHappierTools: async () => undefined,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      ensureLocalHappierTools: async () => MANAGED_CLI,
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay-from-cli.example.test',
         webappUrl: 'https://app-from-cli.example.test',
@@ -369,8 +528,12 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         configureRelay: async (profile) => {
           configureRelayProfiles.push(profile);
         },
+        // Already paired: valid credentials and a server-confirmed machine, so the recipe
+        // attempts no pairing. Pairing is covered by the pairing-approval tests.
         readAuthStatus: async () => ({
           authenticated: true,
+          credentialState: 'valid' as const,
+          machineRegistrationState: 'server-confirmed' as const,
           machineId: 'machine-1',
         }),
         requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
@@ -394,6 +557,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         conflictingServices: [],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: false,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: false,
@@ -435,6 +599,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('prompts to replace a conflicting default-following service from another Happier installation before setup continues', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -452,6 +618,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
           currentCliVersion: '0.2.0',
         },
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         conflictingServices: [],
         foreignHomeConflictingServices: [
           {
@@ -486,6 +653,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
       },
     });
 
@@ -531,6 +700,10 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('prompts to take over a manual relay runtime before installing the background service', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+        switchDefaultReleaseChannel: async () => undefined,
+        uninstallExistingDaemonServices: async () => undefined,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -550,6 +723,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         conflictingServices: [],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: false,
         shouldPromptForManualRelayTakeover: true,
         shouldPromptForServiceReplacement: false,
@@ -569,6 +743,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
       },
     });
 
@@ -619,6 +795,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
 
   it('fails when the user keeps conflicting local background services', async () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -644,6 +822,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         ],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: false,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: true,
@@ -665,6 +844,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
         channel: 'preview',
       },
     });
@@ -690,6 +871,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('does not switch the default release channel when setup is later cancelled by keeping conflicting services', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -736,6 +919,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         ],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: true,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: true,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: true,
@@ -761,6 +945,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
         channel: 'preview',
       },
     });
@@ -792,6 +978,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
 
   it('fails with a release-channel specific error when the user keeps the current default release channel', async () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
+        ensureLocalHappierTools: async () => MANAGED_CLI,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -819,6 +1007,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
         conflictingServices: [],
         foreignHomeConflictingServices: [],
         exactDefaultServiceExists: false,
+        exactDefaultServiceRunning: false,
         shouldOfferDefaultReleaseChannelSwitch: true,
         shouldPromptForManualRelayTakeover: false,
         shouldPromptForServiceReplacement: false,
@@ -840,6 +1029,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       params: {
         surface: 'desktop.ui',
         target: 'thisComputer',
+        activeRelayUrl: 'https://relay.example.test',
+        activeWebappUrl: 'https://app.example.test',
         channel: 'preview',
       },
     });

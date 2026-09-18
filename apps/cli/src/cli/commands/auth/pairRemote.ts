@@ -99,14 +99,23 @@ async function readHomeIdentity(target: ResolvedHomeTarget, deps: PairRemoteDeps
     : null;
 }
 
-export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<PairRemoteDeps> = {}): Promise<void> {
-  const effectiveDeps: PairRemoteDeps = { ...DEFAULT_DEPS, ...deps };
+export async function handleAuthPairRemote(
+  argsRaw: string[],
+  signalOrDeps: AbortSignal | Partial<PairRemoteDeps> = {},
+  injectedDeps: Partial<PairRemoteDeps> = {},
+): Promise<void> {
+  const signal = 'aborted' in signalOrDeps ? signalOrDeps : signalOrDeps.signal;
+  const deps = 'aborted' in signalOrDeps ? injectedDeps : signalOrDeps;
+  const effectiveDeps: PairRemoteDeps = { ...DEFAULT_DEPS, ...(signal ? { signal } : {}), ...deps };
+  effectiveDeps.signal?.throwIfAborted();
   const parsedTargetArgs = await effectiveDeps.parseHomeTargetArgs(argsRaw);
   let args = parsedTargetArgs.rest;
   const json = takeFlag(args, '--json');
   args = json.rest;
   const noPostCheck = takeFlag(args, '--no-post-check');
   args = noPostCheck.rest;
+  const authorizeUnattendedTeamAccess = takeFlag(args, '--authorize-unattended-team-access');
+  args = authorizeUnattendedTeamAccess.rest;
 
   const ssh = takeFlagValue(args, '--ssh');
   args = ssh.rest;
@@ -137,6 +146,7 @@ export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<Pair
   const resolvedHomeTarget = remoteUrl.url
     ? await resolveCliHomeTarget({ kind: 'https_url', url: remoteUrl.url })
     : selectedHomeTarget;
+  effectiveDeps.signal?.throwIfAborted();
   const executor = effectiveDeps.createEnrollmentExecutor({
     target: ssh.value,
     happierCommand: remoteCommand.value?.trim() || 'happier',
@@ -187,9 +197,14 @@ export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<Pair
         pairing: request.pairing,
         supportsTokenOnly: true,
         target: resolvedHomeTarget,
+        ...(effectiveDeps.signal ? { signal: effectiveDeps.signal } : {}),
+        ...(authorizeUnattendedTeamAccess.present
+          ? { authorizeUnattendedTeamAccess: true }
+          : {}),
       });
     },
   });
+  effectiveDeps.signal?.throwIfAborted();
 
   const remoteServerId = result.remoteProfileId;
   let postCheck: JsonRecord | null = null;

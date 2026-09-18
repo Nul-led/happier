@@ -10,16 +10,20 @@ import {
   ExecutionRunTurnStreamCancelRequestSchema,
   ExecutionRunTurnStreamReadRequestSchema,
   ExecutionRunTurnStreamStartRequestSchema,
-  convertBackendTargetRefV2ToV1,
-  normalizeExecutionRunWaitPollIntervalMs,
   normalizeExecutionRunWaitTimeoutMs,
+  ProviderErrorCodeV1Schema,
   readExecutionRunStartRunCreation,
   type ActionExecutorDeps,
+  type ActionExecutorContext,
   type ActionExecuteResult,
   type PluginPermissionGrantRequestActionInputV1,
   isRuntimeActionIdV1,
+  isActionEnabledByActionsSettings,
+  isApprovalRequiredByActionsSettings,
   type RuntimeActionIdV1,
   type SessionInputCausalPermissionAuthorityV1,
+  type ExecutionRunTeamCredentialSessionBindingConsentV1,
+  type TeamCredentialProviderModelSelectionV1,
   waitForExecutionRunTerminal,
   withExecutionRunStartFailureDetails,
 } from '@happier-dev/protocol';
@@ -44,12 +48,22 @@ import {
   type ExecutionRunPolicy,
 } from '@/agent/executionRuns/policy/executionRunPolicy';
 import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
-import { resolveExecutionRunRuntimeBackendId } from '@/agent/runtime/bridges/executionRun/backendTargets';
+import {
+  resolveExecutionRunRuntimeBackendId,
+  resolveExecutionRunRuntimeBackendTarget,
+} from '@/agent/runtime/bridges/executionRun/backendTargets';
 import { VoiceAgentError } from '@/agent/voice/agent/VoiceAgentManager';
 import { resolveReviewExecutionRunIntentInput } from '@/agent/reviews/resolveReviewExecutionRunIntentInput';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
-import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
-import { isActionApprovalRequiredByEnv, isActionEnabledByEnv } from '@/settings/actionsSettings';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import {
+  createActionSettingsProvider,
+  type RuntimeActionSettingsProvider,
+} from '@/settings/actionsSettingsProvider';
+import type { ExecutionRunPermissionRequestStore } from '@/agent/runtime/bridges/executionRun/executionRunPermissionResponseTarget';
+import {
+  readExecutionRunWorkflowObservationSink,
+} from '@/agent/runtime/bridges/executionRun/executionRunWorkflowObservation';
 
 import type { RpcActionExecutor } from '../_actionDispatchAdapter';
 import type {
@@ -65,6 +79,7 @@ export type ExecutionRunRpcApprovalDeps = Pick<
   | 'approvalsResolveBlockingDecision'
   | 'approvalsUpdate'
   | 'approvalsWaitForDecision'
+  | 'isApprovalExecutionOriginCurrent'
   | 'reviewCommentAction'
 > & Readonly<{
   executionRunHostActionCurrentIntent?: (
@@ -81,8 +96,15 @@ type ExecutionRunRpcFailure = Readonly<{
   errorCode: string;
   details?: unknown;
 }>;
+export type PrepareAttachedTeamCredentialSessionBinding = (input: Readonly<{
+  sessionId: string;
+  selection: TeamCredentialProviderModelSelectionV1;
+  consent?: ExecutionRunTeamCredentialSessionBindingConsentV1;
+}>) => Promise<Readonly<{ ok: true } | ExecutionRunRpcFailure>>;
+// The host bridge owns what a started run reports; this dispatcher only marks
+// the successful case, so it reads that shape back instead of restating it.
 type ExecutionRunStartResult =
-  | Readonly<{ ok: true; runId: string; callId: string; sidechainId: string }>
+  | (Readonly<{ ok: true }> & Awaited<ReturnType<ExecutionRunHostBridgeContract['start']>>)
   | ExecutionRunRpcFailure;
 
 type ExecutionRunRpcActionDepsParams = Readonly<{
@@ -90,6 +112,7 @@ type ExecutionRunRpcActionDepsParams = Readonly<{
   context: ExecutionRunRpcActionContext;
   policy: ExecutionRunPolicy;
   isExecutionRunsEnabled: () => boolean;
+  actionsSettingsProvider?: RuntimeActionSettingsProvider;
   approvalDeps?: Partial<ExecutionRunRpcApprovalDeps>;
 }>;
 
@@ -118,6 +141,13 @@ type ExecutionRunRpcActionContext = Readonly<{
   peerMediationObservability?: DaemonPeerMediationObservabilityRuntimeActionContext | null;
   getServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
   resolveAccountSettings?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  /** Session-owned Run listing dependency, injected by the runtime principal owner. */
+  sessionList?: ActionExecutorDeps['sessionList'];
+  /**
+   * Attached-Session owner that commits the selected Team model, provider slot
+   * binding and any required visibility grant before the Run registry opens.
+   */
+  prepareAttachedTeamCredentialSessionBinding?: PrepareAttachedTeamCredentialSessionBinding;
 }>;
 
 function executionRunsDisabled(): ExecutionRunRpcFailure {
@@ -156,17 +186,37 @@ async function unsupportedActionDependency(): Promise<never> {
   throw new Error('action_not_supported_in_execution_run_rpc');
 }
 
+// Detached execution-run hosts admit no Session corpus, so `session.list` fails with the
+// canonical typed SessionListActionResult failure instead of a thrown generic action error.
+async function unsupportedSessionListDependency(): Promise<Readonly<{
+  ok: false;
+  errorCode: 'unsupported_action';
+  error: 'unsupported_action:session.list';
+}>> {
+  return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.list' };
+}
+
+function readPermissionRequestStore(value: unknown): ExecutionRunPermissionRequestStore | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.publishRequest === 'function'
+    && typeof candidate.publishRequestAndWait === 'function'
+    && typeof candidate.registerResponseTargetHandler === 'function'
+    ? value as ExecutionRunPermissionRequestStore
+    : null;
+}
+
 export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDepsParams): ActionExecutorDeps {
+  const actionsSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider();
   const ensureEnabled = (): ExecutionRunRpcFailure | null => params.isExecutionRunsEnabled()
     ? null
     : executionRunsDisabled();
-  let cachedServerSnapshot: CliServerFeaturesSnapshot | undefined;
   // One daemon composition owner serves execution-run actions and plugin API actions. This adapter
   // contributes only the execution-run's fixed route owners and cached server-feature accessor.
   const runtimeActionExecute = createDaemonRuntimeActionExecutor({
     env: process.env,
     resolveRouteOwners: () => params.context,
-    resolveServerFeaturesSnapshot: () => params.context.getServerFeaturesSnapshot?.() ?? cachedServerSnapshot,
+    resolveServerFeaturesSnapshot: () => params.context.getServerFeaturesSnapshot?.(),
   });
   let actionDeps: ActionExecutorDeps | null = null;
   let runtimeActionExecutorForRunActions: ReturnType<typeof createActionExecutor> | null = null;
@@ -177,6 +227,16 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     context: Readonly<{
       defaultSessionId: string;
       serverId?: string | null;
+      authority?: ActionExecutorContext['authority'];
+      actionCaller?: ActionExecutorContext['actionCaller'];
+      runtimeAccountId?: string;
+      runtimeRunId?: string;
+      actionRequestId?: string;
+      externalActionCredential?: ActionExecutorContext['externalActionCredential'];
+      externalActionExecutionAuthorization?: ActionExecutorContext['externalActionExecutionAuthorization'];
+      signExternalActionApprovalInput?: ActionExecutorContext['signExternalActionApprovalInput'];
+      externalActionTarget?: ActionExecutorContext['externalActionTarget'];
+      defaultSessionMachineId?: string;
       callerPermissionMode?: string | null;
       causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
@@ -188,8 +248,23 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     return await runtimeActionExecutorForRunActions.execute(actionId, input, {
       defaultSessionId: context.defaultSessionId,
       ...(context.serverId ? { serverId: context.serverId } : {}),
+      ...(context.authority ? { authority: context.authority } : {}),
+      ...(context.actionCaller ? { actionCaller: context.actionCaller } : {}),
+      ...(context.runtimeAccountId ? { runtimeAccountId: context.runtimeAccountId } : {}),
+      ...(context.runtimeRunId ? { runtimeRunId: context.runtimeRunId } : {}),
+      ...(context.actionRequestId ? { actionRequestId: context.actionRequestId } : {}),
+      ...(context.externalActionCredential ? { externalActionCredential: context.externalActionCredential } : {}),
+      ...(context.externalActionExecutionAuthorization
+        ? { externalActionExecutionAuthorization: context.externalActionExecutionAuthorization }
+        : {}),
+      ...(context.signExternalActionApprovalInput
+        ? { signExternalActionApprovalInput: context.signExternalActionApprovalInput }
+        : {}),
+      ...(context.externalActionTarget ? { externalActionTarget: context.externalActionTarget } : {}),
+      ...(context.defaultSessionMachineId ? { defaultSessionMachineId: context.defaultSessionMachineId } : {}),
       surface: 'agent',
-      authority: 'account_automation',
+      authority: context.authority ?? 'account_automation',
+      sessionListAccess: 'current_session',
       placement: null,
       ...(context.callerPermissionMode ? { callerPermissionMode: context.callerPermissionMode } : {}),
       ...(context.causalPermissionAuthority
@@ -239,7 +314,18 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     if (disabled) return beforeStart(disabled);
     const parsed = ExecutionRunStartRequestSchema.safeParse(raw);
     if (!parsed.success) return beforeStart(invalidParams());
-    const backendTarget = convertBackendTargetRefV2ToV1(parsed.data.backendTarget);
+    if (
+      parsed.data.initialInput?.kind === 'deferred_session_pending'
+      && (sessionId === null || actionOptions?.actionCaller?.kind !== 'workflowRun')
+    ) {
+      return beforeStart(invalidParams());
+    }
+    if (
+      parsed.data.launchOrigin?.kind === 'session_discussion'
+      && parsed.data.launchOrigin.sessionId !== sessionId
+    ) return beforeStart(executionRunScopeMismatch());
+    const backendTarget = resolveExecutionRunRuntimeBackendTarget(parsed.data.backendTarget);
+    if (!backendTarget) return beforeStart(invalidParams());
     const backendId = resolveExecutionRunRuntimeBackendId(backendTarget);
     let normalizedReviewIntentInput: unknown;
     let hasNormalizedReviewIntentInput = false;
@@ -263,18 +349,8 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     const intentPolicy = resolveExecutionRunIntentPolicy(parsed.data.intent);
     if (intentPolicy.requiredFeatureId) {
       const featureId = intentPolicy.requiredFeatureId;
-      const serverSnapshot = params.context.getServerFeaturesSnapshot?.() ?? cachedServerSnapshot;
-      let featureDecision = resolveCliFeatureDecision({ featureId, env: process.env, serverSnapshot });
-
-      if (
-        featureDecision.state === 'unknown'
-        && featureDecision.blockedBy === 'server'
-        && params.context.serverUrl
-      ) {
-        cachedServerSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: params.context.serverUrl });
-        const nextSnapshot = params.context.getServerFeaturesSnapshot?.() ?? cachedServerSnapshot;
-        featureDecision = resolveCliFeatureDecision({ featureId, env: process.env, serverSnapshot: nextSnapshot });
-      }
+      const serverSnapshot = params.context.getServerFeaturesSnapshot?.();
+      const featureDecision = resolveCliFeatureDecision({ featureId, env: process.env, serverSnapshot });
 
       if (featureDecision.state !== 'enabled') {
         return beforeStart({
@@ -349,9 +425,57 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     }
 
     try {
+      const permissionRequestStore = readPermissionRequestStore(actionOptions?.permissionRequestStore);
+      if (actionOptions?.permissionRequestStore !== undefined && !permissionRequestStore) {
+        return beforeStart(invalidParams());
+      }
+      const workflowObservationSink = readExecutionRunWorkflowObservationSink(
+        actionOptions?.workflowObservationSink,
+      );
+      if (actionOptions?.workflowObservationSink !== undefined && !workflowObservationSink) {
+        return beforeStart(invalidParams());
+      }
+      if (workflowObservationSink && !parsed.data.localInputId) {
+        return beforeStart(invalidParams());
+      }
+      if (parsed.data.teamCredentialSessionBindingConsent?.sessionId !== undefined
+          && parsed.data.teamCredentialSessionBindingConsent.sessionId !== sessionId) {
+        return beforeStart(invalidParams());
+      }
+      if (sessionId !== null && parsed.data.teamCredentialModel) {
+        const prepareBinding = params.context.prepareAttachedTeamCredentialSessionBinding;
+        if (!prepareBinding) {
+          return beforeStart({
+            ok: false,
+            error: 'Attached Session Team credential binding owner is unavailable',
+            errorCode: 'execution_run_team_session_binding_unavailable',
+          });
+        }
+        let prepared: Awaited<ReturnType<PrepareAttachedTeamCredentialSessionBinding>>;
+        try {
+          prepared = await prepareBinding({
+            sessionId,
+            selection: parsed.data.teamCredentialModel,
+            ...(parsed.data.teamCredentialSessionBindingConsent
+              ? { consent: parsed.data.teamCredentialSessionBindingConsent }
+              : {}),
+          });
+        } catch (error) {
+          return beforeStart({
+            ok: false,
+            error: error instanceof Error ? error.message : 'Attached Session Team credential binding failed',
+            errorCode: 'execution_run_team_session_binding_rejected',
+          });
+        }
+        if (!prepared.ok) return beforeStart(prepared);
+      }
+      const {
+        teamCredentialSessionBindingConsent: _teamCredentialSessionBindingConsent,
+        ...runStartRequest
+      } = parsed.data;
       const started = await params.manager.start({
         ...(accountSettings ? { accountSettings } : {}),
-        ...parsed.data,
+        ...runStartRequest,
         // The outer Action/RPC scope is authoritative; a passthrough field in
         // the nested start request must not select a second scope.
         sessionId,
@@ -360,6 +484,13 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         ...(actionOptions?.causalPermissionAuthority
           ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
           : {}),
+        ...(actionOptions?.actionCaller?.kind === 'workflowRun' && actionOptions.actionRequestId
+          ? { actionRequestId: actionOptions.actionRequestId }
+          : {}),
+        ...(permissionRequestStore
+          ? { getPermissionRequestStore: () => permissionRequestStore }
+          : {}),
+        ...(workflowObservationSink ? { workflowObservationSink } : {}),
         ...(() => {
           const boundedTimeoutMs = resolveExecutionRunStartBoundedTimeoutMs({
             policy: params.policy,
@@ -390,6 +521,15 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           ok: false,
           error: error instanceof Error ? error.message : 'Execution run is not allowed in this scope',
           errorCode: 'execution_run_not_allowed',
+          ...(rawDetails !== undefined ? { details: rawDetails } : {}),
+        }, runCreation);
+      }
+      const providerErrorCode = ProviderErrorCodeV1Schema.safeParse(code);
+      if (providerErrorCode.success) {
+        return classifyFailure({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Provider launch failed',
+          errorCode: providerErrorCode.data,
           ...(rawDetails !== undefined ? { details: rawDetails } : {}),
         }, runCreation);
       }
@@ -432,7 +572,14 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       }
       const started = await startRun(request, sessionId, actionOptions);
       return started.ok
-        ? { runId: started.runId, callId: started.callId, sidechainId: started.sidechainId }
+        ? {
+            runId: started.runId,
+            callId: started.callId,
+            sidechainId: started.sidechainId,
+            ...(started.requestedConfiguration
+              ? { requestedConfiguration: started.requestedConfiguration }
+              : {}),
+          }
         : started;
     },
     executionRunList: async (sessionId, request) => {
@@ -442,28 +589,65 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const listRequest = ExecutionRunListRequestSchema.parse(request);
       return { runs: params.manager.listPublicForRequest(listRequest, sessionId) };
     },
-    executionRunGet: async (sessionId, request) => {
+    executionRunGet: async (sessionId, request, opts) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
       const parsed = ExecutionRunGetRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
-      return projectExecutionRunGetResponse(parsed.runId, parsed.includeStructured === true)
-        ?? executionRunNotFound();
+      const observedInputTurn = parsed.waitForInputId
+        ? await params.manager.waitForInputTurn(parsed.runId, parsed.waitForInputId, opts?.signal)
+        : null;
+      const response = projectExecutionRunGetResponse(parsed.runId, parsed.includeStructured === true);
+      if (!response) return executionRunNotFound();
+      if (!observedInputTurn) return response;
+      const projectedTurns = response.run.inputTurns;
+      return {
+        ...response,
+        run: {
+          ...response.run,
+          inputTurns: {
+            occurrenceId: observedInputTurn.occurrenceId,
+            ...(projectedTurns?.occurrenceId === observedInputTurn.occurrenceId && projectedTurns.current
+              ? { current: projectedTurns.current }
+              : {}),
+            last: observedInputTurn.turn,
+          },
+        },
+      };
     },
-    executionRunSend: async (sessionId, request, actionOptions) => {
+    detachedExecutionRunSend: async (sessionId, request, actionOptions) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
       const parsed = ExecutionRunSendRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
+      const permissionRequestStore = readPermissionRequestStore(actionOptions?.permissionRequestStore);
+      if (actionOptions?.permissionRequestStore !== undefined && !permissionRequestStore) {
+        return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid interaction target' };
+      }
+      const workflowObservationSink = readExecutionRunWorkflowObservationSink(
+        actionOptions?.workflowObservationSink,
+      );
+      if (actionOptions?.workflowObservationSink !== undefined && !workflowObservationSink) {
+        return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Invalid Workflow observation target' };
+      }
+      if (workflowObservationSink && !parsed.localInputId) {
+        return { ok: false, errorCode: 'execution_run_invalid_action_input', error: 'Workflow observation requires an exact local input id' };
+      }
       const sent = await params.manager.send(parsed.runId, {
         message: parsed.message,
         resume: parsed.resume,
         delivery: parsed.delivery,
+        ...(parsed.localInputId ? { localInputId: parsed.localInputId } : {}),
+        ...(parsed.resultContract ? { resultContract: parsed.resultContract } : {}),
+        ...(parsed.structuredInput ? { structuredInput: parsed.structuredInput } : {}),
         ...(actionOptions?.causalPermissionAuthority
           ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
           : {}),
+        ...(actionOptions?.signal ? { signal: actionOptions.signal } : {}),
+        ...(permissionRequestStore ? { permissionRequestStore } : {}),
+        ...(workflowObservationSink ? { workflowObservationSink } : {}),
       });
       if (!sent.ok) {
         return {
@@ -603,6 +787,20 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           {
             defaultSessionId: sessionId,
             ...(opts?.serverId ? { serverId: opts.serverId } : {}),
+            ...(opts?.authority ? { authority: opts.authority } : {}),
+            ...(opts?.actionCaller ? { actionCaller: opts.actionCaller } : {}),
+            ...(opts?.runtimeAccountId ? { runtimeAccountId: opts.runtimeAccountId } : {}),
+            runtimeRunId: parsed.runId,
+            ...(opts?.actionRequestId ? { actionRequestId: opts.actionRequestId } : {}),
+            ...(opts?.externalActionCredential ? { externalActionCredential: opts.externalActionCredential } : {}),
+            ...(opts?.externalActionExecutionAuthorization
+              ? { externalActionExecutionAuthorization: opts.externalActionExecutionAuthorization }
+              : {}),
+            ...(opts?.signExternalActionApprovalInput
+              ? { signExternalActionApprovalInput: opts.signExternalActionApprovalInput }
+              : {}),
+            ...(opts?.externalActionTarget ? { externalActionTarget: opts.externalActionTarget } : {}),
+            ...(opts?.defaultSessionMachineId ? { defaultSessionMachineId: opts.defaultSessionMachineId } : {}),
             ...(opts?.effectiveCallerPermissionMode
               ? { callerPermissionMode: opts.effectiveCallerPermissionMode }
               : {}),
@@ -652,8 +850,10 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       return await waitForExecutionRunTerminal({
         runId,
         timeoutMs: normalizeExecutionRunWaitTimeoutMs(request.timeoutSeconds),
-        pollIntervalMs: normalizeExecutionRunWaitPollIntervalMs(request.pollIntervalMs),
         ...(opts?.signal ? { signal: opts.signal } : {}),
+        waitForTerminal: async (observedRunId, signal) => {
+          await params.manager.waitForTerminal(observedRunId, { signal });
+        },
         readRun: async ({ runId: observedRunId }) => {
           if (!getRunInAuthoritativeScope(observedRunId, sessionId)) {
             return { ok: false, code: 'execution_run_not_found', message: 'Not found' } as const;
@@ -685,7 +885,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
 
     sessionTargetPrimarySet: unsupportedActionDependency,
     sessionTargetTrackedSet: unsupportedActionDependency,
-    sessionList: unsupportedActionDependency,
+    sessionList: params.context.sessionId && params.context.sessionList
+      ? params.context.sessionList
+      : unsupportedSessionListDependency,
     sessionActivityGet: unsupportedActionDependency,
     sessionRecentMessagesGet: unsupportedActionDependency,
 
@@ -697,13 +899,23 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
 
     ...(params.approvalDeps ?? {}),
 
-    isActionEnabled: (id, ctx) => isActionEnabledByEnv(id, {
-      surface: ctx.surface ?? null,
-      placement: ctx.placement ?? null,
-    }),
-    isActionApprovalRequired: (id, ctx) => isActionApprovalRequiredByEnv(id, {
-      surface: ctx.surface ?? null,
-    }),
+    isActionEnabled: (id, ctx) => isActionEnabledByActionsSettings(
+      id,
+      actionsSettingsProvider.getActionsSettings(),
+      {
+        surface: ctx.surface ?? null,
+        placement: ctx.placement ?? null,
+      },
+    ),
+    isActionApprovalRequired: (id, ctx) => isApprovalRequiredByActionsSettings(
+      id,
+      actionsSettingsProvider.getActionsSettings(),
+      {
+        surface: ctx.surface ?? null,
+        authority: ctx.authority,
+        presentUserConfirmation: ctx.presentUserConfirmation,
+      },
+    ),
   };
   return actionDeps;
 }

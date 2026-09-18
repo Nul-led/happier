@@ -4,6 +4,31 @@ import {
   AgentSessionRuntimeEventV1Schema,
   type AgentSessionRuntimeEventV1,
 } from '@happier-dev/protocol';
+import type { RuntimeTranscriptProjectionSession } from './projectRuntimeTranscriptEvent';
+
+type EnqueueAgentMessageCommitted = NonNullable<
+  RuntimeTranscriptProjectionSession['enqueueAgentMessageCommitted']
+>;
+type CommittedAgentMessageBody = Parameters<EnqueueAgentMessageCommitted>[1];
+type CommittedToolCallBody = Extract<CommittedAgentMessageBody, { type: 'tool-call' }>;
+
+function createCommittedAgentMessageCapture() {
+  const bodies: CommittedAgentMessageBody[] = [];
+  const enqueueAgentMessageCommitted = vi.fn<EnqueueAgentMessageCommitted>(async (_provider, body) => {
+    bodies.push(body);
+    return { persisted: true, delivered: false };
+  });
+  return { bodies, enqueueAgentMessageCommitted };
+}
+
+function findCanonicalDiffCall(bodies: readonly CommittedAgentMessageBody[]): CommittedToolCallBody {
+  const body = bodies.find(
+    (candidate): candidate is CommittedToolCallBody => candidate.type === 'tool-call' && candidate.name === 'Diff',
+  );
+  expect(body).toBeDefined();
+  if (!body) throw new Error('Expected a committed canonical Diff tool call');
+  return body;
+}
 
 let nextRuntimeEventSequence = 0;
 
@@ -15,6 +40,71 @@ function canonicalRuntimeEvent(input: Readonly<Record<string, unknown>>): AgentS
 }
 
 describe('projectRuntimeTranscriptEvent', () => {
+  it('persists typed completion evidence when a turn completes without streamed output', async () => {
+    const { createKeyedStreamedTranscriptBridge } = await import('@/api/session/createKeyedStreamedTranscriptBridge');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const session = {
+      sessionId: 'session-1',
+      requiresDurableTurnCompletionMarker: true as const,
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true as const, delivered: false as const })),
+    };
+    const runtimeMessageDeltaBridge = createKeyedStreamedTranscriptBridge({
+      provider: 'claude',
+      createSessionForStream: () => session,
+    });
+
+    await expect(projectRuntimeTranscriptEvent({
+      session,
+      provider: 'claude',
+      runtimeMessageDeltaBridge,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-complete', sessionId: 'session-1', emittedAtMs: 3, turnId: 'turn-empty',
+      }),
+    })).resolves.toEqual({ projected: true, kind: 'turn-complete' });
+
+    expect(session.enqueueAgentMessageCommitted).toHaveBeenCalledWith(
+      'claude',
+      { type: 'task_complete', id: 'turn-empty' },
+      expect.objectContaining({
+        localId: 'turn-empty:task_complete',
+        meta: { source: 'runtime', runtimeEventKind: 'turn-complete', runtimeTurnId: 'turn-empty' },
+      }),
+    );
+  });
+
+  it('persists typed failure evidence when a Run turn fails without streamed output', async () => {
+    const { createKeyedStreamedTranscriptBridge } = await import('@/api/session/createKeyedStreamedTranscriptBridge');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const session = {
+      sessionId: 'session-1',
+      requiresDurableTurnCompletionMarker: true as const,
+      enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true as const, delivered: false as const })),
+    };
+    const runtimeMessageDeltaBridge = createKeyedStreamedTranscriptBridge({
+      provider: 'claude',
+      createSessionForStream: () => session,
+    });
+
+    await expect(projectRuntimeTranscriptEvent({
+      session,
+      provider: 'claude',
+      runtimeMessageDeltaBridge,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-failed', sessionId: 'session-1', emittedAtMs: 3, turnId: 'turn-empty',
+        diagnostic: { code: 'provider_error', severity: 'error' },
+      }),
+    })).resolves.toEqual({ projected: true, kind: 'turn-failed' });
+
+    expect(session.enqueueAgentMessageCommitted).toHaveBeenCalledWith(
+      'claude',
+      { type: 'turn_failed', id: 'turn-empty' },
+      expect.objectContaining({
+        localId: 'turn-empty:turn_failed',
+        meta: { source: 'runtime', runtimeEventKind: 'turn-failed', runtimeTurnId: 'turn-empty' },
+      }),
+    );
+  });
+
   it('projects public runtime message deltas through the canonical streamed transcript writer', async () => {
     const { createKeyedStreamedTranscriptBridge } = await import('@/api/session/createKeyedStreamedTranscriptBridge');
     const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
@@ -278,6 +368,292 @@ describe('projectRuntimeTranscriptEvent', () => {
       },
     );
     expect(session.sendAgentMessageCommitted).not.toHaveBeenCalled();
+  });
+
+  it('publishes normalized runtime tool changes with provider turn correlation readable by Protocol', async () => {
+    const {
+      extractCanonicalDiffFiles,
+      readTurnChangeToolMetadata,
+    } = await import('../../../../../../../packages/protocol/src/sessions/messages/canonicalTurnDiffTool');
+    const { NormalizedToolTurnChangeTracker } = await import('@/agent/tools/diff/normalizedToolTurnChangeTracker');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const runtimeMessageDeltaBridge = {
+      appendAssistantDelta: vi.fn(),
+      appendThinkingDelta: vi.fn(),
+      flushAll: vi.fn(async () => []),
+    };
+    const { bodies, enqueueAgentMessageCommitted } = createCommittedAgentMessageCapture();
+    const session = { sessionId: 'session-1', enqueueAgentMessageCommitted };
+    const normalizedToolTurnChangeTracker = new NormalizedToolTurnChangeTracker({ provider: 'codex' });
+
+    await projectRuntimeTranscriptEvent({
+      session,
+      provider: 'codex',
+      runtimeMessageDeltaBridge,
+      normalizedToolTurnChangeTracker,
+      toolNormalizationProtocol: 'codex',
+      event: canonicalRuntimeEvent({
+        kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 1, turnId: 'host-turn-1',
+        startedBy: 'provider',
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      session,
+      provider: 'codex',
+      runtimeMessageDeltaBridge,
+      normalizedToolTurnChangeTracker,
+      toolNormalizationProtocol: 'codex',
+      event: canonicalRuntimeEvent({
+        kind: 'tool-call', sessionId: 'session-1', emittedAtMs: 2, turnId: 'host-turn-1',
+        toolCallId: 'edit-1', toolName: 'Edit',
+        input: { file_path: 'src/runtime-edit.ts', old_string: 'before', new_string: 'after' },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      session,
+      provider: 'codex',
+      runtimeMessageDeltaBridge,
+      normalizedToolTurnChangeTracker,
+      toolNormalizationProtocol: 'codex',
+      event: canonicalRuntimeEvent({
+        kind: 'tool-result', sessionId: 'session-1', emittedAtMs: 3, turnId: 'host-turn-1',
+        toolCallId: 'edit-1', output: { status: 'completed' },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      session,
+      provider: 'codex',
+      runtimeMessageDeltaBridge,
+      normalizedToolTurnChangeTracker,
+      toolNormalizationProtocol: 'codex',
+      event: canonicalRuntimeEvent({
+        kind: 'turn-complete', sessionId: 'session-1', emittedAtMs: 4, turnId: 'host-turn-1',
+        agentTurnId: 'provider-turn-1',
+      }),
+    });
+
+    const canonicalDiffCall = findCanonicalDiffCall(bodies);
+    const metadata = readTurnChangeToolMetadata(canonicalDiffCall.input);
+    expect(metadata).toMatchObject({ turnId: 'host-turn-1', provider: 'codex' });
+    expect(extractCanonicalDiffFiles(canonicalDiffCall.input, metadata!)).toEqual([
+      expect.objectContaining({
+        filePath: 'src/runtime-edit.ts',
+        source: 'provider_tool',
+        confidence: 'exact',
+        provider: 'codex',
+        agentTurnId: 'provider-turn-1',
+        providerMessageId: 'edit-1',
+        oldText: 'before',
+        newText: 'after',
+      }),
+    ]);
+  });
+
+  it('publishes Codex app-server Patch changes with provider turn correlation readable by Protocol', async () => {
+    const {
+      extractCanonicalDiffFiles,
+      readTurnChangeToolMetadata,
+    } = await import('../../../../../../../packages/protocol/src/sessions/messages/canonicalTurnDiffTool');
+    const { NormalizedToolTurnChangeTracker } = await import('@/agent/tools/diff/normalizedToolTurnChangeTracker');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const { bodies, enqueueAgentMessageCommitted } = createCommittedAgentMessageCapture();
+    const common = {
+      session: { sessionId: 'session-patch', enqueueAgentMessageCommitted },
+      provider: 'codex' as const,
+      runtimeMessageDeltaBridge: {
+        appendAssistantDelta: vi.fn(),
+        appendThinkingDelta: vi.fn(),
+        flushAll: vi.fn(async () => []),
+      },
+      normalizedToolTurnChangeTracker: new NormalizedToolTurnChangeTracker({ provider: 'codex' }),
+      toolNormalizationProtocol: 'codex' as const,
+    };
+
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-start', sessionId: 'session-patch', emittedAtMs: 1, turnId: 'host-turn-patch',
+        startedBy: 'provider',
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'tool-call', sessionId: 'session-patch', emittedAtMs: 2, turnId: 'host-turn-patch',
+        agentTurnId: 'codex-turn-patch', toolCallId: 'patch_1', toolName: 'Patch',
+        input: {
+          auto_approved: true,
+          changes: [{
+            path: 'src/file.ts',
+            kind: { type: 'update', move_path: null },
+            diff: '@@ -1 +1,2 @@\n-old line\n+old line\n+new line\n',
+          }],
+        },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'tool-result', sessionId: 'session-patch', emittedAtMs: 3, turnId: 'host-turn-patch',
+        agentTurnId: 'codex-turn-patch', toolCallId: 'patch_1', output: { success: true },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-complete', sessionId: 'session-patch', emittedAtMs: 4, turnId: 'host-turn-patch',
+        agentTurnId: 'codex-turn-patch',
+      }),
+    });
+
+    const canonicalDiffCall = findCanonicalDiffCall(bodies);
+    const metadata = readTurnChangeToolMetadata(canonicalDiffCall.input);
+    expect(metadata).toMatchObject({
+      turnId: 'host-turn-patch',
+      provider: 'codex',
+    });
+    expect(extractCanonicalDiffFiles(canonicalDiffCall.input, metadata!)).toEqual([
+      expect.objectContaining({
+        filePath: 'src/file.ts',
+        source: 'provider_tool',
+        confidence: 'exact',
+        provider: 'codex',
+        agentTurnId: 'codex-turn-patch',
+        providerMessageId: 'patch_1',
+        oldText: 'old line\n',
+        newText: 'old line\nnew line\n',
+      }),
+    ]);
+  });
+
+  it.each([
+    { kind: 'turn-failed' as const, expectedStatus: 'interrupted' as const },
+    { kind: 'turn-cancelled' as const, expectedStatus: 'aborted' as const },
+  ])('publishes pending normalized changes at the $kind terminal boundary', async ({ kind, expectedStatus }) => {
+    const { readTurnChangeToolMetadata } = await import('../../../../../../../packages/protocol/src/sessions/messages/canonicalTurnDiffTool');
+    const { NormalizedToolTurnChangeTracker } = await import('@/agent/tools/diff/normalizedToolTurnChangeTracker');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const { bodies, enqueueAgentMessageCommitted } = createCommittedAgentMessageCapture();
+    const common = {
+      session: { sessionId: 'session-terminal', enqueueAgentMessageCommitted },
+      provider: 'codex' as const,
+      runtimeMessageDeltaBridge: {
+        appendAssistantDelta: vi.fn(),
+        appendThinkingDelta: vi.fn(),
+        flushAll: vi.fn(async () => []),
+      },
+      normalizedToolTurnChangeTracker: new NormalizedToolTurnChangeTracker({ provider: 'codex' }),
+      toolNormalizationProtocol: 'codex' as const,
+    };
+
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-start', sessionId: 'session-terminal', emittedAtMs: 1, turnId: 'host-turn-terminal',
+        startedBy: 'provider',
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'tool-call', sessionId: 'session-terminal', emittedAtMs: 2, turnId: 'host-turn-terminal',
+        toolCallId: 'edit-terminal', toolName: 'Edit',
+        input: { file_path: 'src/terminal.ts', old_string: 'before', new_string: 'after' },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'tool-result', sessionId: 'session-terminal', emittedAtMs: 3, turnId: 'host-turn-terminal',
+        toolCallId: 'edit-terminal', output: { status: 'completed' },
+      }),
+    });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind, sessionId: 'session-terminal', emittedAtMs: 4, turnId: 'host-turn-terminal',
+        ...(kind === 'turn-failed'
+          ? { diagnostic: { code: 'provider_error', severity: 'error' } }
+          : { cause: 'user' }),
+      }),
+    });
+
+    const canonicalDiffCall = findCanonicalDiffCall(bodies);
+    expect(readTurnChangeToolMetadata(canonicalDiffCall.input)).toMatchObject({
+      turnId: 'host-turn-terminal',
+      turnStatus: expectedStatus,
+    });
+  });
+
+  it('publishes provider-native file edit events through the same durable turn change set', async () => {
+    const {
+      extractCanonicalDiffFiles,
+      readTurnChangeToolMetadata,
+    } = await import('../../../../../../../packages/protocol/src/sessions/messages/canonicalTurnDiffTool');
+    const { NormalizedToolTurnChangeTracker } = await import('@/agent/tools/diff/normalizedToolTurnChangeTracker');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const runtimeMessageDeltaBridge = {
+      appendAssistantDelta: vi.fn(),
+      appendThinkingDelta: vi.fn(),
+      flushAll: vi.fn(async () => []),
+    };
+    const { bodies, enqueueAgentMessageCommitted } = createCommittedAgentMessageCapture();
+    const session = { sessionId: 'session-1', enqueueAgentMessageCommitted };
+    const normalizedToolTurnChangeTracker = new NormalizedToolTurnChangeTracker({ provider: 'codex' });
+    const common = {
+      session,
+      provider: 'codex' as const,
+      runtimeMessageDeltaBridge,
+      normalizedToolTurnChangeTracker,
+      toolNormalizationProtocol: 'codex' as const,
+    };
+
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 1, turnId: 'host-turn-1',
+        startedBy: 'provider',
+      }),
+    });
+    await expect(projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'file-edit', sessionId: 'session-1', emittedAtMs: 2, turnId: 'host-turn-1',
+        agentTurnId: 'provider-turn-1', editId: 'native-edit-1', path: 'src/native-edit.ts',
+        oldContent: 'before', newContent: 'after', description: 'native edit',
+      }),
+    })).resolves.toEqual({ projected: true, kind: 'file-edit' });
+    await projectRuntimeTranscriptEvent({
+      ...common,
+      event: canonicalRuntimeEvent({
+        kind: 'turn-complete', sessionId: 'session-1', emittedAtMs: 3, turnId: 'host-turn-1',
+        agentTurnId: 'provider-turn-1',
+      }),
+    });
+
+    expect(bodies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'file-edit',
+        filePath: 'src/native-edit.ts',
+        oldContent: 'before',
+        newContent: 'after',
+      }),
+    ]));
+    const canonicalDiffCall = findCanonicalDiffCall(bodies);
+    const metadata = readTurnChangeToolMetadata(canonicalDiffCall.input);
+    expect(extractCanonicalDiffFiles(canonicalDiffCall.input, metadata!)).toEqual([
+      expect.objectContaining({
+        filePath: 'src/native-edit.ts',
+        source: 'provider_native',
+        confidence: 'exact',
+        provider: 'codex',
+        agentTurnId: 'provider-turn-1',
+        providerMessageId: 'native-edit-1',
+        oldText: 'before',
+        newText: 'after',
+        description: 'native edit',
+      }),
+    ]);
   });
 
   it('projects a committed external tool call without a streamed delta bridge', async () => {

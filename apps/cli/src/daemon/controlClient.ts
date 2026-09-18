@@ -3,7 +3,7 @@
  * Used by CLI commands to interact with running daemon
  */
 
-import { isPidPresent, isPidProvablyAbsent } from '@happier-dev/cli-common/process';
+import { isPidProvablyAbsent } from '@happier-dev/cli-common/process';
 import type { ActionExecuteResult, ActionExecutorContext } from '@happier-dev/protocol';
 import { logger } from '@/ui/logger';
 import {
@@ -58,7 +58,7 @@ import {
   SessionRunnerStatusGetRequestV1Schema,
   SessionRunnerRuntimeStateV1Schema,
   SessionRunnerRuntimeStatusV2Schema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedAccountServiceKey,
   type ConnectedServiceId,
   type ConnectedServiceUsageSourceV1,
@@ -172,7 +172,11 @@ const DAEMON_PING_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_PING_TIMEOUT_MS';
 const DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_ENV_KEY = 'HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS';
 const DAEMON_SHUTDOWN_SPAWN_DRAIN_GRACE_ENV_KEY = 'HAPPIER_DAEMON_SHUTDOWN_SPAWN_DRAIN_GRACE_MS';
 const EXECUTION_RUN_CS_MATERIALIZE_TIMEOUT_ENV_KEY = 'HAPPIER_EXECUTION_RUN_CS_MATERIALIZE_TIMEOUT_MS';
-const DEFAULT_EXECUTION_RUN_CS_MATERIALIZE_TIMEOUT_MS = 120_000;
+// The daemon's serialized materialization owner may legitimately wait up to six minutes behind an
+// older root operation before it begins its own bounded refresh/copy/promotion work. Keep the
+// caller's deadline at the existing ten-minute cap so load does not turn valid work into an
+// ambiguous abandoned start plus compensating release.
+const DEFAULT_EXECUTION_RUN_CS_MATERIALIZE_TIMEOUT_MS = 600_000;
 
 function serializeSpawnDaemonSessionRequestForLocalControl(
   request: SpawnDaemonSessionRequest,
@@ -401,14 +405,6 @@ async function daemonPost(path: string, body?: any, options: DaemonPostOptions =
   const state = options.target ?? await readDaemonState();
   if (!state?.httpPort) {
     const errorMessage = 'No daemon running, no state file found';
-    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    };
-  }
-
-  if (!isPidPresent(state.pid)) {
-    const errorMessage = 'Daemon is not running, file is stale';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
     return {
       error: errorMessage
@@ -762,10 +758,13 @@ export async function requestDaemonSessionConnectedServiceAuthSwitch(
   body: Readonly<{
     sessionId: string;
     agentId: string;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     rematerializeServiceId?: ConnectedAccountServiceKey;
     expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
     accountSettingsVersionHint?: number;
+    teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    previousTeamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
   }>,
   options: DaemonControlRequestOptions = {},
 ): Promise<unknown> {
@@ -779,6 +778,15 @@ export async function requestDaemonSessionConnectedServiceAuthSwitch(
     ...(body.expectedGroupGenerationByServiceId === undefined
       ? {}
       : { expectedGroupGenerationByServiceId: body.expectedGroupGenerationByServiceId }),
+    ...(body.teamCredentialBindings === undefined
+      ? {}
+      : { teamCredentialBindings: body.teamCredentialBindings }),
+    ...(body.previousTeamCredentialBindings === undefined
+      ? {}
+      : { previousTeamCredentialBindings: body.previousTeamCredentialBindings }),
+    ...(body.teamVisibilityGrantConsent === undefined
+      ? {}
+      : { teamVisibilityGrantConsent: body.teamVisibilityGrantConsent }),
     ...(body.accountSettingsVersionHint === undefined
       ? {}
       : { accountSettingsVersionHint: body.accountSettingsVersionHint }),

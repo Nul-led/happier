@@ -450,7 +450,7 @@ describe('runBackendSessionCliCommand', () => {
 
   it('sends persisted terminal-resume Connected Services intent through foreground admission', async () => {
     const connectedServices = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
         'openai-codex': {
           source: 'connected' as const,
@@ -579,7 +579,7 @@ describe('runBackendSessionCliCommand', () => {
     expect(foregroundAdmissionMocks.release).toHaveBeenCalledTimes(1);
   });
 
-  it('resolves the configured Connected Services default before foreground admission and sends the legacy binding ingress', async () => {
+  it('resolves the configured Connected Services default and normalizes legacy binding ingress before foreground admission', async () => {
     const credentials = { token: 'x' } as any;
     vi.spyOn(persistenceModule, 'readStoredCredentials').mockResolvedValue(credentials);
     vi.spyOn(persistenceModule, 'readSettings').mockResolvedValue({ machineId: 'machine-1' } as any);
@@ -624,7 +624,7 @@ describe('runBackendSessionCliCommand', () => {
     expect(foregroundAdmissionMocks.admit).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'codex',
       connectedServices: expect.objectContaining({
-        v: 1,
+        v: 2,
         bindingsByServiceId: expect.objectContaining({
           'happier.agent.codex/openai-codex': {
             source: 'connected',

@@ -2,7 +2,6 @@ import {
   AgentProviderRequirementsV1Schema,
   ProviderBoundModelRefSchema,
   ProviderModelDescriptorV1Schema,
-  ProviderCredentialTransportV1Schema,
   SessionProviderBindingMetadataV1Schema,
   createProviderBindingSecurityFingerprintV1,
   createProviderErrorV1,
@@ -37,6 +36,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
+import type { SavedSecretCatalogResourceInputV1 } from '@/settings/secrets/savedSecretCatalog';
 import {
   prepareLeasedAgentProviderBinding,
   readLeasedAgentProviderBindingAdapter,
@@ -78,7 +78,7 @@ export type ManagedProviderBindingAuthorizationFacts = Readonly<{
     protocol: AgentProviderBindingResolvedFacts['endpoint']['protocol'];
     publicHeaders: Readonly<Record<string, string>>;
   }>;
-  runtimeCredentialTransport: ProviderCredentialTransportV1;
+  runtimeCredentialTransport: ProviderCredentialTransportV1 | null;
   compatibilityFingerprint: string;
 }>;
 
@@ -89,7 +89,6 @@ type ProviderSpawnAuthorizationBase = Readonly<{
   prepared: AgentProviderBindingPrepared;
   support: AgentProviderRequirementsV1;
   adapterVersion: number;
-  credentialReference: ProviderCredentialReference;
   sessionBindingMetadata: SessionProviderBindingMetadataV1;
 }>;
 
@@ -97,6 +96,7 @@ export type ProviderSpawnAuthorization = ProviderSpawnAuthorizationBase & Readon
   | {
       deployment: Readonly<{ kind: 'external' }>;
       binding: AgentProviderBindingResolvedFacts;
+      credentialReference: Exclude<ProviderCredentialReference, { kind: 'team_direct' }>;
     }
   | {
       deployment: Readonly<{
@@ -225,6 +225,7 @@ export type ResolveProviderSpawnAuthorizationInput = Readonly<{
   /** Runtime/catalog agent id used only to look up the executable adapter. */
   agentId: string;
   accountSettings: unknown;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
   providerSettings?: ProviderSettingsV1;
   registry: ProviderContributionRegistryView;
   dnsEvidenceByEndpointUrl: ProviderEndpointDnsEvidence;
@@ -288,6 +289,7 @@ function managedPurposeBindingSnapshotMatchesDeclarations(input: Readonly<{
 export function resolveProviderProbeAuthorization(input: Readonly<{
   request: ProviderProbeAuthorizationRequest;
   accountSettings: unknown;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
   providerSettings?: ProviderSettingsV1;
   /** A caller-owned point-in-time parse for one bulk Provider projection. */
   settingsRead?: ReturnType<typeof readProviderSettingsFromAccountSettingsV1>;
@@ -502,6 +504,7 @@ export function resolveProviderProbeAuthorization(input: Readonly<{
     ? resolveProviderCredentialReference({
         providerSettings,
         accountSettings: input.accountSettings,
+        savedSecretResources: input.savedSecretResources,
         connectionId: record.connectionId,
         machineId: input.request.machineId,
         credentialSlotId: facts.credential.slotId,
@@ -557,6 +560,7 @@ export function resolveProviderProbeAuthorization(input: Readonly<{
 export function resolveProviderModelLoadAuthorization(input: Readonly<{
   request: ProviderModelLoadHostRequest;
   accountSettings: unknown;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
   providerSettings?: ProviderSettingsV1;
   registry: ProviderContributionRegistryView;
   dnsEvidenceByEndpointUrl: ProviderEndpointDnsEvidence;
@@ -609,6 +613,7 @@ export function resolveProviderModelLoadAuthorization(input: Readonly<{
     ? resolveProviderCredentialReference({
         providerSettings,
         accountSettings: input.accountSettings,
+        savedSecretResources: input.savedSecretResources,
         connectionId: record.connectionId,
         machineId: input.request.machineId,
         credentialSlotId: credential.slotId,
@@ -976,21 +981,14 @@ export function resolveProviderSpawnAuthorization(
     ) {
       return { ok: false, error: createProviderErrorV1('provider_connection_invalid', errorContext) };
     }
-    const runtimeCredentialTransport = ProviderCredentialTransportV1Schema.parse({
-      id: 'managed-runtime-bearer',
-      protocols: [compatibilityResult.selectedProtocol],
-      uses: ['runtime'],
-      destination: {
-        kind: 'httpHeader',
-        name: 'Authorization',
-        format: 'bearer',
-      },
-    });
-    if (!selectProviderRuntimeCredentialTransportV1({
-      transports: [runtimeCredentialTransport],
-      protocol: compatibilityResult.selectedProtocol,
-      agent: adapter.support,
-    })) {
+    const runtimeCredentialTransport = facts.credential
+      ? selectProviderRuntimeCredentialTransportV1({
+          transports: facts.credential.transports,
+          protocol: compatibilityResult.selectedProtocol,
+          agent: adapter.support,
+        })
+      : null;
+    if (facts.credential && !runtimeCredentialTransport) {
       return {
         ok: false,
         error: createProviderErrorV1('provider_credential_transport_unavailable', errorContext),
@@ -1029,7 +1027,9 @@ export function resolveProviderSpawnAuthorization(
       publicHeaders: endpointTemplate.publicHeaders ?? {},
       materialization: prepared.materialization,
       ...(prepared.adapterBindingKey ? { adapterBindingKey: prepared.adapterBindingKey } : {}),
-      credentialDestination: runtimeCredentialTransport.destination,
+      ...(runtimeCredentialTransport
+        ? { credentialDestination: runtimeCredentialTransport.destination }
+        : {}),
       compatibilityFingerprint: compatibility.compatibilityFingerprint,
       adapterVersion: adapter.adapter.adapterVersion,
     });
@@ -1120,6 +1120,7 @@ export function resolveProviderSpawnAuthorization(
     ? resolveProviderCredentialReference({
         providerSettings,
         accountSettings: input.accountSettings,
+        savedSecretResources: input.savedSecretResources,
         connectionId,
         machineId: input.machineId,
         credentialSlotId: facts.credential.slotId,

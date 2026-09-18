@@ -1,18 +1,6 @@
 import {
   AGENT_PERMISSION_INTENTS_V1,
-  ExecutionRunClassSchema,
-  ExecutionRunIntentSchema,
-  ExecutionRunIoModeSchema,
-  ExecutionRunRetentionPolicySchema,
-  ExecutionRunStatusSchema,
 } from '@happier-dev/protocol';
-import { formatProtocolEnumUsage } from '@/cli/commands/shared/parseProtocolEnumFlag';
-
-const EXECUTION_RUN_INTENT_USAGE = formatProtocolEnumUsage(ExecutionRunIntentSchema);
-const EXECUTION_RUN_RETENTION_USAGE = formatProtocolEnumUsage(ExecutionRunRetentionPolicySchema);
-const EXECUTION_RUN_CLASS_USAGE = formatProtocolEnumUsage(ExecutionRunClassSchema);
-const EXECUTION_RUN_IO_MODE_USAGE = formatProtocolEnumUsage(ExecutionRunIoModeSchema);
-const EXECUTION_RUN_STATUS_USAGE = formatProtocolEnumUsage(ExecutionRunStatusSchema);
 
 const SESSION_CREATE_HELP = [
   'happier session create [options]',
@@ -38,18 +26,8 @@ const SESSION_CREATE_HELP = [
 
 export const SESSION_HELP_LINES = {
   resume: 'happier resume [<session-id-or-prefix>]',
-  list: 'happier session list [--active] [--archived] [--limit N] [--cursor C] [--machine-id <machineId>] [--include-system] [--resumable] [--plain] [--json]',
-  status: 'happier session status <session-id-or-prefix-or-tag> [--live] [--json]',
   create: SESSION_CREATE_HELP,
-  send: 'happier session send <session-id-or-prefix-or-tag> <message|--message <text>|--prompt <text>> [--machine-id <machineId>] [--permission-mode <mode>] [--model <model-id>] [--provider-connection <id|native>] [--local-id <id>] [--wait] [--timeout <seconds>] [--json]',
-  wait: 'happier session wait <session-id-or-prefix-or-tag> [--machine-id <machineId>] [--timeout <seconds>] [--json]',
-  stop: 'happier session stop <session-id-or-prefix-or-tag> [--machine-id <machineId>] [--json]',
   history: 'happier session history <session-id-or-prefix-or-tag> [--machine-id <machineId>] ([--tail N|--limit N] [--format compact|raw] [--raw] [--include-meta] [--include-structured-payload] [--json] | --follow [--jsonl])',
-  setTitle: 'happier session set-title <session-id-or-prefix-or-tag> <title> [--json]',
-  setPermissionMode: 'happier session set-permission-mode <session-id-or-prefix-or-tag> <mode> [--json]',
-  setModel: 'happier session set-model <session-id-or-prefix-or-tag> <model-id> [--provider-connection <id|native>] [--json]',
-  archive: 'happier session archive <session-id-or-prefix-or-tag> [--json]',
-  unarchive: 'happier session unarchive <session-id-or-prefix-or-tag> [--json]',
   reviewStart: 'happier session review start <session-id-or-prefix-or-tag> --engines <id1,id2> --instructions <text> [--json]',
   planStart: 'happier session plan start <session-id-or-prefix-or-tag> --backends <id1,id2> --instructions <text> [--machine-id <machineId>] [--json]',
   delegateStart: 'happier session delegate start <session-id-or-prefix-or-tag> [<instructions>|--instructions <text>] (--backends <id1,id2>|--agent <agent>) [--machine-id <machineId>] [--json]',
@@ -57,31 +35,12 @@ export const SESSION_HELP_LINES = {
   actionsList: 'happier session actions list [--json]',
   actionsDescribe: 'happier session actions describe <action-id> [--json]',
   actionsExecute: 'happier session actions execute <session-id-or-prefix-or-tag> <action-id> [--input-json <json>] [--action-request-id <id>] [--resume-action-request] [--json]',
-  runStart: `happier session run start <session-id-or-prefix-or-tag> --intent <${EXECUTION_RUN_INTENT_USAGE}> --agent <agent-id> [--instructions <text>] [--permission-mode <mode>] [--retention <${EXECUTION_RUN_RETENTION_USAGE}>] [--run-class <${EXECUTION_RUN_CLASS_USAGE}>] [--io-mode <${EXECUTION_RUN_IO_MODE_USAGE}>] [--json]`,
-  runList: `happier session run list <session-id-or-prefix-or-tag> [--agent <agent-id>] [--status <${EXECUTION_RUN_STATUS_USAGE}>] [--limit <count>] [--json]`,
-  runGet: 'happier session run get <session-id-or-prefix-or-tag> <run-id> [--include-structured] [--json]',
-  runSend: 'happier session run send <session-id-or-prefix-or-tag> <run-id> <message> [--resume] [--json]',
-  runStop: 'happier session run stop <session-id-or-prefix-or-tag> <run-id> [--json]',
   runAction: 'happier session run action <session-id-or-prefix-or-tag> <run-id> <action-id> [--input-json <json>] [--json]',
-  runWait: 'happier session run wait <session-id-or-prefix-or-tag> <run-id> [--timeout <seconds>] [--json]',
-  runStreamStart: 'happier session run stream-start <session-id-or-prefix-or-tag> <run-id> <message> [--resume] [--json]',
-  runStreamRead: 'happier session run stream-read <session-id-or-prefix-or-tag> <run-id> <stream-id> --cursor <n> [--max-events <n>] [--json]',
-  runStreamCancel: 'happier session run stream-cancel <session-id-or-prefix-or-tag> <run-id> <stream-id> [--json]',
 } as const;
 
 export const SESSION_TOP_LEVEL_HELP_LINES = [
-  SESSION_HELP_LINES.list,
-  SESSION_HELP_LINES.status,
   SESSION_HELP_LINES.create,
-  SESSION_HELP_LINES.send,
-  SESSION_HELP_LINES.wait,
-  SESSION_HELP_LINES.stop,
   SESSION_HELP_LINES.history,
-  SESSION_HELP_LINES.setTitle,
-  SESSION_HELP_LINES.setPermissionMode,
-  SESSION_HELP_LINES.setModel,
-  SESSION_HELP_LINES.archive,
-  SESSION_HELP_LINES.unarchive,
   SESSION_HELP_LINES.reviewStart,
   SESSION_HELP_LINES.planStart,
   SESSION_HELP_LINES.delegateStart,
@@ -89,49 +48,19 @@ export const SESSION_TOP_LEVEL_HELP_LINES = [
   SESSION_HELP_LINES.actionsList,
   SESSION_HELP_LINES.actionsDescribe,
   SESSION_HELP_LINES.actionsExecute,
-  SESSION_HELP_LINES.runStart,
-  SESSION_HELP_LINES.runList,
-  SESSION_HELP_LINES.runGet,
-  SESSION_HELP_LINES.runSend,
-  SESSION_HELP_LINES.runStop,
   SESSION_HELP_LINES.runAction,
-  SESSION_HELP_LINES.runWait,
-  SESSION_HELP_LINES.runStreamStart,
-  SESSION_HELP_LINES.runStreamRead,
-  SESSION_HELP_LINES.runStreamCancel,
   SESSION_HELP_LINES.resume,
 ] as const;
 
 export const SESSION_SUBCOMMAND_HELP_LINES: Record<string, readonly string[]> = {
-  list: [SESSION_HELP_LINES.list],
-  status: [SESSION_HELP_LINES.status],
   create: [SESSION_HELP_LINES.create],
-  send: [SESSION_HELP_LINES.send],
-  wait: [SESSION_HELP_LINES.wait],
-  stop: [SESSION_HELP_LINES.stop],
   history: [SESSION_HELP_LINES.history],
-  'set-title': [SESSION_HELP_LINES.setTitle],
-  'set-permission-mode': [SESSION_HELP_LINES.setPermissionMode],
-  'set-model': [SESSION_HELP_LINES.setModel],
-  archive: [SESSION_HELP_LINES.archive],
-  unarchive: [SESSION_HELP_LINES.unarchive],
   review: [SESSION_HELP_LINES.reviewStart],
   plan: [SESSION_HELP_LINES.planStart],
   delegate: [SESSION_HELP_LINES.delegateStart],
   'voice-agent': [SESSION_HELP_LINES.voiceAgentStart],
   actions: [SESSION_HELP_LINES.actionsList, SESSION_HELP_LINES.actionsDescribe, SESSION_HELP_LINES.actionsExecute],
-  run: [
-    SESSION_HELP_LINES.runStart,
-    SESSION_HELP_LINES.runList,
-    SESSION_HELP_LINES.runGet,
-    SESSION_HELP_LINES.runSend,
-    SESSION_HELP_LINES.runStop,
-    SESSION_HELP_LINES.runAction,
-    SESSION_HELP_LINES.runWait,
-    SESSION_HELP_LINES.runStreamStart,
-    SESSION_HELP_LINES.runStreamRead,
-    SESSION_HELP_LINES.runStreamCancel,
-  ],
+  run: [SESSION_HELP_LINES.runAction],
 };
 
 export const SESSION_NESTED_SUBCOMMAND_HELP_LINES: Record<string, string> = {
@@ -142,16 +71,7 @@ export const SESSION_NESTED_SUBCOMMAND_HELP_LINES: Record<string, string> = {
   'actions list': SESSION_HELP_LINES.actionsList,
   'actions describe': SESSION_HELP_LINES.actionsDescribe,
   'actions execute': SESSION_HELP_LINES.actionsExecute,
-  'run start': SESSION_HELP_LINES.runStart,
-  'run list': SESSION_HELP_LINES.runList,
-  'run get': SESSION_HELP_LINES.runGet,
-  'run send': SESSION_HELP_LINES.runSend,
-  'run stop': SESSION_HELP_LINES.runStop,
   'run action': SESSION_HELP_LINES.runAction,
-  'run wait': SESSION_HELP_LINES.runWait,
-  'run stream-start': SESSION_HELP_LINES.runStreamStart,
-  'run stream-read': SESSION_HELP_LINES.runStreamRead,
-  'run stream-cancel': SESSION_HELP_LINES.runStreamCancel,
 };
 
 const FIRST_CLASS_SESSION_COMMAND_GUIDANCE: Readonly<Record<string, Readonly<{

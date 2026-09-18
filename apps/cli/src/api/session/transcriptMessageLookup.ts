@@ -31,14 +31,29 @@ export type TranscriptLookupOutcome =
     | { type: 'unhealthy'; reason: 'timeout' | 'network' | 'server_5xx'; error: unknown }
     | { type: 'protocol_error'; error: unknown };
 
-function createAxiosGetConfig(params: { token: string; timeoutMs?: number }) {
+type ResolveTranscriptLookupAuthorizationHeaders = (request: Readonly<{
+    method: 'GET';
+    path: string;
+}>) => Readonly<Record<string, string>> | null;
+
+function createAxiosGetConfig(params: {
+    token: string;
+    path: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
+}) {
+    const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path: params.path })
+        ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+    if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
     return {
         headers: {
             ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-            Authorization: `Bearer ${params.token}`,
+            ...authorizationHeaders,
             'Content-Type': 'application/json',
         },
         timeout: params.timeoutMs ?? configuration.transcriptLookupRequestTimeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
         ...(configuration.transcriptLookupKeepAliveEnabled
             ? { httpAgent: KEEP_ALIVE_HTTP_AGENT, httpsAgent: KEEP_ALIVE_HTTPS_AGENT }
             : null),
@@ -154,11 +169,22 @@ export async function findTranscriptEncryptedMessageByLocalIdV2(params: {
     sessionId: string;
     localId: string;
     timeoutMs?: number;
+    signal?: AbortSignal;
+    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptLookupOutcome> {
     try {
+        const path = `/v2/sessions/${params.sessionId}/messages/by-local-id/${encodeURIComponent(params.localId)}`;
         const response = await axios.get(
-            `${params.serverUrl}/v2/sessions/${params.sessionId}/messages/by-local-id/${encodeURIComponent(params.localId)}`,
-            createAxiosGetConfig({ token: params.token, timeoutMs: params.timeoutMs })
+            `${params.serverUrl}${path}`,
+            createAxiosGetConfig({
+                token: params.token,
+                path,
+                timeoutMs: params.timeoutMs,
+                ...(params.signal ? { signal: params.signal } : {}),
+                ...(params.resolveAuthorizationHeaders
+                    ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+                    : {}),
+            })
         );
         const status = typeof response?.status === 'number' ? response.status : null;
         if (typeof status === 'number' && status >= 500) {
@@ -194,6 +220,7 @@ export async function findTranscriptEncryptedMessageByLocalId(params: {
     localId: string;
     onError?: (error: unknown) => void;
     timeoutMs?: number;
+    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptMessageLookupResult | null> {
     const serverUrl = resolveServerHttpBaseUrl();
     const outcome = await findTranscriptEncryptedMessageByLocalIdV2({
@@ -202,6 +229,9 @@ export async function findTranscriptEncryptedMessageByLocalId(params: {
         sessionId: params.sessionId,
         localId: params.localId,
         timeoutMs: params.timeoutMs,
+        ...(params.resolveAuthorizationHeaders
+            ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+            : {}),
     });
     switch (outcome.type) {
         case 'found':
@@ -228,7 +258,9 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
     errorBackoffBaseMs?: number;
     errorBackoffMaxMs?: number;
     requestTimeoutMs?: number;
+    signal?: AbortSignal;
     onUnsupported?: (error: unknown) => void;
+    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptMessageLookupResult | null> {
     const maxWaitMs = params.maxWaitMs ?? 5_000;
     const pollIntervalMs = params.pollIntervalMs ?? configuration.transcriptLookupPollIntervalMs;
@@ -250,7 +282,7 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
 
     const startedAt = Date.now();
     let currentErrorBackoffMs = errorBackoffBaseMs;
-    while (Date.now() - startedAt < maxWaitMs) {
+    while (!params.signal?.aborted && Date.now() - startedAt < maxWaitMs) {
         const elapsedMs = Date.now() - startedAt;
         const remainingMs = maxWaitMs - elapsedMs;
         if (remainingMs <= 0) break;
@@ -262,6 +294,10 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
             sessionId: params.sessionId,
             localId: params.localId,
             timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)),
+            ...(params.signal ? { signal: params.signal } : {}),
+            ...(params.resolveAuthorizationHeaders
+                ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+                : {}),
         });
         switch (outcome.type) {
             case 'found':
@@ -294,7 +330,7 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
         const remainingAfterAttemptMs = maxWaitMs - (Date.now() - startedAt);
         if (remainingAfterAttemptMs <= 0) break;
 
-        await new Promise((r) => setTimeout(r, Math.min(delayMs, remainingAfterAttemptMs)));
+        await waitForTranscriptLookupDelay(Math.min(delayMs, remainingAfterAttemptMs), params.signal);
     }
     return null;
 }
@@ -309,13 +345,15 @@ async function waitForTranscriptEncryptedMessageByLocalIdWithSupervisor(params: 
     pollIntervalMs: number;
     errorBackoffBaseMs: number;
     requestTimeoutMs: number;
+    signal?: AbortSignal;
     onError?: (error: unknown) => void;
     onUnsupported?: (error: unknown) => void;
+    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptMessageLookupResult | null> {
     const coordinator = TranscriptRecoveryCoordinator.forServer(params.serverUrl);
     const startedAt = Date.now();
 
-    while (Date.now() - startedAt < params.maxWaitMs) {
+    while (!params.signal?.aborted && Date.now() - startedAt < params.maxWaitMs) {
         const elapsedMs = Date.now() - startedAt;
         const remainingMs = params.maxWaitMs - elapsedMs;
         if (remainingMs <= 0) break;
@@ -333,6 +371,10 @@ async function waitForTranscriptEncryptedMessageByLocalIdWithSupervisor(params: 
                     sessionId: params.sessionId,
                     localId: params.localId,
                     timeoutMs: Math.max(1, Math.min(params.requestTimeoutMs, remainingMs)),
+                    ...(params.signal ? { signal: params.signal } : {}),
+                    ...(params.resolveAuthorizationHeaders
+                        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+                        : {}),
                 }),
             }),
         });
@@ -350,13 +392,27 @@ async function waitForTranscriptEncryptedMessageByLocalIdWithSupervisor(params: 
         const remainingAfterAttemptMs = params.maxWaitMs - (Date.now() - startedAt);
         if (remainingAfterAttemptMs <= 0) break;
 
-        await new Promise((resolve) => setTimeout(
-            resolve,
+        await waitForTranscriptLookupDelay(
             Math.min(resolveRecoveryResultDelayMs(result, params), remainingAfterAttemptMs),
-        ));
+            params.signal,
+        );
     }
 
     return null;
+}
+
+function waitForTranscriptLookupDelay(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+        const timer = setTimeout(finish, Math.max(1, Math.trunc(ms)));
+        function finish(): void {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', finish);
+            resolve();
+        }
+        signal?.addEventListener('abort', finish, { once: true });
+        if (signal?.aborted) finish();
+    });
 }
 
 function resolveRecoveryResultDelayMs(

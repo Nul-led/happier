@@ -292,6 +292,6 @@ describe('Personal Home staged SQLite migration frontier', () => {
         expect(renderPrismaCompatibleSqliteDatabaseUrl({
             dbPath: 'C:\\Restore Stage\\home.sqlite',
             platform: 'win32',
-        })).toBe('file:C:/Restore%20Stage/home.sqlite?socket_timeout=30');
+        })).toBe('file:C:\\Restore Stage\\home.sqlite?socket_timeout=30');
     });
 });

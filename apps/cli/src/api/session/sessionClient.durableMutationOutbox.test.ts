@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -578,7 +579,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 'transport-disposal' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 'transport-disposal' }));
 
     await client.close();
 
@@ -592,7 +593,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 'semantic-session-end' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 'semantic-session-end' }));
 
     await Promise.all([
       client.endSessionAndClose(),
@@ -2032,7 +2033,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
 
     try {
       const { ApiSessionClient } = await import('./sessionClient');
-      const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+      const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
       const durableMutationOutbox: {
         enqueueSessionTurnMutation: (mutation: SessionTurnMutationV1) => Promise<void>;
         enqueueRegisteredSessionStateFieldMutation: () => Promise<void>;
@@ -2113,7 +2114,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const { ApiSessionClient } = await import('./sessionClient');
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's-runtime-activity' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's-runtime-activity' }));
     await drainAsyncWork();
     sessionSocketStub.connected = true;
     const currentServerContract = {
@@ -2188,7 +2189,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
 
     try {
       const { ApiSessionClient } = await import('./sessionClient');
-      const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+      const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
       const durableMutationOutbox: {
         enqueueSessionTurnMutation: (mutation: SessionTurnMutationV1) => Promise<void>;
         enqueueRegisteredSessionStateFieldMutation: () => Promise<void>;

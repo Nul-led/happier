@@ -151,7 +151,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
     ...(tmuxTmpDir ? ['--happy-tmux-tmpdir', tmuxTmpDir] : []),
   ];
 
-  const { commandTokens, tmuxEnv, unsetEnvKeys } = buildTmuxSpawnConfig({
+  const { commandTokens, tmuxEnv, unsetEnvKeys } = await buildTmuxSpawnConfig({
     agent: agentSubcommand,
     directory: params.directory,
     extraEnv: params.extraEnvForChildWithMessage,
@@ -379,7 +379,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
         sessionId,
         handle: createTmuxTerminalHostHandle({
           sessionName: tmuxSession,
-          windowName: tmuxResult.windowName ?? windowName,
+          windowId: tmuxResult.windowId,
           ...(tmuxTmpDir ? { tmuxTmpDir } : {}),
           topology: 'shared',
         }),

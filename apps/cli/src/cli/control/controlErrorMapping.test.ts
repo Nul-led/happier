@@ -11,6 +11,7 @@ describe('mapUnknownErrorToControlError', () => {
   it('keeps inventory and subcommand failures expected', () => {
     expect(mapUnknownErrorToControlError(Object.assign(new Error('inventory'), { code: 'machine_inventory_unavailable' }))).toMatchObject({ code: 'machine_inventory_unavailable', unexpected: false });
     expect(mapUnknownErrorToControlError(Object.assign(new Error('subcommand'), { code: 'unknown_subcommand' }))).toMatchObject({ code: 'unknown_subcommand', unexpected: false });
+    expect(mapUnknownErrorToControlError(Object.assign(new Error('identity'), { code: 'server_identity_unavailable' }))).toMatchObject({ code: 'server_identity_unavailable', unexpected: false });
   });
   it('maps an invalid external API token to the canonical authentication error', () => {
     const error = Object.assign(new Error('The Happier API returned HTTP 401.'), {

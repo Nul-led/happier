@@ -2379,6 +2379,72 @@ describe('createExternalSessionFollowLeaseManager', () => {
         await manager.dispose();
     });
 
+    it('publishes source unavailable once per committed status transition and again after recovery', async () => {
+        const refresh = vi.fn()
+            .mockResolvedValueOnce({ outcome: 'source_unavailable' as const })
+            .mockResolvedValueOnce({ outcome: 'source_unavailable' as const })
+            .mockResolvedValueOnce({ outcome: 'already_current' as const })
+            .mockResolvedValueOnce({ outcome: 'source_unavailable' as const });
+        const writeFollowStatus = vi.fn(async () => {});
+        const publishSourceUnavailableOccurrence = vi.fn(async () => {});
+        let nowMs = 80_000;
+        const manager = createExternalSessionFollowLeaseManager({
+            now: () => nowMs,
+            writeFollowStatus,
+            publishSourceUnavailableOccurrence,
+        });
+        const resource = { linkGeneration: 'link-occurrence', pluginGeneration: 'plugin-occurrence' };
+        await manager.setBackgroundFollowEnabled({
+            sessionId: 'session-occurrence', enabled: true, resource,
+            acquireFollowLease: async () => ({ release: async () => {}, requestTranscriptRefresh: refresh }),
+        });
+
+        await manager.requestTranscriptRefresh({ sessionId: 'session-occurrence', resource });
+        expect(publishSourceUnavailableOccurrence).toHaveBeenCalledTimes(1);
+        expect(writeFollowStatus).toHaveBeenCalledBefore(publishSourceUnavailableOccurrence);
+
+        // The retry remains in the same unavailable state and cannot re-alert.
+        nowMs += 250;
+        await vi.advanceTimersByTimeAsync(250);
+        expect(publishSourceUnavailableOccurrence).toHaveBeenCalledTimes(1);
+
+        // A later retry recovers, so the next genuine transition is alertable.
+        nowMs += 1_000;
+        await vi.advanceTimersByTimeAsync(1_000);
+        await manager.requestTranscriptRefresh({ sessionId: 'session-occurrence', resource });
+        expect(publishSourceUnavailableOccurrence).toHaveBeenCalledTimes(2);
+        expect(publishSourceUnavailableOccurrence).toHaveBeenLastCalledWith({
+            sessionId: 'session-occurrence', observedAtMs: nowMs,
+        });
+        await manager.dispose();
+    });
+
+    it('does not publish source unavailable when the status metadata commit fails', async () => {
+        const publishSourceUnavailableOccurrence = vi.fn(async () => {});
+        const writeFollowStatus = vi.fn()
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValue(undefined);
+        const manager = createExternalSessionFollowLeaseManager({
+            writeFollowStatus,
+            publishSourceUnavailableOccurrence,
+        });
+        const resource = { linkGeneration: 'link-no-commit', pluginGeneration: 'plugin-no-commit' };
+        await manager.setBackgroundFollowEnabled({
+            sessionId: 'session-no-commit', enabled: true, resource,
+            acquireFollowLease: async () => ({
+                release: async () => {},
+                requestTranscriptRefresh: async () => ({ outcome: 'source_unavailable' as const }),
+            }),
+        });
+
+        await manager.requestTranscriptRefresh({ sessionId: 'session-no-commit', resource });
+        expect(publishSourceUnavailableOccurrence).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(250);
+        expect(writeFollowStatus).toHaveBeenCalledTimes(2);
+        expect(publishSourceUnavailableOccurrence).toHaveBeenCalledTimes(1);
+        await manager.dispose();
+    });
+
     it('cancels a retryable transcript refresh retry when its demand is released', async () => {
         const refresh = vi.fn(async () => ({ outcome: 'source_unavailable' as const }));
         const manager = createExternalSessionFollowLeaseManager({

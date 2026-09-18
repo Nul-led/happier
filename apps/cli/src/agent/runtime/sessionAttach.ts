@@ -20,6 +20,7 @@ export type SessionAttachSnapshot = Readonly<{
   metadataVersion: number;
   agentState: AgentState | null;
   agentStateVersion: number;
+  pendingExecutionRunIds?: readonly string[];
   metadataLayoutVersion?: 1;
   ownerMetadata?: SessionOwnerMetadataV1;
   ownerMetadataEnvelope?: SessionOwnerMetadataEnvelopeV1;

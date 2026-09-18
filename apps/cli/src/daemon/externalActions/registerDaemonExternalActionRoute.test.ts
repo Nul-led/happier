@@ -36,6 +36,12 @@ import { registerDaemonExternalActionRoute } from './registerDaemonExternalActio
 
 const PAT = `hap_v1_2c67deea-5ae7-4706-9ad6-b5b992df1cba_${'A'.repeat(43)}`;
 
+const SESSION_SPAWN_PENDING_RESULT = {
+  type: 'pending',
+  retryWithSameCreationKey: true,
+  outcome: 'accepted',
+} as const;
+
 type CanonicalActionExecutor = Pick<
   ReturnType<typeof import('@happier-dev/protocol/actions').createActionExecutor>,
   'execute'
@@ -52,7 +58,7 @@ function verifier(): DaemonPatVerifier {
   }));
 }
 
-function executor(result: ActionExecuteResult = { ok: true, result: { sessionId: 'session-1' } }): ExternalActionExecutor {
+function executor(result: ActionExecuteResult = { ok: true, result: SESSION_SPAWN_PENDING_RESULT }): ExternalActionExecutor {
   return { execute: vi.fn(async () => result) };
 }
 
@@ -74,7 +80,7 @@ function createDeepExternalActionResult(depth = 12_000): unknown {
 function createExactLimitMultibyteResponseResult(): string {
   const emptyResponse = {
     v: 1,
-    actionId: 'session.spawn_new',
+    actionId: 'session.status.get',
     requestId: 'response-limit',
     execution: { ok: true, result: '' },
   } as const;
@@ -107,6 +113,7 @@ async function createApp(overrides: Partial<Parameters<typeof registerDaemonExte
     currentServerId: 'server-local',
     verifyPat: verifier(),
     executor: executor(),
+    resolvePatExecutor: () => overrides.executor ?? executor(),
     resolveTarget: resolveTarget(),
     ...overrides,
   });
@@ -115,6 +122,31 @@ async function createApp(overrides: Partial<Parameters<typeof registerDaemonExte
 }
 
 describe('registerDaemonExternalActionRoute', () => {
+  it('returns a strict correlated outer failure for protected placement before opening', async () => {
+    const app = await createApp();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/actions/session.message.send',
+        headers: { authorization: `Bearer ${PAT}` },
+        payload: {
+          v: 2,
+          requestId: 'direct-protected-placement',
+          payload: { t: 'encrypted', c: 'opaque' },
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'invalid_request',
+        code: 'target_required',
+        requestId: 'direct-protected-placement',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('sends the ingress owner\'s prepared response without serializing it again', async () => {
     protocolSerializerSpy.mockClear();
     const app = await createApp();
@@ -135,7 +167,7 @@ describe('registerDaemonExternalActionRoute', () => {
 
   it('accepts only a verified PAT, stamps its provenance through the canonical executor, and sends a finite no-store response', async () => {
     const verifyPat = verifier();
-    const execute = vi.fn(async () => ({ ok: true as const, result: { sessionId: 'session-1' } }));
+    const execute = vi.fn(async () => ({ ok: true as const, result: SESSION_SPAWN_PENDING_RESULT }));
     const target = resolveTarget();
     const app = await createApp({
       verifyPat,
@@ -161,7 +193,7 @@ describe('registerDaemonExternalActionRoute', () => {
         v: 1,
         actionId: 'session.spawn_new',
         requestId: 'request-1',
-        execution: { ok: true, result: { sessionId: 'session-1' } },
+        execution: { ok: true, result: SESSION_SPAWN_PENDING_RESULT },
       });
       expect(verifyPat).toHaveBeenCalledWith(PAT, expect.any(AbortSignal));
       expect(verifyPat).toHaveBeenCalledTimes(1);
@@ -196,7 +228,10 @@ describe('registerDaemonExternalActionRoute', () => {
       ok: true,
       result,
     }));
-    const canonicalExecutor: CanonicalActionExecutor = { execute };
+    const canonicalExecutor = {
+      execute,
+      resolveSessionTarget: vi.fn(),
+    };
     const actionInput = {
       machineId: 'machine-local',
       query: {
@@ -277,8 +312,8 @@ describe('registerDaemonExternalActionRoute', () => {
       {
         actionId: 'memory.search',
         input: actionInput,
-        surface: 'api',
-        authority: undefined,
+        surface: 'cli',
+        authority: 'present_user',
         caller: undefined,
       },
       {
@@ -299,22 +334,35 @@ describe('registerDaemonExternalActionRoute', () => {
   });
 
   it('returns typed invalid_action_output rather than a recursive JSON response failure', async () => {
+    const usableResult = {
+      ok: true as const,
+      sessionId: 'session-1',
+      active: false,
+      updatedAt: null,
+      pendingCount: 0,
+      pendingPermissionRequestCount: 0,
+      pendingUserActionRequestCount: 0,
+    };
     const execute = vi.fn()
       .mockResolvedValueOnce({ ok: true as const, result: createDeepExternalActionResult() })
-      .mockResolvedValueOnce({ ok: true as const, result: { carrier: 'usable' } });
+      .mockResolvedValueOnce({ ok: true as const, result: usableResult });
     const app = await createApp({ executor: { execute } });
     try {
       const deepResponse = await app.inject({
         method: 'POST',
-        url: '/v1/actions/session.spawn_new',
+        url: '/v1/actions/session.activity.get',
         headers: { authorization: `Bearer ${PAT}` },
-        payload: { v: 1, input: {} },
+        payload: {
+          v: 1,
+          target: { kind: 'session', sessionId: 'session-1' },
+          input: { sessionId: 'session-1' },
+        },
       });
 
       expect(deepResponse.statusCode).toBe(200);
       expect(deepResponse.json()).toMatchObject({
         v: 1,
-        actionId: 'session.spawn_new',
+        actionId: 'session.activity.get',
         execution: {
           ok: false,
           errorCode: 'invalid_action_output',
@@ -324,13 +372,17 @@ describe('registerDaemonExternalActionRoute', () => {
 
       const nextResponse = await app.inject({
         method: 'POST',
-        url: '/v1/actions/session.spawn_new',
+        url: '/v1/actions/session.activity.get',
         headers: { authorization: `Bearer ${PAT}` },
-        payload: { v: 1, input: {} },
+        payload: {
+          v: 1,
+          target: { kind: 'session', sessionId: 'session-1' },
+          input: { sessionId: 'session-1' },
+        },
       });
       expect(nextResponse.statusCode).toBe(200);
       expect(nextResponse.json()).toMatchObject({
-        execution: { ok: true, result: { carrier: 'usable' } },
+        execution: { ok: true, result: usableResult },
       });
       expect(execute).toHaveBeenCalledTimes(2);
     } finally {
@@ -347,9 +399,14 @@ describe('registerDaemonExternalActionRoute', () => {
     const app = await createApp({ executor: { execute } });
     const request = {
       method: 'POST' as const,
-      url: '/v1/actions/session.spawn_new',
+      url: '/v1/actions/session.status.get',
       headers: { authorization: `Bearer ${PAT}` },
-      payload: { v: 1, requestId: 'response-limit', input: {} },
+      payload: {
+        v: 1,
+        requestId: 'response-limit',
+        target: { kind: 'session', sessionId: 'session-1' },
+        input: { sessionId: 'session-1' },
+      },
     };
     try {
       const exact = await app.inject(request);
@@ -403,6 +460,7 @@ describe('registerDaemonExternalActionRoute', () => {
       currentServerId: 'server-local',
       verifyPat,
       executor: { execute },
+      resolvePatExecutor: () => ({ execute }),
       resolveTarget: resolveTarget(),
     });
     await app.ready();
@@ -430,6 +488,33 @@ describe('registerDaemonExternalActionRoute', () => {
       expect(verifyPat).not.toHaveBeenCalled();
       expect(parse).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('redacts PAT verification outages through the bounded authentication error', async () => {
+    const app = await createApp({
+      verifyPat: vi.fn(async () => {
+        throw new Error('private verifier diagnostic');
+      }),
+    });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/actions/session.message.send',
+        headers: { authorization: `Bearer ${PAT}` },
+        payload: {
+          v: 2,
+          requestId: 'verification-outage',
+          target: { kind: 'machine', machineId: 'machine-local' },
+          payload: { t: 'encrypted', c: 'opaque' },
+        },
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ error: 'auth_unavailable' });
+      expect(response.body).not.toContain('diagnostic');
     } finally {
       await app.close();
     }
@@ -485,6 +570,7 @@ describe('registerDaemonExternalActionRoute', () => {
       currentServerId: 'server-local',
       verifyPat: verifier(),
       executor: { execute },
+      resolvePatExecutor: () => ({ execute }),
       resolveTarget: resolveTarget(),
     });
     await app.ready();

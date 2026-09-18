@@ -146,12 +146,6 @@ export async function authorizeRunnerManagedProviderServerSupervision(
         );
     }
     const executable = input.request.executable;
-    if (executable.kind !== 'packaged-runtime-binary') {
-        return fail(
-            'plugin_managed_server_executable_unavailable',
-            'Managed Provider packaged runtime is unavailable',
-        );
-    }
     if (
         input.request.serverId !== input.expectedLaunch.serverId
         || !isDeepStrictEqual(
@@ -244,6 +238,81 @@ export async function authorizeRunnerManagedProviderServerSupervision(
         return fail(
             'plugin_managed_server_declaration_stale',
             'Managed Provider server launch does not match immutable P',
+        );
+    }
+    if (executable.kind === 'systemTool') {
+        const processRequests = [
+            ...manifest.manifest.hostAccess.required,
+            ...manifest.manifest.hostAccess.optional,
+        ].filter(
+            (request): request is Extract<typeof request, {
+                capability: 'process';
+            }> => request.capability === 'process',
+        );
+        const executableDeclared = processRequests.some((request) =>
+            request.scope.executables.some((candidate) =>
+                refEquals(candidate, executable)
+            )
+        );
+        const declaredEnvironmentKeys = new Set(
+            processRequests.flatMap(
+                (request) => request.scope.envKeys ?? [],
+            ),
+        );
+        const identity = refIdentity(executable, scope.pluginId);
+        const systemTool = manifest.manifest.contributes.systemTools.find(
+            (candidate) => identity.pluginId === scope.pluginId
+                && candidate.id === identity.localId,
+        );
+        if (
+            !executableDeclared
+            || input.request.environmentKeys.some(
+                (key) => !declaredEnvironmentKeys.has(key),
+            )
+            || !systemTool
+        ) {
+            return fail(
+                'plugin_managed_server_launch_denied',
+                'Managed Provider system tool is outside declared HostAccess',
+            );
+        }
+        const resolver = createDaemonSpawnToolResolutionContext({
+            processEnv: input.processEnv ?? process.env,
+            ...(input.signal ? { signal: input.signal } : {}),
+        });
+        const resolved = await resolver.resolveSystemTool({
+            toolId: `${identity.pluginId}/${identity.localId}`,
+            lookupNames: systemTool.executableNames,
+            reason: 'Authorize retained managed Provider server launch',
+        });
+        if (!resolved.ok || !isAbsolute(resolved.command)) {
+            return fail(
+                'plugin_system_tool_unavailable',
+                'Managed Provider system tool is unavailable',
+            );
+        }
+        return Object.freeze({
+            launch: Object.freeze({
+                kind: 'daemonResolved' as const,
+                value: Object.freeze({
+                    command: resolved.command,
+                    args: Object.freeze([...(resolved.args ?? [])]),
+                    env: Object.freeze({ PATH: '' }),
+                    ...(systemTool.allowedArguments
+                        ? {
+                            allowedArguments: Object.freeze([
+                                ...systemTool.allowedArguments,
+                            ]),
+                        }
+                        : {}),
+                }),
+            }),
+        });
+    }
+    if (executable.kind !== 'packaged-runtime-binary') {
+        return fail(
+            'plugin_managed_server_executable_unavailable',
+            'Managed Provider executable is unavailable',
         );
     }
     if (scope.manifestAuthority === 'external') {

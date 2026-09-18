@@ -6,6 +6,12 @@ import {
   type ClientContext,
   type ForkSessionRequest,
   type ForkSessionResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
+  type DeleteSessionRequest,
+  type DeleteSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type LoadSessionRequest,
@@ -124,6 +130,21 @@ export class AcpAgentPeer {
   forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
     this.assertActive();
     return this.requestWithDiagnostics(() => this.context.request(methods.agent.session.fork, params));
+  }
+
+  listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    this.assertActive();
+    return this.requestWithDiagnostics(() => this.context.request(methods.agent.session.list, params));
+  }
+
+  closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    this.assertActive();
+    return this.requestWithDiagnostics(() => this.context.request(methods.agent.session.close, params));
+  }
+
+  deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    this.assertActive();
+    return this.requestWithDiagnostics(() => this.context.request(methods.agent.session.delete, params));
   }
 
   prompt(params: PromptRequest): Promise<PromptResponse> {

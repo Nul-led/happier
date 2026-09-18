@@ -178,6 +178,31 @@ describe('runOpenSshRemoteCommand', () => {
     }
   });
 
+  it('keeps an explicitly unbounded command alive beyond the default timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = createFakeChild();
+      spawn.mockReturnValue(child);
+      const pending = runOpenSshRemoteCommand({
+        target: 'dev@example.test',
+        remoteCommand: ['happier', 'home', 'erase', '--approval-stdin'],
+        knownHostsMode: 'system',
+        auth: { mode: 'agent' },
+        timeoutMs: null,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(child.kill).not.toHaveBeenCalled();
+      child.stdout.end('{"ok":true}\n');
+      child.stderr.end('');
+      child.emit('close', 0, null);
+
+      await expect(pending).resolves.toMatchObject({ status: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('kills output-flooding children without reflecting captured pairing secrets', async () => {
     const child = createFakeChild();
     spawn.mockReturnValue(child);
@@ -283,6 +308,29 @@ describe('transferOpenSshFile', () => {
     const argv = spawn.mock.calls[0]?.[1] as string[];
     expect(argv.slice(-2)).toEqual(endpoints);
     expect(argv).not.toContain('-r');
+  });
+
+  it('passes recursive directory intent to scp and aborts an in-flight boundary process', async () => {
+    const child = createFakeChild();
+    spawn.mockReturnValue(child);
+    const controller = new AbortController();
+    const pending = transferOpenSshFile({
+      direction: 'upload',
+      target: 'dev@example.test',
+      localPath: '/work/payload',
+      remotePath: '/tmp/payload',
+      recursive: true,
+      knownHostsMode: 'system',
+      auth: { mode: 'agent' },
+      signal: controller.signal,
+    });
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(spawn.mock.calls[0]?.[1]).toContain('-r');
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ code: 'aborted' });
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
   });
 });
 

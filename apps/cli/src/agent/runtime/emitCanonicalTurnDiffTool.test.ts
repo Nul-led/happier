@@ -5,7 +5,7 @@ import type { TurnChangeSet } from '@happier-dev/protocol';
 import { emitCanonicalTurnDiffTool } from './emitCanonicalTurnDiffTool';
 
 describe('emitCanonicalTurnDiffTool', () => {
-    it('does not emit an empty canonical Diff tool for checkpoint-only turns without file evidence', () => {
+    it('emits nothing for a zero-file change set even when it carries checkpoint metadata', () => {
         const calls: Array<{ toolName: string; input: unknown; callId?: string }> = [];
         const results: Array<{ callId: string; output: unknown }> = [];
 

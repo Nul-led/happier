@@ -282,6 +282,10 @@ describe('ACP runtime definitions', () => {
         mcp: {
           policy: 'pass_through',
         },
+        permissionModeMapping: {
+          default: null,
+          'safe-yolo': 'smart',
+        },
       },
     });
 
@@ -300,6 +304,10 @@ describe('ACP runtime definitions', () => {
         },
         mcp: {
           policy: 'pass_through',
+        },
+        permissionModeMapping: {
+          default: null,
+          'safe-yolo': 'smart',
         },
       },
     });
@@ -584,6 +592,7 @@ describe('ACP runtime definitions', () => {
           preferLongestPattern: true,
         },
         stderrRules: {
+          authenticationErrorDetail: 'Authenticate with the provider CLI, then retry.',
           suppress: [{
             includes: ['models.dev', 'unable to connect'],
           }],
@@ -673,6 +682,14 @@ describe('ACP runtime definitions', () => {
       type: 'status',
       status: 'error',
       detail: 'Plugin setup failed. Re-run the provider CLI from your terminal, then retry.',
+    });
+    expect(transport.handleStderr?.('Request failed with status code 401', {
+      activeToolCalls: new Set(),
+      hasActiveInvestigation: false,
+    })?.message).toEqual({
+      type: 'status',
+      status: 'error',
+      detail: 'Authenticate with the provider CLI, then retry.',
     });
   });
 

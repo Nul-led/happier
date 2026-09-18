@@ -8,6 +8,7 @@ import type {
   TranscriptScope,
 } from './transcript/semanticTranscriptItem';
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export type GetSessionEventsResult =
   | Readonly<{
@@ -55,10 +56,12 @@ export async function getSessionEvents(params: Readonly<{
   includeStructuredPayload?: boolean;
   maxTextChars?: number;
   maxPayloadChars?: number;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<GetSessionEventsResult> {
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
     return {
@@ -92,7 +95,7 @@ export async function getSessionEvents(params: Readonly<{
     const page = await fetchTranscriptSemanticPage({
       token: params.credentials.token,
       sessionId: sessionTarget.sessionId,
-      ctx: sessionTarget.ctx,
+      contentContext: sessionTarget,
       limit,
       rawPageLimit: includeRaw ? Math.min(50, limit) : Math.min(200, Math.max(limit, 50)),
       maxRawRowsToScan: Math.max(50, limit * 20),

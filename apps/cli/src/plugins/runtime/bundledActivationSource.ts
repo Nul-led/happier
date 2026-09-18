@@ -243,13 +243,19 @@ export function selectBundledExecutableImmutableArtifacts<
 >(params: Readonly<{
     artifacts: readonly TArtifact[];
     activationTargets: readonly BundledExecutablePluginTarget[];
+    /** Exact activation scope; omitted keeps the ordinary daemon's full bundled set. */
+    pluginIds?: readonly string[];
 }>): readonly TArtifact[] {
+    const scopedPluginIds = params.pluginIds === undefined
+        ? null
+        : new Set(params.pluginIds.map((pluginId) => pluginId.trim()).filter(Boolean));
     const executablePluginIds = new Set(
         params.activationTargets.flatMap((target) => (
             target.sourceSpec.kind === 'bundled'
             && typeof target.daemonEntryPath === 'string'
             && target.daemonEntryPath.trim().length > 0
             && target.pluginId.trim().length > 0
+            && (scopedPluginIds === null || scopedPluginIds.has(target.pluginId.trim()))
                 ? [target.pluginId.trim()]
                 : []
         )),

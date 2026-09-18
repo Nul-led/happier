@@ -1,126 +1,64 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  resolveSessionTransportContext: vi.fn(),
-  fetchEncryptedTranscriptMessagesPage: vi.fn(),
-  decryptSessionPayload: vi.fn(),
-}));
-
-vi.mock('@/session/services/resolveSessionTransportContext', () => ({
-  resolveSessionTransportContext: mocks.resolveSessionTransportContext,
-}));
-vi.mock('@/session/replay/fetchEncryptedTranscriptMessages', () => ({
-  fetchEncryptedTranscriptMessagesPage: mocks.fetchEncryptedTranscriptMessagesPage,
-}));
-vi.mock('@/session/transport/encryption/sessionEncryptionContext', () => ({
-  decryptSessionPayload: mocks.decryptSessionPayload,
-}));
-
+import { encodeBase64, encrypt } from '@/api/encryption';
+import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { readCurrentMessageActionReferenceRowV1 } from './messageActionReference';
 
-const credentials = { token: 'account-token', encryption: null } as const;
+const secret = new Uint8Array(32).fill(3);
+const credentials = { token: 'account-token', encryption: { type: 'legacy' as const, secret } };
 const reference = {
-  v: 1,
-  sessionId: 'session_1',
-  messageId: 'message_1',
+  v: 1, sessionId: 'c1234567890123456789012345', messageId: 'message_1',
   observedRevision: 'message-updated-at:10',
 } as const;
 const durableMessage = {
-  sessionId: reference.sessionId,
-  messageId: reference.messageId,
-  observedRevision: reference.observedRevision,
-  seq: 7,
-  messageRole: 'agent' as const,
+  sessionId: reference.sessionId, messageId: reference.messageId,
+  observedRevision: reference.observedRevision, seq: 7, messageRole: 'agent' as const,
 };
+const decryptedContent = { role: 'agent', content: { type: 'text', text: 'Fresh text' } };
+
+function serveRow(mode: 'plain' | 'e2ee', content: unknown) {
+  // Only HTTP is substituted; Session resolution, envelope parsing and crypto remain real.
+  vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === '/v1/account/encryption/currentness') {
+      return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+    }
+    if (path === `/v2/sessions/${reference.sessionId}`) {
+      return { status: 200, data: { session: createSessionRecordFixture({
+        id: reference.sessionId, encryptionMode: mode,
+      }) } };
+    }
+    if (path === `/v1/sessions/${reference.sessionId}/messages`) {
+      return { status: 200, data: { messages: [{
+        id: reference.messageId, seq: durableMessage.seq,
+        messageRole: durableMessage.messageRole,
+        messageActionReference: reference, content,
+      }], hasMore: false } };
+    }
+    throw new Error(`Unexpected HTTP request: ${path}`);
+  });
+}
 
 describe('readCurrentMessageActionReferenceRowV1', () => {
-  beforeEach(() => {
-    mocks.resolveSessionTransportContext.mockReset();
-    mocks.fetchEncryptedTranscriptMessagesPage.mockReset();
-    mocks.decryptSessionPayload.mockReset();
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['plain', 'e2ee'] as const)('reads exact %s content through the real Session owner', async (mode) => {
+    serveRow(mode, mode === 'plain'
+      ? { t: 'plain', v: decryptedContent }
+      : { t: 'encrypted', c: encodeBase64(encrypt(secret, 'legacy', decryptedContent)) });
+    await expect(readCurrentMessageActionReferenceRowV1({
+      credentials: mode === 'plain' ? { token: credentials.token, encryption: null } : credentials,
+      token: credentials.token, reference, durableMessage,
+    })).resolves.toEqual({ ...durableMessage, decryptedContent });
   });
 
-  it('uses the session crypto owner and rechecks the exact durable sequence row', async () => {
-    const signal = new AbortController().signal;
-    mocks.resolveSessionTransportContext.mockResolvedValue({
-      ok: true,
-      sessionId: reference.sessionId,
-      mode: 'e2ee',
-      ctx: { encryptionKey: new Uint8Array([1]), encryptionVariant: 'dataKey' },
-    });
-    mocks.fetchEncryptedTranscriptMessagesPage.mockResolvedValue({
-      messages: [{
-        id: reference.messageId,
-        seq: durableMessage.seq,
-        messageRole: durableMessage.messageRole,
-        messageActionReference: reference,
-        content: { t: 'encrypted', c: 'ciphertext' },
-      }],
-      hasMore: false,
-      nextBeforeSeq: null,
-      nextAfterSeq: null,
-    });
-    const decryptedContent = { role: 'agent', content: { type: 'text', text: 'Fresh text' } };
-    mocks.decryptSessionPayload.mockReturnValue(decryptedContent);
-
+  it.each(['plain', 'e2ee'] as const)('does not disclose a mismatched envelope under %s mode', async (mode) => {
+    serveRow(mode, mode === 'e2ee'
+      ? { t: 'plain', v: decryptedContent }
+      : { t: 'encrypted', c: encodeBase64(encrypt(secret, 'legacy', decryptedContent)) });
     await expect(readCurrentMessageActionReferenceRowV1({
-      credentials,
-      token: credentials.token,
-      reference,
-      durableMessage,
-      signal,
-    })).resolves.toEqual({
-      sessionId: reference.sessionId,
-      messageId: reference.messageId,
-      observedRevision: reference.observedRevision,
-      seq: durableMessage.seq,
-      messageRole: 'agent',
-      decryptedContent,
-    });
-    expect(mocks.resolveSessionTransportContext).toHaveBeenCalledWith({
-      credentials,
-      idOrPrefix: reference.sessionId,
-    });
-    expect(mocks.fetchEncryptedTranscriptMessagesPage).toHaveBeenCalledWith({
-      token: credentials.token,
-      sessionId: reference.sessionId,
-      afterSeq: 6,
-      limit: 1,
-      scope: 'all',
-      signal,
-    });
-    expect(mocks.decryptSessionPayload).toHaveBeenCalledWith({
-      ctx: { encryptionKey: new Uint8Array([1]), encryptionVariant: 'dataKey' },
-      ciphertextBase64: 'ciphertext',
-    });
-  });
-
-  it('fails closed on an envelope that disagrees with the session encryption mode', async () => {
-    mocks.resolveSessionTransportContext.mockResolvedValue({
-      ok: true,
-      sessionId: reference.sessionId,
-      mode: 'e2ee',
-      ctx: { encryptionKey: new Uint8Array([1]), encryptionVariant: 'dataKey' },
-    });
-    mocks.fetchEncryptedTranscriptMessagesPage.mockResolvedValue({
-      messages: [{
-        id: reference.messageId,
-        seq: durableMessage.seq,
-        messageRole: durableMessage.messageRole,
-        messageActionReference: reference,
-        content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'wrong envelope' } } },
-      }],
-      hasMore: false,
-      nextBeforeSeq: null,
-      nextAfterSeq: null,
-    });
-
-    await expect(readCurrentMessageActionReferenceRowV1({
-      credentials,
-      token: credentials.token,
-      reference,
-      durableMessage,
+      credentials, token: credentials.token, reference, durableMessage,
     })).resolves.toBeNull();
-    expect(mocks.decryptSessionPayload).not.toHaveBeenCalled();
   });
 });

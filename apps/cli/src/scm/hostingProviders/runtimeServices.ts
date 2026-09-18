@@ -11,6 +11,7 @@ import { z } from 'zod';
 import {
     createScmHostingProviderRegistry,
     type ResolvedScmHostingProviderRegistry,
+    type ScmHostingProviderConfiguredDeployments,
     type ScmHostingProviderDescriptor,
     type ScmHostingProviderRuntimeBinding,
 } from './registry';
@@ -23,8 +24,9 @@ import { PluginError } from '@happier-dev/plugin-sdk';
 import {
     deriveScmHostingProviderConnectedAccountPurposeAuthorization,
 } from '@/daemon/connectedServices/purposeBindings/deriveRegistryConnectedAccountPurposeAuthorizations';
-import type {
-    StablePluginConnectedAccountsOwner,
+import {
+    CONNECTED_ACCOUNT_METADATA_LIST_MAX_LIMIT,
+    type StablePluginConnectedAccountsOwner,
 } from '@/plugins/runtime/invocation/services/connectedAccounts';
 import type {
     ResolvedConnectedAccountDescriptorContribution,
@@ -43,8 +45,12 @@ type ScmHostingProviderRuntimeRegistryInput = Readonly<{
     scmHostingProvidersById: ResolvedExecutablePluginRuntimeRegistry['scmHostingProvidersById'];
     envAllowedNamesByPluginId?: ResolvedExecutablePluginRuntimeRegistry['envAllowedNamesByPluginId'];
     managedDependencies?: Pick<StablePluginManagedDependenciesHost, 'resolveExecutable'>;
-    resolveConnectedAccountPurposeBindingOwner?: () =>
-        Pick<StablePluginConnectedAccountsOwner, 'materialize'> | null;
+    resolveConnectedAccountPurposeBindingOwner?: () => (
+        Pick<StablePluginConnectedAccountsOwner, 'materialize'>
+        // Optional: a host that cannot list accounts recognizes no configured deployment, which
+        // is exactly what an absent projection should mean.
+        & Partial<Pick<StablePluginConnectedAccountsOwner, 'listAccounts'>>
+    ) | null;
     executeCommand?: (
         input: Readonly<{
             executable: ManagedExecutableRef;
@@ -247,8 +253,60 @@ function readBasicCredentials(
     return username && password ? { username, password } : null;
 }
 
+/**
+ * The configured service bases of every Connected Account bound to each hosting provider's
+ * `authService`, keyed by qualified provider id, together with what the owner could publish.
+ *
+ * This is the one projection that lets a self-managed deployment be recognized at all: a forge
+ * without a product-owned hostname cannot be told from any other host by a remote URL alone.
+ * The Connected Account owner remains the authority — this reads what it already published and
+ * neither stores, re-spells, nor selects among deployments.
+ *
+ * The listing is asked for the whole authorized inventory the canonical metadata seam admits, so
+ * no SCM-local ceiling can elide a deployment the owner would have published. That seam has no
+ * cursor, so an elision it does report, and a listing that refuses outright, are both carried to
+ * the registry rather than flattened into "nothing is configured".
+ */
+async function resolveScmHostingConfiguredDeployments(
+    input: ScmHostingProviderRuntimeRegistryInput,
+): Promise<ReadonlyMap<string, ScmHostingProviderConfiguredDeployments>> {
+    const deploymentsByProviderId = new Map<string, ScmHostingProviderConfiguredDeployments>();
+    const owner = input.resolveConnectedAccountPurposeBindingOwner?.() ?? null;
+    if (!owner?.listAccounts) return deploymentsByProviderId;
+    for (const provider of input.contributes.scmHostingProviders ?? []) {
+        if (!provider.pluginId) continue;
+        const providerId = `${provider.pluginId}/${provider.definition.id}`;
+        const authorization = resolveProviderPurposeAuthorization(input, providerId);
+        if (!authorization) continue;
+        try {
+            const listed = await owner.listAccounts({
+                ...authorization,
+                limit: CONNECTED_ACCOUNT_METADATA_LIST_MAX_LIMIT,
+                // The registry-resolution seam carries no caller signal, so there is nothing to
+                // thread here; the owner still bounds the read itself.
+                signal: new AbortController().signal,
+            });
+            deploymentsByProviderId.set(providerId, Object.freeze({
+                bases: Object.freeze([...new Set(listed.accounts.flatMap(
+                    (account) => [...account.connectedAccountBases],
+                ))]),
+                status: listed.status,
+            }));
+        } catch {
+            // One provider's unavailable account listing must not fail the whole registry or let
+            // another provider inherit its bases — and it must not be read as an empty inventory.
+            deploymentsByProviderId.set(providerId, Object.freeze({
+                bases: Object.freeze([]),
+                status: 'unavailable',
+            }));
+        }
+    }
+    return deploymentsByProviderId;
+}
+
 export function createHostScmHostingProviderRegistry(
     input: ScmHostingProviderRuntimeRegistryInput,
+    configuredDeploymentsByProviderId?: ReadonlyMap<string, ScmHostingProviderConfiguredDeployments>,
 ): ResolvedScmHostingProviderRegistry {
     const providers: ScmHostingProviderDescriptor[] = (input.contributes.scmHostingProviders ?? [])
         .flatMap((provider) => {
@@ -271,6 +329,9 @@ export function createHostScmHostingProviderRegistry(
     return createScmHostingProviderRegistry({
         providers,
         runtimeRegistrations,
+        ...(configuredDeploymentsByProviderId
+            ? { configuredDeploymentsByProviderId }
+            : {}),
     });
 }
 
@@ -278,7 +339,10 @@ export function createHostScmHostingProviderRuntimeServices(
     input: ScmHostingProviderRuntimeRegistryInput,
 ): ScmHostingProviderRuntimeServices {
     const resolveScmHostingProviderRegistry = async (): Promise<ResolvedScmHostingProviderRegistry> => {
-        return createHostScmHostingProviderRegistry(input);
+        return createHostScmHostingProviderRegistry(
+            input,
+            await resolveScmHostingConfiguredDeployments(input),
+        );
     };
     const captureHostingAuthAuthority = (providerId: string) => {
         const authority = readHostingProviderExecutionAuthority();

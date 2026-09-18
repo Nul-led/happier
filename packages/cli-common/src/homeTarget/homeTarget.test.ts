@@ -54,6 +54,7 @@ describe('Home target input and resolution', () => {
       release: async () => undefined,
     }));
     await expect(acquireHomeCarrierByPolicy({
+      mode: 'initial_selection',
       descriptor: result.descriptor!,
       preferredTransport: result.preferredTransport,
       acquireIroh,

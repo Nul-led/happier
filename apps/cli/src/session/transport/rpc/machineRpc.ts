@@ -2,16 +2,26 @@ import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/
 import { fetchAccountMachineReplacements } from '@/api/machine/fetchAccountMachineReplacements';
 import { createUserScopedSocket } from '@/api/session/sockets';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { resolveMachineEncryptionContext } from '@/api/client/encryptionKey';
-import { createMachineContentCodec } from '@/api/machine/machineStoredContent';
+import { resolvePublishedMachineContentCodec } from '@/api/machine/machineDataEncryptionKey';
 import type { StoredCredentials } from '@/persistence';
 import { waitForSocketConnect } from '@/session/transport/socket/waitForSocketConnect';
+import { createSocketRpcAbortScope, type SocketRpcAbortScope } from '@/session/transport/socket/createSocketRpcAbortScope';
 import { resolveSessionControlSocketConnectTimeoutMs } from '@/session/transport/shared/sessionTimeouts';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 import { createRpcCallError, isRpcMethodNotAvailableError } from '@happier-dev/protocol/rpcErrors';
-import { isPlainMachineDataKeyMarker, resolveCanonicalMachineId } from '@happier-dev/protocol';
+import {
+  resolveCanonicalMachineId,
+  type ExpectedRunnerMachineContentKeyBindingV1,
+} from '@happier-dev/protocol';
 import axios from 'axios';
+import { randomUUID } from 'node:crypto';
+import type { ActionExecutorContext } from '@happier-dev/protocol/actions';
+import {
+  createExternalActionAuthorizedRequestHeaders,
+  createExternalActionMachineRpcExecution,
+  type ExternalActionMachineRequestSigningKey,
+} from '@/api/externalActionExecutionAuthorization';
 import {
   markRpcRequestDisposition,
   readRpcRequestDisposition,
@@ -20,6 +30,36 @@ import {
 
 export type MachineRpcRequestDisposition = RpcRequestDisposition;
 export const readMachineRpcRequestDisposition = readRpcRequestDisposition;
+
+export class MachineRpcEncryptionModeMismatchError extends Error {
+  readonly code = 'machine_content_mode_mismatch' as const;
+
+  constructor(readonly machineId: string) {
+    super(`Machine ${machineId} content mode does not match the verified caller's expectation`);
+    this.name = 'MachineRpcEncryptionModeMismatchError';
+  }
+}
+
+export class MachineRpcTargetNotCurrentError extends Error {
+  readonly code = 'machine_target_not_current' as const;
+
+  constructor(readonly machineId: string) {
+    super(`Machine ${machineId} is revoked or has been replaced`);
+    this.name = 'MachineRpcTargetNotCurrentError';
+  }
+}
+
+export class MachineRpcMachineKindMismatchError extends Error {
+  readonly code = 'machine_kind_mismatch' as const;
+
+  constructor(
+    readonly machineId: string,
+    readonly expectedKind: 'persistent' | 'ephemeral_session_runner',
+  ) {
+    super(`Machine ${machineId} is not a ${expectedKind}`);
+    this.name = 'MachineRpcMachineKindMismatchError';
+  }
+}
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
@@ -49,105 +89,221 @@ async function waitForConnectWithSignal(
 async function resolveMachineRpcContentCodec(params: Readonly<{
   credentials: StoredCredentials;
   machineId: string;
+  serverUrl?: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  expectedRunnerMachineContentKeyBinding?: Omit<
+    ExpectedRunnerMachineContentKeyBindingV1,
+    'accountSigningPublicKeyBase64Url'
+  >;
+  requireCurrentMachine?: boolean;
+  requiredMachineKind?: 'persistent' | 'ephemeral_session_runner';
+  externalAction?: Readonly<{
+    context: ActionExecutorContext;
+    effectActionId: string;
+    installationId: string;
+    privateKey: ExternalActionMachineRequestSigningKey;
+  }>;
 }>) {
+  const path = `/v1/machines/${encodeURIComponent(params.machineId)}`;
+  const externalAuthorization = params.externalAction?.context.externalActionExecutionAuthorization;
+  const externalTarget = params.externalAction?.context.externalActionTarget;
+  if (params.externalAction && (!externalAuthorization || !externalTarget)) {
+    throw new Error('External Action Machine HTTP authorization is unavailable');
+  }
   const response = await axios.get(
-    `${resolveServerHttpBaseUrl()}/v1/machines/${encodeURIComponent(params.machineId)}`,
+    `${params.serverUrl ?? resolveServerHttpBaseUrl()}${path}`,
     {
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.credentials.token}`,
+        ...(params.externalAction && externalAuthorization && externalTarget
+          ? createExternalActionAuthorizedRequestHeaders({
+              authorization: externalAuthorization,
+              effectActionId: params.externalAction.effectActionId,
+              target: externalTarget,
+              installationId: params.externalAction.installationId,
+              method: 'GET',
+              path,
+              privateKey: params.externalAction.privateKey,
+            })
+          : { Authorization: `Bearer ${params.credentials.token}` }),
       },
       timeout: params.timeoutMs,
       ...(params.signal ? { signal: params.signal } : {}),
     },
   );
   const raw = response.data?.machine as
-    | { id?: unknown; dataEncryptionKey?: unknown }
+    | {
+        id?: unknown;
+        kind?: 'persistent' | 'ephemeral_session_runner';
+        installationId?: string | null;
+        dataEncryptionKey?: unknown;
+        runnerContentKeyBinding?: unknown;
+        revokedAt?: unknown;
+        replacedByMachineId?: unknown;
+      }
     | null
     | undefined;
   if (String(raw?.id ?? '').trim() !== params.machineId) {
     throw new Error(`Machine ${params.machineId} was not returned by the server`);
   }
   if (
-    typeof raw?.dataEncryptionKey === 'string'
-    && isPlainMachineDataKeyMarker(raw.dataEncryptionKey)
+    params.requireCurrentMachine === true
+    && (
+      (raw?.revokedAt !== null && raw?.revokedAt !== undefined)
+      || (typeof raw?.replacedByMachineId === 'string' && raw.replacedByMachineId.trim().length > 0)
+    )
   ) {
-    return createMachineContentCodec({ encryptionMode: 'plain' });
+    throw new MachineRpcTargetNotCurrentError(params.machineId);
   }
-  if (!params.credentials.encryption) {
-    throw new Error(
-      `Machine ${params.machineId} requires E2EE credentials`,
-    );
+  const actualMachineKind = raw?.kind ?? 'persistent';
+  if (params.requiredMachineKind && actualMachineKind !== params.requiredMachineKind) {
+    throw new MachineRpcMachineKindMismatchError(params.machineId, params.requiredMachineKind);
   }
-  const encryption = resolveMachineEncryptionContext({
-    token: params.credentials.token,
-    encryption: params.credentials.encryption,
-  });
-  return createMachineContentCodec({
-    encryptionMode: 'e2ee',
-    encryptionKey: encryption.encryptionKey,
-    encryptionVariant: encryption.encryptionVariant,
+  return resolvePublishedMachineContentCodec({
+    credentials: params.credentials,
+    machineId: params.machineId,
+    publishedDataEncryptionKey: raw?.dataEncryptionKey,
+    machineKind: raw?.kind,
+    installationId: raw?.installationId,
+    runnerContentKeyBinding: raw?.runnerContentKeyBinding,
+    ...(params.expectedRunnerMachineContentKeyBinding
+      ? { expectedRunnerMachineContentKeyBinding: params.expectedRunnerMachineContentKeyBinding }
+      : {}),
   });
 }
 
 /** One exact account-scoped machine RPC; retry and target selection stay caller-owned. */
-async function callExactMachineRpc(params: Readonly<{
+export async function callExactMachineRpc(params: Readonly<{
   credentials: StoredCredentials;
   machineId: string;
+  serverUrl?: string;
   method: string;
   request: unknown;
   authorization?: SocketRpcAuthorizationContext;
-  timeoutMs?: number;
+  /** Captured from verified Account/Machine context, never inferred from key presence. */
+  expectedEncryptionMode?: 'plain' | 'e2ee';
+  /** Independently trusted Home/Account/Machine scope required for an encrypted Runner Machine. */
+  expectedRunnerMachineContentKeyBinding?: Omit<
+    ExpectedRunnerMachineContentKeyBindingV1,
+    'accountSigningPublicKeyBase64Url'
+  >;
+  /** Reject a revoked/replaced row before encryption or socket emission. */
+  requireCurrentMachine?: boolean;
+  /** Reject a different Machine class before encryption or socket emission. */
+  requiredMachineKind?: 'persistent' | 'ephemeral_session_runner';
+  /** Null delegates acknowledgement lifetime to the caller signal/server lifecycle. */
+  timeoutMs?: number | null;
   signal?: AbortSignal;
+  externalAction?: Readonly<{
+    context: ActionExecutorContext;
+    effectActionId: string;
+    installationId: string;
+    privateKey: ExternalActionMachineRequestSigningKey;
+  }>;
 }>): Promise<unknown> {
   let socket: ReturnType<typeof createUserScopedSocket> | null = null;
+  let abortScope: SocketRpcAbortScope | null = null;
   let requestEmitted = false;
   try {
     params.signal?.throwIfAborted();
     const machineId = params.machineId.trim();
     if (!machineId) throw new Error('Machine id is required');
-    const activeSocket = createUserScopedSocket({ token: params.credentials.token });
+    const activeSocket = createUserScopedSocket({ token: params.credentials.token, ...(params.serverUrl ? { serverUrl: params.serverUrl } : {}) });
     socket = activeSocket;
-    const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 20_000;
+    abortScope = createSocketRpcAbortScope({
+      socket: activeSocket,
+      ...(params.signal ? { callerSignal: params.signal } : {}),
+      disconnectError: () => new Error('Machine RPC socket disconnected before acknowledgement'),
+    });
+    const rpcSignal = abortScope.signal;
+    const acknowledgementTimeoutMs = params.timeoutMs === null
+      ? null
+      : typeof params.timeoutMs === 'number' && params.timeoutMs > 0
+        ? params.timeoutMs
+        : 20_000;
+    const setupTimeoutMs = typeof acknowledgementTimeoutMs === 'number' ? acknowledgementTimeoutMs : 20_000;
     const connectTimeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0
-      ? timeoutMs
+      ? setupTimeoutMs
       : resolveSessionControlSocketConnectTimeoutMs();
     const machineCodec = await resolveMachineRpcContentCodec({
       credentials: params.credentials,
       machineId,
-      timeoutMs,
+      serverUrl: params.serverUrl,
+      timeoutMs: setupTimeoutMs,
+      ...(params.expectedRunnerMachineContentKeyBinding
+        ? { expectedRunnerMachineContentKeyBinding: params.expectedRunnerMachineContentKeyBinding }
+        : {}),
+      ...(params.requireCurrentMachine ? { requireCurrentMachine: true } : {}),
+      ...(params.requiredMachineKind ? { requiredMachineKind: params.requiredMachineKind } : {}),
+      ...(params.externalAction
+        ? {
+            externalAction: {
+              context: params.externalAction.context,
+              effectActionId: params.externalAction.effectActionId,
+              installationId: params.externalAction.installationId,
+              privateKey: params.externalAction.privateKey,
+            },
+          }
+        : {}),
       ...(params.signal ? { signal: params.signal } : {}),
     });
+    if (params.expectedEncryptionMode !== undefined && machineCodec.mode !== params.expectedEncryptionMode) {
+      throw new MachineRpcEncryptionModeMismatchError(machineId);
+    }
     const connectPromise = waitForSocketConnect(activeSocket as unknown as import('socket.io-client').Socket, connectTimeoutMs);
     activeSocket.connect();
-    await waitForConnectWithSignal(connectPromise, params.signal);
-    params.signal?.throwIfAborted();
+    rpcSignal.throwIfAborted();
+    await waitForConnectWithSignal(connectPromise, rpcSignal);
+    rpcSignal.throwIfAborted();
     const encodedRequest = machineCodec.encodeRpc(params.request);
+    const method = `${machineId}:${params.method}`;
+    const requestId = randomUUID();
+    const externalActionExecution = params.externalAction
+      ? createExternalActionMachineRpcExecution({
+          context: params.externalAction.context,
+          effectActionId: params.externalAction.effectActionId,
+          installationId: params.externalAction.installationId,
+          method,
+          ...(requestId === undefined ? {} : { requestId }),
+          params: encodedRequest,
+          privateKey: params.externalAction.privateKey,
+        })
+      : null;
+    if (params.externalAction && !externalActionExecution) {
+      throw new Error('External Action Machine RPC authorization is unavailable');
+    }
     const response = await new Promise<{ ok: boolean; result?: unknown; error?: string; errorCode?: string }>((resolve, reject) => {
       let settled = false;
-      let timer: ReturnType<typeof setTimeout>;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
-        params.signal?.removeEventListener('abort', onAbort);
+        if (timer !== null) clearTimeout(timer);
+        rpcSignal.removeEventListener('abort', onAbort);
         callback();
       };
-      const onAbort = () => finish(() => reject(abortReason(params.signal!)));
-      params.signal?.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(() => finish(() => reject(Object.assign(new Error('Machine RPC call timeout'), {
-        code: 'MACHINE_RPC_TIMEOUT',
-      }))), timeoutMs);
+      const onAbort = () => finish(() => reject(abortReason(rpcSignal)));
+      rpcSignal.addEventListener('abort', onAbort, { once: true });
+      if (rpcSignal.aborted) {
+        onAbort();
+        return;
+      }
+      if (acknowledgementTimeoutMs !== null) {
+        timer = setTimeout(() => finish(() => reject(Object.assign(new Error('Machine RPC call timeout'), {
+          code: 'MACHINE_RPC_TIMEOUT',
+        }))), acknowledgementTimeoutMs);
+      }
       try {
         requestEmitted = true;
         activeSocket.emit(
           SOCKET_RPC_EVENTS.CALL,
           {
-            method: `${machineId}:${params.method}`,
+            method,
             params: encodedRequest,
-            timeoutMs,
+            requestId,
+            ...(externalActionExecution ? { externalActionExecution } : {}),
+            ...(acknowledgementTimeoutMs !== null ? { timeoutMs: acknowledgementTimeoutMs } : {}),
             ...(params.authorization ? { authorization: params.authorization } : {}),
           },
           (payload: { ok: boolean; result?: unknown; error?: string; errorCode?: string }) => finish(() => resolve(payload)),
@@ -163,6 +319,7 @@ async function callExactMachineRpc(params: Readonly<{
   } catch (error) {
     throw markRpcRequestDisposition(error, requestEmitted ? 'outcomeUnknown' : 'notSent');
   } finally {
+    abortScope?.dispose();
     if (socket) {
       try {
         socket.disconnect();
@@ -216,6 +373,9 @@ async function resolveSuccessorMachineId(params: Readonly<{
  * against a different machine would be a correctness bug, and an unknown outcome
  * could execute twice. When nothing changes hands the ORIGINAL error surfaces
  * unchanged, because the user's problem is the RPC and not the lookup.
+ *
+ * Private material delivery uses callExactMachineRpc directly: replacement
+ * resolution is deliberately absent from that operation.
  */
 export async function callMachineRpc(params: Readonly<{
   credentials: StoredCredentials;
@@ -223,7 +383,7 @@ export async function callMachineRpc(params: Readonly<{
   method: string;
   request: unknown;
   authorization?: SocketRpcAuthorizationContext;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   signal?: AbortSignal;
 }>): Promise<unknown> {
   try {

@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  parseTerminalConnectLinkV4Parameters,
+  sealTerminalProvisioningV3Payload,
+} from '@happier-dev/protocol';
+import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 
 const machineRegistrationMocks = vi.hoisted(() => ({
   apiCreate: vi.fn(async () => ({})),
@@ -14,6 +19,13 @@ const machineRegistrationMocks = vi.hoisted(() => ({
 const descriptorRuntimeMocks = vi.hoisted(() => ({
   acquire: vi.fn(),
   fetchFeatures: vi.fn(),
+}));
+const terminalAuthMocks = vi.hoisted(() => ({
+  response: '',
+  approvedToken: '',
+  createRequest: vi.fn(async () => ({ state: 'requested' })),
+  readStatus: vi.fn(async () => ({ status: 'pending', supportsV2: true })),
+  claimRequest: vi.fn(async () => ({ state: 'requested' })),
 }));
 
 vi.mock('@/api/api', () => ({
@@ -31,6 +43,16 @@ vi.mock('@/auth/terminalAuthEnrollmentRuntime', () => ({
 vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: descriptorRuntimeMocks.fetchFeatures,
 }));
+
+vi.mock('@/auth/terminalAuthEnrollmentClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/auth/terminalAuthEnrollmentClient')>();
+  return {
+    ...actual,
+    createTerminalAuthRequest: terminalAuthMocks.createRequest,
+    readTerminalAuthRequestStatus: terminalAuthMocks.readStatus,
+    claimTerminalAuthRequest: terminalAuthMocks.claimRequest,
+  };
+});
 
 vi.mock('./logger', () => ({
   logger: {
@@ -53,6 +75,9 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
   const previousServerUrl = process.env.HAPPIER_SERVER_URL;
   const previousWebappUrl = process.env.HAPPIER_WEBAPP_URL;
   const previousAutostart = process.env.HAPPIER_SESSION_AUTOSTART_DAEMON;
+  const previousAuthMethod = process.env.HAPPIER_AUTH_METHOD;
+  const previousNoBrowser = process.env.HAPPIER_NO_BROWSER_OPEN;
+  const previousPollInterval = process.env.HAPPIER_AUTH_POLL_INTERVAL_MS;
 
   afterEach(() => {
     if (previousHomeDir === undefined) delete process.env.HAPPIER_HOME_DIR;
@@ -65,6 +90,12 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
     else process.env.HAPPIER_WEBAPP_URL = previousWebappUrl;
     if (previousAutostart === undefined) delete process.env.HAPPIER_SESSION_AUTOSTART_DAEMON;
     else process.env.HAPPIER_SESSION_AUTOSTART_DAEMON = previousAutostart;
+    if (previousAuthMethod === undefined) delete process.env.HAPPIER_AUTH_METHOD;
+    else process.env.HAPPIER_AUTH_METHOD = previousAuthMethod;
+    if (previousNoBrowser === undefined) delete process.env.HAPPIER_NO_BROWSER_OPEN;
+    else process.env.HAPPIER_NO_BROWSER_OPEN = previousNoBrowser;
+    if (previousPollInterval === undefined) delete process.env.HAPPIER_AUTH_POLL_INTERVAL_MS;
+    else process.env.HAPPIER_AUTH_POLL_INTERVAL_MS = previousPollInterval;
     vi.clearAllMocks();
     machineRegistrationMocks.apiCreate.mockResolvedValue({});
     machineRegistrationMocks.ensureMachineRegistered.mockImplementation(async ({ machineId }: { machineId: string }) => ({
@@ -74,6 +105,12 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
     }));
     descriptorRuntimeMocks.acquire.mockReset();
     descriptorRuntimeMocks.fetchFeatures.mockReset();
+    terminalAuthMocks.response = '';
+    terminalAuthMocks.approvedToken = '';
+    terminalAuthMocks.createRequest.mockClear();
+    terminalAuthMocks.readStatus.mockReset();
+    terminalAuthMocks.claimRequest.mockReset();
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -271,6 +308,226 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
         credentialProvenance: 'stored_session',
       });
       expect(result.machineId).toBe('machine-token-only');
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not request Account material for a plaintext Home when setup asks to recheck readiness', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-auth-plain-material-readiness-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'plain-home';
+    process.env.HAPPIER_SERVER_URL = 'https://plain-home.example.test';
+    const token = makeJwtWithSub('acct-plain-material-readiness');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://plain-home.example.test/v1/account/encryption') {
+        return Response.json({ mode: 'plain', updatedAt: 1 });
+      }
+      return new Response(null, { status: 404 });
+    }));
+
+    try {
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 6,
+        activeServerId: 'plain-home',
+        servers: {
+          'plain-home': {
+            id: 'plain-home',
+            name: 'Plain Home',
+            serverUrl: 'https://plain-home.example.test',
+            webappUrl: 'https://app.happier.dev',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+          },
+        },
+      }), 'utf8');
+      const serverDir = join(homeDir, 'servers', 'plain-home');
+      mkdirSync(serverDir, { recursive: true });
+      writeFileSync(join(serverDir, 'access.key'), JSON.stringify({ token }), 'utf8');
+
+      vi.resetModules();
+      const { authAndSetupMachineIfNeeded } = await import('./auth');
+      await expect(authAndSetupMachineIfNeeded({
+        callerIntent: 'setup-managed',
+        requireAccountMaterial: true,
+      })).resolves.toMatchObject({ credentials: { token, encryption: null } });
+
+      expect(terminalAuthMocks.createRequest).not.toHaveBeenCalled();
+      expect(machineRegistrationMocks.ensureMachineRegistered).toHaveBeenCalledOnce();
+
+      terminalAuthMocks.createRequest.mockClear();
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new TypeError('Home mode transport unavailable');
+      }));
+      await expect(authAndSetupMachineIfNeeded({
+        callerIntent: 'setup-managed',
+        requireAccountMaterial: true,
+      })).rejects.toThrow('Home mode transport unavailable');
+      expect(terminalAuthMocks.createRequest).not.toHaveBeenCalled();
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts supported legacy Account material when the selected Home remains E2EE', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-auth-legacy-material-readiness-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'legacy-home';
+    process.env.HAPPIER_SERVER_URL = 'https://legacy-home.example.test';
+    const token = makeJwtWithSub('acct-legacy-material-readiness');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://legacy-home.example.test/v1/account/encryption') {
+        return Response.json({ mode: 'e2ee', updatedAt: 1 });
+      }
+      return new Response(null, { status: 404 });
+    }));
+
+    try {
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 6,
+        activeServerId: 'legacy-home',
+        servers: {
+          'legacy-home': {
+            id: 'legacy-home',
+            name: 'Legacy Home',
+            serverUrl: 'https://legacy-home.example.test',
+            webappUrl: 'https://app.happier.dev',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+          },
+        },
+      }), 'utf8');
+      const serverDir = join(homeDir, 'servers', 'legacy-home');
+      mkdirSync(serverDir, { recursive: true });
+      writeFileSync(join(serverDir, 'access.key'), JSON.stringify({
+        token,
+        secret: Buffer.from(new Uint8Array(32).fill(17)).toString('base64'),
+      }), 'utf8');
+
+      vi.resetModules();
+      const { authAndSetupMachineIfNeeded } = await import('./auth');
+      await expect(authAndSetupMachineIfNeeded({
+        callerIntent: 'setup-managed',
+        requireAccountMaterial: true,
+      })).resolves.toMatchObject({
+        credentials: { token, encryption: { type: 'legacy' } },
+      });
+
+      expect(terminalAuthMocks.createRequest).not.toHaveBeenCalled();
+      expect(machineRegistrationMocks.ensureMachineRegistered).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers missing E2EE material for the exact Home while retaining its committed bearer', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-auth-material-recovery-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'material-home';
+    process.env.HAPPIER_SERVER_URL = 'https://material-home.example.test';
+    process.env.HAPPIER_WEBAPP_URL = 'https://app.happier.dev';
+    process.env.HAPPIER_AUTH_METHOD = 'web';
+    process.env.HAPPIER_NO_BROWSER_OPEN = '1';
+    process.env.HAPPIER_AUTH_POLL_INTERVAL_MS = '1';
+    const accountId = 'acct-material-recovery';
+    const retainedToken = `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.retained`;
+    terminalAuthMocks.approvedToken = `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.approved`;
+    terminalAuthMocks.readStatus.mockImplementation(async () => ({
+      status: terminalAuthMocks.response ? 'authorized' : 'pending',
+      supportsV2: true,
+    }));
+    terminalAuthMocks.claimRequest.mockImplementation(async () => ({
+      state: 'authorized',
+      token: terminalAuthMocks.approvedToken,
+      response: terminalAuthMocks.response,
+      serverIdentityId: 'srv_material_home',
+    }));
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_material_home',
+      canonicalServerUrl: 'https://material-home.example.test',
+      revision: 1,
+      endpoints: [{ kind: 'https' as const, url: 'https://material-home.example.test' }],
+    };
+    descriptorRuntimeMocks.acquire.mockResolvedValue({
+      ok: true,
+      runtime: {
+        runtimeOrigin: 'https://material-home.example.test',
+        carrier: 'https',
+        authenticatedCredentialDestination: { kind: 'https', applicationUrl: 'https://material-home.example.test' },
+      },
+      close: vi.fn(async () => undefined),
+    });
+    descriptorRuntimeMocks.fetchFeatures.mockResolvedValue({
+      status: 'ready',
+      features: {
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: descriptor.homeServerIdentityId } },
+        homeConnectionDescriptor: descriptor,
+      },
+    });
+
+    try {
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 6,
+        activeServerId: 'material-home',
+        servers: {
+          'material-home': {
+            id: 'material-home',
+            name: 'Material Home',
+            serverUrl: descriptor.canonicalServerUrl,
+            webappUrl: 'https://app.happier.dev',
+            homeConnectionDescriptor: descriptor,
+            homeConnectionDescriptorAuthority: 'exact',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+          },
+        },
+      }), 'utf8');
+      const serverDir = join(homeDir, 'servers', 'material-home');
+      mkdirSync(serverDir, { recursive: true });
+      writeFileSync(join(serverDir, 'access.key'), JSON.stringify({ token: retainedToken }), 'utf8');
+
+      vi.resetModules();
+      const output = captureConsoleLogAndMuteStdout();
+      try {
+        const { doAuth } = await import('./auth');
+        const recovery = doAuth({
+          callerIntent: 'setup-managed',
+          retainedCredentialForMaterialRecovery: { token: retainedToken, encryption: null },
+        });
+        await vi.waitFor(() => {
+          expect(output.logs.some((line) => line.includes('/terminal/connect#'))).toBe(true);
+        });
+        const link = output.logs.find((line) => line.includes('/terminal/connect#'));
+        if (!link) throw new Error('Expected exact-Home material-recovery link');
+        const envelope = parseTerminalConnectLinkV4Parameters(new URL(link).hash.slice(1));
+        if (!envelope) throw new Error('Expected descriptor-bound terminal connect V4 link');
+        const freshMachineKey = new Uint8Array(32).fill(29);
+        terminalAuthMocks.response = Buffer.from(sealTerminalProvisioningV3Payload({
+          terminalEphemeralPublicKey: new Uint8Array(Buffer.from(envelope.publicKeyB64Url, 'base64url')),
+          contentPrivateKey: freshMachineKey,
+          pairingSecret: new Uint8Array(Buffer.from(envelope.pairing.secretB64Url, 'base64url')),
+          createdAtMs: envelope.pairing.createdAtMs,
+          expiresAtMs: envelope.pairing.expiresAtMs,
+          randomBytes: (length) => new Uint8Array(length).fill(31),
+        })).toString('base64');
+
+        await expect(recovery).resolves.toMatchObject({
+          token: retainedToken,
+          encryption: { type: 'dataKey', machineKey: freshMachineKey },
+        });
+        const { readStoredCredentials } = await import('@/persistence');
+        await expect(readStoredCredentials()).resolves.toMatchObject({
+          token: retainedToken,
+          encryption: { type: 'dataKey', machineKey: freshMachineKey },
+        });
+      } finally {
+        output.restore();
+      }
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }

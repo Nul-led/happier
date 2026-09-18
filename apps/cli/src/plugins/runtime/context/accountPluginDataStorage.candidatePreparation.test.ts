@@ -111,6 +111,7 @@ const currentEncryption = async () => Object.freeze({
     signingKeyFingerprint: null,
     contentKeyFingerprint: null,
     updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 });
 
 function sourceRow(rowId: string, revision: number, title: string, alreadyStaged: boolean) {

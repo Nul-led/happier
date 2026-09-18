@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   buildBackendTargetKey,
+  deriveSessionFollowWakeEventLocalIdV1,
   deriveSessionCreationTagV1,
   ProviderConnectionIdSchema,
   redactBugReportSensitiveText,
   SessionCreationCorrespondenceV1Schema,
+  SESSION_FOLLOW_WAKE_EVENT_MESSAGE,
   type PluginContributionIdentityV1,
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
@@ -54,6 +56,7 @@ import { runHostSessionRuntime, type HostSessionRuntimeConfig, type HostSessionR
 import type { CreateSessionMetadataOptions } from '@/agent/runtime/createSessionMetadata';
 import type { InitializeBackendRunSessionOptions } from '@/agent/runtime/initializeBackendRunSession';
 import type { Metadata } from '@/api/types';
+import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import type { HostSessionTerminalRemoteModeLoop } from './terminalRemoteModeRuntime';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { resolveForkInheritedOverridesFromMetadata } from '@/session/fork/resolveForkInheritedOverridesFromMetadata';
@@ -83,6 +86,10 @@ import {
 } from '@/api/session/sessionClient';
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
 import { DeferredApiSessionClient } from '@/agent/runtime/startup/DeferredApiSessionClient';
+// The composed Follow gate below runs the real prompt loop over the real admitted
+// permission-mode queue, so this is the production owner rather than a test double.
+import { runPermissionModePromptLoop } from '@/agent/runtime/runPermissionModePromptLoop';
+import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
 
 vi.mock('@/api/session/client/transport/initializeSessionClientConnection', () => ({
   initializeSessionClientConnection: (params: {
@@ -316,16 +323,24 @@ function createSessionFixture(sessionId: string) {
       },
     },
     setSessionRuntimeControls: vi.fn(),
+    setOwnerActivityDelivery: vi.fn(),
     sendAgentMessage: vi.fn(),
+    enqueueAgentMessageCommitted: vi.fn(async () => undefined),
     sendSessionEvent: vi.fn(),
     keepAlive: vi.fn(),
     getMetadataSnapshot: () => ({ path: '/tmp/workspace', permissionMode: 'default' }),
+    fetchLatestUserPermissionIntentFromTranscript: vi.fn(async () => null),
+    waitForMetadataUpdate: vi.fn(async () => false),
+    hasPendingProviderInput: vi.fn(() => true),
+    observeProviderInputSettlement: vi.fn(),
+    confirmUserMessageLocallyConsumed: vi.fn(),
     updateMetadata: vi.fn(),
     updateMetadataAsCurrentPublisher: vi.fn(
       async (update: (metadata: Metadata) => Metadata) =>
         await session.updateMetadata(update),
     ),
     checkCurrentPublisherAuthority: vi.fn(async () => true),
+    hasOwnerMetadataAuthority: vi.fn(() => true),
     on: vi.fn(),
     off: vi.fn(),
     refreshSessionSnapshotFromServerRequired: vi.fn(async () => undefined),
@@ -456,6 +471,7 @@ function createHarness() {
         subscriber(message);
       }
     }),
+    setOnPromptDeliveryOutcome: vi.fn(),
     steerInFlightTurn: vi.fn(async function (this: unknown, prompt: string) {
       if (this !== runtime) {
         throw new Error('steerInFlightTurn called with wrong receiver');
@@ -726,6 +742,25 @@ function createTerminalRemoteModeLoopFixture() {
 }
 
 describe('runHostSessionRuntime', () => {
+  it('rejects a hookless runtime before the Session loop can dispatch provider input', async () => {
+    const harness = createHarness();
+    const { setOnPromptDeliveryOutcome: _omittedOutcomePort, ...hooklessRuntime } = harness.runtime;
+    const runSessionLoopLifecycleFn = vi.fn(async () => undefined);
+    harness.deps.runSessionLoopLifecycleFn = runSessionLoopLifecycleFn;
+    setSessionRuntimeFactory(harness.config, () => ({
+      operations: hooklessRuntime,
+      nativeRuntime: hooklessRuntime,
+    } as never));
+
+    await expect(
+      runHostSessionRuntime(harness.opts, harness.config, harness.deps),
+    ).rejects.toThrow(/provider delivery outcome/i);
+    expect(runSessionLoopLifecycleFn).not.toHaveBeenCalled();
+    expect(hooklessRuntime.sendTurnPrompt).not.toHaveBeenCalled();
+    expect(hooklessRuntime.steerInFlightTurn).not.toHaveBeenCalled();
+    expect(hooklessRuntime.resetOrDisposeRuntime).toHaveBeenCalledOnce();
+  });
+
   let runtimeRegistryLease: PluginRuntimeRegistryLease | null = null;
 
   beforeAll(async () => {
@@ -810,6 +845,32 @@ describe('runHostSessionRuntime', () => {
       metadata: expect.objectContaining({
         sessionCreationCorrespondenceV1: sessionCreationCorrespondence,
       }),
+    }));
+  });
+
+  it('writes admitted Machine Pool placement origin into fresh creation metadata', async () => {
+    const harness = createHarness();
+    const placementOrigin = {
+      kind: 'machine_pool' as const,
+      poolId: '0191f11b-4ab2-7ef2-8dd2-268abc9c191f',
+    };
+    const initializeBackendRunSessionFn = vi.fn(harness.deps.initializeBackendRunSessionFn);
+    harness.deps.createSessionMetadataFn = (params: CreateSessionMetadataOptions) => {
+      if (!params.augmentMetadata) throw new Error('Expected the host runtime metadata augmenter');
+      const metadata = harness.session.getMetadataSnapshot();
+      if (!metadata) throw new Error('Expected fixture Session metadata');
+      return {
+        state: { controlledByUser: false },
+        metadata: params.augmentMetadata(metadata),
+      };
+    };
+    harness.deps.initializeBackendRunSessionFn = initializeBackendRunSessionFn;
+    harness.opts.placementOrigin = placementOrigin;
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(initializeBackendRunSessionFn).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ placementOrigin }),
     }));
   });
 
@@ -2984,6 +3045,65 @@ describe('runHostSessionRuntime', () => {
       .toBeLessThan(settleComposerStagedMedia.mock.invocationCallOrder[0]!);
   });
 
+  it('publishes the incumbent structured-input resolvers for retained Run delivery', async () => {
+    const harness = createHarness();
+    const resolveComposerReference = vi.fn(async () => ({
+      id: 'issue:42',
+      label: 'Issue 42',
+      context: 'Current issue context.',
+    }));
+    const resolveComposerAttachment = vi.fn(async () => ({ attachments: [] }));
+    harness.deps.sessionLoopLifecycleDeps = {
+      daemonTurnContributionsBridge: {
+        resolvePrompt: vi.fn(),
+        resolveAgentComposition: vi.fn(),
+        resolveComposerReference,
+        resolveComposerAttachment,
+        afterComposerAttachmentMessageAccepted: vi.fn(),
+        transformAgentContext: vi.fn(),
+        transformSessionInput: vi.fn(),
+        transformAgentRequest: vi.fn(),
+      },
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    const controls = harness.session.setSessionRuntimeControls.mock.calls[0]?.[0];
+    const signal = new AbortController().signal;
+    await expect(controls.resolveComposerReference({
+      reference: { pluginId: 'acme.issues', localId: 'issues' },
+      candidateId: 'issue:42',
+      signal,
+    })).resolves.toMatchObject({ id: 'issue:42' });
+    await expect(controls.resolveComposerAttachmentForDispatch({
+      sessionId: 'session-1',
+      attachment: { pluginId: 'acme.review', localId: 'review' },
+      request: {
+        sessionId: 'session-1',
+        localId: 'pending-input-1',
+        attachments: [],
+      },
+      signal,
+    })).resolves.toEqual({ attachments: [] });
+
+    expect(resolveComposerReference).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      reference: { pluginId: 'acme.issues', localId: 'issues' },
+      candidateId: 'issue:42',
+      signal,
+    });
+    expect(resolveComposerAttachment).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      attachment: { pluginId: 'acme.review', localId: 'review' },
+      request: {
+        sessionId: 'session-1',
+        localId: 'pending-input-1',
+        attachments: [],
+      },
+      signal,
+    });
+  });
+
   it('publishes connected-account auth controls from the semantic runtime auth facet', async () => {
     const harness = createHarness();
     const apply = vi.fn(async (request: unknown) => ({
@@ -3418,6 +3538,60 @@ describe('runHostSessionRuntime', () => {
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
     expect(createSessionRuntime).toHaveBeenCalledOnce();
+  });
+
+  it('accepts an ordinary Session stop before deferred attachment and terminalizes before Agent admission', async () => {
+    const harness = createHarness();
+    const deferredSession = new DeferredApiSessionClient({
+      placeholderSessionId: 'PID-stop-before-attach',
+      limits: { maxEntries: 10, maxBytes: 10_000 },
+    });
+    let continueAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      continueAttachment = resolve;
+    });
+    let requestStop!: () => Promise<void>;
+    const createSessionRuntime = vi.fn(harness.config.createSessionRuntime!);
+    const runSessionLoopLifecycleFn = vi.fn(async () => undefined);
+    harness.config.createSessionRuntime = createSessionRuntime;
+    harness.config.onRuntimeStopReady = (stop) => {
+      requestStop = stop;
+    };
+    harness.deps.runSessionLoopLifecycleFn = runSessionLoopLifecycleFn;
+    harness.config.startupBootstrap = {
+      create: async () => ({
+        api: { push: () => ({
+          sendToAllDevices: vi.fn(),
+          sendToAllDevicesAsync: vi.fn(async () => undefined),
+        }) },
+        session: deferredSession as unknown as ApiSessionClient,
+        machineId: 'machine-1',
+        metadata: { path: '/tmp/workspace' } as never,
+        attachedToExistingSession: true,
+        reconnectionHandle: null,
+        start: async (options) => {
+          await attachmentGate;
+          await deferredSession.attach(harness.session, {
+            beforeBufferedDrain: async () => {
+              await options?.prepareSession?.(harness.session);
+            },
+          });
+        },
+      }),
+    };
+
+    const running = runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    await vi.waitFor(() => expect(requestStop).toBeTypeOf('function'));
+    const stopping = requestStop();
+    const repeatedStopping = requestStop();
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    continueAttachment();
+
+    await expect(Promise.all([stopping, repeatedStopping])).resolves.toEqual([undefined, undefined]);
+    await expect(running).resolves.toBeUndefined();
+    expect(harness.session.endSessionAndClose).toHaveBeenCalledOnce();
+    expect(createSessionRuntime).not.toHaveBeenCalled();
+    expect(runSessionLoopLifecycleFn).not.toHaveBeenCalled();
   });
 
   it('releases pre-runtime durable custody when the provider runtime factory fails', async () => {
@@ -4845,10 +5019,9 @@ describe('runHostSessionRuntime', () => {
     expect(swappedSession.updateMetadata).toHaveBeenCalledTimes(1);
   });
 
-  it('binds exact and legacy provider outcomes to the one current-session host normalizer', async () => {
+  it('binds exact provider outcomes and pre-provider rejections to the one current-session host normalizer', async () => {
     const harness = createHarness();
     let deliveryHandler: ((outcome: any) => void) | null = null;
-    let acceptedHandler: ((info: any) => void) | null = null;
     let rejectedHandler: ((info: any) => void) | null = null;
     let blockerClearedHandler: ((info: any) => void) | null = null;
     const observedSettlements: unknown[] = [];
@@ -4860,9 +5033,6 @@ describe('runHostSessionRuntime', () => {
       ...harness.runtime,
       setOnPromptDeliveryOutcome: vi.fn((handler: ((outcome: any) => void) | null) => {
         deliveryHandler = handler;
-      }),
-      setOnPromptAcceptedByProvider: vi.fn((handler: ((info: any) => void) | null) => {
-        acceptedHandler = handler;
       }),
       setOnPromptTerminallyRejectedBeforeProvider: vi.fn((handler: ((info: any) => void) | null) => {
         rejectedHandler = handler;
@@ -4887,11 +5057,6 @@ describe('runHostSessionRuntime', () => {
         userMessageSeq: 21,
         userMessageSeqs: [21],
         delivery: { kind: 'newTurn', turnId: 'turn-exact' },
-      });
-      acceptedHandler?.({
-        localIds: ['local-legacy'],
-        userMessageSeq: 22,
-        userMessageSeqs: [22],
       });
       rejectedHandler?.({
         localIds: ['local-blocked'],
@@ -4922,12 +5087,6 @@ describe('runHostSessionRuntime', () => {
         },
       },
       {
-        kind: 'accepted',
-        localId: 'local-legacy',
-        userMessageSeq: 22,
-        userMessageSeqs: [22],
-      },
-      {
         kind: 'rejected_before_effect',
         localId: 'local-blocked',
         userMessageSeq: 23,
@@ -4939,15 +5098,16 @@ describe('runHostSessionRuntime', () => {
     ]);
     expect(harness.session.wakePendingMaterialization).toHaveBeenCalledTimes(1);
     expect(runtime.setOnPromptDeliveryOutcome).toHaveBeenLastCalledWith(null);
-    expect(runtime.setOnPromptAcceptedByProvider).toHaveBeenLastCalledWith(null);
     expect(runtime.setOnPromptTerminallyRejectedBeforeProvider).toHaveBeenLastCalledWith(null);
     expect(runtime.setOnPromptDeliveryBlockerCleared).toHaveBeenLastCalledWith(null);
   });
 
-  it('routes exact provider acceptance to Pending and the correlated replay effect', async () => {
+  it('routes exact provider acceptance to every correlated effect and discards them on rejection', async () => {
     const harness = createHarness();
     let deliveryHandler: ((outcome: any) => void) | null = null;
-    harness.session.hasPendingProviderInput = vi.fn((localId: string) => localId === 'local-exact');
+    harness.session.hasPendingProviderInput = vi.fn(
+      (localId: string) => localId === 'local-exact' || localId === 'local-rejected',
+    );
     harness.session.observeProviderInputSettlement = vi.fn();
     const runtime = {
       ...harness.runtime,
@@ -4957,10 +5117,25 @@ describe('runHostSessionRuntime', () => {
     };
     setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
 
-    const replayEffect = vi.fn();
+    const effects: string[] = [];
+    const replayEffect = vi.fn(() => {
+      effects.push('replay');
+      throw new Error('replay settlement failed');
+    });
+    const followEffect = vi.fn(() => { effects.push('follow'); });
+    const rejectedEffect = vi.fn(() => { effects.push('rejected'); });
     harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
       expect(params.registerProviderAcceptedEffect).toBeTypeOf('function');
       params.registerProviderAcceptedEffect('local-exact', replayEffect);
+      params.registerProviderAcceptedEffect('local-exact', followEffect);
+      params.registerProviderAcceptedEffect('local-rejected', rejectedEffect);
+      deliveryHandler?.({
+        type: 'input-rejected',
+        localId: 'local-rejected',
+        userMessageSeq: 22,
+        diagnostic: { code: 'provider_rejected', severity: 'error' },
+        retryable: true,
+      });
       deliveryHandler?.({
         type: 'input-accepted',
         localId: 'local-exact',
@@ -4977,8 +5152,11 @@ describe('runHostSessionRuntime', () => {
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    expect(harness.session.observeProviderInputSettlement).toHaveBeenCalledOnce();
+    expect(harness.session.observeProviderInputSettlement).toHaveBeenCalledTimes(2);
     expect(replayEffect).toHaveBeenCalledOnce();
+    expect(followEffect).toHaveBeenCalledOnce();
+    expect(rejectedEffect).not.toHaveBeenCalled();
+    expect(effects).toEqual(['replay', 'follow']);
   });
 
   it('registers abort control RPCs on the active swapped session manager without authoring a cancellation transcript', async () => {
@@ -6925,6 +7103,29 @@ describe('runHostSessionRuntime', () => {
       },
     };
     let capturedAccountSettings: unknown = null;
+    const savedSecretResources = [{
+      resourceId: 'shared-mcp-secret',
+      ownerAccountId: 'owner-account',
+      displayName: 'Shared MCP token',
+      kind: 'apiKey',
+      encryptionMode: 'plain',
+      revision: 1,
+      storedContent: {
+        t: 'plain',
+        v: { v: 1, name: 'Shared MCP token', kind: 'apiKey', value: 'shared-token' },
+      },
+      materialStatus: 'ready',
+    }] as const;
+    harness.opts.accountSettingsContext = {
+      source: 'network',
+      settings: runnerAccountSettings as never,
+      settingsVersion: 1,
+      loadedAtMs: Date.now(),
+      settingsSecretsReadKeys: [],
+      savedSecretResources,
+      savedSecretCatalogState: 'ready',
+      whenRefreshed: null,
+    };
     const createRuntimeOriginal = harness.config.createSessionRuntime;
     if (!createRuntimeOriginal) {
       throw new Error('Expected session runtime factory in harness');
@@ -6933,6 +7134,7 @@ describe('runHostSessionRuntime', () => {
     harness.config.resolveRunnerMcpServersAccountSettings = () => runnerAccountSettings as never;
     harness.deps.resolveRunnerMcpServersFn = vi.fn(async (params: any) => {
       expect(params.accountSettings).toBe(runnerAccountSettings);
+      expect(params.savedSecretResources).toBe(savedSecretResources);
       return {
         happierMcpServer: { stop: () => undefined },
         mcpServers: { happier: { command: 'built-in' } },
@@ -6946,6 +7148,47 @@ describe('runHostSessionRuntime', () => {
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
     expect(capturedAccountSettings).toBe(runnerAccountSettings);
+  });
+
+  it('threads an explicitly scoped Action policy to the Session tool transports without ambient Account settings', async () => {
+    const harness = createHarness();
+    const scopedActionsSettings = {
+      v: 1 as const,
+      actions: {
+        'session.title.set': {
+          enabled: true,
+          approvalRequiredSurfaces: ['agent'] as const,
+        },
+      },
+    };
+    const actionsSettingsProvider = Object.freeze({
+      getActionsSettings: () => scopedActionsSettings,
+    });
+    const pluginRuntimeRegistryLease = Object.freeze({
+      registry: Object.freeze({}),
+      source: 'ephemeral' as const,
+      durableRevision: 7,
+      release: vi.fn(async () => undefined),
+    });
+    Object.assign(harness.config, {
+      runtimeActionSettingsProvider: actionsSettingsProvider,
+      pluginRuntimeRegistryLease,
+    });
+    harness.opts.accountSettingsContext = undefined;
+    harness.deps.resolveRunnerMcpServersFn = vi.fn(async (params: any) => {
+      expect(params.accountSettings).toBeNull();
+      expect(params.actionsSettingsProvider).toBe(actionsSettingsProvider);
+      expect(params.actionsSettingsProvider.getActionsSettings()).toBe(scopedActionsSettings);
+      expect(params.pluginRuntimeRegistryLease).toBe(pluginRuntimeRegistryLease);
+      return {
+        happierMcpServer: { stop: () => undefined },
+        mcpServers: { happier: { command: 'built-in' } },
+      };
+    });
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(harness.deps.resolveRunnerMcpServersFn).toHaveBeenCalledTimes(1);
   });
 
   it('uses attached session metadata for runtime metadata, runtime directory, and MCP directory resolution', async () => {
@@ -7864,6 +8107,7 @@ describe('runHostSessionRuntime', () => {
       cancelTurn: vi.fn(async () => undefined),
       readSessionIdentity: vi.fn(() => ({ sessionId: null })),
       updateSessionRuntimeConfig: vi.fn(async () => undefined),
+      setOnPromptDeliveryOutcome: vi.fn(),
       resetOrDisposeRuntime: vi.fn(async () => undefined),
       shouldResumeAfterPermissionModeChange: vi.fn(() => false),
     };
@@ -8574,6 +8818,27 @@ describe('runHostSessionRuntime', () => {
     expect(observedGetAccountSettingsSecretsReadKeys?.()).toEqual(settingsSecretsReadKeys);
   });
 
+  it('lets a restricted runtime truthfully declare that Activity owner delivery requires the Home', async () => {
+    const harness = createHarness();
+    const createProviderEnforcedPermissionHandlerFn = vi.fn(() => ({
+      setPermissionMode: () => undefined,
+      reset: () => undefined,
+      updateSession: () => undefined,
+    }));
+    harness.deps.createProviderEnforcedPermissionHandlerFn = createProviderEnforcedPermissionHandlerFn;
+    harness.deps.initializeBackendApiContextFn = async () => ({
+      api: { push: () => null } as never,
+      machineId: 'machine-1',
+    });
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(harness.session.setOwnerActivityDelivery).toHaveBeenCalledWith('home_required');
+    expect(createProviderEnforcedPermissionHandlerFn).toHaveBeenCalledWith(
+      expect.objectContaining({ pushSender: null }),
+    );
+  });
+
   it('passes pending queue delivery timing from account settings into the permission prompt loop', async () => {
     const harness = createHarness();
     let observedPendingQueueDeliveryTiming: unknown;
@@ -8594,6 +8859,371 @@ describe('runHostSessionRuntime', () => {
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
     expect(observedPendingQueueDeliveryTiming).toBe('after_runtime_idle');
+  });
+
+  it('uses the measured Follow fallback before usage and matching authoritative remaining capacity afterward', async () => {
+    const harness = createHarness();
+    const observePendingSessionFollow = vi.fn(async () => ({
+      ok: true as const,
+      publisherGeneration: 1,
+      currentSourceSessionIds: [],
+      observations: [],
+    }));
+    harness.session.observePendingSessionFollow = observePendingSessionFollow;
+    const publishHostRuntimeEvent = vi.fn();
+    harness.config.publishHostRuntimeEvent = publishHostRuntimeEvent;
+    harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
+      const prepare = params.runtime.prepareSessionFollowContext;
+      expect(prepare).toEqual(expect.any(Function));
+
+      await prepare({ signal: new AbortController().signal, requiredPrompt: 'required' });
+      expect(observePendingSessionFollow).toHaveBeenCalledTimes(1);
+
+      const modelId = params.readActiveModelSelection().modelId;
+      harness.runtime.emitRuntimeMessage({
+        kind: 'usage-observed',
+        sequence: 1,
+        sessionId: 'session-1',
+        emittedAtMs: 1,
+        observationId: 'usage-1',
+        source: 'provider',
+        scope: 'session_cumulative',
+        modelId,
+        context: {
+          v: 1,
+          modelId,
+          usedTokens: 96,
+          windowTokens: 100,
+          totalProcessedTokens: null,
+          baselineTokens: null,
+          isAutoCompactEnabled: null,
+          categories: null,
+          observedAtMs: 1,
+          source: 'provider_live',
+        },
+      });
+      await prepare({ signal: new AbortController().signal, requiredPrompt: 'required' });
+      expect(observePendingSessionFollow).toHaveBeenCalledTimes(1);
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(publishHostRuntimeEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'usage-observed',
+    }));
+  });
+
+  it('composes the canonical Follow reconciler into a real host prompt and ACKs the exact observed frontier only after provider acceptance', async () => {
+    const harness = createHarness();
+    let userMessageHandler: ((message: unknown) => boolean | void) | null = null;
+    harness.session.onUserMessage = (handler: (message: unknown) => boolean | void) => {
+      userMessageHandler = handler;
+    };
+    harness.session.getCommittedUserMessageSeq = vi.fn((localId: string) => (
+      localId === 'local-follow-runtime' ? 41 : null
+    ));
+    delete harness.deps.createPermissionModeQueueStateFn;
+
+    const observed = {
+      transcriptSeq: 8,
+      readyEventSeq: 3,
+      agentStateVersion: 5,
+      turn: { id: 'source-turn', status: 'completed' as const },
+    };
+    const delivered = {
+      transcriptSeq: 7,
+      readyEventSeq: 2,
+      agentStateVersion: 4,
+      turn: null,
+    };
+    harness.session.observePendingSessionFollow = vi.fn(async () => ({
+      ok: true as const,
+      v: 1 as const,
+      sessionId: 'session-1',
+      publisherGeneration: '17',
+      currentSourceSessionIds: ['source-session'],
+      observations: [{
+        sourceSessionId: 'source-session',
+        destinationSessionId: 'session-1',
+        delivered,
+        observed,
+      }],
+    }));
+    harness.session.acknowledgeSessionFollow = vi.fn(async () => ({
+      ok: true as const,
+      v: 1 as const,
+      destinationSessionId: 'session-1',
+      sourceSessionId: 'source-session',
+      delivered: observed,
+    }));
+    const hydrateObservation = vi.fn(async () => ({
+      v: 1 as const,
+      kind: 'session_follow_update' as const,
+      edge: { sourceSessionId: 'source-session', destinationSessionId: 'session-1' },
+      reason: 'source_changed' as const,
+      deliveryIntent: 'context_only' as const,
+      observed,
+      awareness: {
+        v: 1 as const,
+        sessionId: 'source-session',
+        lifecycle: 'ready' as const,
+        runtime: 'idle' as const,
+        freshness: 'live' as const,
+        operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+        encryption: 'plain' as const,
+        availability: 'complete' as const,
+      },
+      recentMessages: [{
+        messageId: 'seq:8',
+        seq: 8,
+        text: 'source context accepted by the provider',
+        provenance: null,
+      }],
+      truncated: false,
+      sourceRecencyMs: 9_000,
+    }));
+    harness.deps.createSessionFollowSourceHydratorFn = vi.fn(() => hydrateObservation);
+
+    let providerOutcome: ((outcome: any) => void) | null = null;
+    const runtime = {
+      ...harness.runtime,
+      readSessionIdentity: vi.fn(() => ({ sessionId: null })),
+      updateSessionRuntimeConfig: vi.fn(async () => undefined),
+      beginTurnLifecycle: vi.fn(),
+      waitForTurnCompletion: vi.fn(async () => undefined),
+      setOnPromptDeliveryOutcome: vi.fn((handler: ((outcome: any) => void) | null) => {
+        providerOutcome = handler;
+      }),
+      sendTurnPrompt: vi.fn(async (_prompt: string, meta?: { localId?: string }) => {
+        expect(harness.session.acknowledgeSessionFollow).not.toHaveBeenCalled();
+        providerOutcome?.({
+          type: 'input-accepted',
+          localInputId: meta?.localId,
+          userMessageSeq: 41,
+          delivery: { kind: 'newTurn', turnId: 'destination-turn' },
+        });
+      }),
+    };
+    setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      let shouldExit = false;
+      expect(userMessageHandler).toBeTypeOf('function');
+      userMessageHandler?.({
+        role: 'user',
+        content: { type: 'text', text: 'continue the destination work' },
+        localId: 'local-follow-runtime',
+        meta: {},
+      });
+      await runPermissionModePromptLoop({
+        ...params,
+        shouldExit: () => shouldExit,
+        sendReady: () => { shouldExit = true; },
+      });
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(runtime.sendTurnPrompt).toHaveBeenCalled();
+    expect(harness.session.observePendingSessionFollow).toHaveBeenCalled();
+    expect(hydrateObservation).toHaveBeenCalledWith(expect.objectContaining({
+      observation: expect.objectContaining({ sourceSessionId: 'source-session', delivered, observed }),
+    }));
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
+      expect.stringContaining('source context accepted by the provider'),
+      expect.objectContaining({ localId: 'local-follow-runtime', userMessageSeq: 41 }),
+    );
+    expect(harness.session.acknowledgeSessionFollow).toHaveBeenCalledWith({
+      sourceSessionId: 'source-session',
+      expectedPublisherGeneration: '17',
+      expected: delivered,
+      observed,
+      consumed: observed,
+      acceptance: { kind: 'admitted_input', localInputId: 'local-follow-runtime', userMessageSeq: 41 },
+    });
+  });
+
+  it('commits one stable event identity before each retried Follow wake delivery and ACKs that exact identity', async () => {
+    const harness = createHarness();
+    harness.session.hasPendingProviderInput = vi.fn(() => false);
+    const wakeQueue = new MessageQueue2(() => 'default', {
+      batcher: (messages) => messages[0]!,
+    });
+    harness.deps.createPermissionModeQueueStateFn = () => ({
+      messageQueue: wakeQueue,
+      rebindSession: () => undefined,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => undefined,
+      getCurrentPermissionModeUpdatedAt: () => 0,
+      setCurrentPermissionModeUpdatedAt: () => undefined,
+    });
+    const delivered = { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+    const observed = { transcriptSeq: 2, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+    const expectedEventLocalId = deriveSessionFollowWakeEventLocalIdV1({
+      destinationSessionId: 'session-1',
+      publisherGeneration: '17',
+      observations: [{ sourceSessionId: 'source-session', expected: delivered, consumed: observed }],
+    });
+    harness.session.observePendingSessionFollow = vi.fn(async () => ({
+      ok: true as const,
+      v: 1 as const,
+      sessionId: 'session-1',
+      publisherGeneration: '17',
+      currentSourceSessionIds: ['source-session'],
+      observations: [{
+        sourceSessionId: 'source-session',
+        destinationSessionId: 'session-1',
+        delivered,
+        observed,
+        mode: 'wake_on_human_change' as const,
+      }],
+    }));
+    harness.session.acknowledgeSessionFollow = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('lost ACK response'))
+      .mockResolvedValueOnce({
+        ok: true as const,
+        v: 1 as const,
+        destinationSessionId: 'session-1',
+        sourceSessionId: 'source-session',
+        delivered: observed,
+      });
+    harness.session.enqueueAgentMessageCommitted = vi.fn(async () => ({ persisted: true, delivered: false }));
+    harness.deps.createSessionFollowSourceHydratorFn = vi.fn(() => vi.fn(async () => ({
+      v: 1 as const,
+      kind: 'session_follow_update' as const,
+      edge: { sourceSessionId: 'source-session', destinationSessionId: 'session-1' },
+      reason: 'source_changed' as const,
+      deliveryIntent: 'context_only' as const,
+      observed,
+      awareness: {
+        v: 1 as const,
+        sessionId: 'source-session',
+        lifecycle: 'ready' as const,
+        runtime: 'idle' as const,
+        freshness: 'live' as const,
+        operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+        encryption: 'plain' as const,
+        availability: 'complete' as const,
+      },
+      recentMessages: [{
+        messageId: 'source-human-2',
+        seq: 2,
+        text: 'Please re-check the destination',
+        provenance: { v: 1 as const, kind: 'cli' as const },
+      }],
+      truncated: false,
+    })));
+
+    let deliveryHandler: ((outcome: any) => void) | null = null;
+    const runtime = {
+      ...harness.runtime,
+      readSessionIdentity: vi.fn(() => ({ sessionId: null })),
+      updateSessionRuntimeConfig: vi.fn(async () => undefined),
+      beginTurnLifecycle: vi.fn(),
+      waitForTurnCompletion: vi.fn(async () => undefined),
+      setOnPromptDeliveryOutcome: vi.fn((handler: ((outcome: any) => void) | null) => {
+        deliveryHandler = handler;
+      }),
+      sendTurnPrompt: vi.fn(async (_prompt: string, meta?: { localId?: string }) => {
+        expect(harness.session.enqueueAgentMessageCommitted).toHaveBeenCalled();
+        deliveryHandler?.({
+          type: 'input-accepted',
+          localInputId: meta?.localId,
+          userMessageSeq: null,
+          delivery: { kind: 'newTurn', turnId: `wake-turn-${runtime.sendTurnPrompt.mock.calls.length}` },
+        });
+      }),
+    };
+    setSessionRuntimeFactory(harness.config, () => ({ operations: runtime, nativeRuntime: runtime }));
+    harness.deps.runPermissionModePromptLoopFn = async (params: Parameters<typeof runPermissionModePromptLoop>[0]) => {
+      let completedTurns = 0;
+      let shouldExit = false;
+      await runPermissionModePromptLoop({
+        ...params,
+        shouldExit: () => shouldExit,
+        sendReady: () => {
+          completedTurns += 1;
+          if (completedTurns === 1) publishSessionFollowWakeInvalidation();
+          else shouldExit = true;
+        },
+      });
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+    await Promise.resolve();
+
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(2);
+    expect(harness.session.enqueueAgentMessageCommitted).toHaveBeenCalledTimes(2);
+    for (const call of harness.session.enqueueAgentMessageCommitted.mock.calls) {
+      expect(call).toEqual([
+        'qwen',
+        { type: 'event', id: expectedEventLocalId, data: { type: 'message', message: SESSION_FOLLOW_WAKE_EVENT_MESSAGE } },
+        expect.objectContaining({
+          localId: expectedEventLocalId,
+          provenance: { kind: 'non_dependent', source: 'external' },
+        }),
+      ]);
+    }
+    expect(harness.session.confirmUserMessageLocallyConsumed).not.toHaveBeenCalled();
+    expect(harness.session.observeProviderInputSettlement).not.toHaveBeenCalled();
+    expect(harness.session.acknowledgeSessionFollow).toHaveBeenCalledTimes(2);
+    expect(harness.session.acknowledgeSessionFollow).toHaveBeenNthCalledWith(2, {
+      sourceSessionId: 'source-session',
+      expectedPublisherGeneration: '17',
+      expected: delivered,
+      observed,
+      consumed: observed,
+      acceptance: {
+        kind: 'context_only_wake',
+        eventLocalId: expectedEventLocalId,
+        observations: [{ sourceSessionId: 'source-session', expected: delivered, consumed: observed }],
+      },
+    });
+  });
+
+  it('keeps the one Follow reconciler bound to the authoritative Session after handoff', async () => {
+    const harness = createHarness();
+    const initialObserve = vi.fn(async () => ({
+      ok: true as const,
+      v: 1 as const,
+      sessionId: 'session-1',
+      publisherGeneration: '1',
+      currentSourceSessionIds: [],
+      observations: [],
+    }));
+    harness.session.observePendingSessionFollow = initialObserve;
+    const replacementFixture = harness.createSessionFixture('session-1');
+    const replacementObserve = vi.fn(async () => ({
+      ok: true as const,
+      v: 1 as const,
+      sessionId: 'session-1',
+      publisherGeneration: '2',
+      currentSourceSessionIds: [],
+      observations: [],
+    }));
+    replacementFixture.session.observePendingSessionFollow = replacementObserve;
+    let swapSession: ((nextSession: any) => Promise<void>) | null = null;
+    harness.deps.initializeBackendRunSessionFn = async ({ onSessionSwap }: any) => {
+      swapSession = onSessionSwap;
+      return {
+        session: harness.session,
+        reconnectionHandle: null,
+        reportedSessionId: 'session-1',
+        attachedToExistingSession: false,
+      };
+    };
+    harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
+      const prepare = params.runtime.prepareSessionFollowContext;
+      const signal = new AbortController().signal;
+      await prepare({ signal, requiredPrompt: 'before handoff' });
+      await swapSession?.(replacementFixture.session);
+      await prepare({ signal, requiredPrompt: 'after handoff' });
+    };
+
+    await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
+
+    expect(initialObserve).toHaveBeenCalledOnce();
+    expect(replacementObserve).toHaveBeenCalledOnce();
   });
 
   it('reads the live applied timing for each claim and wakes only when it broadens eligibility', async () => {
@@ -8625,10 +9255,10 @@ describe('runHostSessionRuntime', () => {
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
+    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith(expect.objectContaining({
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_foreground_ready',
-    });
+    }));
     setTiming('after_foreground_ready', 4);
     expect(harness.session.wakePendingMaterialization).toHaveBeenCalledTimes(1);
   });

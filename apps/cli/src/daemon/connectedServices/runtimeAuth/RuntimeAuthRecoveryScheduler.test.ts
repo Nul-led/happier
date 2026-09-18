@@ -492,6 +492,26 @@ describe('RuntimeAuthRecoveryScheduler', () => {
     ]));
   });
 
+  it('rechecks a transiently unavailable alternative before the exhausted account weekly reset', async () => {
+    const { RuntimeAuthRecoveryScheduler } = await loadModule();
+    const scheduler = new RuntimeAuthRecoveryScheduler({
+      nowMs: () => 1_000, baseBackoffMs: 100, maxBackoffMs: 1_000, jitterMs: () => 0,
+      recover: async () => ({
+        status: 'no_eligible_member', generation: 12, groupExhausted: true,
+        retryAtMs: 600_000,
+        excluded: [{ profileId: 'backup', reason: 'credential_unavailable' }],
+      }),
+    });
+    await scheduler.enqueueHandlerFailure({
+      sessionId: 'sess_1', switchesThisTurn: 0,
+      classification: usageLimitClassification({ resetsAtMs: 600_000 }),
+      error: new Error('timeout of 5000ms exceeded'),
+    });
+    await scheduler.wake({ sessionId: 'sess_1', reason: 'manual' });
+    expect(scheduler.read('sess_1')).toMatchObject({ status: 'waiting', nextRetryAtMs: 31_000 });
+    scheduler.dispose();
+  });
+
   it('arms a durable wait (not terminal) for a non-group recovery_action_required with a known future reset (incident Jun-11 F-NEW-1)', async () => {
     const { RuntimeAuthRecoveryScheduler } = await loadModule();
     const diagnostics: unknown[] = [];

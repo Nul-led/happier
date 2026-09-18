@@ -15,6 +15,7 @@ import {
   ResolvedMentionContextTooLargeError,
   StructuredInputMentionResolutionError,
   resolveStructuredInputProviderDispatchContext,
+  type StructuredInputComposerAttachmentResolver,
 } from './resolveStructuredInputProviderContext';
 
 function renderPromptContext(
@@ -167,7 +168,7 @@ describe('resolveStructuredInputProviderContext', () => {
       }),
       sessionMedia: [SESSION_MEDIA_IMAGE],
       composerAttachments: {
-        sessionId: 'session-1',
+        scope: { kind: 'session', sessionId: 'session-1' },
         localId: 'local-1',
         resolve: async (input) => ({
           attachments: input.request.attachments.map((attachment) => ({
@@ -201,6 +202,12 @@ describe('resolveStructuredInputProviderContext', () => {
         }],
       }),
       sessionMedia: [SESSION_MEDIA_VIDEO],
+      composerAttachments: {
+        scope: { kind: 'session', sessionId: 'session-1' },
+        localId: 'local-1',
+        resolve: vi.fn(),
+        signal: new AbortController().signal,
+      },
     })).rejects.toMatchObject({
       code: 'session_media_video_unsupported',
       retryable: false,
@@ -209,22 +216,19 @@ describe('resolveStructuredInputProviderContext', () => {
 
   it('resolves attachment groups at dispatch, preserves author order, and removes raw attachment values', async () => {
     const listSkills = vi.fn(async () => ({ skills: [SKILL_ITEM] }));
-    const resolve = vi.fn(async (input: Readonly<{
-      attachment: Readonly<{ pluginId: string; localId: string }>;
-      request: Readonly<{
-        sessionId: string;
-        localId: string;
-        attachments: readonly Readonly<{ instanceId: string; key: string; value: unknown }>[];
-      }>;
-      signal: AbortSignal;
-    }>) => ({
+    const resolve = vi.fn(async (
+      input: Parameters<StructuredInputComposerAttachmentResolver['resolve']>[0],
+    ) => {
+      if ('scope' in input.request) throw new Error('Expected Session V1 attachment request');
+      return {
       attachments: input.request.attachments.map((attachment) => ({
         instanceId: attachment.instanceId,
         status: 'ready' as const,
         context: `Fresh context for ${attachment.instanceId}`,
         data: { refreshedKey: attachment.key },
       })),
-    }));
+      };
+    });
     const signal = new AbortController().signal;
 
     const result = await resolveStructuredInputProviderDispatchContext({
@@ -233,7 +237,7 @@ describe('resolveStructuredInputProviderContext', () => {
       }),
       catalogs: { listSkills },
       composerAttachments: {
-        sessionId: 'session-1',
+        scope: { kind: 'session', sessionId: 'session-1' },
         localId: 'local-1',
         resolve,
         signal,
@@ -280,6 +284,66 @@ describe('resolveStructuredInputProviderContext', () => {
     expect(contextBlock).not.toContain('reviewId');
   });
 
+  it('stamps detached attachment resolution with the exact execution-run scope', async () => {
+    const resolve = vi.fn(async (
+      input: Parameters<StructuredInputComposerAttachmentResolver['resolve']>[0],
+    ) => {
+      if (!('scope' in input.request) || input.request.scope.kind !== 'execution_run') {
+        throw new Error('Expected detached Execution Run V2 attachment request');
+      }
+      return {
+      attachments: input.request.attachments.map((attachment) => ({
+        instanceId: attachment.instanceId,
+        status: 'ready' as const,
+        context: `Detached context for ${attachment.key}`,
+      })),
+      };
+    });
+
+    await expect(resolveStructuredInputProviderDispatchContext({
+      structuredInput: envelope({ composerAttachments: [COMPOSER_ATTACHMENT] }),
+      composerAttachments: {
+        scope: { kind: 'execution_run', executionRunId: 'run-1' },
+        localId: 'local-1',
+        resolve,
+        signal: new AbortController().signal,
+      },
+    })).resolves.toMatchObject({
+      structuredInput: {
+        resolvedComposerAttachments: [expect.objectContaining({ instanceId: 'review-comment-1' })],
+      },
+    });
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        scope: { kind: 'execution_run', executionRunId: 'run-1' },
+      }),
+    }));
+  });
+
+  it('rejects SessionMedia before detached provider effects', async () => {
+    const resolve = vi.fn();
+
+    await expect(resolveStructuredInputProviderDispatchContext({
+      structuredInput: envelope({
+        composerAttachments: [{
+          ...COMPOSER_ATTACHMENT,
+          content: { kind: 'sessionMedia', mediaId: SESSION_MEDIA_IMAGE.id },
+        }],
+      }),
+      sessionMedia: [SESSION_MEDIA_IMAGE],
+      composerAttachments: {
+        scope: { kind: 'execution_run', executionRunId: 'run-1' },
+        localId: 'local-1',
+        resolve,
+        signal: new AbortController().signal,
+      },
+    })).rejects.toMatchObject({
+      code: 'session_media_scope_unavailable',
+      retryable: false,
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('keeps a ready textless attachment model-visible when the plugin supplies no context', async () => {
     const resolve = vi.fn(async () => ({
       attachments: [{
@@ -291,7 +355,7 @@ describe('resolveStructuredInputProviderContext', () => {
     const result = await resolveStructuredInputProviderDispatchContext({
       structuredInput: envelope({ composerAttachments: [COMPOSER_ATTACHMENT] }),
       composerAttachments: {
-        sessionId: 'session-1',
+        scope: { kind: 'session', sessionId: 'session-1' },
         localId: 'local-1',
         resolve,
         signal: new AbortController().signal,
@@ -320,7 +384,7 @@ describe('resolveStructuredInputProviderContext', () => {
     await expect(resolveStructuredInputProviderDispatchContext({
       structuredInput: envelope({ composerAttachments: [COMPOSER_ATTACHMENT] }),
       composerAttachments: {
-        sessionId: 'session-1',
+        scope: { kind: 'session', sessionId: 'session-1' },
         localId: 'local-1',
         resolve,
         signal: controller.signal,
@@ -341,7 +405,7 @@ describe('resolveStructuredInputProviderContext', () => {
     await expect(resolveStructuredInputProviderDispatchContext({
       structuredInput: envelope({ composerAttachments: [COMPOSER_ATTACHMENT, SECOND_COMPOSER_ATTACHMENT] }),
       composerAttachments: {
-        sessionId: 'session-1',
+        scope: { kind: 'session', sessionId: 'session-1' },
         localId: 'local-1',
         resolve,
         signal: new AbortController().signal,

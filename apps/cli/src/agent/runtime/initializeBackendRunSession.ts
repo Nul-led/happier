@@ -2,6 +2,8 @@ import type { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/session/sessionClient'
 import type { AgentState, Metadata, SessionCreationOutcome } from '@/api/types'
 import type { SessionAttachMetadataIdentityPolicy } from '@happier-dev/protocol'
+import { SessionCreationTerminalSpawnErrorDetailSchema } from '@happier-dev/protocol'
+import { SessionInitialAccessUpdateRequiredError } from '@/api/session/sessionCreationInitialAccess'
 import { isSessionCreationPlacementError } from '@/api/session/sessionCreationPlacementError'
 import {
   isSessionCreationCorrespondenceConflictError,
@@ -33,10 +35,15 @@ export interface InitializeBackendRunSessionOptions {
   api: Pick<ApiClient, 'getOrCreateSession' | 'sessionSyncClient'>
   sessionTag: string
   organizationPlacement?: import('@happier-dev/protocol').SessionOrganizationPlacementV1
+  initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1
+  primaryTeamId?: string | null
+  teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1
   metadata: Metadata
   state: AgentState
   existingSessionId?: string
   sessionAttachFilePath?: string
+  sessionAttachSecret?: import('@/agent/runtime/sessionAttach').SessionAttachSecret
+  sessionClientOptions?: Parameters<ApiClient['sessionSyncClient']>[1]
   uiLogPrefix: string
   startupMetadataOverrides: {
     permissionModeOverride: PermissionModeOverride
@@ -275,9 +282,10 @@ export async function initializeBackendRunSession(
       metadata: opts.metadata,
       state: opts.state,
       ...(opts.sessionAttachFilePath ? { sessionAttachFilePath: opts.sessionAttachFilePath } : {}),
+      ...(opts.sessionAttachSecret ? { sessionAttachSecret: opts.sessionAttachSecret } : {}),
     })
     throwIfAborted()
-    const session = opts.api.sessionSyncClient(baseSession)
+    const session = opts.api.sessionSyncClient(baseSession, opts.sessionClientOptions)
     opts.configureSessionClient?.(session)
 
     let attachCleanupPromise: Promise<void> | null = null
@@ -426,6 +434,9 @@ export async function initializeBackendRunSession(
       tag: opts.sessionTag,
       metadata: opts.metadata,
       state: opts.state,
+      ...(opts.initialAccess !== undefined ? { initialAccess: opts.initialAccess } : {}),
+      ...(opts.primaryTeamId !== undefined ? { primaryTeamId: opts.primaryTeamId } : {}),
+      ...(opts.teamCredentialBindings !== undefined ? { teamCredentialBindings: opts.teamCredentialBindings } : {}),
       ...(opts.organizationPlacement
         ? { organizationPlacement: opts.organizationPlacement }
         : {}),
@@ -443,7 +454,9 @@ export async function initializeBackendRunSession(
             kind: 'session_creation_correspondence_conflict' as const,
             code: 'creation_conflict' as const,
           }
-        : null
+        : error instanceof SessionInitialAccessUpdateRequiredError
+          ? SessionCreationTerminalSpawnErrorDetailSchema.safeParse(error.details).data
+          : null
     if (
       !opts.signal?.aborted
       && opts.metadata.startedBy === 'daemon'

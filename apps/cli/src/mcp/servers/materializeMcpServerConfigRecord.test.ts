@@ -11,11 +11,17 @@ import {
   deriveSettingsSecretsKeyV1,
   encryptSecretStringV1,
   resolveEffectiveServersV1,
+  sealSavedSecretResourceStoredContentV1,
+  type SavedSecretCatalogResourceV1,
 } from '@happier-dev/protocol';
 
 import { projectPath } from '@/projectPath';
 import { resolvePackagedRuntimeEntrypoint } from '@/packagedRuntime/resolvePackagedRuntimeEntrypoint';
 import { resolveCliTsxTsconfigPath, resolveTsxImportHookPath } from '@/utils/spawnHappyCLI';
+import {
+  createSavedSecretMaterializerV1,
+  type SavedSecretCatalogResourceInputV1,
+} from '@/settings/secrets/savedSecretCatalog';
 
 import { materializeMcpServerConfigRecord } from './materializeMcpServerConfigRecord';
 
@@ -32,6 +38,131 @@ function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
 }
 
 describe('materializeMcpServerConfigRecord', () => {
+  it.each([
+    ['missing', 'personal_missing', null],
+    ['temporarily_unavailable', 'happier:shared-secret:v1:resource_1', 'temporarily_unavailable'],
+    ['forbidden', 'happier:shared-secret:v1:resource_1', 'access_removed'],
+    ['repair_required', 'happier:shared-secret:v1:resource_1', 'update_required'],
+    ['deleted', 'happier:shared-secret:v1:resource_1', 'deleted'],
+    ['mode_incompatible', 'happier:shared-secret:v1:resource_1', 'recipient_mode_unsupported'],
+    ['corrupt', 'happier:shared-secret:v1:resource_1', 'ready'],
+  ] as const)('fails an explicitly enabled Saved Secret ref with typed status %s even in non-strict mode', async (
+    expectedStatus,
+    secretId,
+    materialStatus,
+  ) => {
+    const settings = McpServersSettingsV1Schema.parse({
+      v: 1,
+      strictMode: false,
+      servers: [{
+        id: 's1',
+        name: 'alpha',
+        transport: 'stdio',
+        stdio: { command: 'node', args: [] },
+        env: { API_KEY: { t: 'savedSecret', secretId } },
+        createdAt: 0,
+        updatedAt: 0,
+      }],
+      bindings: [{ id: 'b1', serverId: 's1', enabled: true, target: { t: 'allMachines' }, createdAt: 0, updatedAt: 0 }],
+    });
+    const resources: SavedSecretCatalogResourceInputV1[] = materialStatus === null ? [] : [{
+      resourceId: 'resource_1',
+      ownerAccountId: 'owner',
+      displayName: 'shared',
+      kind: 'token',
+      encryptionMode: 'plain',
+      revision: 1,
+      materialStatus: materialStatus satisfies SavedSecretCatalogResourceV1['materialStatus'],
+      storedContent: materialStatus === 'ready' ? null : sealSavedSecretResourceStoredContentV1({
+        resourceId: 'resource_1',
+        mode: 'plain',
+        content: { v: 1, name: 'shared', kind: 'token', value: 'unused' },
+      }),
+    }];
+    const savedSecretMaterializer = createSavedSecretMaterializerV1({
+      accountSettings: {},
+      settingsSecretsReadKeys: [],
+      resources,
+      resourceCatalogState: 'ready',
+    });
+
+    const promise = materializeMcpServerConfigRecord({
+      resolved: resolveEffectiveServersV1(settings, { machineId: 'm1', directory: '/repo' }),
+      savedSecretsById: new Map(),
+      savedSecretMaterializer,
+      settingsSecretsKey: null,
+      processEnv: {},
+      tmpDir: null,
+      strictMode: false,
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'saved_secret_resolution_failed',
+      status: expectedStatus,
+      consumer: 'mcp',
+      field: 'env:API_KEY',
+    });
+  });
+
+  it('preserves typed Saved Secret failures for remote header refs', async () => {
+    const settings = McpServersSettingsV1Schema.parse({
+      v: 1,
+      strictMode: false,
+      servers: [{
+        id: 's1',
+        name: 'remote',
+        transport: 'http',
+        remote: {
+          url: 'https://mcp.example.com',
+          headers: {
+            Authorization: {
+              t: 'savedSecret',
+              secretId: 'happier:shared-secret:v1:resource_1',
+            },
+          },
+        },
+        env: {},
+        createdAt: 0,
+        updatedAt: 0,
+      }],
+      bindings: [{ id: 'b1', serverId: 's1', enabled: true, target: { t: 'allMachines' }, createdAt: 0, updatedAt: 0 }],
+    });
+    const savedSecretMaterializer = createSavedSecretMaterializerV1({
+      accountSettings: {},
+      settingsSecretsReadKeys: [],
+      resources: [{
+        resourceId: 'resource_1',
+        ownerAccountId: 'owner',
+        displayName: 'shared',
+        kind: 'token',
+        encryptionMode: 'plain',
+        revision: 1,
+        materialStatus: 'deleted',
+        storedContent: sealSavedSecretResourceStoredContentV1({
+          resourceId: 'resource_1',
+          mode: 'plain',
+          content: { v: 1, name: 'shared', kind: 'token', value: 'unused' },
+        }),
+      }],
+      resourceCatalogState: 'ready',
+    });
+
+    await expect(materializeMcpServerConfigRecord({
+      resolved: resolveEffectiveServersV1(settings, { machineId: 'm1', directory: '/repo' }),
+      savedSecretsById: new Map(),
+      savedSecretMaterializer,
+      settingsSecretsKey: null,
+      processEnv: {},
+      tmpDir: null,
+      strictMode: false,
+    })).rejects.toMatchObject({
+      code: 'saved_secret_resolution_failed',
+      status: 'deleted',
+      consumer: 'mcp',
+      field: 'header:Authorization',
+    });
+  });
+
   it('materializes stdio servers and expands env templates', async () => {
     const settings = McpServersSettingsV1Schema.parse({
       v: 1,
@@ -141,7 +272,7 @@ describe('materializeMcpServerConfigRecord', () => {
     expect(out.mcpServers.alpha.env).toEqual({ API_KEY: 'sk-legacy' });
   });
 
-  it('skips invalid servers when strictMode=false and throws when strictMode=true', async () => {
+  it('skips unresolved literal refs when strictMode=false and throws when strictMode=true', async () => {
     const settings = McpServersSettingsV1Schema.parse({
       v: 1,
       strictMode: false,
@@ -151,7 +282,7 @@ describe('materializeMcpServerConfigRecord', () => {
           name: 'alpha',
           transport: 'stdio',
           stdio: { command: 'node', args: [] },
-          env: { API_KEY: { t: 'savedSecret', secretId: 'missing' } },
+          env: { API_KEY: { t: 'literal', v: '${MISSING}' } },
           createdAt: 0,
           updatedAt: 0,
         },

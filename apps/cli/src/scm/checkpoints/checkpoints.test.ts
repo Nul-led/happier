@@ -113,14 +113,14 @@ describe('repository checkpoint primitives', () => {
             baseRef: malformedBaseRef,
             finalRef: refs.turnFinal!,
             baseRefSource: 'turn_start',
-            attributionScope: 'exclusive_worktree',
+            attributionScope: 'no_happier_checkpoint_overlap_observed',
         })).resolves.toMatchObject({
             success: false,
             kind: 'failed',
             reason: 'invalid_ref',
             baseRefSource: 'turn_start',
             contentConfidence: 'unavailable',
-            attributionScope: 'exclusive_worktree',
+            attributionScope: 'no_happier_checkpoint_overlap_observed',
             receipts: [],
         });
     });

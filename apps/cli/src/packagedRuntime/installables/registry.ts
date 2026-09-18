@@ -7,6 +7,7 @@ import {
 
 import { getGitHubReleaseBinaryRuntimeInstallableAdapter } from './sourceAdapters/githubReleaseBinary';
 import { getManagedPypiWheelAssetRuntimeInstallableAdapter } from './sourceAdapters/pypiWheelAsset';
+import { getPinnedArchiveRuntimeInstallableAdapter } from './sourceAdapters/pinnedArchive';
 import {
   ARCHIVE_DOWNLOAD_INSTALLABLE_SOURCE_KIND,
   BROWSER_CHROMIUM_INSTALLABLE_KEY,
@@ -42,8 +43,13 @@ export type RuntimeInstallableLaunchCommandParams = Readonly<{
   sourcePreference?: 'system-first' | 'managed-first';
 }>;
 
+/**
+ * `logPath` is the install log this source wrote, or `null` when the source
+ * writes none. Readers present it to users as the install log, so a source must
+ * never substitute another path for it.
+ */
 export type RuntimeInstallableInstallResult =
-  | Readonly<{ ok: true; logPath: string }>
+  | Readonly<{ ok: true; logPath: string | null }>
   | Readonly<{ ok: false; errorMessage: string; logPath: string | null }>;
 
 export type RuntimeInstallableCapabilityStatusParams = Readonly<{
@@ -85,6 +91,13 @@ export async function getRuntimeInstallableAdapter(
       descriptor,
       contribution.owner.ownerId,
     );
+    if (adapter) {
+      return adapter;
+    }
+  }
+
+  if (descriptor.source.kind === 'pinned_archive') {
+    const adapter = getPinnedArchiveRuntimeInstallableAdapter(descriptor);
     if (adapter) {
       return adapter;
     }

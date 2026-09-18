@@ -9,8 +9,10 @@ import {
   ProviderSettingsV1Schema,
   SavedSecretSchema,
   createProviderDiscoveryCandidateIdV1,
+  formatSavedSecretCatalogReferenceV1,
   readOwnRecordValue,
   readProviderSettingsFromAccountSettingsV1,
+  sealSavedSecretResourceStoredContentV1,
   type ProviderDiscoveryCandidateV1,
 } from '@happier-dev/protocol';
 import type { DaemonProviderAgentCompatibilitySummaryV1 } from '@happier-dev/protocol/rpc';
@@ -25,8 +27,31 @@ import type {
   ProviderConnectionServiceDeps,
   ProviderConnectionServiceSnapshot,
 } from './service/types';
+import type {
+  SavedSecretCatalogResourceInputV1,
+  SavedSecretCatalogState,
+} from '@/settings/secrets/savedSecretCatalog';
 
 const contributionKey = 'acme.gateway/gateway';
+const sharedSecretResourceId = 'resource-provider-authoring';
+const sharedSecretRef = formatSavedSecretCatalogReferenceV1({
+  kind: 'shared_resource',
+  id: sharedSecretResourceId,
+});
+const sharedSecretResource: SavedSecretCatalogResourceInputV1 = {
+  resourceId: sharedSecretResourceId,
+  ownerAccountId: 'owner-account',
+  displayName: 'Shared provider key',
+  kind: 'apiKey',
+  encryptionMode: 'plain',
+  revision: 1,
+  storedContent: sealSavedSecretResourceStoredContentV1({
+    resourceId: sharedSecretResourceId,
+    mode: 'plain',
+    content: { v: 1, name: 'Shared provider key', kind: 'apiKey', value: 'shared-provider-value' },
+  }),
+  materialStatus: 'ready',
+};
 
 function contribution(): ResolvedProviderContribution {
   return {
@@ -234,6 +259,8 @@ function harness(options: Readonly<{
   localDiscoveryEnabled?: boolean;
   managedEnabled?: boolean;
   managedRuntimeRegistryLease?: PluginRuntimeRegistryLease;
+  savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
+  savedSecretCatalogState?: SavedSecretCatalogState;
 }> = {}) {
   let raw: Readonly<Record<string, unknown>> = {
     providerSettingsV1: DEFAULT_PROVIDER_SETTINGS_V1,
@@ -258,6 +285,8 @@ function harness(options: Readonly<{
       accountSettings: AccountSettingsSchema.parse(raw),
       rawAccountSettings: raw,
       registry: registryProjection?.registry ?? currentRegistry,
+      ...(options.savedSecretResources ? { savedSecretResources: options.savedSecretResources } : {}),
+      ...(options.savedSecretCatalogState ? { savedSecretCatalogState: options.savedSecretCatalogState } : {}),
     };
     lastSnapshot = snapshot;
     return snapshot;
@@ -1547,6 +1576,12 @@ describe('provider connection service', () => {
             accountBound: true,
             keyUrl: 'https://gateway.example/keys',
           },
+          teamCredentialSourceOffer: {
+            connectionId: 'pc_gateway',
+            connectionSecurityFingerprint: expect.stringMatching(/^connection-security:v1:/),
+            credentialSlotId: 'apiKey',
+            label: 'Gateway',
+          },
           compatibility: [{ agentTargetKey: 'backend:codex', status: 'experimental' }],
           endpoints: [{ defaultBaseUrl: 'https://gateway.example/v1' }],
         }],
@@ -1765,6 +1800,54 @@ describe('provider connection service', () => {
     expect(settings.machineGrants).toHaveLength(1);
     expect(settings.accountGrants).toHaveLength(0);
     expect(h.updateAccountSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds a current shared Saved Secret through the detected-listener authoring choke point', async () => {
+    const h = harness({
+      includeSecret: false,
+      savedSecretResources: [sharedSecretResource],
+      savedSecretCatalogState: 'ready',
+      dnsEvidence: new Map([['http://127.0.0.1:22434/v1', ['127.0.0.1']]]),
+    });
+    const local = localContribution();
+    const requiredCredential = contribution().definition.credential!;
+    h.providersByContributionKey.set(contributionKey, {
+      ...local,
+      definition: ProviderContributionV1Schema.parse({
+        ...local.definition,
+        credential: {
+          ...requiredCredential,
+          transports: requiredCredential.transports.map((transport) => ({
+            ...transport,
+            protocols: ['openai-chat'],
+          })),
+        },
+      }),
+    });
+    const normalizedEndpointUrl = 'http://127.0.0.1:22434/v1';
+    const candidateId = createProviderDiscoveryCandidateIdV1({
+      machineId: 'machine-a', contributionKey, endpointTemplateId: 'chat', normalizedEndpointUrl,
+    });
+    h.discoveryCandidates.mockResolvedValue([{
+      v: 1,
+      machineId: 'machine-a',
+      contributionKey,
+      providerName: 'Local',
+      endpointTemplateId: 'chat',
+      normalizedEndpointUrl,
+      candidateId,
+      evidence: { kind: 'attributed_listener' },
+      ownership: 'adopted',
+      connection: { status: 'enable_default' },
+    }]);
+
+    await expect(h.service.enableDetected({
+      action: 'enableDetected', machineId: 'machine-a', connectionId: 'pc_local_shared',
+      candidateId, displayName: null, savedSecretId: sharedSecretRef,
+    })).resolves.toMatchObject({ status: 'success', connectionId: 'pc_local_shared', authorized: true });
+    const settings = readProviderSettingsFromAccountSettingsV1(h.getRaw()).settings;
+    expect(readOwnRecordValue(settings.secretBindingsByConnectionId, 'pc_local_shared')?.byMachineId)
+      .toEqual({ 'machine-a': { apiKey: sharedSecretRef } });
   });
 
   it('never starts or mutates an adopted aggregator process while enabling and deleting its connection', async () => {
@@ -2751,7 +2834,9 @@ describe('provider connection service', () => {
         effectiveState: 'valid',
       } }],
     });
-    expect(JSON.stringify(described)).not.toContain('Fingerprint');
+    if (described.status !== 'success') throw new Error('Expected successful describe');
+    const redactedSourceOffers = described.connections.map(({ teamCredentialSourceOffer: _offer, ...connection }) => connection);
+    expect(JSON.stringify(redactedSourceOffers)).not.toContain('Fingerprint');
   });
 
   it('upserts and removes one endpoint override without replacing siblings', async () => {
@@ -2978,6 +3063,86 @@ describe('provider connection service', () => {
     })).toMatchObject({ status: 'error', error: { code: 'provider_credential_transport_unavailable' } });
   });
 
+  it('accepts one current shared Saved Secret reference for contribution/custom authoring and an existing binding', async () => {
+    const h = harness({
+      includeSecret: false,
+      savedSecretResources: [sharedSecretResource],
+      savedSecretCatalogState: 'ready',
+    });
+
+    await expect(h.service.create({
+      action: 'createContribution', machineId: 'machine-a', connectionId: 'pc_shared_contribution',
+      contributionKey, displayName: null, savedSecretId: sharedSecretRef, enable: false,
+    })).resolves.toMatchObject({ status: 'success', created: true });
+    await expect(h.service.create({
+      action: 'createCustom', machineId: 'machine-a', connectionId: 'pc_shared_custom',
+      template: {
+        v: 1, name: 'Shared custom',
+        endpointTemplates: [{
+          id: 'responses', protocol: 'openai-responses', baseUrl: 'https://custom.example/v1',
+          capabilities: { streaming: 'unknown', toolRoundTrips: 'unknown', statefulResponses: 'unknown', reasoningControls: 'unknown' },
+        }],
+        credential: {
+          kind: 'apiKey',
+          slotId: 'apiKey',
+          required: true,
+          transports: [{
+            id: 'runtime-bearer',
+            protocols: ['openai-responses'],
+            uses: ['runtime'],
+            destination: { kind: 'httpHeader', name: 'Authorization', format: 'bearer' },
+          }],
+        },
+        catalog: { source: 'manual', manualModelPolicy: 'allowed' },
+      },
+      savedSecretId: sharedSecretRef, enable: false,
+    })).resolves.toMatchObject({ status: 'success', created: true });
+
+    await h.service.create({
+      action: 'createContribution', machineId: 'machine-a', connectionId: 'pc_shared_bind',
+      contributionKey, displayName: 'Bind later', savedSecretId: null, enable: false,
+    });
+    await expect(h.service.bindSecret({
+      action: 'bindSecret', machineId: 'machine-a', connectionId: 'pc_shared_bind',
+      credentialSlotId: 'apiKey', savedSecretId: sharedSecretRef, scope: 'account',
+    })).resolves.toMatchObject({ status: 'success', connectionId: 'pc_shared_bind' });
+
+    const settings = readProviderSettingsFromAccountSettingsV1(h.getRaw()).settings;
+    expect(readOwnRecordValue(settings.secretBindingsByConnectionId, 'pc_shared_contribution')?.account)
+      .toEqual({ apiKey: sharedSecretRef });
+    expect(readOwnRecordValue(settings.secretBindingsByConnectionId, 'pc_shared_custom')?.account)
+      .toEqual({ apiKey: sharedSecretRef });
+    expect(readOwnRecordValue(settings.secretBindingsByConnectionId, 'pc_shared_bind')?.account)
+      .toEqual({ apiKey: sharedSecretRef });
+    expect(h.getRaw().secrets).toEqual([]);
+  });
+
+  it('keeps shared Saved Secret catalog outages retryable but refuses authoritative absence', async () => {
+    const unavailable = harness({
+      includeSecret: false,
+      savedSecretResources: [sharedSecretResource],
+      savedSecretCatalogState: 'temporarily_unavailable',
+    });
+    await expect(unavailable.service.create({
+      action: 'createContribution', machineId: 'machine-a', connectionId: 'pc_shared_unavailable',
+      contributionKey, displayName: null, savedSecretId: sharedSecretRef, enable: false,
+    })).resolves.toMatchObject({
+      status: 'error', error: { code: 'provider_secret_unavailable', retryable: true, action: 'retry' },
+    });
+    expect(unavailable.updateAccountSettings).not.toHaveBeenCalled();
+
+    const revoked = harness({
+      includeSecret: false,
+      savedSecretResources: [],
+      savedSecretCatalogState: 'ready',
+    });
+    await expect(revoked.service.create({
+      action: 'createContribution', machineId: 'machine-a', connectionId: 'pc_shared_revoked',
+      contributionKey, displayName: null, savedSecretId: sharedSecretRef, enable: false,
+    })).resolves.toMatchObject({ status: 'error', error: { code: 'provider_secret_missing', retryable: false } });
+    expect(revoked.updateAccountSettings).not.toHaveBeenCalled();
+  });
+
   it('duplicates as custom only when every declared catalog format is bundled', async () => {
     const h = harness();
     // The plugin implements this format itself; a custom template has no plugin
@@ -3043,6 +3208,7 @@ describe('provider connection service', () => {
         status: 'success',
         connections: [{
           sourceStatus: 'unavailable',
+          teamCredentialSourceOffer: null,
           grants: {
             accountEnabled: false,
             enabledMachineIds: [],

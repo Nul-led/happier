@@ -18,6 +18,11 @@ const WINDOWS_RESERVED_NAMES = /^(?:con|prn|aux|nul|clock\$|com[0-9１-９]|lpt[
 export const PERSONAL_HOME_BACKUP_MAX_PATH_BYTES = 4096;
 export const PERSONAL_HOME_BACKUP_MAX_SEGMENT_BYTES = 255;
 
+/** Stable artifact ordering is byte/code-unit based and must never depend on the host locale. */
+export function comparePersonalHomeBackupArtifactNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function fingerprintMasterSecret(secret: Buffer | string): string { return createHash('sha256').update(secret).digest('hex'); }
 
 function isSafePersonalHomeBackupPathShape(path: string): boolean {
@@ -105,6 +110,6 @@ export function parsePersonalHomeBackupManifest(value: unknown): PersonalHomeBac
   assertNonCollidingPersonalHomeBackupPaths(entries.map((entry) => ({ path: entry.path, kind: 'file' })));
   const paths = new Set(entries.map((entry) => entry.path));
   for (const required of ['database/home.sqlite', 'secrets/handy-master-secret.txt', 'configuration/home.env.json']) if (!paths.has(required)) throw new Error('Personal Home backup is missing a required entry');
-  return Object.freeze({ format: PERSONAL_HOME_BACKUP_FORMAT, version: PERSONAL_HOME_BACKUP_VERSION, createdAt: record.createdAt, happierVersion: record.happierVersion, schemaVersion: record.schemaVersion, homeServerIdentityId: record.homeServerIdentityId, masterSecretFingerprint: record.masterSecretFingerprint, databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: record.sourcePlatform, sourceRuntimeMode: record.sourceRuntimeMode, entries: Object.freeze(entries.slice().sort((a, b) => a.path.localeCompare(b.path))) });
+  return Object.freeze({ format: PERSONAL_HOME_BACKUP_FORMAT, version: PERSONAL_HOME_BACKUP_VERSION, createdAt: record.createdAt, happierVersion: record.happierVersion, schemaVersion: record.schemaVersion, homeServerIdentityId: record.homeServerIdentityId, masterSecretFingerprint: record.masterSecretFingerprint, databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: record.sourcePlatform, sourceRuntimeMode: record.sourceRuntimeMode, entries: Object.freeze(entries.slice().sort((a, b) => comparePersonalHomeBackupArtifactNames(a.path, b.path))) });
 }
 export function serializePersonalHomeManifest(manifest: PersonalHomeBackupManifestV1): string { return `${JSON.stringify(parsePersonalHomeBackupManifest(manifest), null, 2)}\n`; }

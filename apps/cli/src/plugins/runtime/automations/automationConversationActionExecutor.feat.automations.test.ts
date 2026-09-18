@@ -57,6 +57,7 @@ const plainCurrentness: AccountEncryptionCurrentnessResponse = {
   signingKeyFingerprint: null,
   contentKeyFingerprint: null,
   updatedAt: 1_700_000_000_000,
+  recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
 };
 
 /**
@@ -98,6 +99,7 @@ function e2eeAccountFixture() {
         signingKeyFingerprint: 'aemk1_signing',
         contentKeyFingerprint,
         updatedAt: 1_700_000_000_000,
+        recipientEnvelopeReadiness: { status: 'available' },
       }),
       resolveAccountEncryptionMaterial: async () => snapshot,
       randomBytes: (length: number) => Uint8Array.from({ length }, (_, index) => index + 5),

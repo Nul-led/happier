@@ -3,7 +3,7 @@ import {
   type ActionExecuteResult,
   type ActionExecutorContext,
   type ExternalActionTargetV1,
-  type PublicActionId,
+  type SignedRootActionId,
 } from '@happier-dev/protocol/actions';
 
 /**
@@ -13,7 +13,7 @@ import {
  * New selector-shaped Action input must extend this owner and its architecture
  * test rather than gaining a route-local exception.
  */
-const NESTED_SESSION_SELECTOR_ACTION_IDS = new Set<PublicActionId>([
+const NESTED_SESSION_SELECTOR_ACTION_IDS = new Set<SignedRootActionId>([
   'session.continue_with_replay',
 ]);
 
@@ -30,7 +30,7 @@ function asRecord(value: unknown): Readonly<Record<string, unknown>> | null {
 }
 
 function readSessionSelectorIds(
-  actionId: PublicActionId,
+  actionId: SignedRootActionId,
   input: Readonly<Record<string, unknown>>,
 ): readonly string[] {
   const selectors = [
@@ -52,7 +52,7 @@ function readMachineSelectorIds(input: Readonly<Record<string, unknown>>): reado
 }
 
 function isTitleOnlySessionOpen(
-  actionId: PublicActionId,
+  actionId: SignedRootActionId,
   input: Readonly<Record<string, unknown>>,
   sessionSelectorIds: readonly string[],
 ): boolean {
@@ -97,7 +97,7 @@ export type ExternalActionTargetReconciliation =
  * different daemon or Session than the verified route target.
  */
 export function reconcileExternalActionTarget(input: Readonly<{
-  actionId: PublicActionId;
+  actionId: SignedRootActionId;
   rawInput: unknown;
   target: ExternalActionTargetV1 | undefined;
   currentMachineId: string;

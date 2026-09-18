@@ -146,8 +146,8 @@ describe('background service runner host', () => {
         await activated.dispose();
     });
 
-    it('binds an adopted daemon background runner to its canonical network.client HostAccess policy', async () => {
-        const pluginId = 'acme.background-host-access';
+    it.each(['resolved', 'rejected'] as const)('binds an adopted daemon background runner to canonical network.client HostAccess and isolates its %s settlement', async (outcome) => {
+        const pluginId = `acme.background-host-access-${outcome}`;
         const ingested = ingestCanonicalPluginManifest({
             schemaVersion: 2,
             id: pluginId,
@@ -175,7 +175,9 @@ describe('background service runner host', () => {
         if (!ingested.ok) {
             throw new Error(ingested.diagnostics.map((item) => item.message).join('\n'));
         }
-        const runner = vi.fn(async () => {});
+        const runner = vi.fn(async () => {
+            if (outcome === 'rejected') throw new Error('Gateway observer stopped');
+        });
         const policyCalls: Array<Readonly<{ target: unknown; context: unknown }>> = [];
         const policyBindings: ReturnType<typeof createUnavailablePluginInvocationServiceBinding>[] = [];
         const serviceBindings: ReturnType<typeof createUnavailablePluginInvocationServiceBinding>[] = [];
@@ -248,7 +250,7 @@ describe('background service runner host', () => {
 
         activated.startAdoptedBackgroundServices();
         await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce());
-        await vi.waitFor(() => expect(terminalFailure).toHaveBeenCalledWith(pluginId));
+        await new Promise<void>((resolve) => setImmediate(resolve));
 
         expect(policyCalls).toEqual([{
             target: {
@@ -272,16 +274,12 @@ describe('background service runner host', () => {
             },
             networkClientRequestIds: ['gateway'],
         });
-        expect(activated.activatedPluginIds.has(pluginId)).toBe(false);
-        expect(activated.failedActivationPluginIds.has(pluginId)).toBe(true);
+        expect(terminalFailure).not.toHaveBeenCalled();
+        expect(activated.activatedPluginIds.has(pluginId)).toBe(true);
+        expect(activated.failedActivationPluginIds.has(pluginId)).toBe(false);
         expect(activated.targetActivationFacts).toContainEqual(expect.objectContaining({
             pluginId,
-            status: 'unavailable',
-            bound: [],
-            diagnostics: expect.arrayContaining([expect.objectContaining({
-                code: 'plugin_activation_failed',
-                message: expect.stringMatching(/background service 'gateway-supervisor' stopped/i),
-            })]),
+            status: 'active',
         }));
         await activated.dispose();
     });
@@ -494,6 +492,8 @@ describe('background service runner host', () => {
         await vi.waitFor(() => expect(policyCalls).toBe(1));
 
         expect(runner).not.toHaveBeenCalled();
+        expect(activated.activatedPluginIds.has(pluginId)).toBe(true);
+        expect(activated.failedActivationPluginIds.has(pluginId)).toBe(false);
         await activated.dispose();
     });
 

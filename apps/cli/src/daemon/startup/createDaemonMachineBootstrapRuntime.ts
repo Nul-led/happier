@@ -5,7 +5,8 @@ import type {
 } from '@/api/apiMachine';
 import type { DaemonState } from '@/api/types';
 import type { ConnectedServiceQuotasLoopHandle } from '../connectedServices/quotas/startConnectedServiceQuotasLoop';
-import type { MachineLiveStreamControlLeaseV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
+import type { MachineLiveStreamControlLeaseV1, WorkspaceSyncRuntimeReadinessV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
+import { doesRunnerBrokerReadinessResponseMatchRequestV1 } from '@happier-dev/protocol/teams';
 import { logger } from '@/ui/logger';
 import { startAutomationWorker, type AutomationWorkerHandle } from '../automation/automationWorker';
 import { startMemoryWorker, type MemoryWorkerHandle } from '../memory/memoryWorker';
@@ -36,6 +37,13 @@ import type { DaemonSessionMutationCustody } from '../connectedServices/usageLim
 import type { ExternalActionIngressOwner } from '@/rpc/handlers/externalAction';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
 import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
+import type { createProductionWorkflowRunCoordinator } from '@/daemon/workflows/production';
+import type { WorkflowRecoveryTrigger } from '@/daemon/workflows/recovery';
+import { createRunnerBrokerReadinessApplicationLifecycle } from '../peer/mediation/loopback/runnerBrokerReadinessApplication';
+import type { StartPeerMediationLoopbackInput } from '../peer/mediation/rpc/startLoopback';
+import type { DaemonProviderBrokerRuntime } from '@/providers/broker/daemonProviderBrokerRuntime';
+import type { ExecutionRunTeamCredentialProviderBindingPreparer } from '@/agent/runtime/bridges/executionRun/runtime/providerLaunch';
+import type { DirectRouteGrantTrustRoot } from '../peer/mediation/verifyDirectRouteGrantV1';
 
 type BootstrapRuntime = Omit<
   Parameters<typeof startDaemonMachineRegistration>[0]['bootstrapRuntime'],
@@ -64,6 +72,7 @@ export function createDaemonMachineBootstrapRuntime(
     workspaceSync?: ApiMachineClientLifecycleDependencies['workspaceSync'];
     createWorkspaceSyncRuntime?: (input: Readonly<{
       machineId: string;
+      onReadinessPublished(readiness: WorkspaceSyncRuntimeReadinessV1): void;
       onStatusPublished(status: WorkspaceSyncStatusV1): void;
     }>) => Promise<Readonly<{
       handoffAdapter: WorkspaceSyncHandoffAdapter;
@@ -88,7 +97,6 @@ export function createDaemonMachineBootstrapRuntime(
     awaitAgentSessionOpen: BootstrapRuntime['awaitAgentSessionOpen'];
     isSessionAlreadyRunning: BootstrapRuntime['isSessionAlreadyRunning'];
     loadLocalSessionMetadataForHandoff: BootstrapRuntime['loadLocalSessionMetadataForHandoff'];
-    savePreparedTargetLocalMetadata: BootstrapRuntime['savePreparedTargetLocalMetadata'];
     beforeShutdown: BootstrapRuntime['beforeShutdown'];
     requestShutdown: BootstrapRuntime['requestShutdown'];
     directPeerServerLifecycle: BootstrapRuntime['directPeerServerLifecycle'];
@@ -100,12 +108,16 @@ export function createDaemonMachineBootstrapRuntime(
     daemonServerWorkScheduler: BootstrapRuntime['daemonServerWorkScheduler'];
     cancelConnectedServiceRuntimeAuthRecovery?: BootstrapRuntime['cancelConnectedServiceRuntimeAuthRecovery'];
     retryTemporaryThrottleNow?: BootstrapRuntime['retryTemporaryThrottleNow'];
+    readTemporaryThrottleRecovery?: BootstrapRuntime['readTemporaryThrottleRecovery'];
+    cancelTemporaryThrottleRecovery?: BootstrapRuntime['cancelTemporaryThrottleRecovery'];
     setDaemonServerWorkOnline: BootstrapRuntime['setDaemonServerWorkOnline'];
     onMachineConnectionOnline: NonNullable<BootstrapRuntime['onMachineConnectionOnline']>;
     reconcileConnectedServicesProjection: Parameters<ApiMachineClient['onConnectedServicesProjection']>[0];
     subscribeConnectedAccountInvalidations?: BootstrapRuntime['subscribeConnectedAccountInvalidations'];
     isShuttingDown: BootstrapRuntime['isShuttingDown'];
     getServerFeaturesSnapshot?: BootstrapRuntime['getServerFeaturesSnapshot'];
+    resolvePeerMediationTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
+    refreshServerFeaturesSnapshot?: ApiMachineClientLifecycleDependencies['resolveServerFeaturesSnapshot'];
     liveStreamCaptureRegistry?: MachineLiveStreamCaptureRegistry;
     readActiveLiveStreamControlLease?: (leaseInput: Readonly<{
       streamId: string;
@@ -117,8 +129,12 @@ export function createDaemonMachineBootstrapRuntime(
     readLocalServiceInventorySnapshot?: () => Promise<NormalizedLocalServiceInventorySnapshot | null>;
     managedCatalogRuntime?: BootstrapRuntime['managedCatalogRuntime'];
     resolveManagedPurposeBindingIntent?: BootstrapRuntime['resolveManagedPurposeBindingIntent'];
+    openTeamDirect?: BootstrapRuntime['openTeamDirect'];
+    prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
     createAgentCatalogObservation?: BootstrapRuntime['createAgentCatalogObservation'];
     onAutomationWorkerStarted?: (worker: AutomationWorkerHandle) => void;
+    /** Live canonical Workflow feature decision. Missing/unknown remains disabled. */
+    isWorkflowFeatureEnabled?: () => boolean;
     prepareApiMachineForSessions?: (apiMachine: ApiMachineClient) => void;
     persistedTakeoverAdmissionWaiter?: PersistedTakeoverAdmissionWaiter;
     attachPersistedTakeoverAdmissionOwner?: (
@@ -128,27 +144,79 @@ export function createDaemonMachineBootstrapRuntime(
       operations: ExternalSessionHostOperationSet,
     ) => Promise<ExternalSessionHostOperationInstallation>;
     externalActionIngressOwner?: ExternalActionIngressOwner;
+    createWorkflowRunCoordinatorForMachine?: (input: Readonly<{
+      machineId: string;
+      machineAdmissionTransport: NonNullable<Parameters<typeof startAutomationWorker>[0]['machineAdmissionTransport']>;
+      machineActionDirectTargetTransport: import('@/session/actions/createCliActionDeps').MachineActionDirectTargetTransport;
+    }>) => ReturnType<typeof createProductionWorkflowRunCoordinator>;
+    createWorkflowRecoveryForMachine?: (input: Readonly<{
+      machineId: string;
+      machineAdmissionTransport: NonNullable<Parameters<typeof startAutomationWorker>[0]['machineAdmissionTransport']>;
+    }>) => (trigger: WorkflowRecoveryTrigger) => Promise<void>;
+    /** Starts the provider-broker application against the authoritative
+     * registered Machine identity. A successful installation — never a
+     * manifest or schema — is what makes the daemon advertise
+     * `providerBrokerIngress`. */
+    startProviderBrokerApplication?: (input: Readonly<{
+      machineId: string;
+      apiMachine: ApiMachineClient;
+    }>) => Promise<Readonly<{
+      resolveProviderBrokerApplicationTarget: NonNullable<NonNullable<
+        StartPeerMediationLoopbackInput['irohMachineAdmission']
+      >['resolveProviderBrokerApplicationTarget']>;
+      resolveExternalProviderBrokerApplicationTarget:
+        DaemonProviderBrokerRuntime['resolveExternalProviderBrokerApplicationTarget'];
+      checkRunnerCredentialSelectionCurrentness:
+        DaemonProviderBrokerRuntime['checkRunnerCredentialSelectionCurrentness'];
+      close(): Promise<void>;
+    }>>;
   }>,
 ): BootstrapRuntime {
+  const runnerBrokerReadinessApplication = createRunnerBrokerReadinessApplicationLifecycle({
+    authorize: async (request, signal) => await params.api.authorizeRunnerBrokerReadiness(request, signal),
+    checkLocalCurrentness: async (currentness, signal) => await providerBrokerApplication
+      ?.checkRunnerCredentialSelectionCurrentness(currentness, signal) ?? 'update_required',
+  });
   let connectedApiMachine: ApiMachineClient | null = null;
+  let providerBrokerApplication: Awaited<ReturnType<NonNullable<
+    typeof params.startProviderBrokerApplication
+  >>> | null = null;
+  let providerBrokerApplicationMachineId: string | null = null;
+  let providerBrokerApplicationApiMachine: ApiMachineClient | null = null;
+  let workflowRecovery: ((trigger: WorkflowRecoveryTrigger) => Promise<void>) | null = null;
   const pendingWorkspaceSyncStatuses = new Map<string, WorkspaceSyncStatusV1>();
+  let workspaceSyncReadiness: WorkspaceSyncRuntimeReadinessV1 | null = null;
+  let latestWorkspaceSyncStatus: WorkspaceSyncStatusV1 | null = null;
   let workspaceSyncPublicationTail = Promise.resolve();
-  const publishWorkspaceSyncStatus = (status: WorkspaceSyncStatusV1): void => {
-    pendingWorkspaceSyncStatuses.set(status.relationshipId, status);
+  const publishWorkspaceSyncEvent = (status: WorkspaceSyncStatusV1 | null): void => {
     workspaceSyncPublicationTail = workspaceSyncPublicationTail.catch(() => undefined).then(async () => {
       const apiMachine = connectedApiMachine;
-      if (!apiMachine || params.isShuttingDown()) return;
-      const next = pendingWorkspaceSyncStatuses.get(status.relationshipId);
-      if (!next) return;
+      const readiness = workspaceSyncReadiness;
+      if (!apiMachine || !readiness || params.isShuttingDown()) return;
+      const next = status ? pendingWorkspaceSyncStatuses.get(status.relationshipId) : latestWorkspaceSyncStatus;
+      if (status && !next) return;
       await apiMachine.updateDaemonState((state) => ({
         ...(state ?? { status: 'running' as const }),
-        workspaceSync: { v: 1 as const, status: next },
+        workspaceSync: {
+          v: 1 as const,
+          readiness,
+          ...(next ? { status: next } : {}),
+        },
       }));
-      if (pendingWorkspaceSyncStatuses.get(status.relationshipId) === next) {
+      if (status && pendingWorkspaceSyncStatuses.get(status.relationshipId) === next) {
         pendingWorkspaceSyncStatuses.delete(status.relationshipId);
       }
     });
     void workspaceSyncPublicationTail.catch(() => undefined);
+  };
+  const publishWorkspaceSyncStatus = (status: WorkspaceSyncStatusV1): void => {
+    pendingWorkspaceSyncStatuses.set(status.relationshipId, status);
+    latestWorkspaceSyncStatus = status;
+    publishWorkspaceSyncEvent(status);
+  };
+  const publishWorkspaceSyncReadiness = (readiness: WorkspaceSyncRuntimeReadinessV1): void => {
+    workspaceSyncReadiness = readiness;
+    publishWorkspaceSyncEvent(null);
   };
   let workspaceSyncService: ApiMachineClientLifecycleDependencies['workspaceSync'];
   return {
@@ -164,8 +232,15 @@ export function createDaemonMachineBootstrapRuntime(
     setDaemonServerWorkOnline: params.setDaemonServerWorkOnline,
     onMachineConnectionOnline: params.onMachineConnectionOnline,
     reconcileConnectedServicesProjection: params.reconcileConnectedServicesProjection,
+    recoverWorkflowRuns: async (trigger) => {
+      await workflowRecovery?.(trigger);
+    },
     ...(params.subscribeConnectedAccountInvalidations
       ? { subscribeConnectedAccountInvalidations: params.subscribeConnectedAccountInvalidations }
+      : {}),
+    ...(params.openTeamDirect ? { openTeamDirect: params.openTeamDirect } : {}),
+    ...(params.prepareRunTeamCredentialProviderBinding
+      ? { prepareRunTeamCredentialProviderBinding: params.prepareRunTeamCredentialProviderBinding }
       : {}),
     isShuttingDown: params.isShuttingDown,
     ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
@@ -178,11 +253,15 @@ export function createDaemonMachineBootstrapRuntime(
     ...(params.getServerFeaturesSnapshot
       ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
       : {}),
+    ...(params.resolvePeerMediationTrustRoots
+      ? { resolvePeerMediationTrustRoots: params.resolvePeerMediationTrustRoots }
+      : {}),
     createConnectedApiMachine: async (registeredMachine) => {
       if (params.diagnosticSubsystemGates.disableMachineSync) return null;
       const workspaceRuntime = params.createWorkspaceSyncRuntime
-        ? await params.createWorkspaceSyncRuntime({
+          ? await params.createWorkspaceSyncRuntime({
             machineId: registeredMachine.id,
+            onReadinessPublished: publishWorkspaceSyncReadiness,
             onStatusPublished: publishWorkspaceSyncStatus,
           })
         : null;
@@ -203,10 +282,57 @@ export function createDaemonMachineBootstrapRuntime(
               ? { workspaceSyncHandoffAdapter }
               : {}),
             ...(workspaceSync ? { workspaceSync } : {}),
+            ...(params.refreshServerFeaturesSnapshot || params.getServerFeaturesSnapshot
+              ? {
+                  resolveServerFeaturesSnapshot: async () =>
+                    params.refreshServerFeaturesSnapshot
+                      ? await params.refreshServerFeaturesSnapshot()
+                      : params.getServerFeaturesSnapshot?.(),
+                }
+              : {}),
       });
       connectedApiMachine = apiMachine;
-      for (const status of pendingWorkspaceSyncStatuses.values()) publishWorkspaceSyncStatus(status);
+      const recoverWorkflowRuns = params.createWorkflowRecoveryForMachine?.({
+        machineId: registeredMachine.id,
+        machineAdmissionTransport: async (request, options) =>
+          await apiMachine.enqueueSessionPendingByMachine(request, options),
+      });
+      workflowRecovery = recoverWorkflowRuns
+        ? async (trigger) => {
+            if (params.isWorkflowFeatureEnabled?.() !== true) return;
+            await recoverWorkflowRuns(trigger);
+          }
+        : null;
+      if (pendingWorkspaceSyncStatuses.size > 0) {
+        for (const status of pendingWorkspaceSyncStatuses.values()) publishWorkspaceSyncStatus(status);
+      } else {
+        publishWorkspaceSyncEvent(null);
+      }
       params.prepareApiMachineForSessions?.(apiMachine);
+      if (
+        providerBrokerApplication
+        && providerBrokerApplicationMachineId !== registeredMachine.id
+      ) {
+        try {
+          await providerBrokerApplicationApiMachine?.setProviderBrokerIngressLive(false);
+        } finally {
+          await providerBrokerApplication.close();
+          providerBrokerApplication = null;
+          providerBrokerApplicationMachineId = null;
+          providerBrokerApplicationApiMachine = null;
+        }
+      }
+      if (params.startProviderBrokerApplication && !providerBrokerApplication) {
+        providerBrokerApplication = await params.startProviderBrokerApplication({
+          machineId: registeredMachine.id,
+          apiMachine,
+        });
+        providerBrokerApplicationMachineId = registeredMachine.id;
+      }
+      if (providerBrokerApplication) {
+        providerBrokerApplicationApiMachine = apiMachine;
+        await apiMachine.setProviderBrokerIngressLive(true);
+      }
       return apiMachine;
     },
     prepareWorkspaceSyncSeedExport: async (request) => {
@@ -222,6 +348,22 @@ export function createDaemonMachineBootstrapRuntime(
         logger.warn('[DAEMON RUN] Diagnostic gate enabled: automation worker disabled');
         return null;
       }
+      const automationApiMachine = connectedApiMachine;
+      const coordinateWorkflowRun = automationApiMachine && params.createWorkflowRunCoordinatorForMachine
+        ? params.createWorkflowRunCoordinatorForMachine({
+            machineId: runtimeMachineId,
+            machineAdmissionTransport: async (request, options) =>
+              await automationApiMachine.enqueueSessionPendingByMachine(request, options),
+            machineActionDirectTargetTransport: {
+              machineId: runtimeMachineId,
+              invoke: async (method, request, options) => await automationApiMachine.invokeLocalMachineAction(
+                method,
+                request,
+                options,
+              ),
+            },
+          })
+        : null;
       const worker = startAutomationWorker({
         token: params.credentials.token,
         credentials: params.credentials,
@@ -230,6 +372,17 @@ export function createDaemonMachineBootstrapRuntime(
           ? { encryption: params.credentials.encryption }
           : {}),
         spawnSession: params.spawnSession,
+        ...(coordinateWorkflowRun
+          ? {
+              coordinateWorkflowRun: async (...args: Parameters<typeof coordinateWorkflowRun>) => {
+                if (params.isWorkflowFeatureEnabled?.() !== true) {
+                  throw new Error('Workflow Run coordinator is unavailable');
+                }
+                return await coordinateWorkflowRun(...args);
+              },
+            }
+          : {}),
+        recoverWorkflowRuns: async () => await workflowRecovery?.('control'),
         ...(connectedApiMachine
           ? {
               machineAdmissionTransport: async (request, options) =>
@@ -287,8 +440,20 @@ export function createDaemonMachineBootstrapRuntime(
     awaitAgentSessionOpen: params.awaitAgentSessionOpen,
     isSessionAlreadyRunning: params.isSessionAlreadyRunning,
     loadLocalSessionMetadataForHandoff: params.loadLocalSessionMetadataForHandoff,
-    savePreparedTargetLocalMetadata: params.savePreparedTargetLocalMetadata,
-    beforeShutdown: params.beforeShutdown,
+    beforeShutdown: async () => {
+      if (providerBrokerApplication) {
+        try {
+          await providerBrokerApplicationApiMachine?.setProviderBrokerIngressLive(false);
+        } finally {
+          await providerBrokerApplication.close();
+          providerBrokerApplication = null;
+          providerBrokerApplicationMachineId = null;
+          providerBrokerApplicationApiMachine = null;
+        }
+      }
+      await runnerBrokerReadinessApplication.stop();
+      await params.beforeShutdown();
+    },
     requestShutdown: params.requestShutdown,
     directPeerServerLifecycle: params.directPeerServerLifecycle,
     directTransferPromptAssetAdapterRegistry: params.directTransferPromptAssetAdapterRegistry,
@@ -299,7 +464,34 @@ export function createDaemonMachineBootstrapRuntime(
     ...(params.retryTemporaryThrottleNow
       ? { retryTemporaryThrottleNow: params.retryTemporaryThrottleNow }
       : {}),
+    ...(params.readTemporaryThrottleRecovery
+      ? { readTemporaryThrottleRecovery: params.readTemporaryThrottleRecovery }
+      : {}),
+    ...(params.cancelTemporaryThrottleRecovery
+      ? { cancelTemporaryThrottleRecovery: params.cancelTemporaryThrottleRecovery }
+      : {}),
     peerMediationMachineRpc: {
+      ...(params.startProviderBrokerApplication
+        ? {
+            resolveProviderBrokerApplicationTarget: async (input) =>
+              await providerBrokerApplication?.resolveProviderBrokerApplicationTarget(input) ?? null,
+            resolveExternalProviderBrokerApplicationTarget: async (input) =>
+              await providerBrokerApplication?.resolveExternalProviderBrokerApplicationTarget(input) ?? null,
+          }
+        : {}),
+      resolveRunnerBrokerReadinessApplicationTarget: async ({ request, signal }) => {
+        try {
+          const authorization = await params.api.authorizeRunnerBrokerReadiness(request, signal);
+          if (
+            authorization.readiness.kind !== 'available'
+            || !doesRunnerBrokerReadinessResponseMatchRequestV1(request, authorization)
+          ) return null;
+          signal.throwIfAborted();
+          return { port: await runnerBrokerReadinessApplication.ensureListening() };
+        } catch {
+          return null;
+        }
+      },
       stream: {
         captureAdapter: createDaemonMachineLiveStreamCaptureAdapter(params.liveStreamCaptureRegistry),
         ...(params.readActiveLiveStreamControlLease

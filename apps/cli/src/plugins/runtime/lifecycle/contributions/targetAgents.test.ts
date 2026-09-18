@@ -9,6 +9,7 @@ import type {
     AgentProviderBindingAdapter,
     AgentRuntimeFactory,
     AgentSessionRuntimeContext,
+    AgentTerminalSurface,
     AgentTerminalPromptSubmitVerificationPolicyV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
@@ -242,6 +243,31 @@ function externalSessionsRegistration(params?: Readonly<{
     };
 }
 
+function terminalRegistration(params?: Readonly<{
+    pluginId?: string;
+    localId?: string;
+    generation?: string;
+    terminal?: AgentTerminalSurface;
+}>): Readonly<{
+    pluginId: string;
+    generation: string;
+    registration: ContributionRuntimeRegistration;
+}> {
+    return {
+        pluginId: params?.pluginId ?? 'happier.agent.fixture',
+        generation: params?.generation ?? 'generation-7',
+        registration: {
+            family: 'agents',
+            localId: params?.localId ?? 'assistant',
+            value: {
+                terminal: params?.terminal ?? Object.freeze({
+                    resolveLaunch: async () => ({ argv: ['fixture'] }),
+                }),
+            },
+        } as ContributionRuntimeRegistration,
+    };
+}
+
 function observationRegistration(params?: Readonly<{
     pluginId?: string;
     localId?: string;
@@ -249,6 +275,7 @@ function observationRegistration(params?: Readonly<{
     observation?: AgentExternalSessionObservationContribution;
     externalSessionHooks?: AgentExternalSessionHooksContribution;
     externalSessionTakeover?: AgentExternalSessionTakeoverContribution;
+    terminal?: AgentTerminalSurface;
     terminalPromptSubmitVerification?: AgentTerminalPromptSubmitVerificationPolicyV1;
 }>): Readonly<{
     pluginId: string;
@@ -269,6 +296,7 @@ function observationRegistration(params?: Readonly<{
                 ...(params?.externalSessionTakeover
                     ? { externalSessionTakeover: params.externalSessionTakeover }
                     : {}),
+                ...(params?.terminal ? { terminal: params.terminal } : {}),
                 ...(params?.terminalPromptSubmitVerification
                     ? {
                         terminalPromptSubmitVerification:
@@ -1323,7 +1351,133 @@ describe('target Agent runtime registry', () => {
         expect(runtime?.executionRuns).toBeUndefined();
     });
 
-    it('does not synthesize a declarative Agent contribution identity from its routing id', () => {
+    it('composes a resume-only ACP list source and rejects a competing External Sessions owner', () => {
+        const pluginId = 'acme.declarative';
+        const agentId = 'declarative-agent';
+        const agent = {
+            id: agentId,
+            identity: { pluginId, localId: agentId },
+            pluginId,
+            provenance: 'external' as const,
+            source: { kind: 'path' as const },
+            definition: { kindVersion: 1 as const, id: agentId, ownedBackendIds: [] },
+            richDefinition: {
+                provenance: 'external' as const,
+                definition: PluginContributesV2Schema.parse({ agents: [{
+                    id: agentId,
+                    title: 'Declarative Agent',
+                    runtime: {
+                        kind: 'acp',
+                        transport: { kind: 'stdio', executable: { kind: 'systemTool', id: 'fixture-acp' } },
+                    },
+                    primary: 'sessions',
+                    capabilities: {
+                        surfaces: ['externalSessions'],
+                        sessions: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+                    },
+                    surfaces: { externalSession: { sources: [{
+                        sourceKind: 'fixtureAcpSessions',
+                        resumeOnly: true,
+                        schema: { fields: [{ name: 'kind', kind: 'literal', value: 'fixtureAcpSessions' }] },
+                        key: { segments: [{ kind: 'literal', value: 'fixtureAcpSessions' }] },
+                        instances: [{ kind: 'default', constants: {} }],
+                    }] } },
+                }] }).agents[0]!,
+            },
+            sourceSpec: {
+                kind: 'path' as const,
+                locator: `/plugins/${pluginId}`,
+                trustPolicy: 'local_trusted' as const,
+                installPolicy: 'link' as const,
+                resolvedVersion: '2.3.4',
+            },
+        };
+        const common = {
+            agents: [agent],
+            generation: 'generation-9',
+            isGenerationActive: () => true,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+        };
+
+        expect(createDeclarativeAcpAgentRuntimeRegistry({
+            ...common,
+            registered: new Map(),
+        }).get(agentId)?.externalSessions).toBeDefined();
+        expect(() => createDeclarativeAcpAgentRuntimeRegistry({
+            ...common,
+            registered: new Map([[agentId, {
+                pluginId,
+                pluginVersion: '2.3.4',
+                agentId,
+                localAgentId: agentId,
+                generation: 'generation-9',
+                immutableGenerationId: null,
+                hasPrimaryRuntime: false,
+                externalSessions: {} as never,
+                retirementSignal: TEST_RETIREMENT_SIGNAL,
+                isCurrent: () => true,
+                createAgentRuntimeSurfaceInvocationContext: vi.fn(),
+            }]]),
+        })).toThrow(/competing External Sessions owners/);
+    });
+
+    it('fails closed when bypassed installed data declares resume-only sources without Session resume capability', () => {
+        const pluginId = 'acme.declarative';
+        const agentId = 'declarative-agent';
+        const registry = createDeclarativeAcpAgentRuntimeRegistry({
+            agents: [{
+                id: agentId,
+                identity: { pluginId, localId: agentId },
+                pluginId,
+                provenance: 'external',
+                source: { kind: 'path' },
+                definition: { kindVersion: 1, id: agentId, ownedBackendIds: [] },
+                richDefinition: {
+                    provenance: 'external',
+                    // Deliberately not parsed through PluginContributesV2Schema: the
+                    // host synthesis must fail closed against malformed installed
+                    // data that bypassed manifest ingestion.
+                    definition: {
+                        id: agentId,
+                        title: 'Declarative Agent',
+                        runtime: {
+                            kind: 'acp',
+                            transport: { kind: 'stdio', executable: { kind: 'systemTool', id: 'fixture-acp' } },
+                        },
+                        primary: 'sessions',
+                        capabilities: {
+                            surfaces: ['externalSessions'],
+                            sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
+                        },
+                        surfaces: { externalSession: { sources: [{
+                            sourceKind: 'fixtureAcpSessions',
+                            resumeOnly: true,
+                            schema: { fields: [{ name: 'kind', kind: 'literal', value: 'fixtureAcpSessions' }] },
+                            key: { segments: [{ kind: 'literal', value: 'fixtureAcpSessions' }] },
+                            instances: [{ kind: 'default', constants: {} }],
+                        }] } },
+                    },
+                },
+                sourceSpec: {
+                    kind: 'path',
+                    locator: `/plugins/${pluginId}`,
+                    trustPolicy: 'local_trusted',
+                    installPolicy: 'link',
+                    resolvedVersion: '2.3.4',
+                },
+            }],
+            registered: new Map(),
+            generation: 'generation-9',
+            isGenerationActive: () => true,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+        });
+
+        const lease = registry.get(agentId);
+        expect(lease).toBeDefined();
+        expect(lease?.externalSessions).toBeUndefined();
+    });
+
+    it('accepts a declarative Agent with an explicit qualified contribution identity', () => {
         const definition = PluginContributesV2Schema.parse({
             agents: [{
                 id: 'assistant/voice',
@@ -1365,7 +1519,7 @@ describe('target Agent runtime registry', () => {
             retirementSignal: TEST_RETIREMENT_SIGNAL,
         });
 
-        expect(registry.has(routingId)).toBe(false);
+        expect(registry.has(routingId)).toBe(true);
     });
 
     it('leases one manifest-joined factory with provider binding and canonical identity', async () => {
@@ -1561,6 +1715,37 @@ describe('target Agent runtime registry', () => {
         expect(registry.get('assistant')?.externalSessions).toBeDefined();
         expect(registry.get('assistant')?.externalSessions).not.toBe(externalSessionsContribution);
         expect(registry.get('assistant')?.createRuntime).toBeUndefined();
+    });
+
+    it('leases a generation-bound auxiliary terminal contribution without claiming runtime ownership', async () => {
+        let current = true;
+        const resolveLaunch = vi.fn(async () => ({ argv: ['fixture-terminal'] }));
+        const registry = createTargetAgentRuntimeRegistry({
+            agents: [{ id: 'assistant', pluginId: 'happier.agent.fixture' }],
+            activationTargets: [target()],
+            targetRegistrations: [terminalRegistration({
+                terminal: Object.freeze({ resolveLaunch }),
+            })],
+            isGenerationActive: () => current,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+            onDuplicate: vi.fn(),
+        });
+        const lease = registry.get('assistant');
+
+        expect(lease).toMatchObject({ hasPrimaryRuntime: false });
+        await expect(lease?.terminal?.resolveLaunch({
+            sessionId: 'session-1',
+            cwd: '/tmp/project',
+            metadata: {},
+            modelSelection: null,
+        })).resolves.toEqual({ argv: ['fixture-terminal'] });
+        current = false;
+        await expect(lease?.terminal?.resolveLaunch({
+            sessionId: 'session-1',
+            cwd: '/tmp/project',
+            metadata: {},
+            modelSelection: null,
+        })).rejects.toThrow(/retired generation/i);
     });
 
     it('binds the generic invocation ExecService into an External Sessions callback', async () => {
@@ -1977,6 +2162,9 @@ describe('target Agent runtime registry', () => {
                 screenText: string;
             }>) => screenText.includes(promptText),
         });
+        const terminal: AgentTerminalSurface = Object.freeze({
+            resolveLaunch: async () => ({ argv: ['declarative-terminal'] }),
+        });
         const invocationServices = createUnavailablePluginServices();
         const createAgentInvocationServices = vi.fn(async () => invocationServices);
         const auxiliaryRetirement = new AbortController();
@@ -1989,6 +2177,7 @@ describe('target Agent runtime registry', () => {
                 observation,
                 externalSessionHooks,
                 externalSessionTakeover,
+                terminal,
                 terminalPromptSubmitVerification,
             })],
             isGenerationActive: () => activationCurrent,
@@ -2019,6 +2208,18 @@ describe('target Agent runtime registry', () => {
             .toBe(registered.get(agentId)?.externalSessionHooks);
         expect(lease?.externalSessionTakeover)
             .toBe(registered.get(agentId)?.externalSessionTakeover);
+        // The declarative primary adds its own currentness boundary, so the
+        // terminal facet is deliberately re-bound rather than retained by
+        // object identity like the already generation-bounded Session facets.
+        expect(lease?.terminal).not.toBe(registered.get(agentId)?.terminal);
+        await expect(lease?.terminal?.resolveLaunch({
+            sessionId: 'session-1',
+            cwd: '/tmp/declarative-agent',
+            metadata: {},
+            modelSelection: null,
+        })).resolves.toEqual({
+            argv: ['declarative-terminal'],
+        });
         expect(lease?.terminalPromptSubmitVerification)
             .toBe(registered.get(agentId)?.terminalPromptSubmitVerification);
         const invocationContext = await lease?.createAgentRuntimeSurfaceInvocationContext({
@@ -3291,6 +3492,76 @@ describe('target Agent runtime registry', () => {
         await expect(lease.createRuntime({
             signal: new AbortController().signal,
         })).rejects.toThrow(/host derives finite Runs from sessions/i);
+    });
+
+    it('requires the detached execution-run facet and its manifest capability to be declared together', async () => {
+        const definition = (executionRunContext: boolean) => PluginContributesV2Schema.parse({
+            agents: [{
+                id: 'assistant',
+                title: 'Assistant',
+                runtime: { kind: 'custom' },
+                primary: 'sessions',
+                capabilities: {
+                    sessions: {
+                        open: ['create'],
+                        delivery: ['newTurn'],
+                        cancel: true,
+                        ...(executionRunContext
+                            ? { executionRunContext: { versions: [1] } }
+                            : {}),
+                    },
+                },
+            }],
+        }).agents[0]!;
+        const sessionFactory = {
+            open: async () => ({
+                send: async () => ({ status: 'admitted' as const }),
+                watch: () => ({ dispose() {} }),
+                dispose() {},
+            }),
+        };
+        const executionRunContextV1 = {
+            open: async () => ({
+                send: async () => ({ status: 'admitted' as const }),
+                stop: async () => ({ status: 'requested' as const }),
+                watch: () => ({ dispose() {} }),
+                dispose() {},
+            }),
+        };
+        const createLeaseFor = (
+            selectedDefinition: ReturnType<typeof definition>,
+            sessions: typeof sessionFactory & Readonly<{
+                executionRunContextV1?: typeof executionRunContextV1;
+            }>,
+        ) => createTargetAgentRuntimeRegistry({
+            agents: [{
+                id: 'assistant',
+                pluginId: 'happier.agent.fixture',
+                richDefinition: { provenance: 'external', definition: selectedDefinition },
+            }],
+            activationTargets: [target()],
+            targetRegistrations: [registration({
+                factory: async () => ({ sessions }),
+            })],
+            isGenerationActive: () => true,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+            onDuplicate: vi.fn(),
+        }).get('assistant');
+
+        const declaredWithoutFacet = createLeaseFor(definition(true), sessionFactory);
+        if (!declaredWithoutFacet?.hasPrimaryRuntime) throw new Error('Expected declared runtime lease');
+        await expect(declaredWithoutFacet.createRuntime({
+            signal: new AbortController().signal,
+        })).rejects.toThrow(/declares detached execution-run context.*returned no matching runtime facet/i);
+
+        const facetWithoutDeclaration = createLeaseFor(definition(false), {
+            ...sessionFactory,
+            executionRunContextV1,
+        });
+        if (!facetWithoutDeclaration?.hasPrimaryRuntime) throw new Error('Expected undeclared runtime lease');
+        await expect(facetWithoutDeclaration.createRuntime({
+            signal: new AbortController().signal,
+        })).rejects.toThrow(/returned a detached execution-run context facet without declaring/i);
     });
 
     it('validates the lazy factory facet against the manifest primary without a second factory call', async () => {

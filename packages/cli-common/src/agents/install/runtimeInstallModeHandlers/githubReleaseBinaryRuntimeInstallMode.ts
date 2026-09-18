@@ -16,6 +16,7 @@ export const githubReleaseBinaryRuntimeInstallModeHandler: RuntimeInstallModeHan
             env,
             logPath: lifecycleContext.logPath,
             deps,
+            signal: params.signal,
             appendLogLine: lifecycleContext.appendLogLine,
         });
         return buildRuntimeInstallModeOkResult({ plan, lifecycleContext });

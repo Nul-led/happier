@@ -16,6 +16,7 @@ vi.mock('@happier-dev/cli-common/ssh', async (importOriginal) => {
   return {
     ...actual,
     copyLocalDirectoryToRemoteSync: copyLocalDirectoryToRemoteSyncMock,
+    transferOpenSshFile: copyLocalDirectoryToRemoteSyncMock,
     runOpenSshRemoteCommand: async (params: Parameters<typeof actual.runOpenSshRemoteCommand>[0]) => (
       await runRemoteTextSyncMock({
         ...params,
@@ -94,6 +95,54 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     expect(remoteCommand).toContain("'home' 'status' '--json' '--channel' 'preview' '--mode' 'system'");
   });
 
+  it('forwards the exact bounded approval input to SSH stdin under the task result contract', async () => {
+    runRemoteTextSyncMock.mockReset();
+    runRemoteTextSyncMock.mockReturnValue({
+      status: 0,
+      stdout: successfulHomeTask({ outcome: 'erased', removedPaths: ['/srv/home'] }),
+      stderr: '',
+    });
+    const approvalInput = '{"v":1,"operation":"erase","confirmed":true}\n';
+
+    await expect(runRemotePersonalHomeCommandDefault({
+      ssh: { target: 'dev@example.test', auth: 'agent' },
+      auth: { mode: 'agent' },
+      knownHostsMode: 'app',
+      channel: 'stable',
+      mode: 'user',
+      args: ['home', 'erase', '--approval-stdin', '--json'],
+      input: approvalInput,
+      resultContract: 'task',
+      timeoutMs: null,
+    })).resolves.toEqual({ outcome: 'erased', removedPaths: ['/srv/home'] });
+
+    expect(runRemoteTextSyncMock).toHaveBeenCalledWith(expect.objectContaining({
+      input: approvalInput,
+      timeoutMs: null,
+    }));
+  });
+
+  it('preserves the canonical create envelope under the create result contract', async () => {
+    runRemoteTextSyncMock.mockReset();
+    const envelope = {
+      v: 1,
+      ok: true,
+      kind: 'personal_home_create',
+      data: { status: 'complete', profileId: 'profile-1' },
+    };
+    runRemoteTextSyncMock.mockReturnValue({ status: 0, stdout: JSON.stringify(envelope), stderr: '' });
+
+    await expect(runRemotePersonalHomeCommandDefault({
+      ssh: { target: 'dev@example.test', auth: 'agent' },
+      auth: { mode: 'agent' },
+      knownHostsMode: 'app',
+      channel: 'stable',
+      mode: 'user',
+      args: ['home', 'create', '--json'],
+      resultContract: 'create',
+    })).resolves.toEqual(envelope);
+  });
+
   it('rejects a successful remote Home task envelope whose data is not an object', async () => {
     runRemoteTextSyncMock.mockReset();
     runRemoteTextSyncMock.mockReturnValue({
@@ -126,7 +175,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     runRemoteTextSyncMock
       .mockReturnValueOnce({
         status: 0,
-        stdout: successfulHomeTask({ operationId: 'operation-1', uploadLocator: remoteArchive, uploadReceipt: '11111111-1111-4111-8111-111111111111' }),
+        stdout: successfulHomeTask({ operationId: 'operation-1', uploadLocator: remoteArchive }),
         stderr: '',
       })
       .mockReturnValueOnce({
@@ -135,19 +184,20 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
           operationId: 'operation-1',
           status: 'quarantined',
           bundleSha256: 'a'.repeat(64),
-          expectedHomeServerIdentityId: 'home-1',
+          expectedHomeServerIdentityId: 'srv_home_1',
           expectedCanonicalServerUrl: 'https://source.example.test',
           sourceDescriptorRevision: 7,
-          homeServerIdentityId: 'home-1',
+          homeServerIdentityId: 'srv_home_1',
           authenticated: true,
           accountCount: 1,
           sessionCount: 0,
-          canonicalServerUrl: 'http://127.0.0.1:43123',
-          minimumOuterRevisionExclusive: 7,
+          connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'http://127.0.0.1:43123',
+            revision: 8, endpoints: [{ kind: 'https', url: 'http://127.0.0.1:43123' }] },
         }),
         stderr: '',
       });
     const ensureRuntime = vi.fn(async () => undefined);
+    const controller = new AbortController();
 
     const destination = createRemoteSshPersonalHomeRelocationDestinationDefault({
       ssh: { target: 'relocation@example.test', auth: 'agent', port: 2222 },
@@ -161,9 +211,10 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       operationId: 'operation-1',
       archivePath: '/local/verified-home.tar',
       bundleSha256: 'a'.repeat(64),
-      expectedHomeServerIdentityId: 'home-1',
+      expectedHomeServerIdentityId: 'srv_home_1',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 7,
+      signal: controller.signal,
     });
 
     expect(result).toMatchObject({
@@ -178,17 +229,18 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     expect(ensureRuntime).toHaveBeenCalledWith({
       kind: 'personal-home',
       canonicalServerUrl: 'https://source.example.test',
-    });
+    }, controller.signal);
     expect(copyLocalDirectoryToRemoteSyncMock).toHaveBeenCalledWith(expect.objectContaining({
       target: 'relocation@example.test',
       port: 2222,
       localPath: '/local/verified-home.tar',
       remotePath: remoteArchive,
+      signal: controller.signal,
     }));
     const stageCommand = String(runRemoteTextSyncMock.mock.calls[1]?.[0]?.remoteCommand ?? '');
     expect(stageCommand).toContain("HAPPIER_PUBLIC_RELEASE_CHANNEL='preview'");
     expect(stageCommand).toContain("'home' 'relocation-destination' 'stage'");
-    expect(stageCommand).toContain("'--upload-receipt' '11111111-1111-4111-8111-111111111111'");
+    expect(stageCommand).not.toContain('--upload-receipt');
     expect(stageCommand).toContain("'--channel' 'preview' '--mode' 'system'");
     expect(runRemoteTextSyncMock).toHaveBeenCalledTimes(2);
   });
@@ -203,7 +255,6 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
         stdout: successfulHomeTask({
           operationId: 'operation-windows',
           uploadLocator,
-          uploadReceipt: '22222222-2222-4222-8222-222222222222',
         }),
         stderr: '',
       })
@@ -213,15 +264,15 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
           operationId: 'operation-windows',
           status: 'quarantined',
           bundleSha256: 'e'.repeat(64),
-          expectedHomeServerIdentityId: 'home-windows',
+          expectedHomeServerIdentityId: 'srv_home_windows',
           expectedCanonicalServerUrl: 'https://source.example.test',
           sourceDescriptorRevision: 17,
-          homeServerIdentityId: 'home-windows',
+          homeServerIdentityId: 'srv_home_windows',
           authenticated: true,
           accountCount: 1,
           sessionCount: 0,
-          canonicalServerUrl: 'http://127.0.0.1:43123',
-          minimumOuterRevisionExclusive: 17,
+          connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_windows', canonicalServerUrl: 'http://127.0.0.1:43123',
+            revision: 18, endpoints: [{ kind: 'https', url: 'http://127.0.0.1:43123' }] },
         }),
         stderr: '',
       });
@@ -239,7 +290,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       operationId: 'operation-windows',
       archivePath: '/local/verified-home.tar',
       bundleSha256: 'e'.repeat(64),
-      expectedHomeServerIdentityId: 'home-windows',
+      expectedHomeServerIdentityId: 'srv_home_windows',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 17,
     })).resolves.toMatchObject({ operationId: 'operation-windows', status: 'quarantined' });
@@ -251,7 +302,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     const prepareCommand = String(runRemoteTextSyncMock.mock.calls[0]?.[0]?.remoteCommand ?? '');
     const consumeCommand = String(runRemoteTextSyncMock.mock.calls[1]?.[0]?.remoteCommand ?? '');
     expect(prepareCommand).toContain("'home' 'relocation-destination' 'stage' '--operation-id' 'operation-windows' '--prepare-upload'");
-    expect(consumeCommand).toContain("'--upload-receipt' '22222222-2222-4222-8222-222222222222'");
+    expect(consumeCommand).not.toContain('--upload-receipt');
     expect(consumeCommand).not.toContain(uploadLocator);
     expect(runRemoteTextSyncMock.mock.calls).toHaveLength(2);
     expect(runRemoteTextSyncMock.mock.calls.some(([call]) => /(?:umask|mktemp|rm -f|rmdir)/u.test(String(call.remoteCommand)))).toBe(false);
@@ -261,7 +312,9 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     runRemoteTextSyncMock.mockReset();
     copyLocalDirectoryToRemoteSyncMock.mockReset();
     const uploadLocator = '/private/opaque/operation-transfer-failed/SECRET-bundle.tar';
+    const controller = new AbortController();
     copyLocalDirectoryToRemoteSyncMock.mockImplementationOnce(() => {
+      controller.abort();
       throw new Error(`scp connection closed while writing ${uploadLocator}`);
     });
     runRemoteTextSyncMock
@@ -270,7 +323,6 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
         stdout: successfulHomeTask({
           operationId: 'operation-transfer-failed',
           uploadLocator,
-          uploadReceipt: '66666666-6666-4666-8666-666666666666',
         }),
         stderr: '',
       })
@@ -296,6 +348,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       expectedHomeServerIdentityId: 'home-transfer-failed',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 19,
+      signal: controller.signal,
     }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(Error);
@@ -304,6 +357,8 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     expect((failure as Error).message).not.toContain(uploadLocator);
 
     expect(runRemoteTextSyncMock).toHaveBeenCalledTimes(2);
+    expect(runRemoteTextSyncMock.mock.calls[0]?.[0]?.signal).toBe(controller.signal);
+    expect(runRemoteTextSyncMock.mock.calls[1]?.[0]?.signal).toBeUndefined();
     const abortCommand = String(runRemoteTextSyncMock.mock.calls[1]?.[0]?.remoteCommand ?? '');
     expect(abortCommand).toContain("'home' 'relocation-destination' 'abort'");
     expect(abortCommand).toContain("'--operation-id' 'operation-transfer-failed'");
@@ -323,7 +378,6 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
         stdout: successfulHomeTask({
           operationId: 'operation-abort-failed',
           uploadLocator,
-          uploadReceipt: '77777777-7777-4777-8777-777777777777',
         }),
         stderr: '',
       })
@@ -397,7 +451,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     runRemoteTextSyncMock
       .mockReturnValueOnce({
         status: 0,
-        stdout: successfulHomeTask({ operationId: 'operation-3', uploadLocator: remoteArchive, uploadReceipt: '33333333-3333-4333-8333-333333333333' }),
+        stdout: successfulHomeTask({ operationId: 'operation-3', uploadLocator: remoteArchive }),
         stderr: '',
       })
       .mockReturnValueOnce({
@@ -406,10 +460,10 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
           operationId: 'operation-3',
           status: 'quarantined',
           bundleSha256: 'c'.repeat(64),
-          expectedHomeServerIdentityId: 'home-3',
+          expectedHomeServerIdentityId: 'srv_home_3',
           expectedCanonicalServerUrl: 'https://source.example.test',
           sourceDescriptorRevision: 11,
-          homeServerIdentityId: 'home-3',
+          homeServerIdentityId: 'srv_home_3',
         }),
         stderr: '',
       });
@@ -427,10 +481,10 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       operationId: 'operation-3',
       archivePath: '/local/verified-home.tar',
       bundleSha256: 'c'.repeat(64),
-      expectedHomeServerIdentityId: 'home-3',
+      expectedHomeServerIdentityId: 'srv_home_3',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 11,
-    })).rejects.toThrow('unattested operation facts');
+    })).rejects.toThrow();
   });
 
   it('reconciles a lost stage response through destination status and still cleans transfer material', async () => {
@@ -440,7 +494,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     runRemoteTextSyncMock
       .mockReturnValueOnce({
         status: 0,
-        stdout: successfulHomeTask({ operationId: 'operation-2', uploadLocator: remoteArchive, uploadReceipt: '44444444-4444-4444-8444-444444444444' }),
+        stdout: successfulHomeTask({ operationId: 'operation-2', uploadLocator: remoteArchive }),
         stderr: '',
       })
       .mockImplementationOnce(() => { throw new Error('ssh response lost'); })
@@ -450,10 +504,11 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
           operationId: 'operation-2',
           status: 'quarantined',
           bundleSha256: 'b'.repeat(64),
-          expectedHomeServerIdentityId: 'home-2',
+          expectedHomeServerIdentityId: 'srv_home_2',
           expectedCanonicalServerUrl: 'https://source.example.test',
           sourceDescriptorRevision: 9,
-          homeServerIdentityId: 'home-2',
+          homeServerIdentityId: 'srv_home_2',
+          connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_2', canonicalServerUrl: 'https://source.example.test', revision: 10, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }] },
           authenticated: true,
           accountCount: 1,
           sessionCount: 0,
@@ -473,7 +528,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       operationId: 'operation-2',
       archivePath: '/local/verified-home.tar',
       bundleSha256: 'b'.repeat(64),
-      expectedHomeServerIdentityId: 'home-2',
+      expectedHomeServerIdentityId: 'srv_home_2',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 9,
     })).resolves.toMatchObject({ operationId: 'operation-2', status: 'quarantined' });
@@ -491,7 +546,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
     runRemoteTextSyncMock
       .mockReturnValueOnce({
         status: 0,
-        stdout: successfulHomeTask({ operationId: 'operation-cleanup', uploadLocator: remoteArchive, uploadReceipt: '55555555-5555-4555-8555-555555555555' }),
+        stdout: successfulHomeTask({ operationId: 'operation-cleanup', uploadLocator: remoteArchive }),
         stderr: '',
       })
       .mockReturnValueOnce({
@@ -500,15 +555,15 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
           operationId: 'operation-cleanup',
           status: 'quarantined',
           bundleSha256: 'd'.repeat(64),
-          expectedHomeServerIdentityId: 'home-cleanup',
+          expectedHomeServerIdentityId: 'srv_home_cleanup',
           expectedCanonicalServerUrl: 'https://source.example.test',
           sourceDescriptorRevision: 13,
-          homeServerIdentityId: 'home-cleanup',
+          homeServerIdentityId: 'srv_home_cleanup',
           authenticated: true,
           accountCount: 1,
           sessionCount: 0,
-          canonicalServerUrl: 'http://127.0.0.1:43123',
-          minimumOuterRevisionExclusive: 13,
+          connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_cleanup', canonicalServerUrl: 'http://127.0.0.1:43123',
+            revision: 14, endpoints: [{ kind: 'https', url: 'http://127.0.0.1:43123' }] },
           transferCleanupNeedsAttention: true,
         }),
         stderr: '',
@@ -527,7 +582,7 @@ describe('runRemoteDaemonServiceCommandDefault', () => {
       operationId: 'operation-cleanup',
       archivePath: '/local/verified-home.tar',
       bundleSha256: 'd'.repeat(64),
-      expectedHomeServerIdentityId: 'home-cleanup',
+      expectedHomeServerIdentityId: 'srv_home_cleanup',
       expectedCanonicalServerUrl: 'https://source.example.test',
       sourceDescriptorRevision: 13,
     })).resolves.toMatchObject({

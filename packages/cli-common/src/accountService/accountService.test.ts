@@ -12,6 +12,7 @@ import {
   publishAccountServiceHomeLink,
   runAccountServiceDirectoryJourney,
   selectAccountServiceAuthenticationMethod,
+  resolveAccountServiceHomeTarget,
   type AccountServiceHomeEnrollmentAdapters,
 } from './index.js';
 
@@ -93,12 +94,14 @@ function createEnrollmentHarness(options: Readonly<{
     observeHomeBeforeRedemption: vi.fn(async ({ home }) => ({
       homeServerIdentityId: home.homeServerIdentityId,
       connectionDescriptor: home.connectionDescriptor,
+      provenance: 'public' as const,
     })),
     redeemAssertion: vi.fn(async () => options.redemption ?? successfulRedemption),
     decodeHomeCredential: vi.fn(async () => 'home-credential'),
     observeAuthenticatedHome: vi.fn(async () => ({
       homeServerIdentityId: HOME_B.homeServerIdentityId,
       connectionDescriptor: HOME_B.connectionDescriptor,
+      provenance: 'authenticated' as const,
     })),
     commitHomeCredential: vi.fn(async () => 'committed-profile-b'),
     reconcileAuthenticatedHome: vi.fn(async () => {}),
@@ -111,6 +114,34 @@ function createEnrollmentHarness(options: Readonly<{
 }
 
 describe('Account Service deterministic domain operations', () => {
+  it('selects the exact linked Home before a different preferred Home and never substitutes for an absent target', () => {
+    const directory = { homes: [HOME_A, HOME_B], preferredHomeServerIdentityId: HOME_B.homeServerIdentityId };
+    expect(resolveAccountServiceHomeTarget({ directory, explicitHomeServerIdentityId: HOME_A.homeServerIdentityId }))
+      .toEqual({ kind: 'selected', basis: 'explicit', home: HOME_A });
+    expect(resolveAccountServiceHomeTarget({ directory, explicitHomeServerIdentityId: HOME_C.homeServerIdentityId }))
+      .toEqual({ kind: 'explicit_target_not_linked', homeServerIdentityId: HOME_C.homeServerIdentityId });
+  });
+
+  it('selects preferred then structurally sole, otherwise returns the complete chooser or no Homes', () => {
+    expect(resolveAccountServiceHomeTarget({ directory: { homes: [HOME_A, HOME_B], preferredHomeServerIdentityId: HOME_B.homeServerIdentityId } }))
+      .toEqual({ kind: 'selected', basis: 'preferred', home: HOME_B });
+    expect(resolveAccountServiceHomeTarget({ directory: { homes: [HOME_A], preferredHomeServerIdentityId: null } }))
+      .toEqual({ kind: 'selected', basis: 'sole', home: HOME_A });
+    expect(resolveAccountServiceHomeTarget({ directory: { homes: [HOME_A, HOME_C], preferredHomeServerIdentityId: null } }))
+      .toEqual({ kind: 'choose_home', homes: [HOME_A, HOME_C] });
+    expect(resolveAccountServiceHomeTarget({ directory: { homes: [], preferredHomeServerIdentityId: null } }))
+      .toEqual({ kind: 'no_homes' });
+  });
+
+  it('rejects invalid Directory data even when the explicit Home itself is valid', () => {
+    expect(resolveAccountServiceHomeTarget({
+      directory: { homes: [HOME_A, HOME_A], preferredHomeServerIdentityId: null },
+      explicitHomeServerIdentityId: HOME_A.homeServerIdentityId,
+    })).toEqual({ kind: 'invalid_directory', reason: 'invalid_directory' });
+    expect(resolveAccountServiceHomeTarget({ directory: { homes: [HOME_A], preferredHomeServerIdentityId: HOME_B.homeServerIdentityId } }))
+      .toEqual({ kind: 'invalid_directory', reason: 'invalid_directory' });
+  });
+
   it('rejects an advertised requested method that is unavailable without selecting a fallback', () => {
     expect(selectAccountServiceAuthenticationMethod({
       advertised: { keyLoginAvailable: true, oauthProviderIds: ['github'] },
@@ -152,10 +183,100 @@ describe('Account Service deterministic domain operations', () => {
       transport: expect.anything(),
     }));
     expect(result).toMatchObject({
-      kind: 'preferred_home_enrolled',
+      kind: 'home_enrolled',
       homeServerIdentityId: HOME_B.homeServerIdentityId,
+      adoption: { kind: 'completed', failures: [] },
       enrollment: { kind: 'enrolled', commit: 'committed-profile-b' },
     });
+  });
+
+  it('stops before assertion or redemption when the selected Home adoption fails', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    const adoptionError = new Error('selected Home profile conflict');
+    vi.mocked(adoptHome).mockImplementation(async (candidate) => {
+      if (candidate.homeServerIdentityId === HOME_B.homeServerIdentityId) throw adoptionError;
+    });
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_A, HOME_B],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'home_adoption_failed',
+      selection: 'preferred',
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      adoption: {
+        kind: 'partial',
+        adopted: [{ homeServerIdentityId: HOME_A.homeServerIdentityId }],
+        failures: [{ homeServerIdentityId: HOME_B.homeServerIdentityId, error: adoptionError }],
+      },
+    });
+    expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
+    expect(adapters.requestAssertion).not.toHaveBeenCalled();
+    expect(adapters.openHomeTransport).not.toHaveBeenCalled();
+    expect(adapters.redeemAssertion).not.toHaveBeenCalled();
+  });
+
+  it('enrolls the selected Home while reporting a non-selected adoption failure as partial', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    const adoptionError = new Error('other Home profile conflict');
+    vi.mocked(adoptHome).mockImplementation(async (candidate) => {
+      if (candidate.homeServerIdentityId === HOME_A.homeServerIdentityId) throw adoptionError;
+    });
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_A, HOME_B],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'home_enrolled',
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      adoption: {
+        kind: 'partial',
+        adopted: [{ homeServerIdentityId: HOME_B.homeServerIdentityId }],
+        failures: [{ homeServerIdentityId: HOME_A.homeServerIdentityId, error: adoptionError }],
+      },
+    });
+    expect(adapters.requestAssertion).toHaveBeenCalledOnce();
+    expect(adapters.redeemAssertion).toHaveBeenCalledOnce();
+  });
+
+  it('reports all failed adoptions distinctly while preserving the structural chooser', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    vi.mocked(adoptHome).mockRejectedValue(new Error('profile store unavailable'));
+    const homes = [
+      { ...HOME_A, preferred: false },
+      { ...HOME_B, preferred: false },
+    ];
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: { homes, preferredHomeServerIdentityId: null },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'choose_home',
+      homes,
+      adoption: { kind: 'failed', adopted: [], failures: [{}, {}] },
+    });
+    expect(adapters.requestAssertion).not.toHaveBeenCalled();
   });
 
   it('commits only after verified authenticated observation and exact route reconciliation', async () => {
@@ -170,6 +291,7 @@ describe('Account Service deterministic domain operations', () => {
       return {
         homeServerIdentityId: HOME_B.homeServerIdentityId,
         connectionDescriptor: HOME_B.connectionDescriptor,
+        provenance: 'authenticated',
       };
     });
     vi.mocked(harness.adapters.reconcileAuthenticatedHome).mockImplementationOnce(async () => {
@@ -186,6 +308,28 @@ describe('Account Service deterministic domain operations', () => {
 
     expect(result).toEqual({ kind: 'enrolled', commit: 'committed-profile-b' });
     expect(order).toEqual(['observe_authenticated', 'reconcile', 'commit']);
+  });
+
+  it('rejects a public post-redemption observation before reconciliation or credential commit', async () => {
+    const harness = createEnrollmentHarness();
+    vi.mocked(harness.adapters.observeAuthenticatedHome).mockResolvedValueOnce({
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      connectionDescriptor: HOME_B.connectionDescriptor,
+      provenance: 'public',
+    });
+
+    await expect(continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    })).resolves.toEqual({
+      kind: 'verification_failed',
+      reason: 'authenticated_observation_required',
+    });
+    expect(harness.adapters.reconcileAuthenticatedHome).not.toHaveBeenCalled();
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
   });
 
   it('does not commit when exact route reconciliation fails', async () => {
@@ -223,7 +367,40 @@ describe('Account Service deterministic domain operations', () => {
     expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
   });
 
-  it('adopts every Home but makes no assertion when the Directory has no preferred Home', async () => {
+  it('enrolls a sole non-preferred Home through the production Directory journey', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    const home = { ...HOME_B, preferred: false };
+    const result = await runAccountServiceDirectoryJourney({
+      directory: { homes: [home], preferredHomeServerIdentityId: null },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+    expect(result).toMatchObject({
+      kind: 'home_enrolled',
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      selection: 'sole',
+      enrollment: { kind: 'enrolled', commit: 'committed-profile-b' },
+    });
+  });
+
+  it('never starts enrollment for an absent explicit target despite a preferred Home', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    const result = await runAccountServiceDirectoryJourney({
+      directory: { homes: [HOME_B], preferredHomeServerIdentityId: HOME_B.homeServerIdentityId },
+      explicitHomeServerIdentityId: HOME_A.homeServerIdentityId,
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+    expect(result).toMatchObject({ kind: 'explicit_target_not_linked', homeServerIdentityId: HOME_A.homeServerIdentityId });
+    expect(adapters.requestAssertion).not.toHaveBeenCalled();
+    expect(adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('adopts every Home but makes no assertion when several Homes have no preference', async () => {
     const { adapters, adoptHome, adoptionOrder } = createEnrollmentHarness();
     const homes = [
       { ...HOME_A, preferred: false },
@@ -243,7 +420,7 @@ describe('Account Service deterministic domain operations', () => {
     expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
     expect(adapters.requestAssertion).not.toHaveBeenCalled();
     expect(adapters.openHomeTransport).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ kind: 'no_preferred_home' });
+    expect(result).toMatchObject({ kind: 'choose_home', homes });
   });
 
   it('distinguishes an empty Directory from linked Homes with no preferred Home', async () => {
@@ -257,7 +434,10 @@ describe('Account Service deterministic domain operations', () => {
       nowMs: 1_700_000_002_000,
     });
 
-    expect(result).toMatchObject({ kind: 'no_linked_homes' });
+    expect(result).toMatchObject({
+      kind: 'no_linked_homes',
+      adoption: { kind: 'completed', adopted: [], failures: [] },
+    });
     expect(adoptHome).not.toHaveBeenCalled();
     expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
   });
@@ -336,7 +516,9 @@ describe('Account Service deterministic domain operations', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'preferred_home_failed',
+      kind: reason === 'home_identity_mismatch' || reason === 'descriptor_mismatch'
+        ? 'invalid_directory'
+        : 'home_failed',
       enrollment: { kind: 'verification_failed', reason },
     });
     expect(harness.adapters.openHomeTransport).not.toHaveBeenCalled();
@@ -366,13 +548,13 @@ describe('Account Service deterministic domain operations', () => {
     });
 
     expect(first).toMatchObject({
-      kind: 'preferred_home_awaiting_approval',
+      kind: 'home_awaiting_approval',
       enrollment: {
         kind: 'approval_required',
         approval: { approvalId: 'approval-b', homeServerIdentityId: HOME_B.homeServerIdentityId },
       },
     });
-    if (first.kind !== 'preferred_home_awaiting_approval') throw new Error('approval expected');
+    if (first.kind !== 'home_awaiting_approval') throw new Error('approval expected');
 
     const successfulRedemption: HomeLoginRedemptionResultV1 = {
       v: 1,
@@ -394,6 +576,52 @@ describe('Account Service deterministic domain operations', () => {
       assertion: createAssertion(),
       approvalId: 'approval-b',
     });
+    expect(harness.adapters.commitHomeCredential).toHaveBeenCalledOnce();
+  });
+
+  it('reports cancellation when the active attempt is aborted during Home transport acquisition', async () => {
+    const harness = createEnrollmentHarness();
+    let cancelled = false;
+    vi.mocked(harness.adapters.openHomeTransport).mockImplementationOnce(async () => {
+      cancelled = true;
+      throw new DOMException('Aborted', 'AbortError');
+    });
+
+    const result = await continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+      shouldCancel: () => cancelled,
+    });
+
+    expect(result).toEqual({ kind: 'cancelled' });
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+    expect(harness.adapters.closeHomeTransport).not.toHaveBeenCalled();
+  });
+
+  it('preserves an indeterminate commit failure when cancellation races credential custody', async () => {
+    const harness = createEnrollmentHarness();
+    const commitError = Object.assign(new Error('credential custody interrupted'), {
+      homeCredentialCommitted: true,
+    });
+    let cancelled = false;
+    vi.mocked(harness.adapters.commitHomeCredential).mockImplementationOnce(async () => {
+      cancelled = true;
+      throw commitError;
+    });
+
+    const result = await continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+      shouldCancel: () => cancelled,
+    });
+
+    expect(result).toEqual({ kind: 'unavailable', error: commitError });
     expect(harness.adapters.commitHomeCredential).toHaveBeenCalledOnce();
   });
 

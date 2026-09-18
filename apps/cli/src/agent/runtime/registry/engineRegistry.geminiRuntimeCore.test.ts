@@ -135,6 +135,7 @@ describe('engineRegistry (gemini runtimeCore)', () => {
     expect(plan.config.createSessionRuntime).toEqual(expect.any(Function));
 
     const executionRunRuntime = resolution!.engineAdapter.runtimeCore.createExecutionRunBackend({
+      scope: 'detached',
       backendId: GEMINI_BACKEND_ID,
       cwd: '/tmp/gemini',
       permissionMode: 'read_only',

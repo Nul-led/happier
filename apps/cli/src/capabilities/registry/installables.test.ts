@@ -282,4 +282,66 @@ describe('installable capability projection', () => {
     });
     expect(installOrUpgrade).toHaveBeenCalledTimes(1);
   });
+  it('exposes a V2 pinned-archive source through the real runtime installable adapter so UI status and install reach the pinned installer', async () => {
+    const asset = (suffix: string) => ({
+      archiveUrl: `https://downloads.acme.test/acme-pinned-tool-4.5.6-${suffix}.zip`,
+      sha256: 'b'.repeat(64),
+      executableSubpath: suffix.startsWith('win32') ? 'bin/acme-pinned-tool.exe' : 'bin/acme-pinned-tool',
+    });
+    const contribution = {
+      provenance: 'external',
+      source: { kind: 'package' },
+      pluginId: 'com.acme.pinned',
+      manifestPath: '/immutable/generations/com.acme.pinned/.happier-plugin/plugin.json',
+      daemonEntryPath: '/immutable/generations/com.acme.pinned/daemon.mjs',
+      sourceSpec: {
+        kind: 'package',
+        locator: '@acme/pinned',
+        trustPolicy: 'prompt',
+        installPolicy: 'managed_install',
+        resolvedVersion: '1.0.0',
+      },
+      definition: {
+        id: 'pinned-tool',
+        title: 'Acme pinned tool',
+        executable: 'acme-pinned-tool',
+        sources: [{
+          kind: 'pinnedArchive',
+          installId: 'dep.acme.pinned-tool',
+          version: '4.5.6',
+          assetsByPlatform: {
+            'darwin-arm64': asset('darwin-arm64'),
+            'linux-x64': asset('linux-x64'),
+            'linux-arm64': asset('linux-arm64'),
+            'win32-x64': asset('win32-x64'),
+            'win32-arm64': asset('win32-arm64'),
+          },
+        }],
+      },
+    } satisfies ResolvedInstallableContribution;
+
+    // No adapter stub: the default runtime resolver must own this source kind end to end.
+    const capabilities = await createInstallableCapabilitiesFromContributions({
+      installables: [contribution],
+    });
+
+    expect(capabilities.map((capability) => capability.descriptor.id)).toEqual([
+      'dep.acme.pinned-tool',
+    ]);
+    expect(capabilities[0]?.descriptor).toMatchObject({
+      kind: 'dep',
+      title: 'Acme pinned tool',
+      methods: { install: { title: 'Install' }, upgrade: { title: 'Upgrade' } },
+    });
+    // The capability answers with a readable status the UI installables planner can act on
+    // instead of the null status that suppresses every background prewarm.
+    await expect(capabilities[0]?.detect({
+      request: { id: 'dep.acme.pinned-tool' },
+      context: { cliSnapshot: null },
+    })).resolves.toMatchObject({
+      installed: false,
+      installedVersion: null,
+      sourceKind: 'pinned_archive',
+    });
+  });
 });

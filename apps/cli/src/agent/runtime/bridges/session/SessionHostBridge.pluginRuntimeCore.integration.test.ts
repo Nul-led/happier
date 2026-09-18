@@ -2,10 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { reloadConfiguration } from '@/configuration';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
+import { createEphemeralPluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import {
   SAMPLE_PLUGIN_BACKEND_ID,
   SAMPLE_PLUGIN_ID,
@@ -62,6 +64,35 @@ afterEach(() => {
 });
 
 describe('SessionHostBridge current custom Agent (integration)', () => {
+  it('uses an explicitly held Runner-local registry lease without consulting the daemon singleton', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-session-bridge-runner-home-'));
+    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-session-bridge-runner-plugin-'));
+    try {
+      await installSample({ happyHomeDir, pluginRoot, trustPolicy: 'local_trusted' });
+      const lease = createEphemeralPluginRuntimeRegistryLease(
+        await resolveExecutablePluginRuntimeRegistry({ happyHomeDir, generation: 1 }),
+      );
+      try {
+        const plan = await new SessionHostBridge().createSessionRuntime(
+          SAMPLE_PLUGIN_BACKEND_ID,
+          {
+            credentials: createTestCredentials(),
+            directory: pluginRoot,
+            happyHomeDir,
+          },
+          { pluginRuntimeRegistryLease: lease },
+        );
+        expect(plan.agentId).toBe(SAMPLE_PLUGIN_BACKEND_ID);
+        expect(plan.config.createSessionRuntime).toBeTypeOf('function');
+      } finally {
+        await lease.release();
+      }
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
   it('creates and opens a native session through the generation-bound Agent runtime lease', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-session-bridge-current-home-'));
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-session-bridge-current-plugin-'));
@@ -97,6 +128,153 @@ describe('SessionHostBridge current custom Agent (integration)', () => {
           resetOrDisposeRuntime: expect.any(Function),
         },
       });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the host-owned Team credential preparation callback for a direct pinned plugin runtime', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-session-bridge-team-credential-home-'));
+    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-session-bridge-team-credential-plugin-'));
+    try {
+      await installSample({ happyHomeDir, pluginRoot, trustPolicy: 'local_trusted' });
+      const lease = createEphemeralPluginRuntimeRegistryLease(
+        await resolveExecutablePluginRuntimeRegistry({ happyHomeDir, generation: 1 }),
+      );
+      const prepareTeamCredentialProviderBinding = vi.fn(async () => ({
+        providerBinding: {
+          source: {
+            kind: 'team_resource' as const,
+            resourceId: 'resource-1',
+            resourceRevision: 3,
+          },
+          model: { id: 'team-model', name: 'Team model' },
+          upstream: {
+            protocol: 'openai',
+            normalizedUrl: 'http://127.0.0.1:43123/v1',
+            credential: 'apiKey' as const,
+          },
+          materialization: { v: 1 as const, kind: 'spawnEnv' as const },
+        },
+        environmentOverlay: [{
+          name: 'OPENAI_BASE_URL',
+          value: 'http://127.0.0.1:43123/v1',
+          source: 'provider' as const,
+        }],
+        additionalRedactionValues: ['http://127.0.0.1:43123/v1'],
+      }));
+      try {
+        const plan = await new SessionHostBridge().createSessionRuntime(
+          SAMPLE_PLUGIN_BACKEND_ID,
+          {
+            credentials: createTestCredentials(),
+            directory: pluginRoot,
+            happyHomeDir,
+            backendTarget: {
+              kind: 'agent',
+              identity: {
+                pluginId: SAMPLE_PLUGIN_ID,
+                localId: SAMPLE_PLUGIN_BACKEND_ID,
+              },
+            },
+            teamCredentialBindings: [{
+              v: 1,
+              slot: { kind: 'provider_model' },
+              resourceId: 'resource-1',
+              expectedResourceRevision: 3,
+            }],
+            modelSelection: {
+              v: 1,
+              updatedAt: 1,
+              ref: {
+                agentTargetKey: `agent:${SAMPLE_PLUGIN_ID}/${SAMPLE_PLUGIN_BACKEND_ID}`,
+                providerConnectionId: null,
+                modelId: 'team-model',
+              },
+            },
+          },
+          {
+            pluginRuntimeRegistryLease: lease,
+            prepareTeamCredentialProviderBinding,
+          },
+        );
+
+        const runtime = await plan.config.createSessionRuntime?.({
+          directory: pluginRoot,
+          metadata: {},
+          machineId: 'runner-machine-1',
+          session: { sessionId: 'runner-session-1' },
+          transcriptSession: {},
+          messageBuffer: {},
+          mcpServers: {},
+          permissionHandler: {},
+          getPermissionMode: () => 'safe-yolo',
+          memoryRecallGuidanceEnabled: false,
+        } as never);
+
+        expect(runtime).toMatchObject({
+          operations: {
+            sendTurnPrompt: expect.any(Function),
+            resetOrDisposeRuntime: expect.any(Function),
+          },
+        });
+        const operations = (runtime as Readonly<{ operations: Readonly<{
+          sendTurnPrompt(prompt: string, input: Readonly<{
+            turnId: string;
+            localId: string;
+            userMessageSeq: number;
+          }>): Promise<void>;
+          subscribeRuntimeEvents(listener: (event: Readonly<{ kind?: string; turnId?: string }>) => void): (() => void) | void;
+          prepareRunTeamCredentialProviderBinding?(request: Readonly<{
+            runId: string;
+            resourceId: string;
+            modelId: string;
+          }>): Promise<unknown>;
+          resetOrDisposeRuntime(): Promise<void>;
+        }> }>).operations;
+        const events: Readonly<{ kind?: string; turnId?: string }>[] = [];
+        const unsubscribe = operations.subscribeRuntimeEvents((event) => events.push(event));
+        await operations.sendTurnPrompt('brokered turn through external plugin', {
+          turnId: 'runner-external-turn-1',
+          localId: 'runner-external-input-1',
+          userMessageSeq: 1,
+        });
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'input-accepted',
+          turnId: 'runner-external-turn-1',
+        }));
+        await expect(operations.prepareRunTeamCredentialProviderBinding?.({
+          runId: 'run-1',
+          resourceId: 'resource-1',
+          modelId: 'team-model',
+        })).resolves.toMatchObject({
+          providerBinding: {
+            source: { kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 3 },
+          },
+        });
+        expect(prepareTeamCredentialProviderBinding).toHaveBeenLastCalledWith({
+          sessionId: 'runner-session-1',
+          resourceId: 'resource-1',
+          expectedResourceRevision: 3,
+          agentTargetKey: `agent:${SAMPLE_PLUGIN_ID}/${SAMPLE_PLUGIN_BACKEND_ID}`,
+          modelId: 'team-model',
+          consumer: { kind: 'execution_run', executionRunId: 'run-1' },
+          signal: expect.any(AbortSignal),
+        });
+        unsubscribe?.();
+        await operations.resetOrDisposeRuntime();
+        expect(prepareTeamCredentialProviderBinding).toHaveBeenCalledWith({
+          sessionId: 'runner-session-1',
+          resourceId: 'resource-1',
+          expectedResourceRevision: 3,
+          agentTargetKey: `agent:${SAMPLE_PLUGIN_ID}/${SAMPLE_PLUGIN_BACKEND_ID}`,
+          modelId: 'team-model',
+          signal: expect.any(AbortSignal),
+        });
+      } finally {
+        await lease.release();
+      }
     } finally {
       await rm(happyHomeDir, { recursive: true, force: true });
       await rm(pluginRoot, { recursive: true, force: true });

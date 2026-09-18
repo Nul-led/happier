@@ -25,9 +25,9 @@ import { resolveEffectiveMcpServersForDirectory } from '@/mcp/servers/resolveEff
 import {
   deriveSettingsSecretsKeyForCredentials,
   deriveSettingsSecretsReadKeysForCredentials,
-  indexSavedSecretsByIdFromAccountSettings,
 } from '@/mcp/servers/resolveMcpValueRefPlaintext';
 import { materializeMcpServerConfigRecord } from '@/mcp/servers/materializeMcpServerConfigRecord';
+import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
 import { probeMcpStdioServerTools } from '@/mcp/servers/probeMcpStdioServerTools';
 import { redactMcpServerProbeError } from '@/mcp/servers/redactMcpServerProbeError';
 import { detectProviderMcpServers } from '@/mcp/providerDetection/detectProviderMcpServers';
@@ -178,17 +178,23 @@ export function registerMachineMcpServersRpcHandlers(params: Readonly<{
         return { ok: false, errorCode: resolution.errorCode, error: resolution.error, durationMs };
       }
 
-      const savedSecretsById = indexSavedSecretsByIdFromAccountSettings(settingsObj);
       const settingsSecretsKey = credentials.encryption
         ? deriveSettingsSecretsKeyForCredentials(credentials)
         : null;
       const settingsSecretsReadKeys = deriveSettingsSecretsReadKeysForCredentials(credentials);
+      const savedSecretMaterializer = createSavedSecretMaterializerV1({
+        accountSettings: settingsObj,
+        settingsSecretsReadKeys,
+        resources: accountSettingsContext?.savedSecretResources,
+        resourceCatalogState: accountSettingsContext?.savedSecretCatalogState,
+      });
 
       let mcpConfig: { serverName: string; config: McpServerConfig };
       try {
         const materialized = await materializeMcpServerConfigRecord({
           resolved: resolution.resolved,
-          savedSecretsById,
+          savedSecretsById: new Map(),
+          savedSecretMaterializer,
           settingsSecretsKey,
           settingsSecretsReadKeys,
           processEnv: depsEnv,

@@ -4,11 +4,22 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   SessionInputAdmissionResultV1,
-  SessionPendingEnqueueByMachineRequestV1,
+} from '@happier-dev/protocol';
+import {
+  deriveAutomationOccurrenceKeyV1,
+  serializeAutomationRunExecutionRecipeV1,
 } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
+import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
+import type { ClaimableRunPayload } from './automationRunExecutor';
+
+type MachineAdmissionTransport = NonNullable<
+  Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']
+>;
+type MachineAdmissionRequest = Parameters<MachineAdmissionTransport>[0];
 
 vi.mock('@/session/transport/rpc/sessionRpc', () => ({
   callSessionRpc: vi.fn(async () => ({ ok: false, status: 'notRunning' })),
@@ -17,7 +28,7 @@ vi.mock('@/session/transport/rpc/sessionRpc', () => ({
 type SessionTransportServer = Readonly<{
   baseUrl: string;
   state: {
-    machineAdmissionRequests: SessionPendingEnqueueByMachineRequestV1[];
+    machineAdmissionRequests: MachineAdmissionRequest[];
     pendingReads: string[];
     discarded: Array<Readonly<{
       sessionId: string;
@@ -47,6 +58,7 @@ async function startSessionTransportServer(params: Readonly<{
   targetMachineId?: string;
   pendingLocalIds?: readonly string[];
   materializedLocalId?: string;
+  onTranscriptRead?: () => void;
   /** When set, the discard endpoint always answers 404 with this body (proxy/legacy-route simulation). */
   discard404Body?: unknown;
 }> = {}): Promise<SessionTransportServer> {
@@ -60,14 +72,29 @@ async function startSessionTransportServer(params: Readonly<{
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
 
+    if (params.onTranscriptRead && request.method === 'GET') {
+      const inputMessage = {
+        id: 'message-automation-input', seq: 1, localId: params.materializedLocalId,
+        sidechainId: null, createdAt: 1, updatedAt: 1,
+        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Run the task' } } },
+      };
+      if (url.pathname === `/v2/sessions/${CANONICAL_SESSION_ID}/messages/by-local-id/${encodeURIComponent(params.materializedLocalId!)}`) {
+        writeJson(response, 200, { message: inputMessage });
+        return;
+      }
+      if (url.pathname === `/v1/sessions/${CANONICAL_SESSION_ID}/messages`) {
+        params.onTranscriptRead();
+        writeJson(response, 200, { messages: [inputMessage] });
+        return;
+      }
+    }
+
     if (request.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
-      writeJson(response, 200, {
+      writeJson(response, 200, createAccountEncryptionCurrentnessFixture({
         mode,
         version: 1,
-        signingKeyFingerprint: null,
-        contentKeyFingerprint: null,
         updatedAt: 1,
-      });
+      }));
       return;
     }
 
@@ -174,6 +201,7 @@ describe('automation Session input composition', () => {
     targetMachineId?: string;
     pendingLocalIds?: readonly string[];
     materializedLocalId?: string;
+    onTranscriptRead?: () => void;
     discard404Body?: unknown;
   }> = {}) {
     const server = await startSessionTransportServer(params);
@@ -201,7 +229,7 @@ describe('automation Session input composition', () => {
     ];
 
     for (const outcome of outcomes) {
-      const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+      const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
         server.state.machineAdmissionRequests.push(request);
         return outcome;
       });
@@ -259,7 +287,7 @@ describe('automation Session input composition', () => {
       token: '@Nightly%20review',
       label: 'Nightly review',
     } as const;
-    const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+    const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
       server.state.machineAdmissionRequests.push(request);
       return { status: 'accepted', localId: 'automation:run:run-42' } as const;
     });
@@ -290,7 +318,7 @@ describe('automation Session input composition', () => {
     const { enqueueAutomationPrompt, server } = await loadClient({
       targetMachineId: 'machine-on-another-daemon',
     });
-    const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+    const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
       server.state.machineAdmissionRequests.push(request);
       return { status: 'accepted', localId: 'automation:run:run-42' } as const;
     });
@@ -316,7 +344,7 @@ describe('automation Session input composition', () => {
       token: 'token-e2ee',
       encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(7) },
     };
-    const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+    const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
       server.state.machineAdmissionRequests.push(request);
       return { status: 'accepted' as const, localId: String(request.localId) };
     });
@@ -359,7 +387,7 @@ describe('automation Session input composition', () => {
       new Error('generic attempt invalidation'),
     ]) {
       const cancellation = new AbortController();
-      const machineAdmissionTransport = vi.fn(async (request: SessionPendingEnqueueByMachineRequestV1) => {
+      const machineAdmissionTransport = vi.fn<MachineAdmissionTransport>(async (request) => {
         server.state.machineAdmissionRequests.push(request);
         cancellation.abort(reason);
         return { status: 'accepted' as const, localId: String(request.localId) };
@@ -399,6 +427,100 @@ describe('automation Session input composition', () => {
     // the loaded runtime holds no turn carrying this localId to cancel.
     expect(callSessionRpc).not.toHaveBeenCalled();
   });
+
+  it.each(['authoritative', 'generic'] as const)(
+    'preserves exact-input cancellation authority after new-Session final-result admission: %s',
+    async (reason) => {
+      const cancellation = new AbortController();
+      const onTranscriptRead = vi.fn(() => {
+        if (reason === 'authoritative') abortAutomationRunForAuthoritativeCancellation(cancellation);
+        else cancellation.abort(new Error('attempt invalidated'));
+      });
+      const { server } = await loadClient({
+        materializedLocalId: 'automation:run:run-42',
+        onTranscriptRead,
+      });
+      const { executeClaimedRun } = await import('./automationRunExecutor');
+      const { abortAutomationRunForAuthoritativeCancellation } = await import('./automationRunCancellation');
+      const evidence = {
+        v: 1, kind: 'conversation', bindingId: 'binding-1', occurrenceId: 'occurrence-1',
+        occurredAt: 1,
+        caller: { pluginId: 'happier.channels', contributionLocalId: 'provider/observation-ingest-v1', machineId: 'machine-1' },
+        input: { message: 'Run the task' }, replyContextIdentity: 'reply-1',
+      } as const;
+      const recipe = serializeAutomationRunExecutionRecipeV1({
+        v: 1, assignmentMachineIds: ['machine-1'], templateVersion: 1,
+        template: { t: 'plain', v: { v: 1, prompt: 'Run the task' } },
+        triggerEvidence: { t: 'plain', v: { ...evidence, observationReceivedAt: 2 } },
+        target: {
+          kind: 'newSession',
+          spawn: {
+            executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+            directory: '/tmp/automation',
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+          },
+        },
+      });
+      if (recipe.kind !== 'available') throw new Error('Invalid strict recipe fixture');
+      const claimCurrentness = { mode: 'plain', version: 41, contentKeyFingerprint: null } as const;
+      const startCurrentness = { ...claimCurrentness, version: 42 };
+      const claimed = {
+        protocol: 'v3',
+        automation: { id: 'automation-7', name: 'New Session', enabled: true },
+        accountCurrentness: claimCurrentness,
+        run: {
+          id: 'run-42', automationId: 'automation-7', attempt: 1, triggerId: null,
+          revision: 0,
+          recipeKind: 'legacy',
+          cause: { kind: 'conversation', occurrenceKey: deriveAutomationOccurrenceKeyV1(evidence), occurredAt: 1 },
+          executionInputEnvelope: recipe.serialized,
+          resultDelivery: { kind: 'finalResult', accountId: 'account-1', handoffId: 'automation-reply-handoff:run-42' },
+        },
+      } satisfies ClaimableRunPayload;
+      const claimClient = {
+        startRun: vi.fn(async () => startCurrentness), heartbeatRun: vi.fn(async () => {}),
+        succeedRun: vi.fn(async () => {}), failRun: vi.fn(async () => {}),
+      };
+      const dispatchSessionServerStart = vi.fn<NonNullable<Parameters<typeof executeClaimedRun>[0]['dispatchSessionServerStart']>>(async () => ({
+        type: 'success', sessionId: CANONICAL_SESSION_ID, disposition: 'created',
+        executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
+        organizationPlacement: { folderId: null, tagIds: [] },
+        initialInput: { status: 'accepted', localId: 'automation:run:run-42' },
+      }));
+
+      await executeClaimedRun({
+        token: 'token', credentials: { token: 'token', encryption: null },
+        machineId: 'machine-1', claimed, claimClient, signal: cancellation.signal,
+        heartbeatMs: 60_000, leaseDurationMs: 250,
+        spawnSession: async () => { throw new Error('Strict Session dispatch must not use legacy spawn'); },
+        dispatchSessionServerStart,
+        resolveAutomationAccountEncryption: vi.fn()
+          .mockResolvedValueOnce({ kind: 'available', witness: claimCurrentness })
+          .mockResolvedValueOnce({ kind: 'available', witness: startCurrentness }),
+      });
+
+      // Real result-waiter transcript reads establish cancellation during the
+      // admitted turn, not a pre-dispatch abort or a mocked waiter shortcut.
+      expect(onTranscriptRead).toHaveBeenCalled();
+      expect(claimClient.succeedRun).not.toHaveBeenCalled();
+      expect(claimClient.failRun).not.toHaveBeenCalled();
+      expect(dispatchSessionServerStart).toHaveBeenCalledOnce();
+      expect(server.state.discarded).toEqual(reason === 'authoritative' ? [{
+        sessionId: CANONICAL_SESSION_ID,
+        localId: 'automation:run:run-42',
+        body: { reason: 'session_input_cancelled' },
+      }] : []);
+      if (reason === 'authoritative') {
+        expect(callSessionRpc).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          sessionId: CANONICAL_SESSION_ID,
+          method: `${CANONICAL_SESSION_ID}:${SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1}`,
+          request: { sessionId: CANONICAL_SESSION_ID, localId: 'automation:run:run-42' },
+        }));
+      } else {
+        expect(callSessionRpc).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('treats a session-not-found discard 404 as a terminal no-op instead of exact runtime cancellation', async () => {
     const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({

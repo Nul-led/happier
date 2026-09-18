@@ -1,28 +1,31 @@
 import { randomBytes } from 'node:crypto';
 
 import {
+  admitDirectHomeQrV2,
   DirectHomeQrCompletionError,
   startDirectHomeQrLifecycle,
   type DirectHomeQrLifecycleAdapters,
-  type DirectHomeQrPairingStatus,
 } from '@happier-dev/cli-common/homeEnrollment';
 import {
   deriveHomeQrBindingKeyV2,
   encodeHomeQrInviteV2Payload,
   parseHomeQrInviteV2Payload,
-  resolveTerminalProvisioningVariantV2,
   sealTerminalProvisioningV3Payload,
   sealTerminalProvisioningV3TokenOnlyPayload,
-  verifyHomeQrBindingProofV2,
 } from '@happier-dev/protocol';
 import qrcode from 'qrcode-terminal';
-import tweetnacl from 'tweetnacl';
 
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
-import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentialsForServerId } from '@/persistence';
-import { getActiveServerProfile, getServerProfile, type ServerProfile } from '@/server/serverProfiles';
+import {
+  adoptServerProfileHomeConnectionDescriptor,
+  getActiveServerProfile,
+  getServerProfile,
+  type ServerProfile,
+} from '@/server/serverProfiles';
+import { resolveTerminalProvisioningMaterial, type TerminalProvisioningMaterial } from '@/auth/terminalProvisioningMaterial';
 
 export type CliDirectHomeQrResult =
   | Readonly<{ kind: 'completed'; requestedDeviceLabel: string | null }>
@@ -52,41 +55,6 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
   const keys = Object.keys(value).sort();
   const sorted = [...expected].sort();
   return keys.length === sorted.length && keys.every((key, index) => key === sorted[index]);
-}
-
-function parseStatus(value: unknown): DirectHomeQrPairingStatus | null {
-  if (!isRecord(value) || typeof value.pairId !== 'string' || typeof value.expiresAt !== 'string') return null;
-  if (value.state === 'pending' && exactKeys(value, ['state', 'pairId', 'expiresAt'])) {
-    return { state: 'pending', pairId: value.pairId, expiresAt: value.expiresAt };
-  }
-  if (
-    value.state === 'requested'
-    && typeof value.requestedPublicKey === 'string'
-    && (value.requestedDeviceLabel === null || typeof value.requestedDeviceLabel === 'string')
-    && typeof value.bindingProof === 'string'
-    && typeof value.homeServerIdentityId === 'string'
-    && exactKeys(value, ['state', 'pairId', 'expiresAt', 'requestedPublicKey', 'requestedDeviceLabel', 'bindingProof', 'homeServerIdentityId'])
-  ) {
-    return {
-      state: 'requested',
-      pairId: value.pairId,
-      expiresAt: value.expiresAt,
-      requestedPublicKey: value.requestedPublicKey,
-      requestedDeviceLabel: value.requestedDeviceLabel,
-      bindingProof: value.bindingProof,
-      homeServerIdentityId: value.homeServerIdentityId,
-    };
-  }
-  return null;
-}
-
-function decodeCanonicalBase64Key(value: string): Uint8Array | null {
-  try {
-    const bytes = Buffer.from(value, 'base64');
-    return bytes.byteLength === 32 && bytes.toString('base64') === value ? new Uint8Array(bytes) : null;
-  } catch {
-    return null;
-  }
 }
 
 function renderTerminalQr(link: string): string | null {
@@ -174,6 +142,7 @@ export async function runCliDirectHomeQr(input: Readonly<{
   signal?: AbortSignal;
   onInvite?: (input: Readonly<{ link: string }>) => void;
 }>): Promise<CliDirectHomeQrResult> {
+  if (input.signal?.aborted) return { kind: 'cancelled' };
   let profile: ServerProfile;
   try {
     profile = input.profileRef
@@ -182,15 +151,24 @@ export async function runCliDirectHomeQr(input: Readonly<{
   } catch {
     return { kind: 'failed', status: 404 };
   }
-  const descriptor = profile.homeConnectionDescriptor;
-  if (!descriptor || profile.homeConnectionDescriptorAuthority !== 'exact') return { kind: 'failed', status: 412 };
+  const storedDescriptor = profile.homeConnectionDescriptor;
+  if (!storedDescriptor || profile.homeConnectionDescriptorAuthority !== 'exact') return { kind: 'failed', status: 412 };
   const credentials = await readStoredCredentialsForServerId(profile.id);
   if (!credentials?.token) return { kind: 'failed', status: 401 };
 
-  const acquired = await acquireTerminalAuthEnrollmentRuntime(descriptor);
-  if (!acquired.ok) return { kind: 'failed', status: 503 };
+  const acquired = await acquireTerminalAuthEnrollmentRuntime(storedDescriptor, undefined, input.signal);
+  if (!acquired.ok) return input.signal?.aborted
+    ? { kind: 'cancelled' }
+    : { kind: 'failed', status: 503 };
   const origin = normalizeOrigin(acquired.runtime.runtimeOrigin);
-  const observed = await fetchServerFeaturesSnapshot({ serverUrl: origin, token: credentials.token, signal: input.signal });
+  let observed: Awaited<ReturnType<typeof observeServerFeaturesSnapshot>>;
+  try {
+    observed = await observeServerFeaturesSnapshot({ serverUrl: origin, token: credentials.token, signal: input.signal });
+  } catch (error) {
+    await acquired.close().catch(() => undefined);
+    if (input.signal?.aborted) return { kind: 'cancelled' };
+    throw error;
+  }
   if (observed.status === 'unsupported') {
     await acquired.close().catch(() => undefined);
     return { kind: 'update_required' };
@@ -199,7 +177,31 @@ export async function runCliDirectHomeQr(input: Readonly<{
     await acquired.close().catch(() => undefined);
     return { kind: 'failed', status: 503 };
   }
-  if (observed.features.homeConnectionDescriptor?.homeServerIdentityId !== descriptor.homeServerIdentityId) {
+  const observedDescriptor = observed.features.homeConnectionDescriptor;
+  if (!observedDescriptor || observedDescriptor.homeServerIdentityId !== storedDescriptor.homeServerIdentityId) {
+    await acquired.close().catch(() => undefined);
+    return { kind: 'failed', status: 412 };
+  }
+  // Admission owns whether this flow may mutate state at all. The lifecycle
+  // repeats the same canonical check immediately before starting the pairing.
+  if (admitDirectHomeQrV2(observed.features).kind !== 'admitted') {
+    await acquired.close().catch(() => undefined);
+    return { kind: 'update_required' };
+  }
+  let descriptor: typeof storedDescriptor;
+  try {
+    const reconciled = await adoptServerProfileHomeConnectionDescriptor({
+      descriptor: observedDescriptor,
+      expectedProfileId: profile.id,
+      observation: 'exact',
+    });
+    const currentDescriptor = reconciled.profile.homeConnectionDescriptor;
+    if (!currentDescriptor || reconciled.profile.homeConnectionDescriptorAuthority !== 'exact') {
+      await acquired.close().catch(() => undefined);
+      return { kind: 'failed', status: 412 };
+    }
+    descriptor = currentDescriptor;
+  } catch {
     await acquired.close().catch(() => undefined);
     return { kind: 'failed', status: 412 };
   }
@@ -212,12 +214,12 @@ export async function runCliDirectHomeQr(input: Readonly<{
   const adapters: DirectHomeQrLifecycleAdapters = {
     randomBytes: (length) => new Uint8Array(randomBytes(length)),
     now: Date.now,
-    start: async (body) => {
+    start: async ({ signal, ...body }) => {
       const response = await fetch(`${origin}/v1/auth/pairing/start`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: input.signal,
+        signal,
       });
       if (!response.ok) return { ok: false, status: response.status };
       const payload = await readJson(response);
@@ -244,8 +246,7 @@ export async function runCliDirectHomeQr(input: Readonly<{
           status: response.status,
         };
       }
-      const status = parseStatus(await readJson(response));
-      return status ? { ok: true, status } : { ok: false, reason: 'invalid', status: 502 };
+      return { ok: true, status: await readJson(response) };
     },
     consume: async ({ pairId, intent, signal, timeoutMs }) => {
       try {
@@ -255,36 +256,25 @@ export async function runCliDirectHomeQr(input: Readonly<{
           body: JSON.stringify({ pairId, intent }),
           signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
         });
-        return { ok: response.ok };
+        if (response.ok) return { ok: true, outcome: 'cancelled' };
+        if (response.status === 409) {
+          const payload = await readJson(response);
+          if (isRecord(payload) && exactKeys(payload, ['error']) && payload.error === 'already_decided') {
+            return { ok: true, outcome: 'completion_won' };
+          }
+        }
+        return { ok: false };
       } catch {
         return { ok: false };
       }
     },
-    complete: async ({ context, status, signal }) => {
-      const requesterPublicKey = decodeCanonicalBase64Key(status.requestedPublicKey);
-      const responseExpiresAtMs = Date.parse(status.expiresAt);
-      if (
-        !requesterPublicKey
-        || status.pairId !== context.pairId
-        || status.homeServerIdentityId !== context.descriptor.homeServerIdentityId
-        || responseExpiresAtMs !== context.expiresAtMs
-        || Date.now() < context.issuedAtMs
-        || Date.now() >= context.expiresAtMs
-        || !verifyHomeQrBindingProofV2({
-          direction: context.direction,
-          qrSecret: context.qrSecret,
-          pairId: context.pairId,
-          homeServerIdentityId: context.descriptor.homeServerIdentityId,
-          requesterPublicKey,
-          expiresAtMs: context.expiresAtMs,
-        }, status.bindingProof)
-      ) throw new DirectHomeQrCompletionError('invalid');
-
-      const variant = resolveTerminalProvisioningVariantV2({
-        encryptionMode: credentials.encryption ? 'e2ee' : 'plain',
-        dataKeyMaterialAvailable: credentials.encryption?.type === 'dataKey',
-      });
-      if (variant === 'legacyProvisioningUnavailable') throw new DirectHomeQrCompletionError('failed');
+    complete: async ({ context, requesterPublicKey, signal }) => {
+      let material: TerminalProvisioningMaterial;
+      try {
+        material = resolveTerminalProvisioningMaterial(credentials);
+      } catch {
+        throw new DirectHomeQrCompletionError('invalid');
+      }
       const common = {
         terminalEphemeralPublicKey: requesterPublicKey,
         pairingSecret: deriveHomeQrBindingKeyV2(context.qrSecret),
@@ -294,17 +284,12 @@ export async function runCliDirectHomeQr(input: Readonly<{
       };
       let sealed: Uint8Array;
       let responseKind: 'tokenOnly' | 'dataKey';
-      if (variant === 'tokenOnly') {
+      if (material.kind === 'tokenOnly') {
         responseKind = 'tokenOnly';
         sealed = sealTerminalProvisioningV3TokenOnlyPayload(common);
       } else {
-        const encryption = credentials.encryption;
-        if (encryption?.type !== 'dataKey'
-          || !Buffer.from(tweetnacl.box.keyPair.fromSecretKey(encryption.machineKey).publicKey).equals(Buffer.from(encryption.publicKey))) {
-          throw new DirectHomeQrCompletionError('invalid');
-        }
         responseKind = 'dataKey';
-        sealed = sealTerminalProvisioningV3Payload({ ...common, contentPrivateKey: encryption.machineKey });
+        sealed = sealTerminalProvisioningV3Payload({ ...common, contentPrivateKey: material.contentPrivateKey });
       }
       let response: Response;
       try {
@@ -353,6 +338,7 @@ export async function runCliDirectHomeQr(input: Readonly<{
     ...(input.signal ? { signal: input.signal } : {}),
   });
   if (started.kind === 'update_required') return started;
+  if (started.kind === 'cancelled') return started;
   if (started.kind === 'failed') return { kind: 'failed', status: started.status };
   if (input.onInvite) {
     input.onInvite({ link: started.link });

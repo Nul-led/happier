@@ -7,13 +7,15 @@ import {
   resolveConnectedServicesLaunchAuthWithInventory,
 } from './connectedServicesLaunchAuth';
 
+const CODEX_SERVICE_KEY = 'happier.agent.codex/openai-codex';
+
 const codexInventory = {
-  supportedServiceIds: ['openai-codex'],
+  supportedServiceIds: [CODEX_SERVICE_KEY],
   profileOptionsByServiceId: {
-    'openai-codex': [{ profileId: 'work', status: 'connected' }],
+    [CODEX_SERVICE_KEY]: [{ profileId: 'work', status: 'connected' }],
   },
   groupOptionsByServiceId: {
-    'openai-codex': [{ groupId: 'team' }],
+    [CODEX_SERVICE_KEY]: [{ groupId: 'team' }],
   },
 };
 
@@ -27,23 +29,23 @@ describe('connectedServicesLaunchAuth', () => {
       selection: null,
       serviceId: null,
     });
-    expect(parseConnectedServicesLaunchAuth('cs:openai-codex:group:team')).toEqual({
+    expect(parseConnectedServicesLaunchAuth(`cs:${CODEX_SERVICE_KEY}:group:team`)).toEqual({
       kind: 'connected',
       id: 'team',
       selection: 'group',
-      serviceId: 'openai-codex',
+      serviceId: CODEX_SERVICE_KEY,
     });
   });
 
   it('resolves the exact id through the evolved inventory shape', () => {
     expect(resolveConnectedServicesLaunchAuth({
       intent: parseConnectedServicesLaunchAuth('cs:work'),
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       inventory: codexInventory,
     })).toEqual({
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        'openai-codex': {
+        [CODEX_SERVICE_KEY]: {
           source: 'connected',
           selection: 'profile',
           profileId: 'work',
@@ -55,7 +57,7 @@ describe('connectedServicesLaunchAuth', () => {
   it('fails closed when the exact id is unavailable', () => {
     expect(() => resolveConnectedServicesLaunchAuth({
       intent: parseConnectedServicesLaunchAuth('cs:missing'),
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       inventory: codexInventory,
     })).toThrow('connected_service_auth_not_found:cs:missing');
   });
@@ -63,18 +65,18 @@ describe('connectedServicesLaunchAuth', () => {
   it('reports qualified alternatives when an exact id is ambiguous', () => {
     expect(() => resolveConnectedServicesLaunchAuth({
       intent: parseConnectedServicesLaunchAuth('cs:same'),
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       inventory: {
-        supportedServiceIds: ['openai-codex'],
+        supportedServiceIds: [CODEX_SERVICE_KEY],
         profileOptionsByServiceId: {
-          'openai-codex': [{ profileId: 'same', status: 'connected' }],
+          [CODEX_SERVICE_KEY]: [{ profileId: 'same', status: 'connected' }],
         },
         groupOptionsByServiceId: {
-          'openai-codex': [{ groupId: 'same' }],
+          [CODEX_SERVICE_KEY]: [{ groupId: 'same' }],
         },
       },
     })).toThrow(
-      'connected_service_auth_ambiguous:cs:openai-codex:profile:same,cs:openai-codex:group:same',
+      `connected_service_auth_ambiguous:cs:${CODEX_SERVICE_KEY}:profile:same,cs:${CODEX_SERVICE_KEY}:group:same`,
     );
   });
 
@@ -83,12 +85,12 @@ describe('connectedServicesLaunchAuth', () => {
 
     await expect(resolveConnectedServicesLaunchAuthWithInventory({
       intent: parseConnectedServicesLaunchAuth('cs:work'),
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       listInventory,
     })).resolves.toEqual({
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        'openai-codex': {
+        [CODEX_SERVICE_KEY]: {
           source: 'connected',
           selection: 'profile',
           profileId: 'work',
@@ -100,7 +102,7 @@ describe('connectedServicesLaunchAuth', () => {
     listInventory.mockClear();
     await resolveConnectedServicesLaunchAuthWithInventory({
       intent: parseConnectedServicesLaunchAuth('native'),
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       listInventory,
     });
     expect(listInventory).not.toHaveBeenCalled();
@@ -108,15 +110,15 @@ describe('connectedServicesLaunchAuth', () => {
 
   it('uses the configured Connected Services default when direct CLI auth is omitted', async () => {
     const bindings = {
-      v: 1 as const,
+      v: 2 as const,
       bindingsByServiceId: {
-        'openai-codex': { source: 'connected' as const, selection: 'group' as const, groupId: 'team' },
+        [CODEX_SERVICE_KEY]: { source: 'connected' as const, selection: 'group' as const, groupId: 'team' },
       },
     };
     await expect(resolveCliConnectedServicesLaunchBindings({
       authRaw: undefined,
       authJsonRaw: undefined,
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       defaultDisposition: { kind: 'connected', bindings },
       listInventory: async () => {
         throw new Error('inventory should not be read for defaults');
@@ -128,13 +130,13 @@ describe('connectedServicesLaunchAuth', () => {
     await expect(resolveCliConnectedServicesLaunchBindings({
       authRaw: 'native',
       authJsonRaw: undefined,
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       defaultDisposition: {
         kind: 'connected',
         bindings: {
-          v: 1,
+          v: 2,
           bindingsByServiceId: {
-            'openai-codex': {
+            [CODEX_SERVICE_KEY]: {
               source: 'connected',
               selection: 'group',
               groupId: 'team',
@@ -144,9 +146,9 @@ describe('connectedServicesLaunchAuth', () => {
       },
       listInventory: vi.fn(),
     })).resolves.toEqual({
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        'openai-codex': { source: 'native' },
+        [CODEX_SERVICE_KEY]: { source: 'native' },
       },
     });
   });
@@ -155,7 +157,7 @@ describe('connectedServicesLaunchAuth', () => {
     await expect(resolveCliConnectedServicesLaunchBindings({
       authRaw: undefined,
       authJsonRaw: undefined,
-      supportedServiceIds: ['openai-codex'],
+      supportedServiceIds: [CODEX_SERVICE_KEY],
       defaultDisposition: {
         kind: 'unavailable',
         reason: 'connected_services_default_settings_invalid',

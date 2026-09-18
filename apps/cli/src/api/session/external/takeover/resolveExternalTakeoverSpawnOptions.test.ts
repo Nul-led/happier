@@ -383,7 +383,6 @@ describe('External Session takeover launch consumption', () => {
           profileId: privateProfileId,
         },
         credentials: { token: 'token', encryption: null },
-        loadLocalHandoffMetadataByVendorResumeId: async () => null,
       },
       validateEnvVarRecordStrict: () => ({
         ok: false,

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import axios from 'axios';
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
@@ -12,13 +13,11 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
     envScope.restore();
     envScope = createEnvKeyScope(envKeys);
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('encodes sessionId path segments for fetchSessionById', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { fetchSessionById } = await import('./sessionsHttp');
 
     const sessionId = 'sess/../?x=1';
@@ -33,10 +32,79 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
     );
   });
 
+  it('uses the captured Home for an exact Session hydration', async () => {
+    const { fetchSessionById } = await import('./sessionsHttp');
+    const get = vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 404, data: {} });
+    await expect(fetchSessionById({ token: 't', sessionId: 'session', serverUrl: 'https://captured.example' })).resolves.toBeNull();
+    expect(get.mock.calls[0]?.[0]).toBe('https://captured.example/v2/sessions/session');
+  });
+
+  it('requests effective access only after the exact Home decision opts in', async () => {
+    const { fetchSessionById } = await import('./sessionsHttp');
+    const get = vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 404, data: {} });
+    await expect(fetchSessionById({
+      token: 't',
+      sessionId: 'session',
+      serverUrl: 'https://captured.example',
+      accessProjectionVersion: 1,
+    })).resolves.toBeNull();
+    expect(get.mock.calls[0]?.[0]).toBe('https://captured.example/v2/sessions/session?accessProjectionVersion=1');
+  });
+
+  it('does not report a qualified detail route miss as an absent Session', async () => {
+    const { fetchSessionById } = await import('./sessionsHttp');
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 404,
+      data: { error: 'Not found', path: '/v2/sessions/session', method: 'GET' },
+    });
+
+    await expect(fetchSessionById({
+      token: 't',
+      sessionId: 'session',
+      serverUrl: 'https://captured.example',
+      accessProjectionVersion: 1,
+    })).rejects.toThrow('Unexpected /v2/sessions response shape');
+  });
+
+  it('derives effective-access detail from the exact Home collaboration snapshot', async () => {
+    const { fetchSessionById } = await import('./sessionsHttp');
+    const get = vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 404, data: {} });
+    await expect(fetchSessionById({
+      token: 't',
+      sessionId: 'session',
+      serverUrl: 'https://captured.example',
+      serverFeaturesSnapshot: {
+        status: 'ready',
+        features: FeaturesResponseSchema.parse({
+          features: {
+            sessions: { enabled: true, collaboration: { enabled: true } },
+            sharing: { session: { enabled: true } },
+          },
+          capabilities: {},
+        }),
+      },
+    })).resolves.toBeNull();
+    expect(get.mock.calls[0]?.[0]).toBe('https://captured.example/v2/sessions/session?accessProjectionVersion=1');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['unsupported', { status: 'unsupported' as const, reason: 'endpoint_missing' as const }],
+  ])('keeps the released bare detail projection when the exact Home decision is %s', async (_label, snapshot) => {
+    const { fetchSessionById } = await import('./sessionsHttp');
+    const get = vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 404, data: {} });
+    await expect(fetchSessionById({
+      token: 't',
+      sessionId: 'session',
+      serverUrl: 'https://captured.example',
+      ...(snapshot ? { serverFeaturesSnapshot: snapshot } : {}),
+    })).resolves.toBeNull();
+    expect(get.mock.calls[0]?.[0]).toBe('https://captured.example/v2/sessions/session');
+  });
+
   it('encodes sessionId path segments for commitSessionStoredMessage', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { commitSessionStoredMessage } = await import('./sessionsHttp');
 
     const sessionId = 'sess/../?x=1';
@@ -59,7 +127,6 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
   it('sends transcript.import as one validated historical batch', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { importHistoricalSessionTranscript } = await import('./sessionsHttp');
     const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({
       status: 200,
@@ -105,7 +172,6 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
   it('keeps an empty transcript.import as a local no-op', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { importHistoricalSessionTranscript } = await import('./sessionsHttp');
     const postSpy = vi.spyOn(axios, 'post');
 
@@ -121,7 +187,6 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
   it('maps the server-v0.2.1 route-miss vector to an upgrade-required transcript.import error', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { importHistoricalSessionTranscript } = await import('./sessionsHttp');
     // Provenance: server-v0.2.1@4913c1e533c872a0712ba1c25b3104fd470aacc2 registers
     // POST /v2/sessions/:sessionId/messages but no transcript/import route.
@@ -150,7 +215,6 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
   it('preserves current-server missing-session handling for transcript.import', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { importHistoricalSessionTranscript } = await import('./sessionsHttp');
     vi.spyOn(axios, 'post').mockResolvedValueOnce({
       status: 404,
@@ -170,7 +234,6 @@ describe('sessionControl.sessionsHttp URL encoding', () => {
   it('rejects the complete transcript.import batch before any request when one item is invalid', async () => {
     process.env.HAPPIER_SERVER_URL = 'http://server.example.test';
 
-    vi.resetModules();
     const { importHistoricalSessionTranscript } = await import('./sessionsHttp');
     const postSpy = vi.spyOn(axios, 'post');
 

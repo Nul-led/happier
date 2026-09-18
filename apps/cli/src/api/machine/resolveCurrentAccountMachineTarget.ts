@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ExternalActionMachineBootstrapV1Schema } from '@happier-dev/protocol';
 
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 
 // The machine bootstrap rows reuse the one Protocol-owned external Action
 // bootstrap projection; this parser extends it only with the legacy/full-account
@@ -54,10 +54,17 @@ function projectCurrentMachineTarget(
   return { machineId: row.id, machineLabel: readMachineLabel(row.metadata, row.id) };
 }
 
-export async function listCurrentAccountMachines(params: Readonly<{ token: string; signal?: AbortSignal }>): Promise<readonly CurrentAccountMachineInventoryItem[]> {
+export async function listCurrentAccountMachines(params: Readonly<{
+  token: string;
+  serverHttpBaseUrl?: string;
+  signal?: AbortSignal;
+}>): Promise<readonly CurrentAccountMachineInventoryItem[]> {
   params.signal?.throwIfAborted();
   try {
-    const response = await axios.get<unknown>(`${resolveServerHttpBaseUrl()}/v1/machines`, {
+    const serverHttpBaseUrl = params.serverHttpBaseUrl
+      ? normalizeServerHttpBaseUrl(params.serverHttpBaseUrl)
+      : resolveServerHttpBaseUrl();
+    const response = await axios.get<unknown>(`${serverHttpBaseUrl}/v1/machines`, {
       headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.token}` },
       timeout: 20_000,
       ...(params.signal ? { signal: params.signal } : {}),
@@ -88,6 +95,7 @@ export async function listCurrentAccountMachines(params: Readonly<{ token: strin
 export async function resolveCurrentAccountMachineTarget(params: Readonly<{
   token: string;
   requestedMachineId?: string;
+  serverHttpBaseUrl?: string;
   signal?: AbortSignal;
 }>): Promise<CurrentAccountMachineTargetResolution> {
   params.signal?.throwIfAborted();

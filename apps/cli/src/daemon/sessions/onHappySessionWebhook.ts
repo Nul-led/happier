@@ -428,7 +428,9 @@ export function createOnDaemonSessionStartupFailure(params: Readonly<{
       errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
       errorMessage: input.errorDetail.kind === 'session_creation_correspondence_conflict'
         ? 'Session creation correspondence conflicts with the existing Session'
-        : 'Session creation organization placement is invalid',
+        : input.errorDetail.kind === 'update_required'
+          ? 'Session initial access requires updated collaboration support'
+          : 'Session creation organization placement is invalid',
       errorDetail: input.errorDetail,
     };
     // Claim before invoking the existing waiter so duplicate/later callbacks

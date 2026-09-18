@@ -14,6 +14,7 @@ export async function runRuntimeInstallModeDispatch(params: Readonly<{
     plan: AgentCliInstallPlan;
     env: NodeJS.ProcessEnv;
     lifecycleContext: RuntimeInstallLifecycleContext;
+    signal?: AbortSignal;
     deps: ManagedInstallDeps;
 }>): Promise<InstallAgentCliResult> {
     const { runtimeSpec, plan, env, lifecycleContext } = params;
@@ -26,6 +27,7 @@ export async function runRuntimeInstallModeDispatch(params: Readonly<{
             env,
             lifecycleContext,
             deps: params.deps,
+            signal: params.signal,
             spawn,
         })
         : null;

@@ -12,6 +12,7 @@ import { readStoredCredentials } from '@/persistence';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { addServerProfile, adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
 import { applyEphemeralServerSelectionFromPrefixArgs } from '@/server/serverSelection';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 const env = process.env;
 
@@ -54,6 +55,7 @@ describe('happier mcp serve (env hardening)', () => {
       expect(deps.createExternalMcpServer).toHaveBeenCalledWith({
         credentials,
         defaultSessionId: 'sess-1',
+        machineId: 'machine-1',
         pluginToolCatalog: [],
       });
       expect(deps.connectMcpStdio).toHaveBeenCalledWith(expect.objectContaining({ connect }));
@@ -104,6 +106,7 @@ describe('happier mcp serve (env hardening)', () => {
       expect(createExternalMcpServer).toHaveBeenCalledWith({
         credentials,
         defaultSessionId: null,
+        machineId: 'machine-1',
         pluginToolCatalog: [pluginTool],
       });
     } finally {
@@ -294,6 +297,14 @@ describe('happier mcp serve (env hardening)', () => {
       }>> = [];
       const connectedSnapshots: typeof constructedSnapshots = [];
       const deps: McpCommandDeps = {
+        observeServerFeaturesSnapshot: async () => ({
+          status: 'ready',
+          provenance: 'public',
+          features: {
+            features: {},
+            capabilities: { serverIdentity: { serverIdentityId: 'srv_selected_home' } },
+          },
+        } as CliServerFeaturesSnapshot),
         readStoredCredentials,
         ensureMachineIdForCredentials: async () => ({ machineId: 'machine_1' }),
         bootstrapAccountSettingsContext: async ({ credentials }) => {
@@ -371,6 +382,85 @@ describe('happier mcp serve (env hardening)', () => {
         reloadConfiguration();
       }
     });
+  });
+
+  it('rejects a stale local route whose anonymously observed Home identity differs before reading or sending its bearer', async () => {
+    const readStoredCredentials = vi.fn(async () => ({
+      token: 'selected-home-token',
+      encryption: null,
+    }));
+    const ensureMachineIdForCredentials = vi.fn(async () => ({ machineId: 'machine_1' }));
+    const bootstrapAccountSettingsContext = vi.fn(async () => ({ settings: { actionsSettingsV1: null } }) as any);
+    const observeServerFeaturesSnapshot = vi.fn(async () => ({
+      status: 'ready' as const,
+      provenance: 'public' as const,
+      features: {
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_attacker_home' } },
+      },
+    } as CliServerFeaturesSnapshot));
+    const selection = {
+      homeTarget: {
+        profileId: 'selected-home',
+        homeServerIdentityId: 'srv_selected_home',
+        descriptor: {
+          v: 1 as const,
+          homeServerIdentityId: 'srv_selected_home',
+          canonicalServerUrl: 'https://selected-home.example.test',
+          revision: 1,
+          endpoints: [{ kind: 'https' as const, url: 'https://selected-route.example.test' }],
+        },
+        canonicalAuthUrl: 'https://selected-home.example.test',
+        applicationUrl: 'https://selected-route.example.test',
+        webappUrl: 'https://app.selected-home.example.test',
+        credentialDestination: {
+          v: 1 as const,
+          homeServerIdentityId: 'srv_selected_home',
+          canonicalServerUrl: 'https://selected-home.example.test',
+          applicationEndpointUrls: ['https://selected-route.example.test'],
+          irohEndpointIds: [],
+        },
+        preferredTransport: 'https' as const,
+        authority: 'saved_profile' as const,
+      },
+      serverUrl: 'https://selected-home.example.test',
+      localServerUrl: 'https://stale-malicious-route.example.test',
+      webappUrl: 'https://app.selected-home.example.test',
+      activeServerId: 'selected-home',
+      application: { kind: 'ephemeralEnv' as const },
+    };
+
+    try {
+      await expect(runMcpServeCommand(['serve'], {
+        observeServerFeaturesSnapshot,
+        readStoredCredentials,
+        ensureMachineIdForCredentials,
+        bootstrapAccountSettingsContext,
+        createExternalMcpServer: vi.fn(() => ({ mcp: { connect: async () => {} } as any, toolNames: [] })),
+        connectMcpStdio: async () => {},
+        updateAccountSettingsV2WithRetry: async () => ({} as any),
+        detectProviderMcpServers: async () => ({} as any),
+        probeMcpStdioServerTools: async () => [],
+        randomUUID: () => 'uuid',
+        nowMs: () => 0,
+      }, selection)).rejects.toMatchObject({ code: 'identity_mismatch' });
+
+      expect(observeServerFeaturesSnapshot).toHaveBeenCalledWith({
+        serverUrl: 'https://selected-route.example.test',
+        projection: 'public',
+      });
+      expect(readStoredCredentials).not.toHaveBeenCalled();
+      expect(ensureMachineIdForCredentials).not.toHaveBeenCalled();
+      expect(bootstrapAccountSettingsContext).not.toHaveBeenCalled();
+    } finally {
+      disableMcpStdioConsolePatch();
+      delete process.env.HAPPIER_SERVER_URL;
+      delete process.env.HAPPIER_LOCAL_SERVER_URL;
+      delete process.env.HAPPIER_PUBLIC_SERVER_URL;
+      delete process.env.HAPPIER_WEBAPP_URL;
+      delete process.env.HAPPIER_ACTIVE_SERVER_ID;
+      reloadConfiguration();
+    }
   });
 
   it('preserves an explicit manual Home URL without persisting or accepting ambient redirection', async () => {
@@ -483,6 +573,7 @@ describe('happier mcp serve (env hardening)', () => {
     expect(createExternalMcpServer).toHaveBeenCalledWith({
       credentials,
       defaultSessionId: null,
+      machineId: 'machine_1',
       pluginToolCatalog: [],
     });
     expect(connectMcpStdio).toHaveBeenCalledOnce();
@@ -524,6 +615,7 @@ describe('happier mcp serve (env hardening)', () => {
         expect(createExternalMcpServer).toHaveBeenCalledWith({
           credentials: { token, encryption: null, credentialProvenance: 'api_token' },
           defaultSessionId: null,
+          machineId: 'machine_1',
           pluginToolCatalog: [],
         });
         await expect(readFile(configuration.privateKeyFile, 'utf8')).resolves.toBe(stored);

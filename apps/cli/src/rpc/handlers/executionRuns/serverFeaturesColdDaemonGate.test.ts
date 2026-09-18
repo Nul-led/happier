@@ -31,6 +31,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     getStructuredMeta: () => null,
     getLatestToolResult: () => null,
     waitForTerminal: async () => unusedBridgeMethod(),
+    waitForInputTurn: async () => unusedBridgeMethod(),
     getPublic: () => null,
     listPublic: () => [],
     listPublicForRequest: () => [],
@@ -45,6 +46,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     cancelTurnStream: async () => unusedBridgeMethod(),
     stop: async () => unusedBridgeMethod(),
     respondToPermissionRequest: async () => unusedBridgeMethod(),
+    completePermissionRequest: async () => unusedBridgeMethod(),
     applyAction: async () => unusedBridgeMethod(),
   };
 }
@@ -79,6 +81,16 @@ const PREVIEW_SNAPSHOT: LocalServicePreviewSnapshotV1 = {
 };
 
 const PREVIEW_STATUS_INPUT = { machineId: 'machine_1', sessionId: 'session_1' } as const;
+
+// The daemon front door reaches runtime-action families through
+// `executeRuntimeActionFromRunAction`, which stamps exactly this surface and
+// the admitted current-Session corpus (`dispatchExecutionRunRpcAction.ts:240-266`).
+// Without both, Action admission refuses the call before any feature gate runs,
+// so a bare `execute(actionId, input)` proves nothing about the gate.
+const RUNTIME_ACTION_CONTEXT = {
+  surface: 'agent',
+  defaultSessionId: PREVIEW_STATUS_INPUT.sessionId,
+} as const;
 
 function createGatedPreviewExecutor(params: {
   getServerFeaturesSnapshot: () => CliServerFeaturesSnapshot | undefined;
@@ -116,7 +128,7 @@ describe('server-features cold-daemon runtime-action gate (G9-E)', () => {
       getSnapshot,
     });
 
-    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT);
+    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT, RUNTIME_ACTION_CONTEXT);
 
     expect(result).toEqual({
       ok: false,
@@ -137,7 +149,7 @@ describe('server-features cold-daemon runtime-action gate (G9-E)', () => {
     // Mirror the daemon startup prime: a single fetch warms the daemon-wide cache.
     await store.refresh();
 
-    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT);
+    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT, RUNTIME_ACTION_CONTEXT);
 
     expect(result).toEqual({ ok: true, result: PREVIEW_SNAPSHOT });
     expect(getSnapshot).toHaveBeenCalledOnce();
@@ -153,7 +165,7 @@ describe('server-features cold-daemon runtime-action gate (G9-E)', () => {
 
     await store.refresh();
 
-    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT);
+    const result = await executor.execute('localServices.preview.status', PREVIEW_STATUS_INPUT, RUNTIME_ACTION_CONTEXT);
 
     expect(result).toEqual({
       ok: false,

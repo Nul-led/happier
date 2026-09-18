@@ -1,3 +1,13 @@
+/**
+ * The option-bearing portion of one argv. The first standalone `--` is the
+ * universal CLI boundary: it and every later byte belong to positional input
+ * and must never be rescanned as a global option.
+ */
+export function argvBeforeOptionTerminator(argv: readonly string[]): readonly string[] {
+  const terminatorIndex = argv.indexOf('--');
+  return terminatorIndex < 0 ? argv : argv.slice(0, terminatorIndex);
+}
+
 export function hasFlag(argv: readonly string[], flag: string): boolean {
   return argv.includes(flag);
 }
@@ -11,16 +21,24 @@ export function readCommandPositionals(
   options: Readonly<{
     startIndex?: number;
     valueFlags?: readonly string[];
+    /**
+     * Identifier-shaped positionals are trimmed by default. Commands whose
+     * positional carries authored content — a Session message is the current
+     * case — opt out so the caller's exact argv bytes, including surrounding
+     * whitespace and newlines, reach the canonical Action unchanged.
+     */
+    trim?: boolean;
   }> = {},
 ): string[] {
   const positionals: string[] = [];
   const valueFlags = new Set(options.valueFlags ?? []);
+  const trim = options.trim ?? true;
   let positionalOnly = false;
 
   for (let index = options.startIndex ?? 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (positionalOnly) {
-      positionals.push(value.trim());
+      positionals.push(trim ? value.trim() : value);
       continue;
     }
     if (value === '--') {
@@ -31,7 +49,7 @@ export function readCommandPositionals(
       if (valueFlags.has(value)) index += 1;
       continue;
     }
-    positionals.push(value.trim());
+    positionals.push(trim ? value.trim() : value);
   }
 
   return positionals;

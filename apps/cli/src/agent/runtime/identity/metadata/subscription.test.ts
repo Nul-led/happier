@@ -134,6 +134,43 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     });
   });
 
+  it('publishes an opaque provider session id byte-exact', () => {
+    // The Agent minted these bytes; whitespace, newline and base64 punctuation
+    // are identity. Publishing a trimmed value makes the successor runtime ask
+    // the Agent for a session it never issued.
+    const opaqueProviderSessionId = '  provider\nses/AB+cd==  ';
+    const harness = createHarness({ providerSessionId: opaqueProviderSessionId });
+    subscribeSessionRuntimePublicationToMetadata({
+      session: harness.session,
+      sessionState: harness.sessionState,
+      runtime: harness.runtime as never,
+      providerSessionMetadataKey: 'grokSessionId',
+    });
+
+    expect(harness.sessionState.writeHappierField).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fieldId: 'identity.providerSessionId',
+        value: {
+          metadataKey: 'grokSessionId',
+          value: opaqueProviderSessionId,
+          nativeSessionLogPath: null,
+        },
+      }),
+    );
+  });
+
+  it('does not publish a whitespace-only provider session id', () => {
+    const harness = createHarness({ providerSessionId: '   \n  ' });
+    subscribeSessionRuntimePublicationToMetadata({
+      session: harness.session,
+      sessionState: harness.sessionState,
+      runtime: harness.runtime as never,
+      providerSessionMetadataKey: 'grokSessionId',
+    });
+
+    expect(harness.sessionState.writeHappierField).not.toHaveBeenCalled();
+  });
+
   it('routes each typed runtime publication fact to its single writer and dedupes equal facets', () => {
     const harness = createHarness();
     const unsubscribe = subscribeSessionRuntimePublicationToMetadata({
@@ -237,6 +274,28 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     } as never);
 
     expect(harness.sessionState.writeHappierField).not.toHaveBeenCalled();
+    expect(harness.session.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('retains session-state identity publication but suppresses owner metadata for a shared-editor runtime', () => {
+    const harness = createHarness();
+    subscribeSessionRuntimePublicationToMetadata({
+      session: harness.session,
+      sessionState: harness.sessionState,
+      runtime: harness.runtime as never,
+      publishOwnerMetadata: false,
+    });
+
+    harness.publish({
+      fact: 'runtimeDescriptor',
+      value: { v: 1, agentId: 'external-agent', agent: { backendMode: 'appServer' } },
+    });
+    harness.publish({ fact: 'runtimeCapabilities', value: { v: 1 } });
+    harness.publish({ fact: 'runtimeFacets', value: { v: 1 } });
+
+    expect(harness.sessionState.writeHappierField).toHaveBeenCalledWith(expect.objectContaining({
+      fieldId: 'identity.runtimeDescriptor',
+    }));
     expect(harness.session.updateMetadata).not.toHaveBeenCalled();
   });
 
@@ -509,6 +568,7 @@ describe('subscribeSessionRuntimePublicationToMetadata — Agent with no catalog
       sequence: 1,
       sessionId: 'session-1',
       emittedAtMs: 1,
+      // The external Agent minted these bytes; they are published verbatim.
       providerSessionId: ' acme-native-1 ',
     });
 
@@ -517,7 +577,7 @@ describe('subscribeSessionRuntimePublicationToMetadata — Agent with no catalog
       fieldId: 'identity.providerSessionId',
       value: {
         metadataKey: null,
-        value: 'acme-native-1',
+        value: ' acme-native-1 ',
         nativeSessionLogPath: null,
       },
       reason: 'reconciliation',

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, readdir, stat } from 'node:fs/promises';
+import { lstat, opendir, readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { inspectPersonalHomeArchive } from './archive.js';
@@ -9,24 +9,21 @@ import {
   type PersonalHomeBackupResult,
   type PersonalHomeSqliteMaintenance,
 } from './backup.js';
-import { erasePersonalHomeData, PersonalHomeEraseError, resolvePersonalHomeEraseTargets } from './erase.js';
+import { preparePersonalHomeDataErase, PersonalHomeEraseError, resolvePersonalHomeEraseTargets } from './erase.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 import type { PersonalHomeRestorableConfigurationV1 } from './configuration.js';
 import type { PersonalHomeAuthenticatedReadiness } from './readiness.js';
-import { withPersonalHomeOperationLock } from './lock.js';
+import { withPersonalHomeOperationAdmission } from './operationAdmission.js';
 import { fingerprintMasterSecret, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import type { ManagedRelayPurpose } from './personalHomeRuntimeSpec.js';
 import {
-  assertPersonalHomeRelocationSourceAllowsActivation,
-  assertPersonalHomeRelocationSourceAllowsOperation,
   coordinatePersonalHomeRelocation,
   inspectPersonalHomeRelocationSourceRecovery,
   type PersonalHomeRelocationSourceCoordinatorParams,
   type PersonalHomeRelocationSourceRecoveryFacts,
   type PersonalHomeRelocationSourceResult,
 } from './relocationCoordinator.js';
-import { assertPersonalHomeRelocationDestinationAllowsActivation, type PersonalHomeRelocationDestinationOwner } from './relocationDestination.js';
-import { readPersonalHomeUpdateRecoveryRecord } from './updateRecovery.js';
+import type { PersonalHomeRelocationDestinationOwner } from './relocationDestination.js';
 import {
   inspectPersonalHomeRestoreRecovery,
   finalizePersonalHomeRestoreWithLease,
@@ -62,6 +59,7 @@ export class PersonalHomeOperationsError extends Error {
       | 'home_stop_failed'
       | 'home_restart_failed'
       | 'operation_cancelled'
+      | 'erase_preview_incomplete'
       | 'restore_unavailable'
       | 'restore_recovery_required'
       | 'operation_recovery_required'
@@ -140,11 +138,13 @@ export type PersonalHomeInspection = Readonly<{
     publicFilesPresent: boolean;
     privateFilesPresent: boolean;
     backupsCount: number;
-    /** False when the newest-candidate manifest-read budget stopped the inventory early; then `backupsCount` is a confirmed lower bound, never an exact total. */
+    /** False when a candidate could not be quick-confirmed within the archive parser's real resource limits; then `backupsCount` is a confirmed lower bound. */
     backupsCountComplete: boolean;
     latestBackup: Readonly<{ path: string; createdAt: string; archiveBytes: number }> | null;
     ownedErasePaths: readonly string[];
     estimatedOwnedBytes: number | null;
+    estimatedOwnedBytesComplete: boolean;
+    estimatedOwnedBytesReason: string | null;
     destinationEmpty: boolean;
   }>;
   restoreRecovery: PersonalHomeRestoreRecoveryFacts;
@@ -181,6 +181,8 @@ export type PersonalHomeEraseConfirmationFacts = Readonly<{
   homeServerIdentityId: string | null;
   paths: readonly string[];
   estimatedBytes: number | null;
+  previewComplete: boolean;
+  previewReason: string | null;
 }>;
 
 export type PersonalHomeEraseOperationInput = Readonly<{
@@ -188,11 +190,13 @@ export type PersonalHomeEraseOperationInput = Readonly<{
 } & PersonalHomeOperationContext>;
 
 export type PersonalHomeEraseOperationResult = Readonly<{
-  outcome: 'completed' | 'partial';
+  outcome: 'completed' | 'completed_with_cleanup_attention' | 'partial';
   removedPaths: readonly string[];
   remainingOwnedPaths: readonly string[];
   remainingUnknownPaths: readonly string[];
   stoppedRunningHome: boolean;
+  inspectionComplete: boolean;
+  inspectionError: string | null;
   error: string | null;
 }>;
 
@@ -250,10 +254,34 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
-async function estimateOwnedBytes(paths: readonly string[]): Promise<number | null> {
-  const visit = async (path: string): Promise<number> => { const info = await lstat(path); if (info.isSymbolicLink()) throw new Error('symbolic link'); if (info.isFile()) return info.size; if (!info.isDirectory()) return 0; let total = 0; for (const name of await readdir(path)) total += await visit(join(path, name)); return total; };
+type PersonalHomeOwnedBytesPreview = Readonly<{ bytes: number; complete: boolean; reason: string | null }>;
+
+async function estimateOwnedBytes(paths: readonly string[], checkCancelled: () => void = () => undefined): Promise<PersonalHomeOwnedBytesPreview> {
+  const pending = [...paths];
+  const visited = new Set<string>();
   let total = 0;
-  try { for (const path of paths) total += await visit(path).catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? 0 : Promise.reject(error)); return total; } catch { return null; }
+  try {
+    while (pending.length > 0) {
+      checkCancelled();
+      const path = pending.pop()!;
+      if (visited.has(path)) continue;
+      visited.add(path);
+      const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if (!info) continue;
+      if (info.isSymbolicLink()) throw new Error(`symbolic link encountered at ${path}`);
+      if (info.isFile()) {
+        total += info.size;
+        continue;
+      }
+      if (!info.isDirectory()) continue;
+      for await (const entry of await opendir(path)) pending.push(join(path, entry.name));
+    }
+    return { bytes: total, complete: true, reason: null };
+  } catch (error) {
+    if (error instanceof PersonalHomeOperationsError && error.code === 'operation_cancelled') throw error;
+    const reason = error instanceof Error && error.message.trim() ? error.message.trim() : 'unknown filesystem inspection error';
+    return { bytes: total, complete: false, reason };
+  }
 }
 
 /**
@@ -295,37 +323,20 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     });
   };
   const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>, reconcileRestore = true): Promise<T> => {
-    checkCancelled(context);
-    const initialPurpose = await deps.readPurpose(); assertPersonalHomePurpose(initialPurpose); assertExpectedPurpose(initialPurpose, context);
-    const initialLayout = await deps.resolveLayout(); await deps.validateLayout(initialLayout);
-    return withPersonalHomeOperationLock(initialLayout.dataDir, kind, async () => {
-      checkCancelled(context);
-      const currentPurpose = await deps.readPurpose(); assertPersonalHomePurpose(currentPurpose); assertExpectedPurpose(currentPurpose, context);
-      const currentLayout = await deps.resolveLayout(); await deps.validateLayout(currentLayout);
-      if (JSON.stringify(currentLayout) !== JSON.stringify(initialLayout) || currentPurpose.canonicalServerUrl !== initialPurpose.canonicalServerUrl) throw new PersonalHomeOperationsError('purpose_not_personal_home', 'Personal Home purpose or canonical layout changed while waiting for the operation lease.');
-      if (kind !== 'inspect') {
-        const updateRecovery = await readPersonalHomeUpdateRecoveryRecord(initialLayout);
-        if (updateRecovery && updateRecovery.phase !== 'committed') {
-          throw new PersonalHomeOperationsError('operation_recovery_required', 'Personal Home runtime update recovery must complete before another data operation can continue.');
-        }
-        try {
-          if (kind === 'relocate') {
-            const operationId = 'operationId' in context && typeof context.operationId === 'string' ? context.operationId : '';
-            await assertPersonalHomeRelocationSourceAllowsOperation(initialLayout.dataDir, operationId);
-          } else {
-            await assertPersonalHomeRelocationSourceAllowsActivation(initialLayout.dataDir);
-          }
-          await assertPersonalHomeRelocationDestinationAllowsActivation(initialLayout.dataDir);
-        } catch (error) {
-          throw new PersonalHomeOperationsError(
-            'operation_recovery_required',
-            error instanceof Error ? error.message : 'Personal Home operation recovery is required.',
-            error,
-          );
-        }
-      }
+    return withPersonalHomeOperationAdmission({
+      request: kind === 'relocate'
+        ? { kind, role: 'source', operationId: 'operationId' in context && typeof context.operationId === 'string' ? context.operationId : '' }
+        : { kind },
+      readValidatedTarget: async () => {
+        checkCancelled(context);
+        const purpose = await deps.readPurpose(); assertPersonalHomePurpose(purpose); assertExpectedPurpose(purpose, context);
+        const layout = await deps.resolveLayout(); await deps.validateLayout(layout);
+        return { layout, canonicalServerUrl: purpose.canonicalServerUrl, homeServerIdentityId: (await readIdentityOrNull(layout))?.homeServerIdentityId ?? null };
+      },
+      isHomeRunning: deps.lifecycle.isRunning,
+    }, async ({ layout, canonicalServerUrl }) => {
       if (reconcileRestore) {
-        const reconciliation = await reconcileRestoreWithLease(initialLayout);
+        const reconciliation = await reconcileRestoreWithLease(layout);
         if (reconciliation.outcome === 'recovery_required' && kind !== 'inspect') {
           throw new PersonalHomeOperationsError(
             'restore_recovery_required',
@@ -333,7 +344,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           );
         }
       }
-      return fn(initialLayout, currentPurpose);
+      return fn(layout, { kind: 'personal-home', canonicalServerUrl: canonicalServerUrl! });
     });
   };
 
@@ -458,35 +469,61 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
 
   const inspect = async (context: PersonalHomeOperationContext = {}): Promise<PersonalHomeInspection> => {
     context.progress?.('acquiring_lock');
-    return withStableLayoutLease('inspect', context, async (layout, purpose) => {
-      context.progress?.('inspecting');
-      const ownedErasePaths = resolvePersonalHomeEraseTargets(layout);
-      const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupInventory, restoreRecovery, relocationRecovery, estimatedOwnedBytes, destinationHasData] =
-      await Promise.all([
-        readIdentityOrNull(layout),
-        readMasterSecretFacts(layout),
-        deps.lifecycle.isRunning(),
-        fileSizeOrNull(layout.databasePath),
-        isDirectory(layout.publicFilesDir),
-        isDirectory(layout.privateFilesDir),
-        listPersonalHomeBackupArchives(layout.backupsDir),
-        inspectPersonalHomeRestoreRecovery(layout).catch((): PersonalHomeRestoreRecoveryFacts => ({ status: 'ambiguous', affectedTargets: [] })),
-        inspectPersonalHomeRelocationSourceRecovery(layout.dataDir),
-        estimateOwnedBytes(ownedErasePaths),
-        hasMeaningfulPersonalHomeData(layout),
-      ]);
-      return {
+    // Reconcile operation-owned recovery and pin the canonical target while briefly holding the
+    // mutation lease. Potentially unbounded passive filesystem/archive enumeration happens only
+    // after that lease is released, so Settings inspection cannot starve real Home operations.
+    const { layout, purpose } = await withStableLayoutLease('inspect', context, async (stableLayout, stablePurpose) => ({
+      layout: stableLayout,
+      purpose: stablePurpose,
+    }));
+    context.progress?.('inspecting');
+    const ownedErasePaths = resolvePersonalHomeEraseTargets(layout);
+    const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupInventory, restoreRecovery, relocationRecovery, ownedBytesPreview, destinationHasData] =
+    await Promise.all([
+      readIdentityOrNull(layout),
+      readMasterSecretFacts(layout),
+      deps.lifecycle.isRunning(),
+      fileSizeOrNull(layout.databasePath),
+      isDirectory(layout.publicFilesDir),
+      isDirectory(layout.privateFilesDir),
+      listPersonalHomeBackupArchives(layout.backupsDir, () => checkCancelled(context)),
+      inspectPersonalHomeRestoreRecovery(layout).catch((): PersonalHomeRestoreRecoveryFacts => ({ status: 'ambiguous', affectedTargets: [] })),
+      inspectPersonalHomeRelocationSourceRecovery(layout.dataDir),
+      estimateOwnedBytes(ownedErasePaths, () => checkCancelled(context)),
+      hasMeaningfulPersonalHomeData(layout),
+    ]);
+    const currentPurpose = await deps.readPurpose();
+    assertPersonalHomePurpose(currentPurpose);
+    assertExpectedPurpose(currentPurpose, context);
+    const currentLayout = await deps.resolveLayout();
+    await deps.validateLayout(currentLayout);
+    if (currentPurpose.canonicalServerUrl !== purpose.canonicalServerUrl || JSON.stringify(currentLayout) !== JSON.stringify(layout)) {
+      throw new PersonalHomeOperationsError('purpose_not_personal_home', 'Personal Home purpose or canonical layout changed during inspection.');
+    }
+    return {
       purpose: 'personal-home',
       canonicalServerUrl: purpose.canonicalServerUrl,
       layout,
       running,
       identity,
       masterSecret,
-      storage: { databasePresent: databaseBytes !== null, databaseBytes, publicFilesPresent, privateFilesPresent, backupsCount: backupInventory.count, backupsCountComplete: backupInventory.complete, latestBackup: backupInventory.latest, ownedErasePaths, estimatedOwnedBytes, destinationEmpty: !destinationHasData },
+      storage: {
+        databasePresent: databaseBytes !== null,
+        databaseBytes,
+        publicFilesPresent,
+        privateFilesPresent,
+        backupsCount: backupInventory.count,
+        backupsCountComplete: backupInventory.complete,
+        latestBackup: backupInventory.latest,
+        ownedErasePaths,
+        estimatedOwnedBytes: ownedBytesPreview.bytes,
+        estimatedOwnedBytesComplete: ownedBytesPreview.complete,
+        estimatedOwnedBytesReason: ownedBytesPreview.reason,
+        destinationEmpty: !destinationHasData,
+      },
       restoreRecovery,
       relocationRecovery,
-      };
-    });
+    };
   };
 
   const backup = async (input: PersonalHomeBackupOperationInput = {}): Promise<PersonalHomeBackupResult> => {
@@ -626,7 +663,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       } catch {
         throw new PersonalHomeOperationsError(
           'restore_recovery_required',
-          'Personal Home restore state is ambiguous; recover, roll back, or finalize the restore before erasing data.',
+          'Personal Home restore state is ambiguous; recover it or complete operation-owned cleanup before erasing data.',
         );
       }
       if (restoreRecovery.status !== 'none') {
@@ -636,15 +673,24 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         );
       }
       const paths = resolvePersonalHomeEraseTargets(layout);
-      const estimatedBytes = await estimateOwnedBytes(paths);
+      const preview = await estimateOwnedBytes(paths, () => checkCancelled(input));
+      if (!preview.complete) {
+        throw new PersonalHomeOperationsError(
+          'erase_preview_incomplete',
+          `Personal Home erase preview could not be completed; no confirmation or deletion was attempted: ${preview.reason ?? 'unknown filesystem inspection error'}.`,
+        );
+      }
       const identity = await requireIdentity(layout);
+      const previewRunning = await deps.lifecycle.isRunning();
       checkCancelled(input);
       input.progress?.('awaiting_confirmation');
       if (!await input.confirm({
         canonicalServerUrl: purpose.canonicalServerUrl,
         homeServerIdentityId: identity.homeServerIdentityId,
         paths,
-        estimatedBytes,
+        estimatedBytes: preview.bytes,
+        previewComplete: true,
+        previewReason: null,
       })) {
         throw new PersonalHomeEraseError(
           'confirmation_required',
@@ -660,39 +706,50 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       await deps.validateLayout(currentLayout);
       const currentIdentity = await requireIdentity(currentLayout);
       const currentPaths = resolvePersonalHomeEraseTargets(currentLayout);
-      const currentEstimatedBytes = await estimateOwnedBytes(currentPaths);
+      const currentPreview = await estimateOwnedBytes(currentPaths, () => checkCancelled(input));
+      const currentRunning = await deps.lifecycle.isRunning();
       if (currentPurpose.canonicalServerUrl !== purpose.canonicalServerUrl
         || JSON.stringify(currentLayout) !== JSON.stringify(layout)
         || currentIdentity.homeServerIdentityId !== identity.homeServerIdentityId
         || JSON.stringify(currentPaths) !== JSON.stringify(paths)
-        || currentEstimatedBytes !== estimatedBytes) {
+        || !currentPreview.complete
+        || currentPreview.bytes !== preview.bytes
+        || currentRunning !== previewRunning) {
         throw new PersonalHomeOperationsError(
           'purpose_not_personal_home',
-          'Personal Home identity, layout, or erase preview changed after confirmation; erase was not attempted.',
+          'Personal Home identity, layout, erase preview, or writer state changed after confirmation; erase was not attempted.',
         );
       }
 
-      const wasRunning = await deps.lifecycle.isRunning();
-      if (wasRunning) {
-        input.progress?.('stopping_home');
-        try {
+      const wasRunning = previewRunning;
+      let deleteData: Awaited<ReturnType<typeof preparePersonalHomeDataErase>>;
+      try {
+        if (wasRunning) {
+          input.progress?.('stopping_home');
           await deps.lifecycle.stop();
-          if (await deps.lifecycle.isRunning()) {
-            throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; erase was not attempted.');
-          }
-        } catch (error) {
-          await restorePreviouslyRunningHomeOrRethrow('Erase', error);
         }
+        checkCancelled(input);
+        deleteData = await preparePersonalHomeDataErase({ layout, operationLeaseHeld: true });
+        if (await deps.lifecycle.isRunning()) {
+          throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not remain stopped; erase was not attempted.');
+        }
+        checkCancelled(input);
+        input.progress?.('erasing');
+      } catch (error) {
+        if (wasRunning) await restorePreviouslyRunningHomeOrRethrow('Erase', error);
+        throw error;
       }
-      checkCancelled(input);
-      input.progress?.('erasing');
-      const result = await erasePersonalHomeData({ layout, operationLeaseHeld: true });
+      // No recovery restart is safe beyond this point: deletion may have removed only part
+      // of a database or file tree even when the filesystem reports an error.
+      const result = await deleteData();
       return {
         outcome: result.outcome,
         removedPaths: result.removedPaths,
         remainingOwnedPaths: result.remainingOwnedPaths,
         remainingUnknownPaths: result.remainingUnknownPaths,
         stoppedRunningHome: wasRunning,
+        inspectionComplete: result.inspectionComplete,
+        inspectionError: result.inspectionError,
         error: result.error,
       };
     });
@@ -729,11 +786,12 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         sourceDescriptorRevision: input.sourceDescriptorRevision,
         ...(input.recoveryAction ? { recoveryAction: input.recoveryAction } : {}),
         destinationMachineId: input.destinationMachineId,
+        ...(input.signal ? { signal: input.signal } : {}),
+        progress: (step) => input.progress?.(step),
         destination: input.destination,
         publishDestination: input.publishDestination,
         readPublishedDescriptor: input.readPublishedDescriptor,
         stopSource: async () => {
-          input.progress?.('stopping_source');
           const wasRunning = await deps.lifecycle.isRunning();
           if (wasRunning) {
             try {
@@ -756,16 +814,13 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           return { wasRunning };
         },
         quarantineSource: async () => {
-          input.progress?.('quarantining_source');
           await quarantineSource();
         },
         activateSource: async () => {
-          input.progress?.('rolling_back_source');
           await activateSource();
         },
         readSourceServiceStatus,
         createFinalBackup: async () => {
-          input.progress?.('creating_final_backup');
           const outputPath = join(leasedLayout.backupsDir, `personal-home-relocation-${backupName}.tar`);
           const stagingDir = join(dirname(leasedLayout.dataDir), `.personal-home-relocation-backup-${process.pid}-${randomUUID()}`);
           const backup = await createPersonalHomeBackupWithLease({

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import nacl from 'tweetnacl';
+import { deriveAccountMachineKeyFromRecoverySecret, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import { encodeBase64, encrypt } from '@/api/encryption';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -129,8 +132,26 @@ describe('hydrateVoiceReplayDialogFromTranscript (integration)', () => {
     systemRecordStatus?: number;
     systemRecordSynopsis?: string | null;
     onSystemRecordRequest?: () => void;
+    encryptionMode?: 'plain' | 'e2ee';
   }>) {
-    const sessionRow = createPlainSessionRow(params.sessionId, params.rows.length);
+    const secret = new Uint8Array(32).fill(1);
+    const sessionKey = new Uint8Array(32).fill(23);
+    const encrypted = params.encryptionMode === 'e2ee';
+    const sessionRow = {
+      ...createPlainSessionRow(params.sessionId, params.rows.length),
+      ...(encrypted ? {
+        encryptionMode: 'e2ee',
+        metadata: encodeBase64(encrypt(sessionKey, 'dataKey', { flavor: 'voice', path: '/tmp' })),
+        dataEncryptionKey: encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+          dataKey: sessionKey,
+          recipientPublicKey: nacl.box.keyPair.fromSecretKey(deriveAccountMachineKeyFromRecoverySecret(secret)).publicKey,
+          randomBytes: (length) => new Uint8Array(length).fill(5),
+        })),
+      } : {}),
+    };
+    const rows = encrypted
+      ? params.rows.map((row) => ({ ...row, content: { t: 'encrypted', c: encodeBase64(encrypt(sessionKey, 'dataKey', row.content.v)) } }))
+      : params.rows;
 
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
@@ -178,7 +199,7 @@ describe('hydrateVoiceReplayDialogFromTranscript (integration)', () => {
       if (req.method === 'GET' && url.pathname === `/v1/sessions/${params.sessionId}/messages`) {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ messages: params.rows }));
+        res.end(JSON.stringify({ messages: rows }));
         return;
       }
 
@@ -202,7 +223,7 @@ describe('hydrateVoiceReplayDialogFromTranscript (integration)', () => {
 
     const { hydrateVoiceReplayDialogFromTranscript } = await import('./hydrateVoiceReplayDialogFromTranscript');
     return hydrateVoiceReplayDialogFromTranscript({
-      credentials: { token: 't', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
+      credentials: { token: 't', encryption: { type: 'legacy', secret } },
       previousSessionId: params.sessionId,
       transcriptEpoch: 7,
       limit: 50,
@@ -263,9 +284,10 @@ describe('hydrateVoiceReplayDialogFromTranscript (integration)', () => {
     expect(result?.synopsisText).toBe('TRANSCRIPT_SYNOPSIS_FALLBACK');
   });
 
-  it('hydrates ACP assistant voice turns through the semantic transcript extractor', async () => {
+  it.each(['plain', 'e2ee'] as const)('hydrates %s ACP assistant voice turns through the semantic transcript extractor', async (encryptionMode) => {
     const result = await serveAndHydrate({
       sessionId: 'sess_voice_acp_assistant',
+      encryptionMode,
       systemRecordSynopsis: null,
       rows: [
         createVoiceTurnRow({

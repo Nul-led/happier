@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import { once } from 'node:events';
+import { request as requestHttp } from 'node:http';
 import { connect, createServer } from 'node:net';
 
 import {
@@ -10,6 +11,7 @@ import {
   createEphemeralPeerRouteProofHandleV2,
   createPeerMachineRpcRequestHashV1,
   PEER_MEDIATION_RECEIPTS,
+  PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
   type DirectRouteGrantPayloadV1,
   type DirectRouteGrantPayloadV2,
   type IrohMachineHandshakeV1,
@@ -369,6 +371,11 @@ describe('peer mediation loopback server', () => {
       nonceBase64Url: 'nonce_1',
       accountSigningSeed: new Uint8Array(32).fill(7),
     });
+    const startupTrustRoots = [{
+      keyId: 'grant-key-1',
+      publicKey: toBase64Url(grantKeyPair.publicKey),
+    }];
+    let currentTrustRoots = startupTrustRoots;
     const app = createPeerMediationLoopbackApp({
       nowMs: () => 2_000,
       expected: {
@@ -379,11 +386,26 @@ describe('peer mediation loopback server', () => {
         endpointFingerprint: 'loopback_endpoint_1',
         accountPublicKey: toBase64Url(accountKeyPair.publicKey),
       },
-      trustRoots: [{
-        keyId: 'grant-key-1',
-        publicKey: toBase64Url(grantKeyPair.publicKey),
-      }],
+      trustRoots: startupTrustRoots,
+      resolveTrustRoots: () => currentTrustRoots,
     });
+
+    const rotatedKeyPair = tweetnacl.sign.keyPair();
+    currentTrustRoots = [{ keyId: 'grant-key-2', publicKey: toBase64Url(rotatedKeyPair.publicKey) }];
+    const rotated = await app.inject({
+      method: 'POST',
+      url: '/peer-mediation/v1/probe',
+      payload: { v: 1, grant, nonceProof },
+    });
+    expect(rotated.json()).toMatchObject({ ok: false, reasonCode: 'grant_unknown_key' });
+    currentTrustRoots = [];
+    const unavailable = await app.inject({
+      method: 'POST',
+      url: '/peer-mediation/v1/probe',
+      payload: { v: 1, grant, nonceProof },
+    });
+    expect(unavailable.json()).toMatchObject({ ok: false, reasonCode: 'grant_unknown_key' });
+    currentTrustRoots = startupTrustRoots;
 
     const response = await app.inject({
       method: 'POST',
@@ -480,6 +502,11 @@ describe('peer mediation loopback server', () => {
       accountSigningSeed: new Uint8Array(32).fill(7),
     });
     const emittedFrames: MachineLiveStreamFrameV1[] = [];
+    const startupTrustRoots = [{
+      keyId: 'grant-key-1',
+      publicKey: toBase64Url(grantKeyPair.publicKey),
+    }];
+    let currentTrustRoots = startupTrustRoots;
     const appOptions = {
       nowMs: () => 2_000,
       expected: {
@@ -490,10 +517,8 @@ describe('peer mediation loopback server', () => {
         endpointFingerprint: 'loopback_endpoint_1',
         accountPublicKey: toBase64Url(accountKeyPair.publicKey),
       },
-      trustRoots: [{
-        keyId: 'grant-key-1',
-        publicKey: toBase64Url(grantKeyPair.publicKey),
-      }],
+      trustRoots: startupTrustRoots,
+      resolveTrustRoots: () => currentTrustRoots,
       stream: {
         captureAdapter: {
           start: async (input: TestLiveStreamCaptureStartInput) => {
@@ -507,6 +532,37 @@ describe('peer mediation loopback server', () => {
       },
     } as const;
     const app = createPeerMediationLoopbackApp(appOptions);
+
+    currentTrustRoots = [];
+    const unavailable = await app.inject({
+      method: 'POST',
+      url: '/peer-mediation/v1/live-stream/start',
+      payload: {
+        v: 1,
+        streamId: 'stream_1',
+        streamFamily: 'screen',
+        routeKind: 'loopback_direct',
+        flowKind: 'live_stream',
+        endpointFingerprint: 'loopback_endpoint_1',
+        grant,
+        nonceProof,
+        startRequest: {
+          v: 1,
+          streamId: 'stream_1',
+          streamFamily: 'screen',
+          routeKind: 'loopback_direct',
+          sourceMachineId: 'machine_1',
+          targetMachineId: 'machine_target',
+          maxBitrateBps: 64_000,
+          maxFramesPerSecond: 12,
+          maxFrameBytes: 32_000,
+          maxDurationMs: 60_000,
+          maxTotalBytes: 128_000,
+        },
+      },
+    });
+    expect(unavailable.json()).toMatchObject({ ok: false, reasonCode: 'grant_unknown_key' });
+    currentTrustRoots = startupTrustRoots;
 
     const response = await app.inject({
       method: 'POST',
@@ -679,7 +735,7 @@ describe('peer mediation loopback server', () => {
         v: 1 as const,
         tunnelId: 'tun_1',
         streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-        encoding: 'json_base64_v1' as const,
+        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
         initialWindowBytes: 1024 * 1024,
         maxFrameBytes: 64 * 1024,
       },
@@ -723,6 +779,7 @@ describe('peer mediation loopback server', () => {
     expect(response.json()).toMatchObject({
       tunnelId: 'tun_1',
       streamPath: '/peer-mediation/v1/tunnel/stream',
+      encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     });
     await app.ready();
     expect(typeof (app as unknown as { injectWS?: unknown }).injectWS).toBe('function');
@@ -798,6 +855,12 @@ describe('peer mediation loopback server', () => {
       nonceBase64Url: 'nonce_1',
       accountSigningSeed: new Uint8Array(32).fill(7),
     });
+    const startupTrustRoots = [{
+      keyId: 'grant-key-1',
+      publicKey: toBase64Url(grantKeyPair.publicKey),
+    }];
+    let currentTrustRoots = startupTrustRoots;
+    const invokeLocal = vi.fn(async (method: string, params: unknown) => ({ method, params, ok: true }));
     const app = createPeerMediationLoopbackApp({
       nowMs: () => 2_000,
       expected: {
@@ -808,16 +871,36 @@ describe('peer mediation loopback server', () => {
         endpointFingerprint: 'loopback_endpoint_1',
         accountPublicKey: toBase64Url(accountKeyPair.publicKey),
       },
-      trustRoots: [{
-        keyId: 'grant-key-1',
-        publicKey: toBase64Url(grantKeyPair.publicKey),
-      }],
+      trustRoots: startupTrustRoots,
+      resolveTrustRoots: () => currentTrustRoots,
       rpc: {
         rpcHandlerManager: {
-          invokeLocal: async (method: string, params: unknown) => ({ method, params, ok: true }),
+          invokeLocal,
         },
       },
     });
+
+    currentTrustRoots = [];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const unavailable = await app.inject({
+        method: 'POST',
+        url: '/peer-mediation/v1/rpc',
+        payload: {
+          v: 1,
+          requestId: `request_unavailable_${attempt}`,
+          method: RPC_METHODS.DAEMON_MEMORY_STATUS,
+          params: { includeWorkers: true },
+          grant,
+          nonceProof,
+          routeKind: 'loopback_direct',
+          flowKind: 'machine_rpc',
+          endpointFingerprint: 'loopback_endpoint_1',
+        },
+      });
+      expect(unavailable.json()).toMatchObject({ ok: false, reasonCode: 'grant_unknown_key' });
+    }
+    expect(invokeLocal).not.toHaveBeenCalled();
+    currentTrustRoots = startupTrustRoots;
 
     const response = await app.inject({
       method: 'POST',
@@ -1192,6 +1275,72 @@ describe('peer mediation loopback server', () => {
 });
 
 describe('machine/1 Iroh admission route', () => {
+  it('cancels ordinary application resolution on request disconnect and admits an immediate retry', async () => {
+    let attempts = 0;
+    let observedSignal: AbortSignal | undefined;
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1', machineId: 'machine_1', flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct', endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: IROH_TRUST_ROOTS,
+      irohMachineAdmission: {
+        localEndpointId: IROH_TARGET_ENDPOINT_ID,
+        role: 'acceptor',
+        allowedFlows: ['workspace_sync'],
+        resolveApplicationTarget: async ({ signal }) => {
+          attempts += 1;
+          observedSignal = signal;
+          resolveStarted();
+          if (attempts === 1) {
+            await new Promise<void>((_resolve, reject) => {
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+          }
+          return { port: 46_001, localCapability: 'a'.repeat(64) };
+        },
+      },
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === 'string') throw new Error('admission listener did not bind');
+    const body = JSON.stringify(createIrohMachineHandshake({ flow: 'workspace_sync' }));
+    const client = requestHttp({
+      host: '127.0.0.1',
+      port: address.port,
+      path: IROH_MACHINE_ADMISSION_PATH,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID,
+      },
+    });
+    client.on('error', () => undefined);
+    try {
+      client.end(body);
+      await started;
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      client.destroy();
+      await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true));
+
+      const retry = await app.inject({
+        method: 'POST',
+        url: IROH_MACHINE_ADMISSION_PATH,
+        headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+        payload: createIrohMachineHandshake({ flow: 'workspace_sync' }),
+      });
+      expect(retry.statusCode).toBe(204);
+      expect(attempts).toBe(2);
+    } finally {
+      client.destroy();
+      await app.close();
+    }
+  });
+
   it('resolves current signing roots for each admission instead of freezing startup keys', async () => {
     let currentRoots: typeof IROH_TRUST_ROOTS = [];
     const app = createPeerMediationLoopbackApp({
@@ -1206,7 +1355,10 @@ describe('machine/1 Iroh admission route', () => {
         role: 'acceptor',
         allowedFlows: ['finite_transfer'],
         resolveTrustRoots: () => currentRoots,
-        resolveApplicationTarget: () => ({ port: 46_001 }),
+        resolveApplicationTarget: (input) => {
+          expect(input.signal).toBeInstanceOf(AbortSignal);
+          return { port: 46_001 };
+        },
       },
     });
     const request = {
@@ -1222,7 +1374,7 @@ describe('machine/1 Iroh admission route', () => {
     await app.close();
   });
 
-  it('gates the finite-transfer target listener with a fresh first-bytes capability and strips it before application bytes', async () => {
+  it('routes an admitted finite-transfer stream directly to the existing transfer listener without another capability proxy', async () => {
     const applicationBytes: Buffer[] = [];
     const applicationServer = createServer({ allowHalfOpen: true }, (socket) => {
       socket.on('data', (chunk: Buffer) => applicationBytes.push(chunk));
@@ -1260,40 +1412,56 @@ describe('machine/1 Iroh admission route', () => {
         payload: createIrohMachineHandshake(),
       });
       expect(admission.statusCode).toBe(204);
-      const capability = admission.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()];
-      const protectedPort = Number(admission.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]);
-      expect(capability).toMatch(/^[0-9a-f]{64}$/);
-      expect(protectedPort).not.toBe(applicationAddress.port);
+      expect(admission.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toBeUndefined();
+      const applicationPort = Number(admission.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]);
+      expect(applicationPort).toBe(applicationAddress.port);
 
-      const scanner = connect({ host: '127.0.0.1', port: protectedPort });
-      await once(scanner, 'connect');
-      scanner.end(`${'0'.repeat(64)}unauthorized`);
-      await once(scanner, 'close');
-      expect(applicationBytes).toEqual([]);
-
-      const partialScanner = connect({ host: '127.0.0.1', port: protectedPort });
-      await once(partialScanner, 'connect');
-      const partialScannerClosed = once(partialScanner, 'close');
-      partialScanner.write('0');
-
-      const client = connect({ host: '127.0.0.1', port: protectedPort, allowHalfOpen: true });
+      const client = connect({ host: '127.0.0.1', port: applicationPort, allowHalfOpen: true });
       await once(client, 'connect');
       const echoed = Promise.race([
         (once(client, 'data') as Promise<[Buffer]>).then(([chunk]) => chunk),
         once(client, 'close').then(() => null),
       ]);
-      client.end(Buffer.concat([
-        Buffer.from(String(capability), 'ascii'),
-        Buffer.from('finite-transfer-http-bytes'),
-      ]));
+      client.end(Buffer.from('finite-transfer-http-bytes'));
       await expect(echoed).resolves.toEqual(Buffer.from('finite-transfer-http-bytes'));
       expect(Buffer.concat(applicationBytes)).toEqual(Buffer.from('finite-transfer-http-bytes'));
-      await expect(partialScannerClosed).resolves.toBeDefined();
       client.destroy();
     } finally {
       await app.close();
       await new Promise<void>((resolve) => applicationServer.close(() => resolve()));
     }
+  });
+
+  it('rejects a finite-transfer target that attempts to add a local capability layer', async () => {
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1', machineId: 'machine_1', flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct', endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: IROH_TRUST_ROOTS,
+      irohMachineAdmission: {
+        localEndpointId: IROH_TARGET_ENDPOINT_ID,
+        role: 'acceptor',
+        allowedFlows: ['finite_transfer'],
+        resolveApplicationTarget: () => ({
+          port: 46_001,
+          localCapability: 'c'.repeat(64),
+        }),
+      },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: IROH_MACHINE_ADMISSION_PATH,
+      headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+      payload: createIrohMachineHandshake(),
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).toBeUndefined();
+    expect(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toBeUndefined();
+    await app.close();
   });
 
   it('admits a real signed machine/1 handshake with a bodyless 204 and the exact endpoint echo', async () => {
@@ -1310,9 +1478,14 @@ describe('machine/1 Iroh admission route', () => {
 
       expect(response.statusCode).toBe(204);
       expect(response.headers[IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase()]).toBe(IROH_SOURCE_ENDPOINT_ID);
-      expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).not.toBe('46001');
-      expect(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toMatch(/^[0-9a-f]{64}$/);
-      localCapabilities.push(String(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]));
+      if (flow === 'finite_transfer') {
+        expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).toBe('46001');
+        expect(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toBeUndefined();
+      } else {
+        expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).not.toBe('46001');
+        expect(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toMatch(/^[0-9a-f]{64}$/);
+        localCapabilities.push(String(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]));
+      }
       expect(response.body).toBe('');
     }
     expect(new Set(localCapabilities).size).toBe(localCapabilities.length);

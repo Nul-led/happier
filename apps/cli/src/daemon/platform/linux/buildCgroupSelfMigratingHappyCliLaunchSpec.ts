@@ -37,18 +37,19 @@ export type ExecutableLaunchSpec = Readonly<{
 }>;
 
 export async function buildCgroupSelfMigratingHappyCliLaunchSpec(params: Readonly<{
-  args: string[];
   daemonPid?: number;
   procfsRootDir?: string;
   cgroupRootDir?: string;
-  launchOptions?: HappyCliSubprocessLaunchOptions;
   environment?: NodeJS.ProcessEnv;
   systemdUserResourceGovernorExecFile?: SystemdUserResourceGovernorExecFile;
-}>): Promise<ExecutableLaunchSpec | null> {
+} & (
+  | { args: string[]; launchOptions?: HappyCliSubprocessLaunchOptions; launchSpec?: never }
+  | { launchSpec: HappyCliSubprocessLaunchSpec; args?: never; launchOptions?: never }
+)>): Promise<ExecutableLaunchSpec | null> {
   const daemonPid = normalizePid(params.daemonPid) ?? process.pid;
   const procfsRootDir = params.procfsRootDir ?? '/proc';
   const cgroupRootDir = params.cgroupRootDir ?? '/sys/fs/cgroup';
-  const baseLaunchSpec: HappyCliSubprocessLaunchSpec = buildHappyCliSubprocessLaunchSpec(params.args, params.launchOptions);
+  const baseLaunchSpec = params.launchSpec ?? buildHappyCliSubprocessLaunchSpec(params.args, params.launchOptions);
   const systemdUserResourceGovernorReady = await isSystemdUserResourceGovernorReady({
     environment: params.environment ?? process.env,
     execFile: params.systemdUserResourceGovernorExecFile,

@@ -103,3 +103,31 @@ export function projectExecutablePluginToolCatalog(
     left.name.localeCompare(right.name) || left.toolId.localeCompare(right.toolId)
   )));
 }
+
+/**
+ * Binds a transport-facing Tool catalog to the immutable Action contributor
+ * generation owned by this exact executable-registry snapshot. Long-lived
+ * MCP consumers must carry this fence back to the same registry before an
+ * Action handler can begin.
+ */
+export function projectGenerationBoundExecutablePluginToolCatalog(
+  runtimeRegistry: PluginToolCatalogRuntimeRegistry,
+): readonly ProjectedPluginToolCatalogEntry[] {
+  const immutableGenerationIdsByPluginId =
+    runtimeRegistry.contributes.immutableGenerationIdsByPluginId ?? {};
+  return Object.freeze(projectExecutablePluginToolCatalog(runtimeRegistry).flatMap((tool) => {
+    const actionPluginId = runtimeRegistry.contributes.actionsById
+      ?.get(tool.actionId)
+      ?.pluginId
+      ?.trim();
+    const immutableGenerationId = actionPluginId
+      ? immutableGenerationIdsByPluginId[actionPluginId]?.trim()
+      : undefined;
+    return immutableGenerationId
+      ? [Object.freeze({
+          ...tool,
+          expectedContributorImmutableGenerationId: immutableGenerationId,
+        })]
+      : [];
+  }));
+}

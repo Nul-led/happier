@@ -1,3 +1,4 @@
+import { createAccountSessionClientTransport } from '@/api/client/createAccountSessionClientTransport';
 import { AxiosError, AxiosHeaders } from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1 } from '@happier-dev/protocol';
@@ -27,6 +28,7 @@ const compatibilityState = vi.hoisted(() => ({
 
 const supervisorState = vi.hoisted(() => ({
   reportProbeResult: vi.fn(),
+  onStateChange: null as null | ((state: Record<string, unknown>) => void),
 }));
 
 vi.mock('@/api/clientCompatibility/sessionSyncPendingInputServerContract', () => ({
@@ -72,20 +74,25 @@ vi.mock('@happier-dev/connection-supervisor', () => ({
   DEFAULT_MANAGED_CONNECTION_POLICY: {},
   createManagedConnectionSupervisor: (params: {
     createTransport: () => unknown;
+    onStateChange?: (state: Record<string, unknown>) => void;
     onConnected?: () => Promise<void> | void;
     onDisconnected?: (value: { event: { reason?: string } }) => Promise<void> | void;
     onAuthFailed?: () => Promise<void> | void;
-  }) => ({
-    start: async () => {
-      params.createTransport();
-      await params.onConnected?.();
-    },
-    stop: async () => {},
-    triggerDisconnected: async () => await params.onDisconnected?.({ event: { reason: 'test' } }),
-    triggerAuthFailed: async () => await params.onAuthFailed?.(),
-    captureProbeReportScope: () => ({ epoch: 1 }),
-    reportProbeResult: supervisorState.reportProbeResult,
-  }),
+  }) => {
+    supervisorState.onStateChange = params.onStateChange ?? null;
+    return {
+      start: async () => {
+        params.createTransport();
+        await params.onConnected?.();
+      },
+      triggerConnected: async () => await params.onConnected?.(),
+      stop: async () => {},
+      triggerDisconnected: async () => await params.onDisconnected?.({ event: { reason: 'test' } }),
+      triggerAuthFailed: async () => await params.onAuthFailed?.(),
+      captureProbeReportScope: () => ({ epoch: 1 }),
+      reportProbeResult: supervisorState.reportProbeResult,
+    };
+  },
 }));
 
 function createSecretAxiosError(label: string): AxiosError {
@@ -119,15 +126,64 @@ describe('initializeSessionClientConnection diagnostics', () => {
     };
     compatibilityState.resolve.mockReset().mockImplementation(async (probe) => ({
       mode: 'session_sync_v2_pending_input_v1',
+      runtimeActivity: 'v2', pendingInput: 'v1', publisherAuthority: 'unsupported',
       sessionConnectionEpoch: probe.sessionConnectionEpoch,
       socket: probe.socket,
     }));
     compatibilityState.invalidate.mockReset().mockImplementation((probe) => probe?.socket ? ({
       mode: 'indeterminate',
+      runtimeActivity: 'indeterminate', pendingInput: 'indeterminate', publisherAuthority: 'indeterminate',
       sessionConnectionEpoch: probe.sessionConnectionEpoch ?? 0,
       socket: probe.socket,
     }) : null);
     supervisorState.reportProbeResult.mockReset();
+    supervisorState.onStateChange = null;
+  });
+
+  it('records supervised socket failures without leaking credentials', () => {
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const onStateChange = vi.fn();
+    initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1',
+      sessionId: 's1',
+      userScopedAccountUpdates: true,
+      getMetadataSnapshot: () => null,
+      setSessionSocket: vi.fn(),
+      rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
+      handleUserScopedUpdate: vi.fn(),
+      installSessionSocketEventHandlers: vi.fn(),
+      classifyTransportErrorToProbeResult: undefined,
+      onStateChange,
+      shouldKeepUserSocketConnected: () => false,
+      kickUserSocketConnect: vi.fn(),
+      syncChangesOnConnect: vi.fn(async () => {}),
+      shouldSyncSessionSnapshotOnConnect: () => false,
+      syncSessionSnapshotFromServer: vi.fn(async () => {}),
+      flushQueuedSessionMessagesOnReconnect: vi.fn(async () => {}),
+      flushDurableSessionMutationsOnReconnect: vi.fn(async () => {}),
+      markConnected: () => 'connect',
+    });
+
+    supervisorState.onStateChange?.({
+      phase: 'offline',
+      reason: 'server_unreachable',
+      attempt: 1,
+      nextRetryAt: 1234,
+      lastConnectedAt: null,
+      lastDisconnectedAt: null,
+      lastErrorMessage: 'connect failed Authorization: Bearer SESSION_SOCKET_SECRET',
+    });
+
+    expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ phase: 'offline' }));
+    expect(infoFileSpy).toHaveBeenCalledWith('[API] Session socket connection state', {
+      phase: 'offline',
+      reason: 'server_unreachable',
+      attempt: 1,
+      nextRetryAt: 1234,
+      lastErrorMessage: 'connect failed authorization: bearer [REDACTED]',
+    });
+    expect(JSON.stringify(infoFileSpy.mock.calls)).not.toContain('SESSION_SOCKET_SECRET');
   });
 
   it.each([
@@ -149,8 +205,10 @@ describe('initializeSessionClientConnection diagnostics', () => {
     expectedMachineId,
   }) => {
     const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
       token: 'token-1',
       sessionId: 's1',
+      userScopedAccountUpdates: true,
       localMachineId,
       getMetadataSnapshot: () => metadata,
       setSessionSocket: vi.fn(),
@@ -171,11 +229,11 @@ describe('initializeSessionClientConnection diagnostics', () => {
 
     await connection.sessionConnectionSupervisor.start();
 
-    expect(socketState.transportParams).toEqual([{
+    expect(socketState.transportParams).toEqual([expect.objectContaining({
       token: 'token-1',
       sessionId: 's1',
       machineId: expectedMachineId,
-    }]);
+    })]);
   });
 
   it('recovers shared offline UX state after the supervised session transport connects', async () => {
@@ -183,7 +241,8 @@ describe('initializeSessionClientConnection diagnostics', () => {
     expect(connectionState.isOffline()).toBe(true);
 
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -197,12 +256,36 @@ describe('initializeSessionClientConnection diagnostics', () => {
     expect(connectionState.isOffline()).toBe(false);
   });
 
+  it('invalidates Follow observation after every successful exact Session connect', async () => {
+    const onSessionFollowInvalidated = vi.fn();
+    const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', userScopedAccountUpdates: false, getMetadataSnapshot: () => null,
+      setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
+      handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
+      onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
+      syncChangesOnConnect: vi.fn(async () => {}), shouldSyncSessionSnapshotOnConnect: () => false,
+      syncSessionSnapshotFromServer: vi.fn(async () => {}), flushQueuedSessionMessagesOnReconnect: vi.fn(async () => {}),
+      flushDurableSessionMutationsOnReconnect: vi.fn(async () => {}), markConnected: () => ({ reason: 'reconnect', epoch: 1 }),
+      onSessionFollowInvalidated,
+    });
+
+    await connection.sessionConnectionSupervisor.start();
+    await (connection.sessionConnectionSupervisor as unknown as {
+      triggerConnected(): Promise<void>;
+    }).triggerConnected();
+
+    expect(onSessionFollowInvalidated).toHaveBeenCalledTimes(2);
+  });
+
   it('publishes the identical compatibility result to the shared Pending/Runtime consumer', async () => {
     const setContractResult = vi.fn();
     const reofferAcceptedProviderInputSettlementsAfterConnection = vi.fn();
     const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
       token: 'token-1',
       sessionId: 's1',
+      userScopedAccountUpdates: true,
       localMachineId: 'machine-1',
       getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(),
@@ -226,6 +309,7 @@ describe('initializeSessionClientConnection diagnostics', () => {
     await connection.sessionConnectionSupervisor.start();
     expect(setContractResult).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'session_sync_v2_pending_input_v1',
+      runtimeActivity: 'v2', pendingInput: 'v1', publisherAuthority: 'unsupported',
       sessionConnectionEpoch: 9,
       socket: socketState.sessionSocket,
       transcriptTransport: { mode: 'session_transcript_observation_v1' },
@@ -254,7 +338,8 @@ describe('initializeSessionClientConnection diagnostics', () => {
       pendingMaterializations += 1;
     });
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -277,19 +362,23 @@ describe('initializeSessionClientConnection diagnostics', () => {
     compatibilityState.resolve
       .mockImplementationOnce(async (probe) => ({
         mode: 'indeterminate',
+        runtimeActivity: 'indeterminate', pendingInput: 'indeterminate', publisherAuthority: 'indeterminate',
         sessionConnectionEpoch: probe.sessionConnectionEpoch,
         socket: probe.socket,
       }))
       .mockImplementationOnce(async (probe) => ({
         mode: 'session_sync_v2_pending_input_v1',
+        runtimeActivity: 'v2', pendingInput: 'v1', publisherAuthority: 'unsupported',
         sessionConnectionEpoch: probe.sessionConnectionEpoch,
         socket: probe.socket,
       }));
     const setContractResult = vi.fn();
     const flushDurableSessionMutationsOnReconnect = vi.fn(async () => {});
     const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
       token: 'token-1',
       sessionId: 's1',
+      userScopedAccountUpdates: true,
       localMachineId: 'machine-1',
       getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(),
@@ -335,6 +424,7 @@ describe('initializeSessionClientConnection diagnostics', () => {
   it('parks persistent indeterminate compatibility through the connection supervisor after two probes', async () => {
     compatibilityState.resolve.mockImplementation(async (probe) => ({
       mode: 'indeterminate',
+      runtimeActivity: 'indeterminate', pendingInput: 'indeterminate', publisherAuthority: 'indeterminate',
       sessionConnectionEpoch: probe.sessionConnectionEpoch,
       socket: probe.socket,
     }));
@@ -342,8 +432,10 @@ describe('initializeSessionClientConnection diagnostics', () => {
     const flushQueuedSessionMessagesOnReconnect = vi.fn(async () => {});
     const flushDurableSessionMutationsOnReconnect = vi.fn(async () => {});
     const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
       token: 'token-1',
       sessionId: 's1',
+      userScopedAccountUpdates: true,
       localMachineId: 'machine-1',
       getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(),
@@ -379,7 +471,8 @@ describe('initializeSessionClientConnection diagnostics', () => {
   it.each(['triggerDisconnected', 'triggerAuthFailed'] as const)('clears authority through no-I/O invalidation on %s', async (trigger) => {
     const setContractResult = vi.fn();
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -403,7 +496,8 @@ describe('initializeSessionClientConnection diagnostics', () => {
     let epoch = 0;
     const setContractResult = vi.fn();
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -432,7 +526,8 @@ describe('initializeSessionClientConnection diagnostics', () => {
     const setContractResult = vi.fn();
     const flushDurableSessionMutationsOnReconnect = vi.fn(async () => {});
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -457,12 +552,14 @@ describe('initializeSessionClientConnection diagnostics', () => {
   it('selects the released server-v0.2.1 transcript seam without probing the new capability', async () => {
     compatibilityState.resolve.mockImplementation(async (probe) => ({
       mode: 'released_server_v0_2_1',
+      runtimeActivity: 'legacy', pendingInput: 'released_server_v0_2_1', publisherAuthority: 'unsupported',
       sessionConnectionEpoch: probe.sessionConnectionEpoch,
       socket: probe.socket,
     }));
     const setContractResult = vi.fn();
     const connection = initializeSessionClientConnection({
-      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', getMetadataSnapshot: () => null,
+      transport: createAccountSessionClientTransport('token-1'),
+      token: 'token-1', sessionId: 's1', localMachineId: 'machine-1', userScopedAccountUpdates: true, getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(), rpcHandlerManager: { onSocketConnect: vi.fn(), onSocketDisconnect: vi.fn() },
       handleUserScopedUpdate: vi.fn(), installSessionSocketEventHandlers: vi.fn(), classifyTransportErrorToProbeResult: undefined,
       onStateChange: vi.fn(), shouldKeepUserSocketConnected: () => false, kickUserSocketConnect: vi.fn(),
@@ -485,8 +582,10 @@ describe('initializeSessionClientConnection diagnostics', () => {
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
 
     const connection = initializeSessionClientConnection({
+      transport: createAccountSessionClientTransport('token-1'),
       token: 'token-1',
       sessionId: 's1',
+      userScopedAccountUpdates: true,
       getMetadataSnapshot: () => null,
       setSessionSocket: vi.fn(),
       rpcHandlerManager: {

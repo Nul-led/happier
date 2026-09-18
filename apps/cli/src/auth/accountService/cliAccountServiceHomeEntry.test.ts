@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  createCliAccountServiceHomeEntryCoordinator,
   runCliAccountServiceHomeEntry,
   type CliAccountServiceDirectoryAttemptOutcome,
   type CliAccountServiceHomeEntryPorts,
@@ -22,18 +21,19 @@ function createPorts(
       credential,
     })),
     runDirectoryJourney: vi.fn(async () => ({
-      kind: 'preferred_home_enrolled' as const,
+      kind: 'home_entered' as const,
       homeServerIdentityId: 'home-1',
       profileId: 'studio',
+      selection: 'preferred' as const,
     })),
-    openPreferredHome: vi.fn(async () => ({ kind: 'opened' as const })),
+    openSelectedHome: vi.fn(async () => ({ kind: 'opened' as const })),
     continueMachineAndService: vi.fn(async () => ({ kind: 'continued' as const })),
     ...overrides,
   };
 }
 
 describe('runCliAccountServiceHomeEntry', () => {
-  it('authenticates the exact advertised method once, then opens and continues the preferred Home', async () => {
+  it('authenticates the exact advertised method once, then opens and continues the selected Home', async () => {
     const events: string[] = [];
     const ports = createPorts({
       authenticateExactMethod: vi.fn(async (input) => {
@@ -47,12 +47,13 @@ describe('runCliAccountServiceHomeEntry', () => {
       runDirectoryJourney: vi.fn(async (input) => {
         events.push(`directory:${input.target.serverIdentityId}`);
         return {
-          kind: 'preferred_home_enrolled' as const,
+          kind: 'home_entered' as const,
           homeServerIdentityId: 'home-1',
           profileId: 'studio',
+          selection: 'preferred' as const,
         };
       }),
-      openPreferredHome: vi.fn(async (input) => {
+      openSelectedHome: vi.fn(async (input) => {
         events.push(`open:${input.profileId}`);
         return { kind: 'opened' as const };
       }),
@@ -64,13 +65,14 @@ describe('runCliAccountServiceHomeEntry', () => {
 
     const result = await runCliAccountServiceHomeEntry({
       service: { endpoint: 'https://accounts.example' },
-      method: { kind: 'provider', providerId: 'github' },
+      method: { kind: 'provider', providerId: 'github', action: 'login', mode: 'keyless' },
     }, ports);
 
     expect(result).toEqual({
-      kind: 'preferred_home_enrolled',
+      kind: 'home_entered',
       homeServerIdentityId: 'home-1',
       profileId: 'studio',
+      selection: 'preferred',
     });
     expect(events).toEqual([
       'authenticate:github',
@@ -95,8 +97,7 @@ describe('runCliAccountServiceHomeEntry', () => {
   });
 
   it.each([
-    'no_linked_homes',
-    'no_preferred_home',
+    'account_connected_no_homes',
     'update_required',
     'account_service_unavailable',
     'home_unavailable',
@@ -116,7 +117,7 @@ describe('runCliAccountServiceHomeEntry', () => {
     }, ports);
 
     expect(result).toEqual({ kind });
-    expect(ports.openPreferredHome).not.toHaveBeenCalled();
+    expect(ports.openSelectedHome).not.toHaveBeenCalled();
     expect(ports.continueMachineAndService).not.toHaveBeenCalled();
   });
 
@@ -136,9 +137,10 @@ describe('runCliAccountServiceHomeEntry', () => {
           };
         }
         return {
-          kind: 'preferred_home_enrolled',
+          kind: 'home_entered',
           homeServerIdentityId: 'home-1',
           profileId: 'studio',
+          selection: 'preferred',
         };
       });
       const ports = createPorts({
@@ -163,12 +165,12 @@ describe('runCliAccountServiceHomeEntry', () => {
       await vi.advanceTimersByTimeAsync(4_000);
 
       await expect(result).resolves.toMatchObject({
-        kind: 'preferred_home_enrolled',
+        kind: 'home_entered',
         homeServerIdentityId: 'home-1',
       });
       expect(resume).toHaveBeenCalledTimes(3);
       expect(ports.authenticateExactMethod).toHaveBeenCalledOnce();
-      expect(ports.openPreferredHome).toHaveBeenCalledOnce();
+      expect(ports.openSelectedHome).toHaveBeenCalledOnce();
       expect(ports.continueMachineAndService).toHaveBeenCalledOnce();
     } finally {
       random.mockRestore();
@@ -209,7 +211,7 @@ describe('runCliAccountServiceHomeEntry', () => {
 
       expect(observation.signal?.aborted).toBe(true);
       await expect(result).resolves.toEqual({ kind: 'timed_out' });
-      expect(ports.openPreferredHome).not.toHaveBeenCalled();
+      expect(ports.openSelectedHome).not.toHaveBeenCalled();
       expect(ports.continueMachineAndService).not.toHaveBeenCalled();
     } finally {
       random.mockRestore();
@@ -217,9 +219,9 @@ describe('runCliAccountServiceHomeEntry', () => {
     }
   });
 
-  it('maps preferred-Home open and continuation failures without retrying authentication', async () => {
+  it('maps selected-Home open and continuation failures without retrying authentication', async () => {
     const homeUnavailablePorts = createPorts({
-      openPreferredHome: vi.fn(async () => ({ kind: 'home_unavailable' as const })),
+      openSelectedHome: vi.fn(async () => ({ kind: 'home_unavailable' as const })),
     });
     await expect(runCliAccountServiceHomeEntry({
       service: { endpoint: 'https://accounts.example' },
@@ -236,8 +238,77 @@ describe('runCliAccountServiceHomeEntry', () => {
       service: { endpoint: 'https://accounts.example' },
       method: { kind: 'key' },
       key: new Uint8Array(32),
-    }, continuationPorts)).resolves.toEqual({ kind: 'timed_out' });
+    }, continuationPorts)).resolves.toEqual({
+      kind: 'failure',
+      stage: 'enter',
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      homeCredentialCommitted: true,
+      recovery: 'retry_stage',
+    });
     expect(continuationPorts.authenticateExactMethod).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['home_unavailable', 'cancelled', 'timed_out', 'identity_mismatch', 'failed'] as const)(
+    'maps post-focus %s continuation to a committed enter failure',
+    async (kind) => {
+      const ports = createPorts({
+        continueMachineAndService: vi.fn(async () => ({ kind })),
+      });
+
+      await expect(runCliAccountServiceHomeEntry({
+        service: { endpoint: 'https://accounts.example' },
+        method: { kind: 'key' },
+        key: new Uint8Array(32),
+      }, ports)).resolves.toEqual({
+        kind: 'failure',
+        stage: 'enter',
+        homeServerIdentityId: 'home-1',
+        profileId: 'studio',
+        homeCredentialCommitted: true,
+        recovery: 'retry_stage',
+      });
+      expect(ports.openSelectedHome).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('preserves committed enter failure when caller cancellation races after focus', async () => {
+    const controller = new AbortController();
+    const ports = createPorts({
+      continueMachineAndService: vi.fn(async () => {
+        controller.abort();
+        return { kind: 'cancelled' as const };
+      }),
+    });
+
+    await expect(runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+      signal: controller.signal,
+    }, ports)).resolves.toMatchObject({
+      kind: 'failure',
+      stage: 'enter',
+      homeCredentialCommitted: true,
+    });
+  });
+
+  it('maps a thrown post-focus continuation error to a committed enter failure', async () => {
+    const ports = createPorts({
+      continueMachineAndService: vi.fn(async () => {
+        throw new Error('service continuation failed');
+      }),
+    });
+
+    await expect(runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+    }, ports)).resolves.toMatchObject({
+      kind: 'failure',
+      stage: 'enter',
+      homeCredentialCommitted: true,
+    });
   });
 
   it('preserves successful completion when the timeout fires during non-cancellable continuation', async () => {
@@ -258,9 +329,10 @@ describe('runCliAccountServiceHomeEntry', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       finishContinuation();
       await expect(result).resolves.toEqual({
-        kind: 'preferred_home_enrolled',
+        kind: 'home_entered',
         homeServerIdentityId: 'home-1',
         profileId: 'studio',
+        selection: 'preferred',
       });
     } finally {
       vi.useRealTimers();
@@ -285,21 +357,48 @@ describe('runCliAccountServiceHomeEntry', () => {
     controller.abort();
     finishContinuation();
     await expect(result).resolves.toEqual({
-      kind: 'preferred_home_enrolled',
+      kind: 'home_entered',
       homeServerIdentityId: 'home-1',
       profileId: 'studio',
+      selection: 'preferred',
     });
   });
 
-  it('does not focus or continue after cancellation wins the race with preferred-Home enrollment', async () => {
+  it('finishes terminal machine and service continuation after cancellation races with completed profile activation', async () => {
+    const controller = new AbortController();
+    const ports = createPorts({
+      openSelectedHome: vi.fn(async () => {
+        controller.abort();
+        return { kind: 'opened' as const };
+      }),
+    });
+
+    await expect(runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+      signal: controller.signal,
+    }, ports)).resolves.toEqual({
+      kind: 'home_entered',
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      selection: 'preferred',
+    });
+
+    expect(ports.openSelectedHome).toHaveBeenCalledOnce();
+    expect(ports.continueMachineAndService).toHaveBeenCalledOnce();
+  });
+
+  it('does not focus or continue after cancellation wins the race with selected-Home enrollment', async () => {
     const controller = new AbortController();
     const ports = createPorts({
       runDirectoryJourney: vi.fn(async () => {
         controller.abort();
         return {
-          kind: 'preferred_home_enrolled' as const,
+          kind: 'home_entered' as const,
           homeServerIdentityId: 'home-1',
           profileId: 'studio',
+          selection: 'preferred' as const,
         };
       }),
     });
@@ -311,44 +410,117 @@ describe('runCliAccountServiceHomeEntry', () => {
       signal: controller.signal,
     }, ports)).resolves.toEqual({ kind: 'cancelled' });
 
-    expect(ports.openPreferredHome).not.toHaveBeenCalled();
+    expect(ports.openSelectedHome).not.toHaveBeenCalled();
     expect(ports.continueMachineAndService).not.toHaveBeenCalled();
   });
-});
 
-describe('CLI Account Service Home-entry coordinator', () => {
-  it('exposes one reusable U10-06 continuation and cancels an older in-flight entry', async () => {
-    let releaseFirst!: () => void;
-    const firstAuthentication = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let authenticationCount = 0;
-    const ports = createPorts({
-      authenticateExactMethod: vi.fn(async () => {
-        authenticationCount += 1;
-        if (authenticationCount === 1) await firstAuthentication;
-        return {
-          kind: 'authenticated' as const,
-          target: { endpoint: 'https://accounts.example', serverIdentityId: 'account-service-1' },
-          credential,
-        };
-      }),
-    });
-    const coordinator = createCliAccountServiceHomeEntryCoordinator(ports);
-    const entry = {
-      service: { endpoint: 'https://accounts.example' },
-      method: { kind: 'key' as const },
-      key: new Uint8Array(32),
+  it('finalizes a deferred material retry that later yields home_entered with exactly one open+continue', async () => {
+    const entered = {
+      kind: 'home_entered' as const,
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      selection: 'preferred' as const,
     };
+    const retry = vi.fn(async () => entered);
+    const ports = createPorts({
+      runDirectoryJourney: vi.fn(async () => ({
+        kind: 'failure' as const,
+        stage: 'material' as const,
+        homeServerIdentityId: 'home-1',
+        profileId: 'studio',
+        homeCredentialCommitted: true,
+        recovery: 'retry_stage' as const,
+        retry,
+      })),
+    });
 
-    const first = coordinator.run(entry);
-    const second = coordinator.run(entry);
-    releaseFirst();
+    const initial = await runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+    }, ports);
+    if (initial.kind !== 'failure' || !initial.retry) throw new Error('Expected deferred material retry');
+    expect(ports.openSelectedHome).not.toHaveBeenCalled();
+    expect(ports.continueMachineAndService).not.toHaveBeenCalled();
 
-    await expect(first).resolves.toEqual({ kind: 'cancelled' });
-    await expect(second).resolves.toMatchObject({ kind: 'preferred_home_enrolled' });
-    expect(ports.openPreferredHome).toHaveBeenCalledOnce();
-    expect(ports.continueMachineAndService).toHaveBeenCalledOnce();
-    expect(coordinator.cancel()).toBe(false);
+    await expect(initial.retry()).resolves.toEqual(entered);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(ports.openSelectedHome).toHaveBeenCalledTimes(1);
+    expect(ports.continueMachineAndService).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns deferred continuation failures rather than home_entered', async () => {
+    const entered = {
+      kind: 'home_entered' as const,
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      selection: 'preferred' as const,
+    };
+    const retry = vi.fn(async () => entered);
+    const ports = createPorts({
+      runDirectoryJourney: vi.fn(async () => ({
+        kind: 'failure' as const,
+        stage: 'material' as const,
+        homeServerIdentityId: 'home-1',
+        profileId: 'studio',
+        homeCredentialCommitted: true,
+        recovery: 'retry_stage' as const,
+        retry,
+      })),
+      continueMachineAndService: vi.fn(async () => ({ kind: 'failed' as const })),
+    });
+
+    const initial = await runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+    }, ports);
+    if (initial.kind !== 'failure' || !initial.retry) throw new Error('Expected deferred material retry');
+
+    await expect(initial.retry()).resolves.toEqual({
+      kind: 'failure',
+      stage: 'enter',
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      homeCredentialCommitted: true,
+      recovery: 'retry_stage',
+    });
+    expect(ports.openSelectedHome).toHaveBeenCalledTimes(1);
+    expect(ports.continueMachineAndService).toHaveBeenCalledTimes(1);
+  });
+
+  it('respects caller abort before deferred retry completion', async () => {
+    const controller = new AbortController();
+    const entered = {
+      kind: 'home_entered' as const,
+      homeServerIdentityId: 'home-1',
+      profileId: 'studio',
+      selection: 'preferred' as const,
+    };
+    const retry = vi.fn(async () => entered);
+    const ports = createPorts({
+      runDirectoryJourney: vi.fn(async () => ({
+        kind: 'failure' as const,
+        stage: 'material' as const,
+        homeServerIdentityId: 'home-1',
+        profileId: 'studio',
+        homeCredentialCommitted: true,
+        recovery: 'retry_stage' as const,
+        retry,
+      })),
+    });
+
+    const initial = await runCliAccountServiceHomeEntry({
+      service: { endpoint: 'https://accounts.example' },
+      method: { kind: 'key' },
+      key: new Uint8Array(32),
+      signal: controller.signal,
+    }, ports);
+    if (initial.kind !== 'failure' || !initial.retry) throw new Error('Expected deferred material retry');
+    controller.abort();
+
+    await expect(initial.retry()).resolves.toEqual({ kind: 'cancelled' });
+    expect(ports.openSelectedHome).not.toHaveBeenCalled();
+    expect(ports.continueMachineAndService).not.toHaveBeenCalled();
   });
 });

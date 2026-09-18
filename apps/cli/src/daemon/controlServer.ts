@@ -88,7 +88,7 @@ import {
   SshTunnelReleaseRequestSchema,
   SshTunnelStopRequestSchema,
   StrictJsonValueSchema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceId,
   type ConnectedServiceQuotaRecoveryCreditConsumeRequestV1,
   type ConnectedServiceUsageSourceV1,
@@ -231,6 +231,7 @@ import type {
   TargetActionCurrentIntentResult,
 } from '@/plugins/runtime/invocation/actionExecutor';
 import type { DaemonPatVerifier } from './auth/daemonPatVerifier';
+import type { AccountServerPatEncryptionAccessReader } from './auth/accountServerPatEncryptionAccess';
 import {
   registerDaemonExternalActionRoute,
 } from './externalActions/registerDaemonExternalActionRoute';
@@ -238,6 +239,7 @@ import {
   executeExternalAction,
   type ExternalActionExecutor,
   type ResolveExternalActionTarget,
+  type ResolveExternalActionEncryption,
 } from './externalActions/executeExternalAction';
 import {
   SIGNED_ROOT_ACTION_EXECUTE_PATH,
@@ -255,8 +257,13 @@ type DaemonSelfRestartRequest = Readonly<{
 type DaemonExternalActionApi = Readonly<{
   currentServerId: string;
   verifyPat: DaemonPatVerifier;
+  readEncryptionAccess?: AccountServerPatEncryptionAccessReader;
   executor: ExternalActionExecutor;
+  resolvePatExecutor?: Parameters<typeof registerDaemonExternalActionRoute>[1]['resolvePatExecutor'];
+  mintExecutionAuthorization?: Parameters<typeof registerDaemonExternalActionRoute>[1]['mintExecutionAuthorization'];
+  externalActionMachineRequestPrivateKey?: Parameters<typeof registerDaemonExternalActionRoute>[1]['externalActionMachineRequestPrivateKey'];
   resolveTarget: ResolveExternalActionTarget;
+  resolveEncryption?: ResolveExternalActionEncryption;
 }>;
 const DEFAULT_SPAWN_NONCE_PENDING_TTL_MS = 5 * 60_000;
 
@@ -788,8 +795,11 @@ export function createDaemonControlApp({
   handleSessionConnectedServiceAuthSwitch?: (input: Readonly<{
     sessionId: string;
     agentId: string;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
+    teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    previousTeamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
     accountSettingsVersionHint?: number;
   }>) => Promise<unknown>;
   handleSessionConnectedServiceRuntimeAuthRefresh?: SessionConnectedServiceRuntimeAuthRefreshHandler;
@@ -1137,12 +1147,11 @@ export function createDaemonControlApp({
         envelope: {
           v: 1,
           input: parsed.data.input,
-          ...(parsed.data.targetMachineId
-            ? { target: { kind: 'machine' as const, machineId: parsed.data.targetMachineId } }
-            : {}),
+          ...(parsed.data.target ? { target: parsed.data.target } : {}),
           ...(parsed.data.actionRequestId ? { requestId: parsed.data.actionRequestId } : {}),
         },
         principal: { authority: 'present_user' },
+        surface: 'cli',
         currentMachineId: machineId,
         currentServerId: externalActionApi.currentServerId,
         resolveTarget: externalActionApi.resolveTarget,
@@ -1155,6 +1164,7 @@ export function createDaemonControlApp({
           error: execution.errorCode,
         });
       }
+      if (execution.response.v !== 1) throw new Error('Local signed Action returned an unexpected envelope version');
       return execution.response.execution;
     });
   }
@@ -1483,6 +1493,15 @@ export function createDaemonControlApp({
       ...(request.body.expectedGroupGenerationByServiceId === undefined
         ? {}
         : { expectedGroupGenerationByServiceId: request.body.expectedGroupGenerationByServiceId }),
+      ...(request.body.teamCredentialBindings === undefined
+        ? {}
+        : { teamCredentialBindings: request.body.teamCredentialBindings }),
+      ...(request.body.previousTeamCredentialBindings === undefined
+        ? {}
+        : { previousTeamCredentialBindings: request.body.previousTeamCredentialBindings }),
+      ...(request.body.teamVisibilityGrantConsent === undefined
+        ? {}
+        : { teamVisibilityGrantConsent: request.body.teamVisibilityGrantConsent }),
       ...(request.body.accountSettingsVersionHint === undefined
         ? {}
         : { accountSettingsVersionHint: request.body.accountSettingsVersionHint }),
@@ -4000,8 +4019,11 @@ export function startDaemonControlServer({
   handleSessionConnectedServiceAuthSwitch?: (input: Readonly<{
     sessionId: string;
     agentId: string;
-    bindings: ConnectedServiceBindingsV1;
+    bindings: ConnectedServiceBindingsV2;
     expectedGroupGenerationByServiceId?: Readonly<Record<string, number>>;
+    teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    previousTeamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
+    teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
     accountSettingsVersionHint?: number;
   }>) => Promise<unknown>;
   handleSessionConnectedServiceRuntimeAuthRefresh?: SessionConnectedServiceRuntimeAuthRefreshHandler;

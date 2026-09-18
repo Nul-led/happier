@@ -29,6 +29,8 @@ import { readSessionMetadataLayoutVersion } from '@/session/metadata/sessionMeta
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
 import { tryParseJsonRecord } from '@/utils/tryParseJsonRecord';
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
+import { readPendingExecutionRunIds } from '@/api/session/pendingQueueState';
+import { isSessionEncryptionModeAllowedByEffectiveClientRequirement } from '@/settings/accountSettings/resolveEffectiveClientEncryptionRequirement';
 
 const EXISTING_SESSION_ATTACH_DETAIL_CONCURRENCY = 4;
 let activeExistingSessionAttachDetailReads = 0;
@@ -52,7 +54,8 @@ export type ExistingSessionAttachContextFailureReason =
   | 'missingCredentials'
   | 'invalidEncryptionKey'
   | 'invalidOwnerMetadata'
-  | 'linkedResumeIdentityUnavailable';
+  | 'linkedResumeIdentityUnavailable'
+  | 'clientE2eeRequired';
 
 export type ExistingSessionAttachContextFailure = Readonly<{
   ok: false;
@@ -158,6 +161,7 @@ function buildAttachSnapshot(params: Readonly<{
     dataEncryptionKey?: unknown;
     encryptionMode?: unknown;
     metadataLayoutVersion?: unknown;
+    pendingExecutionRunIds?: unknown;
   }>;
   credentials: StoredCredentials | null;
   metadataRecord: Record<string, unknown> | null;
@@ -175,12 +179,14 @@ function buildAttachSnapshot(params: Readonly<{
     credentials: params.credentials,
   });
   if (agentState === undefined) return undefined;
+  const pendingExecutionRunIds = readPendingExecutionRunIds(params.rawSession);
 
   return {
     metadata: params.metadataRecord as Metadata,
     metadataVersion,
     agentState,
     agentStateVersion,
+    ...(pendingExecutionRunIds ? { pendingExecutionRunIds } : {}),
     ...(params.ownerMetadata && params.ownerMetadataEnvelope
       ? {
         metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
@@ -225,10 +231,15 @@ async function buildExistingSessionAttachContext(params: Readonly<{
     metadataLayoutVersion?: unknown;
     ownerMetadata?: unknown;
     seq?: unknown;
+    pendingExecutionRunIds?: unknown;
   }>;
   credentials: StoredCredentials | null;
   accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
 }>): Promise<ExistingSessionAttachContext | ExistingSessionAttachContextFailure> {
+  const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
+  if (!isSessionEncryptionModeAllowedByEffectiveClientRequirement(mode)) {
+    return { ok: false, reason: 'clientE2eeRequired' };
+  }
   const metadataLayoutVersion = readSessionMetadataLayoutVersion(
     params.rawSession.metadataLayoutVersion,
   );
@@ -299,7 +310,6 @@ async function buildExistingSessionAttachContext(params: Readonly<{
     ? vendorResumeId ?? undefined
     : undefined;
   const existingSessionWorkspacePath = ownerMetadata?.workspace?.path?.trim() || null;
-  const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
   const lastObservedMessageSeq = resolveLastObservedMessageSeq(params.rawSession);
   const snapshot = buildAttachSnapshot({
     rawSession: params.rawSession,
@@ -331,7 +341,7 @@ async function buildExistingSessionAttachContext(params: Readonly<{
   if (!params.credentials?.encryption) return { ok: false, reason: 'missingCredentials' };
 
   const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, params.rawSession);
-  if (ctx.encryptionKey.length !== 32) return { ok: false, reason: 'invalidEncryptionKey' };
+  if (!ctx || ctx.encryptionKey.length !== 32) return { ok: false, reason: 'invalidEncryptionKey' };
 
   return {
     ok: true,

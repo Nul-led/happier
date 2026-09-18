@@ -16,6 +16,7 @@ function createVoiceAgentController(
 ): ExecutionRunVoiceAgentController {
   return {
     kind: 'voice_agent',
+    controllerOccurrenceId: 'voice-agent-controller-1',
     voiceAgentId: 'voice-agent-1',
     cancelled: false,
     lastMarkerWriteAtMs: 0,
@@ -120,6 +121,9 @@ describe('voiceAgentTurnStreams', () => {
 
     expect(result.ok).toBe(true);
     expect(events).toEqual(['persist: opaque-local-id ', 'provider']);
+    expect(startTurnStream).toHaveBeenCalledWith(expect.objectContaining({
+      durableUserTranscriptLocalId: ' opaque-local-id ',
+    }));
   });
 
   it('rejects v2 persist before provider effects without a persistent committed writer', async () => {
@@ -166,6 +170,34 @@ describe('voiceAgentTurnStreams', () => {
 
     expect(result.ok).toBe(true);
     expect(startTurnStream).toHaveBeenCalledTimes(1);
+    expect(startTurnStream).toHaveBeenCalledWith(expect.not.objectContaining({
+      durableUserTranscriptLocalId: expect.anything(),
+    }));
+  });
+
+  it('forwards an already-committed suppress local id for provider correlation without persisting again', async () => {
+    const startTurnStream = vi.fn(async () => ({ streamId: 'internal-suppress-correlated' }));
+    const appendUserTextCommitted = vi.fn();
+    const result = await startVoiceAgentTurnStream({
+      runId: 'run_1',
+      params: {
+        message: 'permission fallback',
+        userTranscript: { mode: 'suppress', localId: 'already-committed' },
+      },
+      runs: new Map([['run_1', { status: 'running', intent: 'voice_agent', ioMode: 'streaming' } as ExecutionRunState]]),
+      controllers: new Map([['run_1', createVoiceAgentController()]]),
+      voiceAgentManager: { startTurnStream } as unknown as VoiceAgentManager,
+      transcriptWriter: {
+        appendUserTextCommitted,
+        appendAssistantTextCommitted: vi.fn(),
+        commitVoiceAgentTranscriptTurn: vi.fn(),
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(appendUserTextCommitted).not.toHaveBeenCalled();
+    expect(startTurnStream).toHaveBeenCalledWith(expect.objectContaining({
+      durableUserTranscriptLocalId: 'already-committed',
+    }));
   });
 
   it('keeps persisted turn metadata keyed by the manager voiceAgentId rather than the execution run id', async () => {
@@ -276,7 +308,7 @@ describe('voiceAgentTurnStreams', () => {
   it('commits the terminal transcript pair when the producer finishes even if no stream reader arrives', async () => {
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-agent-producer-completion-session',
+      runtimeId: 'voice-agent-producer-completion-session',
       onSendPrompt() {
         runtime.emitMessage({ type: 'model-output', fullText: 'assistant persisted without a read' });
         runtime.emitMessage({ type: 'status', status: 'idle' });
@@ -440,7 +472,7 @@ describe('voiceAgentTurnStreams', () => {
   it('fails closed at producer completion when durable transcript custody rejects the final', async () => {
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-agent-producer-custody-failure-session',
+      runtimeId: 'voice-agent-producer-custody-failure-session',
       onSendPrompt() {
         runtime.emitMessage({ type: 'model-output', fullText: 'assistant final' });
         runtime.emitMessage({ type: 'status', status: 'idle' });
@@ -560,7 +592,7 @@ describe('voiceAgentTurnStreams', () => {
       releaseCancelledPrompt = resolve;
     });
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-agent-integration-session',
+      runtimeId: 'voice-agent-integration-session',
       async onSendPrompt(_sessionId, prompt) {
         if (prompt.includes('cancel this')) {
           await cancelledPromptBarrier;
@@ -673,7 +705,7 @@ describe('voiceAgentTurnStreams', () => {
     let responseIndex = 0;
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-agent-completed-cancel-session',
+      runtimeId: 'voice-agent-completed-cancel-session',
       onSendPrompt(_sessionId, prompt) {
         seenPrompts.push(prompt);
         responseIndex += 1;
@@ -802,7 +834,7 @@ describe('voiceAgentTurnStreams', () => {
   it('rejects cancellation while a producer final is crossing the durable handoff boundary', async () => {
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-agent-durable-handoff-session',
+      runtimeId: 'voice-agent-durable-handoff-session',
       onSendPrompt() {
         runtime.emitMessage({ type: 'model-output', fullText: 'durable assistant' });
         runtime.emitMessage({ type: 'status', status: 'idle' });

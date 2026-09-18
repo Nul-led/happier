@@ -467,6 +467,9 @@ export function createExecutionRunConnectedServicesBridge(
                         },
                         purposes: purposeSnapshot.purposes,
                         bindings: purposeSnapshot.bindings,
+                        ...(purposeSnapshot.directMaterialOrigins
+                            ? { directMaterialOrigins: purposeSnapshot.directMaterialOrigins }
+                            : {}),
                     });
             }
             if (requestAuthPurposeBindings.length > 0) {
@@ -890,6 +893,9 @@ export function createExecutionRunConnectedServicesBridge(
                                 },
                                 purposes: snapshot.purposes,
                                 bindings: snapshot.bindings,
+                                ...(snapshot.directMaterialOrigins
+                                    ? { directMaterialOrigins: snapshot.directMaterialOrigins }
+                                    : {}),
                             }),
                     });
                 } catch (error) {

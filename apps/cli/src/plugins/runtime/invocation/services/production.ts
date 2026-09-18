@@ -70,6 +70,8 @@ import type {
 } from '@happier-dev/protocol';
 import { join } from 'node:path';
 import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
+import type { StoredCredentials } from '@/persistence';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import {
     createPluginEphemeralStorageScope,
     createPluginStorageOwner,
@@ -235,6 +237,14 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
     onPluginSettingsUnavailable?(input: Readonly<{ pluginId: string; error: unknown }>): void;
     /** Testable port for the one reserved Account Settings record owner. */
     accountSettingsRecordAdapter?: PluginAccountSettingsRecordAdapter;
+    /**
+     * Exact Account credential authority selected by a scoped executable
+     * registry. Omission preserves the ordinary active-Account owner.
+     */
+    accountCredentialAuthority?: Readonly<{
+        readCredentials: () => Promise<StoredCredentials | null>;
+        actionsSettingsProvider: RuntimeActionSettingsProvider;
+    }>;
     secretDeclarations?: readonly PluginSecretDeclaration[];
     resolveOptionalAccess?: (pluginId: string) => readonly PluginAccessSelection[];
     isGenerationCurrent?: (action: ResolvedTargetAction) => boolean | Promise<boolean>;
@@ -288,6 +298,13 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         return invocationLogger;
     };
     const approvals = createProductionPluginApprovalQueueOwner({
+        ...(params?.accountCredentialAuthority
+            ? {
+                readCredentials: params.accountCredentialAuthority.readCredentials,
+                actionsSettingsProvider:
+                    params.accountCredentialAuthority.actionsSettingsProvider,
+            }
+            : {}),
         recordDiagnostic(seed, error) {
             resolveInvocationLogger(seed).diagnostic({
                 code: 'plugin_approval_queue_listener_failed',
@@ -356,8 +373,26 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         declarationsByPluginId: params?.eventDeclarationsByPluginId ?? new Map(),
         activePluginIds: params?.activePluginIds ?? new Set<string>(),
     });
-    const accountSettingsRecordAdapter = params?.accountSettingsRecordAdapter
-        ?? createAccountPluginSettingsRecordStorage();
+    const accountCredentialAuthority = params?.accountCredentialAuthority;
+    const accountSettingsRecordAdapter = accountCredentialAuthority
+        ? Object.freeze({
+                isAvailable: () => false,
+                async bindOperation() {
+                    return Object.freeze({
+                        async readRecord() {
+                            return Object.freeze({ status: 'unavailable' as const });
+                        },
+                        async writeRecord() {
+                            return Object.freeze({ status: 'unavailable' as const });
+                        },
+                    });
+                },
+                watchRecord() {
+                    return () => {};
+                },
+            })
+        : params?.accountSettingsRecordAdapter
+            ?? createAccountPluginSettingsRecordStorage();
     const storagePaths = params?.storagePaths;
     const createSettingsHost = (
         declarations: readonly Readonly<{
@@ -388,9 +423,18 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             broker,
         });
     const settingsHost = params?.settingsDeclarations
-        ? createSettingsHost(params.settingsDeclarations)
+        ? createSettingsHost(params.settingsDeclarations.filter((entry) => (
+            !accountCredentialAuthority || entry.contribution.scope !== 'account'
+        )))
         : null;
-    const accountSecretCustody = createAccountPluginSecretCustodyRouter();
+    const accountSecretCustody = createAccountPluginSecretCustodyRouter(
+        accountCredentialAuthority
+            ? {
+                readCredentials: accountCredentialAuthority.readCredentials,
+                accountScopeKey: null,
+            }
+            : {},
+    );
     const daemonSecretCustody = storagePaths
         ? createDaemonPluginSecretCustodyRouter({
             paths: storagePaths,
@@ -412,7 +456,9 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             : null
     );
     const secretsHost = params?.secretDeclarations
-        ? createSecretsHost(params.secretDeclarations)
+        ? createSecretsHost(params.secretDeclarations.filter((entry) => (
+            !accountCredentialAuthority || entry.declaration.custody !== 'account'
+        )))
         : null;
     const filesystemRoots = params?.filesystemRoots;
     const notificationsOwner = params?.notifications

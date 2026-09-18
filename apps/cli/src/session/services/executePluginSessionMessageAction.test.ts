@@ -16,6 +16,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.agent',
       contributionLocalId: 'launch-teammate',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => ({
         pluginId: 'acme.agent',
         machineId: 'machine-1',
@@ -61,6 +62,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => ({
         pluginId: 'acme.channels',
         machineId: 'machine-1',
@@ -91,6 +93,7 @@ describe('executePluginSessionMessageAction', () => {
           kind: 'plugin',
           pluginId: 'acme.channels',
           contributionLocalId: 'inbound',
+          immutableGenerationId: 'generation-current',
           materialization: {
             pluginId: 'acme.channels',
             machineId: 'machine-1',
@@ -99,6 +102,63 @@ describe('executePluginSessionMessageAction', () => {
         },
         signal,
       },
+    );
+  });
+
+  it('preserves an execution-run recipient and attachments through the plugin Session handle Action boundary', async () => {
+    const execute = vi.fn(async () => ({
+      ok: true as const,
+      result: { status: 'accepted' as const, localId: 'plugin-input-v1:targeted' },
+    }));
+    const signal = new AbortController().signal;
+
+    await expect(executePluginSessionMessageAction({
+      execute,
+      pluginId: 'acme.channels',
+      contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
+      resolveCallerMaterialization: () => ({
+        pluginId: 'acme.channels',
+        machineId: 'machine-1',
+        materializationId: 'materialization-current',
+      }),
+      sessionId: 'session-1',
+      request: {
+        kind: 'userText',
+        text: 'Continue this run',
+        idempotencyKey: 'message-targeted-42',
+        recipient: { kind: 'execution_run', runId: 'run-1' },
+        attachments: [{
+          attachmentLocalId: 'entry',
+          value: {
+            key: 'github:pull:42',
+            value: { sourceId: 'github', entryId: '42' },
+            presentation: { label: 'PR #42' },
+          },
+        }],
+      },
+      signal,
+    })).resolves.toEqual({
+      status: 'accepted',
+      localId: 'plugin-input-v1:targeted',
+    });
+    expect(execute).toHaveBeenCalledWith(
+      'session.message.send',
+      {
+        sessionId: 'session-1',
+        message: 'Continue this run',
+        idempotencyKey: 'message-targeted-42',
+        recipient: { kind: 'execution_run', runId: 'run-1' },
+        attachments: [{
+          attachmentLocalId: 'entry',
+          value: {
+            key: 'github:pull:42',
+            value: { sourceId: 'github', entryId: '42' },
+            presentation: { label: 'PR #42' },
+          },
+        }],
+      },
+      expect.objectContaining({ surface: 'plugin' }),
     );
   });
 
@@ -126,6 +186,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -164,6 +225,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -201,6 +263,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -246,6 +309,7 @@ describe('executePluginSessionMessageAction', () => {
       execute: executor.execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       resolveCallerMaterialization: () => materialization,
       sessionId: 'session-1',
       request: {
@@ -271,6 +335,7 @@ describe('executePluginSessionMessageAction', () => {
       execute,
       pluginId: 'acme.channels',
       contributionLocalId: 'inbound',
+      immutableGenerationId: 'generation-current',
       sessionId: 'session-1',
       request: {
         kind: 'userText',

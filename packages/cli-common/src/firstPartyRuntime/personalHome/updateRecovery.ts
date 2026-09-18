@@ -6,14 +6,32 @@ import { replacePersonalHomeFileDurably, syncPersonalHomeParentDirectory } from 
 import { resolvePersonalHomeRuntimeArtifactPaths, type PersonalHomeRuntimeLayout } from './layout.js';
 import { parsePersonalHomeAuthenticatedReadiness, type PersonalHomeAuthenticatedReadiness } from './readiness.js';
 import { createPersonalHomePathProtection } from './protection.js';
+import { parsePersonalHomeRuntimePurpose } from './personalHomeRuntimeSpec.js';
 
 const RUNTIME_BACKUP_PREFIX = '.relay-runtime-backup-';
 const RESTORE_POINT_PREFIX = 'pre-upgrade-';
+
+export type PersonalHomeUpdateCandidateState = Readonly<{
+  channel: 'stable' | 'preview' | 'publicdev';
+  mode: 'user' | 'system';
+  version: string | null;
+  updatedAt: string;
+  purpose: Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>;
+  uiDeploymentDigest?: string;
+  uiDeploymentId?: string;
+}>;
 
 export type PersonalHomeUpdateRecoveryRecordV1 = Readonly<{
   version: 1;
   phase: 'prepared' | 'activated' | 'committed';
   expectedStartupNonce?: string;
+  /** Exact candidate selected durably before any incumbent payload, migration, or configuration mutation. */
+  candidate?: Readonly<{
+    envText: string;
+    state: PersonalHomeUpdateCandidateState;
+    /** Present for records created after exact payload staging moved ahead of the durable boundary. */
+    payload?: Readonly<{ directoryName: 'candidate'; sha256: string }>;
+  }>;
   activation?: Readonly<{
     nonce: string;
     pid: number;
@@ -62,7 +80,7 @@ function parseOwnedName(value: unknown, prefix: string, suffix: string, field: s
 export function parsePersonalHomeUpdateRecoveryRecord(value: unknown): PersonalHomeUpdateRecoveryRecordV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Personal Home update recovery record is invalid');
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(['version', 'phase', 'expectedStartupNonce', 'activation', 'priorRunning', 'previousServiceDefinitionExisted', 'runtimeBackup', 'restorePoint']);
+  const allowed = new Set(['version', 'phase', 'expectedStartupNonce', 'candidate', 'activation', 'priorRunning', 'previousServiceDefinitionExisted', 'runtimeBackup', 'restorePoint']);
   if (Object.keys(raw).some((key) => !allowed.has(key))) throw new Error('Personal Home update recovery record has unknown fields');
   if (raw.version !== 1 || !['prepared', 'activated', 'committed'].includes(String(raw.phase))) throw new Error('Personal Home update recovery version or phase is invalid');
   if (!raw.runtimeBackup || typeof raw.runtimeBackup !== 'object' || Array.isArray(raw.runtimeBackup)) throw new Error('Personal Home update recovery runtime backup is invalid');
@@ -97,10 +115,45 @@ export function parsePersonalHomeUpdateRecoveryRecord(value: unknown): PersonalH
   if (activation && expectedStartupNonce && activation.nonce !== expectedStartupNonce) throw new Error('Personal Home update recovery activation nonce does not match');
   if (activation && activation.readiness.homeServerIdentityId !== homeServerIdentityId) throw new Error('Personal Home update recovery activation identity does not match');
   if (raw.phase === 'activated' && (!activation || !expectedStartupNonce)) throw new Error('Personal Home activated update is missing exact activation evidence');
+  let candidate: PersonalHomeUpdateRecoveryRecordV1['candidate'];
+  if (raw.candidate !== undefined) {
+    if (!raw.candidate || typeof raw.candidate !== 'object' || Array.isArray(raw.candidate)) throw new Error('Personal Home update candidate is invalid');
+    const value = raw.candidate as Record<string, unknown>;
+    if (Object.keys(value).some((key) => !['envText', 'state', 'payload'].includes(key)) || typeof value.envText !== 'string'
+      || !value.state || typeof value.state !== 'object' || Array.isArray(value.state)) throw new Error('Personal Home update candidate is invalid');
+    const state = value.state as Record<string, unknown>;
+    if (Object.keys(state).some((key) => !['channel', 'mode', 'version', 'updatedAt', 'purpose', 'uiDeploymentDigest', 'uiDeploymentId'].includes(key))
+      || !['stable', 'preview', 'publicdev'].includes(String(state.channel)) || !['user', 'system'].includes(String(state.mode))
+      || !(state.version === null || typeof state.version === 'string') || typeof state.updatedAt !== 'string'
+      || (state.uiDeploymentDigest !== undefined && typeof state.uiDeploymentDigest !== 'string')
+      || (state.uiDeploymentId !== undefined && typeof state.uiDeploymentId !== 'string')) throw new Error('Personal Home update candidate state is invalid');
+    const purpose = parsePersonalHomeRuntimePurpose(state.purpose);
+    let payload: NonNullable<PersonalHomeUpdateRecoveryRecordV1['candidate']>['payload'];
+    if (value.payload !== undefined) {
+      if (!value.payload || typeof value.payload !== 'object' || Array.isArray(value.payload)) throw new Error('Personal Home update candidate payload is invalid');
+      const rawPayload = value.payload as Record<string, unknown>;
+      if (Object.keys(rawPayload).some((key) => !['directoryName', 'sha256'].includes(key))
+        || rawPayload.directoryName !== 'candidate'
+        || typeof rawPayload.sha256 !== 'string'
+        || !/^sha256:[a-f0-9]{64}$/u.test(rawPayload.sha256)) throw new Error('Personal Home update candidate payload is invalid');
+      payload = Object.freeze({ directoryName: 'candidate' as const, sha256: rawPayload.sha256 });
+    }
+    candidate = Object.freeze({ envText: value.envText, state: Object.freeze({
+      channel: state.channel as PersonalHomeUpdateCandidateState['channel'],
+      mode: state.mode as PersonalHomeUpdateCandidateState['mode'],
+      version: state.version,
+      updatedAt: state.updatedAt,
+      purpose: { kind: 'personal-home' as const, canonicalServerUrl: purpose.canonicalServerUrl },
+      ...(typeof state.uiDeploymentDigest === 'string' ? { uiDeploymentDigest: state.uiDeploymentDigest } : {}),
+      ...(typeof state.uiDeploymentId === 'string' ? { uiDeploymentId: state.uiDeploymentId } : {}),
+    }), ...(payload ? { payload } : {}) });
+    if (!expectedStartupNonce) throw new Error('Personal Home update candidate is missing its startup nonce');
+  }
   return Object.freeze({
     version: 1,
     phase: raw.phase as PersonalHomeUpdateRecoveryRecordV1['phase'],
     ...(expectedStartupNonce ? { expectedStartupNonce } : {}),
+    ...(candidate ? { candidate } : {}),
     ...(raw.activation === undefined ? {} : { activation }),
     priorRunning: parseBoolean(raw.priorRunning, 'prior-running fact'),
     previousServiceDefinitionExisted: parseBoolean(raw.previousServiceDefinitionExisted, 'service-definition fact'),
@@ -127,6 +180,7 @@ export function resolvePersonalHomeUpdateRecoveryReferences(params: Readonly<{
   runtimeBackupRoot: string;
   payloadBackupDir: string | null;
   migrationsBackupDir: string | null;
+  candidatePayloadDir: string | null;
   restorePointPath: string;
 }> {
   const runtimeBackupRoot = join(dirname(params.layout.installRoot), params.record.runtimeBackup.directoryName);
@@ -134,6 +188,7 @@ export function resolvePersonalHomeUpdateRecoveryReferences(params: Readonly<{
     runtimeBackupRoot,
     payloadBackupDir: params.record.runtimeBackup.hasPayload ? join(runtimeBackupRoot, 'payload') : null,
     migrationsBackupDir: params.record.runtimeBackup.hasMigrations ? join(runtimeBackupRoot, 'migrations') : null,
+    candidatePayloadDir: params.record.candidate?.payload ? join(runtimeBackupRoot, params.record.candidate.payload.directoryName) : null,
     restorePointPath: join(params.layout.backupsDir, 'restore-points', params.record.restorePoint.fileName),
   });
 }

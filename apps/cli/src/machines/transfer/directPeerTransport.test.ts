@@ -46,7 +46,6 @@ describe('direct peer machine transfer', () => {
     delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_CHUNK_BYTES;
     delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_EXPIRY_SKEW_MS;
     delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_OPEN_BODY_MAX_BYTES;
-    delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_MAX_TOTAL_CHUNKS;
     delete process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_PUBLISHED_TRANSFER_REGISTRY_MAX_ENTRIES;
     delete process.env.HAPPIER_FILES_READ_MAX_BYTES;
   });
@@ -755,6 +754,37 @@ describe('direct peer machine transfer', () => {
       await expect(readFile(destinationPath)).resolves.toEqual(payload);
     } finally {
       timeoutSpy.mockRestore();
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('cancels an in-flight direct-peer download from the caller signal without retrying', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-direct-peer-transfer-cancelled-'));
+    const destinationPath = join(tempDir, 'payload-destination.bin');
+    const { requestDirectPeerTransferToFile } = await import('./directPeerTransport');
+    const cancellation = new AbortController();
+    const fetchFn: typeof fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      cancellation.abort();
+      init?.signal?.throwIfAborted();
+      throw new Error('fetch continued after caller cancellation');
+    });
+
+    try {
+      await expect(requestDirectPeerTransferToFile({
+        transferId: 'transfer_cancelled',
+        endpointCandidates: [{
+          kind: 'http',
+          url: 'http://127.0.0.1:46001/machine-transfers/direct/transfer_cancelled',
+          authorizationToken: 'test-token',
+          expiresAt: 10_000,
+        }],
+        destinationPath,
+        fetchFn,
+        now: () => 5_000,
+        signal: cancellation.signal,
+      })).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchFn).toHaveBeenCalledOnce();
+    } finally {
       await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     }
   });
@@ -3879,9 +3909,7 @@ describe('direct peer machine transfer', () => {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   });
 
-  it('fails closed before requesting chunks when a peer returns an absurd totalChunks value', async () => {
-    process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_MAX_TOTAL_CHUNKS = '3';
-
+  it('fails closed before requesting chunks when totalChunks cannot fit the authoritative byte commitment', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'happier-direct-peer-transfer-open-too-many-chunks-'));
     const destinationPath = join(tempDir, 'payload-destination.bin');
 
@@ -3892,7 +3920,7 @@ describe('direct peer machine transfer', () => {
       if (url.endsWith('/open')) {
         return new Response(JSON.stringify({
           transferId: 'transfer_open_too_many_chunks',
-          manifestHash: 'sha256:ignored',
+          manifestHash: 'sha256:expected',
           totalChunks: 10,
         }), {
           status: 200,
@@ -3915,7 +3943,9 @@ describe('direct peer machine transfer', () => {
       fetchFn,
       now: () => 5_000,
       destinationPath,
-    })).rejects.toThrow('Transfer exceeds the in-memory transfer size limit');
+      expectedSizeBytes: 3,
+      expectedManifestHash: 'sha256:expected',
+    })).rejects.toThrow('Invalid direct peer transfer response');
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);

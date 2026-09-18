@@ -1,8 +1,12 @@
 import { z } from 'zod';
 import {
   ManagedExecutableRefSchema,
+  AgentSessionTeamProviderBindingV1Schema,
+  SessionEnvOverlayV1Schema,
   SessionInputAdmissionResultV1Schema,
   SessionPendingEnqueueByMachineRequestV1Schema,
+  SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
+  ProviderBrokerConsumerV1Schema,
 } from '@happier-dev/protocol';
 
 import {
@@ -128,13 +132,27 @@ export const AgentRuntimeDaemonServiceRequestV1Schema = z.object({
     z.object({
       kind: z.literal('session.input.admit'),
       requestId: OpaqueIdSchema,
-      request: SessionPendingEnqueueByMachineRequestV1Schema,
+      request: z.union([SessionPendingEnqueueByMachineRequestV1Schema, SessionPendingExecutionRunEnqueueByMachineRequestV2Schema]),
     }).strict(),
     z.object({
       kind: z.literal('model_transition.authorize'),
       requestId: OpaqueIdSchema,
       selection:
         AgentRuntimeDaemonProviderConnectionModelRefV1Schema,
+    }).strict(),
+    z.object({
+      kind: z.literal('provider_broker.binding.open'),
+      requestId: OpaqueIdSchema,
+      resourceId: OpaqueIdSchema,
+      expectedResourceRevision: z.number().int().nonnegative(),
+      agentTargetKey: OpaqueIdSchema,
+      modelId: OpaqueIdSchema,
+      consumer: ProviderBrokerConsumerV1Schema.optional(),
+    }).strict(),
+    z.object({
+      kind: z.literal('provider_broker.binding.close'),
+      requestId: OpaqueIdSchema,
+      bindingId: OpaqueIdSchema,
     }).strict(),
     z.object({
       kind: z.literal('managed_server.supervision.authorize'),
@@ -224,6 +242,18 @@ export const AgentRuntimeDaemonServiceResponseV1Schema =
           status: z.literal('authorized'),
           authorization:
             AgentRuntimeDaemonModelTransitionAuthorizationResultV1Schema,
+        }).strict(),
+        z.object({
+          kind: z.literal('provider_broker.binding'),
+          status: z.literal('opened'),
+          providerBinding: AgentSessionTeamProviderBindingV1Schema,
+          environmentOverlay: SessionEnvOverlayV1Schema,
+          additionalRedactionValues: z.array(z.string().min(1).max(65_536)).max(64),
+          bindingId: OpaqueIdSchema.optional(),
+        }).strict(),
+        z.object({
+          kind: z.literal('provider_broker.binding.closed'),
+          status: z.literal('closed'),
         }).strict(),
         z.object({
           kind: z.literal('turn.admission'),

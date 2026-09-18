@@ -18,4 +18,21 @@ describe('doctor diagnostic redaction', () => {
             secretary: 'meeting-notes',
         });
     });
+
+    it('removes native-auth secrets from captured process argv', () => {
+        const value = redactDoctorDiagnosticValue({
+            processArgv: [
+                'happier', 'auth', 'password', 'enroll',
+                '--password', 'doctor-password-value',
+                '--verification-token=doctor-verification-value',
+                '--reauth-proof-json', 'doctor-proof-value',
+                '--invitation-token', 'doctor-invitation-value',
+            ],
+        });
+        const serialized = JSON.stringify(value);
+        expect(serialized).not.toContain('doctor-password-value');
+        expect(serialized).not.toContain('doctor-verification-value');
+        expect(serialized).not.toContain('doctor-proof-value');
+        expect(serialized).not.toContain('doctor-invitation-value');
+    });
 });

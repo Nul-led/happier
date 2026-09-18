@@ -11,6 +11,7 @@ import {
   type PersonalHomeRelocationDestinationReceivedCandidate,
   type PersonalHomeRelocationDestinationStageInput,
 } from './relocationDestination.js';
+import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 
 /** Durable state left behind by a destination process killed inside the canonical
  * restore: the receiving marker is on disk and never advanced to `staged`. */
@@ -45,8 +46,10 @@ async function fixture() {
     homeServerIdentityId: 'srv_home_1',
     accountCount: 1,
     sessionCount: 0,
-    canonicalServerUrl: 'https://source.example.test',
-    minimumOuterRevisionExclusive: 9,
+    connectionDescriptor: {
+      v: 1 as const, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://source.example.test',
+      revision: 10, endpoints: [{ kind: 'https' as const, url: 'https://source.example.test' }],
+    },
   }));
   const activate = vi.fn(async () => undefined);
   const attestActive = vi.fn(async () => ({
@@ -63,6 +66,11 @@ async function fixture() {
   const finalizeCandidate = vi.fn(async () => undefined);
   const owner = createPersonalHomeRelocationDestinationOwner({
     dataDir,
+    readValidatedTarget: async () => ({
+      layout: resolvePersonalHomeRuntimeLayout({ homeDir: dataDir, env: { HAPPIER_SERVER_LIGHT_DATA_DIR: dataDir } }),
+      canonicalServerUrl: 'https://source.example.test',
+      homeServerIdentityId: null,
+    }),
     quarantine,
     readServiceStatus: async () => ({ running: false, quarantined: true }),
     stageCandidate,
@@ -143,8 +151,10 @@ describe('destination-local Personal Home relocation owner', () => {
       homeServerIdentityId: 'srv_home_1',
       accountCount: 1,
       sessionCount: 0,
-      canonicalServerUrl: 'https://source.example.test',
-      minimumOuterRevisionExclusive: 9,
+      connectionDescriptor: {
+        v: 1 as const, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://source.example.test',
+        revision: 10, endpoints: [{ kind: 'https' as const, url: 'https://source.example.test' }],
+      },
     });
 
     await expect(owner.stage(stage)).resolves.toMatchObject({
@@ -155,7 +165,7 @@ describe('destination-local Personal Home relocation owner', () => {
       authenticated: true,
       accountCount: 1,
       sessionCount: 0,
-      minimumOuterRevisionExclusive: 9,
+      connectionDescriptor: { revision: 10 },
     });
     expect(stageCandidate).not.toHaveBeenCalled();
     expect(inspectReceivedCandidate).toHaveBeenCalledTimes(1);

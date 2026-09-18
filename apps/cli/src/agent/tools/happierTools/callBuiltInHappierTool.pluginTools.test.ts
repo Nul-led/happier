@@ -82,6 +82,7 @@ describe('callBuiltInHappierTool plugin tools', () => {
       actionId: 'acme.review.plugin/review-start',
       input: { scope: 'diff' },
       surface: 'cli',
+      authority: 'account_automation',
       defaultSessionId: 'sess-1',
     });
   });

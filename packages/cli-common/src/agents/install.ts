@@ -10,6 +10,7 @@ import { runRuntimeInstallCoordinator } from './install/runtimeInstallCoordinato
 import { runRuntimeInstallPreflight } from './install/runtimeInstallPreflight.js';
 import {
   type AgentCliRuntimeDescriptor,
+  type AgentCliSourcePolicy,
 } from './resolution.js';
 
 export type AgentCliInstallCommand = Readonly<{
@@ -187,8 +188,11 @@ export async function installAgentCliForRuntime(params: Readonly<{
   skipIfInstalled?: boolean;
   intent?: AgentCliInstallIntent;
   allowVendorRecipeExecution?: boolean;
+  sourcePolicy?: AgentCliSourcePolicy;
+  signal?: AbortSignal;
   deps?: InstallAgentCliDeps;
 }>): Promise<InstallAgentCliResult> {
+  params.signal?.throwIfAborted();
   const runtimeSpec = params.runtimeSpec;
   const env = params.env ?? process.env;
   const deps = params.deps ?? {};
@@ -220,6 +224,7 @@ export async function installAgentCliForRuntime(params: Readonly<{
         skipIfInstalled: params.skipIfInstalled,
         intent: params.intent,
         allowVendorRecipeExecution: params.allowVendorRecipeExecution,
+        sourcePolicy: params.sourcePolicy,
       });
       if (
         preflight.kind === 'return'
@@ -237,10 +242,12 @@ export async function installAgentCliForRuntime(params: Readonly<{
     plan: planned.plan,
     env,
     logDir: params.logDir,
+    signal: params.signal,
     dryRun: params.dryRun,
     skipIfInstalled: params.skipIfInstalled,
     intent: params.intent,
     allowVendorRecipeExecution: params.allowVendorRecipeExecution,
+    sourcePolicy: params.sourcePolicy,
     deps,
   });
 }
@@ -254,6 +261,8 @@ export async function installAgentCli(params: Readonly<{
   skipIfInstalled?: boolean;
   intent?: AgentCliInstallIntent;
   allowVendorRecipeExecution?: boolean;
+  sourcePolicy?: AgentCliSourcePolicy;
+  signal?: AbortSignal;
   deps?: InstallAgentCliDeps;
 }>): Promise<InstallAgentCliResult> {
   const runtimeSpec = getAgentCliRuntimeSpec(params.agentId);
@@ -271,10 +280,12 @@ export async function installAgentCli(params: Readonly<{
     platform: params.platform,
     env: params.env,
     logDir: params.logDir,
+    signal: params.signal,
     dryRun: params.dryRun,
     skipIfInstalled: params.skipIfInstalled,
     intent: params.intent,
     allowVendorRecipeExecution: params.allowVendorRecipeExecution,
+    sourcePolicy: params.sourcePolicy,
     deps: params.deps,
   });
 }

@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { Metadata } from '@/api/types';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/testkit';
+import { buildExecutionRunProfileCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import { reloadConfiguration } from '@/configuration';
 import { registerExecutionRunHandlers as registerExecutionRunHandlersBase } from '@/rpc/handlers/executionRuns';
 import { HAPPIER_MCP_ACTION_SPECS_RESOURCE_URI } from '@/mcp/resources/registerHappierMcpResources';
@@ -20,10 +21,17 @@ import {
   startHappyServer,
   type HappyMcpSessionClient,
 } from '@/mcp/startHappyServer';
+import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const env = process.env;
+
+const getTestServerBinding = () => ({
+  serverId: 'test-home',
+  serverUrl: 'https://test-home.example.test',
+} as const);
 
 type TestExecutionRunRuntimeFactory = (opts: Readonly<{
   runId?: string;
@@ -39,8 +47,8 @@ const runtimeFactoryState = vi.hoisted(() => ({
   current: null as TestExecutionRunRuntimeFactory | null,
 }));
 
-vi.mock('@/agent/runtime/bridges/executionRun/runtime/create', () => ({
-  createExecutionRunRuntime: vi.fn((opts: Parameters<TestExecutionRunRuntimeFactory>[0]) => {
+vi.mock('@/agent/runtime/bridges/executionRun/createExecutionRunBridgeRuntime', () => ({
+  createExecutionRunBridgeRuntime: vi.fn((opts: Parameters<TestExecutionRunRuntimeFactory>[0]) => {
     const factory = runtimeFactoryState.current;
     if (!factory) {
       throw new Error('Missing test execution-run runtime factory');
@@ -61,7 +69,10 @@ function registerExecutionRunHandlers(
   runtimeFactoryState.current = createBackend ?? (() => {
     throw new Error('Missing test execution-run runtime factory');
   });
-  registerExecutionRunHandlersBase(rpc, baseCtx);
+  registerExecutionRunHandlersBase(rpc, {
+    ...baseCtx,
+    executionRunProfileCatalog: baseCtx.executionRunProfileCatalog ?? buildExecutionRunProfileCatalog(),
+  });
 }
 
 function createStaticRuntime(responseText: string): ExecutionRunHostRuntime {
@@ -69,7 +80,7 @@ function createStaticRuntime(responseText: string): ExecutionRunHostRuntime {
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId: 'child_sess_1',
+    runtimeId: 'child_sess_1',
     onSendPrompt() {
       fullText = responseText;
       runtime.emitMessage({ type: 'model-output', fullText });
@@ -108,7 +119,38 @@ async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 3_
   }
 }
 
+function createDefaultActiveTurnPermissionWitness(turnId: string) {
+  return {
+    turnId,
+    causalPermissionAuthority: {
+      kind: 'admittedSessionInputV1' as const,
+      admittedPermissionCeiling: 'default' as const,
+    },
+  };
+}
+
+let pluginRuntimeHomeDir: string | null = null;
+
 describe('startHappyServer (MCP integration)', () => {
+  beforeAll(async () => {
+    pluginRuntimeHomeDir = await mkdtemp(join(tmpdir(), 'happier-mcp-plugin-runtime-'));
+    const lease = await pluginReloadController.acquireRuntimeRegistry({
+      resolveRuntimeRegistry: async () => await resolveExecutablePluginRuntimeRegistry({
+        generation: 1,
+        happyHomeDir: pluginRuntimeHomeDir!,
+      }),
+    });
+    await lease.release();
+  });
+
+  afterAll(async () => {
+    await pluginReloadController.shutdown();
+    if (pluginRuntimeHomeDir) {
+      await rm(pluginRuntimeHomeDir, { recursive: true, force: true });
+      pluginRuntimeHomeDir = null;
+    }
+  });
+
   beforeEach(() => {
     vi.resetModules();
     process.env = { ...env };
@@ -138,6 +180,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_keepalive_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
     };
@@ -204,13 +247,6 @@ describe('startHappyServer (MCP integration)', () => {
   });
 
   it('snapshots tool names from account action settings when provided', async () => {
-    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
-      v: 1,
-      actions: {
-        'session.list': { enabled: true, disabledSurfaces: ['agent'], disabledPlacements: [] },
-      },
-    });
-
     const rpcHandlerManager = new RpcHandlerManager({
       scopePrefix: 'sess_mcp_account_tool_names_1',
       encryptionKey: new Uint8Array([1, 2, 3, 4]),
@@ -219,6 +255,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_account_tool_names_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
     };
@@ -247,6 +284,7 @@ describe('startHappyServer (MCP integration)', () => {
     });
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_native_agent_tool_rpc_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
       getPermissionMode: () => 'default',
@@ -325,12 +363,21 @@ describe('startHappyServer (MCP integration)', () => {
       sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
         sent.push({ body, meta: opts?.meta });
       },
+      streamedTranscriptSession: {
+        enqueueAgentMessageCommitted: async (_provider, body, opts) => {
+          sent.push({ body, meta: opts.meta });
+          return { persisted: true, delivered: true };
+        },
+      },
     });
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
+      getPermissionMode: () => 'default',
+      getActiveTurnPermissionWitness: () => createDefaultActiveTurnPermissionWitness('turn_mcp_1'),
     };
 
     const server = await startHappyServer(fakeClient);
@@ -392,6 +439,8 @@ describe('startHappyServer (MCP integration)', () => {
         key: 'backend:claude',
         ok: true,
       }));
+      const planRunId = plan.results[0].result.runId;
+      expect(String(planRunId)).toMatch(/^run_/);
 
       const startedRaw = await client.callTool({
         name: 'action_execute',
@@ -410,7 +459,7 @@ describe('startHappyServer (MCP integration)', () => {
         },
       });
       const started = parseMcpJsonText(startedRaw);
-      expect(String(started.runId)).toMatch(/^run_/);
+      expect(started).toEqual(expect.objectContaining({ runId: expect.stringMatching(/^run_/) }));
 
       const startedRunId = started.runId;
 
@@ -442,7 +491,9 @@ describe('startHappyServer (MCP integration)', () => {
         },
       });
       const action = parseMcpJsonText(actionRaw);
-      expect(action.updatedToolResult).toEqual(expect.objectContaining({ ok: true, actionId: 'review.triage' }));
+      expect(action).toEqual(expect.objectContaining({
+        updatedToolResult: expect.objectContaining({ ok: true, actionId: 'review.triage' }),
+      }));
 
       // Verify the run emitted tool-call/tool-result into transcript (via sendAcp).
       expect(sent.some((m) => (m.body as any)?.type === 'tool-call')).toBe(true);
@@ -475,6 +526,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient = {
       sessionId: 'sess_mcp_change_title_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata,
     } satisfies HappyMcpSessionClient;
@@ -503,6 +555,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('surfaces execution_run_start app-level failures as MCP tool errors', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_run_start_error_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: {
         invokeLocal: vi.fn(async (method: string) => {
           if (method === 'execution.run.start') {
@@ -516,6 +569,8 @@ describe('startHappyServer (MCP integration)', () => {
         }),
       } as any,
       updateMetadata: () => {},
+      getPermissionMode: () => 'default',
+      getActiveTurnPermissionWitness: () => createDefaultActiveTurnPermissionWitness('turn_mcp_run_start_error_1'),
     };
 
     const server = await startHappyServer(fakeClient);
@@ -544,7 +599,96 @@ describe('startHappyServer (MCP integration)', () => {
       expect(parseMcpJsonText(resultRaw)).toEqual({
         errorCode: 'execution_run_budget_exceeded',
         error: 'Execution run budget exceeded',
+        details: {
+          executionRunStart: {
+            v: 1,
+            runCreation: 'outcomeUnknown',
+          },
+        },
       });
+    } finally {
+      await (client as any)?.close?.();
+      server.stop();
+    }
+  });
+
+  it('fails closed instead of retargeting execution-run actions to the MCP-bound session', async () => {
+    const invokeLocal = vi.fn(async () => ({ ok: true }));
+    const fakeClient: HappyMcpSessionClient = {
+      sessionId: 'sess_mcp_bound_1',
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: { invokeLocal } as any,
+      updateMetadata: () => {},
+      getPermissionMode: () => 'default',
+      getActiveTurnPermissionWitness: () => ({
+        turnId: 'turn_mcp_scope_1',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'default',
+        },
+      }),
+    };
+
+    const server = await startHappyServer(fakeClient);
+    let client: Client | null = null;
+    try {
+      client = new Client({ name: 'mcp-test-run-scope', version: '1.0.0' }, { capabilities: {} });
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+
+      const startRaw = await client.callTool({
+        name: 'action_execute',
+        arguments: {
+          actionId: 'execution.run.start',
+          input: {
+            sessionId: 'sess_foreign_1',
+            intent: 'review',
+            backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+            instructions: 'Review.',
+            permissionMode: 'default',
+            retentionPolicy: 'ephemeral',
+            runClass: 'bounded',
+            ioMode: 'request_response',
+          },
+        },
+      });
+      expect(startRaw.isError).toBe(true);
+      expect(parseMcpJsonText(startRaw)).toEqual(expect.objectContaining({
+        errorCode: 'execution_run_scope_mismatch',
+      }));
+
+      const detachedStartRaw = await client.callTool({
+        name: 'action_execute',
+        arguments: {
+          actionId: 'execution.run.start',
+          input: {
+            sessionId: null,
+            intent: 'review',
+            backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+            instructions: 'Review.',
+            permissionMode: 'default',
+            retentionPolicy: 'ephemeral',
+            runClass: 'bounded',
+            ioMode: 'request_response',
+          },
+        },
+      });
+      expect(detachedStartRaw.isError).toBe(true);
+      expect(parseMcpJsonText(detachedStartRaw)).toEqual(expect.objectContaining({
+        errorCode: 'not_authenticated',
+      }));
+
+      const stopRaw = await client.callTool({
+        name: 'action_execute',
+        arguments: {
+          actionId: 'execution.run.stop',
+          input: { sessionId: 'sess_foreign_1', runId: 'run_foreign_1' },
+        },
+      });
+      expect(stopRaw.isError).toBe(true);
+      expect(parseMcpJsonText(stopRaw)).toEqual(expect.objectContaining({
+        errorCode: 'execution_run_scope_mismatch',
+      }));
+      expect(invokeLocal).not.toHaveBeenCalled();
     } finally {
       await (client as any)?.close?.();
       server.stop();
@@ -554,6 +698,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('surfaces execution_run_send app-level failures as MCP tool errors', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_run_send_error_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: {
         invokeLocal: vi.fn(async (method: string) => {
           if (method === 'execution.run.send') {
@@ -567,6 +712,8 @@ describe('startHappyServer (MCP integration)', () => {
         }),
       } as any,
       updateMetadata: () => {},
+      getPermissionMode: () => 'default',
+      getActiveTurnPermissionWitness: () => createDefaultActiveTurnPermissionWitness('turn_mcp_run_send_error_1'),
     };
 
     const server = await startHappyServer(fakeClient);
@@ -607,6 +754,7 @@ describe('startHappyServer (MCP integration)', () => {
   it('uses the live session metadata snapshot for MCP action_options_resolve inventory lookups', async () => {
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_options_metadata_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager: {
         invokeLocal: vi.fn(async () => ({})),
       } as any,
@@ -676,6 +824,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_disabled_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
     };
@@ -722,6 +871,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_resources_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
     };
@@ -777,6 +927,7 @@ describe('startHappyServer (MCP integration)', () => {
 
     const fakeClient: HappyMcpSessionClient = {
       sessionId: 'sess_mcp_seq_1',
+      getServerBinding: getTestServerBinding,
       rpcHandlerManager,
       updateMetadata: () => {},
     };

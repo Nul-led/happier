@@ -188,7 +188,7 @@ describe('ActionSpec-derived RPC registrar', () => {
         expect(execute).toHaveBeenCalledWith(
             'sessions.external.operation.status.get',
             { operationId: 'operation-1' },
-            { surface: 'rpc', authority: 'present_user' },
+            { surface: 'rpc', authority: 'account_automation' },
         );
     });
 
@@ -258,7 +258,7 @@ describe('ActionSpec-derived RPC registrar', () => {
             { request: { idempotencyKey: 'takeover-1' } },
             {
                 surface: 'rpc',
-                authority: 'present_user',
+                authority: 'account_automation',
                 signal: controller.signal,
             },
         );
@@ -331,7 +331,7 @@ describe('ActionSpec-derived RPC registrar', () => {
                 context: {
                     defaultSessionId: 'parent-session',
                     surface: 'rpc',
-                    authority: 'present_user',
+                    authority: 'account_automation',
                 },
             },
             {
@@ -340,7 +340,7 @@ describe('ActionSpec-derived RPC registrar', () => {
                 context: {
                     serverId: 'server-1',
                     surface: 'rpc',
-                    authority: 'present_user',
+                    authority: 'account_automation',
                 },
             },
         ]);
@@ -379,6 +379,40 @@ describe('ActionSpec-derived RPC registrar', () => {
             actionId: 'sessions.subagents.inspect',
             input: { sessionId: 'session-1' },
         });
+    });
+
+    it('stamps the Action operation runner admitted request identity into execution context', async () => {
+        const module = await import('./registerActionSpecRpcHandlers');
+        const contexts: unknown[] = [];
+        const actionExecutor: RpcActionExecutor = {
+            execute: async (_actionId, _input, context) => {
+                contexts.push(context);
+                return { ok: true, result: { accepted: true } };
+            },
+        };
+        const { handlers, rpcHandlerManager } = createRpcHarness();
+
+        module.registerActionSpecRpcHandlers({
+            rpcHandlerManager,
+            actionExecutor,
+            actionIds: ['sessions.subagents.list'],
+            actionSpecs: [{
+                id: 'sessions.subagents.list',
+                operation: { version: 1 },
+                surfaces: { rpc: true },
+                bindings: { rpcMethod: 'sessions.subagents.list' },
+            }],
+            observeExecution: async (request) => await request.execute({
+                actionRequestId: 'admitted-request-1',
+                signal: new AbortController().signal,
+                operationProgress: { update: () => undefined },
+                operationOwnerUpdate: { update: () => undefined },
+            }),
+        });
+
+        await expect(handlers.get('sessions.subagents.list')?.({ sessionId: 'session-1' }))
+            .resolves.toEqual({ accepted: true });
+        expect(contexts).toEqual([expect.objectContaining({ actionRequestId: 'admitted-request-1' })]);
     });
 
     it('does not register runtime ActionSpec rows while their rpc surface is disabled', async () => {
@@ -450,7 +484,7 @@ describe('ActionSpec-derived RPC registrar', () => {
             {
                 actionId: 'reviews.comments.create',
                 input: { projectId: 'project-1' },
-                context: { surface: 'rpc', authority: 'present_user' },
+                context: { surface: 'rpc', authority: 'account_automation' },
             },
         ]);
     });

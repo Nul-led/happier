@@ -3,13 +3,24 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 
+const approvalsGet = vi.hoisted(() => vi.fn());
+vi.mock('@/session/actions/approvals/artifactStore', () => ({
+  createCliApprovalsArtifactStore: () => ({ approvalsGet }),
+}));
+
 import {
   AccountSettingsSchema,
   computeWorkspaceSyncPolicyDigest,
+  type HandoffTargetReplacementApprovalV1,
 } from '@happier-dev/protocol';
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { WorkspaceSyncLegacyStateInspection } from '@/workspaces/sync/workspaceSyncLegacyState';
+import type {
+  FiniteTransferMachineTunnel,
+  WorkspaceSyncMachineTunnel,
+  WorkspaceSyncMachineTunnelOpenInput,
+} from '@/workspaces/sync/workspaceSyncMachineCarrierStream';
 import {
   createProductionDaemonWorkspaceSyncRuntime,
   type ProductionDaemonWorkspaceSyncFactories,
@@ -186,11 +197,26 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     const subscribeSettingsSnapshot = vi.fn(() => unsubscribeSettings);
     const warn = vi.fn();
     const closeTunnel = vi.fn(async () => undefined);
-    const openMachineCarrierTunnel = vi.fn(async (
-      _request: Parameters<NonNullable<ProductionInput['openMachineCarrierTunnel']>>[0],
-    ) => ({
-      localPort: 48_123, localCapability: 'd'.repeat(64), observedPath: 'direct' as const, close: closeTunnel,
-    }));
+    const openMachineCarrierTunnelCalls: WorkspaceSyncMachineTunnelOpenInput[] = [];
+    async function openMachineCarrierTunnel(
+      input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'file_transfer' }>,
+    ): Promise<FiniteTransferMachineTunnel>;
+    async function openMachineCarrierTunnel(
+      input: Extract<WorkspaceSyncMachineTunnelOpenInput, { flow: 'workspace_sync' }>,
+    ): Promise<WorkspaceSyncMachineTunnel>;
+    async function openMachineCarrierTunnel(
+      input: WorkspaceSyncMachineTunnelOpenInput,
+    ): Promise<FiniteTransferMachineTunnel | WorkspaceSyncMachineTunnel> {
+      openMachineCarrierTunnelCalls.push(input);
+      const lifecycle = {
+        localPort: 48_123,
+        observedPath: 'direct' as const,
+        close: closeTunnel,
+      };
+      return input.flow === 'workspace_sync'
+        ? { ...lifecycle, localCapability: 'a'.repeat(64) }
+        : lifecycle;
+    }
     const requestDirectTransferPayloadFile = vi.fn(async (
       _request: Parameters<NonNullable<ProductionInput['requestDirectTransferPayloadFile']>>[0],
     ) => undefined);
@@ -234,34 +260,150 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       prepareSourceSeedExport,
       warn,
     } as unknown as ProductionDaemonWorkspaceSyncFactories;
+    const onReadinessPublished = vi.fn();
 
     const production = await createProductionDaemonWorkspaceSyncRuntime({
       happyHomeDir: '/happier-home',
       activeServerDir,
+      activeServerId: 'server-1',
       localMachineId: 'machine-a',
       releaseChannel: 'publicdev',
       credentials: { token: 'secret-token', encryption: null },
       openMachineCarrierTunnel,
       requestDirectTransferPayloadFile,
+      onReadinessPublished,
     }, factories);
 
+    const approval: HandoffTargetReplacementApprovalV1 = {
+      v: 1 as const,
+      consequences: ['replace_nonempty_workspace_target'] as const,
+      serverId: 'server-1',
+      machineId: 'machine-b',
+      canonicalRoot: '/work/beta',
+      rootFingerprint: 'a'.repeat(64),
+      operationId: 'handoff-action-1',
+    };
+    const approvedActionInput = {
+      sessionId: 'session-1',
+      targetMachineId: 'machine-b',
+      targetPath: '/work/beta',
+      workspaceAction: { kind: 'copy_once' as const, contentPolicy },
+    };
+    const approvedArtifact = {
+      v: 2 as const,
+      status: 'executing' as const,
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'cli' as const },
+      executionOriginV1: {
+        v: 1 as const,
+        authority: 'present_user' as const,
+        surface: 'cli' as const,
+        caller: { kind: 'host' as const },
+        serverId: 'server-1',
+        sessionId: 'session-1',
+        machineId: 'machine-b',
+        actionId: 'session.handoff' as const,
+        requestId: 'handoff-action-1',
+      },
+      approval: { flow: 'deferred' as const, result: 'required' as const },
+      actionId: 'session.handoff' as const,
+      actionArgs: approvedActionInput,
+      summary: 'Approve handoff',
+      handoffTargetReplacementApproval: approval,
+      decision: { kind: 'approve' as const, decidedAtMs: 2 },
+    };
+    approvalsGet.mockResolvedValue(approvedArtifact);
+    const assertTargetReplacementAuthorized = createTargetAuthority.mock.calls[0]![0].assertTargetReplacementAuthorized;
+    if (!assertTargetReplacementAuthorized) throw new Error('target replacement authorizer was not composed');
+    await expect(assertTargetReplacementAuthorized('approval-receipt-1', approvedActionInput, approval)).resolves.toBeUndefined();
+    expect(approvalsGet).toHaveBeenCalledWith({ artifactId: 'approval-receipt-1', serverId: 'server-1' });
+    const conflictInput = {
+      controllerMachineId: 'machine-a',
+      request: { relationshipId: 'rel-1', path: 'conflict.txt', keep: 'alpha' as const, expectedKind: 'file' as const, expectedDigest: 'a'.repeat(40) },
+    };
+    const conflictArtifact = {
+      ...approvedArtifact,
+      actionId: 'workspace.sync.conflict.resolve' as const,
+      executionOriginV1: {
+        ...approvedArtifact.executionOriginV1,
+        actionId: 'workspace.sync.conflict.resolve' as const,
+        machineId: 'machine-a',
+        requestId: 'conflict-request-1',
+      },
+      actionArgs: conflictInput,
+      handoffTargetReplacementApproval: undefined,
+    };
+    const assertConflictResolutionAuthorized = createTargetAuthority.mock.calls[0]![0].assertConflictResolutionAuthorized;
+    if (!assertConflictResolutionAuthorized) throw new Error('conflict authorizer was not composed');
+    approvalsGet.mockResolvedValueOnce(conflictArtifact);
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).resolves.toBeUndefined();
+    approvalsGet.mockResolvedValueOnce({
+      ...conflictArtifact,
+      actionArgs: {
+        request: { ...conflictInput.request },
+        controllerMachineId: conflictInput.controllerMachineId,
+      },
+    });
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).resolves.toBeUndefined();
+    approvalsGet.mockResolvedValueOnce(conflictArtifact);
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', {
+      ...conflictInput,
+      request: { ...conflictInput.request, expectedDigest: 'b'.repeat(40) },
+    })).rejects.toMatchObject({ code: 'approval_stale' });
+    approvalsGet.mockResolvedValueOnce({ ...conflictArtifact, v: 1 });
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).rejects.toMatchObject({ code: 'approval_stale' });
+    approvalsGet.mockResolvedValueOnce({ ...conflictArtifact, status: 'approved' });
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).rejects.toMatchObject({ code: 'approval_stale' });
+    approvalsGet.mockResolvedValueOnce({
+      ...conflictArtifact,
+      executionOriginV1: { ...conflictArtifact.executionOriginV1, serverId: 'server-2' },
+    });
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).rejects.toMatchObject({ code: 'approval_stale' });
+    approvalsGet.mockResolvedValueOnce({
+      ...conflictArtifact,
+      executionOriginV1: { ...conflictArtifact.executionOriginV1, machineId: 'machine-c' },
+    });
+    await expect(assertConflictResolutionAuthorized('conflict-receipt-1', conflictInput)).rejects.toMatchObject({ code: 'approval_stale' });
+    const staleApprovalCases: Array<readonly [unknown, unknown, HandoffTargetReplacementApprovalV1]> = [
+      [{ ...approvedArtifact, status: 'approved' }, approvedActionInput, approval],
+      [{ ...approvedArtifact, decision: { kind: 'reject', decidedAtMs: 2 } }, approvedActionInput, approval],
+      [{ ...approvedArtifact, actionId: 'session.restore', executionOriginV1: { ...approvedArtifact.executionOriginV1, actionId: 'session.restore' } }, approvedActionInput, approval],
+      [{ ...approvedArtifact, executionOriginV1: { ...approvedArtifact.executionOriginV1, serverId: 'server-2' } }, approvedActionInput, approval],
+      [{ ...approvedArtifact, executionOriginV1: { ...approvedArtifact.executionOriginV1, requestId: 'other-operation' } }, approvedActionInput, approval],
+      [{ ...approvedArtifact, executionOriginV1: { ...approvedArtifact.executionOriginV1, sessionId: 'other-session' } }, approvedActionInput, approval],
+      [approvedArtifact, { ...approvedActionInput, targetPath: '/work/other' }, approval],
+      [approvedArtifact, { ...approvedActionInput, workspaceAction: { ...approvedActionInput.workspaceAction, kind: 'create_relationship' } }, approval],
+      [approvedArtifact, approvedActionInput, { ...approval, canonicalRoot: '/work/other' }],
+      [approvedArtifact, approvedActionInput, { ...approval, rootFingerprint: 'b'.repeat(64) }],
+      [approvedArtifact, approvedActionInput, { ...approval, machineId: 'machine-c' }],
+    ];
+    for (const [artifact, actionInput, proof] of staleApprovalCases) {
+      approvalsGet.mockResolvedValueOnce(artifact);
+      await expect(assertTargetReplacementAuthorized('approval-receipt-1', actionInput, proof)).rejects.toMatchObject({ code: 'approval_stale' });
+    }
+
     const remoteMaterialize = createTargetAuthority.mock.calls[0]![0].bootstrap?.materializeRemoteSeed;
+    const remoteSeedCancellation = new AbortController();
     await remoteMaterialize?.({
       operationId: 'rel-1', sourceMachineId: 'machine-b', sourceWorkspaceRefId: 'workspace-beta',
       canonicalRoot: '/work/alpha', contentPolicy,
       materializationReceiptPath: '/work/.alpha.happier-materialization.json',
       originalTargetExists: false,
+      targetFence: { state: 'missing', identity: null },
+      signal: remoteSeedCancellation.signal,
     });
-    expect(openMachineCarrierTunnel.mock.calls.map(([request]) => request.flow)).toEqual([
+    expect(openMachineCarrierTunnelCalls.map((request) => request.flow)).toEqual([
       'file_transfer', 'file_transfer', 'file_transfer',
     ]);
-    expect(openMachineCarrierTunnel.mock.calls.every(([request]) => !('operationId' in request))).toBe(true);
+    expect(openMachineCarrierTunnelCalls.every((request) => !('operationId' in request))).toBe(true);
     expect(requestDirectTransferPayloadFile).toHaveBeenCalledTimes(3);
     for (const [request] of requestDirectTransferPayloadFile.mock.calls) {
       expect(request.endpointCandidates).toHaveLength(1);
       expect(new URL(request.endpointCandidates[0]!.url).hostname).toBe('127.0.0.1');
       expect(new URL(request.endpointCandidates[0]!.url).port).toBe('48123');
-      expect(request.fetchFn).toEqual(expect.any(Function));
+      expect(request.fetchFn).toBeUndefined();
+      expect(request.signal).toBe(remoteSeedCancellation.signal);
     }
 
     expect(inspectLegacyState).toHaveBeenCalledOnce();
@@ -278,6 +420,10 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       '[DAEMON RUN] Workspace sync engine is initially unavailable; commands and settings changes may retry it',
       runtimeStartError,
     );
+    expect(onReadinessPublished).toHaveBeenLastCalledWith({
+      engine: { state: 'unavailable', errorCode: 'engine_unavailable' },
+      carrier: { state: 'ready' },
+    });
     expect(production.handoffAdapter).toBe(handoffAdapter);
     expect(production.workspaceSync.controller).toBe(controller);
     expect(production.workspaceSync.relationshipOwner).toBe(relationshipOwner);
@@ -354,6 +500,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       contentPolicy,
       materializationReceiptPath: '/work/.beta.happier-materialization.json',
       originalTargetExists: false,
+      targetFence: { state: 'missing', identity: null },
     });
     expect(materializeLocalSeed).toHaveBeenCalledWith(expect.objectContaining({
       operationId: 'local-op',
@@ -385,6 +532,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       contentPolicy: gitPolicy,
       materializationReceiptPath: '/work/.beta.happier-materialization.json',
       originalTargetExists: false,
+      targetFence: { state: 'missing', identity: null },
     });
     expect(materializeLocalSeed).toHaveBeenLastCalledWith(expect.objectContaining({
       workspaceTransfer: {
@@ -463,6 +611,36 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       reason: 'copy_committed',
     });
     expect(sourceOwnership.release).toHaveBeenCalledOnce();
+
+    // Cancellation ends forward synchronization work, but must not cancel the
+    // mandatory target cleanup that settles the materialization receipt and
+    // discards any target created for this copy operation.
+    const cancelledWork = new AbortController();
+    const cancelledFence = await daemonRuntimeInput.bootstrap({
+      operationId: 'copy-op-cancelled',
+      action: { kind: 'copy_once', contentPolicy },
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceWorkspaceRefId: 'workspace-alpha',
+      targetWorkspaceRefId: 'workspace-beta',
+      sourceRootPath: '/caller/must/not/cross/the/wire',
+      targetRootPath: '/caller/must/not/cross/the/wire/either',
+      signal: cancelledWork.signal,
+    });
+    releaseBootstrapAtTarget.mockImplementationOnce(async (request) => {
+      request.signal?.throwIfAborted();
+      return { ok: true as const, released: true };
+    });
+    cancelledWork.abort();
+    await expect(cancelledFence.release('abort')).resolves.toBeUndefined();
+    expect(releaseBootstrapAtTarget).toHaveBeenLastCalledWith({
+      v: 1,
+      bootstrapOperationId: 'copy-op-cancelled',
+      targetWorkspaceRefId: 'workspace-beta',
+      targetMachineId: 'machine-b',
+      reason: 'abort',
+    });
+    expect(sourceOwnership.release).toHaveBeenCalledTimes(2);
 
     await relationshipOwnerInput.commitRelationshipTarget(settingsSnapshot().settings.workspaceSyncRelationshipsV1[0]!);
     expect(releaseBootstrapAtTarget).toHaveBeenLastCalledWith({
@@ -574,6 +752,16 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
             createIfMissing: true,
           }));
           await expectTyped(production.workspaceSync.deleteConflictLoserAtTarget({
+            actionReceiptId: 'conflict-receipt-1',
+            actionInput: {
+              controllerMachineId: 'machine-b',
+              request: {
+                relationshipId: 'rel-1',
+                path: 'src/x.ts',
+                keep: 'alpha',
+                expectedKind: 'file',
+              },
+            },
             relationshipId: 'rel-1',
             workspaceRefId: 'workspace-alpha',
             path: 'src/x.ts',

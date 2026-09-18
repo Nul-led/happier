@@ -8,22 +8,28 @@ import {
   SessionCreationCorrespondenceV1Schema,
   SessionAttachMetadataIdentityPolicySchema,
   SessionMcpSelectionV1Schema,
-  SessionInputRequestV1Schema,
-  SessionMessageProvenanceV1Schema,
+  SessionInputRequestSchema,
+  SessionMessageProvenanceSchema,
   SessionUserMessageSendRequestSchema,
   SessionModelSelectionV1Schema,
   SessionCreationTagV1Schema,
+  SessionInitialAccessDraftV1Schema,
+  MachinePoolSelectionOriginV1Schema,
+  NonBlankOpaqueIdentifierSchema,
+  SecretReferenceOverlayV1Schema,
   SessionProviderBindingSecurityChangeConfirmationV1Schema,
   SpawnSessionExecutionAuthorizationSchema,
   buildBackendTargetKeyV2,
   type AgentExecutionTargetV1,
   type BackendTargetRefV2,
 } from '@happier-dev/protocol';
+import { SessionTeamCredentialBindingIntentsV1Schema } from '@happier-dev/protocol/teams';
 
 import { PERMISSION_MODES } from '@/api/types';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
 import { isCatalogAgentId } from '@/agent/catalog/resolution';
 import { normalizeDaemonBackendTargetV2Input } from '@/daemon/backendTargetRouting';
+import { ConnectedServicesBindingsIngressSchema } from '@/daemon/connectedServices/parseConnectedServicesBindings';
 
 import {
   NativeForkSourceSchema,
@@ -173,14 +179,18 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
   spawnNonce: z.string().trim().min(1).optional(),
   sessionCreationTag: SessionCreationTagV1Schema.optional(),
   sessionCreationCorrespondence: SessionCreationCorrespondenceV1Schema.optional(),
+  placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
   initialTitle: z.string().trim().min(1).optional(),
+  initialAccess: SessionInitialAccessDraftV1Schema.optional(),
+  primaryTeamId: z.string().min(1).nullable().optional(),
+  teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.optional(),
   pendingFirstInput: z.object({
     text: z.string(),
     localId: z.string().refine((value) => value.trim().length > 0),
     meta: z.record(z.string(), z.unknown()).optional(),
     inputAdmission: z.object({
-      provenance: SessionMessageProvenanceV1Schema,
-      request: SessionInputRequestV1Schema,
+      provenance: SessionMessageProvenanceSchema,
+      request: SessionInputRequestSchema,
     }).strict().optional(),
   }).strict().superRefine((value, ctx) => {
     const parsed = SessionUserMessageSendRequestSchema.safeParse({
@@ -200,7 +210,8 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
   initialTranscriptAfterSeq: z.number().int().min(0).optional(),
   executionAuthorization: SpawnSessionExecutionAuthorizationSchema.optional(),
   attachMetadataIdentityPolicy: SessionAttachMetadataIdentityPolicySchema.optional(),
-  resume: z.string().trim().min(1).optional(),
+  /** Agent-issued and opaque: admitted for presence, carried byte for byte. */
+  resume: NonBlankOpaqueIdentifierSchema.optional(),
   nativeForkSource: NativeForkSourceSchema.optional(),
   agentSessionStartupInstructionsV1:
     AgentSessionStartupInstructionsV1Schema.optional(),
@@ -222,8 +233,9 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
   windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
   windowsTerminalWindowName: z.string().optional(),
   profileId: z.string().optional(),
+  secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
   environmentVariables: z.record(z.string(), z.string()).optional(),
-  connectedServices: z.unknown().optional(),
+  connectedServices: ConnectedServicesBindingsIngressSchema,
   connectedServicesUpdatedAt: z.number().int().optional(),
   connectedServiceMaterializationIdentityV1: ConnectedServiceMaterializationIdentityV1Schema.optional(),
   mcpSelection: SessionMcpSelectionV1Schema.optional(),
@@ -231,6 +243,19 @@ const SpawnDaemonSessionRequestCompatSchema = z.preprocess(canonicalizeSpawnDaem
 }).strict());
 
 export const SpawnDaemonSessionRequestSchema = SpawnDaemonSessionRequestCompatSchema.transform((request, ctx) => {
+  if ((request.initialAccess !== undefined || request.primaryTeamId !== undefined)
+    && (request.existingSessionId || request.type === 'resume-session')) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['initialAccess'], message: 'Initial access and Team context require fresh Session creation' });
+    return z.NEVER;
+  }
+  if (request.placementOrigin && request.existingSessionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Session placement origin is valid only for fresh creation',
+      path: ['placementOrigin'],
+    });
+    return z.NEVER;
+  }
   if (request.resume && request.nativeForkSource) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -337,7 +362,11 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'spawnNonce',
   'sessionCreationTag',
   'sessionCreationCorrespondence',
+  'placementOrigin',
   'initialTitle',
+  'initialAccess',
+  'primaryTeamId',
+  'teamCredentialBindings',
   'pendingFirstInput',
   'accountSettingsVersionHint',
   'sessionId',
@@ -363,6 +392,7 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'windowsRemoteSessionConsole',
   'windowsTerminalWindowName',
   'profileId',
+  'secretReferenceOverlay',
   'environmentVariables',
   'connectedServices',
   'connectedServicesUpdatedAt',

@@ -246,4 +246,22 @@ describe('evaluateConnectedServiceAuthGroupQuotaLifecycle', () => {
       allowUnconfirmedConfidence: true,
     })).toEqual({ ok: true });
   });
+
+  it('rejects future-dated quota evidence for lifecycle decisions', () => {
+    const nowMs = 1_000_000;
+    const future = createUsageSnapshot({
+      profileId: 'primary',
+      nowMs,
+      fetchedAtMs: nowMs + 900_000,
+      remainingPct: 0,
+    });
+
+    expect(canDriveQuotaLifecycleEdge({
+      snapshot: future,
+      expectedGroupGeneration: 4,
+      observedGroupGeneration: 4,
+      nowMs,
+      quotaFreshnessMs: 300_000,
+    })).toEqual({ ok: false, reason: 'stale' });
+  });
 });

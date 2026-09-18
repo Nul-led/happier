@@ -1,23 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// The launcher is the genuine process boundary here; the argument composition
+// under test is the CLI's own, so the spec echoes exactly what it was handed.
 vi.mock('@/utils/spawnHappyCLI', () => ({
-  buildHappyCliSubprocessLaunchSpec: () => ({
+  buildHappyCliSubprocessLaunchSpec: (args: readonly string[]) => ({
     runtime: 'node',
     filePath: process.execPath,
-    args: [
-      '--no-warnings',
-      '--no-deprecation',
-      '/tmp/apps/cli/index.mjs',
-      'tools',
-      'call',
-      '--source',
-      'happier',
-      '--tool',
-      'change_title',
-      '--args-json',
-      '{"title":"Renamed"}',
-      '--json',
-    ],
+    args: ['--no-warnings', '--no-deprecation', '/tmp/apps/cli/index.mjs', ...args],
   }),
 }));
 
@@ -42,6 +31,7 @@ describe('buildHappierToolsShellBridgeCommand', () => {
       kind: 'call',
       source: 'happier',
       tool: 'change_title',
+      agentBridge: true,
     });
     expect(
       parseTrustedHappierToolsShellBridgeCommand(
@@ -54,6 +44,12 @@ describe('buildHappierToolsShellBridgeCommand', () => {
       ),
     ).toBeNull();
     expect(parseTrustedHappierToolsShellBridgeCommand(`${command} && touch /tmp/happier-pwn`)).toBeNull();
+    // The generated bridge form is always Agent-produced. A command that is
+    // byte-identical apart from the missing provenance marker is not the shape
+    // this CLI generates, so it is not the trusted one either.
+    expect(
+      parseTrustedHappierToolsShellBridgeCommand(command.replace(`'--agent-bridge' `, '')),
+    ).toBeNull();
   });
 
   const originalHomeDir = process.env.HAPPIER_HOME_DIR;
@@ -141,7 +137,7 @@ describe('buildHappierToolsShellBridgeCommand', () => {
     expect(command).not.toContain('HAPPIER_HOME_DIR=');
     expect(command).not.toContain('HAPPIER_SERVER_URL=');
     // Binary-safe invocation of the tools CLI.
-    expect(command).toContain(`'tools' 'call' '--source' 'happier' '--tool' 'change_title'`);
+    expect(command).toContain(`'tools' 'call' '--agent-bridge' '--source' 'happier' '--tool' 'change_title'`);
     // Never embed credentials.
     expect(command).not.toContain('secret-token-that-must-not-be-embedded');
     expect(command).not.toContain('HAPPIER_ACCESS_TOKEN');
@@ -158,7 +154,16 @@ describe('buildHappierToolsShellBridgeCommand', () => {
     process.env.HAPPIER_ACCESS_TOKEN = 'secret-token-that-must-not-be-embedded';
 
     const { buildHappierToolsShellBridgeCommand } = await import('./buildHappierToolsShellBridgeCommand');
-    const command = buildHappierToolsShellBridgeCommand(['call']);
+    const command = buildHappierToolsShellBridgeCommand([
+      'call',
+      '--source',
+      'happier',
+      '--tool',
+      'change_title',
+      '--args-json',
+      '{"title":"Renamed"}',
+      '--json',
+    ]);
 
     expect(command).toContain(`HAPPIER_HOME_DIR='/tmp/happier-stack-home'`);
     expect(command).not.toContain('HAPPIER_ACTIVE_SERVER_ID=');
@@ -167,7 +172,7 @@ describe('buildHappierToolsShellBridgeCommand', () => {
     expect(command).not.toContain('HAPPIER_PUBLIC_SERVER_URL=');
     expect(command).not.toContain('HAPPIER_WEBAPP_URL=');
     // Binary-safe invocation of the tools CLI.
-    expect(command).toContain(`'tools' 'call' '--source' 'happier' '--tool' 'change_title'`);
+    expect(command).toContain(`'tools' 'call' '--agent-bridge' '--source' 'happier' '--tool' 'change_title'`);
     // Never embed credentials.
     expect(command).not.toContain('secret-token-that-must-not-be-embedded');
     expect(command).not.toContain('HAPPIER_ACCESS_TOKEN');
@@ -184,7 +189,16 @@ describe('buildHappierToolsShellBridgeCommand', () => {
     process.env.HAPPIER_ACCESS_TOKEN = 'secret-token-that-must-not-be-embedded';
 
     const { buildHappierToolsShellBridgeCommand } = await import('./buildHappierToolsShellBridgeCommand');
-    const command = buildHappierToolsShellBridgeCommand(['call']);
+    const command = buildHappierToolsShellBridgeCommand([
+      'call',
+      '--source',
+      'happier',
+      '--tool',
+      'change_title',
+      '--args-json',
+      '{"title":"Renamed"}',
+      '--json',
+    ]);
 
     expect(command).toContain(`HAPPIER_HOME_DIR='/tmp/happier-stack-home'`);
     expect(command).toContain(`HAPPIER_ACTIVE_SERVER_ID='preview'`);

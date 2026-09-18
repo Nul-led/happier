@@ -1,13 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     openAccountScopedBlobCiphertext,
+    accountSettingsParse,
     PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
+    sealAccountScopedBlobCiphertext,
     type AccountScopedCryptoMaterial,
 } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
-import type { StablePluginSettingsModel } from '../invocation/services/settings';
+import {
+    clearActiveAccountSettingsSnapshot,
+    setActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import {
+    createAccountSettingsBackedSettingsRecordStore,
+    createStablePluginSettingsModel,
+    parseCanonicalPluginSettingsRecord,
+    type StablePluginSettingsModel,
+} from '../invocation/services/settings';
 import {
     createAccountPluginSettingsRecordStorage,
 } from './accountPluginSettingsRecordStorage';
@@ -38,7 +49,177 @@ const e2eeCredentials: StoredCredentials = {
     },
 };
 
+const settingsModel = createStablePluginSettingsModel({ pluginId: 'example.tasks', contribution: {
+    id: 'preferences', version: 1, title: 'Preferences', target: { kind: 'plugin' }, scope: 'account',
+    fields: [{ id: 'theme', title: 'Theme', schema: { type: 'string' } }],
+    presentation: { sections: [], subagentSections: [] },
+} });
+
 describe('Account plugin Settings record storage', () => {
+    afterEach(() => clearActiveAccountSettingsSnapshot());
+
+    it.each(['plain', 'e2ee'] as const)('never retargets a %s logical update after its initial Account read', async (mode) => {
+        const accountA = mode === 'plain' ? plainCredentials : e2eeCredentials;
+        const accountB: StoredCredentials = mode === 'plain'
+            ? { token: 'account-b', encryption: null }
+            : { ...e2eeCredentials, token: 'account-b', encryption: {
+                type: 'dataKey', publicKey: new Uint8Array(32).fill(4), machineKey: new Uint8Array(32).fill(8),
+            } };
+        let current = accountA;
+        const values = { v: 1, values: { theme: 'dark', opaque: 'Account A private value' } };
+        const post = vi.fn(async () => ({ status: 200, data: { status: 'updated', revision: 5 } }));
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => current,
+            isCurrentAccount: (credentials) => credentials === current,
+            resolveBaseUrl: () => 'https://server.example',
+            http: {
+                get: async (url) => url.endsWith('/encryption')
+                    ? { status: 200, data: { mode, updatedAt: 1 } }
+                    : { status: 200, data: { status: 'present', revision: 4, content: mode === 'plain'
+                        ? { t: 'plain', v: values }
+                        : { t: 'encrypted', c: sealAccountScopedBlobCiphertext({
+                            kind: PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
+                            material: e2eeMaterial, payload: values, randomBytes: (size) => new Uint8Array(size).fill(9),
+                        }) } } },
+                post,
+            },
+        });
+        const store = createAccountSettingsBackedSettingsRecordStore(adapter);
+        let calls = 0;
+        await expect(store.update(settingsModel, (raw) => {
+            const record = parseCanonicalPluginSettingsRecord(raw);
+            calls += 1;
+            expect(record.values.opaque).toBe('Account A private value');
+            current = accountB;
+            return { record: { ...record, revision: 5, values: { ...record.values, theme: 'light' } }, result: 'updated' };
+        })).rejects.toMatchObject({ code: 'plugin_settings_persistence_unavailable' });
+        expect(calls).toBe(1);
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it.each(['outcomeUnknown', 'conflict', 'cancelledSameAccount'] as const)(
+        'reconciles %s only inside the submitting Account', async (outcome) => {
+            const controller = new AbortController();
+            let current = plainCredentials;
+            let posted = false;
+            const get = vi.fn(async (url: string, config: Readonly<Record<string, unknown>>) => {
+                expect(config.headers).toMatchObject({ Authorization: 'Bearer plain-token' });
+                if (posted) expect(config.signal).toBeUndefined();
+                return url.endsWith('/encryption')
+                    ? { status: 200, data: { mode: 'plain', updatedAt: 1 } }
+                    : { status: 200, data: { status: 'present', revision: posted ? 5 : 4,
+                        content: { t: 'plain', v: { v: 1, values: { theme: posted ? 'light' : 'dark' } } } } };
+            });
+            const adapter = createAccountPluginSettingsRecordStorage({
+                readCredentials: async () => current,
+                isCurrentAccount: (credentials) => credentials === current,
+                resolveBaseUrl: () => 'https://server.example',
+                http: { get, post: async () => {
+                    posted = true;
+                    if (outcome === 'cancelledSameAccount') controller.abort();
+                    else current = { token: 'account-b', encryption: null };
+                    if (outcome === 'conflict') return { status: 200, data: { status: 'conflict', revision: 5 } };
+                    throw new Error('response_lost');
+                } },
+            });
+            const settle = vi.fn((record: { values: Readonly<Record<string, unknown>> }) => (
+                record.values.theme === 'light' ? 'satisfied' : undefined
+            ));
+            const result = createAccountSettingsBackedSettingsRecordStore(adapter).update(settingsModel, (raw) => ({
+                record: { ...parseCanonicalPluginSettingsRecord(raw), revision: 5, values: { theme: 'light' } },
+                result: 'updated',
+            }), { signal: controller.signal, settleConflict: settle, settleOutcomeUnknown: settle });
+            if (outcome === 'cancelledSameAccount') {
+                await expect(result).resolves.toBe('satisfied');
+                expect(settle).toHaveBeenCalledOnce();
+            } else {
+                await expect(result).rejects.toMatchObject({ code: outcome === 'conflict'
+                    ? 'plugin_settings_revision_conflict' : 'plugin_settings_outcome_unknown' });
+                expect(settle).not.toHaveBeenCalled();
+                // Initial record, read-mode, and write-mode requests only. No
+                // replacement Account read can falsely satisfy A's mutation.
+                expect(get).toHaveBeenCalledTimes(3);
+            }
+        },
+    );
+
+    it.each(['beforeRead', 'duringRead'] as const)('rejects a retired A→B→A lifetime %s', async (phase) => {
+        const select = (scopeKey: string) => setActiveAccountSettingsSnapshot({
+            source: 'network', settings: accountSettingsParse({}), settingsVersion: 1,
+            loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey,
+        });
+        const reselect = () => { select('account-b'); select('account-a'); };
+        select('account-a');
+        const get = vi.fn(async () => {
+            if (phase === 'duringRead') reselect();
+            return { status: 200, data: { status: 'present', revision: 4,
+                content: { t: 'plain', v: { v: 1, values: { theme: 'private' } } } } };
+        });
+        const post = vi.fn();
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => plainCredentials, isCurrentAccount: () => true,
+            resolveBaseUrl: () => 'https://server.example', http: { get, post },
+        });
+        const access = await adapter.bindOperation();
+        if (phase === 'beforeRead') reselect();
+        await expect(access.readRecord(settingsModel)).resolves.toEqual({ status: 'unavailable' });
+        await expect(access.writeRecord(settingsModel, { expectedRevision: 4, values: { theme: 'light' } }))
+            .resolves.toEqual({ status: 'unavailable' });
+        expect(get).toHaveBeenCalledTimes(phase === 'beforeRead' ? 0 : 1);
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it('does not send captured credentials to a newly selected server', async () => {
+        let baseUrl = 'https://server-a.example';
+        const get = vi.fn();
+        const post = vi.fn();
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => plainCredentials, isCurrentAccount: () => true,
+            resolveBaseUrl: () => baseUrl, http: { get, post },
+        });
+        const access = await adapter.bindOperation();
+        baseUrl = 'https://server-b.example';
+        await expect(access.readRecord(settingsModel)).resolves.toEqual({ status: 'unavailable' });
+        await expect(access.writeRecord(settingsModel, { expectedRevision: 4, values: { theme: 'light' } }))
+            .resolves.toEqual({ status: 'unavailable' });
+        expect(get).not.toHaveBeenCalled();
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it('keeps a watch baseline and later refreshes inside their original Account', async () => {
+        let current = plainCredentials;
+        let hint: (() => void) | undefined;
+        const get = vi.fn(async (url: string) => url.endsWith('/encryption')
+            ? { status: 200, data: { mode: 'plain', updatedAt: 1 } }
+            : { status: 200, data: { status: 'present', revision: 4,
+                content: { t: 'plain', v: { v: 1, values: { theme: current.token } } } } });
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => current,
+            isCurrentAccount: (credentials) => credentials === current,
+            resolveBaseUrl: () => 'https://server.example',
+            http: { get, post: vi.fn() },
+            subscribeChanges: (listener) => {
+                hint = () => listener({ kind: 'full' });
+                return () => { hint = undefined; };
+            },
+        });
+        const changes: unknown[] = [];
+        const watch = createAccountSettingsBackedSettingsRecordStore(adapter).watch?.(
+            settingsModel, (change) => changes.push(change),
+        );
+        try {
+            await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+            current = { token: 'account-b', encryption: null };
+            hint?.();
+            // The refresh uses only fulfilled in-process promises when retired.
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(get).toHaveBeenCalledTimes(2);
+            expect(changes).toEqual([]);
+        } finally {
+            await watch?.dispose();
+        }
+    });
+
     it('fails closed when the Account encryption mode and returned record envelope disagree', async () => {
         const get = vi.fn(async (url: string) => {
             if (url.endsWith('/v1/account/encryption')) {
@@ -63,7 +244,7 @@ describe('Account plugin Settings record storage', () => {
             resolveBaseUrl: () => 'https://server.example',
         });
 
-        await expect(adapter.readRecord(model)).resolves.toEqual({ status: 'unavailable' });
+        await expect((await adapter.bindOperation()).readRecord(model)).resolves.toEqual({ status: 'unavailable' });
         expect(get).toHaveBeenCalledWith(
             'https://server.example/v1/account/encryption',
             expect.any(Object),
@@ -93,12 +274,12 @@ describe('Account plugin Settings record storage', () => {
             resolveBaseUrl: () => 'https://server.example',
         });
 
-        await expect(adapter.readRecord(model)).resolves.toEqual({
+        await expect((await adapter.bindOperation()).readRecord(model)).resolves.toEqual({
             status: 'present',
             revision: 4,
             values: { theme: 'dark' },
         });
-        await expect(adapter.writeRecord(model, {
+        await expect((await adapter.bindOperation()).writeRecord(model, {
             expectedRevision: 4,
             values: { theme: 'light' },
         })).resolves.toEqual({ status: 'updated', revision: 5 });
@@ -153,9 +334,9 @@ describe('Account plugin Settings record storage', () => {
             values: { theme: 'light' },
         };
 
-        await expect(adapter.writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
-        await expect(adapter.writeRecord(model, request)).resolves.toEqual({ status: 'unavailable' });
-        await expect(adapter.writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
+        await expect((await adapter.bindOperation()).writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
+        await expect((await adapter.bindOperation()).writeRecord(model, request)).resolves.toEqual({ status: 'unavailable' });
+        await expect((await adapter.bindOperation()).writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
     });
 
     it('does not accept a success-shaped mutation body from a non-success HTTP status', async () => {
@@ -171,7 +352,7 @@ describe('Account plugin Settings record storage', () => {
             resolveBaseUrl: () => 'https://server.example',
         });
 
-        await expect(adapter.writeRecord(model, {
+        await expect((await adapter.bindOperation()).writeRecord(model, {
             expectedRevision: 4,
             values: { theme: 'light' },
         })).resolves.toEqual({ status: 'outcomeUnknown' });
@@ -191,7 +372,7 @@ describe('Account plugin Settings record storage', () => {
             resolveBaseUrl: () => 'https://server.example',
         });
 
-        await expect(adapter.writeRecord(model, {
+        await expect((await adapter.bindOperation()).writeRecord(model, {
             expectedRevision: 4,
             values: { theme: 'light' },
         }, { signal: controller.signal })).resolves.toEqual({ status: 'updated', revision: 5 });
@@ -211,7 +392,7 @@ describe('Account plugin Settings record storage', () => {
             resolveBaseUrl: () => 'https://server.example',
         });
 
-        await expect(adapter.writeRecord(model, {
+        await expect((await adapter.bindOperation()).writeRecord(model, {
             expectedRevision: 4,
             values: { theme: 'light' },
         })).resolves.toEqual({ status: 'updated', revision: 5 });
@@ -231,7 +412,7 @@ describe('Account plugin Settings record storage', () => {
             randomBytes: (length) => new Uint8Array(length).fill(9),
         });
 
-        await expect(adapter.writeRecord(model, {
+        await expect((await adapter.bindOperation()).writeRecord(model, {
             expectedRevision: 'absent',
             values: { theme: 'dark' },
         })).resolves.toEqual({ status: 'updated', revision: 1 });
@@ -262,6 +443,6 @@ describe('Account plugin Settings record storage', () => {
             },
             resolveBaseUrl: () => 'https://server.example',
         });
-        await expect(locked.readRecord(model)).resolves.toEqual({ status: 'unavailable' });
+        await expect((await locked.bindOperation()).readRecord(model)).resolves.toEqual({ status: 'unavailable' });
     });
 });

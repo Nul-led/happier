@@ -493,6 +493,9 @@ export function formatPluginInstallationReviewForTerminal(
     `- Publisher: ${formatPublisher(review.publisherIdentity)}`,
     `Source: ${review.source.locator}`,
     `Update channel: ${formatUpdateChannel(review.updateChannel)}`,
+    ...(review.source.kind === 'archive' && /^https?:\/\//u.test(review.source.locator)
+      ? ['URL retention: Happier saves the full archive URL on this machine, including any credentials, for future updates. Expired or revoked URLs can make updates fail.']
+      : []),
     'Verification signals:',
     `- Source integrity: ${review.source.kind === 'path'
       ? 'None'

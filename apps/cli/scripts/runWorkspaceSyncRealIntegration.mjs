@@ -9,6 +9,7 @@ import { resolveArtifactName } from '../../../packages/iroh-native/scripts/build
 
 const cliDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultIrohNativeDirectory = resolve(cliDirectory, '../../packages/iroh-native');
+const defaultProtocolDirectory = resolve(cliDirectory, '../../packages/protocol');
 export const requiredWorkspaceSyncRealBinaryEnvironment = Object.freeze([
   'HAPPIER_MUTAGEN_LIVE_MANAGER_BIN',
   'HAPPIER_MUTAGEN_LIVE_AGENT_BIN',
@@ -22,6 +23,7 @@ export function createWorkspaceSyncRealIntegrationPlan({
   platform = process.platform,
   arch = process.arch,
   irohNativeDirectory = defaultIrohNativeDirectory,
+  protocolDirectory = defaultProtocolDirectory,
 } = {}) {
   const missing = requiredWorkspaceSyncRealBinaryEnvironment.filter((name) => !String(env[name] ?? '').trim());
   if (missing.length > 0) {
@@ -37,15 +39,21 @@ export function createWorkspaceSyncRealIntegrationPlan({
     ...env,
     HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION: '1',
   };
-  const createTestPlan = (specPath, testEnv = mutagenTestEnvironment) => ({
+  const createTestPlan = (
+    specPath,
+    testEnv = mutagenTestEnvironment,
+    testName,
+    config = 'vitest.integration.config.ts',
+  ) => ({
     args: [
       '-s',
       'vitest:local',
       'run',
       '--isolate',
       '-c',
-      'vitest.integration.config.ts',
+      config,
       specPath,
+      ...(testName ? ['-t', testName] : []),
     ],
     cwd,
     env: testEnv,
@@ -62,6 +70,49 @@ export function createWorkspaceSyncRealIntegrationPlan({
       cwd: irohNativeDirectory,
     },
     tests: [
+      {
+        args: [
+          '-s',
+          'test:local',
+          'src/actions/actionExecutor.workspaceSyncConflict.test.ts',
+          'src/actions/actionExecutor.sessionHandoff.test.ts',
+        ],
+        cwd: protocolDirectory,
+        env,
+      },
+      {
+        args: [
+          '-s',
+          'vitest:local',
+          'run',
+          '-c',
+          'vitest.config.ts',
+          'src/workspaces/sync/workspaceSyncLegacySurface.architecture.test.ts',
+        ],
+        cwd,
+        env,
+      },
+      createTestPlan(
+        'src/daemon/startDaemon.handoff.integration.test.ts',
+        mutagenTestEnvironment,
+        'enters session.handoff through the loaded daemon and reaches relationship and target authorities',
+      ),
+      createTestPlan(
+        'src/workspaces/sync/workspaceSyncTargetBootstrap.test.ts',
+        env,
+        'returns approval_stale without mutation when the approved root object was replaced|rolls back durable replacement custody when restart finds no final READY|treats exact READY plus receipt as committed cleanup pending on restart|does not trust mismatched READY to commit a retained rollback receipt',
+        'vitest.config.ts',
+      ),
+      createTestPlan(
+        'src/workspaces/sync/workspaceSyncNativeConfinedFileSystem.test.ts',
+        {
+          ...env,
+          HAPPIER_RUN_NATIVE_CONFINED_WORKSPACE_SYNC_REAL_INTEGRATION:
+            ['darwin', 'win32'].includes(platform) ? '1' : '0',
+        },
+        'uses the staged native helper for read, abort preservation, and committed deletion',
+        'vitest.config.ts',
+      ),
       createTestPlan('src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts'),
       createTestPlan('src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts'),
       createTestPlan(
@@ -69,6 +120,18 @@ export function createWorkspaceSyncRealIntegrationPlan({
         {
           ...mutagenTestEnvironment,
           HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION: '1',
+        },
+      ),
+      createTestPlan(
+        'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts',
+        {
+          ...mutagenTestEnvironment,
+          // This subpass must prove the canonical acquired artifact rather
+          // than accidentally reusing the source-built manager/agent inputs
+          // required by the other real-process lanes.
+          HAPPIER_MUTAGEN_LIVE_MANAGER_BIN: '',
+          HAPPIER_MUTAGEN_LIVE_AGENT_BIN: '',
+          HAPPIER_RUN_MUTAGEN_INSTALLED_ARTIFACT_INTEGRATION: '1',
         },
       ),
     ],

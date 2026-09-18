@@ -69,12 +69,13 @@ import type { DaemonServerWorkScheduler } from './serverWork';
 import type { ConnectedServiceQuotasLoopHandle } from './connectedServices/quotas/startConnectedServiceQuotasLoop';
 import { getReleaseRingCatalogEntry } from '@happier-dev/release-runtime/releaseRings';
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
+  buildBackendTargetKeyV2,
   createProviderErrorV1,
   readServerEnabledBit,
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
-import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
+import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native/node';
 import { readOrCreateInstallationIdentity } from './identity/store';
 import {
   startPluginWebhookDaemonWorkerV1,
@@ -90,10 +91,14 @@ import {
 } from './startup/startDaemonSessionControlRuntime';
 import { prepareDaemonBootstrapContext } from './startup/prepareDaemonBootstrapContext';
 import { createDaemonMachineBootstrapRuntime } from './startup/createDaemonMachineBootstrapRuntime';
+import { createProductionDaemonWorkflowRuntime } from './workflows/daemonRuntime';
+import { isWorkflowRuntimeEnabled } from './automation/workflowFeatureGate';
 import {
   createProductionDaemonWorkspaceSyncRuntime,
   type ProductionDaemonWorkspaceSyncRuntime,
 } from './startup/createProductionDaemonWorkspaceSyncRuntime';
+import { createDaemonWorkspaceSyncRuntimeCustody } from './startup/daemonWorkspaceSyncRuntimeCustody';
+import { cleanupDaemonHomeMachineWorkspace } from './startup/daemonHomeMachineWorkspaceCleanup';
 import { createSshTunnelSupervisor } from './ssh/tunnels';
 import { createConnectedServiceGroupHomeCleanupScheduler } from './connectedServices/homes/createConnectedServiceGroupHomeCleanupScheduler';
 import { createConnectedServiceMaterializedHomeCleanupScheduler } from './connectedServices/materialize/cleanup/createConnectedServiceMaterializedHomeCleanupScheduler';
@@ -125,11 +130,13 @@ import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFea
 import { startServerFeaturesSnapshotRefreshLoop } from './serverFeaturesSnapshotRefreshLoop';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createDaemonPeerMediationObservabilityRuntime } from './machine/peerMediationObservabilityRuntime';
+import { resolvePeerMediationTrustRoots as resolvePeerMediationTrustRootsFromSnapshot } from './peer/mediation/resolvePeerMediationTrustRoots';
 import {
   createDaemonMachineIrohRuntime,
   type DaemonMachineIrohRuntime,
 } from './peer/iroh/daemonMachineIrohRuntime';
 import { createWorkspaceMachineCarrierTunnelOpen } from './peer/iroh/workspaceMachineCarrierTunnelOpen';
+import { createProviderBrokerMachineCarrierTunnelOpen } from './peer/iroh/providerBrokerMachineCarrierTunnelOpen';
 import {
   applyDaemonHomeDescriptorRefresh,
   prepareDaemonHomeIrohTransport,
@@ -157,15 +164,76 @@ import {
   resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId,
 } from '@/plugins/projection/registry/connectedAccountPurposeCompatibility';
 import { createDaemonConnectedAccountPurposeBindingRuntime } from './connectedServices/purposeBindings/createDaemonConnectedAccountPurposeBindingRuntime';
+import {
+  createDaemonTeamCredentialDirectMaterialReconciler,
+} from './connectedServices/directMaterial/daemonTeamCredentialDirectMaterialReconciler';
+import { createHttpTeamCredentialDirectMaterialClient } from './connectedServices/directMaterial/teamCredentialDirectMaterialClient';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import {
+  PROVIDER_ENDPOINT_SAFETY_LIMITS,
+  pluginJsonValuesEqual,
+  readProviderSettingsFromAccountSettingsV1,
+  type ProviderBrokerApplicationBindingV1,
+  type ProviderBrokerRelayApplicationBindingV1,
+} from '@happier-dev/protocol';
+import {
+  TeamCredentialResourceEntitledPageV1Schema,
+  type TeamCredentialResourceCatalogEntryV1,
+  type TeamCredentialResourceSummaryV1,
+} from '@happier-dev/protocol/teams';
+import {
+  daemonExternalProviderRequestPolicyAcceptsResource,
+  resolveRunnerCredentialSelectionCurrentness,
+  startDaemonProviderBrokerRuntime,
+} from '@/providers/broker/daemonProviderBrokerRuntime';
+import { createConnectedServicesBrokerSourceOpen } from '@/providers/broker/connectedServicesSource';
+import {
+  createTeamCredentialBrokerSourceOwner,
+  teamCredentialBrokerPlacementAcceptsMachine,
+} from '@/providers/broker/teamCredentialBrokerSourceOwner';
+import {
+  createTeamCredentialExternalModelCatalog,
+  createTeamCredentialModelCatalogResolver,
+  isSameTeamCredentialBrokerApplication,
+  type TeamCredentialModelCatalogResolver,
+} from '@/providers/broker/teamCredentialModelCatalog';
+import { resolveTeamCredentialResourceCatalogApplications } from '@/providers/broker/resourceTestCandidate';
+import {
+  classifyTeamCredentialRequestRouteV1,
+  evaluateTeamCredentialRequestPolicyV1,
+} from '@/providers/broker/requestPolicyV1';
+import {
+  createProviderConnectionBrokerSourceOpen,
+  isProviderConnectionBrokerSourceCurrent,
+  isProviderConnectionDirectSourceCurrent,
+  materializeProviderConnectionDirectCredential,
+  resolveProviderConnectionDirectSourceSnapshot,
+} from '@/providers/broker/providerConnectionSource';
+import { createProviderConnectionTeamCredentialSourceSnapshot } from '@/providers/broker/teamCredentialSourceSnapshot';
+import { createProviderConnectionCpxBridge } from '@/providers/broker/providerConnectionCpxBridge';
+import { collectProviderConnectionDnsEvidence } from '@/providers/registry/dnsEvidence';
+import { resolveProviderContributionRegistryView } from '@/providers/registry';
+import { createProviderOperationLifetime } from '@/providers/operationLifetime';
+import {
+  getActiveAccountSettingsSnapshot,
+  subscribeActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { createManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import { createManagedProviderOperationAuthority } from './connectedServices/purposeBindings/managedProviderOperationAuthority';
 import { createConnectedAccountRequestAuthSubjectRegistry } from './connectedServices/requestAuth/ConnectedAccountRequestAuthSubjectRegistry';
 import { resolveQualifiedPurposeBindingSnapshotForAgentSpawn } from './connectedServices/requestAuth/prepareConnectedAccountRequestAuthForSpawn';
 import { createProviderRedactionLease } from '@/providers/spawn/redaction';
+import { openSessionTeamCredentialProviderBinding } from '@/providers/broker/sessionTeamCredentialProviderBinding';
+import { createDaemonTeamCredentialDirectMaterialOpen } from './providers/teamCredentialDirectMaterialComposition';
 import {
   createCurrentRuntimeProviderOperationsSource,
   type RuntimeProviderOperationsProducer,
 } from '@/providers/runtimeServices';
-import { createConnectedAccountDaemonRuntime } from './connectedServices/ConnectedAccountDaemonRuntime';
+import {
+  createConnectedAccountDaemonConfigurationOwner,
+  createConnectedAccountDaemonRuntime,
+} from './connectedServices/ConnectedAccountDaemonRuntime';
 import {
   createActiveAccountSettingsConnectedAccountSecrets,
   createQualifiedConnectedAccountDaemonPersistence,
@@ -188,6 +256,11 @@ import {
   resolveQualifiedConnectedAccountPeerClass,
   resolveQualifiedConnectedAccountPeerOperationTransport,
 } from '@/api/client/qualifiedConnectedAccountApi';
+
+function readTeamCredentialCatalogNextCursor(page: object): string | null {
+  if (!('nextCursor' in page)) return null;
+  return typeof page.nextCursor === 'string' ? page.nextCursor : null;
+}
 
 function resolvePositiveIntEnv(raw: string | undefined, fallback: number, bounds: { min: number; max: number }): number {
   const value = (raw ?? '').trim();
@@ -237,8 +310,8 @@ export async function startDaemon(
 
   let daemonLockHandle: Awaited<ReturnType<typeof acquireDaemonLock>> = null;
   let daemonStateOwner: DaemonStateOwner | null = null;
-  let workspaceSyncRuntime: ProductionDaemonWorkspaceSyncRuntime | null = null;
-  let workspaceSyncRuntimeMachineId: string | null = null;
+  const workspaceSyncRuntimeCustody =
+    createDaemonWorkspaceSyncRuntimeCustody<ProductionDaemonWorkspaceSyncRuntime>();
   let machineIrohRuntime: DaemonMachineIrohRuntime | null = null;
   let homeIrohTransport: DaemonHomeTransport | null = null;
   const preparedIrohState: {
@@ -247,12 +320,7 @@ export async function startDaemon(
     failedStartupCleanup: (() => Promise<void>) | null;
   } = { machine: null, home: null, failedStartupCleanup: null };
   let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
-  const stopWorkspaceSyncRuntime = async (): Promise<void> => {
-    const runtime = workspaceSyncRuntime;
-    workspaceSyncRuntime = null;
-    workspaceSyncRuntimeMachineId = null;
-    await runtime?.stop();
-  };
+  const stopWorkspaceSyncRuntime = workspaceSyncRuntimeCustody.stop;
   const runtimeId = resolveDaemonRuntimeId(process.env);
   const startupSource = resolveDaemonStartupSourceFromEnv(process.env);
   const serviceLabel = resolveDaemonServiceLabelFromEnv(process.env);
@@ -351,6 +419,13 @@ export async function startDaemon(
     // connection, not a request claim or a persisted Account projection. An
     // opaque/malformed connection credential leaves public PAT ingress off.
     const externalActionAccountId = readAccountIdFromToken(credentials.token);
+    const workflowRuntime = externalActionAccountId
+      ? createProductionDaemonWorkflowRuntime({
+          credentials,
+          accountId: externalActionAccountId,
+          serverId: configuration.activeServerId,
+        })
+      : null;
     let preflightMachineRegistration = bootstrapContext.preflightMachineRegistration;
     let machineId = bootstrapContext.machineId;
     const deviceLocalSecretStorage = bootstrapContext.deviceLocalSecretStorage;
@@ -363,6 +438,8 @@ export async function startDaemon(
     }> | null = null;
     let connectedServiceQuotasCoordinator: ConnectedServiceQuotasCoordinator | null = null;
     let connectedServiceQuotasLoopHandle: ConnectedServiceQuotasLoopHandle | null = null;
+    let teamCredentialDirectMaterialChangeCleanup: (() => void) | null = null;
+    let reconcileTeamCredentialDirectMaterialAfterSourceChange = (): void => {};
     let daemonServerWorkScheduler: DaemonServerWorkScheduler | null = null;
     let apiMachineForSessions: ApiMachineClient | null = null;
     let apiMachine: ApiMachineClient | null = null;
@@ -413,11 +490,11 @@ export async function startDaemon(
     // daemon-wide and every server-represented runtime-action family (e.g. localServices.preview)
     // fails closed even when the server enables it. The store reuses the same `/v1/features` fetch
     // source the local-services inventory + browser daemon gates already use — no second fetch path.
+    let retireProviderBrokerClaimsForFeatureDisable: (() => Promise<void>) | null = null;
     const serverFeaturesSnapshotStore = createServerUrlServerFeaturesSnapshotStore({
       serverUrl: resolveServerHttpBaseUrl,
       token: credentials.token,
-      timeoutMs: 1_500,
-      onReady: async (features) => {
+      onAuthenticatedReady: async (features) => {
         await applyDaemonHomeDescriptorRefresh({
           features,
           requestReconnect: () => {
@@ -428,12 +505,33 @@ export async function startDaemon(
             homeTransportReplacementPending = false;
           },
         });
+        await apiMachine?.refreshProviderBrokerIngressAdvertisement(features);
+        await hydrateSavedSecretCatalog({
+          token: credentials.token,
+          serverFeatures: features,
+        }).catch((error) => {
+          logger.debug('[DAEMON RUN] Saved Secret catalog feature reconciliation failed (non-fatal)', {
+            error: serializeAxiosErrorForLog(error),
+          });
+        });
+        if (readServerEnabledBit(features, 'teams.credentialResources') !== true) {
+          await retireProviderBrokerClaimsForFeatureDisable?.();
+        }
       },
       onError: (error) => {
         logger.debug('[DAEMON RUN] Server-features snapshot refresh failed (non-fatal)', error);
       },
     });
-    api.setServerFeaturesSnapshotProvider(() => serverFeaturesSnapshotStore.getSnapshot());
+    api.setServerFeaturesSnapshotProvider(
+      () => serverFeaturesSnapshotStore.getSnapshot(),
+      () => serverFeaturesSnapshotStore.refresh(),
+    );
+    const resolvePeerMediationTrustRoots = () => {
+      return resolvePeerMediationTrustRootsFromSnapshot(
+        serverFeaturesSnapshotStore.getSnapshot(),
+        Date.now(),
+      );
+    };
     let refreshBrowserRouteOwners: (() => Promise<void>) | null = null;
     const minimumServerFeaturesSnapshotRefreshIntervalMs = 30_000;
     const configuredServerFeaturesSnapshotRefreshIntervalMs = resolvePositiveIntEnv(
@@ -626,6 +724,8 @@ export async function startDaemon(
           clearInterval(connectedServiceMaterializedHomeCleanupInterval);
           connectedServiceMaterializedHomeCleanupInterval = null;
         }
+        teamCredentialDirectMaterialChangeCleanup?.();
+        teamCredentialDirectMaterialChangeCleanup = null;
         serverFeaturesSnapshotRefreshLoop.stop();
         await connectedServiceQuotasCoordinator?.flushInBandQuotaPersistence(2_000);
         await daemonServerWorkScheduler?.flushAll(2_000);
@@ -642,12 +742,9 @@ export async function startDaemon(
     });
     const {
       loadLocalSessionMetadataForHandoff,
-      loadLocalHandoffMetadataByVendorResumeId,
-      savePreparedTargetLocalMetadata,
     } = createDaemonSessionHandoffMetadataBridge({
       pidToTrackedSession,
       getMachineId: () => machineId,
-      activeServerDir: configuration.activeServerDir,
     });
     const sshTunnelSupervisor = createSshTunnelSupervisor();
     await sshTunnelSupervisor.adoptPersistedTunnels();
@@ -899,12 +996,18 @@ export async function startDaemon(
               await api.getAccountEncryptionMode(),
           }),
       });
+    const connectedAccountConfigurationOwner =
+      createConnectedAccountDaemonConfigurationOwner({
+        reloadController: pluginReloadController,
+        persistence: connectedAccountPersistence.configuration,
+      });
     const establishedConnectedAccountRuntimeOwner =
       createQualifiedConnectedAccountEstablishedRuntimeOwner({
         reloadController: pluginReloadController,
         credentials,
         getAccountEncryptionMode: (signal) => api.getAccountEncryptionMode({ signal }),
         configuration: connectedAccountPersistence.configuration,
+        configurationOwner: connectedAccountConfigurationOwner,
       });
     const revisionedLegacyConnectedAccountMaterializationOwner =
       createRevisionedLegacyConnectedAccountMaterializationOwner({
@@ -914,9 +1017,28 @@ export async function startDaemon(
         getAccountEncryptionMode: () => api.getAccountEncryptionMode(),
         configuration: connectedAccountPersistence.configuration,
       });
+    const teamCredentialDirectMaterialClient = createHttpTeamCredentialDirectMaterialClient({
+      token: credentials.token,
+      serverUrl: resolveServerHttpBaseUrl(),
+      async readRecipientEncryptionMaterial(signal) {
+        const mode = await api.getAccountEncryptionMode({ signal });
+        if (mode === 'plain') return { mode: 'plain' };
+        if (mode !== 'e2ee' || !credentials.encryption) {
+          return { mode: 'e2ee_unavailable' };
+        }
+        return {
+          mode: 'e2ee',
+          secretKeyOrSeed: credentials.encryption.type === 'dataKey'
+            ? credentials.encryption.machineKey
+            : credentials.encryption.secret,
+        };
+      },
+    });
     const connectedAccountPurposeBindingRuntime = createDaemonConnectedAccountPurposeBindingRuntime({
+        workerMachineId: machineId,
       api,
       establishedRuntimeOwner: establishedConnectedAccountRuntimeOwner,
+      openTeamDirect: teamCredentialDirectMaterialClient.open,
       revisionedLegacyMaterializationOwner:
         revisionedLegacyConnectedAccountMaterializationOwner,
       resolveQualifiedConnectedAccountMaterializationTransport: (service) =>
@@ -1015,13 +1137,19 @@ export async function startDaemon(
       createCurrentMachineExecutionOriginContextResolver({
         serverUrl: configuration.serverUrl,
         resolveCurrentMachineId: () => machineId,
-        timeoutMs: 1_500,
       });
     const browserRuntimeActionExecute = api.createBrowserRuntimeActionExecutor();
     const pluginRuntimeOwner = createDaemonPluginRuntimeOwner({
       happyHomeDir: configuration.happyHomeDir,
       daemonDatabaseLimits: DEFAULT_PLUGIN_DAEMON_DATABASE_LIMITS_POLICY,
       resolveCurrentMachineId: () => machineId,
+      machineAdmissionTransport: async (request, options) => {
+        const currentApiMachine = apiMachineForSessions;
+        if (!currentApiMachine) {
+          return { status: 'rejected', code: 'session_input_target_unavailable' };
+        }
+        return await currentApiMachine.enqueueSessionPendingByMachine(request, options);
+      },
       resolveComposerMediaStageTransferRpcHandler: () => (
         apiMachineForSessions?.getPeerMediationMachineRpcHandlerManager() ?? null
       ),
@@ -1059,10 +1187,14 @@ export async function startDaemon(
           resolvesWhenShutdownRequested.then(() => undefined),
         ]);
       },
-      onDurableRegistryApplied:
-        pluginRegistryProjectionInvalidation.invalidateProjection,
-      onRuntimeProjectionInvalidated:
-        pluginRegistryProjectionInvalidation.invalidateProjection,
+      onDurableRegistryApplied: () => {
+        pluginRegistryProjectionInvalidation.invalidateProjection();
+        reconcileTeamCredentialDirectMaterialAfterSourceChange();
+      },
+      onRuntimeProjectionInvalidated: () => {
+        pluginRegistryProjectionInvalidation.invalidateProjection();
+        reconcileTeamCredentialDirectMaterialAfterSourceChange();
+      },
       managedProviderOperationAuthority,
       qualifiedConnectedAccountEstablishedRuntimeOwner:
         establishedConnectedAccountRuntimeOwner,
@@ -1118,6 +1250,7 @@ export async function startDaemon(
     const connectedAccountDaemonRuntime = createConnectedAccountDaemonRuntime({
       reloadController: pluginReloadController,
       persistence: connectedAccountPersistence,
+      configurationOwner: connectedAccountConfigurationOwner,
       resolvePeerOperationTransport: ({ service, operation }) =>
         resolveQualifiedConnectedAccountPeerOperationTransport({
           snapshot: serverFeaturesSnapshotStore.getSnapshot(),
@@ -1169,12 +1302,213 @@ export async function startDaemon(
           ),
       },
     });
+    const homeDomainAction = externalActionAccountId
+      ? createAccountServerActionDeps({
+        token: credentials.token,
+        credentials,
+        serverId: configuration.activeServerId,
+        serverHttpBaseUrl: resolveServerHttpBaseUrl(),
+        resolveServerFeaturesSnapshot: () => serverFeaturesSnapshotStore.getSnapshot(),
+      }).homeDomainAction
+      : undefined;
+    if (externalActionAccountId && homeDomainAction) {
+        const reconciler = createDaemonTeamCredentialDirectMaterialReconciler({
+          token: credentials.token,
+          accountId: externalActionAccountId,
+          homeDomainAction,
+          establishedRuntimeOwner: establishedConnectedAccountRuntimeOwner,
+          async listAccounts(service, signal) {
+            return await listQualifiedConnectedAccountsV4({ token: credentials.token, service, signal });
+          },
+          async readGroup(source, signal) {
+            return await readQualifiedConnectedAccountGroupV4({
+              token: credentials.token,
+              group: source.target,
+              signal,
+            });
+          },
+          async resolveProviderSource(source, signal) {
+            const accountSnapshot = getActiveAccountSettingsSnapshot();
+            if (!accountSnapshot) return null;
+            const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+              happyHomeDir: configuration.happyHomeDir,
+              controller: pluginReloadController,
+            });
+            try {
+              const registry = resolveProviderContributionRegistryView(
+                lease.registry.contributes,
+                lease.durableRevision,
+              );
+              const dnsEvidenceByEndpointUrl = await collectProviderConnectionDnsEvidence({
+                connectionId: source.connectionId,
+                machineId,
+                providerSettings: readProviderSettingsFromAccountSettingsV1(
+                  accountSnapshot.settings,
+                ).settings,
+                registry,
+                lifetime: createProviderOperationLifetime({
+                  signal,
+                  wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
+                }),
+              });
+              const resolved = resolveProviderConnectionDirectSourceSnapshot({
+                source,
+                machineId,
+                accountSettings: accountSnapshot.settings,
+                ...(accountSnapshot.savedSecretResources
+                  ? { savedSecretResources: accountSnapshot.savedSecretResources }
+                  : {}),
+                registry,
+                dnsEvidenceByEndpointUrl,
+              });
+              if (!resolved.ok) return null;
+              const credential = await materializeProviderConnectionDirectCredential({
+                expected: resolved.snapshot,
+                registry,
+                dnsEvidenceByEndpointUrl,
+                getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+              });
+              if (!credential.ok) return null;
+              return createProviderConnectionTeamCredentialSourceSnapshot({
+                sourceAccountId: externalActionAccountId,
+                expected: resolved.snapshot,
+                resolvedCredential: credential.credential,
+                isPersistedSourceCurrent: () => true,
+                async isProviderSourceCurrent(expected) {
+                  const currentSnapshot = getActiveAccountSettingsSnapshot();
+                  if (!currentSnapshot) return false;
+                  const currentLease = await acquireAuthoritativePluginRuntimeRegistryLease({
+                    happyHomeDir: configuration.happyHomeDir,
+                    controller: pluginReloadController,
+                  });
+                  try {
+                    const currentRegistry = resolveProviderContributionRegistryView(
+                      currentLease.registry.contributes,
+                      currentLease.durableRevision,
+                    );
+                    const currentDnsEvidence = await collectProviderConnectionDnsEvidence({
+                      connectionId: source.connectionId,
+                      machineId,
+                      providerSettings: readProviderSettingsFromAccountSettingsV1(
+                        currentSnapshot.settings,
+                      ).settings,
+                      registry: currentRegistry,
+                      lifetime: createProviderOperationLifetime({
+                        signal,
+                        wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
+                      }),
+                    });
+                    return isProviderConnectionDirectSourceCurrent({
+                      expected,
+                      registry: currentRegistry,
+                      dnsEvidenceByEndpointUrl: currentDnsEvidence,
+                      getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+                    });
+                  } finally {
+                    await currentLease.release();
+                  }
+                },
+              });
+            } finally {
+              await lease.release();
+            }
+          },
+        });
+        const reconcileIfEnabled = async (
+          target?: Parameters<typeof reconciler.reconcile>[0],
+          signal?: AbortSignal,
+        ) => {
+          const snapshot = serverFeaturesSnapshotStore.getSnapshot();
+          if (
+            snapshot?.status !== 'ready'
+            || readServerEnabledBit(snapshot.features, 'teams.credentialResources') !== true
+          ) return { prepared: 0, remaining: 0, failures: [] };
+          return await reconciler.reconcile(target, signal);
+        };
+        const reconcileDirectMaterialBestEffort = () => void reconcileIfEnabled(undefined).catch((error) => logger.debug(
+            '[DAEMON RUN] Team credential direct-material reconciliation failed (non-fatal)',
+            { error: serializeAxiosErrorForLog(error) },
+          ));
+        reconcileTeamCredentialDirectMaterialAfterSourceChange = reconcileDirectMaterialBestEffort;
+        teamCredentialDirectMaterialChangeCleanup = subscribeActiveAccountSettingsSnapshot(
+          reconcileDirectMaterialBestEffort,
+        );
+        reconcileDirectMaterialBestEffort();
+    }
     machineRpcRouteAttachments.attachConnectedAccountDaemonRuntime(
       connectedAccountDaemonRuntime,
     );
     machineRpcRouteAttachments.attachConnectedAccountPurposeBindingRuntime(
       connectedAccountPurposeBindingRuntime,
     );
+    const openTeamCredentialProviderBinding: NonNullable<
+      Parameters<typeof startDaemonSessionControlRuntime>[0]['openTeamCredentialProviderBinding']
+    > | undefined = homeDomainAction && externalActionAccountId
+      ? async (input) => {
+          const workerMachineId = machineId;
+          const openTunnel = machineIrohRuntime
+            ? createProviderBrokerMachineCarrierTunnelOpen({
+                accountId: externalActionAccountId,
+                localMachineId: workerMachineId,
+                runtime: machineIrohRuntime,
+                resolveTrustRoots: resolvePeerMediationTrustRoots,
+              })
+            : undefined;
+          const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+            happyHomeDir: configuration.happyHomeDir,
+            controller: pluginReloadController,
+          });
+          try {
+            const opened = await openSessionTeamCredentialProviderBinding({
+              ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+              ...(input.consumer ? { consumer: input.consumer } : {}),
+              machineId: workerMachineId,
+              agentId: input.agentId,
+              agentTargetKey: input.agentTargetKey,
+              modelId: input.modelId,
+              binding: {
+                v: 1,
+                slot: { kind: 'provider_model' },
+                resourceId: input.resourceId,
+                expectedResourceRevision: input.expectedResourceRevision,
+                deliveryMode: input.deliveryMode,
+                teamId: input.teamId,
+              },
+              lease,
+              materializationBaseDir: join(configuration.happyHomeDir, 'providers', 'materialized'),
+              signal: input.signal,
+              readCatalog: async (signal) => {
+                let cursor: string | null = null;
+                do {
+                  const raw = await homeDomainAction({
+                    actionId: 'teams.credentials.entitled.list', input: { teamId: input.teamId, ...(cursor ? { cursor } : {}) },
+                    context: { surface: 'cli' }, signal,
+                  });
+                  const parsed = TeamCredentialResourceEntitledPageV1Schema.parse(raw);
+                  const resource = parsed.resources.find(candidate => candidate.id === input.resourceId);
+                  if (resource) return resource.providerModels;
+                  cursor = readTeamCredentialCatalogNextCursor(parsed);
+                } while (cursor);
+                return [];
+              },
+              ...(openTunnel ? {
+                openBroker: async (request, signal) =>
+                  await api.openTeamCredentialProviderBroker(request, { signal }),
+                openTunnel,
+              } : {}),
+              openTeamDirect: createDaemonTeamCredentialDirectMaterialOpen({
+                clientOpen: teamCredentialDirectMaterialClient.open,
+                workerMachineId,
+                signal: input.signal,
+              }),
+            });
+            if (!opened) throw new Error('team_credential_provider_selection_not_current');
+            return opened;
+          } finally {
+            await lease.release();
+          }
+        }
+      : undefined;
     const {
       spawnSession,
       stopSession,
@@ -1189,6 +1523,8 @@ export async function startDaemon(
       requestConnectedServiceRefreshRestartSignal,
       cancelConnectedServiceRuntimeAuthRecovery,
       retryTemporaryThrottleNow,
+      readTemporaryThrottleRecovery,
+      cancelTemporaryThrottleRecovery,
       reconcileReattachedConnectedServiceCredentialProjection,
       reconcileConnectedServicesProjection,
       awaitAgentSessionOpen,
@@ -1202,8 +1538,15 @@ export async function startDaemon(
     } = await startDaemonSessionControlRuntime({
       machineId,
       externalActionAccountId,
-      serverBaseUrl: configuration.serverUrl,
+      serverId: configuration.activeServerId,
+      serverBaseUrl: resolveServerHttpBaseUrl(),
       runtimeActionExecute: browserRuntimeActionExecute,
+      ...(workflowRuntime
+        ? {
+            workflowAcceptedAuthorizationCurrentness:
+              workflowRuntime.isAcceptedAuthorizationCurrent,
+          }
+        : {}),
       currentMachineHost: metadataForRegistration.host,
       currentMachineHomeDir: metadataForRegistration.homeDir,
       resolveCurrentMachineExecutionOriginContext,
@@ -1227,7 +1570,7 @@ export async function startDaemon(
         await cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop(input),
       deviceLocalSecretStorage,
       api,
-      loadLocalHandoffMetadataByVendorResumeId,
+      ...(openTeamCredentialProviderBinding ? { openTeamCredentialProviderBinding } : {}),
       connectedServicesMaterializationBaseDir,
       getConnectedServiceRefreshCoordinator: () => connectedServiceRefreshCoordinator,
       getConnectedServiceQuotasCoordinator: () => connectedServiceQuotasCoordinator,
@@ -1416,7 +1759,7 @@ export async function startDaemon(
         agentId,
         connectedServicesBindingsRaw,
       }) => {
-        const bindings = ConnectedServiceBindingsV1Schema.safeParse(
+        const bindings = ConnectedServiceBindingsV2IngressSchema.safeParse(
           connectedServicesBindingsRaw,
         );
         if (!bindings.success) return null;
@@ -1535,47 +1878,488 @@ export async function startDaemon(
         credentials,
         daemonSessionMutationCustody,
         deviceLocalSecretStorage,
-        createWorkspaceSyncRuntime: async ({ machineId: registeredMachineId, onStatusPublished }) => {
-          if (
-            workspaceSyncRuntime
-            && workspaceSyncRuntimeMachineId === registeredMachineId
-          ) {
-            return workspaceSyncRuntime;
-          }
-          await stopWorkspaceSyncRuntime();
-          const openMachineCarrierTunnel = machineIrohRuntime && externalActionAccountId
-            ? createWorkspaceMachineCarrierTunnelOpen({
+        ...(openTeamCredentialProviderBinding
+          ? {
+              prepareRunTeamCredentialProviderBinding: async (request) => {
+                const selection = request.selection;
+                if (!selection) return null;
+                const currentMachineId = machineId;
+                if (!request.machineId || request.machineId !== currentMachineId) {
+                  throw new Error('team_credential_provider_machine_not_current');
+                }
+                const lifetime = new AbortController();
+                const opened = await openTeamCredentialProviderBinding({
+                  teamId: selection.teamId,
+                  resourceId: selection.resourceId,
+                  expectedResourceRevision: selection.expectedResourceRevision,
+                  deliveryMode: selection.deliveryMode,
+                  agentId: request.agentId,
+                  agentTargetKey: selection.agentTargetKey,
+                  modelId: selection.modelId,
+                  consumer: { kind: 'execution_run', executionRunId: request.runId },
+                  signal: lifetime.signal,
+                });
+                let closed = false;
+                return Object.freeze({
+                  ...opened,
+                  async cleanup() {
+                    if (closed) return;
+                    closed = true;
+                    lifetime.abort();
+                    await opened.cleanup();
+                  },
+                });
+              },
+            }
+          : {}),
+        ...(homeDomainAction
+          ? {
+              startProviderBrokerApplication: async ({
+                machineId: registeredMachineId,
+                apiMachine: brokerApiMachine,
+              }) => {
+                const readResource = async (
+                  resourceId: string,
+                  signal: AbortSignal,
+                ): Promise<TeamCredentialResourceSummaryV1 | null> => {
+                  try {
+                    return await api.getTeamCredentialResource(resourceId, { signal });
+                  } catch {
+                    return null;
+                  }
+                };
+                const resolveCatalog = async (input: Readonly<{
+                  resource: TeamCredentialResourceSummaryV1;
+                  application: ProviderBrokerApplicationBindingV1;
+                  signal: AbortSignal;
+                }>) => {
+                  let cursor: string | null = null;
+                  let row: TeamCredentialResourceCatalogEntryV1 | undefined;
+                  do {
+                    const rawPage = await homeDomainAction({
+                      actionId: 'teams.credentials.entitled.list',
+                      input: { teamId: input.resource.teamId, application: input.application, ...(cursor ? { cursor } : {}) },
+                      context: { surface: 'cli' }, signal: input.signal,
+                    });
+                    if (typeof rawPage === 'object' && rawPage !== null && 'ok' in rawPage && rawPage.ok === false) return null;
+                    const parsedPage = TeamCredentialResourceEntitledPageV1Schema.safeParse(rawPage);
+                    if (!parsedPage.success) return null;
+                    row = parsedPage.data.resources.find(candidate => candidate.id === input.resource.id
+                      && candidate.resourceRevision === input.resource.revision);
+                    cursor = readTeamCredentialCatalogNextCursor(parsedPage.data);
+                  } while (!row && cursor);
+                  return row
+                    ? createTeamCredentialModelCatalogResolver({
+                        resourceId: input.resource.id,
+                        resourceRevision: input.resource.revision,
+                        application: input.application,
+                        rows: row.providerModels,
+                      })
+                    : null;
+                };
+                const brokerManagedProviderCustody = createManagedProviderExplicitStartCustody({
+                  machineId: registeredMachineId,
+                  happyHomeDir: configuration.happyHomeDir,
+                  controller: pluginReloadController,
+                });
+                const sourceOwner = createTeamCredentialBrokerSourceOwner({
+                  machineId: registeredMachineId,
+                  openConnectedServicesSource: createConnectedServicesBrokerSourceOpen({
+                    readResource,
+                    resolveBindingIntentSelection: connectedAccountPurposeBindingRuntime.resolveBindingIntentSelection,
+                    custody: brokerManagedProviderCustody,
+                  }),
+                  openProviderConnectionSource: createProviderConnectionBrokerSourceOpen({
+                    machineId: registeredMachineId,
+                    readResource: async (resourceId, signal) => {
+                      const resource = await readResource(resourceId, signal);
+                      return resource?.source && resource.brokerPlacement
+                        ? {
+                            teamId: resource.teamId,
+                            source: resource.source,
+                            brokerPlacement: resource.brokerPlacement,
+                            revision: resource.revision,
+                            enabled: resource.enabled,
+                          }
+                        : null;
+                    },
+                    withRegistry: async (read) => {
+                      const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+                        happyHomeDir: configuration.happyHomeDir,
+                        controller: pluginReloadController,
+                      });
+                      try {
+                        return await read(resolveProviderContributionRegistryView(
+                          lease.registry.contributes,
+                          lease.durableRevision,
+                        ));
+                      } finally {
+                        await lease.release();
+                      }
+                    },
+                    getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+                    collectDnsEvidence: async ({ source, registry, signal }) => {
+                      const snapshot = getActiveAccountSettingsSnapshot();
+                      if (!snapshot) return new Map();
+                      return await collectProviderConnectionDnsEvidence({
+                        connectionId: source.connectionId,
+                        machineId: registeredMachineId,
+                        providerSettings: readProviderSettingsFromAccountSettingsV1(
+                          snapshot.settings,
+                        ).settings,
+                        registry,
+                        lifetime: createProviderOperationLifetime({
+                          signal,
+                          wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
+                        }),
+                      });
+                    },
+                    openCpxProviderConnection: createProviderConnectionCpxBridge({
+                      custody: brokerManagedProviderCustody,
+                    }).open,
+                    resolveExactSelection: async (request) => await (
+                      providerOperationsProducer?.machineServices
+                        .resolveTeamCredentialBrokerSourceSelection(request)
+                      ?? Promise.resolve(null)
+                    ),
+                  }),
+                });
+                const authorizeExternalAuthorization = async (input: Readonly<{
+                  binding: Extract<ProviderBrokerRelayApplicationBindingV1, { kind: 'external_api_key' }>;
+                  expectedResourceRevision: number;
+                  application: ProviderBrokerApplicationBindingV1;
+                  signal?: AbortSignal;
+                }>) => await api.authorizeTeamCredentialProviderModelCatalog({
+                  v: 1,
+                  binding: input.binding,
+                  brokerMachineId: registeredMachineId,
+                  expectedResourceRevision: input.expectedResourceRevision,
+                  application: input.application,
+                }, input.signal ? { signal: input.signal } : undefined);
+                const runtime = await startDaemonProviderBrokerRuntime({
+                  machineId: registeredMachineId,
+                  resolveTrustRoots: resolvePeerMediationTrustRoots,
+                  nowMs: () => Date.now(),
+                  createRequestId: randomUUID,
+                  sourceOwner,
+                  checkRunnerCredentialSelectionCurrentness: async ({ selection, modelId, signal }) => {
+                    const resolveEligibility = providerOperationsProducer?.machineServices
+                      .resolveTeamCredentialBrokerEligibility;
+                    if (!resolveEligibility) return 'update_required';
+                    return await resolveRunnerCredentialSelectionCurrentness({
+                      registeredMachineId,
+                      selection,
+                      modelId,
+                      signal,
+                      readResource,
+                      resolveEligibility: async (request, currentnessSignal) =>
+                        await resolveEligibility(request, currentnessSignal),
+                    });
+                  },
+                  resolveRequestPolicy: async ({ authority, request }) => {
+                    const signal = request.signal ?? new AbortController().signal;
+                    const resource = await readResource(authority.resourceId, signal);
+                    if (
+                      !resource
+                      || !resource.enabled
+                      || resource.teamId !== authority.teamId
+                      || !resource.source
+                      || !teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, registeredMachineId)
+                    ) return null;
+                    const catalog = await resolveCatalog({
+                      resource,
+                      application: authority.application,
+                      signal,
+                    }).catch(() => null);
+                    return catalog
+                      ? {
+                          resourceRevision: resource.revision,
+                          sourceRevision: catalog.sourceRevision,
+                          application: catalog.application,
+                          policy: resource.requestPolicy,
+                          source: resource.source,
+                          modelCatalog: {
+                            models: catalog.rows.map((row) => ({
+                              id: row.descriptor.id,
+                              ...(row.descriptor.name === undefined ? {} : { name: row.descriptor.name }),
+                            })),
+                            resolveCanonicalModelId: catalog.resolveCanonicalModelId,
+                          },
+                        }
+                      : null;
+                  },
+                  admitRequest: async (request) => await api.admitTeamCredentialProviderBrokerRequest({
+                    v: 1,
+                    authority: request.authority,
+                    expectedResourceRevision: request.expectedResourceRevision,
+                    sourceMemberKey: request.sourceMemberKey,
+                    requestId: request.requestId,
+                    requestFacts: request.requestFacts,
+                  }, { signal: request.request.signal }),
+                  authorizeModelCatalog: async ({ authorization, expectedResourceRevision, request }) => {
+                    if (authorization.kind === 'resource_test') {
+                      return { ok: false as const, reasonCode: 'resource_unavailable' as const };
+                    }
+                    return authorization.kind === 'private'
+                      ? await api.authorizeTeamCredentialProviderModelCatalog({
+                            v: 1,
+                            authority: authorization.authority,
+                            expectedResourceRevision,
+                          }, { signal: request.signal })
+                      : await authorizeExternalAuthorization({
+                          binding: authorization.binding,
+                          expectedResourceRevision,
+                          application: authorization.application,
+                          ...(request.signal ? { signal: request.signal } : {}),
+                        });
+                  },
+                  resolveExternalRequestPolicy: async ({ binding, request }) => {
+                    const signal = request.signal ?? new AbortController().signal;
+                    const resource = await readResource(binding.resourceId, signal);
+                    const route = classifyTeamCredentialRequestRouteV1(request.pathAndQuery);
+                    const source = resource?.source;
+                    const protocol = route?.kind === 'openai_responses'
+                      ? 'openai-responses'
+                      : route?.kind === 'openai_chat_completions'
+                        ? 'openai-chat'
+                        : route?.kind === 'anthropic_messages' ? 'anthropic' : null;
+                    if (
+                      !daemonExternalProviderRequestPolicyAcceptsResource({
+                        resource,
+                        bindingTeamId: binding.teamId,
+                        registeredMachineId,
+                      })
+                      || !source
+                    ) return null;
+                    const producer = providerOperationsProducer;
+                    if (!producer) return null;
+                    const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+                      happyHomeDir: configuration.happyHomeDir,
+                      controller: pluginReloadController,
+                    });
+                    let agentTargetKeys: string[];
+                    try {
+                      agentTargetKeys = [...lease.registry.contributes.agentDefinitionsById.values()]
+                        .flatMap((agent) => agent.identity
+                          ? [buildBackendTargetKeyV2({ kind: 'agent', identity: agent.identity })]
+                          : []);
+                    } finally {
+                      await lease.release();
+                    }
+                    const applications = await resolveTeamCredentialResourceCatalogApplications({
+                      machineId: registeredMachineId,
+                      teamId: resource.teamId,
+                      resourceId: resource.id,
+                      expectedResourceRevision: resource.revision,
+                      source,
+                      agentTargetKeys,
+                      projectModels: async (projectionRequest) =>
+                        await producer.machineServices.projectModels(projectionRequest),
+                      signal,
+                    }).catch(() => []);
+                    if (request.method === 'GET' && request.pathAndQuery === '/v1/models') {
+                      const resolvedCatalogs = await Promise.all(applications.map(async (candidate) =>
+                        await resolveCatalog({ resource, application: candidate, signal }).catch(() => null)));
+                      if (resolvedCatalogs.some((catalog) => catalog === null)) {
+                        return { kind: 'denied' as const, reasonCode: 'resource_unavailable' as const };
+                      }
+                      const catalogs = resolvedCatalogs.filter(
+                        (catalog): catalog is TeamCredentialModelCatalogResolver => catalog !== null,
+                      );
+                      const catalog = createTeamCredentialExternalModelCatalog(catalogs);
+                      return catalog
+                        ? {
+                            kind: 'model_catalog' as const,
+                            resourceRevision: resource.revision,
+                            policy: resource.requestPolicy,
+                            applications: catalog.applications,
+                            modelCatalog: {
+                              models: catalog.models,
+                              resolveCanonicalModelId: catalog.resolveCanonicalModelId,
+                            },
+                          }
+                        : null;
+                    }
+                    if (!protocol) return { kind: 'denied' as const, reasonCode: 'route_not_allowed' as const };
+                    const protocolApplications = applications.filter((candidate) => candidate.protocol === protocol);
+                    if (protocolApplications.length === 0) {
+                      return { kind: 'denied' as const, reasonCode: 'route_not_allowed' as const };
+                    }
+                    const policy = resource.requestPolicy ?? {
+                      allowedProtocolKinds: null,
+                      allowedModelIds: null,
+                      reasoningEffort: null,
+                      maxOutputTokens: null,
+                      maxThinkingBudgetTokens: null,
+                    };
+                    const evaluatedCatalogs: TeamCredentialModelCatalogResolver[] = [];
+                    let firstFailure: Extract<
+                      ReturnType<typeof evaluateTeamCredentialRequestPolicyV1>,
+                      { ok: false }
+                    > | null = null;
+                    for (const application of protocolApplications) {
+                      const catalog = await resolveCatalog({ resource, application, signal }).catch(() => null);
+                      if (!catalog) {
+                        return { kind: 'denied' as const, reasonCode: 'resource_unavailable' as const };
+                      }
+                      const evaluated = evaluateTeamCredentialRequestPolicyV1({
+                        policy,
+                        request,
+                        resolveCanonicalModelId: catalog.resolveCanonicalModelId,
+                      });
+                      if (evaluated.ok) evaluatedCatalogs.push(catalog);
+                      else if (!firstFailure) firstFailure = evaluated;
+                    }
+                    if (evaluatedCatalogs.length === 0) {
+                      return {
+                        kind: 'denied' as const,
+                        reasonCode: firstFailure?.reasonCode ?? 'resource_unavailable' as const,
+                      };
+                    }
+                    if (evaluatedCatalogs.length !== 1) {
+                      return { kind: 'denied' as const, reasonCode: 'route_not_allowed' as const };
+                    }
+                    const catalog = evaluatedCatalogs[0]!;
+                    return {
+                          kind: 'application' as const,
+                          resourceRevision: resource.revision,
+                          policy: resource.requestPolicy,
+                          application: catalog.application,
+                          modelCatalog: {
+                            models: catalog.rows.map((row) => ({
+                              id: row.descriptor.id,
+                              ...(row.descriptor.name === undefined ? {} : { name: row.descriptor.name }),
+                            })),
+                            resolveCanonicalModelId: catalog.resolveCanonicalModelId,
+                          },
+                        };
+                  },
+                  admitExternalRequest: async (request) => await api.admitTeamCredentialExternalProviderRequest({
+                    v: 1,
+                    binding: request.binding,
+                    brokerMachineId: registeredMachineId,
+                    expectedResourceRevision: request.expectedResourceRevision,
+                    application: request.application,
+                    requestFacts: request.requestFacts,
+                  }, { signal: request.request.signal }),
+                  revalidateExternalAuthorization: async (request) => (
+                    await authorizeExternalAuthorization(request)
+                  ).ok,
+                  retireExternalApiKey: async ({ externalApiKeyId, application }) =>
+                    await brokerManagedProviderCustody.retireExternalApiKey({
+                      identity: application.implementationIdentity,
+                      externalApiKeyId,
+                    }),
+                  recordExternalTerminalUsage: async (request) =>
+                    await api.recordTeamCredentialExternalProviderTerminalUsage(request),
+                  resolveResourceTestRequestPolicy: async ({ binding, request }) => {
+                    const signal = request.signal ?? new AbortController().signal;
+                    const resource = await readResource(binding.resourceId, signal);
+                    if (
+                      !resource
+                      || !resource.enabled
+                      || resource.teamId !== binding.teamId
+                      || resource.revision !== binding.expectedResourceRevision
+                      || !resource.source
+                      || !pluginJsonValuesEqual(resource.source, binding.source)
+                      || !teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, registeredMachineId)
+                    ) return null;
+                    const catalog = await resolveCatalog({
+                      resource,
+                      application: binding.application,
+                      signal,
+                    }).catch(() => null);
+                    return catalog
+                      ? {
+                          resourceRevision: resource.revision,
+                          policy: resource.requestPolicy,
+                          application: binding.application,
+                          modelCatalog: {
+                            models: catalog.rows.map((row) => ({
+                              id: row.descriptor.id,
+                              ...(row.descriptor.name === undefined ? {} : { name: row.descriptor.name }),
+                            })),
+                            resolveCanonicalModelId: catalog.resolveCanonicalModelId,
+                          },
+                        }
+                      : null;
+                  },
+                  admitResourceTestRequest: async (request) => await api.admitTeamCredentialResourceTestRequest({
+                    v: 1,
+                    binding: request.binding,
+                    brokerMachineId: registeredMachineId,
+                    relayAuthorization: request.relayAuthorization,
+                    requestFacts: request.requestFacts,
+                  }, { signal: request.request.signal }),
+                });
+                let current = true;
+                const revalidateRetainedClaims = async (
+                  invalidation: Readonly<{ signal: AbortSignal }>,
+                ): Promise<void> => {
+                  if (!current) return;
+                  await brokerManagedProviderCustody.revalidateRetainedClaims(
+                    invalidation.signal,
+                  );
+                };
+                const retireAllClaims = async (): Promise<void> => {
+                  if (!current) return;
+                  await brokerManagedProviderCustody.retireAll();
+                };
+                const unsubscribeCurrentness =
+                  brokerApiMachine.onManagedProviderRetainedCurrentnessInvalidation(
+                    revalidateRetainedClaims,
+                  );
+                retireProviderBrokerClaimsForFeatureDisable = retireAllClaims;
+                return Object.freeze({
+                  ...runtime,
+                  async close() {
+                    if (!current) return;
+                    current = false;
+                    unsubscribeCurrentness();
+                    if (retireProviderBrokerClaimsForFeatureDisable === retireAllClaims) {
+                      retireProviderBrokerClaimsForFeatureDisable = null;
+                    }
+                    try {
+                      await runtime.close();
+                    } finally {
+                      await brokerManagedProviderCustody.retireAll();
+                    }
+                  },
+                });
+              },
+            }
+          : {}),
+        createWorkspaceSyncRuntime: async ({
+          machineId: registeredMachineId,
+          onReadinessPublished,
+          onStatusPublished,
+        }) => {
+          return await workspaceSyncRuntimeCustody.acquire(registeredMachineId, async () => {
+            const openMachineCarrierTunnel = machineIrohRuntime && externalActionAccountId
+              ? createWorkspaceMachineCarrierTunnelOpen({
                 accountId: externalActionAccountId,
                 localMachineId: registeredMachineId,
                 runtime: machineIrohRuntime,
-                resolveTrustRoots: () => {
-                  const featureSnapshot = serverFeaturesSnapshotStore.getSnapshot();
-                  return featureSnapshot?.status === 'ready'
-                    ? featureSnapshot.features.capabilities.machines.peerMediation.grantSigningKeys
-                        .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
-                        .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }))
-                    : [];
-                },
+                resolveTrustRoots: resolvePeerMediationTrustRoots,
                 readTargetMachine: async (targetMachineId, signal) => await api.getMachine(targetMachineId, { signal }),
                 mintGrant: async (request, signal) => await api.mintPeerMediationRouteGrant(request, { signal }),
               })
-            : undefined;
-          const created = await createProductionDaemonWorkspaceSyncRuntime({
-            happyHomeDir: configuration.happyHomeDir,
-            activeServerDir: configuration.activeServerDir,
-            activeServerId: configuration.activeServerId,
-            localMachineId: registeredMachineId,
-            releaseChannel: configuration.publicReleaseRing,
-            credentials,
-            onStatusPublished,
-            ...(openMachineCarrierTunnel ? { openMachineCarrierTunnel } : {}),
-            ...(directPeerServerLifecycle
-              ? { requestDirectTransferPayloadFile: directPeerServerLifecycle.requestPayloadFile }
-              : {}),
+              : undefined;
+            return await createProductionDaemonWorkspaceSyncRuntime({
+              happyHomeDir: configuration.happyHomeDir,
+              activeServerDir: configuration.activeServerDir,
+              activeServerId: configuration.activeServerId,
+              localMachineId: registeredMachineId,
+              releaseChannel: configuration.publicReleaseRing,
+              credentials,
+              onReadinessPublished,
+              onStatusPublished,
+              ...(openMachineCarrierTunnel ? { openMachineCarrierTunnel } : {}),
+              ...(directPeerServerLifecycle
+                ? { requestDirectTransferPayloadFile: directPeerServerLifecycle.requestPayloadFile }
+                : {}),
+            });
           });
-          workspaceSyncRuntime = created;
-          workspaceSyncRuntimeMachineId = registeredMachineId;
-          return created;
         },
         diagnosticSubsystemGates,
         runtimeId,
@@ -1589,7 +2373,6 @@ export async function startDaemon(
         installExternalSessionHostOperations,
         isSessionAlreadyRunning,
         loadLocalSessionMetadataForHandoff,
-        savePreparedTargetLocalMetadata,
         beforeShutdown,
         requestShutdown,
         directPeerServerLifecycle,
@@ -1600,7 +2383,7 @@ export async function startDaemon(
             : { status: 'ready' as const }
         ),
         acquireWorkspaceSyncMachineIngress: async (input) => {
-          const runtime = workspaceSyncRuntime;
+          const runtime = workspaceSyncRuntimeCustody.get();
           if (!runtime) throw new Error('Workspace sync runtime is not ready');
           return await runtime.acquireWorkspaceSyncMachineIngress(input);
         },
@@ -1609,6 +2392,8 @@ export async function startDaemon(
         daemonServerWorkScheduler,
         cancelConnectedServiceRuntimeAuthRecovery,
         retryTemporaryThrottleNow,
+        readTemporaryThrottleRecovery,
+        cancelTemporaryThrottleRecovery,
         liveStreamCaptureRegistry,
         readActiveLiveStreamControlLease: (input) => simulatorInputLeaseManager.read(input),
         peerMediationObservabilityEmitter: peerMediationObservabilityRuntime.emitter,
@@ -1625,6 +2410,8 @@ export async function startDaemon(
           connectedAccountPurposeBindingRuntime.subscribeInvalidations,
         isShuttingDown: isDaemonQuiescing,
         getServerFeaturesSnapshot: () => serverFeaturesSnapshotStore.getSnapshot(),
+        resolvePeerMediationTrustRoots,
+        refreshServerFeaturesSnapshot: () => serverFeaturesSnapshotStore.refresh(),
         readLocalServiceInventorySnapshot: async () => localServiceInventoryRoutes?.getSnapshot() ?? null,
         managedCatalogRuntime: {
           launch: async (input) => {
@@ -1646,6 +2433,18 @@ export async function startDaemon(
         onAutomationWorkerStarted: (worker: AutomationWorkerHandle) => {
           automationWorker = worker;
         },
+        ...(workflowRuntime
+          ? {
+              isWorkflowFeatureEnabled: () => isWorkflowRuntimeEnabled(
+                process.env,
+                serverFeaturesSnapshotStore.getSnapshot(),
+              ),
+              createWorkflowRunCoordinatorForMachine: (input) =>
+                workflowRuntime.createCoordinatorForMachine(input),
+              createWorkflowRecoveryForMachine: (input) =>
+                workflowRuntime.createRecoveryForMachine(input),
+            }
+          : {}),
         prepareApiMachineForSessions:
           machineRpcRouteAttachments.prepareApiMachineForSessions,
         persistedTakeoverAdmissionWaiter,
@@ -1902,12 +2701,15 @@ export async function startDaemon(
       voiceInferenceWorker,
       trackedSessionCount: pidToTrackedSession.size,
       stopDirectPeerServer: async () => {
-        await stopMachineIrohAcceptor();
-        await stopPeerMediationLoopbackServer();
-        await stopDirectPeerServer();
-        await homeIrohTransport?.release();
-        await machineIrohRuntime?.shutdown();
-        await preparedIrohState.failedStartupCleanup?.();
+        await cleanupDaemonHomeMachineWorkspace({
+          stopWorkspaceSync: stopWorkspaceSyncRuntime,
+          stopMachineAcceptor: stopMachineIrohAcceptor,
+          stopPeerMediation: stopPeerMediationLoopbackServer,
+          stopDirectPeer: stopDirectPeerServer,
+          releaseHomeTransport: async () => await homeIrohTransport?.release(),
+          shutdownMachineIroh: async () => await machineIrohRuntime?.shutdown(),
+          cleanupFailedIrohStartup: async () => await preparedIrohState.failedStartupCleanup?.(),
+        });
       },
       stopTailscaleTransferServeLifecycle,
       stopSshTunnelsOnShutdown: sshTunnelSupervisor.stopAllTunnels,
@@ -1918,10 +2720,15 @@ export async function startDaemon(
     });
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
-    await stopWorkspaceSyncRuntime().catch(() => undefined);
-    await (homeIrohTransport ?? preparedIrohState.home)?.release().catch(() => undefined);
-    await (machineIrohRuntime ?? preparedIrohState.machine)?.shutdown().catch(() => undefined);
-    await preparedIrohState.failedStartupCleanup?.().catch(() => undefined);
+    await cleanupDaemonHomeMachineWorkspace({
+      stopWorkspaceSync: stopWorkspaceSyncRuntime,
+      stopMachineAcceptor: stopMachineIrohAcceptor,
+      stopPeerMediation: async () => undefined,
+      stopDirectPeer: async () => undefined,
+      releaseHomeTransport: async () => await (homeIrohTransport ?? preparedIrohState.home)?.release(),
+      shutdownMachineIroh: async () => await (machineIrohRuntime ?? preparedIrohState.machine)?.shutdown(),
+      cleanupFailedIrohStartup: async () => await preparedIrohState.failedStartupCleanup?.(),
+    }).catch(() => undefined);
     try {
       await releaseDaemonOwnershipAfterFatal({
         daemonLockHandle,

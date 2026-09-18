@@ -199,6 +199,7 @@ type SystemTasksRunnerAdapter = Readonly<{
   start: (params: Record<string, unknown>) => Promise<unknown>;
   poll: (params: Record<string, unknown>) => Promise<unknown>;
   respond: (params: Record<string, unknown>) => Promise<void>;
+  cancel: (params: Record<string, unknown>) => Promise<void>;
 }>;
 
 let liveRunnerAdapter: SystemTasksRunnerAdapter | null = null;
@@ -421,6 +422,11 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
       await runner.respond({
         taskId: String(params.taskId ?? '').trim(),
         answer: params.answer,
+      });
+    },
+    cancel: async (params) => {
+      await runner.cancel({
+        taskId: String(params.taskId ?? '').trim(),
       });
     },
   };

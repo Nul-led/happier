@@ -169,8 +169,20 @@ function legacyUnsupportedCode(descriptor: InstallableDependencyDescriptor): str
             return 'plugin_managed_dependency_source_unsupported';
         case 'github_release_binary':
         case 'managed_pypi_wheel_asset':
+        case 'pinned_archive':
             return null;
     }
+}
+
+/**
+ * The install identity a V2 source publishes into the installables registry, or
+ * `null` for a source kind that is never projected. Declared once so owner
+ * exclusion and retention pinning cannot drift from the projection.
+ */
+function projectedInstallId(source: ManagedDependencySourceModelEntry): string | null {
+    return source.declaration.kind === 'managedPypiWheelAsset' || source.declaration.kind === 'pinnedArchive'
+        ? source.declaration.installId
+        : null;
 }
 
 function readVersion(status: unknown, ...keys: readonly string[]): string | null {
@@ -214,11 +226,17 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         Promise<RunnerManagedDependencyRetentionV1>;
     env?: NodeJS.ProcessEnv;
 }>): StablePluginManagedDependenciesHost {
+    /**
+     * A source that publishes an install identity shares one global install root
+     * with every other claim on that identity, so only the plugin that won
+     * registry arbitration may operate it. Source kinds that never project have
+     * no shared identity to arbitrate.
+     */
     function isCanonicalV2ManagedSource(
         owner: V2DescriptorOwner,
         source: ManagedDependencySourceModelEntry,
     ): boolean {
-        if (source.declaration.kind !== 'managedPypiWheelAsset') return true;
+        if (projectedInstallId(source) === null) return true;
         return sourceInstallableFor(owner, source) !== null;
     }
 
@@ -226,41 +244,46 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         owner: V2DescriptorOwner,
         source: ManagedDependencySourceModelEntry,
     ): InstallableRegistryContribution | null {
-        if (
-            !params.sourceModel
-            || source.declaration.kind !== 'managedPypiWheelAsset'
-        ) return null;
-        const winner = params.installablesRegistry.descriptorsByKey[
-            source.declaration.installId
-        ];
+        const installId = params.sourceModel ? projectedInstallId(source) : null;
+        if (!installId) return null;
+        const winner = params.installablesRegistry.descriptorsByKey[installId];
         const expectedProvenance = owner.dependency.provenance === 'first_party'
             ? 'bundled_first_party_plugin'
             : 'external_plugin';
         const descriptor = winner?.descriptor;
-        const expectedSource = Object.freeze({
-            kind: 'managed_pypi_wheel_asset' as const,
-            distribution: source.declaration.distribution,
-            versionSpecifier: source.declaration.versionSpecifier,
-            assetPathByPlatform: source.declaration.assetPathByPlatform,
-            executable: true as const,
-            ...(source.declaration.compatibilityProbe
-                ? { compatibilityProbe: source.declaration.compatibilityProbe }
-                : {}),
-            installConsent: source.declaration.installConsent,
-            autoUpdateMode: source.declaration.autoUpdateMode,
-            ...(source.declaration.trustedPublisher
-                ? { trustedPublisher: source.declaration.trustedPublisher }
-                : {}),
-        });
+        const expectedSource = source.declaration.kind === 'pinnedArchive'
+            ? Object.freeze({
+                kind: 'pinned_archive' as const,
+                version: source.declaration.version,
+                assetsByPlatform: source.declaration.assetsByPlatform,
+            })
+            : source.declaration.kind === 'managedPypiWheelAsset'
+                ? Object.freeze({
+                    kind: 'managed_pypi_wheel_asset' as const,
+                    distribution: source.declaration.distribution,
+                    versionSpecifier: source.declaration.versionSpecifier,
+                    assetPathByPlatform: source.declaration.assetPathByPlatform,
+                    executable: true as const,
+                    ...(source.declaration.compatibilityProbe
+                        ? { compatibilityProbe: source.declaration.compatibilityProbe }
+                        : {}),
+                    installConsent: source.declaration.installConsent,
+                    autoUpdateMode: source.declaration.autoUpdateMode,
+                    ...(source.declaration.trustedPublisher
+                        ? { trustedPublisher: source.declaration.trustedPublisher }
+                        : {}),
+                })
+                : null;
         if (
             !winner
             || !descriptor
+            || !expectedSource
             || winner.owner.provenance !== expectedProvenance
             || winner.owner.pluginId !== owner.dependency.identity.pluginId
             || winner.owner.manifestPath !== owner.dependency.manifestPath
-            || descriptor.id !== source.declaration.installId
-            || descriptor.key !== source.declaration.installId
-            || descriptor.capabilityId !== source.declaration.installId
+            || descriptor.id !== installId
+            || descriptor.key !== installId
+            || descriptor.capabilityId !== installId
             || descriptor.binary.commands.length !== 1
             || descriptor.binary.commands[0] !== owner.dependency.definition.executable
             || !isDeepStrictEqual(descriptor.source, expectedSource)
@@ -387,13 +410,9 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             if (owner.kind !== 'v2') continue;
             addSourceCandidate(owner);
             for (const source of owner.dependency.sources) {
-                if (
-                    source.declaration.kind
-                        !== 'managedPypiWheelAsset'
-                ) continue;
-                const winner = params.installablesRegistry.descriptorsByKey[
-                    source.declaration.installId
-                ];
+                const installId = projectedInstallId(source);
+                if (!installId) continue;
+                const winner = params.installablesRegistry.descriptorsByKey[installId];
                 if (!winner) continue;
                 const winnerOwner =
                     projectedV2RegistryContributions.get(winner);
@@ -606,10 +625,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
         if (owner.kind === 'legacy') return legacyUnsupportedCode(owner.contribution.descriptor);
         if (owner.dependency.availability.state === 'unavailable') return owner.dependency.availability.code;
         if (v2ExecutableSources(owner).length > 0) return null;
-        if (owner.dependency.sources.some((source) => (
-            source.declaration.kind === 'managedPypiWheelAsset'
-            && !isCanonicalV2ManagedSource(owner, source)
-        ))) {
+        if (owner.dependency.sources.some((source) => !isCanonicalV2ManagedSource(owner, source))) {
             return 'plugin_managed_dependency_source_conflict';
         }
         return v2ManualFallbackCode(owner) ?? 'plugin_managed_dependency_source_unsupported';
@@ -1002,25 +1018,33 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             if (removals.has(owner.qualifiedKey)) {
                 return fail('plugin_managed_dependency_busy', 'Managed dependency is being removed');
             }
-            for (const resolvedAdapter of await adapterCandidatesFor(owner)) {
-                if (!resolvedAdapter.adapter.resolveLaunchCommand) continue;
-                try {
-                    const launch = await resolvedAdapter.adapter.resolveLaunchCommand({
-                        env: params.env,
-                        sourcePreference: owner.kind === 'legacy'
-                            ? sourcePreference(owner.contribution.descriptor)
-                            : 'system-first',
-                    });
-                    if (!launch.ok) continue;
-                    return Object.freeze({
-                        command: launch.command,
-                        args: Object.freeze([...(launch.args ?? [])]),
-                        release,
-                    });
-                } catch {
-                    // Source failures are isolated so deterministic fallback can continue.
+            const tryResolve = async (): Promise<ResolvedExecutableLease | null> => {
+                for (const resolvedAdapter of await adapterCandidatesFor(owner)) {
+                    if (!resolvedAdapter.adapter.resolveLaunchCommand) continue;
+                    try {
+                        const launch = await resolvedAdapter.adapter.resolveLaunchCommand({
+                            env: params.env,
+                            sourcePreference: owner.kind === 'legacy'
+                                ? sourcePreference(owner.contribution.descriptor)
+                                : 'system-first',
+                        });
+                        if (!launch.ok) continue;
+                        return Object.freeze({
+                            command: launch.command,
+                            args: Object.freeze([...(launch.args ?? [])]),
+                            release,
+                        });
+                    } catch {
+                        // Source failures are isolated so deterministic fallback can continue.
+                    }
                 }
-            }
+                return null;
+            };
+            const ready = await tryResolve();
+            if (ready) return ready;
+            await mutate(owner, ref.localId, 'ensure');
+            const installed = await tryResolve();
+            if (installed) return installed;
             return fail('plugin_managed_dependency_executable_unavailable', 'Managed dependency executable is unavailable');
         } catch (error) {
             release();

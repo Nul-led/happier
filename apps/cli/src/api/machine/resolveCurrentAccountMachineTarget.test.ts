@@ -9,6 +9,7 @@ vi.mock('@/api/clientCompatibility/cliClientCompatibility', () => ({
   }),
 }));
 vi.mock('@/api/client/serverHttpBaseUrl', () => ({
+  normalizeServerHttpBaseUrl: (serverUrl: string) => serverUrl.replace(/\/+$/, ''),
   resolveServerHttpBaseUrl: () => 'https://api.example.test',
 }));
 
@@ -54,6 +55,24 @@ describe('resolveCurrentAccountMachineTarget', () => {
           Authorization: 'Bearer token-1',
           'X-Happier-Account-Content': 'current',
         }),
+      }),
+    );
+  });
+
+  it('reads a fixed Action executor inventory from its qualified Home endpoint', async () => {
+    boundaries.axiosGet.mockResolvedValue({ data: [currentMachine('machine-fixed')] });
+
+    await expect(resolveCurrentAccountMachineTarget({
+      token: 'token-fixed',
+      serverHttpBaseUrl: 'https://fixed-home.example.test',
+    })).resolves.toMatchObject({
+      kind: 'selected',
+      target: { machineId: 'machine-fixed' },
+    });
+    expect(boundaries.axiosGet).toHaveBeenCalledWith(
+      'https://fixed-home.example.test/v1/machines',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer token-fixed' }),
       }),
     );
   });

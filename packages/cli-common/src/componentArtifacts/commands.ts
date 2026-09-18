@@ -237,6 +237,8 @@ export async function compileBunBinary({
   runCommand = execOrThrow,
   maxAttempts,
   buildRunnerEntrypoint,
+  autoloadDotenv,
+  autoloadBunfig,
 }: {
   entrypoint: string;
   bunTarget: string;
@@ -247,6 +249,8 @@ export async function compileBunBinary({
   runCommand?: RunCommand;
   maxAttempts?: number;
   buildRunnerEntrypoint?: string;
+  autoloadDotenv?: boolean;
+  autoloadBunfig?: boolean;
 }): Promise<void> {
   const resolvedBunCommand = (() => {
     const candidate = String(bunCommand ?? '').trim();
@@ -263,6 +267,15 @@ export async function compileBunBinary({
         `--outfile=${outfile}`,
       ]
     : ['build', '--compile', '--no-cache', `--target=${bunTarget}`, entrypoint, '--outfile', outfile];
+  const appendCompileAutoloadOption = (name: 'dotenv' | 'bunfig', enabled: boolean | undefined): void => {
+    if (enabled === undefined) return;
+    if (buildRunnerEntrypoint) {
+      throw new Error(`[component-artifacts] compile autoload options are unsupported by the custom Bun build runner: ${name}`);
+    }
+    args.push(enabled ? `--compile-autoload-${name}` : `--no-compile-autoload-${name}`);
+  };
+  appendCompileAutoloadOption('dotenv', autoloadDotenv);
+  appendCompileAutoloadOption('bunfig', autoloadBunfig);
   for (const external of externals) {
     const value = String(external ?? '').trim();
     if (!value) continue;

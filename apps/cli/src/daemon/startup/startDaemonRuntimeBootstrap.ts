@@ -45,7 +45,7 @@ import type {
 } from '../connectedServices/qualifiedConnectedAccountV4Support';
 import { startConnectedServiceRefreshLoop } from '../connectedServices/refresh/startConnectedServiceRefreshLoop';
 import { dispatchConnectedServiceCredentialHealthNotificationAsync } from '../connectedServices/notifications/dispatchConnectedServiceCredentialHealthNotification';
-import { dispatchConnectedServiceQuotaLifecycleNotificationAsync } from '../connectedServices/notifications/dispatchConnectedServiceQuotaLifecycleNotification';
+import { dispatchConnectedServiceAutomaticQuotaResetNotificationAsync, dispatchConnectedServiceQuotaLifecycleNotificationAsync } from '../connectedServices/notifications/dispatchConnectedServiceQuotaLifecycleNotification';
 import {
   ConnectedServiceQuotasCoordinator,
   type ConsumeCommittedAuthGroupGeneration,
@@ -542,7 +542,6 @@ export async function startDaemonRuntimeBootstrap(
     await resolveConnectedServicesQuotasDaemonEnabled({
       env: params.processEnv,
       serverUrl: configuration.serverUrl,
-      timeoutMs: 1500,
     });
   let connectedServiceQuotasCoordinator: ConnectedServiceQuotasCoordinator | null = null;
   let connectedServiceQuotasLoopHandle: ConnectedServiceQuotasLoopHandle = null;
@@ -726,6 +725,14 @@ export async function startDaemonRuntimeBootstrap(
         { min: 1, max: 100 },
       ),
       groupSwitchCheckMinIntervalMs,
+      onAutomaticQuotaResetConsumed: async (event) => {
+        const settingsSnapshot = getActiveAccountSettingsSnapshot();
+        await dispatchConnectedServiceAutomaticQuotaResetNotificationAsync({
+          settings: settingsSnapshot?.settings ?? null,
+          settingsSecretsReadKeys: settingsSnapshot?.settingsSecretsReadKeys ?? [],
+          expoPushSender: params.api.push(), event,
+        });
+      },
       onQuotaLifecycleTransition: async (transition) => {
         const settingsSnapshot = getActiveAccountSettingsSnapshot();
         await dispatchConnectedServiceQuotaLifecycleNotificationAsync({

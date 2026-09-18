@@ -1,5 +1,6 @@
 import type { TerminalHostAdapter, TerminalHostHandle } from '@happier-dev/agents';
 import type { AgentTerminalHostDisposeIntent } from '@happier-dev/plugin-sdk/agents/runtime';
+import { probeTerminalHostForRecovery } from '@/integrations/terminal/host/recoveryLiveness';
 import { disposeSessionHookArtifactsForSession } from '@/plugins/runtime/hooks/session/service';
 import { logger } from '@/ui/logger';
 
@@ -147,8 +148,22 @@ export async function executeTerminalHostDisposition(input: Readonly<{
     }
     try {
       await input.adapter.dispose(handle);
-    } catch {
-      return { status: 'parked', reason: 'destroy_failed' };
+    } catch (error) {
+      const liveness = await probeTerminalHostForRecovery({
+        adapter: input.adapter,
+        handle,
+      });
+      if (liveness.status !== 'dead') {
+        logger.warn('[TERMINAL HOST] Failed to destroy exact terminal host; retaining descriptor for retry', {
+          sessionId: input.sessionId,
+          attachmentId: current.attachmentId,
+          hostKind: handle.kind,
+          error,
+          livenessStatus: liveness.status,
+          liveness: liveness.liveness,
+        });
+        return { status: 'parked', reason: 'destroy_failed' };
+      }
     }
     try {
       await input.beforeDescriptorRetirement?.({

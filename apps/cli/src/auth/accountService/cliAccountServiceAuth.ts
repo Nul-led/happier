@@ -1,4 +1,4 @@
-import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import tweetnacl from 'tweetnacl';
 import {
   ExternalOAuthFinalizeAuthSuccessResponseSchema,
@@ -7,16 +7,31 @@ import {
   canonicalizeKeyChallengeV2AudienceOrigin,
   createKeyChallengeV2SigningInput,
   encodeBase64,
+  parseRecoveryKey,
 } from '@happier-dev/protocol';
 
 import { captureLoopbackOauthRedirect } from '@/cloud/loopbackOauthPkce';
 import { openBrowser } from '@/ui/openBrowser';
+import { createExternalAuthProof } from '@/auth/externalAuthProof';
 import type { CliAccountServiceSelection } from './cliAccountServiceSession';
 
-type RequestedMethod = Readonly<{ kind: 'key' }> | Readonly<{ kind: 'provider'; providerId: string }>;
+type RequestedMethod = Readonly<{
+  kind: 'key';
+  action?: 'login' | 'provision';
+  mode?: 'keyed';
+}> | Readonly<{
+  kind: 'provider';
+  providerId: string;
+  action: 'login' | 'provision';
+  mode: 'keyed' | 'keyless';
+}>;
 
 export type CliAccountServiceAuthOutcome =
-  | Readonly<{ kind: 'authenticated'; credential: Readonly<{ token: string }> }>
+  | Readonly<{
+      kind: 'authenticated';
+      credential: Readonly<{ token: string }>;
+      recoveryKey?: Uint8Array;
+    }>
   | Readonly<{ kind: 'key_required' | 'update_required' | 'account_service_unavailable' | 'cancelled' | 'timed_out' | 'identity_mismatch' | 'destination_mismatch' | 'failed' }>;
 
 type CallbackBinding = Readonly<{
@@ -75,6 +90,11 @@ function mapError(error: unknown): CliAccountServiceAuthOutcome {
   return { kind: 'account_service_unavailable' };
 }
 
+export function parseCliAccountServiceRecoveryKey(input: string): Uint8Array | null {
+  const parsed = parseRecoveryKey(input);
+  return parsed.ok ? parsed.bytes : null;
+}
+
 export async function authenticateCliAccountService(
   input: Readonly<{
     service: CliAccountServiceSelection;
@@ -93,7 +113,11 @@ export async function authenticateCliAccountService(
 
   try {
     if (input.method.kind === 'key') {
-      if (!(input.key instanceof Uint8Array) || input.key.byteLength !== 32) return { kind: 'key_required' };
+      const generatedKey = input.method.action === 'provision'
+        ? (deps.randomBytes ?? ((size: number) => new Uint8Array(nodeRandomBytes(size))))(32)
+        : null;
+      const key = input.key ?? generatedKey;
+      if (!(key instanceof Uint8Array) || key.byteLength !== 32) return { kind: 'key_required' };
       const issue = KeyChallengeV2IssueResponseSchema.safeParse(await readJson(await request(
         '/v1/auth/account-directory/challenge',
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' , signal: input.signal },
@@ -103,7 +127,7 @@ export async function authenticateCliAccountService(
         || issue.data.audience.serverIdentityId !== input.service.serverIdentityId) {
         return { kind: 'identity_mismatch' };
       }
-      const keyPair = tweetnacl.sign.keyPair.fromSeed(input.key);
+      const keyPair = tweetnacl.sign.keyPair.fromSeed(key);
       const signature = tweetnacl.sign.detached(createKeyChallengeV2SigningInput(issue.data), keyPair.secretKey);
       const authPayload = await readJson(await request('/v1/auth/account-directory', {
         method: 'POST',
@@ -118,17 +142,35 @@ export async function authenticateCliAccountService(
       const token = typeof authPayload === 'object' && authPayload !== null && typeof (authPayload as { token?: unknown }).token === 'string'
         ? (authPayload as { token: string }).token.trim()
         : '';
-      return token ? { kind: 'authenticated', credential: { token } } : { kind: 'failed' };
+      return token
+        ? {
+            kind: 'authenticated',
+            credential: { token },
+            ...(generatedKey ? { recoveryKey: generatedKey } : {}),
+          }
+        : { kind: 'failed' };
     }
 
     const providerId = input.method.providerId.trim().toLowerCase();
     if (!providerId || !input.service.advertisedMethods.oauthProviderIds.includes(providerId)) return { kind: 'update_required' };
-    const proof = encodeBase64((deps.randomBytes ?? ((size) => new Uint8Array(nodeRandomBytes(size))))(32), 'base64url');
-    const proofHash = createHash('sha256').update(proof).digest('hex');
+    const admittedOAuthMode = input.method.mode;
+    const randomBytes = deps.randomBytes ?? ((size: number) => new Uint8Array(nodeRandomBytes(size)));
+    const recoveryKey = admittedOAuthMode === 'keyed' ? randomBytes(32) : null;
+    const keylessProof = admittedOAuthMode === 'keyless'
+      ? createExternalAuthProof(randomBytes)
+      : null;
+    const proof = keylessProof?.proof ?? null;
+    const proofHash = keylessProof?.proofHash ?? null;
+    const publicKey = recoveryKey
+      ? encodeBase64(tweetnacl.sign.keyPair.fromSeed(recoveryKey).publicKey)
+      : null;
     const expected = expectedBinding(input.service);
     const resolveAuthorizationUrl = async (callbackOrigin: string): Promise<string> => {
       const query = new URLSearchParams({
-        mode: 'keyless', proofHash, purpose: 'account_directory',
+        mode: admittedOAuthMode,
+        ...(proofHash ? { proofHash } : {}),
+        ...(publicKey ? { publicKey } : {}),
+        purpose: 'account_directory',
         endpointUrl: expected.endpointUrl,
         endpointServerIdentityId: expected.endpointServerIdentityId,
         canonicalServerUrl: expected.canonicalServerUrl,
@@ -137,9 +179,19 @@ export async function authenticateCliAccountService(
         `/v1/auth/external/${encodeURIComponent(providerId)}/params?${query}`,
         { method: 'GET', headers: { Origin: callbackOrigin }, signal: input.signal },
       )));
-      if (!parsed.success || !('purpose' in parsed.data)) throw new Error('Account Service OAuth is unsupported');
-      for (const [key, value] of Object.entries(expected)) {
-        if (parsed.data[key as keyof typeof expected] !== value) throw new Error('Account Service OAuth destination mismatch');
+      if (!parsed.success || !('purpose' in parsed.data)) {
+        throw new Error('Account Service OAuth is unsupported');
+      }
+      if (parsed.data.purpose !== expected.purpose
+        || !('credentialTarget' in parsed.data)
+        || parsed.data.credentialTarget !== expected.credentialTarget
+        || !('endpointUrl' in parsed.data)
+        || parsed.data.endpointUrl !== expected.endpointUrl
+        || !('endpointServerIdentityId' in parsed.data)
+        || parsed.data.endpointServerIdentityId !== expected.endpointServerIdentityId
+        || !('canonicalServerUrl' in parsed.data)
+        || parsed.data.canonicalServerUrl !== expected.canonicalServerUrl) {
+        throw new Error('Account Service OAuth destination mismatch');
       }
       return parsed.data.url;
     };
@@ -160,12 +212,28 @@ export async function authenticateCliAccountService(
           },
         }) as CallbackBinding;
     if (callback.endpointServerIdentityId !== expected.endpointServerIdentityId) return { kind: 'identity_mismatch' };
-    if (Object.entries(expected).some(([key, value]) => callback[key as keyof typeof expected] !== value)) {
+    if (callback.purpose !== expected.purpose
+      || callback.credentialTarget !== expected.credentialTarget
+      || callback.endpointUrl !== expected.endpointUrl
+      || callback.endpointServerIdentityId !== expected.endpointServerIdentityId
+      || callback.canonicalServerUrl !== expected.canonicalServerUrl) {
       return { kind: 'destination_mismatch' };
     }
+    const finalizeBody = recoveryKey
+      ? (() => {
+          const challenge = randomBytes(32);
+          const keyPair = tweetnacl.sign.keyPair.fromSeed(recoveryKey);
+          return {
+            pending: callback.pending,
+            publicKey: encodeBase64(keyPair.publicKey),
+            challenge: encodeBase64(challenge),
+            signature: encodeBase64(tweetnacl.sign.detached(challenge, keyPair.secretKey)),
+          };
+        })()
+      : { pending: callback.pending, proof: proof! };
     const finalizeResponse = await request(
-      `/v1/auth/external/${encodeURIComponent(providerId)}/finalize-keyless`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pending: callback.pending, proof }), signal: input.signal },
+      `/v1/auth/external/${encodeURIComponent(providerId)}/${admittedOAuthMode === 'keyless' ? 'finalize-keyless' : 'finalize'}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(finalizeBody), signal: input.signal },
     );
     if (!finalizeResponse.ok) {
       const failure = await finalizeResponse.json().catch(() => null) as { error?: unknown } | null;
@@ -175,7 +243,11 @@ export async function authenticateCliAccountService(
     }
     const finalized = ExternalOAuthFinalizeAuthSuccessResponseSchema.safeParse(await finalizeResponse.json());
     return finalized.success
-      ? { kind: 'authenticated', credential: { token: finalized.data.token } }
+      ? {
+          kind: 'authenticated',
+          credential: { token: finalized.data.token },
+          ...(recoveryKey ? { recoveryKey } : {}),
+        }
       : { kind: 'key_required' };
   } catch (error) {
     return mapError(error);

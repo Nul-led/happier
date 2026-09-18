@@ -72,7 +72,9 @@ async function readRequestPairingEnvelopeFromStdin(): Promise<Record<string, unk
   }
 }
 
-export async function handleAuthApprove(argsRaw: string[]): Promise<void> {
+export async function handleAuthApprove(argsRaw: string[], signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const authorizeUnattendedTeamAccess = argsRaw.includes('--authorize-unattended-team-access');
   const homeTargetFromRequestJson = argsRaw.includes('--home-target-from-request-json');
   const args = homeTargetFromRequestJson ? argsRaw : await applyServerSelectionFromArgs(argsRaw);
 
@@ -146,6 +148,8 @@ export async function handleAuthApprove(argsRaw: string[]): Promise<void> {
       ...(pairing ? { pairing } : {}),
       ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
       ...(target ? { target } : {}),
+      ...(authorizeUnattendedTeamAccess ? { authorizeUnattendedTeamAccess: true } : {}),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
     if (error instanceof TerminalPairingContextRequiredError) {

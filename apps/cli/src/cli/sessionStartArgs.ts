@@ -1,5 +1,8 @@
 import type { PermissionMode } from '@/api/types';
-import type { SessionModelSelectionV1 } from '@happier-dev/protocol';
+import type {
+  SecretReferenceOverlayV1,
+  SessionModelSelectionV1,
+} from '@happier-dev/protocol';
 import {
   getAgentSessionModesKind,
   type AgentId,
@@ -17,6 +20,8 @@ export type ParsedSessionStartArgs = {
   providerConnectionId: string | undefined;
   modelUpdatedAt: number | undefined;
   modelSelection: SessionModelSelectionV1 | undefined;
+  /** One-shot, value-free Saved Secret reference override for this launch. */
+  secretReferenceOverlay: SecretReferenceOverlayV1 | undefined;
 };
 
 export function parseSessionStartArgs(args: string[]): ParsedSessionStartArgs {
@@ -36,6 +41,7 @@ export function parseSessionStartArgs(args: string[]): ParsedSessionStartArgs {
     providerConnectionId: parsed.providerConnectionId,
     modelUpdatedAt: parsed.modelUpdatedAt,
     modelSelection: parsed.modelSelection,
+    secretReferenceOverlay: parsed.secretReferenceOverlay,
   };
 }
 

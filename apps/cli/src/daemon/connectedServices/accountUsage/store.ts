@@ -1,5 +1,6 @@
 import {
     buildProviderAccountUsageRecordId,
+    compareConnectedServiceQuotaObservationRecency,
     ConnectedServiceUsageSourceV1Schema,
     ProviderAccountUsageSnapshotV1Schema,
     type ConnectedServiceUsageSourceV1,
@@ -166,7 +167,14 @@ export function createProviderAccountUsageStore(): ProviderAccountUsageStore {
             ? mergeSources(existingSources, normalized.sources)
             : existingSources;
 
-        if (existing && parsed.fetchedAtMs < existing.fetchedAtMs) {
+        const recency = existing
+            ? compareConnectedServiceQuotaObservationRecency({
+                existingObservedAtMs: existing.fetchedAtMs,
+                incomingObservedAtMs: parsed.fetchedAtMs,
+                nowMs: Date.now(),
+            })
+            : 'incoming_newer';
+        if (existing && (recency === 'incoming_older' || recency === 'incoming_future')) {
             if (sourceLinked) setRecordSources(targetRecordId, sources);
             if (targetRecordId !== parsed.recordId) {
                 snapshotsByRecordId.delete(parsed.recordId);
@@ -193,9 +201,12 @@ export function createProviderAccountUsageStore(): ProviderAccountUsageStore {
                 },
         });
         const snapshotAdvanced = !existing
-            || parsed.fetchedAtMs > existing.fetchedAtMs
-            || computeProviderAccountUsageSnapshotMaterialRevision(next)
-                !== computeProviderAccountUsageSnapshotMaterialRevision(existing);
+            || recency === 'incoming_newer'
+            || (
+                recency !== 'incoming_future'
+                && computeProviderAccountUsageSnapshotMaterialRevision(next)
+                    !== computeProviderAccountUsageSnapshotMaterialRevision(existing)
+            );
         if (snapshotAdvanced) snapshotsByRecordId.set(targetRecordId, next);
         if (sourceLinked || !existing) setRecordSources(targetRecordId, sources);
 

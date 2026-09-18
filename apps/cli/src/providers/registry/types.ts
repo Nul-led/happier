@@ -10,6 +10,7 @@ import type {
   ProviderWireProtocol,
   QualifiedConnectedAccountPurposeBindingsV1,
 } from '@happier-dev/protocol';
+import type { ProviderConnectionSecurityFingerprintV1 } from '@happier-dev/protocol/providers';
 
 import type {
   ResolvedContributionProvenance,
@@ -86,7 +87,7 @@ type ResolvedProviderConnectionRecordBase = Readonly<{
   displayName: string;
   source: ResolvedProviderConnectionSource;
   scope: 'account' | 'machine';
-  connectionSecurityFingerprint: string;
+  connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1;
   endpointSetFingerprint: string;
   authorization: ResolvedProviderConnectionAuthorization;
 }>;

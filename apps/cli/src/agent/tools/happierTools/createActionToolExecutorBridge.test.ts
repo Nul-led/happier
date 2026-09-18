@@ -25,7 +25,11 @@ vi.mock('@/plugins/runtime/reload/singleton', () => ({
 }));
 
 import { describe, expect, it, vi } from 'vitest';
-import { ActionsSettingsV1Schema } from '@happier-dev/protocol';
+import {
+  ActionsSettingsV1Schema,
+  createActionExecutor,
+  type ActionExecutorDeps,
+} from '@happier-dev/protocol';
 
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
@@ -33,6 +37,106 @@ import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCata
 import { createActionToolExecutorBridge } from './createActionToolExecutorBridge';
 
 describe('createActionToolExecutorBridge', () => {
+  it('keeps current-Session Board tools on the host-bound Session before family dispatch', async () => {
+    const sessionBoardAction = vi.fn(async (args: Readonly<{
+      input: Readonly<{ sessionId?: string }>;
+      context: Readonly<{ defaultSessionId?: string | null; serverId?: string | null }>;
+    }>) => ({
+      v: 1 as const,
+      serverId: args.context.serverId ?? 'home-1',
+      sessionId: args.input.sessionId ?? args.context.defaultSessionId ?? 'missing-session',
+      capabilities: { readTranscript: true, editSessionRecords: true },
+      layout: null,
+      items: [],
+      incomplete: false,
+      page: { cursor: null, hasNext: false },
+    }));
+    const executor = createActionExecutor({
+      sessionBoardAction,
+      isActionApprovalRequired: () => false,
+    } as unknown as ActionExecutorDeps);
+    const bridge = createActionToolExecutorBridge({
+      surface: 'agent',
+      executor: {
+        execute: (actionId, input, context) => executor.execute(actionId, input, {
+          ...context,
+          serverId: 'home-1',
+        }),
+      },
+    });
+    const executeBoardGet = async (input: unknown) => await bridge.executeActionByToolName(
+      'action_execute',
+      { actionId: 'session.board.get', input },
+      'session-1',
+    );
+
+    await expect(executeBoardGet({ sessionId: 'session-2' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.board.get',
+    });
+    expect(sessionBoardAction).not.toHaveBeenCalled();
+
+    await expect(executeBoardGet({})).resolves.toMatchObject({
+      ok: true,
+      result: { serverId: 'home-1', sessionId: 'session-1' },
+    });
+    await expect(executeBoardGet({ sessionId: 'session-1' })).resolves.toMatchObject({
+      ok: true,
+      result: { serverId: 'home-1', sessionId: 'session-1' },
+    });
+    expect(sessionBoardAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('executes a Run-required Session read through the canonical Action bridge without widening mutations', async () => {
+    const execute = vi.fn(async (actionId: string, input: unknown) => ({
+      ok: true as const,
+      result: { actionId, input },
+    }));
+    const bridge = createActionToolExecutorBridge({
+      surface: 'agent',
+      executor: { execute },
+      requiredDirectActionIds: ['session.transcript.get'],
+    });
+
+    await expect(bridge.executeActionByToolName(
+      'session_transcript_get',
+      { limit: 10 },
+      'sess-1',
+    )).resolves.toMatchObject({ ok: true });
+    expect(execute).toHaveBeenCalledWith(
+      'session.transcript.get',
+      expect.objectContaining({ sessionId: 'sess-1', limit: 10 }),
+      expect.objectContaining({ defaultSessionId: 'sess-1', surface: 'agent' }),
+    );
+
+    await expect(bridge.executeActionByToolName(
+      'session_discussion_post',
+      { discussionId: 'discussion-1', content: { v: 1, parts: [{ t: 'text', text: 'No' }] } },
+      'sess-1',
+    )).resolves.toMatchObject({ ok: false, errorCode: 'unknown_tool' });
+  });
+
+  it('preserves an explicit discoverable-only preference for a Run-required read', async () => {
+    const bridge = createActionToolExecutorBridge({
+      surface: 'agent',
+      executor: { execute: vi.fn(async () => ({ ok: true as const, result: {} })) },
+      actionsSettings: ActionsSettingsV1Schema.parse({
+        v: 1,
+        actions: {
+          'session.transcript.get': { toolExposureModes: { agent: 'discoverable_only' } },
+        },
+      }),
+      requiredDirectActionIds: ['session.transcript.get'],
+    });
+
+    await expect(bridge.executeActionByToolName(
+      'session_transcript_get',
+      { limit: 10 },
+      'sess-1',
+    )).resolves.toMatchObject({ ok: false, errorCode: 'unknown_tool' });
+  });
+
   it('preserves V2 session spawn option context for the canonical action options resolver', async () => {
     const calls: unknown[] = [];
     const bridge = createActionToolExecutorBridge({
@@ -212,7 +316,41 @@ describe('createActionToolExecutorBridge', () => {
     ]);
   });
 
-  it('stamps the active turn causal authority onto agent execution-run actions', async () => {
+  it('stamps only an explicitly host-bound current Session corpus for external MCP', async () => {
+    const contexts: unknown[] = [];
+    const bridge = createActionToolExecutorBridge({
+      surface: 'mcp',
+      resolveSessionListAccess: (sessionId) => (
+        sessionId === 'sess-bound' ? 'current_session' : undefined
+      ),
+      executor: {
+        execute: async (_actionId, _input, context) => {
+          contexts.push(context);
+          return { ok: true, result: { sessions: [] } };
+        },
+      },
+    });
+
+    await bridge.executeActionByToolName(
+      'session_list',
+      {},
+      'sess-bound',
+      { actionRequestId: 'mcp-request-1' },
+    );
+    await bridge.executeActionByToolName('session_list', {}, 'cli-global');
+
+    expect(contexts).toEqual([
+      expect.objectContaining({
+        surface: 'mcp',
+        defaultSessionId: 'sess-bound',
+        actionRequestId: 'mcp-request-1',
+        sessionListAccess: 'current_session',
+      }),
+      expect.not.objectContaining({ sessionListAccess: expect.anything() }),
+    ]);
+  });
+
+  it('stamps automation identity and active turn causal authority onto Agent execution-run actions', async () => {
     const calls: unknown[] = [];
     const causalPermissionAuthority = {
       kind: 'admittedSessionInputV1',
@@ -253,6 +391,7 @@ describe('createActionToolExecutorBridge', () => {
           defaultSessionId: 'sess-1',
           surface: 'agent',
           callerPermissionMode: 'yolo',
+          authority: 'account_automation',
           causalPermissionAuthority,
         }),
       }),

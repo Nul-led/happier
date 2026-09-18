@@ -2,7 +2,28 @@ import type {
     ExecBinaryLaunchInputV1,
     SystemToolSourceV1,
 } from '@/plugins/runtime/exec/privateContract';
-import type { PluginSystemToolContributionV1 } from '@happier-dev/protocol';
+import type {
+    PluginSystemToolContributionV1,
+    PluginSystemToolReadinessV1,
+} from '@happier-dev/protocol';
+
+export type PluginExecSystemToolAcpFingerprint = Readonly<{
+    loadSession: boolean;
+    sessionCapabilities: readonly string[];
+    absentSessionCapabilities: readonly string[];
+    mcpHttp: boolean;
+    mcpSse: boolean;
+}>;
+
+export type PluginExecSystemToolReadiness = Readonly<{
+    acpProbeArgs: readonly string[];
+    currentFingerprint: PluginExecSystemToolAcpFingerprint;
+    legacyFingerprint: PluginExecSystemToolAcpFingerprint;
+    commandSurfaceArgs: readonly string[];
+    legacyExecutableNames: readonly string[];
+    legacyGuidance: string;
+    unidentifiedGuidance: string;
+}>;
 
 export type PluginExecSystemToolDefinition = Readonly<{
     toolId: string;
@@ -15,6 +36,7 @@ export type PluginExecSystemToolDefinition = Readonly<{
     defaultArgs?: readonly string[];
     env?: Readonly<Record<string, string>>;
     expiresInMs?: number | null;
+    readiness?: PluginExecSystemToolReadiness;
 }>;
 
 export function resolvePluginExecSystemToolHostPlatform(
@@ -35,6 +57,30 @@ export function isPluginExecSystemToolSupportedOnHost(
     return hostPlatform !== null && definition.platforms.includes(hostPlatform);
 }
 
+function projectReadinessFingerprint(
+    fingerprint: PluginSystemToolReadinessV1['currentFingerprint'],
+): PluginExecSystemToolAcpFingerprint {
+    return Object.freeze({
+        loadSession: fingerprint.loadSession,
+        sessionCapabilities: Object.freeze([...fingerprint.sessionCapabilities]),
+        absentSessionCapabilities: Object.freeze([...fingerprint.absentSessionCapabilities]),
+        mcpHttp: fingerprint.mcpHttp,
+        mcpSse: fingerprint.mcpSse,
+    });
+}
+
+function projectReadiness(readiness: PluginSystemToolReadinessV1): PluginExecSystemToolReadiness {
+    return Object.freeze({
+        acpProbeArgs: Object.freeze([...readiness.acpProbeArgs]),
+        currentFingerprint: projectReadinessFingerprint(readiness.currentFingerprint),
+        legacyFingerprint: projectReadinessFingerprint(readiness.legacyFingerprint),
+        commandSurfaceArgs: Object.freeze([...readiness.commandSurfaceArgs]),
+        legacyExecutableNames: Object.freeze([...readiness.legacyExecutableNames]),
+        legacyGuidance: readiness.legacyGuidance,
+        unidentifiedGuidance: readiness.unidentifiedGuidance,
+    });
+}
+
 /**
  * Canonical boundary projection from manifest-declared system tools to the
  * executable grant model consumed by plugin runtime services.
@@ -53,6 +99,9 @@ export function projectPluginSystemToolContributions(
         } : {}),
         ...(definition.platforms ? {
             platforms: Object.freeze([...definition.platforms]),
+        } : {}),
+        ...(definition.readiness ? {
+            readiness: projectReadiness(definition.readiness),
         } : {}),
     })));
 }

@@ -1,5 +1,3 @@
-import { join } from 'node:path';
-
 import {
   HomeConnectionDescriptorV1Schema,
   IrohEndpointDescriptorV1Schema,
@@ -11,12 +9,54 @@ import {
 } from '@happier-dev/iroh-native/node';
 
 import { connectPeerTcpTunnelTcp } from '../mediation/tunnel/open';
+import { resolveCliIrohEndpointKeyPath } from './irohEndpointIdentity';
 import type {
   MachineCarrierTransportConnection,
   MachineCarrierTransportOpenInput,
+  ProviderBrokerMachineCarrierTransportOpenInput,
+  RunnerBrokerReadinessMachineCarrierTransportOpenInput,
 } from './machineCarrier';
 
+type MachineHttpTunnelOpenInput = (MachineCarrierTransportOpenInput
+  | ProviderBrokerMachineCarrierTransportOpenInput
+  | RunnerBrokerReadinessMachineCarrierTransportOpenInput)
+  & Readonly<{ handshakeProvider?: () => Promise<ProviderBrokerMachineCarrierTransportOpenInput['handshake']> }>;
+type WorkspaceMachineCarrierTransportOpenInput = MachineCarrierTransportOpenInput & Readonly<{
+  flow: 'workspace_sync';
+}>;
+
 type NodeIrohNativeModule = Extract<ReturnType<typeof loadIrohNodeNative>, { available: true }>['native'];
+
+type MachineIrohTunnelLifecycle = Readonly<{
+  localPort: number;
+  remoteEndpointId: string;
+  observedPath: 'direct' | 'relay' | 'unknown';
+  close(): Promise<void>;
+}>;
+
+export type DaemonFiniteTransferIrohTunnel = MachineIrohTunnelLifecycle & Readonly<{
+  localCapability?: never;
+}>;
+
+export type DaemonQualifiedMachineIrohTunnel = MachineIrohTunnelLifecycle & Readonly<{
+  localCapability: string;
+}>;
+
+/**
+ * Overloaded call signatures must not be wrapped in `Readonly<...>`: a mapped type maps only
+ * properties, so the wrapper silently erases both signatures and leaves the runtime's opener
+ * uncallable. This mirrors `WorkspaceSyncMachineTunnelOpen`, the Lane 08 consumer contract.
+ */
+type DaemonMachineIrohRawTunnelOpen = {
+  (
+    input: MachineCarrierTransportOpenInput & Readonly<{ flow: 'finite_transfer' }>,
+    endpoint: IrohEndpointDescriptorV1,
+  ): Promise<DaemonFiniteTransferIrohTunnel>;
+  (
+    input: MachineCarrierTransportOpenInput & Readonly<{ flow: 'workspace_sync' }>,
+    endpoint: IrohEndpointDescriptorV1,
+  ): Promise<DaemonQualifiedMachineIrohTunnel>;
+};
 
 /**
  * One shared in-flight cleanup promise per owned native resource. Concurrent
@@ -62,28 +102,13 @@ export type DaemonMachineIrohRuntime = Readonly<{
   startAttemptAcceptor: (input: Readonly<{ admissionPort: number }>) => Promise<void>;
   stopActiveTunnels: () => Promise<void>;
   stopAttemptAcceptor: () => Promise<void>;
-  openTunnel: (
-    input: MachineCarrierTransportOpenInput,
-    endpoint: IrohEndpointDescriptorV1,
-  ) => Promise<Readonly<{
-    localPort: number;
-    localCapability: string;
-    remoteEndpointId: string;
-    observedPath: 'direct' | 'relay' | 'unknown';
-    close(): Promise<void>;
-  }>>;
+  openTunnel: DaemonMachineIrohRawTunnelOpen;
   openHttpTunnel: (
-    input: MachineCarrierTransportOpenInput,
+    input: MachineHttpTunnelOpenInput,
     endpoint: IrohEndpointDescriptorV1,
-  ) => Promise<Readonly<{
-    localPort: number;
-    localCapability: string;
-    remoteEndpointId: string;
-    observedPath: 'direct' | 'relay' | 'unknown';
-    close(): Promise<void>;
-  }>>;
+  ) => Promise<DaemonQualifiedMachineIrohTunnel>;
   openTransport: (
-    input: MachineCarrierTransportOpenInput,
+    input: WorkspaceMachineCarrierTransportOpenInput,
     endpoint: IrohEndpointDescriptorV1,
   ) => Promise<MachineCarrierTransportConnection>;
   shutdown: () => Promise<void>;
@@ -132,7 +157,7 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
   let created: Awaited<ReturnType<NodeIrohNativeModule['createEndpoint']>>;
   try {
     created = await native.createEndpoint({
-      keyPath: join(input.happyHomeDir, 'runtime', 'iroh', 'endpoint.key'),
+      keyPath: resolveCliIrohEndpointKeyPath(input.happyHomeDir),
       relayPolicy: input.relayConfig.relayPolicy,
       ...(input.relayConfig.relayUrls.length > 0 ? { relayUrls: input.relayConfig.relayUrls } : {}),
       capProfile: 'machineBulk',
@@ -216,12 +241,13 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     }
   };
   const startTunnel = async (
-    transportInput: MachineCarrierTransportOpenInput,
+    transportInput: MachineHttpTunnelOpenInput,
     remoteDescriptor: IrohEndpointDescriptorV1,
     kind: 'raw' | 'http' = 'raw',
   ) => {
     if (shutdownRequested) throw new Error('Iroh machine runtime is shut down');
-    if (
+    const ordinaryHandshake = 'flow' in transportInput.handshake;
+    if (ordinaryHandshake && (
       transportInput.flow !== transportInput.handshake.flow
       || (
         transportInput.handshake.flow === 'workspace_sync'
@@ -231,8 +257,11 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
         transportInput.handshake.flow === 'finite_transfer'
         && transportInput.operationId !== undefined
       )
-    ) {
+    )) {
       throw new Error('Iroh machine transport request does not match the verified handshake');
+    }
+    if (!ordinaryHandshake && transportInput.flow !== transportInput.handshake.kind) {
+      throw new Error('Iroh provider-broker transport request does not match its handshake');
     }
     const parsedRemote = IrohEndpointDescriptorV1Schema.parse(remoteDescriptor);
     if (parsedRemote.endpointId !== transportInput.remoteEndpointId) {
@@ -245,13 +274,16 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       ...(parsedRemote.directAddresses ? { directAddresses: parsedRemote.directAddresses } : {}),
       ...(parsedRemote.relayUrls ? { relayUrls: parsedRemote.relayUrls } : {}),
       handshakeJson: JSON.stringify(transportInput.handshake),
+      ...(transportInput.handshakeProvider ? {
+        handshakeProvider: async () => JSON.stringify(await transportInput.handshakeProvider!()),
+      } : {}),
       capProfile: 'machineBulk',
     });
     return tunnel;
   };
 
   const openLoopbackTunnel = async (
-    transportInput: MachineCarrierTransportOpenInput,
+    transportInput: MachineHttpTunnelOpenInput,
     remoteDescriptor: IrohEndpointDescriptorV1,
     kind: 'raw' | 'http',
   ) => {
@@ -267,11 +299,51 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     }
     return {
       localPort: tunnel.localPort,
-      localCapability: tunnel.localCapability,
+      ...(tunnel.localCapability === undefined ? {} : { localCapability: tunnel.localCapability }),
       remoteEndpointId: tunnel.remoteEndpointId,
       observedPath: tunnel.observedPath,
       close,
     };
+  };
+
+  async function openRawTunnel(
+    transportInput: MachineCarrierTransportOpenInput & Readonly<{ flow: 'finite_transfer' }>,
+    remoteDescriptor: IrohEndpointDescriptorV1,
+  ): Promise<DaemonFiniteTransferIrohTunnel>;
+  async function openRawTunnel(
+    transportInput: MachineCarrierTransportOpenInput & Readonly<{ flow: 'workspace_sync' }>,
+    remoteDescriptor: IrohEndpointDescriptorV1,
+  ): Promise<DaemonQualifiedMachineIrohTunnel>;
+  async function openRawTunnel(
+    transportInput: MachineCarrierTransportOpenInput,
+    remoteDescriptor: IrohEndpointDescriptorV1,
+  ): Promise<DaemonFiniteTransferIrohTunnel | DaemonQualifiedMachineIrohTunnel> {
+    const tunnel = await openLoopbackTunnel(transportInput, remoteDescriptor, 'raw');
+    if (transportInput.flow === 'finite_transfer') {
+      if (tunnel.localCapability !== undefined) {
+        await tunnel.close().catch(() => undefined);
+        throw new Error('Iroh finite-transfer tunnel unexpectedly published a local capability');
+      }
+      const { localCapability: _absentCapability, ...finiteTunnel } = tunnel;
+      return finiteTunnel;
+    }
+    if (tunnel.localCapability === undefined) {
+      await tunnel.close().catch(() => undefined);
+      throw new Error('Iroh workspace machine tunnel did not publish its local capability');
+    }
+    return { ...tunnel, localCapability: tunnel.localCapability };
+  }
+
+  const openQualifiedHttpTunnel = async (
+    transportInput: MachineHttpTunnelOpenInput,
+    remoteDescriptor: IrohEndpointDescriptorV1,
+  ): Promise<DaemonQualifiedMachineIrohTunnel> => {
+    const tunnel = await openLoopbackTunnel(transportInput, remoteDescriptor, 'http');
+    if (tunnel.localCapability === undefined) {
+      await tunnel.close().catch(() => undefined);
+      throw new Error('Iroh HTTP machine tunnel did not publish its local capability');
+    }
+    return { ...tunnel, localCapability: tunnel.localCapability };
   };
 
   return {
@@ -332,10 +404,8 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     },
     stopActiveTunnels,
     stopAttemptAcceptor,
-    openTunnel: async (transportInput, remoteDescriptor) =>
-      await openLoopbackTunnel(transportInput, remoteDescriptor, 'raw'),
-    openHttpTunnel: async (transportInput, remoteDescriptor) =>
-      await openLoopbackTunnel(transportInput, remoteDescriptor, 'http'),
+    openTunnel: openRawTunnel,
+    openHttpTunnel: openQualifiedHttpTunnel,
     async openTransport(transportInput, remoteDescriptor) {
       const tunnel = await startTunnel(transportInput, remoteDescriptor);
       // Owned until the native stop succeeds, from native creation onward: a
@@ -360,6 +430,9 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
         stream = await connectTcp({ host: '127.0.0.1', port: tunnel.localPort });
         streamOpened = true;
         if (!stream.write) throw new Error('Iroh machine local hop is not writable');
+        if (tunnel.localCapability === undefined) {
+          throw new Error('Iroh stream machine tunnel did not publish its local capability');
+        }
         await stream.write(Buffer.from(tunnel.localCapability, 'ascii'));
       } catch (error) {
         await close().catch(() => undefined);

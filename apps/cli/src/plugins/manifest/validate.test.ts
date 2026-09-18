@@ -373,7 +373,6 @@ describe('validatePluginManifest', () => {
         primary: 'sessions',
         capabilities: {
           sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
-          executionRuns: { open: ['create'], checkpoint: false, stop: false },
         },
       }],
     }],

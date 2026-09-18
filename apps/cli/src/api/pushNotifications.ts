@@ -1,5 +1,6 @@
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import axios from 'axios'
+import { boundExpoPushMessage } from './boundExpoPushMessage'
 import { logger } from '@/ui/logger'
 import { Expo, type ExpoPushErrorTicket, type ExpoPushMessage } from 'expo-server-sdk'
 import { withServerUrlInPushData } from './pushNotificationData'
@@ -35,6 +36,12 @@ export type PushNotificationDeliveryOptions = Readonly<{
 
 interface AccountActivityBadgeSnapshotResponse {
     badgeCount: number
+}
+
+function isExpoMessageTooBig(result: unknown): boolean {
+    if (!result || typeof result !== 'object' || !('details' in result)) return false
+    const details = result.details
+    return !!details && typeof details === 'object' && 'error' in details && details.error === 'MessageTooBig'
 }
 
 function normalizeClientServerUrl(raw: unknown): string | null {
@@ -103,13 +110,13 @@ function resolveAndroidChannelIdFromPushData(
 function sanitizeNotificationSubtitle(raw: string): string {
     const value = String(raw ?? '').trim()
     if (!value) return ''
-    // Avoid newlines/control chars in lock screen notifications; also cap length for safety.
+    // Avoid newlines/control chars in lock screen notifications.
     const collapsed = value
         .replace(/[\u0000-\u001F\u007F]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
     if (!collapsed) return ''
-    return collapsed.length > 80 ? collapsed.slice(0, 80) : collapsed
+    return collapsed
 }
 
 function resolveIosSubtitleFromPushData(data: Record<string, unknown> | undefined): string | undefined {
@@ -273,7 +280,18 @@ export class PushNotificationClient {
         }
 
         // Create chunks to respect Expo's rate limits
-        const chunks = this.expo.chunkPushNotifications(validMessages)
+        const boundedMessages: ExpoPushMessage[] = []
+        let payloadError: unknown
+        for (const message of validMessages) {
+            try {
+                boundedMessages.push(boundExpoPushMessage(message))
+            } catch (error) {
+                logger.infoFile('[PUSH] Notification exceeds outbound payload budget; routing data was preserved')
+                payloadError = error
+            }
+        }
+        if (boundedMessages.length === 0) throw payloadError
+        const chunks = this.expo.chunkPushNotifications(boundedMessages)
 
         for (const chunk of chunks) {
             // Retry with exponential backoff for 5 minutes
@@ -298,6 +316,21 @@ export class PushNotificationClient {
                         }
                     }
 
+                    const oversizedMessages = new Set<ExpoPushMessage>()
+                    let ticketOffset = 0
+                    for (const message of retryChunk) {
+                        const targetCount = Array.isArray(message.to) ? message.to.length : 1
+                        const tickets = ticketChunk.slice(ticketOffset, ticketOffset + targetCount)
+                        ticketOffset += targetCount
+                        if (tickets.some((ticket) => isExpoMessageTooBig(ticket)
+                            || (ticket.status === 'ok' && isExpoMessageTooBig(receipts?.[ticket.id])))) {
+                            oversizedMessages.add(message)
+                        }
+                    }
+                    if (oversizedMessages.size > 0) {
+                        logger.infoFile('[PUSH] Expo rejected oversized notification payload', { count: oversizedMessages.size })
+                    }
+
                     const chunkInvalidTokens = collectExpoPushTokensMarkedUnregistered({
                         messages: retryChunk,
                         tickets: ticketChunk,
@@ -316,6 +349,8 @@ export class PushNotificationClient {
                         })
                     }
                     
+                    retryChunk = retryChunk.filter((message) => !oversizedMessages.has(message))
+
                     // Log any errors but don't throw
                     const errors = ticketChunk.filter((ticket): ticket is ExpoPushErrorTicket => ticket.status === 'error')
                     if (errors.length > 0) {
@@ -326,7 +361,7 @@ export class PushNotificationClient {
                     if (errors.length === ticketChunk.length) {
                         if (retryChunk.length === 0) {
                             if (debugPush) {
-                                logger.debug('[PUSH] Not retrying terminal DeviceNotRegistered failures')
+                                logger.debug('[PUSH] Not retrying terminal push failures')
                             }
                             break
                         }

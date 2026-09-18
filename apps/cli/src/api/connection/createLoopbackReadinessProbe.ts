@@ -4,7 +4,7 @@ import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 
 import { isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveLoopbackHttpUrl } from '@/api/client/loopbackUrl';
-import { decodeServerFeaturesResponseBody } from '@/features/serverFeaturesParse';
+import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export function createLoopbackHomeIdentityProbe(params: Readonly<{
   serverUrl: string;
@@ -14,32 +14,32 @@ export function createLoopbackHomeIdentityProbe(params: Readonly<{
 
   return async () => {
     try {
-      const featuresResponse = await axios.get(`${serverUrl}/v1/features`, {
-        timeout: 5_000,
-        responseType: 'stream',
-        validateStatus: () => true,
+      const snapshot = await observeServerFeaturesSnapshot({
+        serverUrl,
+        projection: 'public',
+        timeoutMs: 5_000,
       });
 
-      if (featuresResponse.status >= 500) {
+      if (
+        snapshot.status === 'error'
+        && snapshot.reason === 'response_status'
+        && (snapshot.httpStatus ?? 0) >= 500
+      ) {
         return {
           status: 'retry_later',
-          errorMessage: `Home identity probe returned ${featuresResponse.status}`,
+          errorMessage: `Home identity probe returned ${snapshot.httpStatus}`,
         };
       }
-      if (featuresResponse.status >= 400) {
+      if (snapshot.status !== 'ready') {
         return {
           status: 'server_unreachable',
-          errorMessage: `Home identity probe returned ${featuresResponse.status}`,
+          errorMessage: snapshot.status === 'error' && snapshot.httpStatus
+            ? `Home identity probe returned ${snapshot.httpStatus}`
+            : `Home identity probe failed: ${snapshot.reason}`,
         };
       }
-      const parsed = await decodeServerFeaturesResponseBody(
-        featuresResponse.data,
-        featuresResponse.headers?.['content-length'],
-      );
       if (params.expectedServerIdentityId) {
-        const observedIdentity = parsed
-          ? parsed.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
-          : '';
+        const observedIdentity = snapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? '';
         if (observedIdentity !== params.expectedServerIdentityId) {
           return {
             status: 'auth_failed',

@@ -1,4 +1,3 @@
-import { decodeBase64, decrypt } from '../encryption';
 import type {
     Update,
     UserMessage,
@@ -11,7 +10,7 @@ import {
     isBareSessionReadyEvent,
 } from '@/session/shared/sessionTurnLifecycle';
 import { readSessionHistoryReplayProvenance } from './sessionMessageCatchUp';
-import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 type ConnectedServiceTurnLifecycleEvent = 'prompt_or_steer' | 'task_started' | 'assistant_message_end' | 'turn_cancelled';
 
@@ -132,6 +131,18 @@ export function handleSessionNewMessageUpdate(params: {
         };
     }
 
+    let body: unknown;
+    try {
+        body = openSessionMessageContent({ ...params, content: parsedContent.data });
+    } catch (error) {
+        params.debug('[SOCKET] [UPDATE] Rejected unavailable Session message content', { error, messageId });
+        return {
+            handled: true,
+            lastObservedMessageSeq: params.lastObservedMessageSeq,
+            lastObservedUserMessageSeq: params.lastObservedUserMessageSeq,
+        };
+    }
+
     let nextLastObservedMessageSeq = params.lastObservedMessageSeq;
     let nextLastObservedUserMessageSeq = params.lastObservedUserMessageSeq;
     const msgSeq = params.update.body.message.seq;
@@ -143,37 +154,6 @@ export function handleSessionNewMessageUpdate(params: {
     }
 
     const localId = params.update.body.message.localId ?? null;
-    let body: unknown;
-    if (parsedContent.data.t === 'plain') {
-        body = parsedContent.data.v;
-    } else {
-        try {
-            if (params.mode !== 'e2ee') {
-                return {
-                    handled: false,
-                    lastObservedMessageSeq: nextLastObservedMessageSeq,
-                    lastObservedUserMessageSeq: nextLastObservedUserMessageSeq,
-                };
-            }
-            body = decrypt(
-                params.ctx.encryptionKey,
-                params.ctx.encryptionVariant,
-                decodeBase64(parsedContent.data.c),
-            );
-        } catch (error) {
-            params.debug('[SOCKET] [UPDATE] Failed to decrypt new-message payload', {
-                error,
-                messageId: typeof messageId === 'string' ? messageId : null,
-                localId,
-                msgSeq: typeof msgSeq === 'number' && Number.isFinite(msgSeq) ? msgSeq : null,
-            });
-            return {
-                handled: true,
-                lastObservedMessageSeq: nextLastObservedMessageSeq,
-                lastObservedUserMessageSeq: nextLastObservedUserMessageSeq,
-            };
-        }
-    }
     const bodyWithLocalId =
         params.update.body.message.localId === undefined
             ? body

@@ -11,6 +11,7 @@ import type {
 import type {
     PluginInvocationSurface } from '@happier-dev/plugin-sdk/interactions';
 import type {
+    ActionExecutorContext,
     PluginConnectedAccountMaterializationKind,
     PluginContributionIdentityV1,
     PluginMachineMaterializationRefV1,
@@ -33,7 +34,26 @@ export type AgentInvocationTurnAdmissionWitness = Readonly<{
     callerPermissionMode?: SessionPermissionMode | null;
 }>;
 
+/**
+ * Secret-free authority retained inside the host while an external PAT
+ * invocation crosses an installed contributed Action. Plugin code never sees
+ * this value; only the incumbent Actions service projects it onto nested host
+ * Action calls.
+ */
+export type PluginExternalActionContext = Readonly<{
+    authority: 'account_automation';
+    serverId: string;
+    serverIdentityId: string;
+    actionRequestId: string;
+    externalActionCredential: NonNullable<ActionExecutorContext['externalActionCredential']>;
+    externalActionExecutionAuthorization: NonNullable<ActionExecutorContext['externalActionExecutionAuthorization']>;
+    externalActionTarget: NonNullable<ActionExecutorContext['externalActionTarget']>;
+    signExternalActionApprovalInput?: NonNullable<ActionExecutorContext['signExternalActionApprovalInput']>;
+}>;
+
 export type PluginInvocationServicesSeed = Readonly<{
+    /** Host-only absence of an admitted Session-list corpus. */
+    sessionListAccess?: import('@happier-dev/protocol').ActionExecutorContext['sessionListAccess'];
     plugin: Readonly<{ id: string; version: string }>;
     contribution: Readonly<{ id: string; qualifiedId: string }>;
     generation: string;
@@ -43,6 +63,8 @@ export type PluginInvocationServicesSeed = Readonly<{
     surface: PluginInvocationSurface;
     /** Host-stamped provenance for a nested target invocation. */
     caller?: PluginInvocationCaller;
+    /** Host-private external PAT authority; never projected into plugin input/context. */
+    externalActionContext?: PluginExternalActionContext;
     /**
      * Host-private dispatch-time lookup for this invocation's own current
      * materialization. It deliberately prevents a service from capturing
@@ -201,12 +223,16 @@ export type CreateAgentInvocationServices = (
         correlationId: string;
         cwd: string;
         environment?: Readonly<Record<string, string>>;
+        /** Host-private exact managed launch; plugin code never receives this binding. */
+        agentCliLaunch?: import('@/packagedRuntime/managedTools/agentCliLaunchSpec').BoundAgentCliLaunchSpec;
         providerBindingActive?: boolean;
         signal: AbortSignal;
         session?: Readonly<{
             id: string;
             current: HostCurrentSessionUiServices;
         }>;
+        /** Host-private interaction/presentation binding for a detached Run; never creates context.session. */
+        currentSession?: HostCurrentSessionUiServices;
         readActiveTurnAdmissionWitness?():
             AgentInvocationTurnAdmissionWitness | null;
         isGenerationCurrent(): boolean;

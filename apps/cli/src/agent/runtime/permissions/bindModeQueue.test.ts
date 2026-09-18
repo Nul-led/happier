@@ -11,6 +11,10 @@ import {
   type ProviderBoundModelRef,
 } from '@happier-dev/protocol';
 
+const LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK = `<happier_input_context v="1">
+source_kind="legacyUnknown"
+</happier_input_context>`;
+
 describe('registerPermissionModeMessageQueueBinding', () => {
   function createSessionHarness(initialMetadata?: Metadata) {
     let userMessageHandler: ((message: UserMessage) => boolean | void) | null = null;
@@ -69,6 +73,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
         isTurnInFlight: () => false,
         steerText: async () => undefined,
         rejectPromptBeforeProvider,
+        registerProviderAcceptedEffect: () => undefined,
       },
     });
 
@@ -102,8 +107,16 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'hello world', localId: 'local-1', localIds: ['local-1'] },
-        mode: { permissionMode: 'default' },
+        message: {
+          text: 'hello world',
+          localId: 'local-1',
+          localIds: ['local-1'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
+        mode: {
+          permissionMode: 'default',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
       },
     ]);
   });
@@ -220,6 +233,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
         supportsInFlightSteer: () => true,
         isTurnInFlight: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     });
 
@@ -241,6 +255,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
         localId: 'local-image-1',
         localIds: ['local-image-1'],
         structuredInput,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
       },
     }]);
   });
@@ -279,6 +294,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
         supportsInFlightSteer: () => true,
         isTurnInFlight: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     });
 
@@ -509,6 +525,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           localIds: ['local-seq-1'],
           userMessageSeq: 42,
           userMessageSeqs: [42],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
         },
       },
     ]);
@@ -553,6 +570,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           localIds: ['local-dup-1'],
           userMessageSeq: 7,
           userMessageSeqs: [7],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
         },
       },
     ]);
@@ -575,8 +593,16 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'approve this', localId: 'local-2', localIds: ['local-2'] },
-        mode: { permissionMode: 'safe-yolo' },
+        message: {
+          text: 'approve this',
+          localId: 'local-2',
+          localIds: ['local-2'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
+        mode: {
+          permissionMode: 'safe-yolo',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
       },
     ]);
   });
@@ -594,9 +620,15 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'use this model', localId: 'local-model-1', localIds: ['local-model-1'] },
+        message: {
+          text: 'use this model',
+          localId: 'local-model-1',
+          localIds: ['local-model-1'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
         mode: {
           permissionMode: 'default',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
           modelSelection: {
             agentTargetKey: 'backend:opencode',
             providerConnectionId: null,
@@ -635,9 +667,11 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           text: 'use this provider model',
           localId: 'local-structured-model-1',
           localIds: ['local-structured-model-1'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
         },
         mode: {
           permissionMode: 'default',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
           modelSelection: {
             agentTargetKey: 'backend:opencode',
             providerConnectionId: 'pc_openrouter',
@@ -714,8 +748,16 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'approve this', localId: 'local-rebind-1', localIds: ['local-rebind-1'] },
-        mode: { permissionMode: 'safe-yolo' },
+        message: {
+          text: 'approve this',
+          localId: 'local-rebind-1',
+          localIds: ['local-rebind-1'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
+        mode: {
+          permissionMode: 'safe-yolo',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
       },
     ]);
   });
@@ -756,8 +798,16 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'clear',
-        message: { text: '/clear', localId: 'local-3', localIds: ['local-3'] },
-        mode: { permissionMode: 'default' },
+        message: {
+          text: '/clear',
+          localId: 'local-3',
+          localIds: ['local-3'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
+        mode: {
+          permissionMode: 'default',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
       },
     ]);
   });
@@ -820,6 +870,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
         steerText: async (text, options) => {
           steerCalls.push({ text, localId: options?.localId });
         },
+        registerProviderAcceptedEffect: () => undefined,
       },
     });
 
@@ -836,7 +887,10 @@ describe('registerPermissionModeMessageQueueBinding', () => {
 
     expect(queueCalls).toEqual([]);
     expect(steerCalls).toEqual([
-      { text: 'nudge active turn', localId: 'local-steer-1' },
+      {
+        text: `${LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK}\n\nnudge active turn`,
+        localId: 'local-steer-1',
+      },
     ]);
   });
 
@@ -888,6 +942,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
           return steerabilityReadCount === 1;
         },
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     });
 
@@ -922,10 +977,16 @@ describe('registerPermissionModeMessageQueueBinding', () => {
     expect(harness.queueCalls).toEqual([
       {
         type: 'push',
-        message: { text: 'hello world', localId: 'local-4', localIds: ['local-4'] },
+        message: {
+          text: 'hello world',
+          localId: 'local-4',
+          localIds: ['local-4'],
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
+        },
         mode: {
           permissionMode: 'default',
           appendSystemPrompt: 'Use the latest project conventions.',
+          inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT_BLOCK,
         },
       },
     ]);

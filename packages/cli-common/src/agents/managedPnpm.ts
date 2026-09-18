@@ -2,6 +2,7 @@ import { accessSync, constants as fsConstants, existsSync, statSync } from 'node
 import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime';
 import { extractArchivePayloadToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
@@ -109,7 +110,7 @@ async function shouldRecoverStalePnpmBootstrapLock(lockPath: string): Promise<bo
   return ageMs >= STALE_PNPM_BOOTSTRAP_LOCK_MAX_AGE_MS;
 }
 
-async function acquirePnpmBootstrapLock(processEnv: NodeJS.ProcessEnv): Promise<FileHandle> {
+async function acquirePnpmBootstrapLock(processEnv: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<FileHandle> {
   const lockDir = join(managedPnpmInstallDir(processEnv), '.lock');
   await mkdir(lockDir, { recursive: true });
   const lockPath = join(lockDir, 'bootstrap.lock');
@@ -120,6 +121,7 @@ async function acquirePnpmBootstrapLock(processEnv: NodeJS.ProcessEnv): Promise<
   const baseDelayMs = 100;
 
   for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       // Try to open exclusively; on Unix this uses O_EXCL, on Windows uses exclusive share mode
       const handle = await open(lockPath, 'wx');
@@ -133,7 +135,7 @@ async function acquirePnpmBootstrapLock(processEnv: NodeJS.ProcessEnv): Promise<
           continue;
         }
         const delayMs = baseDelayMs * Math.pow(1.5, attempt);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
+        await delay(delayMs, undefined, { signal });
         continue;
       }
       throw err;
@@ -166,6 +168,7 @@ async function extractManagedPnpmArchive(params: Readonly<{
   archivePath: string;
   archiveName: string;
   outputPath: string;
+  signal?: AbortSignal;
 }>): Promise<void> {
   const binDir = dirname(params.outputPath);
   await mkdir(binDir, { recursive: true });
@@ -173,6 +176,7 @@ async function extractManagedPnpmArchive(params: Readonly<{
     archiveName: params.archiveName,
     archivePath: params.archivePath,
     extractDir: binDir,
+    signal: params.signal,
   });
 
   const outputStat = await lstat(params.outputPath).catch(() => null);
@@ -187,10 +191,12 @@ async function extractManagedPnpmArchive(params: Readonly<{
 async function installManagedPnpm(
   processEnv: NodeJS.ProcessEnv,
   deps: EnsureManagedPnpmDeps,
+  signal?: AbortSignal,
 ): Promise<string> {
   // Acquire exclusive lock to prevent concurrent bootstrap races
-  const lockHandle = await acquirePnpmBootstrapLock(processEnv);
+  const lockHandle = await acquirePnpmBootstrapLock(processEnv, signal);
   try {
+    signal?.throwIfAborted();
     // Double-check if installation exists after acquiring lock (another process may have completed it)
     const managedPath = resolveExistingManagedOrOverridePnpmCommand(processEnv);
     if (managedPath) return managedPath;
@@ -199,10 +205,12 @@ async function installManagedPnpm(
     const downloadAsset = deps.downloadGitHubReleaseAsset ?? downloadGitHubReleaseAsset;
 
     const release = await fetchLatestRelease({
+      signal,
       githubRepo: PNPM_GITHUB_REPO,
       userAgent: 'happier-cli',
       githubToken: processEnv.GITHUB_TOKEN,
     });
+    signal?.throwIfAborted();
     const asset = resolvePnpmReleaseAsset(release);
     const scratchDir = await createManagedToolScratchDir({
       installDir: managedPnpmInstallDir(processEnv),
@@ -214,17 +222,20 @@ async function installManagedPnpm(
       const downloadPath = join(scratchDir, asset.name);
 
       await downloadAsset({
+        signal,
         url: asset.url,
         destinationPath: downloadPath,
         digest: asset.digest,
         userAgent: 'happier-cli',
       });
 
+      signal?.throwIfAborted();
       await rm(nextDir, { recursive: true, force: true });
       await mkdir(dirname(nextBinPath), { recursive: true });
       await rm(nextBinPath, { force: true });
       if (isArchiveAssetName(asset.name)) {
         await extractManagedPnpmArchive({
+          signal,
           archivePath: downloadPath,
           archiveName: asset.name,
           outputPath: nextBinPath,
@@ -236,7 +247,9 @@ async function installManagedPnpm(
         await chmod(nextBinPath, 0o755);
       }
 
+      signal?.throwIfAborted();
       await promoteManagedCurrentInstall({
+        signal,
         installRoot: managedPnpmInstallDir(processEnv),
         candidatePath: nextDir,
       });
@@ -264,7 +277,9 @@ async function installManagedPnpm(
 export async function ensureManagedPnpmCommand(
   processEnv: NodeJS.ProcessEnv = process.env,
   deps: EnsureManagedPnpmDeps = {},
+  options: Readonly<{ signal?: AbortSignal }> = {},
 ): Promise<string | null> {
+  options.signal?.throwIfAborted();
   const rawOverride = readRawPnpmOverride(processEnv);
   if (rawOverride) {
     return readPnpmOverride(processEnv);
@@ -278,8 +293,9 @@ export async function ensureManagedPnpmCommand(
   }
 
   try {
-    return await installManagedPnpm(processEnv, deps);
+    return await installManagedPnpm(processEnv, deps, options.signal);
   } catch {
+    options.signal?.throwIfAborted();
     return resolveCommandOnPath('pnpm', processEnv);
   }
 }

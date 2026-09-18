@@ -33,6 +33,23 @@
         "runtime": {
           "kind": "custom"
         },
+        "cli": {
+          "displayName": "Acme Sample CLI",
+          "executable": {
+            "binaryName": "acme-sample",
+            "sourcePreference": "system-first"
+          },
+          "install": {
+            "managed": null,
+            "manual": {
+              "kind": "none"
+            }
+          },
+          "auth": {
+            "support": "unsupported",
+            "loginLaunches": []
+          }
+        },
         "primary": "sessions",
         "capabilities": {
           "sessions": {

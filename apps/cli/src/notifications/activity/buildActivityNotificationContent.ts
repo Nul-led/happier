@@ -2,6 +2,7 @@ import {
   buildAgentRequestNotificationContent,
   buildReadyNotificationContent,
   redactBugReportSensitiveText,
+  WorkflowRunUpdateNotificationV1Schema,
 } from '@happier-dev/protocol';
 
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
@@ -85,6 +86,7 @@ export function buildActivityNotificationContent(
   event: ActivityNotificationEvent,
   options: Readonly<{
     readyIncludeMessageText: boolean;
+    requestIncludeMessageText?: boolean;
   }>,
 ): Readonly<{
   title: string;
@@ -92,6 +94,30 @@ export function buildActivityNotificationContent(
   data: Record<string, unknown>;
   toolDetails?: string | null;
 }> {
+  if (event.topic === 'workflow_run_update') {
+    const workflowEvent = WorkflowRunUpdateNotificationV1Schema.parse(event);
+    const presentation = workflowEvent.updateKind === 'completed'
+      ? { title: 'Workflow completed', body: 'A workflow Run completed.' }
+      : workflowEvent.updateKind === 'completed_with_failures'
+        ? { title: 'Workflow completed with failures', body: 'A workflow Run completed with failures.' }
+        : workflowEvent.updateKind === 'failed'
+          ? { title: 'Workflow failed', body: 'A workflow Run failed.' }
+          : workflowEvent.updateKind === 'paused'
+            ? { title: 'Workflow paused', body: 'A workflow Run paused at its saved boundary.' }
+            : workflowEvent.updateKind === 'interrupted'
+              ? { title: 'Workflow needs attention', body: 'A workflow Run was interrupted and needs attention.' }
+              : { title: 'Workflow outcome uncertain', body: 'A workflow Run needs attention because its outcome is uncertain.' };
+    return {
+      ...presentation,
+      data: {
+        topic: workflowEvent.topic,
+        runId: workflowEvent.runId,
+        updateKind: workflowEvent.updateKind,
+        ...(workflowEvent.reason ? { reason: workflowEvent.reason } : {}),
+      },
+    };
+  }
+
   if (event.topic === 'ready') {
     const content = buildReadyNotificationContent({
       sessionTitle: event.sessionTitle,
@@ -164,13 +190,17 @@ export function buildActivityNotificationContent(
 
   if (event.topic === 'connected_service_quota_blocked' || event.topic === 'connected_service_quota_recovered') {
     const serviceDisplayName = resolveConnectedServiceDisplayName(event.serviceId, event.serviceDisplayName);
+    const automaticReset = event.topic === 'connected_service_quota_recovered' && event.recoveryReason === 'automatic_quota_reset';
+    const resetAccount = redactNotificationText(event.profileId ?? 'selected account');
+    const resetPool = redactNotificationText(event.groupId ?? 'account pool');
     return {
-      title: event.sessionTitle ?? (event.topic === 'connected_service_quota_recovered' ? `${serviceDisplayName} quota recovered` : `${serviceDisplayName} quota blocked`),
-      body: event.topic === 'connected_service_quota_recovered'
+      title: automaticReset ? `${serviceDisplayName} reset credit used` : event.sessionTitle ?? (event.topic === 'connected_service_quota_recovered' ? `${serviceDisplayName} quota recovered` : `${serviceDisplayName} quota blocked`),
+      body: automaticReset ? `Happier automatically used a reset credit for ${resetAccount} in pool ${resetPool}.` : event.topic === 'connected_service_quota_recovered'
         ? `Quota is available again for ${serviceDisplayName}.`
         : `Waiting for quota availability for ${serviceDisplayName}.`,
       data: {
         topic: event.topic,
+        ...(automaticReset ? { recoveryReason: 'automatic_quota_reset' } : {}),
         sessionId: event.sessionId,
         serviceId: event.serviceId,
         serviceDisplayName,
@@ -228,6 +258,7 @@ export function buildActivityNotificationContent(
       requestId: event.requestId,
       toolName: event.toolName,
       toolInput: event.toolInput,
+      includeMessageText: options.requestIncludeMessageText !== false,
       toolDetails: event.toolDetails,
     });
     return {

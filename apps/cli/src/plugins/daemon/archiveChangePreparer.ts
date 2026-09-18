@@ -17,6 +17,8 @@ import {
 } from '@/plugins/discovery/remote/fetch';
 import {
   createArchivePluginDistributionIdentity,
+  canonicalizeRemotePluginArchiveUrl,
+  isRemotePluginArchiveLocator,
   createPluginTrustRecord,
   type PluginDistributionIdentity,
 } from '@/plugins/store/install/trustIdentity';
@@ -50,14 +52,8 @@ import { createDaemonPluginCandidateOperationRoot } from './candidateStorage';
 const PACKAGE_MANIFEST_PATH = '.happier-plugin/plugin.json';
 
 function readRemoteArchiveUrl(locator: string): string | null {
-  try {
-    const value = locator.trim();
-    const url = new URL(value);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
+  if (!isRemotePluginArchiveLocator(locator)) return null;
+  return canonicalizeRemotePluginArchiveUrl(locator);
 }
 
 async function hashArchive(path: string): Promise<Readonly<{

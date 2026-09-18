@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 
 import { resolveWindowsCommandInvocation, type CommandInvocation } from '@happier-dev/cli-common/process';
 import type { CatalogAgentLookupId } from '@/agent/catalog/types';
@@ -6,7 +8,10 @@ import type {
     AttachAvailabilityRequestV1,
     AttachSessionMetadataV1,
 } from '@happier-dev/agents';
-import type { AttachSurface } from '@happier-dev/plugin-sdk/agents/runtime';
+import type {
+    AgentProviderCliAttachReachabilityV1,
+    AttachSurface,
+} from '@happier-dev/plugin-sdk/agents/runtime';
 import type { AgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
 import { requireAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
 
@@ -25,6 +30,39 @@ export type ProviderCliAttachTargetResolver<TTarget extends object> = (params: R
     metadata: AttachSessionMetadataV1;
     fallbackServerBaseUrl?: string | null;
 }>) => ProviderCliAttachTargetResult<TTarget>;
+
+export async function probeLocalSocket(
+    path: string,
+    timeoutMs: number,
+    dependencies: Readonly<{
+        platform?: NodeJS.Platform;
+        statPath?: typeof stat;
+    }> = {},
+): Promise<boolean> {
+    if ((dependencies.platform ?? process.platform) === 'win32') {
+        try {
+            await (dependencies.statPath ?? stat)(path);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+    return await new Promise<boolean>((resolve) => {
+        const socket = createConnection(path);
+        let settled = false;
+        const finish = (reachable: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            socket.destroy();
+            resolve(reachable);
+        };
+        const timeout = setTimeout(() => finish(false), timeoutMs);
+        timeout.unref?.();
+        socket.once('connect', () => finish(true));
+        socket.once('error', () => finish(false));
+    });
+}
 
 function isLocalAttachRequest(request: AttachAvailabilityRequestV1): boolean {
     if (request.hasLocalAttachmentInfo === true) return true;
@@ -75,7 +113,7 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
     agentId: CatalogAgentLookupId;
     resolveTarget: ProviderCliAttachTargetResolver<TTarget>;
     createArgs: (target: TTarget) => readonly string[];
-    buildHealthUrl?: (target: TTarget) => string | null;
+    resolveReachability?: (target: TTarget) => AgentProviderCliAttachReachabilityV1 | null;
     readFallbackServerBaseUrl?: (
         input: Readonly<{ sessionId: string }>,
     ) => Promise<string | null>;
@@ -87,10 +125,11 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
     }>) => CommandInvocation;
     spawnProcess?: typeof spawn;
     fetchFn?: typeof fetch;
+    probeSocket?: (path: string, timeoutMs: number) => Promise<boolean>;
     env?: NodeJS.ProcessEnv;
     reachabilityTimeoutMs?: number;
 }>): AttachSurface {
-    const buildHealthUrl = params.buildHealthUrl;
+    const resolveReachability = params.resolveReachability;
     const resolveInvocation = params.resolveCommandInvocation ?? resolveWindowsCommandInvocation;
     return {
         evaluateAvailability: async (request) => {
@@ -110,40 +149,45 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                 };
             }
             if (request.depth === 'live') {
-                if (!buildHealthUrl) {
+                if (!resolveReachability) {
                     return {
                         available: false,
                         reasonCode: 'unsupported',
                         safeMessage: 'Provider attach reachability is unavailable.',
                     };
                 }
-                const healthUrl = buildHealthUrl(target.value);
-                if (!healthUrl) {
+                const reachability = resolveReachability(target.value);
+                if (!reachability) {
                     return {
                         available: false,
                         reasonCode: 'missing_metadata',
-                        safeMessage: 'Provider attach health URL is invalid.',
+                        safeMessage: 'Provider attach reachability metadata is invalid.',
                     };
                 }
 
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), params.reachabilityTimeoutMs ?? 1_500);
-                timeout.unref?.();
-                try {
-                    const response = await (params.fetchFn ?? fetch)(healthUrl, {
-                        method: 'GET',
-                        signal: controller.signal,
-                    }).catch(() => null);
-                    if (!response?.ok) {
-                        return {
-                            available: false,
-                            reasonCode: 'agent_unavailable',
-                            retryable: true,
-                            safeMessage: 'Provider attach target is unreachable.',
-                        };
-                    }
-                } finally {
-                    clearTimeout(timeout);
+                const timeoutMs = params.reachabilityTimeoutMs ?? 1_500;
+                const reachable = reachability.kind === 'localSocket'
+                    ? await (params.probeSocket ?? probeLocalSocket)(reachability.path, timeoutMs)
+                    : await (async () => {
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+                        timeout.unref?.();
+                        try {
+                            return Boolean((await (params.fetchFn ?? fetch)(reachability.url, {
+                                method: 'GET',
+                                signal: controller.signal,
+                            }).catch(() => null))?.ok);
+                        } finally {
+                            clearTimeout(timeout);
+                        }
+                    })();
+                if (!reachable) {
+                    return {
+                        available: false,
+                        reasonCode: 'agent_unavailable',
+                        retryable: true,
+                        safeMessage: 'Provider attach target is unreachable.',
+                    };
                 }
             }
             return { available: true };

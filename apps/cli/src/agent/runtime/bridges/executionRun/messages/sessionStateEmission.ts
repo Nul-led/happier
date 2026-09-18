@@ -8,16 +8,53 @@ import type { ExecutionRunBackendController } from '@/agent/executionRuns/contro
 import { appendExecutionRunControllerHostBarrier } from '@/agent/executionRuns/controllers/failureSignal';
 import type { ExecutionRunTranscriptPublisher } from '../executionRunTranscriptPublisher';
 import type { ExecutionRunState } from '../executionRunTypes';
-import { readBackendTargetRefV2 } from '@happier-dev/protocol';
+import { readBackendTargetRefV2, readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { normalizePermissionRequestOptionsForAcp } from '@/agent/acp/bridge/acpCommonHandlers';
 import {
   buildExecutionRunParentSessionPermissionRequestEnvelope,
   resolveExecutionRunPermissionInteractionMode,
 } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
+import { buildRunScopedExecutionPermissionRequestId } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
 import type { ExecutionRunPermissionRequestStoreProvider } from '../executionRunPermissionResponseTarget';
 import type { ExecutionRunPermissionCapability } from '../executionRunHostRuntime';
 import { createExecutionRunCodedError } from '../errors';
 import { EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
+import { createExecutionRunTranscriptCustodyError } from '../executionRunTranscriptPublisher';
+
+/**
+ * One writer signature, parameterized over its owner's option/result contract.
+ *
+ * The bridge's stable transcript publisher and the Session client's durable
+ * committed writer disagree on options and result, but both are the same
+ * `(provider, body, …)` seam. Rest parameters keep one projection owner instead
+ * of a second sidechain stamper per consumer.
+ */
+type ExecutionRunSidechainEnqueue<TRest extends unknown[], TResult> = (
+  provider: ACPProvider,
+  body: ACPMessageData,
+  ...rest: TRest
+) => Promise<TResult>;
+
+export function createExecutionRunTranscriptProjection<TRest extends unknown[], TResult>(args: Readonly<{
+  controller: ExecutionRunBackendController;
+  sidechainId: string;
+  isCurrent: () => boolean;
+  session: Readonly<{
+    sessionId: string;
+    enqueueAgentMessageCommitted?: ExecutionRunSidechainEnqueue<TRest, TResult>;
+  }>;
+}>): Readonly<{ enqueueAgentMessageCommitted?: ExecutionRunSidechainEnqueue<TRest, TResult> }> {
+  const enqueue = args.session.enqueueAgentMessageCommitted;
+  if (!enqueue) return Object.freeze({});
+  return Object.freeze({
+    async enqueueAgentMessageCommitted(provider: ACPProvider, body: ACPMessageData, ...rest: TRest) {
+      if (!args.isCurrent() || args.controller.cancelled) throw createExecutionRunTranscriptCustodyError();
+      const acceptance = args.controller.pendingInputAcceptance;
+      if (acceptance && await acceptance !== 'accepted') throw createExecutionRunTranscriptCustodyError();
+      return await enqueue(provider, { ...body, sidechainId: args.sidechainId }, ...rest);
+    },
+  });
+}
 
 const EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_CODE = 'execution_run_output_limit_exceeded';
 const EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_MESSAGE = 'Execution-run task output exceeded the configured limit.';
@@ -51,7 +88,7 @@ function readRuntimePermissionCapability(payload: unknown): ExecutionRunPermissi
 }
 
 function readProviderSessionId(payload: unknown): SessionId | null {
-  return readNonEmptyString(readRecord(payload)?.sessionId) ?? null;
+  return readNonBlankOpaqueIdentifier(readRecord(payload)?.sessionId);
 }
 
 function isExecutionRunActivityMessage(msg: Parameters<AgentMessageHandler>[0]): boolean {
@@ -146,24 +183,27 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
 
   function terminalizeFailClosedPermissionRequest(error: Error): void {
     args.ctrl.failureSignal?.fail(error);
-    if (args.ctrl.childSessionId) {
-      void args.ctrl.backend.cancel(args.ctrl.childSessionId).catch(() => {});
+    if (args.ctrl.runtimeId) {
+      void args.ctrl.backend.cancel(args.ctrl.runtimeId).catch(() => {});
     }
   }
 
-  function terminalizeTaskOutputLimit(): void {
+  function terminalizeExecutionResultOutputLimit(): void {
     const error = createExecutionRunCodedError(
       EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_CODE,
       EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_MESSAGE,
     );
     args.ctrl.failureSignal?.fail(error);
-    if (args.ctrl.childSessionId) {
-      void args.ctrl.backend.cancel(args.ctrl.childSessionId).catch(() => {});
+    if (args.ctrl.runtimeId) {
+      void args.ctrl.backend.cancel(args.ctrl.runtimeId).catch(() => {});
     }
   }
 
-  function exceedsTaskOutputLimit(msg: Extract<Parameters<AgentMessageHandler>[0], { type: 'model-output' }>): boolean {
-    if (args.runs.get(args.runId)?.intent !== 'task') return false;
+  function exceedsExecutionResultOutputLimit(
+    msg: Extract<Parameters<AgentMessageHandler>[0], { type: 'model-output' }>,
+  ): boolean {
+    const intent = args.runs.get(args.runId)?.intent;
+    if (intent !== 'task' && intent !== 'agent') return false;
     if (typeof msg.fullText === 'string') {
       return msg.fullText.length > EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS;
     }
@@ -218,7 +258,7 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
     }
   }
 
-  return (msg) => {
+  const publishMessage: AgentMessageHandler = (msg) => {
     if (msg.type === 'event' && msg.name === 'runtime.descriptor') {
       // The provider-owned descriptor stays opaque to the generic run bridge.
       forwarder.forward(msg);
@@ -234,14 +274,35 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
     if (msg.type === 'event' && (msg.name === 'provider_session_id' || msg.name === 'vendor_session_id')) {
       const providerSessionId = readProviderSessionId(msg.payload);
       if (providerSessionId) {
-        args.ctrl.childSessionId = providerSessionId;
+        // Provider identity is a resume handle only. The provisioned child id
+        // remains the host control address for delivery and cancellation.
         const run = args.runs.get(args.runId);
-        if (run?.retentionPolicy === 'resumable' && args.backendSupportsResume) {
+        if (run?.retentionPolicy === 'resumable'
+          && args.backendSupportsResume
+          && args.ctrl.providerResumeIdentityObserved !== true) {
+          const providerResumeIdentity = {
+            kind: 'provider_session.v1' as const,
+            backendTarget: readBackendTargetRefV2(run.backendTarget),
+            providerSessionId,
+          };
           args.runs.set(args.runId, {
             ...run,
-            resumeHandle: { kind: 'provider_session.v1', backendTarget: readBackendTargetRefV2(run.backendTarget), providerSessionId },
+            resumeHandle: providerResumeIdentity,
           });
+          args.ctrl.providerResumeIdentityObserved = true;
           args.onPublicStateUpdated?.(args.runId);
+          const workflowObservation = args.ctrl.workflowObservation;
+          if (workflowObservation) {
+            args.ctrl.pendingHostBarrier = appendExecutionRunControllerHostBarrier(
+              args.ctrl.pendingHostBarrier,
+              () => workflowObservation.sink.commit({
+                kind: 'provider_resume_identity',
+                runId: args.runId,
+                localInputId: workflowObservation.localInputId,
+                providerResumeIdentity,
+              }),
+            );
+          }
         }
       }
       return;
@@ -265,6 +326,7 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
       // Parent-prompt routing needs a stable host identity, not a provider
       // backend mode. `backendId` is already the canonical run-owned target.
       const runtimeKind = readNonEmptyString(run.backendId);
+      const requestStore = args.getPermissionRequestStore?.() ?? null;
       const mode = resolveExecutionRunPermissionInteractionMode({
         intent: run.intent,
         runClass: run.runClass,
@@ -272,6 +334,7 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         retentionPolicy: run.retentionPolicy,
         permissionMode: run.permissionMode,
         parentSessionId,
+        interactionTargetAvailable: requestStore !== null,
         backendCapabilities: {
           canRespondToPermission: readEffectivePermissionCapability() === 'responds',
           canSurfaceParentSessionPrompt: runtimeKind !== null,
@@ -285,11 +348,25 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         return;
       }
 
-      if (mode !== 'prompt_in_parent_session' || !runtimeKind || parentSessionId === null) {
+      if (mode === 'interaction_unavailable') {
+        const error = createExecutionRunCodedError(
+          'execution_run_interaction_unavailable',
+          'Execution-run permission interaction target is unavailable',
+        );
+        terminalizeFailClosedPermissionRequest(error);
+        throw error;
+      }
+
+      if (mode !== 'prompt_in_execution_scope' || !runtimeKind) {
         return;
       }
 
       const providerRequestId = readNonEmptyString(msg.id) ?? randomUUID();
+      const requestId = buildRunScopedExecutionPermissionRequestId({
+        runId: args.runId,
+        controllerOccurrenceId: args.ctrl.controllerOccurrenceId,
+        providerRequestId,
+      });
       const envelope = buildExecutionRunParentSessionPermissionRequestEnvelope({
         sessionId: parentSessionId,
         runId: args.runId,
@@ -299,6 +376,7 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         runtimeKind,
         permissionMode: run.permissionMode,
         providerRequestId,
+        controllerOccurrenceId: args.ctrl.controllerOccurrenceId,
         providerMetadata,
         providerPayload,
         toolName,
@@ -306,14 +384,13 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         createdAtMs: args.getNowMs(),
       });
 
-      const requestStore = args.getPermissionRequestStore?.() ?? null;
       if (!requestStore) {
         denyPermissionRequestOrFail(providerRequestId);
         return;
       }
 
       requestStore.publishRequest({
-        requestId: providerRequestId,
+        requestId,
         toolName,
         toolInput: mergePermissionRequestOptionsForParentPrompt(
           normalizePermissionRequestOptionsForAcp(providerPayload),
@@ -343,8 +420,8 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
       forwarder.forward(msg);
       return;
     }
-    if (exceedsTaskOutputLimit(msg)) {
-      terminalizeTaskOutputLimit();
+    if (exceedsExecutionResultOutputLimit(msg)) {
+      terminalizeExecutionResultOutputLimit();
       return;
     }
     forwarder.forward(msg);
@@ -387,5 +464,18 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
     }
 
     args.onModelOutput?.();
+  };
+  return (message) => {
+    const acceptance = args.ctrl.pendingInputAcceptance;
+    if (!acceptance) {
+      publishMessage(message);
+      return;
+    }
+    args.ctrl.pendingHostBarrier = appendExecutionRunControllerHostBarrier(
+      args.ctrl.pendingHostBarrier,
+      async () => {
+        if (await acceptance === 'accepted') publishMessage(message);
+      },
+    );
   };
 }

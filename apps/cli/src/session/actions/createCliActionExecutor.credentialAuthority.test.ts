@@ -62,7 +62,7 @@ describe('createCliActionExecutor credential authority', () => {
     await expect(executor.execute(
       'plugins.install',
       { path: '/tmp/plugin' },
-      { surface: 'cli' },
+      { surface: 'cli', presentUserConfirmation: { actionId: 'plugins.install' } },
     )).resolves.toEqual({
       ok: false,
       errorCode: 'present_user_required',
@@ -92,7 +92,7 @@ describe('createCliActionExecutor credential authority', () => {
     await expect(executor.execute(
       'plugins.install',
       { path: '/tmp/plugin' },
-      { surface: 'cli' },
+      { surface: 'cli', presentUserConfirmation: { actionId: 'plugins.install' } },
     )).resolves.toMatchObject({
       ok: true,
       result: {

@@ -3,8 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
 import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
 import { EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
+import { createExactTurnUsageAccumulator } from '@/usage/exactTurnUsage';
 import type { ExecutionRunState } from '../executionRunTypes';
-import { createExecutionRunControllerMessageHandler } from './sessionStateEmission';
+import { createExecutionRunControllerMessageHandler, createExecutionRunTranscriptProjection } from './sessionStateEmission';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
 
 function readPermissionDiagnostic(error: Error | null): unknown {
   return (error as (Error & { executionRunPermissionDiagnostic?: unknown }) | null)
@@ -23,14 +28,20 @@ function createController(opts: Readonly<{
   void signal?.promise.catch(() => {});
   return {
     kind: 'backend',
+    controllerOccurrenceId: 'controller-occurrence-1',
     backend: {
       async readResumeSupport() {
         return false;
       },
-      async provisionSession() {
-        return { sessionId: 'child_session_1' };
+      async provisionRuntime() {
+        return { runtimeId: 'child_session_1' };
       },
-      async sendPrompt() {},
+      async deliverInput() {
+        return { status: 'admitted' as const };
+      },
+      getRuntimeLifetimeSignal() {
+        return TEST_RUNTIME_LIFETIME_SIGNAL;
+      },
       async cancel() {},
       subscribeMessages() {
         return () => {};
@@ -39,7 +50,7 @@ function createController(opts: Readonly<{
       ...opts.backend,
     },
     backendSupportsResume: true,
-    childSessionId: 'child_session_1',
+    runtimeId: 'child_session_1',
     buffer: '',
     sidechainStreamBuffer: '',
     sidechainStreamKey: '',
@@ -50,8 +61,8 @@ function createController(opts: Readonly<{
     turnInFlight: true,
     turnCancelReason: null,
     turnCancelEpoch: null,
-    pendingExternalMessages: [],
-    pendingExternalMessagesSignal: null,
+    admittedLiveInterventions: [],
+    admittedLiveInterventionsSignal: null,
     lastMarkerWriteAtMs: 0,
     terminalPromise,
     resolveTerminal,
@@ -80,6 +91,60 @@ function createRunningRun(): ExecutionRunState {
 }
 
 describe('createExecutionRunControllerMessageHandler', () => {
+  it('binds native durable facts to the exact sidechain and accepted anchor, then refuses retired custody', async () => {
+    let accept!: (value: 'accepted') => void;
+    const ctrl = createController();
+    ctrl.pendingInputAcceptance = new Promise<'accepted'>((resolve) => { accept = resolve; });
+    let current = true;
+    const written: unknown[] = [];
+    const projection = createExecutionRunTranscriptProjection({
+      controller: ctrl, sidechainId: 'sidechain-exact', isCurrent: () => current,
+      session: {
+        sessionId: 'parent-exact',
+        async enqueueAgentMessageCommitted(provider, body, options) {
+          written.push({ provider, body, options });
+          return { persisted: true, delivered: false };
+        },
+      },
+    });
+    const options = { localId: 'native-fact', provenance: { kind: 'non_dependent' as const, source: 'external' as const } };
+    const publication = projection.enqueueAgentMessageCommitted!('codex', {
+      type: 'message', message: 'Run fact', sidechainId: 'untrusted-sidechain',
+    }, options);
+    await Promise.resolve();
+    expect(written).toEqual([]);
+    accept('accepted');
+    await expect(publication).resolves.toEqual({ persisted: true, delivered: false });
+    expect(written).toMatchObject([{ body: { sidechainId: 'sidechain-exact' }, options: { localId: 'native-fact' } }]);
+    current = false;
+    await expect(projection.enqueueAgentMessageCommitted!('codex', { type: 'message', message: 'stale' }, options))
+      .rejects.toMatchObject({ code: 'execution_run_transcript_custody_unavailable' });
+    expect(written).toHaveLength(1);
+  });
+
+  it('holds synchronous Run output until its exact admitted user anchor commits', async () => {
+    let accept!: (value: 'accepted') => void;
+    const ctrl = Object.assign(createController(), {
+      pendingInputAcceptance: new Promise<'accepted'>((resolve) => { accept = resolve; }),
+    });
+    const published: unknown[] = [];
+    const handler = createExecutionRunControllerMessageHandler({
+      ctrl, runId: 'run_1', sidechainId: 'sidechain_1', ioMode: 'streaming',
+      computeSidechainStreamText: (text) => text,
+      sendAcp: async (_provider, message) => { published.push(message); },
+      parentProvider: 'codex', runs: new Map([['run_1', createRunningRun()]]),
+      backendSupportsResume: true, writeActivityMarker: async () => {}, getNowMs: () => 123,
+    });
+    handler({ type: 'model-output', textDelta: 'answer' });
+    handler({ type: 'tool-call', callId: 'tool-1', toolName: 'Read', args: {} });
+    await Promise.resolve();
+    expect(ctrl.buffer).toBe('');
+    expect(published).toEqual([]);
+    accept('accepted');
+    await vi.waitFor(() => expect(ctrl.buffer).toBe('answer'));
+    await vi.waitFor(() => expect(published).not.toEqual([]));
+  });
+
   it('accepts a large individual task delta and fails only when cumulative task output exceeds its bound', () => {
     const transcriptLimit = EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS;
     const cancelLargeDelta = vi.fn(async () => {});
@@ -159,6 +224,38 @@ describe('createExecutionRunControllerMessageHandler', () => {
       .toBe('execution_run_output_limit_exceeded');
   });
 
+  it('applies the existing execution-result output bound to general Agent runs', () => {
+    const cancel = vi.fn(async () => {});
+    const ctrl = createController({ backend: { cancel }, withFailureSignal: true });
+    const handler = createExecutionRunControllerMessageHandler({
+      ctrl,
+      runId: 'run_1',
+      sidechainId: 'sidechain_1',
+      ioMode: 'request_response',
+      computeSidechainStreamText: () => null,
+      sendAcp: async () => {},
+      parentProvider: 'codex',
+      runs: new Map([['run_1', {
+        ...createRunningRun(),
+        intent: 'agent' as const,
+        runClass: 'long_lived' as const,
+      }]]),
+      backendSupportsResume: true,
+      writeActivityMarker: async () => {},
+      getNowMs: () => 123,
+    });
+
+    handler({
+      type: 'model-output',
+      fullText: 'x'.repeat(EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS + 1),
+    });
+
+    expect(ctrl.buffer).toBe('');
+    expect(cancel).toHaveBeenCalledWith('child_session_1');
+    expect((ctrl.failureSignal?.readError() as Error & { executionRunErrorCode?: unknown })?.executionRunErrorCode)
+      .toBe('execution_run_output_limit_exceeded');
+  });
+
   it('writes activity markers for meaningful runtime activity but not vendor session bookkeeping', async () => {
     const ctrl = createController();
     const runs = new Map([['run_1', createRunningRun()]]);
@@ -190,8 +287,12 @@ describe('createExecutionRunControllerMessageHandler', () => {
     expect(writeActivityMarker).toHaveBeenCalledWith('run_1', 123);
   });
 
-  it('accepts legacy vendor_session_id events as provider session identity compatibility', () => {
-    const ctrl = createController();
+  it.each([false, true])('preserves the provisioned control address while recording a provider resume handle (retained: %s)', (retained) => {
+    const ctrl = createController({ backend: retained ? {
+      interaction: { kind: 'retained_agent_session.v1', capabilities: {
+        open: ['create', 'resume'], delivery: ['newTurn'], cancel: true,
+      } },
+    } : {} });
     const runs = new Map([['run_1', createRunningRun()]]);
     const handler = createExecutionRunControllerMessageHandler({
       ctrl,
@@ -209,11 +310,111 @@ describe('createExecutionRunControllerMessageHandler', () => {
 
     handler({ type: 'event', name: 'vendor_session_id', payload: { sessionId: 'legacy-provider-session' } });
 
-    expect(ctrl.childSessionId).toBe('legacy-provider-session');
+    expect(ctrl.runtimeId).toBe('child_session_1');
     expect(runs.get('run_1')?.resumeHandle).toMatchObject({
       kind: 'provider_session.v1',
       providerSessionId: 'legacy-provider-session',
     });
+  });
+
+  it('preserves the first provider resume identity bytes and ignores later or blank-only events', () => {
+    const ctrl = createController();
+    const runs = new Map([['run_1', createRunningRun()]]);
+    const onPublicStateUpdated = vi.fn();
+    const handler = createExecutionRunControllerMessageHandler({
+      ctrl,
+      runId: 'run_1',
+      sidechainId: 'sidechain_1',
+      ioMode: 'request_response',
+      computeSidechainStreamText: () => null,
+      sendAcp: async () => {},
+      parentProvider: 'codex',
+      runs,
+      backendSupportsResume: true,
+      writeActivityMarker: async () => {},
+      getNowMs: () => 123,
+      onPublicStateUpdated,
+    });
+    const opaqueProviderSessionId = '  provider\nses/AB+cd==  ';
+
+    handler({
+      type: 'event',
+      name: 'provider_session_id',
+      payload: { sessionId: opaqueProviderSessionId },
+    });
+    expect(runs.get('run_1')?.resumeHandle).toMatchObject({
+      kind: 'provider_session.v1',
+      providerSessionId: opaqueProviderSessionId,
+    });
+
+    const strippedSibling = opaqueProviderSessionId.trim();
+    handler({ type: 'event', name: 'provider_session_id', payload: { sessionId: strippedSibling } });
+    expect(runs.get('run_1')?.resumeHandle).toMatchObject({
+      kind: 'provider_session.v1',
+      providerSessionId: opaqueProviderSessionId,
+    });
+    expect(strippedSibling).not.toBe(opaqueProviderSessionId);
+
+    handler({ type: 'event', name: 'provider_session_id', payload: { sessionId: ' \n\t ' } });
+    expect(runs.get('run_1')?.resumeHandle).toMatchObject({ providerSessionId: opaqueProviderSessionId });
+    expect(onPublicStateUpdated).toHaveBeenCalledTimes(1);
+  });
+
+  it('awaits the exact Workflow invocation sink before admitting the first provider resume identity as durable', async () => {
+    let release!: () => void;
+    let committed = false;
+    const commit = vi.fn(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      committed = true;
+    });
+    const ctrl = createController();
+    ctrl.workflowObservation = {
+      localInputId: 'workflow-input-1',
+      sink: { commit },
+      usage: createExactTurnUsageAccumulator(),
+    };
+    const runs = new Map([['run_1', {
+      ...createRunningRun(),
+      // Provisioning may expose a host child address before the provider emits
+      // its authoritative resumable identity.
+      resumeHandle: {
+        kind: 'provider_session.v1' as const,
+        backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const },
+        providerSessionId: 'child_session_1',
+      },
+    }]]);
+    const handler = createExecutionRunControllerMessageHandler({
+      ctrl,
+      runId: 'run_1',
+      sidechainId: 'sidechain_1',
+      ioMode: 'request_response',
+      computeSidechainStreamText: () => null,
+      sendAcp: async () => {},
+      parentProvider: 'codex',
+      runs,
+      backendSupportsResume: true,
+      writeActivityMarker: async () => {},
+      getNowMs: () => 123,
+    });
+
+    handler({ type: 'event', name: 'provider_session_id', payload: { sessionId: 'provider-session-1' } });
+    await Promise.resolve();
+    expect(commit).toHaveBeenCalledWith({
+      kind: 'provider_resume_identity',
+      runId: 'run_1',
+      localInputId: 'workflow-input-1',
+      providerResumeIdentity: expect.objectContaining({
+        kind: 'provider_session.v1',
+        providerSessionId: 'provider-session-1',
+      }),
+    });
+    expect(committed).toBe(false);
+    handler({ type: 'event', name: 'provider_session_id', payload: { sessionId: 'late-sibling' } });
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    release();
+    await expect(ctrl.pendingHostBarrier).resolves.toBeUndefined();
+    expect(committed).toBe(true);
   });
 
   it('terminalizes static permission requests with a typed diagnostic instead of recording delivery', () => {
@@ -348,7 +549,7 @@ describe('createExecutionRunControllerMessageHandler', () => {
     const run: ExecutionRunState = {
       ...createRunningRun(),
       intent: 'delegate',
-      permissionMode: 'safe-yolo',
+      permissionMode: 'default',
       runClass: 'long_lived',
       ioMode: 'streaming',
     };
@@ -394,10 +595,11 @@ describe('createExecutionRunControllerMessageHandler', () => {
     });
 
     expect(publishRequest).toHaveBeenCalledWith(expect.objectContaining({
-      requestId: 'provider-request-parent',
+      requestId: 'execution-run:run_1:controller-occurrence-1:provider-request-parent',
       responseTarget: expect.objectContaining({
         runtimeKind: run.backendId,
         providerRequestId: 'provider-request-parent',
+        controllerOccurrenceId: 'controller-occurrence-1',
       }),
     }));
     expect(respondToPermission).not.toHaveBeenCalled();

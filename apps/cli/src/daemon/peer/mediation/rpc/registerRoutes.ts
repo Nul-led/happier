@@ -52,6 +52,7 @@ export type RegisterPeerMediationMachineRpcDirectRoutesOptions = PeerMachineRpcD
     nowMs: () => number;
     expected: PeerMachineRpcDirectExpectedBinding;
     trustRoots: readonly DirectRouteGrantTrustRoot[];
+    resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
 }>;
 
 function isMethodNotFoundResult(value: unknown): boolean {
@@ -149,7 +150,7 @@ export function registerPeerMediationMachineRpcDirectRoutes(
         const validation = validatePeerMachineRpcDirectRequest({
             body,
             expected: options.expected,
-            trustRoots: options.trustRoots,
+            trustRoots: options.resolveTrustRoots?.() ?? options.trustRoots,
             nowMs: options.nowMs(),
             callLimiter,
             quarantine,

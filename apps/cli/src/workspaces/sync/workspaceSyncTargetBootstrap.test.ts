@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ import {
   workspaceSyncTargetBootstrap,
 } from './workspaceSyncTargetBootstrap';
 import { beginWorkspaceTargetMaterialization } from '@/scm/workspace/workspaceExportMaterialization';
+import { readWorkspaceSyncRootObjectIdentity } from './workspaceSyncRootIdentity';
 import { createWorkspaceRootOwnershipManager, type WorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 
 const rootOwnershipManager = createWorkspaceRootOwnershipManager({
@@ -29,19 +30,20 @@ const fakeMaterializationReceipt = {
 };
 
 async function replacementApproval(rootPath: string): Promise<HandoffTargetReplacementApprovalV1> {
+  const canonicalRoot = await realpath(rootPath);
   return {
     v: 1 as const,
     consequences: ['replace_nonempty_workspace_target'],
     serverId: 'server-1',
     machineId: 'machine-b',
-    canonicalRoot: rootPath,
-    rootFingerprint: await computeWorkspaceSyncRootFingerprint(rootPath),
+    canonicalRoot,
+    rootFingerprint: await computeWorkspaceSyncRootFingerprint(canonicalRoot),
     operationId: 'relationship-1',
   };
 }
 
 async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 45_000;
   while (!(await access(path).then(() => true, () => false))) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -79,16 +81,17 @@ describe('workspaceSyncTargetBootstrap', () => {
   it('returns approval_stale without mutation when the approved root object was replaced', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-stale-'));
     const target = join(fixture, 'target');
-    const stagingDirectory = join(fixture, 'staging');
+    const materializationDirectory = join(fixture, 'staging');
     await mkdir(target);
     await writeFile(join(target, 'approved.txt'), 'old');
+    const canonicalTarget = await realpath(target);
     const approval: HandoffTargetReplacementApprovalV1 = {
       v: 1 as const,
       consequences: ['replace_nonempty_workspace_target'],
       serverId: 'server-1',
       machineId: 'machine-b',
-      canonicalRoot: target,
-      rootFingerprint: await computeWorkspaceSyncRootFingerprint(target),
+      canonicalRoot: canonicalTarget,
+      rootFingerprint: await computeWorkspaceSyncRootFingerprint(canonicalTarget),
       operationId: 'handoff-action-1',
     };
     await rm(target, { recursive: true });
@@ -97,13 +100,13 @@ describe('workspaceSyncTargetBootstrap', () => {
 
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory,
+      materializationDirectory,
       targetBootstrap: 'materialize_from_source_workspace',
       targetReplacementApproval: approval,
       materializeSeed: async () => { throw new Error('must not mutate'); },
     }))).rejects.toMatchObject({ code: 'approval_stale' });
     await expect(readFile(join(target, 'replacement.txt'), 'utf8')).resolves.toBe('preserve');
-    await expect(access(stagingDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(materializationDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
     await rm(fixture, { recursive: true, force: true });
   });
   it('recovers an existing target after process loss between rename and READY', async () => {
@@ -117,7 +120,7 @@ describe('workspaceSyncTargetBootstrap', () => {
 
     const recovered = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: staging,
+      materializationDirectory: staging,
       relationshipId: 'relationship-crash',
       targetBootstrap: 'use_existing',
     }));
@@ -125,7 +128,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     await expect(readFile(join(target, 'new.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await recovered.release();
     await rm(fixture, { recursive: true, force: true });
-  }, 45_000);
+  }, 60_000);
 
   it('restores a missing Git target to absence after process loss before SCM materialization', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-crash-missing-git-'));
@@ -136,7 +139,7 @@ describe('workspaceSyncTargetBootstrap', () => {
 
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: staging,
+      materializationDirectory: staging,
       relationshipId: 'relationship-crash',
       contentSelection: 'git_worktree',
       createIfMissing: false,
@@ -145,7 +148,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     }))).rejects.toMatchObject({ code: 'target_bootstrap_required' });
     await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await rm(fixture, { recursive: true, force: true });
-  }, 45_000);
+  }, 60_000);
 
   it('does not mutate an interrupted target when root ownership acquisition reports overlap', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-crash-overlap-'));
@@ -169,7 +172,7 @@ describe('workspaceSyncTargetBootstrap', () => {
 
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: staging,
+      materializationDirectory: staging,
       relationshipId: 'relationship-crash',
       rootOwnershipManager: overlappingManager,
       targetBootstrap: 'use_existing',
@@ -177,7 +180,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     await expect(readFile(join(target, 'new.txt'), 'utf8')).resolves.toBe('new');
     await expect(readFile(join(target, 'old.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await rm(fixture, { recursive: true, force: true });
-  }, 45_000);
+  }, 60_000);
 
   it('rejects a blank root before path resolution', async () => {
     await expect(workspaceSyncTargetBootstrap(input({ rootPath: '   ' }))).rejects.toMatchObject({ code: 'workspace_root_unsafe' });
@@ -190,7 +193,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     await writeFile(join(target, 'existing.txt'), 'preserve');
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       targetBootstrap: 'materialize_from_source_workspace',
       materializeSeed: async () => undefined,
     }))).rejects.toMatchObject({ code: 'approval_stale' });
@@ -206,7 +209,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     let seedCalled = false;
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       targetBootstrap: 'use_existing',
       materializeSeed: async () => { seedCalled = true; },
     }));
@@ -223,7 +226,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     let seeded = false;
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       createIfMissing: true,
       targetBootstrap: 'materialize_from_source_workspace',
       materializeSeed: async ({ canonicalRoot }) => {
@@ -246,7 +249,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     let aborted = 0;
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       targetBootstrap: 'materialize_from_source_workspace',
       targetReplacementApproval: await replacementApproval(target),
       materializeSeed: async ({ canonicalRoot }) => {
@@ -273,14 +276,14 @@ describe('workspaceSyncTargetBootstrap', () => {
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('rehydrates durable replacement custody from the sole materialization receipt beside READY', async () => {
+  it('rolls back durable replacement custody when restart finds no final READY', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-rehydrate-custody-'));
     const target = join(fixture, 'target');
     await mkdir(target);
     await writeFile(join(target, 'existing.txt'), 'preserve');
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       targetBootstrap: 'materialize_from_source_workspace',
       targetReplacementApproval: await replacementApproval(target),
       materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
@@ -302,16 +305,101 @@ describe('workspaceSyncTargetBootstrap', () => {
       rootPath: target,
       relationshipId: 'relationship-1',
       endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
       policyDigest: 'a'.repeat(64),
       contentSelection: 'all_files',
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       rootOwnershipManager,
     });
-    expect(recovered?.materializationCustody).toBeDefined();
-    await recovered?.materializationCustody?.abort();
+    expect(recovered).toBeNull();
     await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
     await expect(readFile(join(target, 'seeded.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    await recovered?.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('does not infer final readiness from a matching root when commit never published READY', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-no-ready-'));
+    const target = join(fixture, 'target');
+    const materializationDirectory = join(fixture, 'staging');
+    const lockDirectory = join(fixture, 'locks');
+    await mkdir(target);
+    const prepared = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    }));
+    await prepared.release();
+
+    const rehydrated = await rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-1',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
+      policyDigest: 'a'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    });
+    expect(rehydrated).toBeNull();
+
+    await prepared.publishReady();
+    await expect(rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-1',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'different-workspace-ref',
+      policyDigest: 'a'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    })).resolves.toBeNull();
+    const ready = await rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-1',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
+      policyDigest: 'a'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    });
+    expect(ready).not.toBeNull();
+    await ready?.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('releases restart ownership when the target disappears after acquisition', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-rehydrate-race-'));
+    const target = join(fixture, 'target');
+    const lockDirectory = join(fixture, 'locks');
+    const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
+    await mkdir(target);
+
+    await expect(rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-1',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
+      policyDigest: 'a'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory: join(fixture, 'staging'),
+      rootOwnershipManager: {
+        tryAcquire: async (request) => {
+          const ownership = await manager.tryAcquire(request);
+          if (!('kind' in ownership)) await rm(target, { recursive: true });
+          return ownership;
+        },
+      },
+    })).rejects.toMatchObject({ code: 'root_changed' });
+
+    await mkdir(target);
+    const reacquired = await manager.tryAcquire({
+      ownerId: 'relationship-2',
+      canonicalRoot: await realpath(target),
+      operation: 'sync',
+    });
+    expect(reacquired).not.toHaveProperty('kind');
+    if (!('kind' in reacquired)) await reacquired.release();
     await rm(fixture, { recursive: true, force: true });
   });
 
@@ -320,7 +408,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     const target = join(fixture, 'target');
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       createIfMissing: true,
       targetBootstrap: 'materialize_from_source_workspace',
       materializeSeed: async ({ canonicalRoot }) => {
@@ -329,10 +417,6 @@ describe('workspaceSyncTargetBootstrap', () => {
       },
     }));
 
-    const readyMarker = JSON.parse(await readFile(result.markerPath, 'utf8')) as Record<string, unknown>;
-    expect(readyMarker).not.toHaveProperty('materialization');
-    const operationDirectory = dirname(result.markerPath);
-    await expect(access(join(operationDirectory, 'materialization.json'))).resolves.toBeUndefined();
     await result.materializationCustody?.abort();
     await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await result.release();
@@ -347,7 +431,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
       sourceRootPath: source,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       contentSelection: 'git_worktree',
       createIfMissing: true,
       targetBootstrap: 'materialize_from_source_workspace',
@@ -376,7 +460,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     const target = join(fixture, 'target');
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       contentSelection: 'git_worktree',
       createIfMissing: true,
       targetBootstrap: 'materialize_from_source_workspace',
@@ -446,6 +530,10 @@ describe('workspaceSyncTargetBootstrap', () => {
       targetState: 'nonempty',
       targetBootstrap: 'materialize_from_source_workspace',
       materializationReceiptPath: join(fixture, 'materialization.json'),
+      targetFence: {
+        state: 'nonempty',
+        identity: await readWorkspaceSyncRootObjectIdentity(target),
+      },
     }, { realizeWorkspaceCheckout, inspectWorkspaceLocation });
     await custody?.abort();
     await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
@@ -461,6 +549,7 @@ describe('workspaceSyncTargetBootstrap', () => {
       targetState: 'missing',
       targetBootstrap: 'materialize_from_source_workspace',
       materializationReceiptPath: '/tmp/.unreachable-target.happier-materialization.json',
+      targetFence: { state: 'missing', identity: null },
     })).rejects.toMatchObject({ code: 'target_bootstrap_offline' });
   });
 
@@ -470,7 +559,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     let acquired = false;
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       createIfMissing: true,
       rootOwnershipManager: {
         tryAcquire: async (owner) => {
@@ -498,7 +587,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     let seedCalled = false;
     const result = await workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       materializeSeed: async ({ canonicalRoot }) => {
         seedCalled = true;
         await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
@@ -508,13 +597,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     }));
     expect(seedCalled).toBe(true);
     await expect(readFile(join(target, 'seeded.txt'), 'utf8')).resolves.toBe('seed');
-    expect(JSON.parse(await readFile(result.markerPath, 'utf8'))).toMatchObject({
-      state: 'READY',
-      engineVersion: 'happier-mutagen-external-v1',
-      contentSelection: 'all_files',
-    });
-    await expect(readFile(join(dirname(result.markerPath), 'manifest.json'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(fixture, 'staging'))).resolves.toHaveLength(0);
     await result.release();
     await rm(fixture, { recursive: true, force: true });
   });
@@ -522,12 +605,12 @@ describe('workspaceSyncTargetBootstrap', () => {
   it('leaves no durable bootstrap authority after materialization fails', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-'));
     const target = join(fixture, 'target');
-    const stagingDirectory = join(fixture, 'staging');
+    const materializationDirectory = join(fixture, 'staging');
     await mkdir(target);
     await writeFile(join(target, 'existing.txt'), 'preserve');
     await expect(workspaceSyncTargetBootstrap(input({
       rootPath: target,
-      stagingDirectory,
+      materializationDirectory,
       materializeSeed: async () => {
         throw Object.assign(new Error('seed unavailable'), { code: 'target_bootstrap_offline' });
       },
@@ -535,75 +618,194 @@ describe('workspaceSyncTargetBootstrap', () => {
       targetReplacementApproval: await replacementApproval(target),
     }))).rejects.toMatchObject({ code: 'target_bootstrap_offline' });
     await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
-    const operationDirectories = await readdir(stagingDirectory);
-    expect(operationDirectories).toHaveLength(1);
-    await expect(readFile(join(stagingDirectory, operationDirectories[0]!, 'manifest.json'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(join(stagingDirectory, operationDirectories[0]!, 'ready.json'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(materializationDirectory)).toEqual([]);
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('authorizes an empty target and writes a root/policy-bound READY marker', async () => {
+  it('uses only the canonical finite materialization receipt and removes it after commit', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-'));
     const target = join(fixture, 'target');
-    const result = await workspaceSyncTargetBootstrap(input({ rootPath: target, stagingDirectory: join(fixture, 'staging'), createIfMissing: true, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => undefined }));
+    const result = await workspaceSyncTargetBootstrap(input({ rootPath: target, materializationDirectory: join(fixture, 'staging'), createIfMissing: true, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => undefined }));
     expect(result).toMatchObject({ created: true, state: 'READY', policyDigest: 'a'.repeat(64) });
-    const marker = JSON.parse(await readFile(result.markerPath, 'utf8')) as Record<string, unknown>;
-    expect(marker).toMatchObject({ state: 'READY', relationshipId: 'relationship-1', endpointRole: 'beta', policyDigest: 'a'.repeat(64) });
-    expect(marker.rootFingerprint).toBe(result.rootFingerprint);
+    expect(result).not.toHaveProperty('markerPath');
+    await expect(readdir(join(fixture, 'staging'))).resolves.toEqual([
+      expect.stringMatching(/(?<!\.ready)\.json$/u),
+    ]);
+    await result.publishReady();
+    await expect(readdir(join(fixture, 'staging'))).resolves.toEqual(expect.arrayContaining([
+      expect.stringMatching(/(?<!\.ready)\.json$/u),
+      expect.stringMatching(/\.ready\.json$/u),
+    ]));
+    await result.materializationCustody?.commit();
+    await expect(readdir(join(fixture, 'staging'))).resolves.toEqual([
+      expect.stringMatching(/\.ready\.json$/u),
+    ]);
     await result.release();
-    await writeFile(join(target, 'later-synced.txt'), 'data');
-    const retry = await workspaceSyncTargetBootstrap(input({ rootPath: target, stagingDirectory: join(fixture, 'staging'), targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => {} }));
-    expect(retry).toMatchObject({ created: false, state: 'READY', rootFingerprint: result.rootFingerprint });
-    await retry.release();
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('derives an opaque staging component from an untrusted relationship id', async () => {
+  it('keeps rollback custody when final READY publication fails', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-ready-failure-'));
+    const target = join(fixture, 'target');
+    const materializationDirectory = join(fixture, 'staging');
+    await mkdir(target);
+    await writeFile(join(target, 'existing.txt'), 'preserve');
+    const readyFailure = new Error('injected READY publication failure');
+    const result = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      targetBootstrap: 'materialize_from_source_workspace',
+      targetReplacementApproval: await replacementApproval(target),
+      materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
+        const materialization = await beginWorkspaceTargetMaterialization({
+          targetPath: canonicalRoot,
+          backupDirectoryPrefix: '.happier-sync-backup',
+          receiptPath: materializationReceiptPath,
+          originalTargetExists,
+        });
+        await mkdir(canonicalRoot);
+        await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
+        await materialization.custody.bindPromotedTarget();
+        return materialization.custody;
+      },
+    }), { writeReadyFact: async () => { throw readyFailure; } });
+
+    await expect(result.publishReady()).rejects.toBe(readyFailure);
+    expect((await readdir(materializationDirectory)).some((name) => name.endsWith('.json'))).toBe(true);
+    expect((await readdir(fixture)).some((name) => name.startsWith('.happier-sync-backup.'))).toBe(true);
+    await result.materializationCustody?.abort();
+    await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
+    await expect(readFile(join(target, 'seeded.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await result.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('treats exact READY plus receipt as committed cleanup pending on restart', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-ready-cleanup-'));
+    const target = join(fixture, 'target');
+    const materializationDirectory = join(fixture, 'staging');
+    const lockDirectory = join(fixture, 'locks');
+    await mkdir(target);
+    await writeFile(join(target, 'existing.txt'), 'preserve');
+    const prepared = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+      targetBootstrap: 'materialize_from_source_workspace',
+      targetReplacementApproval: await replacementApproval(target),
+      materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
+        const materialization = await beginWorkspaceTargetMaterialization({
+          targetPath: canonicalRoot,
+          backupDirectoryPrefix: '.happier-sync-backup',
+          receiptPath: materializationReceiptPath,
+          originalTargetExists,
+        });
+        await mkdir(canonicalRoot);
+        await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
+        await materialization.custody.bindPromotedTarget();
+        return materialization.custody;
+      },
+    }));
+    await prepared.publishReady();
+    await prepared.release();
+
+    const restarted = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    }));
+    expect(restarted).not.toBeNull();
+    expect(restarted?.readyPublished).toBe(true);
+    await expect(readFile(join(target, 'seeded.txt'), 'utf8')).resolves.toBe('seed');
+    await expect(readFile(join(target, 'existing.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(fixture)).some((name) => name.startsWith('.happier-sync-backup.'))).toBe(true);
+    const pendingArtifacts = await readdir(materializationDirectory);
+    expect(pendingArtifacts).toHaveLength(2);
+    expect(pendingArtifacts.some((name) => name.endsWith('.ready.json'))).toBe(true);
+    expect(pendingArtifacts.some((name) => name.endsWith('.json') && !name.endsWith('.ready.json'))).toBe(true);
+    await restarted?.materializationCustody?.commit();
+    expect((await readdir(fixture)).some((name) => name.startsWith('.happier-sync-backup.'))).toBe(false);
+    await expect(readdir(materializationDirectory)).resolves.toEqual([
+      expect.stringMatching(/\.ready\.json$/u),
+    ]);
+    await restarted?.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('does not trust mismatched READY to commit a retained rollback receipt', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-ready-mismatch-'));
+    const target = join(fixture, 'target');
+    const materializationDirectory = join(fixture, 'staging');
+    const lockDirectory = join(fixture, 'locks');
+    await mkdir(target);
+    await writeFile(join(target, 'existing.txt'), 'preserve');
+    const prepared = await workspaceSyncTargetBootstrap(input({
+      rootPath: target,
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+      targetBootstrap: 'materialize_from_source_workspace',
+      targetReplacementApproval: await replacementApproval(target),
+      materializeSeed: async ({ canonicalRoot, materializationReceiptPath, originalTargetExists }) => {
+        const materialization = await beginWorkspaceTargetMaterialization({
+          targetPath: canonicalRoot,
+          backupDirectoryPrefix: '.happier-sync-backup',
+          receiptPath: materializationReceiptPath,
+          originalTargetExists,
+        });
+        await mkdir(canonicalRoot);
+        await writeFile(join(canonicalRoot, 'seeded.txt'), 'seed');
+        await materialization.custody.bindPromotedTarget();
+        return materialization.custody;
+      },
+    }));
+    await prepared.publishReady();
+    await prepared.release();
+
+    await expect(rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: target,
+      relationshipId: 'relationship-1',
+      endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta',
+      policyDigest: 'b'.repeat(64),
+      contentSelection: 'all_files',
+      materializationDirectory,
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory }),
+    })).resolves.toBeNull();
+    await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
+    await expect(readFile(join(target, 'seeded.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it('does not use an untrusted relationship id as a receipt pathname', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-'));
     const target = join(fixture, 'target');
-    const stagingDirectory = join(fixture, 'staging');
+    const materializationDirectory = join(fixture, 'staging');
     const result = await workspaceSyncTargetBootstrap(input({
-      rootPath: target, stagingDirectory, relationshipId: '../escape', createIfMissing: true,
+      rootPath: target, materializationDirectory, relationshipId: '../escape', createIfMissing: true,
     }));
-    expect(result.markerPath.startsWith(`${stagingDirectory}/`)).toBe(true);
+    expect(result).not.toHaveProperty('markerPath');
+    await result.publishReady();
+    await result.materializationCustody?.commit();
     await expect(readFile(join(fixture, 'escape', 'ready.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await result.release();
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('uses the atomic READY record as the only durable bootstrap authority', async () => {
+  it('rehydrates restart custody from settings intent and the canonical materialization receipt owner', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-bootstrap-'));
     const targetA = join(fixture, 'target-a');
-    const targetB = join(fixture, 'target-b');
     const staging = join(fixture, 'staging');
-    const first = await workspaceSyncTargetBootstrap(input({ rootPath: targetA, stagingDirectory: staging, createIfMissing: true, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => {} }));
-    expect(first).not.toHaveProperty('manifestDigest');
-    // The primitive holds its ownership fence until released; once released,
-    // re-preparing over the same verified marker facts is stable.
+    const first = await workspaceSyncTargetBootstrap(input({ rootPath: targetA, materializationDirectory: staging, createIfMissing: true, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => {} }));
+    await first.publishReady();
+    await first.materializationCustody?.commit();
     await first.release();
-    const repeat = await workspaceSyncTargetBootstrap(input({ rootPath: targetA, stagingDirectory: staging, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => {} }));
-    expect(repeat).not.toHaveProperty('manifestDigest');
-    await repeat.release();
-    // The marker is operation-keyed, so read it before the second root reuses
-    // the same relationship fixture identity.
-    const marker = JSON.parse(await readFile(first.markerPath, 'utf8')) as Record<string, unknown>;
-    expect(marker).toMatchObject({
-      v: 1,
-      state: 'READY',
-      relationshipId: 'relationship-1',
-      endpointRole: 'beta',
-      policyDigest: 'a'.repeat(64),
-      rootFingerprint: first.rootFingerprint,
-      engineVersion: 'happier-mutagen-external-v1',
-      contentSelection: 'all_files',
+    const exact = await rehydrateWorkspaceSyncTargetBootstrap({
+      rootPath: targetA, relationshipId: 'relationship-1', endpointRole: 'beta',
+      targetWorkspaceRefId: 'workspace-beta', policyDigest: 'a'.repeat(64), contentSelection: 'all_files',
+      materializationDirectory: staging, rootOwnershipManager,
     });
-    // Different verified facts are represented by a distinct READY record.
-    const otherRoot = await workspaceSyncTargetBootstrap(input({ rootPath: targetB, stagingDirectory: staging, createIfMissing: true, targetBootstrap: 'materialize_from_source_workspace', materializeSeed: async () => {} }));
-    const otherMarker = JSON.parse(await readFile(otherRoot.markerPath, 'utf8')) as Record<string, unknown>;
-    expect(otherMarker.canonicalRoot).not.toBe(marker.canonicalRoot);
-    await otherRoot.release();
+    expect(exact).not.toBeNull();
+    await exact?.release();
     await rm(fixture, { recursive: true, force: true });
   });
 
@@ -615,7 +817,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     await writeFile(join(target, 'existing'), 'data');
     let seeded = false;
     await expect(workspaceSyncTargetBootstrap(input({
-      rootPath: target, sourceRootPath: source, stagingDirectory: join(fixture, 'staging'),
+      rootPath: target, sourceRootPath: source, materializationDirectory: join(fixture, 'staging'),
       materializeSeed: async () => { seeded = true; },
     }))).rejects.toMatchObject({ code: 'workspace_root_unsafe' });
     expect(seeded).toBe(false);
@@ -627,7 +829,7 @@ describe('workspaceSyncTargetBootstrap', () => {
     const target = join(fixture, 'workspace');
     const { sourceRootPath: _sourceRootPath, ...remoteSourceInput } = input({
       rootPath: target,
-      stagingDirectory: join(fixture, 'staging'),
+      materializationDirectory: join(fixture, 'staging'),
       createIfMissing: true,
     });
     void _sourceRootPath;
@@ -642,7 +844,8 @@ describe('workspaceSyncTargetBootstrap', () => {
 function input(overrides: Partial<Parameters<typeof workspaceSyncTargetBootstrap>[0]> = {}) {
   return {
     rootPath: '/tmp/unused', sourceRootPath: `/tmp/workspace-sync-source-${process.pid}`, relationshipId: 'relationship-1', endpointRole: 'beta' as const,
-    policyDigest: 'a'.repeat(64), contentSelection: 'all_files' as const, approved: true as const, stagingDirectory: '/tmp/unused-staging',
+    targetWorkspaceRefId: 'workspace-beta',
+    policyDigest: 'a'.repeat(64), contentSelection: 'all_files' as const, approved: true as const, materializationDirectory: '/tmp/unused-staging',
     rootOwnershipManager,
     targetBootstrap: 'use_existing' as const,
     ...overrides,

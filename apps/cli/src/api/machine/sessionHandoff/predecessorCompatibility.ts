@@ -25,7 +25,7 @@ import { classifyWorkspaceSyncAdmission, workspaceSyncUpdateRequired } from './w
 
 type JsonRecord = Record<string, unknown>;
 
-// Immutable request vectors from cli-v0.2.1. These schemas deliberately live
+// Immutable request vectors from cli-v0.2.11. These schemas deliberately live
 // at the released compatibility seam: current Protocol handoff schemas are
 // additive/passthrough and therefore cannot freeze the unversioned methods.
 const RELEASED_HANDOFF_ID_MAX = 256;
@@ -758,7 +758,18 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
       }
       const ambiguousResume = job.resume.status === 'attempted' || job.resume.status === 'confirmed';
       const cleanupAttemptedAtMs = now();
+      let cleanupProof: 'stopped' | 'already_inactive' | null = null;
       if (ambiguousResume) {
+        try {
+          const stopResult = input.stopSessionForHandoff
+            ? await input.stopSessionForHandoff(job.sessionId)
+            : 'failed';
+          if (stopResult !== 'failed') cleanupProof = stopResult;
+        } catch {
+          cleanupProof = null;
+        }
+      }
+      if (ambiguousResume && cleanupProof === null) {
         const failed = await input.prepareJobStore.transitionPredecessorV2(
           job.jobId,
           (current) => ({
@@ -794,7 +805,13 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
             throw new Error('Target abort requires exact open predecessor ownership');
           }
           const nextRevision = current.transitionRevision + 1;
-          const targetCleanup = current.resume.status === 'preexisting_unowned'
+          const targetCleanup = cleanupProof !== null
+            ? {
+                status: 'proved_absent' as const,
+                proof: cleanupProof,
+                provedAtMs: abortedAtMs,
+              }
+            : current.resume.status === 'preexisting_unowned'
             ? {
                 status: 'not_owned' as const,
                 reason: 'preexisting_or_adopted' as const,

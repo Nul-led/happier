@@ -48,6 +48,7 @@ function presentation(
         setWidget: vi.fn(async () => ({ status: 'applied' as const, revision: '1' })),
         purgeOwner: vi.fn(async () => ({ status: 'applied' as const, revision: '1' })),
         replaceComposerText: vi.fn(async () => ({ status: 'applied' as const, revision: '1' })),
+        present: vi.fn(async () => ({ status: 'applied' as const, revision: '1' })),
         ...overrides,
     });
 }
@@ -151,11 +152,16 @@ describe('plugin invocation interaction and presentation facades', () => {
         })).resolves.toBeUndefined();
         await expect(facade.widget.set('summary', null)).resolves.toBeUndefined();
         await expect(facade.composer.replace('next prompt')).resolves.toBeUndefined();
+        await expect(facade.present({ kind: 'board.item.reveal', widgetId: 'note-1' })).resolves.toBeUndefined();
 
         expect(hostPresentation.notify).toHaveBeenCalledWith({
             operationId: 'host-operation-1',
             message: 'Finished',
             severity: 'warning',
+        }, { signal });
+        expect(hostPresentation.present).toHaveBeenCalledWith({
+            operationId: 'host-operation-6',
+            intent: { kind: 'board.item.reveal', widgetId: 'note-1' },
         }, { signal });
         expect(hostPresentation.setWidget).toHaveBeenLastCalledWith({
             operationId: 'host-operation-4',
@@ -264,6 +270,10 @@ describe('plugin invocation interaction and presentation facades', () => {
             status: 'unavailable',
         });
         await expect(facade.notify('Finished')).rejects.toMatchObject({
+            name: 'PluginError',
+            code: 'plugin_ui_unavailable',
+        } satisfies Partial<PluginError>);
+        await expect(facade.present({ kind: 'chat.return' })).rejects.toMatchObject({
             name: 'PluginError',
             code: 'plugin_ui_unavailable',
         } satisfies Partial<PluginError>);

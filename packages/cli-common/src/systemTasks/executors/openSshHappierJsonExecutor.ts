@@ -2,9 +2,8 @@ import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@h
 import type { OpenSshAuth as CanonicalOpenSshAuth } from '../../ssh/openSshTransport.js';
 export type { OpenSshAuth } from '../../ssh/openSshTransport.js';
 import {
-  SystemTaskJsonValueSchema,
+  SystemTaskResultSchema,
   type SystemTaskJsonObject,
-  type SystemTaskJsonValue,
 } from '@happier-dev/protocol';
 
 import type { SystemTaskSshConnectionConfig } from '../kinds/relayRuntimeKinds.js';
@@ -13,7 +12,7 @@ import { SystemTaskExecutionError } from '../runSystemTask.js';
 
 import type { HappierJsonExecutor, HappierTextResult, RunHappierOptions } from './happierJsonExecutor.js';
 
-function isSystemTaskJsonObject(value: SystemTaskJsonValue): value is SystemTaskJsonObject {
+function isSystemTaskJsonObject(value: unknown): value is SystemTaskJsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
@@ -32,15 +31,14 @@ export function parseStrictPersonalHomeTaskFinalResult(text: string): Readonly<{
     || !envelope.result || typeof envelope.result !== 'object' || Array.isArray(envelope.result)) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command returned the wrong result contract.');
   }
-  const result = envelope.result as Record<string, unknown>;
-  if (result.protocolVersion !== 1 || result.ok !== true || typeof result.taskId !== 'string') {
+  const result = SystemTaskResultSchema.safeParse(envelope.result);
+  if (!result.success || result.data.ok !== true) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command did not confirm a successful task result.');
   }
-  const parsedData = SystemTaskJsonValueSchema.safeParse(result.data);
-  if (!parsedData.success || !isSystemTaskJsonObject(parsedData.data)) {
+  if (!isSystemTaskJsonObject(result.data.data)) {
     throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command did not confirm a successful task result.');
   }
-  return { ok: true, data: parsedData.data };
+  return { ok: true, data: result.data.data };
 }
 
 export type OpenSshRunRemoteText = (params: Readonly<{
@@ -50,7 +48,7 @@ export type OpenSshRunRemoteText = (params: Readonly<{
   remoteCommand: string;
   label?: string;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   onStdoutChunk?: (text: string) => void;
   includeStdoutInError?: boolean;
   input?: string;

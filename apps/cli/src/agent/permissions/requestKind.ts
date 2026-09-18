@@ -1,5 +1,8 @@
 export type AgentRequestKind = 'permission' | 'user_action';
 
+/** Host Action confirmation shares request delivery, never native tool policy. */
+export const HAPPIER_ACTION_REQUEST_SOURCE = 'happier_action';
+
 export function resolveAgentRequestKind(toolName: string): AgentRequestKind {
   const normalized = typeof toolName === 'string' ? toolName.trim() : '';
   if (!normalized) return 'permission';
@@ -18,4 +21,3 @@ export function resolveAgentRequestKind(toolName: string): AgentRequestKind {
 
   return 'permission';
 }
-

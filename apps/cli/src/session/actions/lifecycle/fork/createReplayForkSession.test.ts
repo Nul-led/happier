@@ -43,9 +43,9 @@ vi.mock('@/session/services/sendSessionMessage', () => ({
 import { createReplayForkSession } from './createReplayForkSession';
 
 const CONNECTED_SERVICES = {
-  v: 1,
+  v: 2,
   bindingsByServiceId: {
-    'openai-codex': {
+    'happier.agent.codex/openai-codex': {
       source: 'connected',
       selection: 'profile',
       profileId: 'codex-work',

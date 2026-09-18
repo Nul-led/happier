@@ -7,6 +7,7 @@ import { createPermissionRequestCoordinator } from './permissionRequestCoordinat
 class FakeSession {
     sessionId = 'session-test';
     canceledCompletionWriteCount = 0;
+    agentStateWriteCount = 0;
     agentState: AgentState = {
         requests: Object.create(null),
         completedRequests: Object.create(null),
@@ -17,6 +18,7 @@ class FakeSession {
     }
 
     updateAgentState(updater: (state: AgentState) => AgentState): void | Promise<void> {
+        this.agentStateWriteCount += 1;
         const previousCompleted = this.agentState.completedRequests ?? {};
         const nextState = updater(this.agentState);
         for (const [requestId, completed] of Object.entries(nextState.completedRequests ?? {})) {
@@ -78,6 +80,7 @@ class RejectingUpdateSession extends FakeSession {
     override updateAgentState(updater: (state: AgentState) => AgentState): void | Promise<void> {
         if (this.rejectNext) {
             this.rejectNext = false;
+            this.agentStateWriteCount += 1;
             return Promise.reject(new Error('agent state persistence failed'));
         }
         return super.updateAgentState(updater);
@@ -119,6 +122,87 @@ async function settledState<T>(promise: Promise<T>): Promise<'pending' | 'fulfil
 }
 
 describe('PermissionRequestCoordinator', () => {
+    it('resolves the live waiter when its response target is delivered after terminal persistence', async () => {
+        const { coordinator, store, session } = createHarness();
+        let delivered: boolean | undefined;
+        store.registerResponseTargetHandler('action-confirmation', async ({ requestId }) => {
+            delivered = await coordinator.handleResponse({
+                requestId,
+                buildCompletion: () => ({
+                    result: { decision: 'approved' },
+                    completedRequest: { status: 'approved', decision: 'approved' },
+                }),
+            });
+        });
+        const waiter = coordinator.requestDecision({
+            ...bashRequest,
+            turnId: 'turn-action',
+            responseTarget: { kind: 'action-confirmation', actionId: 'session.message.send' },
+        });
+        const outcome = waiter.then((result) => result, () => null);
+        try {
+            await store.completeRequest({
+                requestId: bashRequest.requestId,
+                status: 'approved',
+                decision: 'approved',
+            });
+            await vi.waitFor(() => expect(delivered).toBe(true));
+            await expect(outcome).resolves.toEqual({ decision: 'approved' });
+            expect(session.agentState.requests?.[bashRequest.requestId]).toBeUndefined();
+        } finally {
+            coordinator.cancelRequest(bashRequest.requestId, 'Test cleanup');
+        }
+    });
+
+    it('does not replace a persisted rejection with an approved response-target redelivery', async () => {
+        const { coordinator, store, session } = createHarness();
+        const waiter = coordinator.requestDecision({
+            ...bashRequest,
+            turnId: 'turn-action',
+            responseTarget: { kind: 'action-confirmation', actionId: 'session.message.send' },
+        });
+        const outcome = waiter.catch(() => null);
+        try {
+            await store.completeRequest({ requestId: bashRequest.requestId, status: 'denied', decision: 'denied' });
+            await expect(coordinator.handleResponse({
+                requestId: bashRequest.requestId,
+                buildCompletion: () => ({
+                    result: { decision: 'approved' },
+                    completedRequest: { status: 'approved', decision: 'approved' },
+                }),
+            })).resolves.toBe(false);
+            expect(await settledState(outcome)).toBe('pending');
+            expect(session.agentState.completedRequests?.[bashRequest.requestId]?.status).toBe('denied');
+        } finally {
+            coordinator.cancelRequest(bashRequest.requestId, 'Test cleanup');
+        }
+    });
+
+    it.each(['live', 'reattached'] as const)('rejects a different response target when %s custody already exists', async (mode) => {
+        const { coordinator, store } = createHarness();
+        const request = {
+            ...bashRequest,
+            turnId: 'turn-action',
+            responseTarget: { kind: 'action-confirmation', runtimeAccountId: 'alice' },
+        };
+        const original = coordinator.requestDecision(request).catch(() => null);
+        const next = mode === 'live' ? coordinator : createPermissionRequestCoordinator<TestPermissionResult>({ store });
+        const attempted = next.requestDecision({
+            ...request,
+            responseTarget: { kind: 'action-confirmation', runtimeAccountId: 'bob' },
+        });
+        let state: 'pending' | 'fulfilled' | 'rejected' = 'pending';
+        void attempted.then(() => { state = 'fulfilled'; }, () => { state = 'rejected'; });
+        try {
+            await Promise.resolve();
+            expect(state).toBe('rejected');
+        } finally {
+            coordinator.cancelRequest(request.requestId, 'Test cleanup');
+            next.cancelRequest(request.requestId, 'Test cleanup');
+            await original;
+        }
+    });
+
     afterEach(() => {
         vi.useRealTimers();
     });
@@ -443,6 +527,15 @@ describe('PermissionRequestCoordinator', () => {
         await coordinator.cancelByPlugin('plugin-a', 'plugin_deactivated');
         await coordinator.releaseResponseClaim({ requestId: request.requestId, claim });
         expect(session.canceledCompletionWriteCount).toBe(1);
+    });
+
+    it('does not persist plugin cancellation when that plugin has no pending requests', async () => {
+        const session = new RejectingUpdateSession();
+        const { coordinator } = createHarness(session);
+
+        session.rejectNextUpdate();
+        await expect(coordinator.cancelByPlugin('plugin-a', 'plugin_deactivated')).resolves.toBeUndefined();
+        expect(session.agentStateWriteCount).toBe(0);
     });
 
     it('does not resolve an approved waiter before its exact AgentState completion update settles', async () => {

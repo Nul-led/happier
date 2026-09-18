@@ -1,4 +1,5 @@
 import type { Credentials, StoredCredentials } from '@/persistence';
+import tweetnacl from 'tweetnacl';
 
 export const ACCOUNT_SETTINGS_ENCRYPTION_MATERIAL_UNAVAILABLE_ERROR_CODE =
   'ACCOUNT_SETTINGS_ENCRYPTION_MATERIAL_UNAVAILABLE' as const;
@@ -21,6 +22,17 @@ export function requireAccountSettingsEncryptionCredentials(
     throw new AccountSettingsEncryptionMaterialUnavailableError();
   }
   return credentials;
+}
+
+export function hasUsableAccountSettingsEncryptionMaterial(
+  credentials: StoredCredentials,
+): credentials is Credentials {
+  const encryption = credentials.encryption;
+  if (!encryption) return false;
+  if (encryption.type === 'legacy') return encryption.secret.length === 32;
+  if (encryption.machineKey.length !== 32 || encryption.publicKey.length !== 32) return false;
+  const derivedPublicKey = tweetnacl.box.keyPair.fromSecretKey(encryption.machineKey).publicKey;
+  return derivedPublicKey.every((byte, index) => byte === encryption.publicKey[index]);
 }
 
 export function isAccountSettingsEncryptionMaterialUnavailableError(error: unknown): boolean {

@@ -70,6 +70,22 @@ function genericSessionFor(id: string, overrides: Record<string, unknown> = {}) 
 }
 
 describe('WorkspaceSyncMutagenAdapterClient', () => {
+  it('projects the broker typed mid-scan Git selector failure without parsing lastError prose', async () => {
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send: vi.fn(async () => listPage([genericSession({
+        lastError: 'alpha scan error: localized diagnostic text',
+        lastErrorCode: 'git_selection_unavailable',
+      })])),
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([relationship])).resolves.toEqual([expect.objectContaining({
+      state: 'error',
+      errorCode: 'git_selection_unavailable',
+    })]);
+  });
+
   it('rehydrates and lists more than 32 valid claimed sessions', async () => {
     const definitions = Array.from({ length: 33 }, (_, index) => ({
       ...relationship,
@@ -582,7 +598,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     expect(commands[1]?.session?.mode).toBe(mutagenMode);
   });
 
-  it('uses the runtime identifier and exhausts bounded conflict pages in stable order', async () => {
+  it('uses the runtime identifier and returns one bounded public conflict page', async () => {
     const commands: unknown[] = [];
     const send = vi.fn(async (command: { t: string; cursor?: string }) => {
       commands.push(command);
@@ -600,14 +616,145 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
 
     await adapter.ensure(relationship);
-    await expect(adapter.listConflicts('r1')).resolves.toMatchObject({ totalCount: 2, shownCount: 2, truncatedCount: 0 });
-    expect(commands.slice(-2)).toEqual([
-      { t: 'list_conflicts', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', limit: 100 },
-      { t: 'list_conflicts', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', cursor: 'cursor-1', limit: 100 },
-    ]);
+    await expect(adapter.listConflicts({ relationshipId: 'r1', limit: 1 })).resolves.toMatchObject({
+      status: 'page', totalCount: 2, nextCursor: 'cursor-1',
+      conflicts: [expect.objectContaining({ path: 'src/a.ts' })],
+    });
+    expect(commands.at(-1)).toEqual({
+      t: 'list_conflicts', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', limit: 1,
+    });
   });
 
-  it('exhausts more than one full conflict page instead of imposing a 100-item aggregate cap', async () => {
+  it('preserves an all-whitespace POSIX conflict filename as exact path data', async () => {
+    const send = vi.fn(async (command: { t: string }) => {
+      if (command.t === 'list') return listPage([]);
+      if (command.t === 'list_conflicts') {
+        return {
+          totalCount: 1,
+          shownCount: 1,
+          truncatedCount: 0,
+          nextCursor: null,
+          conflicts: [{ root: ' ', alphaChanges: [], betaChanges: [] }],
+        };
+      }
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await adapter.ensure(relationship);
+    await expect(adapter.listConflicts({ relationshipId: 'r1', limit: 1 })).resolves.toMatchObject({
+      conflicts: [expect.objectContaining({ path: ' ' })],
+    });
+  });
+
+  it('accepts the fork conflict order defined by UTF-8 path bytes', async () => {
+    const send = vi.fn(async (command: { t: string }) => {
+      if (command.t === 'list') return listPage([]);
+      if (command.t === 'list_conflicts') {
+        return {
+          totalCount: 2,
+          shownCount: 2,
+          truncatedCount: 0,
+          nextCursor: null,
+          conflicts: [
+            { root: '\uFFFD.txt', alphaChanges: [], betaChanges: [] },
+            { root: '\u{1F600}.txt', alphaChanges: [], betaChanges: [] },
+          ],
+        };
+      }
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await adapter.ensure(relationship);
+    await expect(adapter.listConflicts({ relationshipId: 'r1', limit: 2 })).resolves.toMatchObject({
+      conflicts: [
+        expect.objectContaining({ path: '\uFFFD.txt' }),
+        expect.objectContaining({ path: '\u{1F600}.txt' }),
+      ],
+    });
+  });
+
+  it('projects an explicit root deletion as missing instead of reviving the old entry', async () => {
+    const send = vi.fn(async (command: { t: string }) => {
+      if (command.t === 'list') return listPage([]);
+      if (command.t === 'list_conflicts') {
+        return {
+          totalCount: 1,
+          shownCount: 1,
+          truncatedCount: 0,
+          nextCursor: null,
+          conflicts: [{
+            root: 'removed',
+            alphaChanges: [{ path: 'removed', old: { kind: 'directory' }, new: null }],
+            betaChanges: [],
+          }],
+        };
+      }
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await adapter.ensure(relationship);
+    await expect(adapter.listConflicts({ relationshipId: 'r1', limit: 1 })).resolves.toMatchObject({
+      status: 'page',
+      conflicts: [{
+        path: 'removed',
+        alpha: { kind: 'missing' },
+        beta: { kind: 'missing' },
+      }],
+    });
+  });
+
+  it('keeps unsupported engine entries visible and explicitly non-resolvable', async () => {
+    const send = vi.fn(async (command: { t: string }) => {
+      if (command.t === 'list') return listPage([]);
+      if (command.t === 'list_conflicts') {
+        return {
+          totalCount: 1,
+          shownCount: 1,
+          truncatedCount: 0,
+          nextCursor: null,
+          conflicts: [{
+            root: 'ignored.sock',
+            alphaChanges: [{ path: 'ignored.sock', old: null, new: { kind: 'untracked' } }],
+            betaChanges: [{ path: 'ignored.sock', old: null, new: { kind: 'file', digest: 'b'.repeat(40) } }],
+          }],
+        };
+      }
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await adapter.ensure(relationship);
+    await expect(adapter.listConflicts({ relationshipId: 'r1', limit: 1 })).resolves.toMatchObject({
+      status: 'page',
+      totalCount: 1,
+      conflicts: [{
+        path: 'ignored.sock',
+        alpha: { kind: 'unsupported', sourceKind: 'untracked' },
+        beta: { kind: 'file', digest: 'b'.repeat(40) },
+      }],
+    });
+  });
+
+  it('passes the opaque public cursor to the engine without replaying earlier pages', async () => {
     const all = Array.from({ length: 150 }, (_, index) => ({
       root: `src/${String(index).padStart(4, '0')}.ts`, alphaChanges: [], betaChanges: [],
     }));
@@ -632,39 +779,9 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
 
     await adapter.ensure(relationship);
-    await expect(adapter.listConflicts('r1')).resolves.toMatchObject({
-      totalCount: 150, shownCount: 150, truncatedCount: 0,
+    await expect(adapter.listConflicts({ relationshipId: 'r1', cursor: 'cursor-100', limit: 50 })).resolves.toMatchObject({
+      status: 'page', totalCount: 150, nextCursor: null,
       conflicts: expect.arrayContaining([expect.objectContaining({ path: 'src/0149.ts' })]),
-    });
-  });
-
-  it('truthfully truncates conflict aggregation at the public 1000-item DTO bound', async () => {
-    const totalCount = 1_001;
-    const send = vi.fn(async (command: { t: string; cursor?: string; limit?: number }) => {
-      if (command.t === 'list') return listPage([]);
-      if (command.t === 'list_conflicts') {
-        const offset = command.cursor === undefined ? 0 : Number(command.cursor.slice('cursor-'.length));
-        const shownCount = Math.min(command.limit ?? 100, totalCount - offset);
-        return {
-          totalCount,
-          shownCount,
-          truncatedCount: totalCount - offset - shownCount,
-          nextCursor: offset + shownCount < totalCount ? `cursor-${offset + shownCount}` : null,
-          conflicts: Array.from({ length: shownCount }, (_, index) => ({
-            root: `src/${String(offset + index).padStart(4, '0')}.ts`, alphaChanges: [], betaChanges: [],
-          })),
-        };
-      }
-      return genericSession();
-    });
-    const adapter = createWorkspaceSyncMutagenAdapter({
-      send, createRequestId: () => 'request-1',
-      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
-    });
-
-    await adapter.ensure(relationship);
-    await expect(adapter.listConflicts('r1')).resolves.toMatchObject({
-      totalCount, shownCount: 1_000, truncatedCount: 1,
     });
   });
 
@@ -683,7 +800,8 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
 
     await adapter.ensure(relationship);
-    await expect(adapter.listConflicts('r1')).rejects.toMatchObject({ code: 'cursor_invalidated' });
+    await expect(adapter.listConflicts({ relationshipId: 'r1', cursor: 'opaque-conflict-token', limit: 100 }))
+      .resolves.toEqual({ status: 'cursor_invalidated', relationshipId: 'r1' });
   });
 
   it('terminates a claimed session with the stale Git-directory policy label before reporting the mismatch', async () => {
@@ -745,13 +863,15 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     ]);
   });
 
-  it('adopts a disabled relationship as paused and resumes it only after settings re-enable it', async () => {
+  it('terminates an existing disabled relationship and recreates it only after settings re-enable it', async () => {
+    let exists = true;
     let paused = false;
     const commands: string[] = [];
     const send = vi.fn(async (command: { t: string }) => {
       commands.push(command.t);
-      if (command.t === 'list') return listPage([genericSessionFor('r1', { paused })]);
-      if (command.t === 'pause') paused = true;
+      if (command.t === 'list') return listPage(exists ? [genericSessionFor('r1', { paused })] : []);
+      if (command.t === 'terminate') { exists = false; return null; }
+      if (command.t === 'create') { exists = true; paused = true; }
       if (command.t === 'resume') paused = false;
       return genericSessionFor('r1', { paused });
     });
@@ -760,19 +880,17 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
     });
 
-    await expect(adapter.rehydrate([{ ...relationship, enabled: false }])).resolves.toEqual([
-      expect.objectContaining({ relationshipId: 'r1', state: 'paused' }),
-    ]);
-    expect(commands).toEqual(['list', 'pause']);
+    await expect(adapter.rehydrate([{ ...relationship, enabled: false }])).resolves.toEqual([]);
+    expect(commands).toEqual(['list', 'terminate']);
 
     commands.length = 0;
-    await expect(adapter.rehydrate([{ ...relationship, enabled: true }])).resolves.toEqual([
+    await expect(adapter.ensure({ ...relationship, enabled: true })).resolves.toEqual(
       expect.objectContaining({ relationshipId: 'r1', state: 'watching' }),
-    ]);
-    expect(commands).toEqual(['list', 'resume']);
+    );
+    expect(commands).toEqual(['list', 'create', 'resume']);
   });
 
-  it('creates a missing disabled relationship in the paused state without resuming it', async () => {
+  it('does not create a missing disabled relationship', async () => {
     let created = false;
     const commands: string[] = [];
     const send = vi.fn(async (command: { t: string }) => {
@@ -790,7 +908,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
 
     await expect(adapter.ensure({ ...relationship, enabled: false })).resolves.toMatchObject({ state: 'paused' });
-    expect(commands).toEqual(['list', 'create']);
+    expect(commands).toEqual(['list']);
   });
 
   it('recreates a settings relationship when persisted Mutagen mode no longer matches', async () => {

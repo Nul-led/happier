@@ -3,20 +3,20 @@ import { logger } from '@/ui/logger';
 import type {
   HostSessionRuntimeConfig,
   HostSessionRuntimeFactoryParams,
+  HostSessionRuntimeHookRuntime,
   HostSessionRuntimeRunOptions,
 } from '@/agent/runtime/session/loop/runHostSessionRuntime';
 import {
   HOST_SESSION_RUNTIME_PLAN_KIND,
   type HostSessionRuntimePlan,
 } from '@/agent/runtime/session/loop/lifecycle';
-import type { RuntimeTurnOperations } from '@/agent/runtime/turns/runtimeTurnOperations';
 import type { HostSessionRuntimeFactoryResult } from '@/agent/runtime/session/loop/factoryResult';
 import {
   resolveRuntimeActivityApplicability,
   type RuntimeActivityApplicability,
 } from '@/agent/runtime/session/activity/runtimeActivityApplicability';
 
-type CatalogHostSessionRuntimePlanConfig<TRuntime extends RuntimeTurnOperations> = Omit<
+type CatalogHostSessionRuntimePlanConfig<TRuntime extends HostSessionRuntimeHookRuntime> = Omit<
   HostSessionRuntimeConfig,
   'createSessionRuntime'
 > & Readonly<{
@@ -27,13 +27,13 @@ type CatalogHostSessionRuntimePlanConfig<TRuntime extends RuntimeTurnOperations>
     | Promise<TRuntime | HostSessionRuntimeFactoryResult<TRuntime>>;
 }>;
 
-function isHostSessionRuntimeFactoryResult<TRuntime extends RuntimeTurnOperations>(
+function isHostSessionRuntimeFactoryResult<TRuntime extends HostSessionRuntimeHookRuntime>(
   value: TRuntime | HostSessionRuntimeFactoryResult<TRuntime>,
 ): value is HostSessionRuntimeFactoryResult<TRuntime> {
   return typeof value === 'object' && value !== null && 'operations' in value;
 }
 
-export type CatalogHostSessionRuntimeDefaults<TRuntime extends RuntimeTurnOperations> = Omit<
+export type CatalogHostSessionRuntimeDefaults<TRuntime extends HostSessionRuntimeHookRuntime> = Omit<
   CatalogHostSessionRuntimePlanConfig<TRuntime>,
   | 'backendDisplayName'
   | 'uiLogPrefix'
@@ -54,7 +54,7 @@ export type CatalogHostSessionRuntimeDefaults<TRuntime extends RuntimeTurnOperat
   runtimeActivityApplicability?: RuntimeActivityApplicability;
 }>;
 
-export function createCatalogHostSessionRuntimeConfig<TRuntime extends RuntimeTurnOperations>(params: Readonly<{
+export function createCatalogHostSessionRuntimeConfig<TRuntime extends HostSessionRuntimeHookRuntime>(params: Readonly<{
   agentId: string;
   config: CatalogHostSessionRuntimeDefaults<TRuntime>;
 }>): CatalogHostSessionRuntimePlanConfig<TRuntime> {
@@ -99,7 +99,7 @@ export function createCatalogHostSessionRuntimeConfig<TRuntime extends RuntimeTu
 
 export function createCatalogHostSessionRuntimePlan<
   TOptions extends HostSessionRuntimeRunOptions,
-  TRuntime extends RuntimeTurnOperations,
+  TRuntime extends HostSessionRuntimeHookRuntime,
 >(params: Readonly<{
   agentId: string;
   opts: TOptions;

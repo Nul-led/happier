@@ -152,11 +152,18 @@ describe('buildCliSessionRowModel', () => {
         flavor: 'pluginProvider',
       },
       nativeSession: {
+        // The descriptor attributes the Session to its Agent; its `agent`
+        // payload is Agent-owned and opaque. A contributed Agent's native
+        // conversation id lives in the agent-agnostic identity slot, which is
+        // the only carrier the shared resume owner reads. The payload below
+        // deliberately holds a DIFFERENT value so a reader that interpreted it
+        // would fail this test rather than pass it.
         runtimeDescriptorV1: {
           v: 1,
           agentId: 'pluginProvider',
-          providerSessionId: 'private-plugin-session',
+          agent: { backendMode: 'acp', privateResumeFact: 'not-a-resume-id' },
         },
+        nativeResumeIdentityV1: { v: 1, vendorResumeId: 'private-plugin-session' },
       },
     });
 
@@ -220,22 +227,28 @@ describe('buildCliSessionRowModel', () => {
         archivedAt: null,
         encryptionMode: 'plain',
         metadata: JSON.stringify({
+          // Both descriptor payloads stay opaque: what this test proves is WHICH
+          // descriptor names the Agent allowed to claim the canonical resume id.
+          // If the legacy envelope won, the Agent would be `legacyPluginProvider`,
+          // which the registry does not contribute, and the row would report
+          // `agent_unsupported` instead.
           runtimeDescriptorV1: {
             v: 1,
             agentId: 'pluginProvider',
-            provider: {
+            agent: {
               backendMode: 'server',
-              providerSessionId: 'canonical-plugin-session',
+              privateResumeFact: 'canonical-descriptor-payload',
             },
           },
           agentRuntimeDescriptorV1: {
             v: 1,
             agentId: 'legacyPluginProvider',
-            provider: {
+            agent: {
               backendMode: 'server',
-              providerSessionId: 'legacy-plugin-session',
+              privateResumeFact: 'legacy-descriptor-payload',
             },
           },
+          nativeResumeIdentityV1: { v: 1, vendorResumeId: 'canonical-plugin-session' },
         }),
       } as any,
       contributionRegistry: createContributionRegistry(),
@@ -251,12 +264,16 @@ describe('buildCliSessionRowModel', () => {
    * A contributed Agent has no generated `<vendor>SessionId` slot and
    * `PluginAgentContributionV2` is strict — it declares no definition-local
    * resume block — so its native conversation id can only live in the
-   * agent-agnostic runtime-descriptor slot. The listing must resolve it from
-   * there through the shared owner, or it reports a Session as resumable that
-   * the daemon will respawn fresh.
+   * agent-agnostic `nativeResumeIdentityV1` carrier. The listing must resolve it
+   * from there through the shared owner, or it reports a Session as resumable
+   * that the daemon will respawn fresh.
+   *
+   * The descriptor's `agent` payload is Agent-owned and opaque: generic host
+   * code must never read a resume id out of it, which the negative case below
+   * pins by putting the id there and nowhere else.
    */
-  it('resolves a contributed Agent resume id from the runtime descriptor slot', () => {
-    const buildRow = (agentPayload: Record<string, unknown>) => buildCliSessionRowModel({
+  it('resolves a contributed Agent resume id from the canonical native-resume identity slot', () => {
+    const buildRow = (metadata: Record<string, unknown>) => buildCliSessionRowModel({
       credentials,
       rawSession: {
         id: 'sess_configured_plugin_1',
@@ -270,8 +287,9 @@ describe('buildCliSessionRowModel', () => {
           runtimeDescriptorV1: {
             v: 1,
             agentId: 'acme.resume.backend',
-            agent: agentPayload,
+            agent: { backendMode: 'acp' },
           },
+          ...metadata,
         }),
       } as any,
       contributionRegistry: {
@@ -287,10 +305,19 @@ describe('buildCliSessionRowModel', () => {
       },
     });
 
-    expect(buildRow({ backendMode: 'acp', providerSessionId: 'plugin-vendor-session-1' }).vendorResume)
+    expect(buildRow({
+      nativeResumeIdentityV1: { v: 1, vendorResumeId: 'plugin-vendor-session-1' },
+    }).vendorResume)
       .toEqual({ eligible: true, vendorResumeId: 'plugin-vendor-session-1' });
-    // Nothing else in metadata may stand in for the recorded conversation.
-    expect(buildRow({ backendMode: 'acp' }).vendorResume)
+    // Nothing else in metadata may stand in for the recorded conversation —
+    // including a `providerSessionId` inside the Agent-owned descriptor payload.
+    expect(buildRow({
+      runtimeDescriptorV1: {
+        v: 1,
+        agentId: 'acme.resume.backend',
+        agent: { backendMode: 'acp', providerSessionId: 'plugin-vendor-session-1' },
+      },
+    }).vendorResume)
       .toEqual({ eligible: false, reasonCode: 'vendor_resume_id_missing' });
   });
 
@@ -426,11 +453,12 @@ describe('buildCliSessionRowModel', () => {
       runtimeDescriptorV1: {
         v: 1,
         agentId: 'pluginProvider',
-        provider: {
-          providerSessionId: 'plugin-session-1',
-        },
+        agent: { backendMode: 'acp' },
       },
-      pluginSessionId: 'plugin-session-1',
+      // No Agent catalog declares a `pluginSessionId` flat slot, so the shared
+      // owner reads the agent-agnostic carrier instead. The fence then compares
+      // it against the linked Session's `remoteSessionId`.
+      nativeResumeIdentityV1: { v: 1, vendorResumeId: 'plugin-session-1' },
       externalSessionV1: {
         v: 1,
         agentId: 'pluginProvider',
@@ -512,11 +540,18 @@ describe('buildCliSessionRowModel', () => {
         flavor: 'pluginProvider',
       },
       nativeSession: {
+        // The descriptor attributes the Session to its Agent; its `agent`
+        // payload is Agent-owned and opaque. A contributed Agent's native
+        // conversation id lives in the agent-agnostic identity slot, which is
+        // the only carrier the shared resume owner reads. The payload below
+        // deliberately holds a DIFFERENT value so a reader that interpreted it
+        // would fail this test rather than pass it.
         runtimeDescriptorV1: {
           v: 1,
           agentId: 'pluginProvider',
-          providerSessionId: 'private-plugin-session',
+          agent: { backendMode: 'acp', privateResumeFact: 'not-a-resume-id' },
         },
+        nativeResumeIdentityV1: { v: 1, vendorResumeId: 'private-plugin-session' },
       },
       runtime: {
         acpConfiguredBackendV1: {

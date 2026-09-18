@@ -108,19 +108,19 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     const finiteTunnel = await open({
       sourceMachineId: 'machine-source', targetMachineId: 'machine-target', flow: 'file_transfer',
     });
-    expect(openHttpTunnel).toHaveBeenCalledWith(
+    expect(openTunnel).toHaveBeenLastCalledWith(
       expect.objectContaining({
         flow: 'finite_transfer',
         handshake: expect.objectContaining({ flow: 'finite_transfer' }),
       }),
       target.daemonState.peerMediation.iroh.endpoint,
     );
-    expect(openHttpTunnel).toHaveBeenCalledTimes(1);
-    expect(openTunnel).toHaveBeenCalledTimes(1);
-    expect(finiteTunnel).toMatchObject({
-      localPort: 48124,
-      localCapability: 'e'.repeat(64),
-      observedPath: 'relay',
+    expect(openHttpTunnel).not.toHaveBeenCalled();
+    expect(openTunnel).toHaveBeenCalledTimes(2);
+    expect(finiteTunnel).toEqual({
+      localPort: 48123,
+      observedPath: 'direct',
+      close,
     });
   });
 

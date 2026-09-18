@@ -7,10 +7,9 @@ import {
   type TestExecutionRunHostRuntime,
 } from '@/agent/runtime/bridges/executionRun/testkit';
 import { executeBoundedBackendRun } from './bounded/loop';
-import { createLazyExecutionRunHostRuntime } from './hostRuntime/lazy';
-import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import { startExecutionRun } from './startExecutionRun';
 import { stopExecutionRun } from './executionRunStop';
+import { sendBackendLongLivedRun } from './send/backendLongLivedPrompt';
 import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
@@ -104,6 +103,196 @@ describe('startExecutionRun', () => {
     contributionRegistryMock.getResolvedContributionRegistry.mockReturnValue({
       agentDefinitionsById: new Map(),
           });
+  });
+
+  it('rejoins the Run allocated for one host-stamped Action request without repeating start effects', async () => {
+    const runs = new Map<string, ExecutionRunState>();
+    const controllers = new Map<string, ExecutionRunController>();
+    const runtime = createProvisioningRuntime();
+    const createRuntime = vi.fn(() => runtime);
+    const enqueueMarkerWrite = vi.fn(async () => {});
+    const sendAcp = vi.fn(async () => {});
+    const send = vi.fn(async () => ({ ok: true as const }));
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by agent runs');
+      },
+    });
+    const args = {
+      params: {
+        sessionId: null,
+        actionRequestId: 'workflow-input-v2:stable:execution-run-start',
+        intent: 'agent' as const,
+        backendTarget: { kind: 'builtInAgent' as const, agentId: TEST_BACKEND_ID },
+        instructions: 'Implement once.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable' as const,
+        runClass: 'long_lived' as const,
+        ioMode: 'request_response' as const,
+      },
+      parentProvider: TEST_BACKEND_ID,
+      sendAcp,
+      streamedTranscriptSession: null,
+      createRuntime,
+      getNowMs: () => 1_700_000_000_000,
+      budgetRegistry: null,
+      runs,
+      controllers,
+      enqueueMarkerWrite,
+      writeActivityMarker: async () => {},
+      finishRun: async () => {},
+      executeBoundedRun: async () => {},
+      send,
+      voiceAgentManager,
+      getDepthByCallId: () => null,
+    } satisfies StartExecutionRunArgs;
+
+    try {
+      const first = await startExecutionRun(args);
+      const second = await startExecutionRun(args);
+      await (controllers.get(first.runId) as (ExecutionRunController & {
+        provisioningPromise?: Promise<void>;
+      }) | undefined)?.provisioningPromise;
+
+      expect(second).toEqual(first);
+      expect(first.runId).toMatch(/^run_request_/);
+      expect(runs.size).toBe(1);
+      expect(createRuntime).toHaveBeenCalledTimes(1);
+      expect(enqueueMarkerWrite).toHaveBeenCalledTimes(1);
+      expect(sendAcp).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('rejects failed Saved Secret admission before every Run creation effect', async () => {
+    const runs = new Map<string, ExecutionRunState>();
+    const controllers = new Map<string, ExecutionRunController>();
+    const enqueueMarkerWrite = vi.fn(async () => {});
+    const sendAcp = vi.fn(async () => {});
+    const createRuntime = vi.fn(() => createProvisioningRuntime());
+    const onPublicStateUpdated = vi.fn();
+    const finishRun = vi.fn(async () => {});
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by delegate runs');
+      },
+    });
+
+    try {
+      await expect(startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+          instructions: 'Use the selected shared credential.',
+          secretReferenceOverlay: {
+            v: 1,
+            bindings: {
+              ANTHROPIC_API_KEY: {
+                ref: 'happier:shared-secret:v1:shared-key',
+                revision: 6,
+              },
+            },
+          },
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp,
+        streamedTranscriptSession: null,
+        createRuntime,
+        admitSecretReferenceOverlay: async () => {
+          throw Object.assign(new Error('Saved Secret reference changed'), {
+            code: 'provider_binding_changed',
+          });
+        },
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite,
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun: async () => {},
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+        onPublicStateUpdated,
+      })).rejects.toMatchObject({
+        code: 'provider_binding_changed',
+        details: {
+          executionRunStart: { v: 1, runCreation: 'noRunCreated' },
+        },
+      });
+
+      expect(runs.size).toBe(0);
+      expect(controllers.size).toBe(0);
+      expect(enqueueMarkerWrite).not.toHaveBeenCalled();
+      expect(sendAcp).not.toHaveBeenCalled();
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(onPublicStateUpdated).not.toHaveBeenCalled();
+      expect(finishRun).not.toHaveBeenCalled();
+    } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('preserves canonical Voice lifecycle fields when Voice supplies its runtime-specific start override', async () => {
+    const runtime = createProvisioningRuntime();
+    const createRuntime = vi.fn(() => runtime);
+    const voiceAgentManager = {
+      async start(params: { voiceAgentId: string }, options: { createRuntime: (input: Record<string, unknown>) => unknown }) {
+        options.createRuntime({
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          backendId: 'claude',
+          modelId: 'default',
+          permissionIntent: 'default',
+          start: { intent: 'voice_agent' },
+        });
+        return { voiceAgentId: params.voiceAgentId };
+      },
+      getResumeHandle() { return null; },
+    } as unknown as VoiceAgentManager;
+
+    await startExecutionRun({
+      params: {
+        sessionId: 'session_voice',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      },
+      parentProvider: TEST_BACKEND_ID,
+      sendAcp: async () => {},
+      streamedTranscriptSession: null,
+      createRuntime,
+      getNowMs: () => 1_700_000_000_000,
+      budgetRegistry: null,
+      runs: new Map(),
+      controllers: new Map(),
+      enqueueMarkerWrite: async () => {},
+      writeActivityMarker: async () => {},
+      finishRun: async () => {},
+      executeBoundedRun: async () => {},
+      send: async () => ({ ok: true }),
+      voiceAgentManager,
+      getDepthByCallId: () => null,
+    });
+
+    expect(createRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      start: expect.objectContaining({
+        intent: 'voice_agent',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      }),
+    }));
   });
 
   it('rejects unsupported review SCM scope before materializing a SubAgentRun tool call', async () => {
@@ -742,7 +931,7 @@ describe('startExecutionRun', () => {
     }
   });
 
-  it('releases the acquired execution budget and disposes the runtime when resume support inspection fails', async () => {
+  it('returns the accepted handle, then releases capacity when asynchronous resume support inspection fails', async () => {
     const budgetRegistry = new ExecutionBudgetRegistry({
       maxConcurrentExecutionRuns: 1,
       maxConcurrentOneShotTasks: null,
@@ -750,6 +939,11 @@ describe('startExecutionRun', () => {
     const runs = new Map<string, ExecutionRunState>();
     const controllers = new Map<string, ExecutionRunController>();
     const dispose = vi.fn(async () => {});
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+      budgetRegistry.releaseExecutionRun(runId);
+    });
     const runtime = {
       ...createProvisioningRuntime(),
       readResumeSupport: async () => {
@@ -764,7 +958,7 @@ describe('startExecutionRun', () => {
     });
 
     try {
-      await expect(startExecutionRun({
+      const started = await startExecutionRun({
         params: {
           sessionId: 'parent_session_1',
           intent: 'delegate',
@@ -784,16 +978,22 @@ describe('startExecutionRun', () => {
         controllers,
         enqueueMarkerWrite: async () => {},
         writeActivityMarker: async () => {},
-        finishRun: async () => {},
+        finishRun,
         executeBoundedRun: async () => {},
         send: async () => ({ ok: true }),
         voiceAgentManager,
         getDepthByCallId: () => null,
-      })).rejects.toThrow('resume support inspection failed');
+      });
+
+      await vi.waitFor(() => expect(finishRun).toHaveBeenCalledOnce());
 
       expect(budgetRegistry.getInFlightSnapshot()).toEqual({
         executionRuns: 0,
         oneShotTasks: 0,
+      });
+      expect(runs.get(started.runId)).toMatchObject({
+        status: 'failed',
+        error: { code: 'execution_run_failed', message: 'resume support inspection failed' },
       });
       expect(dispose).toHaveBeenCalledTimes(1);
       expect(controllers.size).toBe(0);
@@ -930,7 +1130,7 @@ describe('startExecutionRun', () => {
     }
   });
 
-  it('does not impose an environment-driven provisioning deadline and keeps the controller addressable', async () => {
+  it('returns a long-lived run handle before lazy resume-capability discovery without imposing an environment deadline', async () => {
     const previousTimeout = process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS;
     process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS = '10';
     const runs = new Map<string, ExecutionRunState>();
@@ -947,12 +1147,20 @@ describe('startExecutionRun', () => {
     });
 
     try {
-      let resolveRuntime!: (runtime: ExecutionRunHostRuntime) => void;
-      const runtimeReady = new Promise<ExecutionRunHostRuntime>((resolve) => {
-        resolveRuntime = resolve;
+      let resolveResumeSupport!: () => void;
+      const resumeSupportReady = new Promise<void>((resolve) => {
+        resolveResumeSupport = resolve;
       });
-      const delayedRuntime = createLazyExecutionRunHostRuntime({
-        resolveRuntime: async () => await runtimeReady,
+      const baseRuntime = createTestExecutionRunHostRuntime({
+        onSendPrompt: async () => {},
+        onWaitForTurnCompletion: async () => {},
+      });
+      const delayedRuntime = Object.freeze({
+        ...baseRuntime,
+        async readResumeSupport() {
+          await resumeSupportReady;
+          return true;
+        },
       });
       const createRuntime = vi.fn(() => delayedRuntime);
 
@@ -984,15 +1192,22 @@ describe('startExecutionRun', () => {
         getDepthByCallId: () => null,
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      const startOutcome = await Promise.race([
+        startPromise.then((started) => ({ kind: 'started' as const, started })),
+        new Promise<{ kind: 'still_waiting' }>((resolve) => {
+          setTimeout(() => resolve({ kind: 'still_waiting' }), 30);
+        }),
+      ]);
+      resolveResumeSupport();
+      expect(startOutcome).toMatchObject({ kind: 'started' });
       expect(controllers.size).toBe(1);
       expect(finishRun).not.toHaveBeenCalled();
-
-      resolveRuntime(createTestExecutionRunHostRuntime({
-        onSendPrompt: async () => {},
-        onWaitForTurnCompletion: async () => {},
-      }));
-      await expect(startPromise).resolves.toMatchObject({ runId: expect.any(String) });
+      if (startOutcome.kind === 'started') {
+        const controller = controllers.get(startOutcome.started.runId);
+        if (controller?.kind === 'backend') {
+          await (controller as typeof controller & { provisioningPromise?: Promise<void> }).provisioningPromise;
+        }
+      }
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS;
@@ -1003,13 +1218,133 @@ describe('startExecutionRun', () => {
     }
   });
 
+  it('orders an immediate detached send after initial instructions while long-lived provisioning is pending', async () => {
+    let releaseProvision!: () => void;
+    let markProvisionStarted!: () => void;
+    const provisionGate = new Promise<void>((resolve) => {
+      releaseProvision = resolve;
+    });
+    const provisionStarted = new Promise<void>((resolve) => {
+      markProvisionStarted = resolve;
+    });
+    const prompts: string[] = [];
+    const runtime = createTestExecutionRunHostRuntime({
+      runtimeId: 'provider-session-1',
+      resumeSupported: true,
+      onProvisionRuntime: async () => {
+        markProvisionStarted();
+        await provisionGate;
+      },
+      onSendPrompt: async (_sessionId, prompt) => {
+        prompts.push(prompt);
+      },
+      onWaitForTurnCompletion: async () => {},
+    });
+    const runs = new Map<string, ExecutionRunState>();
+    const controllers = new Map<string, ExecutionRunController>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const send = async (
+      runId: string,
+      params: Parameters<typeof sendBackendLongLivedRun>[0]['params'],
+    ) => await sendBackendLongLivedRun({
+      runId,
+      params,
+      runs,
+      controllers,
+      budgetRegistry: null,
+      createRuntime: () => runtime,
+      maxTurns: null,
+      getNowMs: () => 1_700_000_000_001,
+      finishRun,
+      sendAcp: async () => {},
+      parentProvider: TEST_BACKEND_ID,
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => {},
+    });
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by detached agent runs');
+      },
+    });
+    const startPromise = startExecutionRun({
+      params: {
+        sessionId: null,
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        instructions: 'Initial work.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      },
+      parentProvider: TEST_BACKEND_ID,
+      sendAcp: async () => {},
+      streamedTranscriptSession: null,
+      createRuntime: () => runtime,
+      getNowMs: () => 1_700_000_000_000,
+      budgetRegistry: null,
+      runs,
+      controllers,
+      enqueueMarkerWrite: async () => {},
+      writeActivityMarker: async () => {},
+      finishRun,
+      executeBoundedRun: async () => {},
+      send,
+      voiceAgentManager,
+      getDepthByCallId: () => null,
+    });
+
+    try {
+      await provisionStarted;
+      const startOutcome = await Promise.race([
+        startPromise.then((started) => ({ kind: 'started' as const, started })),
+        new Promise<{ kind: 'still_waiting' }>((resolve) => {
+          setTimeout(() => resolve({ kind: 'still_waiting' }), 30);
+        }),
+      ]);
+      const followUp = startOutcome.kind === 'started'
+        ? send(startOutcome.started.runId, { message: 'Follow-up work.' })
+        : Promise.resolve({ ok: false });
+      expect(prompts).toEqual([]);
+
+      releaseProvision();
+      const started = await startPromise;
+      await expect(followUp).resolves.toEqual({ ok: true });
+      expect(startOutcome).toMatchObject({ kind: 'started', started: { runId: started.runId } });
+      await vi.waitFor(() => expect(prompts).toHaveLength(2));
+      expect(prompts[0]).toContain('Initial work.');
+      expect(prompts[1]).toBe('Follow-up work.');
+      await stopExecutionRun({
+        runId: started.runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_002,
+        finishRun,
+      });
+    } finally {
+      releaseProvision();
+      await voiceAgentManager.dispose();
+    }
+  });
+
   it('does not let a rejected bounded controller occurrence dispose or delete its successor', async () => {
     let rejectProvision!: (error: Error) => void;
+    let markProvisionStarted!: () => void;
+    const provisionStarted = new Promise<void>((resolve) => {
+      markProvisionStarted = resolve;
+    });
     const provisioning = new Promise<never>((_resolve, reject) => {
       rejectProvision = reject;
     });
     const oldRuntime = createTestExecutionRunHostRuntime({
-      onProvisionSession: async () => await provisioning,
+      onProvisionRuntime: async () => {
+        markProvisionStarted();
+        await provisioning;
+      },
       onSendPrompt: async () => {},
       onWaitForTurnCompletion: async () => {},
     });
@@ -1059,6 +1394,7 @@ describe('startExecutionRun', () => {
       if (!oldController || oldController.kind !== 'backend') {
         throw new Error('expected old backend controller occurrence');
       }
+      await provisionStarted;
       const successorResolveTerminal = vi.fn();
       const successor = {
         ...oldController,
@@ -1080,6 +1416,10 @@ describe('startExecutionRun', () => {
 
   it('cancels a bounded child that finishes provisioning after the run was stopped', async () => {
     let resolveProvision!: () => void;
+    let markProvisionStarted!: () => void;
+    const provisionStarted = new Promise<void>((resolve) => {
+      markProvisionStarted = resolve;
+    });
     const provisioning = new Promise<void>((resolve) => {
       resolveProvision = resolve;
     });
@@ -1087,8 +1427,11 @@ describe('startExecutionRun', () => {
     const dispose = vi.fn();
     const executeBoundedRun = vi.fn();
     const runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'late_child_session',
-      onProvisionSession: async () => await provisioning,
+      runtimeId: 'late_child_session',
+      onProvisionRuntime: async () => {
+        markProvisionStarted();
+        await provisioning;
+      },
       onCancel: cancel,
       onDispose: dispose,
     });
@@ -1132,6 +1475,7 @@ describe('startExecutionRun', () => {
         getDepthByCallId: () => null,
       });
 
+      await provisionStarted;
       await expect(stopExecutionRun({
         runId: started.runId,
         runs,
@@ -1162,8 +1506,8 @@ describe('startExecutionRun', () => {
     });
     const dispose = vi.fn(async () => {});
     const runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-provisioning',
-      onProvisionSession: async () => {
+      runtimeId: 'voice-provisioning',
+      onProvisionRuntime: async () => {
         provisionStarted();
         await provisionGate;
       },
@@ -1242,7 +1586,7 @@ describe('startExecutionRun', () => {
     const dispose = vi.fn(async () => {});
     let runtime: TestExecutionRunHostRuntime;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'voice-ready',
+      runtimeId: 'voice-ready',
       onSendPrompt: async () => {
         runtime.emitMessage({ type: 'model-output', fullText: 'READY' });
       },
@@ -1323,8 +1667,8 @@ describe('startExecutionRun', () => {
     const dispose = vi.fn();
     const send = vi.fn(async () => ({ ok: true }));
     const runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'late_long_lived_child_session',
-      onProvisionSession: async () => await provisioning,
+      runtimeId: 'late_long_lived_child_session',
+      onProvisionRuntime: async () => await provisioning,
       onCancel: cancel,
       onDispose: dispose,
     });

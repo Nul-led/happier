@@ -46,6 +46,40 @@ async function extractTarFixture(params: Readonly<{ archivePath: string }>): Pro
 }
 
 describe('installRemoteFirstPartyComponent', () => {
+  it('forwards cancellation to each remote process boundary', async () => {
+    const controller = new AbortController();
+    const observedSignals: Array<AbortSignal | undefined> = [];
+
+    await installRemoteFirstPartyComponent(
+      {
+        componentId: 'happier-cli',
+        channel: 'preview',
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+        strategy: 'remote-self-download',
+        signal: controller.signal,
+      },
+      {
+        resolveRemoteReleaseTarget: async ({ signal }) => {
+          observedSignals.push(signal);
+          return { os: 'linux', arch: 'x64' };
+        },
+        runRemoteText: async ({ signal }) => {
+          observedSignals.push(signal);
+          return { status: 0, stdout: '', stderr: '' };
+        },
+        copyLocalDirectoryToRemote: async () => undefined,
+        resolveSelfDownloadInstallPlan: async () => ({
+          binaryPath: '$HOME/.happier/happier',
+          command: 'install',
+          source: 'https://example.test/happier.tar.gz',
+          versionId: 'preview-1',
+        }),
+      },
+    );
+
+    expect(observedSignals).toEqual([controller.signal, controller.signal]);
+  });
+
   it('uses an scp-safe remote path for staging while keeping $HOME-based paths in remote shell commands', async () => {
     const remoteTextCommands: string[] = [];
     const copiedRemotePaths: string[] = [];

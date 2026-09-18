@@ -510,7 +510,7 @@ function createNeverResolvingBackend(): ExecutionRunHostRuntime {
 
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
-    sessionId: 'child_session_stuck',
+    runtimeId: 'child_session_stuck',
     async onSendPrompt() {
       sendCount += 1;
       // First prompt returns immediately but never completes, simulating a stuck in-flight turn.
@@ -534,27 +534,11 @@ function createNeverResolvingBackend(): ExecutionRunHostRuntime {
   return runtime;
 }
 
-function createThrowingBackend(params: { throwAtSendCount: number; message: string }): ExecutionRunHostRuntime {
-  let sendCount = 0;
-  let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
-  runtime = createTestExecutionRunHostRuntime({
-    onSendPrompt() {
-      sendCount += 1;
-      if (sendCount >= params.throwAtSendCount) {
-        throw new Error(params.message);
-      }
-      runtime.emitMessage({ type: 'model-output', fullText: 'ok' } as AgentMessage);
-    },
-    onWaitForTurnCompletion() {},
-  });
-  return runtime;
-}
-
 function createResumableBackendFactory(responseText: string): () => ExecutionRunHostRuntime {
   return () => {
     let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
     runtime = createTestExecutionRunHostRuntime({
-      sessionId: 'child_session_resumable',
+      runtimeId: 'child_session_resumable',
       resumeSupported: true,
       onSendPrompt() {
         runtime.emitMessage({ type: 'model-output', fullText: responseText } as AgentMessage);
@@ -622,49 +606,6 @@ function createSequencedBackend(params: {
   return { backend, events };
 }
 
-function createCancelRaceBackend(params: Readonly<{
-  longDelayMs: number;
-}>): { backend: ExecutionRunHostRuntime; events: { sendPrompts: string[]; cancelCount: number } } {
-  const events = { sendPrompts: [] as string[], cancelCount: 0 };
-
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let done: Promise<void> | null = null;
-  let resolveDone: (() => void) | null = null;
-  let rejectDone: ((e: Error) => void) | null = null;
-  let rejectNextSendPrompts = 0;
-
-  let backend: ReturnType<typeof createTestExecutionRunHostRuntime>;
-  backend = createTestExecutionRunHostRuntime({
-    onSendPrompt(_sessionId, prompt) {
-      events.sendPrompts.push(prompt);
-      if (rejectNextSendPrompts > 0) {
-        rejectNextSendPrompts -= 1;
-        throw new Error('Turn cancelled');
-      }
-
-      done = new Promise((resolve, reject) => {
-        resolveDone = resolve;
-        rejectDone = reject;
-        timer = setTimeout(() => {
-          backend.emitMessage({ type: 'model-output', fullText: `reply:${prompt}` } as AgentMessage);
-          resolve();
-        }, params.longDelayMs);
-      });
-    },
-    onCancel() {
-      events.cancelCount += 1;
-      rejectNextSendPrompts = 1;
-      if (timer) clearTimeout(timer);
-      rejectDone?.(new Error('Turn cancelled'));
-    },
-    async onWaitForTurnCompletion() {
-      await (done ?? Promise.resolve());
-    },
-  });
-
-  return { backend, events };
-}
-
 const executionRunRpcActionBindings = [
   [SESSION_RPC_METHODS.EXECUTION_RUN_START, 'execution.run.start'],
   [SESSION_RPC_METHODS.EXECUTION_RUN_LIST, 'execution.run.list'],
@@ -681,6 +622,30 @@ const executionRunRpcActionBindings = [
 ] as const satisfies readonly (readonly [string, ActionId])[];
 
 describe('executionRuns session RPC handlers', () => {
+  it('registers the host-private live broker authority resolver on the Session runtime', async () => {
+    const client = createEncryptedRpcTestClient({
+      scopePrefix: 'sess_1',
+      registerHandlers: (rpc) => {
+        registerExecutionRunHandlers(rpc, {
+          sessionId: 'sess_1',
+          cwd: process.cwd(),
+          parentProvider: 'claude',
+          createBackend: () => createStaticBackend('unused'),
+          sendAcp: async () => {},
+        });
+      },
+    });
+
+    await expect(client.call(
+      SESSION_RPC_METHODS.EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE_V1,
+      {
+        v: 1,
+        executionRunId: 'missing-run',
+        expectedOccurrenceId: null,
+      },
+    )).resolves.toEqual({ status: 'not_current', reason: 'not_found' });
+  });
+
   it('dispatches all public execution-run RPC methods through the shared action adapter seam', async () => {
     const calls: Array<{
       actionId: ActionId;
@@ -713,11 +678,16 @@ describe('executionRuns session RPC handlers', () => {
       await expect(client.call<unknown, unknown>(method, input)).resolves.toEqual({ handledActionId: actionId });
     }
 
-    expect(calls).toEqual(executionRunRpcActionBindings.map(([, actionId]) => ({
+    expect(calls).toEqual(executionRunRpcActionBindings.map(([, actionId], index) => ({
       actionId,
       input: { marker: actionId },
       context: {
+        actionRequestId: `sess_1:test-request:${index + 1}`,
+        authority: 'account_automation',
         defaultSessionId: 'sess_1',
+        // The RPC handler serves no Session-list corpus, so it stamps the
+        // fail-closed value the shared list-access guard reads.
+        sessionListAccess: 'unavailable',
         signal: expect.any(AbortSignal),
         surface: 'rpc',
       },
@@ -733,6 +703,25 @@ describe('executionRuns session RPC handlers', () => {
     expect(source.match(/registerActionSpecRpcHandlers\(/g) ?? []).toHaveLength(1);
     expect(source).not.toContain('dispatchPublicAction(');
     expect(source).not.toContain('EXECUTION_RUN_RPC_METHODS');
+  });
+
+  it('installs exact retained Run turn cancellation only after its runtime consumer is present', async () => {
+    const client = createEncryptedRpcTestClient({
+      scopePrefix: 'sess_1',
+      registerHandlers: (rpc) => {
+        registerExecutionRunHandlers(rpc, {
+          sessionId: 'sess_1',
+          cwd: process.cwd(),
+          parentProvider: 'claude',
+          createBackend: () => createStaticBackend('unused'),
+          sendAcp: async () => {},
+        });
+      },
+    });
+
+    await expect(client.call(SESSION_RPC_METHODS.EXECUTION_RUN_CANCEL_TURN_V1, {
+      runId: 'run_1', turnId: 'turn_1',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_invalid_action_input' });
   });
 
   it('honors canonical action policy when dispatching public execution-run RPC calls', async () => {
@@ -806,6 +795,8 @@ describe('executionRuns session RPC handlers', () => {
         registerHandlers: (rpc) => {
           registerExecutionRunHandlers(rpc, {
             sessionId: 'sess_1',
+            serverId: 'home-stable-1',
+            runtimeAccountId: 'account-1',
             cwd: process.cwd(),
             parentProvider: 'claude',
             createBackend: () => createStaticBackend('unused'),
@@ -815,6 +806,7 @@ describe('executionRuns session RPC handlers', () => {
               approvalsUpdate,
               approvalsWaitForDecision,
               approvalsResolveBlockingDecision,
+              isApprovalExecutionOriginCurrent: async () => true,
             },
           });
         },
@@ -824,9 +816,21 @@ describe('executionRuns session RPC handlers', () => {
 
       expect(listed).toEqual({ runs: [] });
       expect(approvalsCreate).toHaveBeenCalledOnce();
+      expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
+        request: expect.objectContaining({
+          v: 2,
+          executionOriginV1: expect.objectContaining({
+            serverId: 'home-stable-1',
+            accountId: 'account-1',
+            sessionId: 'sess_1',
+            actionId: 'execution.run.list',
+            requestId: 'sess_1:test-request:1',
+          }),
+        }),
+      }));
       expect(approvalsWaitForDecision).toHaveBeenCalledWith(expect.objectContaining({
         artifactId: 'approval_1',
-        serverId: null,
+        serverId: 'home-stable-1',
       }));
       expect(approvalsUpdate).toHaveBeenCalledWith(expect.objectContaining({
         artifactId: 'approval_1',
@@ -847,23 +851,80 @@ describe('executionRuns session RPC handlers', () => {
     }
   });
 
-  it('keeps execution-run RPC approved approval updates claimed by the explicit decision seam', async () => {
+  it('fails a blocking execution-run RPC approval closed without a stable Home binding', async () => {
+    const previousActionsSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+    process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
+      v: 1,
+      actions: {
+        'execution.run.list': { enabled: true, disabledSurfaces: [], disabledPlacements: [], approvalRequiredSurfaces: ['rpc'] },
+      },
+    });
+    try {
+      const approvalsCreate = vi.fn<NonNullable<ActionExecutorDeps['approvalsCreate']>>(
+        async () => ({ artifactId: 'approval_must_not_be_created' }),
+      );
+      const client = createEncryptedRpcTestClient({
+        scopePrefix: 'sess_1',
+        registerHandlers: (rpc) => {
+          registerExecutionRunHandlers(rpc, {
+            sessionId: 'sess_1',
+            runtimeAccountId: 'account-1',
+            cwd: process.cwd(),
+            parentProvider: 'claude',
+            createBackend: () => createStaticBackend('unused'),
+            sendAcp: async () => {},
+            actionApprovalDeps: { approvalsCreate },
+          });
+        },
+      });
+
+      await expect(client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_LIST, { limit: 1 }))
+        .resolves.toMatchObject({ ok: false, errorCode: 'approval_origin_unavailable' });
+      expect(approvalsCreate).not.toHaveBeenCalled();
+    } finally {
+      if (previousActionsSettings === undefined) {
+        delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+      } else {
+        process.env.HAPPIER_ACTIONS_SETTINGS_V1 = previousActionsSettings;
+      }
+    }
+  });
+
+  it.each([1, 2] as const)('keeps V%s execution-run RPC approval updates claimed by the explicit decision seam', async (version) => {
     const deps = createExecutionRunRpcApprovalDeps({
       readCredentials: async () => createApprovalCredentials(),
     });
+    // V2 narrows the Action id to the current catalog; the V1 builder carries the
+    // wider historical union, so the replayed id is restated at the V2 boundary.
+    const request = version === 1 ? createApprovalRequest() : {
+      ...createApprovalRequest(),
+      v: 2 as const,
+      actionId: 'execution.run.list' as const,
+      executionOriginV1: {
+        v: 1 as const,
+        authority: 'account_automation' as const,
+        surface: 'rpc' as const,
+        caller: { kind: 'host' as const },
+        serverId: 'server-1',
+        sessionId: 'sess_1',
+        actionId: 'execution.run.list' as const,
+        requestId: 'request-1',
+      },
+    };
     const pending = deps.approvalsWaitForDecision?.({
       artifactId: 'approval_execution_run_intermediate',
-      request: createApprovalRequest(),
+      request,
     });
     if (!pending || !deps.approvalsUpdate || !deps.approvalsResolveBlockingDecision) {
       throw new Error('expected execution-run approval deps');
     }
 
-    const approvedRequest = createApprovalRequest({
-      status: 'approved',
+    const approvedRequest = {
+      ...request,
+      status: 'approved' as const,
       updatedAtMs: 2,
-      decision: { kind: 'approve', decidedAtMs: 2 },
-    });
+      decision: { kind: 'approve' as const, decidedAtMs: 2 },
+    };
     await deps.approvalsUpdate({
       artifactId: 'approval_execution_run_intermediate',
       request: approvedRequest,
@@ -1036,7 +1097,7 @@ describe('executionRuns session RPC handlers', () => {
     expect(sidechainMsg?.body?.sidechainId).toBe(started.callId);
   });
 
-  it('publishes public state updates via onExecutionRunPublicStateUpdated', async () => {
+	  it('publishes public state updates via onExecutionRunPublicStateUpdated', async () => {
     const updates: ExecutionRunPublicState[] = [];
 
 	    const client = createEncryptedRpcTestClient({
@@ -1524,6 +1585,12 @@ describe('executionRuns session RPC handlers', () => {
           sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
             sent.push({ body, meta: opts?.meta });
           },
+          streamedTranscriptSession: {
+            enqueueAgentMessageCommitted: async (_provider, body, opts) => {
+              sent.push({ body, meta: opts.meta });
+              return { persisted: true, delivered: false };
+            },
+          },
         });
       },
     });
@@ -1556,7 +1623,7 @@ describe('executionRuns session RPC handlers', () => {
         findings: [{ id: 'f1', status: 'accept' }],
       },
     });
-    expect(acted.ok).toBe(true);
+    expect(acted).toMatchObject({ ok: true });
 
     // The action should re-emit a tool-result meta update.
     const metaToolResult = [...sent].reverse().find((m) => (m.body as any)?.type === 'tool-result' && m.meta);
@@ -1600,7 +1667,7 @@ describe('executionRuns session RPC handlers', () => {
     expect((toolResult?.body as any)?.output?.status).toBe('cancelled');
   });
 
-  it('supports execution.run.send for long-lived runs', async () => {
+  it('returns the typed update requirement for the released attached execution.run.send body', async () => {
     const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
 
     const client = createEncryptedRpcTestClient({
@@ -1633,70 +1700,55 @@ describe('executionRuns session RPC handlers', () => {
     const sentReply = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
       runId: started.runId,
       message: 'next',
+      delivery: 'steer_if_supported',
     });
-    expect(sentReply.ok).toBe(true);
-    await expect
-      .poll(() => sent.filter((m: any) => m?.body?.type === 'message').length, { timeout: 1_000 })
-      .toBe(2);
+    expect(sentReply).toMatchObject({
+      ok: false,
+      errorCode: 'session_input_target_update_required',
+    });
+    expect(sent.filter((m: any) => m?.body?.type === 'message').length).toBe(1);
   });
 
-  it('returns execution_run_busy when delivery=prompt and a long-lived run already has a turn in flight', async () => {
-    const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
+  it('returns execution_run_busy for prompt delivery to a detached bounded task already in flight', async () => {
     const { backend, events } = createSequencedBackend({
-      responses: [
-        { text: 'start', delayMs: 0 },
-        { text: 'reply', delayMs: 50 },
-      ],
+      responses: [{ text: 'reply', delayMs: 50 }],
     });
 
     const client = createEncryptedRpcTestClient({
       scopePrefix: 'sess_1',
       registerHandlers: (rpc) => {
         registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
+          sessionId: null,
           cwd: process.cwd(),
           parentProvider: 'claude',
           createBackend: () => backend,
-          sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-            sent.push({ body, meta: opts?.meta });
-          },
+          sendAcp: async () => {},
         });
       },
     });
 
     const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
+      sessionId: null,
+      intent: 'task',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       instructions: 'Start.',
       permissionMode: 'read_only',
-      retentionPolicy: 'resumable',
-      runClass: 'long_lived',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
       ioMode: 'request_response',
     });
 
-    // Long-lived runs execute their first turn asynchronously; wait a tick so subsequent send() calls
-    // deterministically test in-flight behavior for a later turn.
     await new Promise((r) => setTimeout(r, 5));
 
-    const p1 = client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'first',
-      delivery: 'prompt',
-    });
-    await new Promise((r) => setTimeout(r, 5));
-
-    const p2 = client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+    const busy = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+      sessionId: null,
       runId: started.runId,
       message: 'second',
       delivery: 'prompt',
     });
-
-    const busy = await p2;
     expect(busy.ok).toBe(false);
     expect(busy.errorCode).toBe('execution_run_busy');
-
-    await p1;
-    expect(events.sendPrompts.length).toBeGreaterThanOrEqual(2);
+    expect(events.sendPrompts).toHaveLength(1);
   });
 
   it('keeps long-lived runs running when a turn is cancelled by the backend', async () => {
@@ -1736,7 +1788,7 @@ describe('executionRuns session RPC handlers', () => {
     expect(got.run?.error).toBeUndefined();
   });
 
-  it('does not terminalize long-lived runs when sendPrompt fails with an abort-like error', async () => {
+  it('does not terminalize long-lived runs when the initial prompt fails with an abort-like error', async () => {
     let backend: ReturnType<typeof createTestExecutionRunHostRuntime>;
     backend = createTestExecutionRunHostRuntime({
       onSendPrompt() {
@@ -1772,177 +1824,12 @@ describe('executionRuns session RPC handlers', () => {
 
     await new Promise((r) => setTimeout(r, 15));
 
-    const sent = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'hi',
-      delivery: 'prompt',
-    });
-    expect(sent.ok).toBe(false);
-
     const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
     expect(got.run?.status).toBe('running');
     expect(got.run?.error).toBeUndefined();
   });
 
-  it('steers an in-flight long-lived run when delivery=steer_if_supported and backend supports sendSteerPrompt', async () => {
-    const { backend, events } = createSequencedBackend({
-      responses: [
-        { text: 'start', delayMs: 0 },
-        { text: 'reply', delayMs: 50 },
-      ],
-      supportsSteer: true,
-    });
-
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => backend,
-          sendAcp: async () => {},
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Start.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
-      ioMode: 'request_response',
-    });
-
-    await new Promise((r) => setTimeout(r, 5));
-
-    const p1 = client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'first',
-      delivery: 'prompt',
-    });
-    await new Promise((r) => setTimeout(r, 5));
-
-    const steered = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'steer text',
-      delivery: 'steer_if_supported',
-    });
-    expect(steered.ok).toBe(true);
-    expect(events.steerPrompts).toEqual(['steer text']);
-
-    await p1;
-  });
-
-  it('interrupts an in-flight long-lived run when delivery=interrupt by cancelling then sending a new prompt', async () => {
-    const { backend, events } = createSequencedBackend({
-      responses: [
-        { text: 'start', delayMs: 0 },
-        { text: 'reply', delayMs: 50 },
-        { text: 'after', delayMs: 0 },
-      ],
-      supportsSteer: false,
-    });
-
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => backend,
-          sendAcp: async () => {},
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Start.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
-      ioMode: 'request_response',
-    });
-
-    await new Promise((r) => setTimeout(r, 5));
-
-    const p1 = client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'first',
-      delivery: 'prompt',
-    });
-    await new Promise((r) => setTimeout(r, 5));
-
-    const interrupted = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'second',
-      delivery: 'interrupt',
-    });
-    expect(interrupted.ok).toBe(true);
-    expect(events.cancelCount).toBe(1);
-    expect(events.sendPrompts.some((p) => p === 'second')).toBe(true);
-
-    await p1;
-  });
-
-	  it('retries cancel+send when the backend transiently rejects the next prompt after cancel', async () => {
-	    const { backend, events } = createCancelRaceBackend({ longDelayMs: 200 });
-
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => backend,
-          sendAcp: async () => {},
-        });
-      },
-    });
-
-	    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-	      intent: 'delegate',
-	      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-	      instructions: 'Start.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
-	      ioMode: 'request_response',
-	    });
-
-	    // Wait until the initial prompt is actually in-flight before issuing an interrupt.
-	    // Under high CI load, a fixed sleep can race and cause the interrupt path to be exercised without a cancel.
-	    for (let attempt = 0; attempt < 200; attempt += 1) {
-	      if (events.sendPrompts.length > 0) break;
-	      await new Promise((r) => setTimeout(r, 5));
-	    }
-	    expect(events.sendPrompts.length).toBeGreaterThan(0);
-
-	    const interrupted = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-	      runId: started.runId,
-	      message: 'second',
-      delivery: 'interrupt',
-    });
-	    expect(interrupted.ok).toBe(true);
-	    expect(events.cancelCount).toBe(1);
-
-	    for (let attempt = 0; attempt < 200; attempt += 1) {
-	      if (events.sendPrompts.some((p) => p === 'second')) break;
-	      await new Promise((r) => setTimeout(r, 5));
-	    }
-
-	    const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
-	    expect(got.run?.status).toBe('running');
-	    expect(events.sendPrompts.some((p) => p === 'second')).toBe(true);
-	  });
-
-  it('does not terminalize long-lived runs when multiple in-flight turns are cancelled for steering', async () => {
+  it('keeps detached bounded replacement delivery healthy across multiple cancellations', async () => {
     const { backend } = createSequencedBackend({
       responses: [
         // Start turn: long enough that the first send interrupts it.
@@ -1960,7 +1847,7 @@ describe('executionRuns session RPC handlers', () => {
       scopePrefix: 'sess_1',
       registerHandlers: (rpc) => {
         registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
+          sessionId: null,
           cwd: process.cwd(),
           parentProvider: 'claude',
           createBackend: () => backend,
@@ -1970,18 +1857,20 @@ describe('executionRuns session RPC handlers', () => {
     });
 
     const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
+      sessionId: null,
+      intent: 'task',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       instructions: 'Start.',
       permissionMode: 'read_only',
       retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
+      runClass: 'bounded',
       ioMode: 'request_response',
     });
 
     await new Promise((r) => setTimeout(r, 5));
 
     const first = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+      sessionId: null,
       runId: started.runId,
       message: 'first',
       delivery: 'interrupt',
@@ -1991,6 +1880,7 @@ describe('executionRuns session RPC handlers', () => {
     await new Promise((r) => setTimeout(r, 5));
 
     const second = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+      sessionId: null,
       runId: started.runId,
       message: 'second',
       delivery: 'interrupt',
@@ -2000,18 +1890,17 @@ describe('executionRuns session RPC handlers', () => {
     await new Promise((r) => setTimeout(r, 75));
 
     const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
-    expect(got.run?.status).toBe('running');
+    expect(got.run?.status).toBe('succeeded');
     expect(got.run?.error).toBeUndefined();
   });
 
-  it('supports steering bounded runs while running (cancel+send fallback when steer is unavailable)', async () => {
-    const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
+  it('supports detached bounded steering while running (cancel+send fallback when steer is unavailable)', async () => {
     const { backend, events } = createSequencedBackend({
       responses: [
         // Initial bounded prompt output (will be cancelled before it emits)
-        { text: JSON.stringify({ findings: [], summary: 'initial' }), delayMs: 50 },
+        { text: 'initial', delayMs: 50 },
         // After interrupt, emit valid output
-        { text: JSON.stringify({ findings: [], summary: 'after' }), delayMs: 0 },
+        { text: 'after', delayMs: 0 },
       ],
       supportsSteer: false,
     });
@@ -2020,21 +1909,20 @@ describe('executionRuns session RPC handlers', () => {
       scopePrefix: 'sess_1',
       registerHandlers: (rpc) => {
         registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
+          sessionId: null,
           cwd: process.cwd(),
           parentProvider: 'claude',
           createBackend: () => backend,
-          sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-            sent.push({ body, meta: opts?.meta });
-          },
+          sendAcp: async () => {},
         });
       },
     });
 
     const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'review',
+      sessionId: null,
+      intent: 'task',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Review.',
+      instructions: 'Run a task.',
       permissionMode: 'read_only',
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
@@ -2044,6 +1932,7 @@ describe('executionRuns session RPC handlers', () => {
     await new Promise((r) => setTimeout(r, 5));
 
     const steered = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+      sessionId: null,
       runId: started.runId,
       message: 'please focus on X',
       delivery: 'steer_if_supported',
@@ -2055,79 +1944,72 @@ describe('executionRuns session RPC handlers', () => {
     await new Promise((r) => setTimeout(r, 30));
     const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
     expect(got.run?.status).toBe('succeeded');
-    expect(got.latestToolResult?.summary).toBe('after');
+    expect(got.latestToolResult).toBe('after');
   });
 
-  it('acks bounded external sends once the replacement turn is adopted, even if the backend never completes it', async () => {
-    const previousAckTimeout = process.env.HAPPIER_EXECUTION_RUN_BOUNDED_SEND_ACK_TIMEOUT_MS;
-    process.env.HAPPIER_EXECUTION_RUN_BOUNDED_SEND_ACK_TIMEOUT_MS = '20';
-    try {
-      const client = createEncryptedRpcTestClient({
-        scopePrefix: 'sess_1',
-        registerHandlers: (rpc) => {
-          registerExecutionRunHandlers(rpc, {
-            sessionId: 'sess_1',
-            cwd: process.cwd(),
-            parentProvider: 'claude',
-            createBackend: () => createNeverResolvingBackend(),
-            sendAcp: async () => {},
-          });
-        },
-      });
-
-      const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-        intent: 'review',
-        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-        instructions: 'Review.',
-        permissionMode: 'read_only',
-        retentionPolicy: 'ephemeral',
-        runClass: 'bounded',
-        ioMode: 'request_response',
-      });
-
-      await new Promise((r) => setTimeout(r, 5));
-
-      const sendResult = await Promise.race([
-        client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-          runId: started.runId,
-          message: 'ping',
-          delivery: 'steer_if_supported',
-        }),
-        new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 250)),
-      ]);
-
-      expect(sendResult).not.toBe('__timeout__');
-      expect((sendResult as any).ok).toBe(true);
-
-      const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
-      expect(got.run?.status).toBe('running');
-    } finally {
-      if (previousAckTimeout === undefined) {
-        delete process.env.HAPPIER_EXECUTION_RUN_BOUNDED_SEND_ACK_TIMEOUT_MS;
-      } else {
-        process.env.HAPPIER_EXECUTION_RUN_BOUNDED_SEND_ACK_TIMEOUT_MS = previousAckTimeout;
-      }
-    }
-  });
-
-  it('rejects bounded run sends after completion', async () => {
+  it('acks detached bounded sends once the replacement turn is adopted, even if the backend never completes it', async () => {
     const client = createEncryptedRpcTestClient({
       scopePrefix: 'sess_1',
       registerHandlers: (rpc) => {
         registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
+          sessionId: null,
           cwd: process.cwd(),
           parentProvider: 'claude',
-          createBackend: () => createStaticBackend(JSON.stringify({ findings: [], summary: 'ok' })),
+          createBackend: () => createNeverResolvingBackend(),
           sendAcp: async () => {},
         });
       },
     });
 
     const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'review',
+      sessionId: null,
+      intent: 'task',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Review.',
+      instructions: 'Run a task.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    });
+
+    await new Promise((r) => setTimeout(r, 5));
+
+    const sendResult = await Promise.race([
+      client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+        sessionId: null,
+        runId: started.runId,
+        message: 'ping',
+        delivery: 'steer_if_supported',
+      }),
+      new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 250)),
+    ]);
+
+    expect(sendResult).not.toBe('__timeout__');
+    expect((sendResult as any).ok).toBe(true);
+
+    const got = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_GET, { runId: started.runId });
+    expect(got.run?.status).toBe('running');
+  });
+
+  it('rejects detached bounded run sends after completion', async () => {
+    const client = createEncryptedRpcTestClient({
+      scopePrefix: 'sess_1',
+      registerHandlers: (rpc) => {
+        registerExecutionRunHandlers(rpc, {
+          sessionId: null,
+          cwd: process.cwd(),
+          parentProvider: 'claude',
+          createBackend: () => createStaticBackend('ok'),
+          sendAcp: async () => {},
+        });
+      },
+    });
+
+    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
+      sessionId: null,
+      intent: 'task',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      instructions: 'Run a task.',
       permissionMode: 'read_only',
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
@@ -2137,6 +2019,7 @@ describe('executionRuns session RPC handlers', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     const res = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
+      sessionId: null,
       runId: started.runId,
       message: 'late',
       delivery: 'steer_if_supported',
@@ -2208,10 +2091,10 @@ describe('executionRuns session RPC handlers', () => {
   });
 
   it('hydrates cached voice replay summaries on the daemon before the first streamed turn', async () => {
-    const { readCredentials } = await import('@/persistence');
+    const { readStoredCredentials } = await import('@/persistence');
     const { fetchSessionById } = await import('@/session/transport/http/sessionsHttp');
     const { fetchEncryptedTranscriptMessages } = await import('@/session/replay/fetchEncryptedTranscriptMessages');
-    vi.mocked(readCredentials).mockResolvedValue({
+    vi.mocked(readStoredCredentials).mockResolvedValue({
       token: 'token_1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
     } as any);
@@ -2310,11 +2193,11 @@ describe('executionRuns session RPC handlers', () => {
   });
 
   it('falls back to on-demand replay summaries for voice runs when no cached synopsis exists', async () => {
-    const { readCredentials } = await import('@/persistence');
+    const { readStoredCredentials } = await import('@/persistence');
     const { fetchSessionById } = await import('@/session/transport/http/sessionsHttp');
     const { fetchEncryptedTranscriptMessages } = await import('@/session/replay/fetchEncryptedTranscriptMessages');
     const { runReplaySummaryForDialog } = await import('@/session/replay/summary/runReplaySummaryForDialog');
-    vi.mocked(readCredentials).mockResolvedValue({
+    vi.mocked(readStoredCredentials).mockResolvedValue({
       token: 'token_1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
     } as any);
@@ -2409,10 +2292,10 @@ describe('executionRuns session RPC handlers', () => {
   });
 
   it('defers replay seed delivery to the first turn when voice prewarm uses a READY handshake', async () => {
-    const { readCredentials } = await import('@/persistence');
+    const { readStoredCredentials } = await import('@/persistence');
     const { fetchSessionById } = await import('@/session/transport/http/sessionsHttp');
     const { fetchEncryptedTranscriptMessages } = await import('@/session/replay/fetchEncryptedTranscriptMessages');
-    vi.mocked(readCredentials).mockResolvedValue({
+    vi.mocked(readStoredCredentials).mockResolvedValue({
       token: 'token_1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
     } as any);
@@ -2822,11 +2705,11 @@ describe('executionRuns session RPC handlers', () => {
             const modelKey = modelId === 'commit' ? 'commit' : 'chat';
             let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
             runtime = createTestExecutionRunHostRuntime({
-              sessionId: modelKey === 'commit' ? 'commit_session_1' : 'chat_session_1',
+              runtimeId: modelKey === 'commit' ? 'commit_session_1' : 'chat_session_1',
               resumeSupported: true,
-              onProvisionSession(opts) {
-                if (opts?.resumeSessionId) {
-                  loadCalls[modelKey].push(String(opts.resumeSessionId));
+              onProvisionRuntime(opts) {
+                if (opts?.resumeRuntimeId) {
+                  loadCalls[modelKey].push(String(opts.resumeRuntimeId));
                 }
               },
               onSendPrompt() {
@@ -2910,44 +2793,6 @@ describe('executionRuns session RPC handlers', () => {
     );
     expect(loadCalls.chat).toEqual(['chat_session_1']);
     expect(loadCalls.commit).toEqual(['commit_session_1']);
-  });
-
-  it('fails closed for long-lived resumable runs via execution.run.send(resume=true) when backend lacks loadSessionWithReplayCapture', async () => {
-    const createBackend = createResumableBackendFactory('reply');
-
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => createBackend(),
-          sendAcp: async () => {},
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Start.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'resumable',
-      runClass: 'long_lived',
-      ioMode: 'request_response',
-    });
-
-    const stopped = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_STOP, { runId: started.runId });
-    expect(stopped.ok).toBe(true);
-
-    const resumed = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'after',
-      resume: true,
-    });
-    expect(resumed.ok).toBe(false);
-    expect(resumed.errorCode).toBe('execution_run_not_allowed');
   });
 
   it('rejects voice_agent runs when voice feature is locally disabled', async () => {
@@ -3291,38 +3136,6 @@ describe('executionRuns session RPC handlers', () => {
     });
     expect(acted.ok).toBe(false);
     expect(acted.errorCode).toBe('execution_run_invalid_action_input');
-  });
-
-  it('returns canonical execution_run_failed when execution.run.send fails mid-run', async () => {
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => createThrowingBackend({ throwAtSendCount: 2, message: 'boom' }),
-          sendAcp: async () => {},
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'hello',
-      permissionMode: 'default',
-      retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
-      ioMode: 'request_response',
-    });
-
-    const res = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'next',
-    });
-    expect(res.ok).toBe(false);
-    expect(res.errorCode).toBe('execution_run_failed');
   });
 
   it('returns permission_denied when starting a review run with an unsafe permissionMode', async () => {
@@ -3833,86 +3646,6 @@ describe('executionRuns session RPC handlers', () => {
     expect(got.latestToolResult?.status).toBe('succeeded');
   });
 
-  it('enforces maxTurns for long-lived runs deterministically', async () => {
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => createStaticBackend('reply'),
-          sendAcp: async () => {},
-          policy: { maxConcurrentRuns: 5, boundedTimeoutMs: 60_000, maxTurns: 1 },
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'delegate',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'hello',
-      permissionMode: 'default',
-      retentionPolicy: 'ephemeral',
-      runClass: 'long_lived',
-      ioMode: 'request_response',
-    });
-
-    const sentReply = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'next',
-    });
-
-    expect(sentReply.ok).toBe(false);
-    expect(sentReply.errorCode).toBe('execution_run_not_allowed');
-  });
-
-  it('supports resumable bounded runs via execution.run.send(resume=true) when backend supports loadSession', async () => {
-    const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
-    const createBackend = createResumableBackendFactory(JSON.stringify({ findings: [], summary: 'ok' }));
-
-    const client = createEncryptedRpcTestClient({
-      scopePrefix: 'sess_1',
-      registerHandlers: (rpc) => {
-        registerExecutionRunHandlers(rpc, {
-          sessionId: 'sess_1',
-          cwd: process.cwd(),
-          parentProvider: 'claude',
-          createBackend: () => createBackend(),
-          sendAcp: async (_provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
-            sent.push({ body, meta: opts?.meta });
-          },
-          policy: { maxConcurrentRuns: 5, boundedTimeoutMs: 60_000 },
-        });
-      },
-    });
-
-    const started = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_START, {
-      intent: 'review',
-      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      instructions: 'Review.',
-      permissionMode: 'read_only',
-      retentionPolicy: 'resumable',
-      runClass: 'bounded',
-      ioMode: 'request_response',
-    });
-
-    await new Promise((r) => setTimeout(r, 10));
-    const completionToolResult = sent.find((m: any) => (m.body as any)?.type === 'tool-result' && m.meta);
-    expect((completionToolResult?.meta as any)?.happierExecutionRun?.resumeHandle?.kind).toBe('provider_session.v1');
-    expect((completionToolResult?.meta as any)?.happierExecutionRun?.resumeHandle?.providerSessionId).toBeTruthy();
-
-    const resumed = await client.call<any, any>(SESSION_RPC_METHODS.EXECUTION_RUN_SEND, {
-      runId: started.runId,
-      message: 'follow-up',
-      resume: true,
-    });
-    expect(resumed.ok).toBe(true);
-    await expect
-      .poll(() => sent.filter((m: any) => (m.body as any)?.type === 'message').length, { timeout: 3_000 })
-      .toBeGreaterThanOrEqual(2);
-  });
-
   it('supports execution.run.ensure(resume=true) for resumable runs', async () => {
     const sent: Array<{ body: unknown; meta?: Record<string, unknown> }> = [];
     const createBackend = createResumableBackendFactory(JSON.stringify({ findings: [], summary: 'ok' }));
@@ -4014,11 +3747,11 @@ describe('executionRuns session RPC handlers', () => {
           cwd: process.cwd(),
           parentProvider: 'claude',
           createBackend: () => createTestExecutionRunHostRuntime({
-            sessionId: 'child_session_new',
+            runtimeId: 'child_session_new',
             resumeSupported: true,
-            onProvisionSession(opts) {
-              if (opts?.resumeSessionId) {
-                calls.loadSession.push(String(opts.resumeSessionId));
+            onProvisionRuntime(opts) {
+              if (opts?.resumeRuntimeId) {
+                calls.loadSession.push(String(opts.resumeRuntimeId));
                 return;
               }
               calls.startSession += 1;

@@ -42,6 +42,7 @@ export type MutagenSessionSummaryV1 = Readonly<{
   successfulCycles: number;
   conflictCount: number;
   lastError?: string;
+  lastErrorCode?: 'git_selection_unavailable';
 }>;
 export type MutagenSessionListPageV1 = Readonly<{
   sessions: readonly MutagenSessionSummaryV1[];
@@ -96,6 +97,7 @@ export const WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES = [
   'peer_unavailable',
   'agent_unavailable',
   'engine_unavailable',
+  'git_selection_unavailable',
   'stream_limit',
   'expired_request',
   'data_attach_failed',

@@ -1,4 +1,4 @@
-import type { HomeConnectionDescriptorV1, IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+import { isLoopbackHostname, type HomeConnectionDescriptorV1, type IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 
 type HomeIrohEndpointDescriptorV1 = Extract<
   HomeConnectionDescriptorV1['endpoints'][number],
@@ -7,6 +7,8 @@ type HomeIrohEndpointDescriptorV1 = Extract<
 
 export type HomeCarrierPolicyFailureClassification = Readonly<{ fallbackAllowed: boolean }>;
 export type HomeCarrierPreferredTransport = 'iroh' | 'https';
+export type HomeCarrierAcquisitionMode = 'initial_selection' | 'pinned_recovery';
+export type HomeApplicationCarrierEligibility = 'automatic' | 'standard_only';
 
 /**
  * Canonical initial carrier preference for a normalized Home descriptor.
@@ -34,6 +36,9 @@ export type HomeCarrierPolicyResult<Value> =
   | Readonly<{ kind: 'fail_closed'; error: unknown; fallbackAllowed: boolean }>;
 
 export type HomeCarrierPolicyInput<Value> = Readonly<{
+  mode: HomeCarrierAcquisitionMode;
+  /** Missing legacy inputs retain the established automatic behavior. */
+  applicationCarrierEligibility?: HomeApplicationCarrierEligibility;
   descriptor: HomeConnectionDescriptorV1;
   preferredTransport: HomeCarrierPreferredTransport;
   acquireIroh(input: Readonly<{
@@ -85,27 +90,50 @@ export async function drainRetainedHomeCarrierReleases(): Promise<void> {
   await Promise.allSettled([...retainedReleases].map(async (release) => await release()));
 }
 
-function resolveDescriptorHttpsOrigin(descriptor: HomeConnectionDescriptorV1): string | null {
+/**
+ * The descriptor-declared application origin this policy may carry bytes over.
+ *
+ * Approval follows the protocol's Home application-origin policy — HTTPS, or HTTP to a
+ * loopback host (`HomeApplicationOriginV1Schema`) — rather than a stricter second rule here.
+ * Requiring `https:` silently left every loopback-HTTP Home, which is the only shape a local
+ * or self-hosted Home publishes, with no application carrier at all: enrollment against it
+ * could never resolve a transport.
+ *
+ * A public HTTPS ingress still wins over a loopback entry regardless of declaration order,
+ * because loopback reaches only the machine running this process; loopback is the last resort
+ * for a Home that publishes no independent ingress. Loopback membership is the shared
+ * predicate's call, so a plaintext origin on any other host stays refused outright.
+ */
+function resolveDescriptorApplicationOrigin(descriptor: HomeConnectionDescriptorV1): string | null {
+  let loopbackOrigin: string | null = null;
   for (const endpoint of descriptor.endpoints) {
     if (endpoint.kind !== 'https') continue;
+    let parsed: URL;
     try {
-      const parsed = new URL(endpoint.url);
-      if (parsed.protocol !== 'https:' || parsed.username || parsed.password) continue;
-      parsed.search = '';
-      parsed.hash = '';
-      return parsed.toString().replace(/\/+$/u, '');
+      parsed = new URL(endpoint.url);
     } catch {
       // Invalid descriptor values are normally rejected at the schema boundary;
       // this owner still refuses to manufacture a fallback from them.
+      continue;
     }
+    if (parsed.username || parsed.password) continue;
+    const loopback = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !loopback) continue;
+    parsed.search = '';
+    parsed.hash = '';
+    const origin = parsed.toString().replace(/\/+$/u, '');
+    if (!loopback) return origin;
+    loopbackOrigin ??= origin;
   }
-  return null;
+  return loopbackOrigin;
 }
 
 /**
- * Platform-neutral first-contact carrier decision. Iroh is always attempted
- * before descriptor-declared HTTPS. Only the injected failure classifier may
- * authorize fallback; identity/readiness mismatch after acquisition is always
+ * Platform-neutral carrier decision. Standard-only eligibility bypasses Iroh
+ * and uses descriptor-declared HTTPS. Automatic eligibility attempts Iroh
+ * first; during initial selection only, the injected classifier may authorize
+ * independently trusted HTTPS. Recovery of a selected Iroh carrier stays
+ * pinned to Iroh. Identity/readiness mismatch after acquisition is always
  * fail-closed and the physical lease remains in retryable cleanup custody.
  */
 export async function acquireHomeCarrierByPolicy<Value>(
@@ -125,10 +153,34 @@ export async function acquireHomeCarrierByPolicy<Value>(
   const endpoint = input.descriptor.endpoints.find(
     (candidate): candidate is HomeIrohEndpointDescriptorV1 => candidate.kind === 'iroh',
   );
-  const httpsOrigin = resolveDescriptorHttpsOrigin(input.descriptor);
+  const applicationOrigin = resolveDescriptorApplicationOrigin(input.descriptor);
+  if (
+    input.mode === 'pinned_recovery'
+    && (input.applicationCarrierEligibility === 'standard_only' || !endpoint)
+  ) {
+    return {
+      kind: 'fail_closed',
+      error: new HomeCarrierPolicyError(
+        'unavailable',
+        'Pinned Iroh recovery cannot select an HTTPS carrier',
+      ),
+      fallbackAllowed: false,
+    };
+  }
+  if (input.applicationCarrierEligibility === 'standard_only') {
+    return applicationOrigin
+      ? { kind: 'https', runtimeOrigin: applicationOrigin }
+      : {
+          kind: 'unavailable',
+          error: new HomeCarrierPolicyError(
+            'unavailable',
+            'Home application carrier policy allows only a descriptor-declared application origin',
+          ),
+        };
+  }
   if (!endpoint) {
-    return httpsOrigin
-      ? { kind: 'https', runtimeOrigin: httpsOrigin }
+    return applicationOrigin
+      ? { kind: 'https', runtimeOrigin: applicationOrigin }
       : {
           kind: 'unavailable',
           error: new HomeCarrierPolicyError('unavailable', 'Home descriptor declares no eligible application endpoint'),
@@ -157,8 +209,8 @@ export async function acquireHomeCarrierByPolicy<Value>(
     return { kind: 'iroh', carrier, release };
   } catch (error) {
     const classification = input.classifyFailure(error);
-    if (classification.fallbackAllowed && httpsOrigin) {
-      return { kind: 'https', runtimeOrigin: httpsOrigin };
+    if (input.mode === 'initial_selection' && classification.fallbackAllowed && applicationOrigin) {
+      return { kind: 'https', runtimeOrigin: applicationOrigin };
     }
     return { kind: 'fail_closed', error, fallbackAllowed: classification.fallbackAllowed };
   }

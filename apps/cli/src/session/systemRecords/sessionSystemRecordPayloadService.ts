@@ -1,19 +1,21 @@
 import {
-  SessionSystemRecordNamespaceSchema,
+  LegacyHostSessionSystemRecordLookupQuerySchema,
   getSessionSystemRecordPayloadSchema,
+  type LegacyHostSessionSystemRecord,
   type SessionSystemRecordKind,
   type SessionSystemRecordContent,
-  type SessionSystemRecordNamespace,
 } from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 
 import type { SessionClientPort } from '@/api/session/sessionClientPort';
 import {
-  decryptSessionPayload,
-  encryptSessionPayload,
+  openSessionStoredContent,
+  sealSessionStoredContent,
+  SessionStoredContentError,
   type SessionEncryptionContext,
+  type SessionStoredContentCryptoContext,
   type SessionStoredContentEncryptionMode,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+} from '@/session/transport/encryption/sessionStoredContentCodec';
 
 /**
  * Private host transport retained for the existing Claude workflow bridge.
@@ -21,16 +23,16 @@ import {
  */
 type SessionSystemRecordsService = Readonly<{
   write(request: Readonly<{
-    namespace: SessionSystemRecordNamespace;
+    namespace: LegacyHostSessionSystemRecord['namespace'];
     kind: SessionSystemRecordKind;
     localId: string;
     payload: JsonValue;
   }>): Promise<void>;
   read(request: Readonly<{
-    namespace: SessionSystemRecordNamespace;
+    namespace: LegacyHostSessionSystemRecord['namespace'];
     localId: string;
   }>): Promise<Readonly<{
-    namespace: SessionSystemRecordNamespace;
+    namespace: LegacyHostSessionSystemRecord['namespace'];
     kind: SessionSystemRecordKind;
     localId: string;
     payload: JsonValue;
@@ -68,33 +70,35 @@ function requireStoredContentContext(session: SessionClientPort): StoredContentC
   return context;
 }
 
-function sealPayload(context: StoredContentContext, payload: JsonValue): SessionSystemRecordContent {
-  if (context.mode === 'plain') {
-    return { t: 'plain', v: payload };
-  }
+function requireCanonicalStoredContentContext(
+  context: StoredContentContext,
+): SessionStoredContentCryptoContext {
+  if (context.mode === 'plain') return { mode: 'plain', ctx: null };
   if (!context.ctx) {
     throw new Error('Missing session encryption context for encrypted system record');
   }
-  return {
-    t: 'encrypted',
-    c: encryptSessionPayload({ ctx: context.ctx, payload }),
-  };
+  return { mode: 'e2ee', ctx: context.ctx };
+}
+
+function sealPayload(context: StoredContentContext, payload: JsonValue): SessionSystemRecordContent {
+  return sealSessionStoredContent({
+    ...requireCanonicalStoredContentContext(context),
+    payload,
+  });
 }
 
 function openPayload(context: StoredContentContext, content: SessionSystemRecordContent): unknown {
-  if (context.mode === 'plain') {
-    if (content.t !== 'plain') {
+  try {
+    return openSessionStoredContent({
+      ...requireCanonicalStoredContentContext(context),
+      content,
+    });
+  } catch (error) {
+    if (error instanceof SessionStoredContentError && error.code === 'session_content_mode_mismatch') {
       throw new Error('Session system record content did not match the Session encryption mode');
     }
-    return content.v;
+    throw error;
   }
-  if (content.t !== 'encrypted') {
-    throw new Error('Session system record content did not match the Session encryption mode');
-  }
-  if (!context.ctx) {
-    throw new Error('Missing session encryption context for encrypted system record');
-  }
-  return decryptSessionPayload({ ctx: context.ctx, ciphertextBase64: content.c });
 }
 
 export function createSessionSystemRecordPayloadService(
@@ -117,7 +121,7 @@ export function createSessionSystemRecordPayloadService(
       });
     },
     async read(request) {
-      if (!SessionSystemRecordNamespaceSchema.safeParse(request.namespace).success) {
+      if (!LegacyHostSessionSystemRecordLookupQuerySchema.safeParse(request).success) {
         throw new Error(`Invalid session system record namespace: ${request.namespace}`);
       }
       requireBoundSession(session);

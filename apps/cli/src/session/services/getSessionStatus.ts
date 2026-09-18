@@ -1,3 +1,5 @@
+import type { SessionAwarenessProjectionV1 } from '@happier-dev/protocol';
+import { projectCliSessionAwarenessV1 } from '@/cli/output/session/sessionAwareness';
 import type { StoredCredentials } from '@/persistence';
 import { summarizeSessionRecord, type SessionSummary } from '@/cli/output/session/sessionSummary';
 import { decryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -8,14 +10,15 @@ import {
 } from '@/session/transport/socket/sessionSocketAgentState';
 
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export type GetSessionStatusResult =
-  | Readonly<{ ok: true; session: SessionSummary; agentState: AgentStateSummary | null }>
+  | Readonly<{ ok: true; session: SessionSummary; agentState: AgentStateSummary | null; awareness: SessionAwarenessProjectionV1 }>
   | Readonly<{ ok: false; code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'unsupported' | 'encryption_material_unavailable'; candidates?: string[] }>;
 
-function summarizeSessionAgentState(params: Readonly<{
+function readSessionAgentState(params: Readonly<{
   sessionTarget: Extract<Awaited<ReturnType<typeof resolveSessionTransportContext>>, { ok: true }>;
-}>): AgentStateSummary | null {
+}>): unknown | null {
   const agentStateCiphertext =
     typeof params.sessionTarget.rawSession.agentState === 'string'
       ? String(params.sessionTarget.rawSession.agentState).trim()
@@ -32,7 +35,7 @@ function summarizeSessionAgentState(params: Readonly<{
             ctx: params.sessionTarget.ctx,
             ciphertextBase64: agentStateCiphertext,
           });
-    return summarizeAgentState(decrypted);
+    return decrypted;
   } catch {
     return null;
   }
@@ -48,10 +51,12 @@ export async function getSessionStatus(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
   live: boolean;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<GetSessionStatusResult> {
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
     return {
@@ -61,9 +66,16 @@ export async function getSessionStatus(params: Readonly<{
     };
   }
 
-  let agentStateSummary = summarizeSessionAgentState({
-    sessionTarget,
-  });
+  const snapshotAgentState = readSessionAgentState({ sessionTarget });
+  // Explicit: the socket callback below supplies a still-unvalidated `unknown` value, and the
+  // awareness normalizer is the owner that parses it. Inferring this from the snapshot branch
+  // would narrow `value` to the decoded snapshot's shape and reject the live evidence.
+  let agentStateEvidence: Readonly<{ value: unknown; observedAtMs: number }> | undefined =
+    snapshotAgentState === null ? undefined : {
+      value: snapshotAgentState,
+      observedAtMs: sessionTarget.rawSession.pendingRequestObservedAt ?? sessionTarget.rawSession.updatedAt,
+    };
+  let agentStateSummary = snapshotAgentState === null ? null : summarizeAgentState(snapshotAgentState);
 
   if (params.live) {
     try {
@@ -73,6 +85,9 @@ export async function getSessionStatus(params: Readonly<{
         ctx: sessionTarget.ctx,
         sessionEncryptionMode: sessionTarget.mode,
         timeoutMs: resolveLiveStatusWaitMs(),
+        onAgentStateObserved: (value, observedAtMs) => {
+          agentStateEvidence = { value, observedAtMs };
+        },
       });
       if (liveSummary) {
         agentStateSummary = liveSummary;
@@ -90,5 +105,12 @@ export async function getSessionStatus(params: Readonly<{
       session: sessionTarget.rawSession,
     }),
     agentState: agentStateSummary,
+    awareness: projectCliSessionAwarenessV1({
+      credentials: params.credentials,
+      accountEncryption: sessionTarget.accountEncryptionCurrentness,
+      row: sessionTarget.rawSession,
+      nowMs: Date.now(),
+      ...(agentStateEvidence ? { agentState: agentStateEvidence } : {}),
+    }),
   };
 }

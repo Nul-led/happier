@@ -9,7 +9,7 @@ import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '@/plugins/projection/regist
 import { joinInstalledCatalogRuntimeIntrospection } from '@/plugins/projection/introspection/catalogSnapshot';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import {
-  projectExecutablePluginToolCatalog,
+  projectGenerationBoundExecutablePluginToolCatalog,
   type ProjectedPluginToolCatalogEntry,
 } from '@/plugins/runtime/toolCatalog';
 
@@ -40,28 +40,9 @@ function projectCurrentDaemonPluginCatalogEntries(
 }
 
 function projectCurrentDaemonPluginTools(
-  registry: Parameters<typeof projectExecutablePluginToolCatalog>[0],
+  registry: Parameters<typeof projectGenerationBoundExecutablePluginToolCatalog>[0],
 ): readonly ProjectedPluginToolCatalogEntry[] {
-  const immutableGenerationIdsByPluginId =
-    registry.contributes.immutableGenerationIdsByPluginId ?? {};
-  return Object.freeze(projectExecutablePluginToolCatalog(registry).flatMap((tool) => {
-    const actionPluginId = registry.contributes.actionsById
-      ?.get(tool.actionId)
-      ?.pluginId
-      ?.trim();
-    const immutableGenerationId = actionPluginId
-      ? immutableGenerationIdsByPluginId[actionPluginId]?.trim()
-      : undefined;
-    // A long-lived MCP server must retain the exact Action contributor it
-    // advertised. Without this lease-local fence, a replacement could run
-    // through the old server's Tool catalog.
-    return immutableGenerationId
-      ? [Object.freeze({
-          ...tool,
-          expectedContributorImmutableGenerationId: immutableGenerationId,
-        })]
-      : [];
-  }));
+  return projectGenerationBoundExecutablePluginToolCatalog(registry);
 }
 
 /**

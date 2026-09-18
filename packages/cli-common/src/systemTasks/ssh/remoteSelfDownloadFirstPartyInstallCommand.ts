@@ -1,6 +1,7 @@
 import { resolveReleaseAssetBundle } from '@happier-dev/release-runtime/assets';
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { lookupSha256 } from '@happier-dev/release-runtime/checksums';
+import { DEFAULT_MINISIGN_PUBLIC_KEY, verifyMinisign } from '@happier-dev/release-runtime/minisign';
 
 import {
   getFirstPartyComponentCatalogEntry,
@@ -15,7 +16,6 @@ import {
   resolveRemoteInstalledFirstPartyBinaryPath,
   sanitizeRemoteFirstPartyPathSegment,
 } from './remoteFirstPartyInstallPath.js';
-import { DEFAULT_MINISIGN_PUBLIC_KEY, verifyMinisign } from './minisignVerification.js';
 
 type RemoteInstallAsset = Readonly<{
   name: string;

@@ -21,6 +21,7 @@ function seed(overrides: Partial<PluginInvocationServicesSeed> = {}): PluginInvo
         resolveCurrentPluginMaterializationRef:
             pluginMaterialization.resolveCurrentPluginMaterializationRef,
         generation: 'generation-1',
+        immutableGenerationId: 'immutable-generation-1',
         correlationId: 'correlation-1',
         surface: 'agent',
         session: { id: 'session-1' },
@@ -44,11 +45,11 @@ function request(status: ApprovalRequestV1['status'] = 'open'): ApprovalRequestV
 }
 
 function createRealExecutor(approvalsCreate: NonNullable<ActionExecutorDeps['approvalsCreate']>) {
-    return createActionExecutor({
+    const executor = createActionExecutor({
         executionRunStart: async () => ({}),
         executionRunList: async () => ({}),
         executionRunGet: async () => ({}),
-        executionRunSend: async () => ({}),
+        detachedExecutionRunSend: async () => ({}),
         executionRunStop: async () => ({}),
         executionRunAction: async () => ({}),
         executionRunWait: async () => ({}),
@@ -68,8 +69,14 @@ function createRealExecutor(approvalsCreate: NonNullable<ActionExecutorDeps['app
         sessionModeSet: async () => ({}),
         sessionModesList: async () => ({}),
         sessionTargetPrimarySet: async () => ({}),
-        sessionTargetTrackedSet: async () => ({}),
-        sessionList: async () => ({}),
+        sessionTargetTrackedSet: async () => ({
+            ok: true as const,
+            status: 'ok' as const,
+            sessionIds: [],
+            sessionAddresses: [],
+            sessions: [],
+        }),
+        sessionList: async () => ({ sessions: [] }),
         sessionActivityGet: async () => ({}),
         sessionRecentMessagesGet: async () => ({}),
         daemonMemorySearch: async () => ({ v: 1, ok: true as const, hits: [] }),
@@ -78,6 +85,17 @@ function createRealExecutor(approvalsCreate: NonNullable<ActionExecutorDeps['app
         resetGlobalVoiceAgent: async () => {},
         approvalsCreate,
     });
+    return {
+        ...executor,
+        execute: (
+            actionId: Parameters<typeof executor.execute>[0],
+            input: Parameters<typeof executor.execute>[1],
+            context: Parameters<typeof executor.execute>[2],
+        ) => executor.execute(actionId, input, {
+            serverId: 'server-1',
+            ...context,
+        }),
+    };
 }
 
 describe('stable plugin approval queue owner', () => {
@@ -107,6 +125,7 @@ describe('stable plugin approval queue owner', () => {
                     kind: 'plugin',
                     pluginId: 'acme.plugin',
                     contributionLocalId: 'action',
+                    immutableGenerationId: 'immutable-generation-1',
                     materialization: pluginMaterialization.materialization,
                 },
             }),
@@ -202,6 +221,17 @@ describe('stable plugin approval queue owner', () => {
                     sessionId: 'session-1',
                 },
                 requestedSurface: 'plugin',
+                executionOriginV1: expect.objectContaining({
+                    serverId: 'server-1',
+                    requestId: 'correlation-1:approval.request.create:1',
+                    sessionId: 'session-1',
+                    sessionListAccess: 'current_session',
+                    caller: expect.objectContaining({
+                        kind: 'plugin',
+                        pluginId: 'acme.plugin',
+                        immutableGenerationId: 'immutable-generation-1',
+                    }),
+                }),
             }),
         }));
 

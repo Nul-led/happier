@@ -1,8 +1,11 @@
 import { logger } from '@/ui/logger';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
+import { SessionMessageContentSchema } from '@/api/types';
+import { createSessionTranscriptStoredContentUnavailableError } from '@/api/session/sessionTranscriptStoredContentUnavailable';
+import { openSessionMessageContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import { createTranscriptHistoryNormalizationSequenceState } from './transcriptHistoryRows';
-import { extractSemanticTranscriptItem } from './extractSemanticTranscriptItem';
+import { extractSemanticTranscriptItemFromDecryptedPayload } from './extractSemanticTranscriptItem';
 import type {
   SemanticTranscriptDiagnostics,
   SemanticTranscriptItem,
@@ -15,6 +18,9 @@ import type {
 
 export type FetchTranscriptRawPageParams = Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
   limit: number;
   direction: TranscriptDirection;
@@ -57,6 +63,9 @@ function parseCursor(cursor: string | null | undefined): number | undefined {
 function defaultFetchTranscriptRawPage(params: FetchTranscriptRawPageParams): Promise<FetchTranscriptRawPageResult> {
   return fetchEncryptedTranscriptMessagesPage({
     token: params.token,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
     sessionId: params.sessionId,
     limit: params.limit,
     ...(typeof params.beforeSeq === 'number' ? { beforeSeq: params.beforeSeq } : {}),
@@ -125,8 +134,11 @@ function recordSemanticPageDiagnostics(params: Readonly<{
 
 export async function fetchTranscriptSemanticPage(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
-  ctx: Readonly<{ encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' }> | null;
+  contentContext: SessionStoredContentCryptoContext;
   limit: number;
   rawPageLimit: number;
   maxRawRowsToScan: number;
@@ -179,6 +191,9 @@ export async function fetchTranscriptSemanticPage(params: Readonly<{
     throwIfTranscriptReadAborted(params.signal);
     const page = await fetchPage({
       token: params.token,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
       sessionId: params.sessionId,
       limit: Math.min(rawPageLimit, maxRawRowsToScan - rawRowsScanned),
       direction: params.direction,
@@ -201,10 +216,12 @@ export async function fetchTranscriptSemanticPage(params: Readonly<{
       const row = page.messages[index]!;
       rawRowsScanned += 1;
       const rowSeq = typeof row.seq === 'number' && Number.isFinite(row.seq) ? Math.floor(row.seq) : null;
-      const extracted = extractSemanticTranscriptItem({
+      const content = SessionMessageContentSchema.safeParse(row.content);
+      if (!content.success) throw createSessionTranscriptStoredContentUnavailableError();
+      const extracted = extractSemanticTranscriptItemFromDecryptedPayload({
+        decrypted: openSessionMessageContent({ ...params.contentContext, content: content.data }),
         row,
         index,
-        ctx: params.ctx,
         sequenceState,
         options: {
           mode: params.mode,

@@ -1,9 +1,16 @@
-import axios from 'axios';
+import axios, { type AxiosResponse } from 'axios';
 import {
   ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
+  AccountApiTokensServerErrorV1Schema,
+  type ActionExecuteFailure,
   ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
   ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
   ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
+  ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1,
+  ACCOUNT_PASSWORD_CHANGE_PATH_V1,
+  ACCOUNT_PASSWORD_ENROLL_PATH_V1,
+  ACCOUNT_PASSWORD_REMOVE_PATH_V1,
+  ACCOUNT_SECURITY_PATH_V1,
   ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
   AccountApiTokensCreateActionInputV1Schema,
   AccountApiTokensCreateActionOutputV1Schema,
@@ -13,18 +20,56 @@ import {
   AccountApiTokensRevokeActionOutputV1Schema,
   AccountApiTokensRevokeAllActionInputV1Schema,
   AccountApiTokensRevokeAllActionOutputV1Schema,
+  AccountEmailChangeRequestResponseV1Schema,
+  AccountEmailChangeRequestV1Schema,
+  AccountPasswordChangeRequestV1Schema,
+  AccountPasswordEnrollRequestV1Schema,
+  AccountPasswordMutationResponseV1Schema,
+  AccountPasswordRemoveRequestV1Schema,
+  AccountSecurityGetResponseV1Schema,
+  AccountSecurityRouteErrorV1Schema,
   AccountSessionsSignOutEverywhereActionInputV1Schema,
   AccountSessionsSignOutEverywhereServerOutputV1Schema,
   type ActionExecutorDeps,
+  bindHomeDomainActionHttpRequestV1,
+  bindSessionAccessActionHttpRequestV1,
+  getActionSpec,
+  homeDomainActionOutputSchemaV1,
+  readHomeDomainActionErrorV1,
+  MachinePoolActionInputSchemasV1,
+  MachinePoolActionOutputSchemasV1,
+  MachinePoolErrorV1Schema,
+  machinePoolActionEndpointPathV1,
+  projectSessionPublicLinkActionResultV1,
+  SessionAccessErrorCodeV1Schema,
+  type ActionExecutorContext,
 } from '@happier-dev/protocol';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import {
   createAuthenticationHttpStatusError,
   createHttpStatusError,
+  isAuthenticationError,
   isAuthenticationStatus,
 } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { classifyServerEndpointError } from '@/api/client/classifyServerEndpointError';
+import { readNormalizedErrorCode } from '@/api/offline/serverConnectionErrors';
+import { configuration } from '@/configuration';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import type { StoredCredentials } from '@/persistence';
+import {
+  materializeSessionAccessGrantEnvelope,
+  SessionAccessGrantEnvelopeHostError,
+} from '@/api/sessionAccessGrantEnvelopeHost';
+import {
+  materializeSessionPublicLinkCreateBody,
+  SessionPublicLinkEnvelopeHostError,
+} from '@/api/sessionPublicLinkEnvelopeHost';
+import {
+  resolveExternalActionServerRequestHeaders,
+  type ExternalActionMachineRequestSigningKey,
+} from '@/api/externalActionExecutionAuthorization';
 
 export type AccountServerActionDeps = Pick<
   ActionExecutorDeps,
@@ -33,26 +78,43 @@ export type AccountServerActionDeps = Pick<
   | 'accountApiTokensListAction'
   | 'accountApiTokensRevokeAction'
   | 'accountApiTokensRevokeAllAction'
+  | 'accountSecurityGetAction'
+  | 'accountPasswordEnrollAction'
+  | 'accountPasswordChangeAction'
+  | 'accountPasswordRemoveAction'
+  | 'accountEmailChangeRequestAction'
+  | 'machinePoolAction'
+  | 'homeDomainAction'
+  | 'sessionAccessAction'
 >;
 
-async function executeAccountServerAction<
-  TInputSchema extends z.ZodType,
-  TOutputSchema extends z.ZodType,
->(params: Readonly<{
-  token: string;
+type AccountServerActionFixedHome =
+  | Readonly<{ serverId?: undefined; serverHttpBaseUrl?: undefined }>
+  | Readonly<{ serverId: string; serverHttpBaseUrl: string }>;
+
+type AccountServerActionParams<TInputSchema extends z.ZodType, TOutputSchema extends z.ZodType> = Readonly<{
+  headers: Readonly<Record<string, string>>;
   path: string;
   input: z.input<TInputSchema>;
   inputSchema: TInputSchema;
   outputSchema: TOutputSchema;
   serverHttpBaseUrl?: string;
   signal?: AbortSignal;
-}>): Promise<z.output<TOutputSchema>> {
+}>;
+
+const PublicShareDeleteHttpResponseSchema = z.object({
+  success: z.literal(true),
+}).loose();
+
+async function executeAccountSecurityAction<TInputSchema extends z.ZodType, TOutputSchema extends z.ZodType>(
+  params: AccountServerActionParams<TInputSchema, TOutputSchema>,
+): Promise<z.output<TOutputSchema> | ActionExecuteFailure> {
   const response = await axios.post<unknown>(
     `${params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl()}${params.path}`,
     params.inputSchema.parse(params.input),
     {
       headers: {
-        Authorization: `Bearer ${params.token}`,
+        ...params.headers,
         'Content-Type': 'application/json',
       },
       timeout: 15_000,
@@ -60,16 +122,57 @@ async function executeAccountServerAction<
       validateStatus: () => true,
     },
   );
+  if (response.status >= 400) {
+    const failure = AccountSecurityRouteErrorV1Schema.safeParse(response.data);
+    if (failure.success) return { ok: false, errorCode: failure.data.error, error: failure.data.error };
+    if ([404, 405, 501].includes(response.status)) return { ok: false, errorCode: 'unsupported', error: 'unsupported' };
+  }
   if (isAuthenticationStatus(response.status)) {
     throw createAuthenticationHttpStatusError(
       response.status,
-      `Authentication failed while executing Account Action (${response.status})`,
+      `Authentication failed while executing Account Security Action (${response.status})`,
     );
   }
   if (response.status < 200 || response.status >= 300) {
     throw createHttpStatusError(
       response.status,
-      `Failed to execute Account Action (${response.status})`,
+      `Failed to execute Account Security Action (${response.status})`,
+    );
+  }
+  return params.outputSchema.parse(response.data);
+}
+
+async function executeAccountSecurityGet<TOutputSchema extends z.ZodType>(
+  params: Readonly<{
+    headers: Readonly<Record<string, string>>;
+    path: string;
+    outputSchema: TOutputSchema;
+    serverHttpBaseUrl?: string;
+    signal?: AbortSignal;
+  }>,
+): Promise<z.output<TOutputSchema> | ActionExecuteFailure> {
+  const response = await axios.get<unknown>(
+    `${params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl()}${params.path}`,
+    {
+      headers: params.headers,
+      timeout: 15_000,
+      ...(params.signal ? { signal: params.signal } : {}),
+      validateStatus: () => true,
+    },
+  );
+  if (response.status >= 400) {
+    if ([404, 405, 501].includes(response.status)) return { ok: false, errorCode: 'unsupported', error: 'unsupported' };
+  }
+  if (isAuthenticationStatus(response.status)) {
+    throw createAuthenticationHttpStatusError(
+      response.status,
+      `Authentication failed while executing Account Security Action (${response.status})`,
+    );
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw createHttpStatusError(
+      response.status,
+      `Failed to execute Account Security Action (${response.status})`,
     );
   }
   return params.outputSchema.parse(response.data);
@@ -83,59 +186,701 @@ async function executeAccountServerAction<
  */
 export function createAccountServerActionDeps(input: Readonly<{
   token: string;
+  /** Existing Machine installation key used only for Home-authorized external Action requests. */
+  externalActionMachineRequestPrivateKey?: ExternalActionMachineRequestSigningKey;
+  externalActionMachineInstallationId?: string;
+  /** Exact Account credential material used only by trusted host-side encryption adapters. */
+  credentials?: StoredCredentials;
+  /** Incumbent credential/scope owner; checked around private direct-grant materialization. */
+  isCredentialCurrent?: () => boolean | Promise<boolean>;
+  /** Cryptographic Home identity observed from the bound endpoint's feature projection. */
+  serverIdentityId?: string;
+  /** Exact Home feature projection used by trusted Session-detail consumers. */
+  resolveServerFeaturesSnapshot?: () =>
+    | CliServerFeaturesSnapshot
+    | undefined
+    | Promise<CliServerFeaturesSnapshot | undefined>;
   /** Optional process-lifetime endpoint binding for long-lived executors such as MCP. */
-  serverHttpBaseUrl?: string;
-}>): AccountServerActionDeps {
+}> & AccountServerActionFixedHome): AccountServerActionDeps {
+  if (
+    (input.serverId === undefined) !== (input.serverHttpBaseUrl === undefined)
+    || (input.serverId !== undefined && input.serverId.trim().length === 0)
+    || (input.serverHttpBaseUrl !== undefined && input.serverHttpBaseUrl.trim().length === 0)
+  ) {
+    throw new Error('fixed_action_server_target_incomplete');
+  }
+  const serverHttpBaseUrl = input.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
+  const serverId = input.serverId ?? configuration.activeServerId;
+  // Local routing/profile identity never substitutes for cryptographic Home
+  // identity. External invocation authority compares only the explicit
+  // serverIdentityId; ordinary daemon-bearer work does not consume it, so
+  // supported ordinary V1 credentials are preserved while a missing
+  // cryptographic identity fails closed instead of falling back to serverId.
+  const serverIdentityId = input.serverIdentityId;
+  const accountServerTargetMismatch = (actionContext: Readonly<{ serverId?: string | null }> | undefined): ActionExecuteFailure | null =>
+    actionContext?.serverId && actionContext.serverId !== serverId
+      ? { ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' }
+      : null;
+  const externalAuthorizationUnavailable = (): ActionExecuteFailure => ({
+    ok: false,
+    errorCode: 'not_authenticated',
+    error: 'not_authenticated',
+  });
+  const resolveRequestHeaders = (params: Readonly<{
+    context: ActionExecutorContext | undefined;
+    effectActionId: string;
+    method: string;
+    path: string;
+    body?: unknown;
+  }>) => resolveExternalActionServerRequestHeaders({
+    context: params.context,
+    effectActionId: params.effectActionId,
+    method: params.method,
+    path: params.path,
+    ...(params.body === undefined ? {} : { body: params.body }),
+    daemonToken: input.token,
+    serverIdentityId,
+    ...(input.externalActionMachineRequestPrivateKey
+      ? { privateKey: input.externalActionMachineRequestPrivateKey }
+      : {}),
+    ...(input.externalActionMachineInstallationId
+      ? { installationId: input.externalActionMachineInstallationId }
+      : {}),
+  });
+  const dispatchAccountServerActionHttpRequest = async (params: Readonly<{
+    headers: Readonly<Record<string, string>>;
+    method: string;
+    path: string;
+    body?: unknown;
+    signal?: AbortSignal;
+    sideEffectClass: ReturnType<typeof getActionSpec>['sideEffectClass'];
+    replayAmbiguousOnce?: boolean;
+  }>): Promise<Readonly<{ ok: true; response: AxiosResponse<unknown> }> | ActionExecuteFailure> => {
+    const mutation = params.sideEffectClass !== 'none' && params.sideEffectClass !== 'read';
+    // An already-aborted signal proves this adapter has not handed request
+    // bytes to Axios. After dispatch, cancellation cannot prove that a Home
+    // mutation did not commit before the response was lost.
+    if (params.signal?.aborted) {
+      return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+    }
+
+    let requestIssued = false;
+    const issueRequest = () => axios.request<unknown>({
+      method: params.method,
+      url: `${serverHttpBaseUrl}${params.path}`,
+      ...(params.body === undefined ? {} : { data: params.body }),
+      headers: { ...params.headers, 'Content-Type': 'application/json' },
+      timeout: 15_000,
+      ...(params.signal ? { signal: params.signal } : {}),
+      validateStatus: () => true,
+    });
+    try {
+      requestIssued = true;
+      const response = await issueRequest();
+      return { ok: true, response };
+    } catch (error) {
+      if (params.signal?.aborted || axios.isCancel(error)) {
+        return mutation && requestIssued
+          ? { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' }
+          : { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+      }
+      const classification = classifyServerEndpointError(error);
+      if (classification.kind !== 'network' && classification.kind !== 'timeout') throw error;
+      const code = readNormalizedErrorCode(error);
+      const provenPreDispatch = code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN';
+      if (mutation && requestIssued && !provenPreDispatch) {
+        if (params.replayAmbiguousOnce) {
+          try {
+            // Public-link POST is value-idempotent. This reuses the one
+            // materialized body so bearer and ciphertext bytes stay exact.
+            return { ok: true, response: await issueRequest() };
+          } catch {
+            return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+          }
+        }
+        return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+      }
+      return { ok: false, errorCode: 'server_unreachable', error: 'server_unreachable' };
+    }
+  };
+  const settleAccountServerActionHttpOutput = <TOutputSchema extends z.ZodType>(params: Readonly<{
+    data: unknown;
+    outputSchema: TOutputSchema;
+    sideEffectClass: ReturnType<typeof getActionSpec>['sideEffectClass'];
+  }>): z.output<TOutputSchema> | ActionExecuteFailure => {
+    try {
+      return params.outputSchema.parse(params.data);
+    } catch (error) {
+      const mutation = params.sideEffectClass !== 'none' && params.sideEffectClass !== 'read';
+      if (!mutation) throw error;
+      // A 2xx response with an unusable acknowledgement cannot establish that
+      // a Home mutation settled without committing its effect.
+      return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+    }
+  };
+  const readAccountApiTokenHttpFailure = (response: AxiosResponse<unknown>): ActionExecuteFailure | null => {
+    if (response.status < 400) return null;
+    const failure = AccountApiTokensServerErrorV1Schema.safeParse(response.data);
+    if (failure.success) {
+      return { ok: false, errorCode: failure.data.error, error: failure.data.error };
+    }
+    if ([404, 405, 501].includes(response.status)) {
+      return { ok: false, errorCode: 'unsupported', error: 'unsupported' };
+    }
+    if (isAuthenticationStatus(response.status)) {
+      return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+    }
+    if (response.status === 429) {
+      return { ok: false, errorCode: 'rate_limited', error: 'rate_limited' };
+    }
+    return { ok: false, errorCode: 'api_token_operation_failed', error: 'api_token_operation_failed' };
+  };
   return {
-    accountSessionsSignOutEverywhereAction: async ({ input: actionInput, signal }) =>
-      await executeAccountServerAction({
-        token: input.token,
-        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
+    machinePoolAction: async ({ actionId, input: actionInput, context: actionContext, signal }) => {
+      if (actionContext?.serverId && actionContext.serverId !== serverId) {
+        return { ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' };
+      }
+      const path = machinePoolActionEndpointPathV1(actionId);
+      const body = MachinePoolActionInputSchemasV1[actionId].parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: actionId,
+        method: 'POST',
+        path,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path,
+        body,
+        ...(signal ? { signal } : {}),
+        sideEffectClass: getActionSpec(actionId).sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const { response } = dispatch;
+      if (isAuthenticationStatus(response.status)) {
+        throw createAuthenticationHttpStatusError(response.status, `Authentication failed while executing Machine Pool Action (${response.status})`);
+      }
+      if (response.status >= 400) {
+        const error = MachinePoolErrorV1Schema.safeParse(response.data);
+        if (error.success) {
+          return { ok: false, errorCode: error.data.code, error: error.data.code, details: error.data };
+        }
+        if (response.status === 404) {
+          return {
+            ok: false,
+            errorCode: 'unsupported_action',
+            error: `unsupported_action:${actionId}`,
+          };
+        }
+        throw createHttpStatusError(response.status, `Failed to execute Machine Pool Action (${response.status})`);
+      }
+      return settleAccountServerActionHttpOutput({
+        data: response.data,
+        outputSchema: MachinePoolActionOutputSchemasV1[actionId],
+        sideEffectClass: getActionSpec(actionId).sideEffectClass,
+      });
+    },
+    /**
+     * The Home family over the Home this process is already bound to. The Action
+     * input names Home-local ids only, so nothing here selects a Home; the
+     * configured endpoint and the signed Account credential do, and the Home's
+     * own transaction remains the authority for every governance decision.
+     */
+    homeDomainAction: async ({ actionId, input: actionInput, context: actionContext, signal }) => {
+      if (actionContext?.serverId && actionContext.serverId !== serverId) {
+        return { ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' };
+      }
+      const request = bindHomeDomainActionHttpRequestV1(actionId, actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: actionId,
+        method: request.method,
+        path: request.path,
+        ...(request.body === undefined ? {} : { body: request.body }),
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: request.method,
+        path: request.path,
+        ...(request.body === undefined ? {} : { body: request.body }),
+        ...(signal ? { signal } : {}),
+        sideEffectClass: getActionSpec(actionId).sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const { response } = dispatch;
+      if (response.status >= 400) {
+        // A Home that named its refusal is answering, not failing — including a
+        // 403 that carries a governance code, which is an authorization outcome
+        // rather than a broken credential.
+        const named = readHomeDomainActionErrorV1(response.data);
+        if (named) {
+          return { ok: false, errorCode: named.code, error: named.code, details: named.details };
+        }
+        if (isAuthenticationStatus(response.status)) {
+          throw createAuthenticationHttpStatusError(
+            response.status,
+            `Authentication failed while executing Home Action (${response.status})`,
+          );
+        }
+        // An older or feature-disabled Home has no such operation at all.
+        if ([404, 405, 501].includes(response.status)) {
+          return {
+            ok: false,
+            errorCode: 'unsupported_action',
+            error: `unsupported_action:${actionId}`,
+          };
+        }
+        throw createHttpStatusError(response.status, `Failed to execute Home Action (${response.status})`);
+      }
+      return settleAccountServerActionHttpOutput({
+        data: response.data,
+        outputSchema: homeDomainActionOutputSchemaV1(actionId),
+        sideEffectClass: getActionSpec(actionId).sideEffectClass,
+      });
+    },
+    sessionAccessAction: async ({ actionId, input: actionInput, context: actionContext, signal }) => {
+      if (actionContext?.serverId && actionContext.serverId !== serverId) {
+        return { ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' };
+      }
+      const spec = getActionSpec(actionId);
+      const mutation = spec.sideEffectClass !== 'none' && spec.sideEffectClass !== 'read';
+      const publicRequest = bindSessionAccessActionHttpRequestV1(actionId, actionInput);
+      let request = publicRequest;
+      let retainedEnvelopeFallback = false;
+      if (actionId === 'session.public_link.create') {
+        if (signal?.aborted) {
+          return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+        }
+        if (input.isCredentialCurrent) {
+          let credentialCurrent = false;
+          try {
+            credentialCurrent = await input.isCredentialCurrent();
+          } catch {
+            credentialCurrent = false;
+          }
+          if (!credentialCurrent) {
+            return { ok: false, errorCode: 'session_access_stale_scope', error: 'session_access_stale_scope' };
+          }
+        }
+        try {
+          const materialized = await materializeSessionPublicLinkCreateBody({
+            token: input.token,
+            credentials: input.credentials,
+            serverHttpBaseUrl,
+            input: actionInput,
+            ...(input.isCredentialCurrent ? { isCurrent: input.isCredentialCurrent } : {}),
+            ...(signal ? { signal } : {}),
+          });
+          const baseBody = publicRequest.body !== null && typeof publicRequest.body === 'object'
+            ? publicRequest.body as Readonly<Record<string, unknown>>
+            : {};
+          request = {
+            ...publicRequest,
+            body: {
+              ...baseBody,
+              token: materialized.token,
+              ...(materialized.encryptedDataKey !== undefined ? { encryptedDataKey: materialized.encryptedDataKey } : {}),
+            },
+          };
+        } catch (error) {
+          if (signal?.aborted || axios.isCancel(error)) {
+            return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+          }
+          if (error instanceof SessionPublicLinkEnvelopeHostError) {
+            if (error.code === 'cancelled') {
+              return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+            }
+            if (error.code === 'not_authenticated') {
+              throw createAuthenticationHttpStatusError(401, 'Session public-link Action authentication failed');
+            }
+            return { ok: false, errorCode: error.code, error: error.code };
+          }
+          if (isAuthenticationError(error)) {
+            throw createAuthenticationHttpStatusError(401, 'Session public-link Action authentication failed');
+          }
+          return {
+            ok: false,
+            errorCode: 'session_access_request_failed',
+            error: 'session_access_request_failed',
+          };
+        }
+        if (signal?.aborted) {
+          return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+        }
+        if (input.isCredentialCurrent) {
+          let credentialCurrent = false;
+          try {
+            credentialCurrent = await input.isCredentialCurrent();
+          } catch {
+            credentialCurrent = false;
+          }
+          if (!credentialCurrent) {
+            return { ok: false, errorCode: 'session_access_stale_scope', error: 'session_access_stale_scope' };
+          }
+        }
+      }
+      if (actionId === 'session.access.grant.set') {
+        try {
+          let serverFeaturesSnapshot: CliServerFeaturesSnapshot | undefined;
+          try {
+            serverFeaturesSnapshot = await input.resolveServerFeaturesSnapshot?.();
+          } catch {
+            // Feature discovery failure must not widen an older or unknown Home.
+            serverFeaturesSnapshot = undefined;
+          }
+          const materialized = await materializeSessionAccessGrantEnvelope({
+            token: input.token,
+            credentials: input.credentials,
+            serverHttpBaseUrl,
+            ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+            input: actionInput,
+            ...(input.isCredentialCurrent ? { isCurrent: input.isCredentialCurrent } : {}),
+            ...(signal ? { signal } : {}),
+          });
+          const physicalInput = materialized.input;
+          retainedEnvelopeFallback = materialized.retainedEnvelopeFallback;
+          const accountEnvelopeInput = 'accountEnvelopeInput' in physicalInput
+            ? physicalInput.accountEnvelopeInput
+            : undefined;
+          request = accountEnvelopeInput && publicRequest.body && typeof publicRequest.body === 'object'
+            ? {
+                ...publicRequest,
+                body: {
+                  ...publicRequest.body,
+                  accountEnvelopeInput,
+                },
+              }
+            : publicRequest;
+        } catch (error) {
+          if (signal?.aborted || axios.isCancel(error)) {
+            return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+          }
+          if (error instanceof SessionAccessGrantEnvelopeHostError) {
+            return { ok: false, errorCode: error.code, error: error.code };
+          }
+          return {
+            ok: false,
+            errorCode: 'session_access_request_failed',
+            error: 'session_access_request_failed',
+          };
+        }
+      }
+      if (actionId === 'session.access.grant.set' && input.isCredentialCurrent) {
+        let credentialCurrent = false;
+        try {
+          credentialCurrent = await input.isCredentialCurrent();
+        } catch {
+          credentialCurrent = false;
+        }
+        if (!credentialCurrent) {
+          return { ok: false, errorCode: 'session_access_stale_scope', error: 'session_access_stale_scope' };
+        }
+      }
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: actionId,
+        method: request.method,
+        path: request.path,
+        ...(request.body === undefined ? {} : { body: request.body }),
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: request.method,
+        path: request.path,
+        ...(request.body === undefined ? {} : { body: request.body }),
+        ...(signal ? { signal } : {}),
+        sideEffectClass: spec.sideEffectClass,
+        ...(actionId === 'session.public_link.create' ? { replayAmbiguousOnce: true } : {}),
+      });
+      if (!dispatch.ok) return dispatch;
+      const response = dispatch.response;
+      if (response.status < 200 || response.status >= 300) {
+        const body = response.data !== null && typeof response.data === 'object'
+          ? response.data as Readonly<Record<string, unknown>>
+          : null;
+        const named = SessionAccessErrorCodeV1Schema.safeParse(body?.error);
+        if (named.success) {
+          const code = retainedEnvelopeFallback && named.data === 'recipient_envelope_required'
+            ? 'session_data_key_unavailable'
+            : named.data;
+          return { ok: false, errorCode: code, error: code };
+        }
+        if (actionId === 'session.public_link.remove' && response.status === 404 && body?.error === 'Share not found') {
+          return spec.outputSchema?.parse({ changed: false }) ?? { changed: false };
+        }
+        if ([404, 405, 501].includes(response.status)) {
+          return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
+        }
+        if (isAuthenticationStatus(response.status)) {
+          throw createAuthenticationHttpStatusError(response.status, 'Session access Action authentication failed');
+        }
+        throw createHttpStatusError(response.status, 'Session access Action request failed');
+      }
+      try {
+        if (actionId === 'session.public_link.remove') {
+          PublicShareDeleteHttpResponseSchema.parse(response.data);
+          return spec.outputSchema?.parse({ changed: true }) ?? { changed: true };
+        }
+        if (actionId === 'session.public_link.get' || actionId === 'session.public_link.create') {
+          const projected = projectSessionPublicLinkActionResultV1(response.data);
+          return spec.outputSchema?.parse(projected) ?? projected;
+        }
+        return spec.outputSchema?.parse(response.data) ?? response.data;
+      } catch (error) {
+        if (!mutation) throw error;
+        // A successful HTTP status proves that request bytes reached the Home,
+        // but a malformed acknowledgement cannot prove whether its mutation
+        // committed. Callers reconcile through the authoritative read owner;
+        // this adapter neither retries nor fabricates an inverse operation.
+        return { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' };
+      }
+    },
+    accountSessionsSignOutEverywhereAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) {
+        throw Object.assign(new Error(targetMismatch.error), { code: targetMismatch.errorCode });
+      }
+      const spec = getActionSpec('account.sessions.signOutEverywhere');
+      const body = AccountSessionsSignOutEverywhereActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.sessions.signOutEverywhere',
+        method: 'POST',
         path: ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
-        input: actionInput,
-        inputSchema: AccountSessionsSignOutEverywhereActionInputV1Schema,
-        outputSchema: AccountSessionsSignOutEverywhereServerOutputV1Schema,
+        body,
+      });
+      if (!requestHeaders.ok) {
+        throw createAuthenticationHttpStatusError(401, 'Sign-out-everywhere Action authentication failed');
+      }
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
+        body,
         ...(signal ? { signal } : {}),
-      }),
-    accountApiTokensCreateAction: async ({ input: actionInput, signal }) =>
-      await executeAccountServerAction({
-        token: input.token,
-        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) {
+        throw Object.assign(new Error(dispatch.error), { code: dispatch.errorCode });
+      }
+      const { response } = dispatch;
+      if (isAuthenticationStatus(response.status)) {
+        throw createAuthenticationHttpStatusError(response.status, 'Sign-out-everywhere Action authentication failed');
+      }
+      if (response.status < 200 || response.status >= 300) {
+        throw createHttpStatusError(response.status, `Failed to execute sign-out-everywhere Action (${response.status})`);
+      }
+      return AccountSessionsSignOutEverywhereServerOutputV1Schema.parse(response.data);
+    },
+    accountApiTokensCreateAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const spec = getActionSpec('account.apiTokens.create');
+      const body = AccountApiTokensCreateActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.apiTokens.create',
+        method: 'POST',
         path: ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
-        input: actionInput,
-        inputSchema: AccountApiTokensCreateActionInputV1Schema,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
+        body,
+        ...(signal ? { signal } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const failure = readAccountApiTokenHttpFailure(dispatch.response);
+      if (failure) return failure;
+      return settleAccountServerActionHttpOutput({
+        data: dispatch.response.data,
         outputSchema: AccountApiTokensCreateActionOutputV1Schema,
-        ...(signal ? { signal } : {}),
-      }),
-    accountApiTokensListAction: async ({ input: actionInput, signal }) =>
-      await executeAccountServerAction({
-        token: input.token,
-        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+    },
+    accountApiTokensListAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const spec = getActionSpec('account.apiTokens.list');
+      const body = AccountApiTokensListActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.apiTokens.list',
+        method: 'POST',
         path: ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
-        input: actionInput,
-        inputSchema: AccountApiTokensListActionInputV1Schema,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
+        body,
+        ...(signal ? { signal } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const failure = readAccountApiTokenHttpFailure(dispatch.response);
+      if (failure) return failure;
+      return settleAccountServerActionHttpOutput({
+        data: dispatch.response.data,
         outputSchema: AccountApiTokensListActionOutputV1Schema,
-        ...(signal ? { signal } : {}),
-      }),
-    accountApiTokensRevokeAction: async ({ input: actionInput, signal }) =>
-      await executeAccountServerAction({
-        token: input.token,
-        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+    },
+    accountApiTokensRevokeAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const spec = getActionSpec('account.apiTokens.revoke');
+      const body = AccountApiTokensRevokeActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.apiTokens.revoke',
+        method: 'POST',
         path: ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
-        input: actionInput,
-        inputSchema: AccountApiTokensRevokeActionInputV1Schema,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
+        body,
+        ...(signal ? { signal } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const failure = readAccountApiTokenHttpFailure(dispatch.response);
+      if (failure) return failure;
+      return settleAccountServerActionHttpOutput({
+        data: dispatch.response.data,
         outputSchema: AccountApiTokensRevokeActionOutputV1Schema,
-        ...(signal ? { signal } : {}),
-      }),
-    accountApiTokensRevokeAllAction: async ({ input: actionInput, signal }) =>
-      await executeAccountServerAction({
-        token: input.token,
-        ...(input.serverHttpBaseUrl ? { serverHttpBaseUrl: input.serverHttpBaseUrl } : {}),
+        sideEffectClass: spec.sideEffectClass,
+      });
+    },
+    accountApiTokensRevokeAllAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const spec = getActionSpec('account.apiTokens.revokeAll');
+      const body = AccountApiTokensRevokeAllActionInputV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.apiTokens.revokeAll',
+        method: 'POST',
         path: ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
-        input: actionInput,
-        inputSchema: AccountApiTokensRevokeAllActionInputV1Schema,
-        outputSchema: AccountApiTokensRevokeAllActionOutputV1Schema,
+        body,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      const dispatch = await dispatchAccountServerActionHttpRequest({
+        headers: requestHeaders.headers,
+        method: 'POST',
+        path: ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
+        body,
         ...(signal ? { signal } : {}),
-      }),
+        sideEffectClass: spec.sideEffectClass,
+      });
+      if (!dispatch.ok) return dispatch;
+      const failure = readAccountApiTokenHttpFailure(dispatch.response);
+      if (failure) return failure;
+      return settleAccountServerActionHttpOutput({
+        data: dispatch.response.data,
+        outputSchema: AccountApiTokensRevokeAllActionOutputV1Schema,
+        sideEffectClass: spec.sideEffectClass,
+      });
+    },
+    // Lane 02 Account Security family. One exact-Home binding (serverId +
+    // endpoint + signed Account credential) serves all five intents; the Home
+    // transaction remains the authority for every governance decision.
+    accountSecurityGetAction: async ({ context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const requestHeaders = resolveRequestHeaders({
+        context: actionContext,
+        effectActionId: 'account.security.get',
+        method: 'GET',
+        path: ACCOUNT_SECURITY_PATH_V1,
+      });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityGet({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_SECURITY_PATH_V1,
+        outputSchema: AccountSecurityGetResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
+    accountPasswordEnrollAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const body = AccountPasswordEnrollRequestV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({ context: actionContext, effectActionId: 'account.password.enroll', method: 'POST', path: ACCOUNT_PASSWORD_ENROLL_PATH_V1, body });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityAction({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_PASSWORD_ENROLL_PATH_V1,
+        input: body,
+        inputSchema: AccountPasswordEnrollRequestV1Schema,
+        outputSchema: AccountPasswordMutationResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
+    accountPasswordChangeAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const body = AccountPasswordChangeRequestV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({ context: actionContext, effectActionId: 'account.password.change', method: 'POST', path: ACCOUNT_PASSWORD_CHANGE_PATH_V1, body });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityAction({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_PASSWORD_CHANGE_PATH_V1,
+        input: body,
+        inputSchema: AccountPasswordChangeRequestV1Schema,
+        outputSchema: AccountPasswordMutationResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
+    accountPasswordRemoveAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const body = AccountPasswordRemoveRequestV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({ context: actionContext, effectActionId: 'account.password.remove', method: 'POST', path: ACCOUNT_PASSWORD_REMOVE_PATH_V1, body });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityAction({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_PASSWORD_REMOVE_PATH_V1,
+        input: body,
+        inputSchema: AccountPasswordRemoveRequestV1Schema,
+        outputSchema: AccountPasswordMutationResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
+    accountEmailChangeRequestAction: async ({ input: actionInput, context: actionContext, signal }) => {
+      const targetMismatch = accountServerTargetMismatch(actionContext);
+      if (targetMismatch) return targetMismatch;
+      const body = AccountEmailChangeRequestV1Schema.parse(actionInput);
+      const requestHeaders = resolveRequestHeaders({ context: actionContext, effectActionId: 'account.email.change.request', method: 'POST', path: ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1, body });
+      if (!requestHeaders.ok) return externalAuthorizationUnavailable();
+      return await executeAccountSecurityAction({
+        headers: requestHeaders.headers,
+        serverHttpBaseUrl,
+        path: ACCOUNT_EMAIL_CHANGE_REQUEST_PATH_V1,
+        input: body,
+        inputSchema: AccountEmailChangeRequestV1Schema,
+        outputSchema: AccountEmailChangeRequestResponseV1Schema,
+        ...(signal ? { signal } : {}),
+      });
+    },
   };
 }

@@ -19,7 +19,7 @@ import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { StoredCredentials } from '@/persistence';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
-import { decryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
+import { openSessionMessageContent } from '@/session/transport/encryption/sessionEncryptionContext';
 
 const textEncoder = new TextEncoder();
 const DEFAULT_MESSAGE_ACTION_REFERENCE_RESOLVE_TIMEOUT_MS = 10_000;
@@ -308,16 +308,7 @@ export async function readCurrentMessageActionReferenceRowV1(params: Readonly<{
       return null;
     }
 
-    const decryptedContent = sessionTransport.mode === 'plain'
-      ? content.data.t === 'plain'
-        ? content.data.v
-        : null
-      : content.data.t === 'encrypted'
-        ? decryptSessionPayload({
-            ctx: sessionTransport.ctx,
-            ciphertextBase64: content.data.c,
-          })
-        : null;
+    const decryptedContent = openSessionMessageContent({ ...sessionTransport, content: content.data });
     if (decryptedContent === null) return null;
 
     return {

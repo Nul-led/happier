@@ -8,7 +8,10 @@ import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/json
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import { initializeBackendApiContext } from '@/agent/runtime/initializeBackendApiContext';
-import { listBuiltInHappierTools } from '@/agent/tools/happierTools/listBuiltInHappierTools';
+import {
+  listBuiltInHappierTools,
+  type BuiltInHappierToolsSurface,
+} from '@/agent/tools/happierTools/listBuiltInHappierTools';
 import { callBuiltInHappierTool } from '@/agent/tools/happierTools/callBuiltInHappierTool';
 import { resolveCustomHappierToolsContext } from '@/agent/tools/happierTools/customMcp/resolveCustomHappierToolsContext';
 import {
@@ -17,6 +20,16 @@ import {
 } from '@/agent/tools/happierTools/customMcp/listResolvedCustomHappierTools';
 import { callResolvedCustomHappierTool } from '@/agent/tools/happierTools/customMcp/callResolvedCustomHappierTool';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
+import {
+  isActionEnabledByActionsSettings,
+  type ActionId,
+  type ActionsSettingsV1,
+  type FeatureId,
+} from '@happier-dev/protocol';
+import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type BuiltInToolEntry = Awaited<ReturnType<typeof listBuiltInHappierTools>>[number];
 type CustomToolEntry = Awaited<ReturnType<typeof listResolvedCustomHappierTools>>['tools'][number];
@@ -27,7 +40,14 @@ export type ToolsCommandDeps = Readonly<{
   readCredentials: () => Promise<StoredCredentials | null>;
   initializeBackendApiContext: typeof initializeBackendApiContext;
   bootstrapAccountSettingsContext: typeof bootstrapAccountSettingsContext;
-  listBuiltInHappierTools: () => Promise<ReadonlyArray<BuiltInToolEntry>> | ReadonlyArray<BuiltInToolEntry>;
+  listBuiltInHappierTools: (
+    params: Readonly<{
+      surface: BuiltInHappierToolsSurface;
+      isActionEnabled: (id: ActionId) => boolean;
+      isServerFeatureEnabled?: (id: FeatureId) => boolean;
+      actionsSettings: ActionsSettingsV1;
+    }>,
+  ) => Promise<ReadonlyArray<BuiltInToolEntry>> | ReadonlyArray<BuiltInToolEntry>;
   callBuiltInHappierTool: typeof callBuiltInHappierTool;
   resolveCustomHappierToolsContext: typeof resolveCustomHappierToolsContext;
   listResolvedCustomHappierTools: typeof listResolvedCustomHappierTools;
@@ -39,13 +59,16 @@ function resolveToolsCommandDeps(overrides?: Partial<ToolsCommandDeps>): ToolsCo
     readCredentials: readStoredCredentials,
     initializeBackendApiContext,
     bootstrapAccountSettingsContext,
-    listBuiltInHappierTools: async () => {
+    listBuiltInHappierTools: async ({ surface, isActionEnabled, isServerFeatureEnabled, actionsSettings }) => {
       const catalog = await readDaemonPluginCatalog().catch(() => ({
         kind: 'unavailable' as const,
         code: 'daemon_unavailable',
       }));
       return listBuiltInHappierTools({
-        surface: 'cli',
+        surface,
+        isActionEnabled,
+        ...(isServerFeatureEnabled ? { isServerFeatureEnabled } : {}),
+        actionsSettings,
         pluginToolCatalog: catalog.kind === 'available' ? catalog.tools : Object.freeze([]),
       });
     },
@@ -68,6 +91,16 @@ function requireFlagValue(args: readonly string[], flag: string): string {
   const value = getFlagValue(args, flag);
   if (!value) throw new Error(`Missing required flag: ${flag}`);
   return value;
+}
+
+/**
+ * The provenance the host stamped on a generated shell-bridge command. A human
+ * `happier tools` invocation never carries it, so this is the one place the two
+ * origins separate — reading stored credentials proves the process can reach the
+ * account, not that a person asked for the call.
+ */
+function resolveToolsCommandSurface(args: readonly string[]): 'cli' | 'agent' {
+  return args.includes('--agent-bridge') ? 'agent' : 'cli';
 }
 
 function resolveCommandKind(args: readonly string[]): string {
@@ -118,6 +151,8 @@ async function resolveCustomToolsRuntimeContext(args: readonly string[], deps: T
   sessionId: string | null;
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
+  accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
 async function resolveCustomToolsRuntimeContext(
@@ -129,6 +164,8 @@ async function resolveCustomToolsRuntimeContext(
   sessionId: string;
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
+  accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>;
 
 async function resolveCustomToolsRuntimeContext(
@@ -140,12 +177,14 @@ async function resolveCustomToolsRuntimeContext(
   sessionId: string | null;
   directory: string;
   mcpServers: Awaited<ReturnType<typeof resolveCustomHappierToolsContext>>['mcpServers'];
+  accountSettings: Awaited<ReturnType<typeof bootstrapAccountSettingsContext>>['settings'];
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }> {
   const baseContext = options?.requireSessionId === true
     ? await resolveToolsBaseContext(args, deps, { requireSessionId: true })
     : await resolveToolsBaseContext(args, deps);
   const { credentials, sessionId, directory } = baseContext;
-  const { machineId } = await deps.initializeBackendApiContext({
+  const { api, machineId } = await deps.initializeBackendApiContext({
     credentials,
     machineMetadata: initialMachineMetadata,
     ...(wantsJson(args) ? { suppressMachineRegistrationRecoveryLogs: true } : {}),
@@ -160,9 +199,22 @@ async function resolveCustomToolsRuntimeContext(
     accountSettings: accountSettingsContext.settings ?? {},
     machineId,
     directory,
+    ...(accountSettingsContext.savedSecretResources
+      ? { savedSecretResources: accountSettingsContext.savedSecretResources }
+      : {}),
   });
+  const serverFeaturesSnapshot = resolveToolsCommandSurface(args) === 'agent' && sessionId
+    ? await api.getServerFeaturesSnapshot({ refresh: true }).catch(() => undefined)
+    : undefined;
 
-  return { credentials, sessionId, directory, mcpServers: customContext.mcpServers };
+  return {
+    credentials,
+    sessionId,
+    directory,
+    mcpServers: customContext.mcpServers,
+    accountSettings: accountSettingsContext.settings,
+    ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+  };
 }
 
 function printHumanToolList(params: Readonly<{
@@ -200,7 +252,25 @@ export async function handleToolsCommand(args: string[], overrides?: Partial<Too
   try {
     if (subcommand === 'list') {
       const context = await resolveCustomToolsRuntimeContext(args, deps);
-      const builtInTools = await deps.listBuiltInHappierTools();
+      const surface = resolveToolsCommandSurface(args);
+      const actionsSettingsProvider = createActionSettingsProvider({
+        accountSettings: context.accountSettings,
+        scopeKey: resolveAccountSettingsScopeKeyForToken(context.credentials.token),
+      });
+      const actionsSettings = actionsSettingsProvider.getActionsSettings();
+      const isServerFeatureEnabled = surface === 'agent'
+        ? (featureId: FeatureId) => resolveCliFeatureDecision({
+            featureId,
+            env: process.env,
+            serverSnapshot: context.serverFeaturesSnapshot,
+          }).state === 'enabled'
+        : undefined;
+      const builtInTools = await deps.listBuiltInHappierTools({
+        surface,
+        actionsSettings,
+        isActionEnabled: (id) => isActionEnabledByActionsSettings(id, actionsSettings, { surface }),
+        ...(isServerFeatureEnabled ? { isServerFeatureEnabled } : {}),
+      });
       const { tools: customTools, warnings } = await deps.listResolvedCustomHappierTools({ mcpServers: context.mcpServers });
 
       if (json) {
@@ -252,15 +322,16 @@ export async function handleToolsCommand(args: string[], overrides?: Partial<Too
       let result: ToolCallResult;
       if (source === 'happier') {
         const context = await resolveToolsBaseContext(args, deps, { requireSessionId: true });
-        const agentBridge = args.includes('--agent-bridge');
-        const toolCallId = agentBridge ? (getFlagValue(args, '--tool-call-id') ?? '') : '';
+        const surface = resolveToolsCommandSurface(args);
+        const toolCallId = surface === 'agent' ? (getFlagValue(args, '--tool-call-id') ?? '') : '';
         result = await deps.callBuiltInHappierTool({
           credentials: context.credentials,
           sessionId: context.sessionId,
           toolName,
           args: parsedArgs,
-          ...(agentBridge ? { surface: 'agent' as const } : {}),
+          surface,
           ...(toolCallId ? { toolCallId } : {}),
+          readCredentials: deps.readCredentials,
         });
       } else {
         const context = await resolveCustomToolsRuntimeContext(args, deps, { requireSessionId: true });

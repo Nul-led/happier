@@ -1,6 +1,7 @@
 import { createSupervisedProcess, type SupervisedProcess } from '@/subprocess/supervision/supervisedProcess';
 import type { TerminationEvent } from '@/subprocess/supervision/types';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { WorkspaceSyncRuntimeReadinessV1 } from '@happier-dev/protocol';
 import type { MutagenControlCommandV1 } from './transport/workspaceSyncBrokerProtocol';
 import type { WorkspaceSyncBrokerOpenContext } from './transport/workspaceSyncBroker';
 
@@ -61,13 +62,18 @@ export type WorkspaceSyncSidecarLifecycleDependencies = Readonly<{
    * runtime that called start(), so this hook is restart-only.
    */
   onRestartReady(): Promise<void>;
-  /** Grace period for the acknowledged sidecar shutdown to exit naturally. */
+  /** Publishes the actual supervised engine lifecycle, including restart attempts. */
+  onReadinessChanged?(readiness: WorkspaceSyncRuntimeReadinessV1['engine']): void;
+  /** Grace period starting when sidecar shutdown is dispatched for the child to exit naturally. */
   shutdownGraceMs?: number;
   /** One deadline for child spawn, authenticated HELLO, and the initial manager probe. */
   startupDeadlineMs?: number;
+  /** Continuous healthy runtime required before unexpected-exit accounting resets. */
+  stableAfterMs?: number;
 }>;
 
 export const WORKSPACE_SYNC_SIDECAR_STARTUP_DEADLINE_MS = 15_000;
+export const WORKSPACE_SYNC_SIDECAR_STABLE_AFTER_MS = 30_000;
 
 export class WorkspaceSyncEngineError extends Error {
   constructor(readonly code: 'engine_unavailable', message: string, options?: ErrorOptions) {
@@ -112,6 +118,8 @@ export class WorkspaceSyncSidecarLifecycle {
   private ready = false;
   private stopping = false;
   private completedInitialStart = false;
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
+  private publishedReadiness: WorkspaceSyncRuntimeReadinessV1['engine'] | null = null;
 
   constructor(private readonly dependencies: WorkspaceSyncSidecarLifecycleDependencies) {
     this.supervisor = createSupervisedProcess({
@@ -173,30 +181,46 @@ export class WorkspaceSyncSidecarLifecycle {
     const cleanupFailures: unknown[] = [];
     const spawnAttempt = this.spawnAttempt;
     this.supervisor.markStopRequested({ reason: 'shutdown', requestedAtMs: Date.now() });
+    this.clearStableTimer();
     const broker = this.activeBroker;
     const process = this.activeProcess;
+    let brokerClosed = broker === null;
     if (this.activeBroker === broker) this.activeBroker = null;
     if (this.activeProcess === process) this.activeProcess = null;
+    const graceMs = this.dependencies.shutdownGraceMs ?? 5_000;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const naturalTermination = process && graceMs > 0
+      ? process.waitForTermination().then(
+          () => true,
+          (error: unknown) => { cleanupFailures.push(error); return false; },
+        )
+      : null;
+    const graceExpired = naturalTermination
+      ? new Promise<boolean>((resolve) => { graceTimer = setTimeout(() => resolve(false), graceMs); })
+      : null;
     if (broker) {
-      await broker.command({ t: 'shutdown', requestId: this.dependencies.randomId() }).catch((error: unknown) => {
+      try {
+        void broker.command({ t: 'shutdown', requestId: this.dependencies.randomId() })
+          .catch((error: unknown) => { cleanupFailures.push(error); });
+      } catch (error) {
         cleanupFailures.push(error);
-      });
+      }
+    }
+    let exitedNaturally = false;
+    if (process) {
+      if (naturalTermination && graceExpired) {
+        exitedNaturally = await Promise.race([naturalTermination, graceExpired]);
+      }
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
+    }
+    if (broker) {
+      await broker.close().then(
+        () => { brokerClosed = true; },
+        (error: unknown) => { cleanupFailures.push(error); },
+      );
     }
     if (process) {
-      const graceMs = this.dependencies.shutdownGraceMs ?? 5_000;
-      let exitedNaturally = false;
       let processStopped = false;
-      if (graceMs > 0) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        exitedNaturally = await Promise.race([
-          process.waitForTermination().then(
-            () => true,
-            (error: unknown) => { cleanupFailures.push(error); return false; },
-          ),
-          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
-        ]);
-        if (timer !== undefined) clearTimeout(timer);
-      }
       if (!exitedNaturally) {
         await process.stop().then(
           () => { processStopped = true; },
@@ -205,14 +229,7 @@ export class WorkspaceSyncSidecarLifecycle {
       }
       if (!exitedNaturally && !processStopped && this.activeProcess === null) this.activeProcess = process;
     }
-    if (broker) {
-      let brokerClosed = false;
-      await broker.close().then(
-        () => { brokerClosed = true; },
-        (error: unknown) => { cleanupFailures.push(error); },
-      );
-      if (!brokerClosed && this.activeBroker === null) this.activeBroker = broker;
-    }
+    if (broker && !brokerClosed && this.activeBroker === null) this.activeBroker = broker;
     await spawnAttempt?.catch(() => undefined);
     const lateSpawnSettlement = this.lateSpawnSettlement;
     if (lateSpawnSettlement) {
@@ -263,8 +280,28 @@ export class WorkspaceSyncSidecarLifecycle {
     return await broker.command(command, signal);
   }
 
+  private publishReadiness(readiness: WorkspaceSyncRuntimeReadinessV1['engine']): void {
+    if (this.publishedReadiness?.state === readiness.state
+      && (readiness.state !== 'unavailable'
+        || (this.publishedReadiness.state === 'unavailable'
+          && this.publishedReadiness.errorCode === readiness.errorCode))) return;
+    this.publishedReadiness = readiness;
+    this.dependencies.onReadinessChanged?.(readiness);
+  }
+
   private async spawnOne(): Promise<Readonly<{ pid: number; waitForTermination(): Promise<TerminationEvent> }>> {
+    const previousProcess = this.activeProcess;
+    if (previousProcess) {
+      await previousProcess.stop();
+      if (this.activeProcess === previousProcess) this.activeProcess = null;
+    }
     if (this.activeProcess) throw engineUnavailable(new Error('a workspace sync sidecar is already active'));
+    const previousBroker = this.activeBroker;
+    if (previousBroker) {
+      await previousBroker.close();
+      if (this.activeBroker === previousBroker) this.activeBroker = null;
+    }
+    this.publishReadiness({ state: 'starting' });
     let broker: WorkspaceSyncSidecarBroker | null = null;
     let process: WorkspaceSyncSidecarProcess | null = null;
     try {
@@ -338,8 +375,9 @@ export class WorkspaceSyncSidecarLifecycle {
         await this.runReconciliation(async () => await this.dependencies.onRestartReady());
       }
       this.ready = true;
+      this.publishReadiness({ state: 'ready' });
       this.completedInitialStart = true;
-      this.supervisor.markStable();
+      this.scheduleStable(process);
       this.currentReadiness?.resolve();
       this.currentReadiness = null;
       return { pid: process.pid, waitForTermination: async () => await termination };
@@ -359,6 +397,7 @@ export class WorkspaceSyncSidecarLifecycle {
       this.ready = false;
       this.authenticated = false;
       const unavailable = engineUnavailable(error);
+      this.publishReadiness({ state: 'unavailable', errorCode: unavailable.code });
       this.currentReadiness?.reject(unavailable);
       this.currentAuthenticatedReadiness?.reject(unavailable);
       this.currentReadiness = null;
@@ -371,13 +410,38 @@ export class WorkspaceSyncSidecarLifecycle {
     if (this.stopping) throw new Error('sidecar lifecycle is stopping');
   }
 
+  private clearStableTimer(): void {
+    if (!this.stableTimer) return;
+    clearTimeout(this.stableTimer);
+    this.stableTimer = null;
+  }
+
+  private scheduleStable(process: WorkspaceSyncSidecarProcess): void {
+    this.clearStableTimer();
+    const stableAfterMs = this.dependencies.stableAfterMs
+      ?? WORKSPACE_SYNC_SIDECAR_STABLE_AFTER_MS;
+    this.stableTimer = setTimeout(() => {
+      this.stableTimer = null;
+      if (!this.stopping && this.ready && this.activeProcess === process) {
+        this.supervisor.markStable();
+      }
+    }, stableAfterMs);
+    this.stableTimer.unref();
+  }
+
   private async onTermination(event: TerminationEvent): Promise<void> {
+    this.clearStableTimer();
     const broker = this.activeBroker;
-    this.activeBroker = null;
-    this.activeProcess = null;
+    if (event.type !== 'spawn_error') this.activeProcess = null;
     this.ready = false;
     this.authenticated = false;
-    await broker?.close();
+    if (!this.stopping) {
+      this.publishReadiness({ state: 'unavailable', errorCode: 'engine_unavailable' });
+    }
+    if (broker) {
+      await broker.close();
+      if (this.activeBroker === broker) this.activeBroker = null;
+    }
     if (!this.stopping && event.type === 'spawn_error') {
       const error = engineUnavailable(new Error(event.errorMessage));
       this.currentReadiness?.reject(error);

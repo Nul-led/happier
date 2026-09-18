@@ -3,9 +3,11 @@ export interface WorkspaceBundleLockContext {
   lockPath: string;
   heldLockValue: string;
   inherited: boolean;
+  assertOwned: () => void;
 }
 
 export const WORKSPACE_BUNDLE_LOCK_TIMEOUT_ERROR_CODE: 'EWORKSPACEBUNDLELOCKTIMEOUT';
+export const WORKSPACE_BUNDLE_LOCK_OWNERSHIP_LOST_ERROR_CODE: 'EWORKSPACEBUNDLELOCKOWNERSHIPLOST';
 export const DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS: number;
 
 export interface WorkspaceBundleLockOptions<T = unknown> {
@@ -17,6 +19,13 @@ export interface WorkspaceBundleLockOptions<T = unknown> {
   staleAfterMs?: number;
   initializationGraceMs?: number;
   readProcessInstanceFingerprintSyncImpl?: (pid: number) => string | null;
+  startWorkspaceLockHeartbeatImpl?: (options: {
+    lockPath: string;
+    ownerToken: string;
+    processInstanceFingerprint: string | null;
+    staleAfterMs: number;
+  }) => { terminate: () => Promise<unknown> } | null;
+  beforeWorkspaceLockHeartbeatWriteImpl?: (options: { lockPath: string }) => void;
   protectLockFileImpl?: (lockPath: string, fd: number) => void;
   platform?: string;
   env?: Record<string, string | undefined>;
@@ -53,7 +62,7 @@ export function observeWorkspaceBundleLock(
 ): { active: boolean; ownerId: string | null };
 export function withWorkspaceBundleLock<T>(
   fn: (context: WorkspaceBundleLockContext) => Promise<T> | T,
-  options: WorkspaceBundleLockOptions<T>,
+  options: WorkspaceBundleLockOptions<T> & { signal?: AbortSignal },
 ): Promise<T>;
 export function withWorkspaceBundleLockSync<T>(
   fn: (context: WorkspaceBundleLockContext) => T,

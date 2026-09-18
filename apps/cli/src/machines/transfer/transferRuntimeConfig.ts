@@ -10,8 +10,6 @@ const DEFAULT_DIRECT_PEER_TTL_MS = 10 * 60_000;
 const DEFAULT_DIRECT_PEER_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_DIRECT_PEER_CHUNK_BYTES = 256 * 1024;
 const DIRECT_PEER_CHUNK_HARD_MAX_BYTES = 512 * 1024;
-const DEFAULT_DIRECT_PEER_MAX_TOTAL_CHUNKS = 1_000_000;
-const DIRECT_PEER_MAX_TOTAL_CHUNKS_HARD_MAX = 10_000_000;
 const DEFAULT_DIRECT_PEER_PUBLISHED_TRANSFER_REGISTRY_MAX_ENTRIES = 2048;
 const DIRECT_PEER_PUBLISHED_TRANSFER_REGISTRY_HARD_MAX_ENTRIES = 100_000;
 const DEFAULT_DIRECT_PEER_IDLE_STOP_MS = 30_000;
@@ -124,13 +122,6 @@ export function resolveDirectPeerTransferOpenBodyMaxBytes(): number {
   );
 }
 
-export function resolveDirectPeerTransferMaxTotalChunks(): number {
-  return Math.min(
-    parsePositiveInt(process.env.HAPPIER_MACHINE_TRANSFER_DIRECT_PEER_MAX_TOTAL_CHUNKS, DEFAULT_DIRECT_PEER_MAX_TOTAL_CHUNKS),
-    DIRECT_PEER_MAX_TOTAL_CHUNKS_HARD_MAX,
-  );
-}
-
 export function resolveDirectPeerTransferPublishedTransferRegistryMaxEntries(): number {
   return Math.min(
     parsePositiveInt(
@@ -208,7 +199,6 @@ export function resolveMachineTransferRuntimeConfig(options?: Readonly<{
     chunkBytes: number;
     expirySkewMs: number;
     openBodyMaxBytes: number;
-    maxTotalChunks: number;
     publishedTransferRegistryMaxEntries: number;
     bindHost: string;
     featureEnabled: boolean;
@@ -237,7 +227,6 @@ export function resolveMachineTransferRuntimeConfig(options?: Readonly<{
       chunkBytes: resolveDirectPeerTransferChunkBytes(),
       expirySkewMs: resolveDirectPeerTransferExpirySkewMs(),
       openBodyMaxBytes: resolveDirectPeerTransferOpenBodyMaxBytes(),
-      maxTotalChunks: resolveDirectPeerTransferMaxTotalChunks(),
       publishedTransferRegistryMaxEntries: resolveDirectPeerTransferPublishedTransferRegistryMaxEntries(),
       bindHost: resolveDirectPeerTransferBindHost(),
       featureEnabled: resolveDirectPeerFeatureEnabled(),

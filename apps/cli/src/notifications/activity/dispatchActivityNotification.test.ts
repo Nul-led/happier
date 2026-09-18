@@ -13,7 +13,10 @@ import type {
   PinnedHttpStreamRequest,
   PinnedHttpStreamResponse,
 } from '@/network/pinnedHttp';
-import { dispatchActivityNotificationAsync } from './dispatchActivityNotification';
+import {
+  dispatchActivityNotificationAsync,
+  resolveActivityNotificationPolicyEvent,
+} from './dispatchActivityNotification';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
 
 vi.mock('@/ui/logger', () => ({
@@ -56,6 +59,37 @@ describe('dispatchActivityNotificationAsync', () => {
     vi.unstubAllGlobals();
   });
 
+  it('uses the connected-service account policy for credential health notifications', () => {
+    expect(resolveActivityNotificationPolicyEvent({
+      topic: 'connected_service_credential_health',
+      sessionId: 'session-credential-policy',
+      serviceId: 'openai-codex',
+      profileId: 'work',
+      status: 'reconnect_required',
+    })).toBe('connected_service_account_switch');
+  });
+
+  it('keeps full permission details only in channels that include request text', async () => {
+    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const settings = accountSettingsParse({ notificationChannelsV1: [true, false, undefined].map((include, index) => ({
+      v: 1, id: `hook-${index}`, kind: 'webhook', enabled: true,
+      url: 'https://hooks.example.test/happier', requestIncludeMessageText: include,
+      topics: { permissionRequest: true },
+    })) });
+    await dispatchActivityNotificationAsync({ settings, webhookNetwork, expoPushSender: { sendToAllDevicesAsync }, event: {
+      topic: 'permission_request', sessionId: 's1', requestId: 'p1', toolName: 'Bash',
+      toolInput: { command: 'git diff -- apps/cli/src/main.ts', justification: 'Review the complete patch' },
+    } });
+    const payloads = webhookRequests.map((request) => JSON.parse(Buffer.from(request.body ?? new Uint8Array()).toString('utf8')));
+    expect(payloads).toHaveLength(3);
+    expect(payloads[0].content.body).toContain('git diff -- apps/cli/src/main.ts');
+    expect(payloads[0].request.toolDetails).toContain('Review the complete patch');
+    expect(payloads[1].content.body).not.toContain('git diff');
+    expect(payloads[1].request.toolDetails).toBeNull();
+    expect(payloads[2].request.toolDetails).toContain('Review the complete patch');
+    expect(payloads[2].content.body).toContain('git diff -- apps/cli/src/main.ts');
+  });
+
   it('falls back to the builtin expo push channel when explicit channels are missing', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const settings = accountSettingsParse({
@@ -91,6 +125,58 @@ describe('dispatchActivityNotificationAsync', () => {
     );
     expect(webhookRequests).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'session-reset'])('delivers automatic reset receipts without inventing a session (%s)', async (sessionId) => {
+    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
+    const event = {
+      topic: 'connected_service_quota_recovered' as const,
+      recoveryReason: 'automatic_quota_reset' as const,
+      sessionId,
+      serviceId: 'acme.accounts/work',
+      serviceDisplayName: 'Work account',
+      groupId: 'team',
+      profileId: 'primary',
+      issueFingerprint: `reset-receipt-${sessionId ?? 'startup'}`,
+    };
+    const settings = accountSettingsParse({
+      attentionDeliveryPolicyV1: {
+        v: 1,
+        channels: { expo_push: { enabled: true } },
+        liveActivityRemoteUpdates: { enabled: true, preferredMode: 'direct_apns', defaultStaleAfterSeconds: 900 },
+      },
+      notificationChannelsV1: [{
+        v: 1, id: 'reset-webhook', kind: 'webhook', enabled: true,
+        url: 'https://hooks.example.test/happier',
+        topics: { ready: false, permissionRequest: false, userActionRequest: false, connectedServiceQuotaRecovered: true },
+        readyIncludeMessageText: false,
+      }],
+    });
+    const dispatch = () => dispatchActivityNotificationAsync({
+      settings, event, webhookNetwork, expoPushSender: { sendToAllDevicesAsync }, nowMs: () => 100_000,
+      liveActivityRemoteSender: { serverId: 'server-reset', sendLiveActivityRemoteUpdateAsync },
+    });
+
+    const result = await dispatch();
+    expect(result, JSON.stringify(vi.mocked(logger.debug).mock.calls)).toEqual({ attemptedChannels: sessionId ? 3 : 2, deliveredChannels: sessionId ? 3 : 2 });
+    expect(sendToAllDevicesAsync.mock.calls[0]).toEqual([
+      expect.stringContaining('reset credit used'),
+      expect.stringContaining('primary in pool team'),
+      expect.objectContaining({ recoveryReason: 'automatic_quota_reset', issueFingerprint: event.issueFingerprint, sessionId }),
+      expect.any(Object),
+    ]);
+    expect(webhookRequestBody(webhookRequests[0])).toMatchObject({
+      topic: 'connected_service_quota_recovered',
+      content: { body: expect.stringContaining('automatically used a reset credit') },
+    });
+    expect(webhookRequestBody(webhookRequests[0]).session).toEqual(sessionId ? { sessionId, title: null } : undefined);
+    if (sessionId) {
+      expect(sendLiveActivityRemoteUpdateAsync.mock.calls[0]?.[0].activityKey.sessionId).toBe(sessionId);
+    } else {
+      expect(sendLiveActivityRemoteUpdateAsync).not.toHaveBeenCalled();
+    }
+    expect(await dispatch()).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
   });
 
   it('dispatches connected-service account switch notifications with structured quota context', async () => {
@@ -858,6 +944,7 @@ describe('dispatchActivityNotificationAsync', () => {
         v: 1,
         channels: {
           expo_push: { enabled: false },
+          live_activity: { events: { permission_request: { previewBehavior: 'title_only' } } },
         },
         privacy: {
           defaultPreviewBehavior: 'include_preview',
@@ -906,6 +993,7 @@ describe('dispatchActivityNotificationAsync', () => {
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
+        channels: { live_activity: { events: { permission_request: { previewBehavior: 'include_preview' } } } },
         quietHours: {
           enabled: true,
           timezone: 'UTC',
@@ -943,7 +1031,7 @@ describe('dispatchActivityNotificationAsync', () => {
     const request = sendLiveActivityRemoteUpdateAsync.mock.calls[0]?.[0];
     expect(request).not.toHaveProperty('interruptiveAlert');
     expect(request?.contentState?.attentionState).toBe('permission_required');
-    expect(JSON.stringify(request)).not.toContain('secret-token');
+    expect(request?.contentState?.previewText).toContain('npm test && echo secret-token');
   });
 
   it('dispatches only to enabled explicit channels', async () => {
@@ -1013,7 +1101,7 @@ describe('dispatchActivityNotificationAsync', () => {
     });
   });
 
-  it('sends sanitized request payloads to webhook channels', async () => {
+  it('omits request previews when the webhook explicitly disables them', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const settings = accountSettingsParse({
       notificationChannelsV1: [
@@ -1033,6 +1121,7 @@ describe('dispatchActivityNotificationAsync', () => {
             userActionRequest: true,
           },
           readyIncludeMessageText: false,
+          requestIncludeMessageText: false,
         },
       ],
     });
@@ -1062,7 +1151,7 @@ describe('dispatchActivityNotificationAsync', () => {
       requestId: 'request-9',
       kind: 'permission',
       toolName: 'Bash',
-      toolDetails: 'Command: git',
+      toolDetails: null,
     });
     expect(JSON.stringify(payload)).not.toContain('secret-token');
   });

@@ -13,7 +13,7 @@ import { logger } from '@/ui/logger';
 import { decryptAccountSettingsCiphertext } from '@/settings/accountSettingsClient';
 import {
   applyAccountSettingMutationV1,
-  AccountEncryptionModeResponseSchema,
+  assertAccountWorkspaceSettingsTransition,
   accountSettingsParse,
   AccountSettingsV2GetResponseSchema,
   AccountSettingsV2UpdateRequestSchema,
@@ -38,6 +38,8 @@ import {
   type AccountSettingsCacheWriteOptions,
 } from './accountSettingsCache';
 import { resolveAccountSettingsHttpBaseUrl } from './resolveAccountSettingsHttpBaseUrl';
+import { assertAccountEncryptionModeAllowedByEffectiveClientRequirement } from './resolveEffectiveClientEncryptionRequirement';
+import { readAccountEncryptionModeOnce } from '@/api/client/accountEncryptionMode';
 import {
   isAccountSettingsEncryptionMaterialUnavailableError,
   requireAccountSettingsEncryptionCredentials,
@@ -402,27 +404,27 @@ function resolveAccountSettingsV2UpdateDeps(params: Readonly<{
 
   const resolveAccountEncryptionModeFromServer = async (signal?: AbortSignal) => {
     const accountSettingsBaseUrl = resolveAccountSettingsHttpBaseUrl();
-    const response = await axios.get(`${accountSettingsBaseUrl}/v1/account/encryption`, {
-      headers: {
-        ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-        Authorization: `Bearer ${params.credentials.token}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 15_000,
-      validateStatus: () => true,
-      ...(signal ? { signal } : {}),
+    const result = await readAccountEncryptionModeOnce({
+      request: async () => await axios.get(`${accountSettingsBaseUrl}/v1/account/encryption`, {
+        headers: {
+          ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+          Authorization: `Bearer ${params.credentials.token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15_000,
+        validateStatus: () => true,
+        ...(signal ? { signal } : {}),
+      }),
     });
-    if (response.status < 200 || response.status >= 300) {
+    if (result.kind !== 'resolved') {
       throw Object.assign(
-        new Error(`Failed to resolve account encryption mode (${response.status})`),
-        { status: response.status },
+        new Error(result.kind === 'http_error'
+          ? `Failed to resolve account encryption mode (${result.status})`
+          : 'Failed to parse account encryption mode response'),
+        { status: result.status },
       );
     }
-    const parsed = AccountEncryptionModeResponseSchema.safeParse(response.data);
-    if (!parsed.success) {
-      throw new Error('Failed to parse account encryption mode response');
-    }
-    return parsed.data.mode;
+    return result.mode;
   };
 
   const resolveAccountEncryptionMode = params.deps?.resolveAccountEncryptionMode
@@ -471,6 +473,12 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
     credentials: params.credentials,
     emptyEnvelopeKind,
   });
+  if (parsed.envelopeKind === 'plain') {
+    assertAccountEncryptionModeAllowedByEffectiveClientRequirement(
+      'plain',
+      accountSettingsParse(parsed.raw),
+    );
+  }
   params.signal?.throwIfAborted();
   let mergedRaw: AccountSettingsPersistedObject;
   if (params.application.kind === 'immutable') {
@@ -493,6 +501,10 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
     randomBytes: params.deps.randomBytes,
   });
   const settings = accountSettingsParse(nextRaw);
+  if (parsed.envelopeKind === 'plain') {
+    assertAccountEncryptionModeAllowedByEffectiveClientRequirement('plain', settings);
+  }
+  assertAccountWorkspaceSettingsTransition(parsed.raw, nextRaw);
 
   if (isDeepStrictEqual(nextRaw, parsed.raw)) {
     return Object.freeze({

@@ -1,7 +1,8 @@
 import {
-  ConnectedServiceBindingsV1Schema,
-  type ConnectedServiceBindingSelectionV1,
-  type ConnectedServiceBindingsV1,
+  ConnectedServiceBindingsV2IngressSchema,
+  ConnectedServiceBindingsV2Schema,
+  type ConnectedServiceBindingSelectionV2,
+  type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 export type ConnectedServicesLaunchAuthIntent =
@@ -136,7 +137,7 @@ function readInventoryCandidates(inventory: unknown): InventoryCandidate[] {
   )) === index);
 }
 
-function nativeBindings(supportedServiceIds: readonly string[]): Record<string, ConnectedServiceBindingSelectionV1> {
+function nativeBindings(supportedServiceIds: readonly string[]): Record<string, ConnectedServiceBindingSelectionV2> {
   return Object.fromEntries(supportedServiceIds.map((serviceId) => [serviceId, { source: 'native' as const }]));
 }
 
@@ -144,14 +145,14 @@ export function resolveConnectedServicesLaunchAuth(params: Readonly<{
   intent: ConnectedServicesLaunchAuthIntent;
   supportedServiceIds: readonly string[];
   inventory: unknown;
-}>): ConnectedServiceBindingsV1 | null {
+}>): ConnectedServiceBindingsV2 | null {
   if (params.intent.kind === 'default') return null;
   if (params.supportedServiceIds.length === 0) {
     throw new Error('connected_service_auth_unsupported');
   }
   if (params.intent.kind === 'native') {
-    return ConnectedServiceBindingsV1Schema.parse({
-      v: 1,
+    return ConnectedServiceBindingsV2Schema.parse({
+      v: 2,
       bindingsByServiceId: nativeBindings(params.supportedServiceIds),
     });
   }
@@ -175,11 +176,11 @@ export function resolveConnectedServicesLaunchAuth(params: Readonly<{
   }
 
   const match = matches[0];
-  const binding: ConnectedServiceBindingSelectionV1 = match.selection === 'group'
+  const binding: ConnectedServiceBindingSelectionV2 = match.selection === 'group'
     ? { source: 'connected', selection: 'group', groupId: match.id }
     : { source: 'connected', selection: 'profile', profileId: match.id };
-  return ConnectedServiceBindingsV1Schema.parse({
-    v: 1,
+  return ConnectedServiceBindingsV2Schema.parse({
+    v: 2,
     bindingsByServiceId: {
       ...nativeBindings(params.supportedServiceIds),
       [match.serviceId]: binding,
@@ -191,7 +192,7 @@ export async function resolveConnectedServicesLaunchAuthWithInventory(params: Re
   intent: ConnectedServicesLaunchAuthIntent;
   supportedServiceIds: readonly string[];
   listInventory: () => Promise<unknown>;
-}>): Promise<ConnectedServiceBindingsV1 | null> {
+}>): Promise<ConnectedServiceBindingsV2 | null> {
   const inventory = params.intent.kind === 'connected'
     ? await params.listInventory()
     : null;
@@ -203,7 +204,7 @@ export async function resolveConnectedServicesLaunchAuthWithInventory(params: Re
 }
 
 type ConnectedServicesLaunchDefaultDisposition =
-  | Readonly<{ kind: 'connected'; bindings: ConnectedServiceBindingsV1 }>
+  | Readonly<{ kind: 'connected'; bindings: ConnectedServiceBindingsV2 }>
   | Readonly<{ kind: 'native' }>
   | Readonly<{ kind: 'unavailable'; reason: string }>;
 
@@ -213,7 +214,7 @@ export async function resolveCliConnectedServicesLaunchBindings(params: Readonly
   supportedServiceIds: readonly string[];
   defaultDisposition: ConnectedServicesLaunchDefaultDisposition;
   listInventory: () => Promise<unknown>;
-}>): Promise<ConnectedServiceBindingsV1 | null> {
+}>): Promise<ConnectedServiceBindingsV2 | null> {
   if (params.authRaw !== undefined && params.authJsonRaw !== undefined) {
     throw new Error('connected_service_auth_conflict');
   }
@@ -222,7 +223,7 @@ export async function resolveCliConnectedServicesLaunchBindings(params: Readonly
       throw new Error('connected_service_auth_unsupported');
     }
     try {
-      return ConnectedServiceBindingsV1Schema.parse(JSON.parse(params.authJsonRaw));
+      return ConnectedServiceBindingsV2IngressSchema.parse(JSON.parse(params.authJsonRaw));
     } catch {
       throw new Error('connected_service_auth_json_invalid');
     }

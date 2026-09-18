@@ -81,6 +81,20 @@ export type ConnectedAccountPurposeResolvedTarget = Readonly<{
   }>;
 }>;
 
+/** Launch-only pointer to one exact recipient-scoped Team material row. */
+export type ConnectedAccountTeamDirectMaterialOrigin = Readonly<{
+  purpose: QualifiedConnectedAccountPurposeV1;
+  resourceId: string;
+  disclosedMember: QualifiedConnectedAccountRef;
+}>;
+type ActiveConnectedAccountTeamDirectMaterialOrigin =
+  ConnectedAccountTeamDirectMaterialOrigin & Readonly<{
+    consumer: Readonly<
+      | { kind: 'session'; sessionId: string }
+      | { kind: 'execution_run'; executionRunId: string }
+    >;
+  }>;
+
 export type ConnectedAccountPurposeBindingOwnerDependencies = Readonly<{
   store: ConnectedAccountPurposeBindingStore;
   /** Genuine UI/policy boundary: the owner validates this result before persistence. */
@@ -100,6 +114,17 @@ export type ConnectedAccountPurposeBindingOwnerDependencies = Readonly<{
   ): Promise<ConnectedAccountPurposeResolvedTarget | null>;
   /** Producer-owned materializer boundary for the exact resolved current account. */
   materializeAccount(input: Readonly<{
+    account: QualifiedConnectedAccountRef;
+    credentialRevisionBasis?: ConnectedAccountMaterializationCredentialRevisionBasis;
+    request: ConnectedAccountMaterializationRequest;
+    signal: AbortSignal;
+  }>): Promise<PluginConnectedAccountMaterialization>;
+  materializeTeamDirect?(input: Readonly<{
+    origin: ConnectedAccountTeamDirectMaterialOrigin;
+    consumer: Readonly<
+      | { kind: 'session'; sessionId: string }
+      | { kind: 'execution_run'; executionRunId: string }
+    >;
     account: QualifiedConnectedAccountRef;
     credentialRevisionBasis?: ConnectedAccountMaterializationCredentialRevisionBasis;
     request: ConnectedAccountMaterializationRequest;
@@ -348,6 +373,7 @@ export type ConnectedAccountPurposeBindingOwner =
       subject: ConnectedAccountPurposeBindingSubject;
       purposes: readonly QualifiedConnectedAccountPurposeV1[];
       bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
+      directMaterialOrigins?: readonly ConnectedAccountTeamDirectMaterialOrigin[];
     }>): ConnectedAccountPurposeBindingLease;
     /**
      * Installs one immutable, launch-scoped compatibility projection. Every declared purpose is
@@ -358,6 +384,7 @@ export type ConnectedAccountPurposeBindingOwner =
       sessionId: string;
       purposes: readonly QualifiedConnectedAccountPurposeV1[];
       bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
+      directMaterialOrigins?: readonly ConnectedAccountTeamDirectMaterialOrigin[];
     }>): ConnectedAccountSessionPurposeBindingLease;
     resolveBindingIntent(input: Readonly<{
       purpose: QualifiedConnectedAccountPurposeV1;
@@ -365,6 +392,16 @@ export type ConnectedAccountPurposeBindingOwner =
       serviceRefs: readonly PluginContributionRef[];
       signal: AbortSignal;
     }>): Promise<QualifiedConnectedAccountPurposeBindingV1>;
+    resolveBindingIntentSelection(input: Readonly<{
+      purpose: QualifiedConnectedAccountPurposeV1;
+      target: QualifiedConnectedAccountPurposeBindingTargetV1;
+      serviceRefs: readonly PluginContributionRef[];
+      signal: AbortSignal;
+    }>): Promise<Readonly<{
+      binding: QualifiedConnectedAccountPurposeBindingV1;
+      resolved: ConnectedAccountPurposeResolvedTarget;
+      isCurrent(): Promise<boolean>;
+    }>>;
     /**
      * Resolves one current, immutable launch snapshot from already-authorized qualified
      * purpose declarations. This is a read of the canonical selection owner; it neither
@@ -619,6 +656,7 @@ export function createConnectedAccountPurposeBindingOwner(
     coveredPurposeKeys: ReadonlySet<string>;
     bindingByPurposeKey: ReadonlyMap<string, QualifiedConnectedAccountPurposeBindingV1>;
     bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
+    directMaterialOriginByPurposeKey: ReadonlyMap<string, ActiveConnectedAccountTeamDirectMaterialOrigin>;
   }>;
   const purposeBindingsBySubjectKey = new Map<string, PurposeBindingState>();
   const purposeBindingsBySubjectId = new Map<string, PurposeBindingState>();
@@ -637,6 +675,7 @@ export function createConnectedAccountPurposeBindingOwner(
   }>): Readonly<{
     covered: boolean;
     binding: QualifiedConnectedAccountPurposeBindingV1 | null;
+    directMaterialOrigin: ActiveConnectedAccountTeamDirectMaterialOrigin | null;
   }> => {
     if (input.exactPurposeBindingSubjectId) {
       const state = purposeBindingsBySubjectId.get(
@@ -654,19 +693,23 @@ export function createConnectedAccountPurposeBindingOwner(
         binding: current && state?.coveredPurposeKeys.has(purposeKey)
           ? state.bindingByPurposeKey.get(purposeKey) ?? null
           : null,
+        directMaterialOrigin: current && state?.coveredPurposeKeys.has(purposeKey)
+          ? state.directMaterialOriginByPurposeKey.get(purposeKey) ?? null
+          : null,
       };
     }
-    if (!input.sessionId) return { covered: false, binding: null };
+    if (!input.sessionId) return { covered: false, binding: null, directMaterialOrigin: null };
     const state = purposeBindingsBySubjectKey.get(
       sessionSubjectKey(input.sessionId),
     );
     const purposeKey = qualifiedPurposeKey(input.purpose);
     if (!state?.coveredPurposeKeys.has(purposeKey)) {
-      return { covered: false, binding: null };
+      return { covered: false, binding: null, directMaterialOrigin: null };
     }
     return {
       covered: true,
       binding: state.bindingByPurposeKey.get(purposeKey) ?? null,
+      directMaterialOrigin: state.directMaterialOriginByPurposeKey.get(purposeKey) ?? null,
     };
   };
   const consumerMutationTails = new Map<string, Promise<void>>();
@@ -727,6 +770,7 @@ export function createConnectedAccountPurposeBindingOwner(
           sessionId,
           errorPrefix: 'connected_account_session_binding',
           expectedConsumer: null,
+          directMaterialConsumer: { kind: 'session' as const, sessionId },
         };
       }
       if (subject.kind === 'execution_run') {
@@ -755,6 +799,7 @@ export function createConnectedAccountPurposeBindingOwner(
           sessionId: null,
           errorPrefix: 'connected_account_execution_run_binding',
           expectedConsumer: null,
+          directMaterialConsumer: { kind: 'execution_run' as const, executionRunId: runId },
         };
       }
       if (subject.kind === 'agent_catalog_observation') {
@@ -773,6 +818,7 @@ export function createConnectedAccountPurposeBindingOwner(
           sessionId: null,
           errorPrefix: 'connected_account_agent_catalog_observation_binding',
           expectedConsumer: Object.freeze({ ...consumer }),
+          directMaterialConsumer: null,
         };
       }
       if (subject.kind === 'operation') {
@@ -791,6 +837,7 @@ export function createConnectedAccountPurposeBindingOwner(
           sessionId: null,
           errorPrefix: 'connected_account_operation_binding',
           expectedConsumer: Object.freeze({ ...consumer }),
+          directMaterialConsumer: null,
         };
       }
       const operationId = subject.operationId.trim();
@@ -821,6 +868,7 @@ export function createConnectedAccountPurposeBindingOwner(
           pluginId,
           localId: providerLocalId,
         }),
+        directMaterialConsumer: null,
       };
     })();
     if (
@@ -865,12 +913,47 @@ export function createConnectedAccountPurposeBindingOwner(
       }
       bindingByPurposeKey.set(key, binding);
     }
+    const directMaterialOriginByPurposeKey = new Map<
+      string,
+      ActiveConnectedAccountTeamDirectMaterialOrigin
+    >();
+    for (const origin of input.directMaterialOrigins ?? []) {
+      if (!normalized.directMaterialConsumer) {
+        throw new Error(`${normalized.errorPrefix}_direct_material_consumer_unsupported`);
+      }
+      const purpose = QualifiedConnectedAccountPurposeV1Schema.parse(origin.purpose);
+      const key = qualifiedPurposeKey(purpose);
+      const binding = bindingByPurposeKey.get(key);
+      if (
+        !binding
+        || binding.target.kind !== 'account'
+        || !sameQualifiedConnectedAccountRef(binding.target.account, origin.disclosedMember)
+      ) {
+        throw new Error(`${normalized.errorPrefix}_direct_material_origin_mismatch`);
+      }
+      if (directMaterialOriginByPurposeKey.has(key)) {
+        throw new Error(`${normalized.errorPrefix}_duplicate_direct_material_origin`);
+      }
+      directMaterialOriginByPurposeKey.set(key, Object.freeze({
+        ...origin,
+        purpose: Object.freeze({
+          consumer: Object.freeze({ ...purpose.consumer }),
+          purpose: purpose.purpose,
+        }),
+        disclosedMember: Object.freeze({
+          service: Object.freeze({ ...origin.disclosedMember.service }),
+          accountId: origin.disclosedMember.accountId,
+        }),
+        consumer: normalized.directMaterialConsumer,
+      }));
+    }
     const state: PurposeBindingState = Object.freeze({
       subjectId: normalized.subjectId,
       isSubjectCurrent: normalized.isSubjectCurrent,
       coveredPurposeKeys,
       bindingByPurposeKey,
       bindings: Object.freeze(parsedBindings),
+      directMaterialOriginByPurposeKey,
     });
     purposeBindingsBySubjectKey.set(normalized.subjectKey, state);
     purposeBindingsBySubjectId.set(normalized.subjectId, state);
@@ -944,6 +1027,7 @@ export function createConnectedAccountPurposeBindingOwner(
   }>): Promise<Readonly<{
     target: QualifiedConnectedAccountPurposeBindingTargetV1;
     resolved: ConnectedAccountPurposeResolvedTarget;
+    directMaterialOrigin: ActiveConnectedAccountTeamDirectMaterialOrigin | null;
   }> | null> => {
     input.signal.throwIfAborted();
     const purpose = QualifiedConnectedAccountPurposeV1Schema.parse(input.purpose);
@@ -965,11 +1049,21 @@ export function createConnectedAccountPurposeBindingOwner(
       } catch {
         return null;
       }
+      if (sessionBinding.directMaterialOrigin) {
+        return {
+          target,
+          resolved: Object.freeze({
+            displayName: sessionBinding.directMaterialOrigin.disclosedMember.accountId,
+            account: sessionBinding.directMaterialOrigin.disclosedMember,
+          }),
+          directMaterialOrigin: sessionBinding.directMaterialOrigin,
+        };
+      }
       const resolved = await dependencies.resolveTarget(target, input.signal);
       input.signal.throwIfAborted();
       if (!resolved) return null;
       assertResolvedTargetMatchesIntent(target, resolved);
-      return { target, resolved };
+      return { target, resolved, directMaterialOrigin: null };
     }
     const target = readPurposeBinding(await dependencies.store.read(input.signal), purpose);
     input.signal.throwIfAborted();
@@ -1005,7 +1099,7 @@ export function createConnectedAccountPurposeBindingOwner(
       input.signal.throwIfAborted();
       if (revalidatedResolved) {
         assertResolvedTargetMatchesIntent(revalidatedTarget, revalidatedResolved);
-        return { target: revalidatedTarget, resolved: revalidatedResolved };
+        return { target: revalidatedTarget, resolved: revalidatedResolved, directMaterialOrigin: null };
       }
       await replaceTargetIfStillCurrent({
         purpose,
@@ -1016,7 +1110,7 @@ export function createConnectedAccountPurposeBindingOwner(
       return null;
     }
     assertResolvedTargetMatchesIntent(target, resolved);
-    return { target, resolved };
+    return { target, resolved, directMaterialOrigin: null };
   };
   const readAuthorizedResolved = async (input: Readonly<{
     purpose: QualifiedConnectedAccountPurposeV1;
@@ -1027,6 +1121,7 @@ export function createConnectedAccountPurposeBindingOwner(
   }>): Promise<Readonly<{
     target: QualifiedConnectedAccountPurposeBindingTargetV1;
     resolved: ConnectedAccountPurposeResolvedTarget;
+    directMaterialOrigin: ActiveConnectedAccountTeamDirectMaterialOrigin | null;
   }> | null> => await withSerializedConsumerMutations(
     [contributionKey(QualifiedConnectedAccountPurposeV1Schema.parse(input.purpose).consumer)],
     async () => await readAuthorizedResolvedLocked(input),
@@ -1109,12 +1204,24 @@ export function createConnectedAccountPurposeBindingOwner(
           },
         })
       : null;
-    const materialization = await dependencies.materializeAccount({
-      account: resolved.resolved.account,
-      ...(credentialRevisionBasis ? { credentialRevisionBasis } : {}),
-      request: input.request,
-      signal: input.signal,
-    });
+    const materialization = resolved.directMaterialOrigin
+      ? await (() => {
+          if (!dependencies.materializeTeamDirect) throw bindingOutOfScope();
+          return dependencies.materializeTeamDirect({
+            origin: resolved.directMaterialOrigin,
+            consumer: resolved.directMaterialOrigin.consumer,
+            account: resolved.resolved.account,
+            ...(credentialRevisionBasis ? { credentialRevisionBasis } : {}),
+            request: input.request,
+            signal: input.signal,
+          });
+        })()
+      : await dependencies.materializeAccount({
+          account: resolved.resolved.account,
+          ...(credentialRevisionBasis ? { credentialRevisionBasis } : {}),
+          request: input.request,
+          signal: input.signal,
+        });
     input.signal.throwIfAborted();
     const current = await readMaterializationTarget();
     if (
@@ -1124,6 +1231,8 @@ export function createConnectedAccountPurposeBindingOwner(
         current.resolved.account,
         resolved.resolved.account,
       )
+      || current.directMaterialOrigin?.resourceId
+        !== resolved.directMaterialOrigin?.resourceId
       || (
         input.expectedAccount
         && !sameQualifiedConnectedAccountRef(input.expectedAccount, current.resolved.account)
@@ -1231,7 +1340,7 @@ export function createConnectedAccountPurposeBindingOwner(
     signal: AbortSignal;
   }>): Promise<ConnectedAccountRequestAuthResolvedBinding | null> => {
     const subjectId = input.subjectId.trim();
-    if (!subjectId || !dependencies.resolveCredentialRevision) return null;
+    if (!subjectId) return null;
     const binding = QualifiedConnectedAccountPurposeBindingV1Schema.parse(
       input.binding,
     );
@@ -1262,15 +1371,18 @@ export function createConnectedAccountPurposeBindingOwner(
       async () => {
         const before = await readCurrent();
         if (!before) return null;
-        const revisionLike = await dependencies.resolveCredentialRevision!(
-          before.current.resolved.account,
-          input.signal,
-        );
+        const revisionLike = before.current.directMaterialOrigin?.resourceId
+          ?? (dependencies.resolveCredentialRevision
+            ? await dependencies.resolveCredentialRevision(
+                before.current.resolved.account,
+                input.signal,
+              )
+            : null);
         input.signal.throwIfAborted();
-        const revision = ConnectedServiceCredentialRevisionV1Schema.safeParse(
-          revisionLike,
-        );
-        if (!revision.success) return null;
+        const revision = before.current.directMaterialOrigin
+          ? { success: true as const, data: revisionLike as ConnectedServiceCredentialRevisionV1 }
+          : ConnectedServiceCredentialRevisionV1Schema.safeParse(revisionLike);
+        if (!revision.success || revisionLike === null) return null;
         const after = await readCurrent();
         if (
           !after
@@ -1384,6 +1496,34 @@ export function createConnectedAccountPurposeBindingOwner(
     );
   };
 
+  const resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'] = async (input) => {
+    input.signal.throwIfAborted();
+    const purpose = QualifiedConnectedAccountPurposeV1Schema.parse(input.purpose);
+    const target = QualifiedConnectedAccountPurposeBindingTargetV1Schema.parse(input.target);
+    assertTargetAuthorized(target, input.serviceRefs);
+    const resolved = await dependencies.resolveTarget(target, input.signal);
+    input.signal.throwIfAborted();
+    if (!resolved) throw resourceNotSelected(purpose);
+    assertResolvedTargetMatchesIntent(target, resolved);
+    const binding = immutableBinding({ purpose, target });
+    return Object.freeze({
+      binding,
+      resolved,
+      async isCurrent() {
+        if (input.signal.aborted) return false;
+        try {
+          const current = await dependencies.resolveTarget(target, input.signal);
+          return current !== null
+            && sameQualifiedConnectedAccountRef(current.account, resolved.account)
+            && current.group?.groupId === resolved.group?.groupId
+            && current.group?.generation === resolved.group?.generation;
+        } catch {
+          return false;
+        }
+      },
+    });
+  };
+
   return Object.freeze({
     activatePurposeBindings,
     activateSessionPurposeBindings(input) {
@@ -1394,18 +1534,14 @@ export function createConnectedAccountPurposeBindingOwner(
         },
         purposes: input.purposes,
         bindings: input.bindings,
+        ...(input.directMaterialOrigins
+          ? { directMaterialOrigins: input.directMaterialOrigins }
+          : {}),
       });
     },
+    resolveBindingIntentSelection,
     async resolveBindingIntent(input) {
-      input.signal.throwIfAborted();
-      const purpose = QualifiedConnectedAccountPurposeV1Schema.parse(input.purpose);
-      const target = QualifiedConnectedAccountPurposeBindingTargetV1Schema.parse(input.target);
-      assertTargetAuthorized(target, input.serviceRefs);
-      const resolved = await dependencies.resolveTarget(target, input.signal);
-      input.signal.throwIfAborted();
-      if (!resolved) throw resourceNotSelected(purpose);
-      assertResolvedTargetMatchesIntent(target, resolved);
-      return immutableBinding({ purpose, target });
+      return (await resolveBindingIntentSelection(input)).binding;
     },
     resolveCurrentSessionPurposeBindingSnapshot,
     resolveCurrentRequestAuthBinding,

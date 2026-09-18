@@ -19,6 +19,7 @@ import type { ResolvedContributionRegistry } from '@/plugins/projection/registry
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 
 import {
   registerAutomationReplyHandoffRpcHandler,
@@ -62,13 +63,11 @@ const source = {
   resultDelivery: 'finalResult',
 } as const;
 
-const plainCurrentness: AccountEncryptionCurrentnessResponse = {
+const plainCurrentness: AccountEncryptionCurrentnessResponse = createAccountEncryptionCurrentnessFixture({
   mode: 'plain',
   version: 7,
-  signingKeyFingerprint: null,
-  contentKeyFingerprint: null,
   updatedAt: 1,
-};
+});
 
 /**
  * A synthetic out-of-tree bridge. The reply-handoff receiver dispatches to the
@@ -139,7 +138,7 @@ function e2eeCurrentness(
   snapshot: AccountScopedCryptoMaterialSnapshotV1,
   version: number,
 ): AccountEncryptionCurrentnessResponse {
-  return {
+  return createAccountEncryptionCurrentnessFixture({
     mode: 'e2ee',
     version,
     signingKeyFingerprint: 'aemk1_signing',
@@ -148,7 +147,7 @@ function e2eeCurrentness(
         snapshot.contentPublicKeyFingerprint,
       ),
     updatedAt: version,
-  };
+  });
 }
 
 function createEncryptedRequest(

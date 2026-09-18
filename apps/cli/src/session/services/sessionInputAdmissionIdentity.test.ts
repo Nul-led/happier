@@ -3,11 +3,13 @@ import { derivePluginSessionInputLocalIdV1 } from '@happier-dev/protocol';
 
 import {
   buildAutomationSessionInputAdmissionV1,
+  buildWorkflowSessionInputAdmissionV2,
   buildAgentRuntimeFirstInputAdmissionV1,
   buildCausalSessionInputAdmissionV1,
   buildPluginSessionInputAdmissionV1,
   buildSessionSpawnInitialInputAdmissionForLocalIdV1,
   deriveAutomationSessionInputLocalIdV1,
+  deriveWorkflowSessionInputLocalIdV2,
 } from './sessionInputAdmissionIdentity';
 
 describe('derivePluginSessionInputLocalIdV1', () => {
@@ -244,6 +246,79 @@ describe('derivePluginSessionInputLocalIdV1', () => {
         permission: {},
       },
     });
+  });
+
+  it('builds distinct stable Workflow invocation and final-delivery Session admissions without an Automation id', () => {
+    const invocation = buildWorkflowSessionInputAdmissionV2({
+      runId: 'workflow-run-42',
+      purpose: 'invocation',
+      invocationRecordId: 'workflow-invocation-7',
+    }, {
+      requestedPermissionCeiling: 'read-only',
+      sourceAuthority: {
+        mediatorPluginId: 'happier.channels',
+        sourceRef: 'channels:binding:binding-1',
+        sourceRevisionOrEpoch: '4:7',
+        remoteApprovalMaxScope: 'session',
+      },
+    });
+    const delivery = buildWorkflowSessionInputAdmissionV2({
+      runId: 'workflow-run-42',
+      purpose: 'result_delivery',
+    });
+
+    expect(invocation).toEqual({
+      provenance: {
+        v: 2,
+        kind: 'workflow_invocation',
+        runId: 'workflow-run-42',
+        invocationRecordId: 'workflow-invocation-7',
+      },
+      request: {
+        v: 2,
+        producer: 'workflow',
+        caller: { kind: 'host' },
+        sourceAuthority: {
+          mediatorPluginId: 'happier.channels',
+          sourceRef: 'channels:binding:binding-1',
+          sourceRevisionOrEpoch: '4:7',
+          remoteApprovalMaxScope: 'session',
+        },
+        workflow: {
+          purpose: 'invocation',
+          runId: 'workflow-run-42',
+          invocationRecordId: 'workflow-invocation-7',
+        },
+        permission: { requestedPermissionCeiling: 'read-only' },
+      },
+    });
+    expect(delivery).toEqual({
+      provenance: { v: 2, kind: 'workflow_result_delivery', runId: 'workflow-run-42' },
+      request: {
+        v: 2,
+        producer: 'workflow',
+        caller: { kind: 'host' },
+        workflow: { purpose: 'result_delivery', runId: 'workflow-run-42' },
+        permission: {},
+      },
+    });
+    expect(deriveWorkflowSessionInputLocalIdV2({
+      runId: 'workflow-run-42',
+      purpose: 'invocation',
+      invocationRecordId: 'workflow-invocation-7',
+    })).toBe(deriveWorkflowSessionInputLocalIdV2({
+      runId: 'workflow-run-42',
+      purpose: 'invocation',
+      invocationRecordId: 'workflow-invocation-7',
+    }));
+    expect(deriveWorkflowSessionInputLocalIdV2({
+      runId: 'workflow-run-42',
+      purpose: 'invocation',
+      invocationRecordId: 'workflow-invocation-7',
+    })).not.toBe(deriveWorkflowSessionInputLocalIdV2({
+      runId: 'workflow-run-42',
+      purpose: 'result_delivery',
+    }));
   });
 
   it('keeps daemon first input distinct from a UI-originated host request', () => {

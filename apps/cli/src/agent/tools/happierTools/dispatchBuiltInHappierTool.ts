@@ -1,4 +1,10 @@
-import { type ActionId, type ActionsSettingsV1, type ApprovalRequestOriginV1, type ResolvedActionOption } from '@happier-dev/protocol';
+import {
+  type ActionContextualDefaults,
+  type ActionId,
+  type ActionsSettingsV1,
+  type ApprovalRequestOriginV1,
+  type ResolvedActionOption,
+} from '@happier-dev/protocol';
 import {
   getActionToolIdForToolName,
   getEquivalentActionIdForBuiltInTool,
@@ -7,12 +13,8 @@ import {
   resolveActionToolCatalogAvailability,
 } from './actionToolCatalog';
 import type { HappierBuiltInToolDispatchResult } from './types';
-import {
-  getActionSpecForSurface,
-  resolveActionOptionsForSurface,
-  searchActionSpecsForSurface,
-  type ResolveActionOptionsInput,
-} from './actionSpecDiscovery';
+import type { ResolveActionOptionsInput } from './createActionToolExecutorBridge';
+import { projectSessionBoundActionToolInputSchema } from './actionToolContext';
 import {
   actionExecuteToolInputSchema,
   changeTitleToolInputSchema,
@@ -23,13 +25,19 @@ type DispatchDeps = Readonly<{
   changeTitle: (
     sessionId: string,
     title: string,
-    options?: Readonly<{ approvalOrigin?: ApprovalRequestOriginV1 | null }>,
+    options?: Readonly<{
+      approvalOrigin?: ApprovalRequestOriginV1 | null;
+      actionRequestId?: string | null;
+    }>,
   ) => Promise<unknown>;
   executeActionByToolName: (
     toolName: string,
     args: unknown,
     defaultSessionId: string,
-    options?: Readonly<{ approvalOrigin?: ApprovalRequestOriginV1 | null }>,
+    options?: Readonly<{
+      approvalOrigin?: ApprovalRequestOriginV1 | null;
+      actionRequestId?: string | null;
+    }>,
   ) => Promise<HappierBuiltInToolDispatchResult>;
   resolveActionOptions?: (args: ResolveActionOptionsInput) => Promise<
     | Readonly<{
@@ -103,8 +111,10 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
   actionsSettings?: ActionsSettingsV1 | null;
   getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
   approvalOrigin?: ApprovalRequestOriginV1 | null;
+  actionRequestId?: string | null;
   registry?: import('@/plugins/projection/registry/types').ResolvedContributionRegistry;
   pluginToolCatalog?: readonly import('@/plugins/runtime/toolCatalog').ProjectedPluginToolCatalogEntry[];
+  requiredDirectActionIds?: readonly ActionId[];
   deps: DispatchDeps;
 }>): Promise<HappierBuiltInToolDispatchResult> {
   const isActionEnabled = params.deps.isActionEnabled ?? (() => true);
@@ -120,6 +130,12 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
     pluginToolCatalog: params.pluginToolCatalog,
   });
   const actionDisabled = (details: unknown) => err('action_disabled', 'Action is disabled', details);
+  const executionOptions = params.approvalOrigin || params.actionRequestId
+    ? {
+        ...(params.approvalOrigin ? { approvalOrigin: params.approvalOrigin } : {}),
+        ...(params.actionRequestId ? { actionRequestId: params.actionRequestId } : {}),
+      }
+    : undefined;
 
   const actionBackedActionId = getActionToolIdForToolName(params.toolName, {
     registry: params.registry,
@@ -137,6 +153,7 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
       actionsSettings,
       registry: params.registry,
       pluginToolCatalog: params.pluginToolCatalog,
+      requiredDirectActionIds: params.requiredDirectActionIds,
     }) || isDirectManualToolAvailable({
       toolName: params.toolName,
       actionId: actionBackedActionId,
@@ -145,6 +162,7 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
       actionsSettings,
       registry: params.registry,
       pluginToolCatalog: params.pluginToolCatalog,
+      requiredDirectActionIds: params.requiredDirectActionIds,
     });
     if (!isDirectToolAvailable) {
       return err('unknown_tool', `Unknown built-in Happier tool: ${params.toolName}`);
@@ -181,27 +199,39 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
     return normalizeChangeTitleResult(await params.deps.changeTitle(
       params.sessionId,
       parsed.data.title,
-      ...(params.approvalOrigin ? [{ approvalOrigin: params.approvalOrigin }] as const : [] as const),
+      ...(executionOptions ? [executionOptions] as const : [] as const),
     ));
   }
 
-  if (params.toolName === 'action_spec_search') {
-    const result = await searchActionSpecsForSurface(params.args, surface, (id) => isActionEnabled(id), actionsSettings);
-    return result.ok ? ok(result.result) : err(result.errorCode, result.error);
-  }
-
   if (params.toolName === 'action_spec_get') {
-    const result = await getActionSpecForSurface(
+    const result = await params.deps.executeActionByToolName(
+      params.toolName,
       params.args,
-      surface,
-      (id) => isActionEnabled(id),
-      actionsSettings,
-      {
-        defaultSessionId: params.sessionId,
-        defaultSessionMachineId: params.sessionMachineId,
-      },
+      params.sessionId,
+      ...(executionOptions ? [executionOptions] : []),
     );
-    return result.ok ? ok(result.result) : err(result.errorCode, result.error, result.details);
+    if (!result.ok || typeof result.result !== 'object' || result.result === null) return result;
+    const payload = result.result as Readonly<Record<string, unknown>>;
+    if (typeof payload.actionSpec !== 'object' || payload.actionSpec === null) return result;
+    const actionSpec = payload.actionSpec as Readonly<Record<string, unknown>>;
+    if (typeof actionSpec.id !== 'string' || !Object.prototype.hasOwnProperty.call(actionSpec, 'inputSchema')) return result;
+    return ok({
+      ...payload,
+      actionSpec: {
+        ...actionSpec,
+        inputSchema: projectSessionBoundActionToolInputSchema({
+          actionId: actionSpec.id,
+          inputSchema: actionSpec.inputSchema,
+          context: {
+            defaultSessionId: params.sessionId,
+            defaultSessionMachineId: params.sessionMachineId,
+          },
+          registry: params.registry,
+          pluginToolCatalog: params.pluginToolCatalog,
+          contextualDefaults: (actionSpec.contextualDefaults ?? null) as ActionContextualDefaults | null,
+        }),
+      },
+    });
   }
 
   if (params.toolName === 'execution_run_start') {
@@ -223,15 +253,8 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
       'execution_run_start',
       normalized.request,
       params.sessionId,
-      ...(params.approvalOrigin ? [{ approvalOrigin: params.approvalOrigin }] : []),
+      ...(executionOptions ? [executionOptions] : []),
     );
-  }
-
-  if (params.toolName === 'action_options_resolve') {
-    const resolver = params.deps.resolveActionOptions;
-    if (!resolver) return err('options_source_not_supported', 'Options source is not supported');
-    const result = await resolveActionOptionsForSurface(params.args, surface, (id) => isActionEnabled(id), resolver, actionsSettings);
-    return result.ok ? ok(result.result) : err(result.errorCode, result.error, result.details);
   }
 
   if (params.toolName === 'action_execute') {
@@ -248,7 +271,7 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
         ...(Object.prototype.hasOwnProperty.call(parsed.data, 'input') ? { input: parsed.data.input } : {}),
       },
       params.sessionId,
-      ...(params.approvalOrigin ? [{ approvalOrigin: params.approvalOrigin }] : []),
+      ...(executionOptions ? [executionOptions] : []),
     );
   }
 
@@ -258,7 +281,7 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
       params.toolName,
       params.args,
       params.sessionId,
-      ...(params.approvalOrigin ? [{ approvalOrigin: params.approvalOrigin }] : []),
+      ...(executionOptions ? [executionOptions] : []),
     );
   }
 

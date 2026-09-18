@@ -527,12 +527,15 @@ describe('sessionRunnerRespawnDescriptor', () => {
       directory: '/tmp/repo',
       backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
     }, {
-      vendorResumeId: '  remote-runtime-learned-id  ',
+      // The Agent minted this id. A persisted respawn descriptor is what a cold
+      // daemon hands back to it, so it must carry the exact bytes -- surrounding
+      // whitespace, newline and base64 punctuation included.
+      vendorResumeId: '  provider\nses/AB+cd==  ',
     });
 
     expect(descriptor).toMatchObject({
       version: 1,
-      vendorResumeId: 'remote-runtime-learned-id',
+      vendorResumeId: '  provider\nses/AB+cd==  ',
     });
     expect(descriptor).not.toHaveProperty('resume');
     expect(REMOTE_DEV_RESPAWN_DESCRIPTOR_V1_READER.safeParse(descriptor).success).toBe(true);

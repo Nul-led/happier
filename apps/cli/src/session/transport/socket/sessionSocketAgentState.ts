@@ -27,7 +27,7 @@ export type AgentStateSummary = Readonly<{
 }>;
 
 export function summarizeAgentState(value: unknown): AgentStateSummary {
-  const obj = value && typeof value === 'object' && !Array.isArray(value) ? (value as any) : null;
+  const obj = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   const controlledByUser = typeof obj?.controlledByUser === 'boolean' ? obj.controlledByUser : undefined;
   const requests = obj?.requests;
   const pendingRequestsCount =
@@ -615,6 +615,7 @@ export async function readLatestAgentStateSummaryViaSocket(params: Readonly<{
   ctx: SessionEncryptionContext | null;
   sessionEncryptionMode: SessionStoredContentEncryptionMode;
   timeoutMs: number;
+  onAgentStateObserved?: (value: unknown, observedAtMs: number) => void;
 }>): Promise<AgentStateSummary | null> {
   const socket = createSessionScopedSocket({ token: params.token, sessionId: params.sessionId }) as unknown as Socket;
   const timeoutMs = Math.max(1, Math.trunc(params.timeoutMs));
@@ -656,7 +657,7 @@ export async function readLatestAgentStateSummaryViaSocket(params: Readonly<{
       const update: UpdateContainer = parsed.data;
 
       if (update.body?.t !== 'update-session') return;
-      const body = update.body as any;
+      const body = update.body;
       if (String(body.id ?? '') !== params.sessionId) return;
 
       const agentStateCiphertext = body.agentState?.value;
@@ -674,6 +675,7 @@ export async function readLatestAgentStateSummaryViaSocket(params: Readonly<{
             : null;
         if (decrypted === null) return;
         const summary = summarizeAgentState(decrypted);
+        params.onAgentStateObserved?.(decrypted, update.createdAt);
         clearTimeout(timer);
         cleanup();
         resolve(summary);

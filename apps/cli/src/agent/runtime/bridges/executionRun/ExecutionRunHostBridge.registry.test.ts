@@ -12,6 +12,10 @@ import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
 import { buildExecutionRunProfileCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
+
 type TestRuntimeFactoryInput = Readonly<{
   cwd: string;
   runId?: string;
@@ -81,7 +85,7 @@ function createResumableStaticRuntime(responseText: string): TestExecutionRunHos
   runtime = createTestExecutionRunHostRuntime({
     resumeSupported: true,
     replayResumeSupported: true,
-    resumeSessionId: 'child_session_resumed',
+    resumeRuntimeId: 'child_session_resumed',
     onSendPrompt: async () => {
       runtime.emitMessage({ type: 'model-output', fullText: responseText });
     },
@@ -246,7 +250,7 @@ describe('ExecutionRunManager execution-run registry integration', () => {
       createRuntime: () => {
         let runtime: TestExecutionRunHostRuntime;
         runtime = createTestExecutionRunHostRuntime({
-          onSendPrompt: async (_sessionId, prompt) => {
+          onSendPrompt: async (_runtimeId, prompt) => {
             prompts.push(prompt);
             runtime.emitMessage({
               type: 'model-output',
@@ -494,6 +498,69 @@ describe('ExecutionRunManager execution-run registry integration', () => {
     expect(runtimeInputs.at(-1)?.runId).toBe(started.runId);
   });
 
+  it('runs a resumed bounded input through canonical bounded completion and settles terminal waiters', async () => {
+    const { ExecutionRunHostBridge: ExecutionRunManager } = await import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge');
+
+    const prompts: string[] = [];
+    const manager = createExecutionRunManager(ExecutionRunManager, {
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: workspaceDir,
+      createRuntime: () => {
+        let runtime: TestExecutionRunHostRuntime;
+        runtime = createTestExecutionRunHostRuntime({
+          resumeSupported: true,
+          resumeRuntimeId: 'child_session_resumed',
+          onSendPrompt: async (_sessionId, prompt) => {
+            prompts.push(prompt);
+            runtime.emitMessage({
+              type: 'model-output',
+              fullText: prompts.length === 1 ? 'first' : 'resumed',
+            });
+          },
+          onWaitForTurnCompletion: async () => {},
+        });
+        return runtime;
+      },
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    const started = await manager.start({
+      sessionId: null,
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      instructions: 'Initial task.',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+    });
+    await manager.waitForTerminal(started.runId);
+    expect(manager.getPublic(started.runId)).toMatchObject({
+      status: 'succeeded',
+      lifecycle: { v: 1, state: 'recoverable_with_input' },
+    });
+    await expect(manager.ensure(started.runId, { resume: true })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_not_allowed',
+      error: 'Resume requires input',
+      resumeFailureKind: 'permanent',
+    });
+
+    await expect(manager.send(started.runId, {
+      message: 'Review again.',
+      resume: true,
+    })).resolves.toEqual({ ok: true });
+
+    await vi.waitFor(() => {
+      expect(manager.get(started.runId)?.status).toBe('succeeded');
+    });
+    await expect(manager.waitForTerminal(started.runId)).resolves.toBeUndefined();
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('Review again.');
+    expect(manager.getRunningCount()).toBe(0);
+  });
+
   it('passes the concrete configured ACP backend id through execution-run state instead of customAcp', async () => {
     await publishCurrentRuntimeRegistry();
     const { ExecutionRunHostBridge: ExecutionRunManager } = await import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge');
@@ -540,10 +607,17 @@ describe('ExecutionRunManager execution-run registry integration', () => {
       async readResumeSupport() {
         throw new Error('startup probe failed');
       },
-      async provisionSession() {
-        return { sessionId: 'unreachable-session' };
+      async provisionRuntime() {
+        return { runtimeId: 'unreachable-session' };
       },
-      async sendPrompt() {},
+      async deliverInput(): Promise<never> {
+        // The startup probe rejects before admission, so reaching input
+        // delivery at all would mean the refusal leaked a usable controller.
+        throw new Error('Input delivery is unreachable once the startup probe fails');
+      },
+      getRuntimeLifetimeSignal() {
+        return TEST_RUNTIME_LIFETIME_SIGNAL;
+      },
       async cancel() {},
       subscribeMessages() {
         return () => undefined;

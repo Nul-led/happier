@@ -9,9 +9,8 @@ import {
   type MutagenEngineArtifactTarget,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
+import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1, WorkspaceSyncRuntimeReadinessV1, WorkspaceSyncStatusV1 } from '@happier-dev/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { chmod, mkdir } from 'node:fs/promises';
 
 import {
   getActiveAccountSettingsSnapshot,
@@ -22,6 +21,7 @@ import {
 import {
   WorkspaceSyncController,
   type WorkspaceSyncLocalAgentStreamOpen,
+  type WorkspaceSyncConflictResolutionAuthorizationAssert,
   type WorkspaceSyncOwnedLocalAgent,
   type WorkspaceSyncResolvedRef,
   type WorkspaceSyncTargetConflictDelete,
@@ -38,6 +38,10 @@ import {
   parseWorkspaceSyncRelationships,
   WORKSPACE_SYNC_SETTINGS_KEY,
 } from '@/workspaces/sync/workspaceSyncSettings';
+import {
+  ensureProtectedLocalStateDirectory,
+  type WindowsProtectedLocalStateAclBoundary,
+} from '@/utils/fs/protectedLocalState';
 import type {
   WorkspaceRootOwnershipHandle,
   WorkspaceRootOwnershipManager,
@@ -54,7 +58,7 @@ import type { Duplex } from 'node:stream';
 type InstalledPaths = Readonly<{ currentPath: string; resolvedCurrentPath: string | null }>;
 type ArtifactPaths = Readonly<{ managerPath: string; agentPath: string }>;
 type ArtifactManifest = Readonly<{ engineVersion: string; protocolEpoch: string }>;
-type DataLayout = Readonly<{ rootDir: string; dataDir: string; brokerDir: string; stagingDir: string }>;
+type DataLayout = Readonly<{ rootDir: string; dataDir: string; brokerDir: string }>;
 
 export type LaunchWorkspaceSyncLocalAgent = (input: Readonly<{
   executablePath: string;
@@ -89,6 +93,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   relationshipOwner?: Pick<WorkspaceSyncRelationshipOwner, 'materializeEndpoints' | 'prepareCreate'>;
   deleteConflictLoserAtTarget?: WorkspaceSyncTargetConflictDelete;
   readFileAtTarget?: WorkspaceSyncTargetFileRead;
+  assertConflictResolutionAuthorized?: WorkspaceSyncConflictResolutionAuthorizationAssert;
   getSettingsSnapshot?: () => ActiveAccountSettingsSnapshot | null;
   subscribeSettingsSnapshot?: (listener: ActiveAccountSettingsSnapshotListener) => () => void;
   resolveInstalledComponentPaths?: (input: Readonly<{ componentId: 'mutagen-engine'; channel: PublicReleaseRingId }>) => InstalledPaths;
@@ -97,6 +102,8 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   assertArtifactPayload?: (input: Readonly<{ payloadRoot: string; targetTriple: MutagenEngineArtifactTarget; engineVersion?: string }>) => ArtifactManifest;
   resolveArtifactTarget?: () => MutagenEngineArtifactTarget;
   resolveDataLayout?: (input: Readonly<{ daemonDataRoot: string; stackDevTargetMutagenDataDir?: string | null }>) => DataLayout;
+  platform?: NodeJS.Platform;
+  windowsAclBoundary?: WindowsProtectedLocalStateAclBoundary;
   ensurePrivateDirectory?: (path: string) => Promise<void>;
   randomBytes?: (length: number) => Uint8Array;
   randomId?: () => string;
@@ -107,6 +114,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
    */
   assertLegacyStateAvailable?: () => void;
   onStatusPublished?: (status: WorkspaceSyncStatusV1) => void;
+  onEngineReadinessPublished?: (readiness: WorkspaceSyncRuntimeReadinessV1['engine']) => void;
 }>;
 
 export type DaemonWorkspaceSyncRuntime = Readonly<{
@@ -123,11 +131,6 @@ export type DaemonWorkspaceSyncRuntime = Readonly<{
   }>): Promise<void>;
 }>;
 
-async function ensurePrivateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') await chmod(path, 0o700);
-}
-
 /**
  * Daemon composition root for the single workspace-sync manager, broker,
  * controller, and handoff adapter. Durable relationship authority remains in
@@ -136,6 +139,7 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
 export function createDaemonWorkspaceSyncRuntime(
   dependencies: DaemonWorkspaceSyncRuntimeDependencies,
 ): DaemonWorkspaceSyncRuntime {
+  const platform = dependencies.platform ?? process.platform;
   const resolveInstalled = dependencies.resolveInstalledComponentPaths ?? resolveInstalledFirstPartyComponentPaths;
   const ensureInstalled = dependencies.ensureInstalledComponent ?? ensureInstalledFirstPartyComponent;
   const resolvePaths = dependencies.resolveArtifactPaths ?? resolveMutagenEngineArtifactPaths;
@@ -184,9 +188,9 @@ export function createDaemonWorkspaceSyncRuntime(
       return { managerPath: paths.managerPath, agentPath: paths.agentPath, dataDir: layout.dataDir, brokerDir: layout.brokerDir, manifest };
     });
     verifiedRuntime = pending;
-    void pending.catch(() => {
+    void pending.finally(() => {
       if (verifiedRuntime === pending) verifiedRuntime = null;
-    });
+    }).catch(() => undefined);
     return pending;
   };
 
@@ -200,7 +204,12 @@ export function createDaemonWorkspaceSyncRuntime(
       signal: context.signal,
     }),
     spawn: dependencies.spawnSidecar,
-    ensurePrivateDirectory: dependencies.ensurePrivateDirectory ?? ensurePrivateDirectory,
+    ensurePrivateDirectory: dependencies.ensurePrivateDirectory
+      ?? (async (path) => await ensureProtectedLocalStateDirectory(path, {
+        platform,
+        authority: 'owned',
+        ...(dependencies.windowsAclBoundary ? { windowsAclBoundary: dependencies.windowsAclBoundary } : {}),
+      })),
     randomBytes: dependencies.randomBytes ?? ((length) => randomBytes(length)),
     randomId: dependencies.randomId ?? randomUUID,
     onRestartReady: async () => {
@@ -209,6 +218,9 @@ export function createDaemonWorkspaceSyncRuntime(
       }
       await reconcileAfterSidecarRestart();
     },
+    ...(dependencies.onEngineReadinessPublished
+      ? { onReadinessChanged: dependencies.onEngineReadinessPublished }
+      : {}),
   });
   const adapter = createWorkspaceSyncMutagenAdapter({
     send: async (command, signal) => await lifecycle.command(command, signal),
@@ -243,6 +255,7 @@ export function createDaemonWorkspaceSyncRuntime(
     openLocalWorkspaceAgentStream: openRootedAgent,
     ...(dependencies.deleteConflictLoserAtTarget ? { deleteConflictLoserAtTarget: dependencies.deleteConflictLoserAtTarget } : {}),
     ...(dependencies.readFileAtTarget ? { readFileAtTarget: dependencies.readFileAtTarget } : {}),
+    ...(dependencies.assertConflictResolutionAuthorized ? { assertConflictResolutionAuthorized: dependencies.assertConflictResolutionAuthorized } : {}),
     ...(dependencies.assertLegacyStateAvailable ? { assertLegacyStateAvailable: dependencies.assertLegacyStateAvailable } : {}),
     ...(dependencies.onStatusPublished ? { onStatusPublished: dependencies.onStatusPublished } : {}),
   });

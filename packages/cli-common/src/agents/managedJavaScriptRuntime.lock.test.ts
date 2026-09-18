@@ -62,6 +62,28 @@ describe('managed JavaScript runtime bootstrap lock', () => {
     await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
   });
 
+  it('cancels a waiting bootstrap without disturbing the current lock owner', async () => {
+    const homeDir = await createHomeDir();
+    const processEnv = { ...process.env, HAPPIER_HOME_DIR: homeDir, PATH: '' };
+    const lockPath = join(managedJavaScriptRuntimeInstallDir(processEnv), '.lock', 'bootstrap.lock');
+    await mkdir(dirname(lockPath), { recursive: true });
+    const owner = JSON.stringify({ pid: process.pid, createdAtMs: Date.now(), updatedAtMs: Date.now(), token: 'other-bootstrap' });
+    await writeFile(lockPath, owner);
+    const controller = new AbortController();
+    const reason = new Error('bootstrap canceled');
+    const pending = ensureManagedJavaScriptRuntimeCommand(processEnv, {
+      fetchNodeRuntimeReleaseAsset: async () => { throw new Error('unexpected acquisition'); },
+    }, { signal: controller.signal });
+    const settled = pending.then(() => 'resolved', (error: unknown) => error);
+    controller.abort(reason);
+    const outcome = await Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve('still waiting'), 250))]);
+    const retainedOwner = await readFile(lockPath, 'utf8');
+    await rm(lockPath, { force: true });
+    await settled;
+    expect(outcome).toBe(reason);
+    expect(retainedOwner).toBe(owner);
+  });
+
   it('does not steal an aged lock from a bootstrap whose owner process is still active', async () => {
     const homeDir = await createHomeDir();
     const processEnv = { ...process.env, HAPPIER_HOME_DIR: homeDir, PATH: '' };

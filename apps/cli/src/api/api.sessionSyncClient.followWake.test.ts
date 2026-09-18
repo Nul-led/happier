@@ -1,0 +1,113 @@
+import axios from 'axios';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  bindApiSessionSocketSequenceMock,
+  createApiSessionSocketStub,
+} from '@/testkit/backends/apiSessionSocketHarness';
+import { createMockSession } from '@/testkit/backends/sessionFixtures';
+import {
+  readSessionFollowWakeInvalidationGeneration,
+} from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
+
+import { ApiClient } from './api';
+import { CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1 } from './apiMachine';
+import type { ApiSessionClient } from './session/sessionClient';
+
+const { mockIo, readStoredCredentialsMock } = vi.hoisted(() => ({
+  mockIo: vi.fn(),
+  readStoredCredentialsMock: vi.fn(),
+}));
+
+vi.mock('socket.io-client', () => ({ io: mockIo }));
+vi.mock('@/api/connection/createLoopbackReadinessProbe', () => ({
+  createLoopbackReadinessProbe: () => async () => ({ status: 'ready' as const }),
+}));
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/persistence')>()),
+  readStoredCredentials: readStoredCredentialsMock,
+}));
+
+describe('ApiClient ordinary Session Follow wake wiring', () => {
+  let client: ApiSessionClient | null = null;
+
+  beforeEach(() => {
+    vi.stubEnv('HAPPY_ENABLE_V2_CHANGES', 'false');
+    mockIo.mockReset();
+    readStoredCredentialsMock.mockReset().mockResolvedValue({
+      token: 'ordinary-account-token',
+      encryption: null,
+    });
+    vi.spyOn(axios, 'get').mockResolvedValue({ status: 404, data: {} });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+  });
+
+  afterEach(async () => {
+    await client?.close();
+    client = null;
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('backs advertised wake support with exact Session invalidation and reconnect consumers when V2 changes are disabled', async () => {
+    const userSocket = createApiSessionSocketStub({ id: 'ordinary-user-socket' });
+    const firstSessionSocket = createApiSessionSocketStub({
+      id: 'ordinary-session-socket-1',
+      disconnectReason: 'transport close',
+    });
+    const reconnectedSessionSocket = createApiSessionSocketStub({
+      id: 'ordinary-session-socket-2',
+    });
+    bindApiSessionSocketSequenceMock(mockIo, [
+      userSocket,
+      firstSessionSocket,
+      reconnectedSessionSocket,
+    ]);
+
+    const api = await ApiClient.create({
+      token: 'ordinary-account-token',
+      encryption: null,
+    });
+    const beforeConstruction = readSessionFollowWakeInvalidationGeneration();
+    client = api.sessionSyncClient(createMockSession({
+      id: 'destination-session',
+      encryptionMode: 'plain',
+      metadataLayoutVersion: 1,
+      metadata: { v: 1 },
+      agentState: null,
+    }));
+
+    await vi.waitFor(() => {
+      expect(readSessionFollowWakeInvalidationGeneration()).toBe(beforeConstruction + 1);
+    });
+    expect(CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1.sessionFollow).toEqual({
+      contextV1: true,
+      wakeOnHumanChangeV1: true,
+    });
+
+    const afterConnect = readSessionFollowWakeInvalidationGeneration();
+    firstSessionSocket.trigger('session', {
+      id: 'wrong-session-change',
+      createdAt: 1,
+      body: { t: 'session-changed', sessionId: 'other-session' },
+    });
+    expect(readSessionFollowWakeInvalidationGeneration()).toBe(afterConnect);
+
+    firstSessionSocket.trigger('session', {
+      id: 'exact-session-change',
+      createdAt: 2,
+      body: { t: 'session-changed', sessionId: 'destination-session' },
+    });
+    expect(readSessionFollowWakeInvalidationGeneration()).toBe(afterConnect + 1);
+
+    const beforeReconnect = readSessionFollowWakeInvalidationGeneration();
+    firstSessionSocket.disconnect();
+    await vi.waitFor(() => expect(reconnectedSessionSocket.connect).toHaveBeenCalledTimes(1), {
+      timeout: 3_000,
+    });
+    await vi.waitFor(() => {
+      expect(readSessionFollowWakeInvalidationGeneration()).toBe(beforeReconnect + 1);
+    });
+  });
+});

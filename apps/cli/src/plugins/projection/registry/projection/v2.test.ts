@@ -82,8 +82,6 @@ describe('buildPluginProjectionV2', () => {
                 code: 'target_absent',
                 message: 'Targeted contribution admission rejected (target_absent).',
                 details: {
-                    targetPluginId,
-                    pointId: 'providers',
                     protocol: { id: 'provider', version: 1 },
                 },
             },
@@ -1125,11 +1123,6 @@ describe('buildPluginProjectionV2', () => {
                             inactive: ['checkNow', 'consumeResetCredit'],
                         },
                     },
-                    executionRuns: {
-                        open: ['create', 'resume', 'fork'],
-                        checkpoint: true,
-                        stop: true,
-                    },
                 },
             }],
         }).agents[0]!;
@@ -1178,13 +1171,12 @@ describe('buildPluginProjectionV2', () => {
                             inactive: ['checkNow', 'consumeResetCredit'],
                         },
                     },
-                    executionRuns: {
-                        open: ['create', 'resume', 'fork'],
-                        checkpoint: true,
-                        stop: true,
-                    },
                 },
             });
+        expect(
+            buildPluginProjectionV2({ registry, generation: 18 })
+                .agentsById['acme-lifecycle']?.capabilities,
+        ).not.toHaveProperty('executionRuns');
     });
 
     it('projects declared built-in external-session Agents and omits unsupported Agent packages', () => {
@@ -1623,7 +1615,10 @@ describe('buildPluginProjectionV2', () => {
             id: 'settings',
             pluginId: 'acme.hooks',
             version: 1,
-            title: 'Acme settings',
+            title: {
+                key: 'plugins.acme.settings.title',
+                fallback: 'Acme settings',
+            },
             rollback: {
                 generation: 'generation-prev',
                 supported: true,
@@ -1643,8 +1638,14 @@ describe('buildPluginProjectionV2', () => {
                     secretCustody: 'daemon',
                     redaction: 'secret',
                     clearWhenEmpty: 'omit',
-                    displayKey: 'API token',
-                    descriptionKey: 'Used to authenticate requests.',
+                    displayKey: {
+                        key: 'plugins.acme.apiToken.label',
+                        fallback: 'API token',
+                    },
+                    descriptionKey: {
+                        key: 'plugins.acme.apiToken.description',
+                        fallback: 'Used to authenticate requests.',
+                    },
                 }),
                 expect.objectContaining({
                     id: 'enabled',

@@ -27,6 +27,8 @@ export type PrepareWorkspaceSyncHandoffInput = Readonly<{
   /** Host-derived Account Home scope, required only for relationship creation. */
   accountServerId?: string;
   targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+  targetReplacementApprovalReceiptId?: string;
+  targetReplacementApprovalActionInput?: unknown;
   action: WorkspaceSyncHandoffAction;
   sourceMachineId: string;
   targetMachineId: string;
@@ -168,6 +170,10 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
           // until the canonical Action approval is replayed.
           targetBootstrap: 'materialize_from_source_workspace',
           ...(input.targetReplacementApproval ? { targetReplacementApproval: input.targetReplacementApproval } : {}),
+          ...(input.targetReplacementApprovalReceiptId ? {
+            targetReplacementApprovalReceiptId: input.targetReplacementApprovalReceiptId,
+            targetReplacementApprovalActionInput: input.targetReplacementApprovalActionInput,
+          } : {}),
           flushBeforeCommit: true,
           ...(input.signal ? { signal: input.signal } : {}),
         });
@@ -248,14 +254,14 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
       } else if (prepared.action.kind === 'create_relationship' && prepared.relationshipId) {
         // prepareCreate's first flush proves the relationship is ready while
         // the source is live; this second flush captures the final delta only
-        // after the handoff coordinator has quiesced that source. The new
-        // relationship is intentionally not durable yet, so it must use the
-        // daemon-local engine rather than the settings-backed controller.
+        // after the handoff coordinator has quiesced that source. Account
+        // Settings already carries disabled intent, while the daemon-local
+        // transient engine remains the only active runtime until final READY.
         status = await deps.sync.flush(prepared.relationshipId, input.signal);
       }
-      // A newly-created relationship becomes durable only after the engine has
-      // completed the final source-quiesced flush, and before target custody is
-      // committed. The later adapter commit is cleanup-only.
+      // After the final source-quiesced flush, the transaction publishes target
+      // READY and settles replacement custody before enabling and reconciling
+      // the durable relationship. The later adapter commit is cleanup-only.
       await operation?.relationshipTransaction?.commit();
       if (operation) preparedByOperation.set(input.operationId, { ...operation, finalized: true, finalizedStatus: status });
       return {

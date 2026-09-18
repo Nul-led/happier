@@ -1,8 +1,16 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 
+import { create as createTar } from 'tar';
+
+import { getAgentCliRuntimeSpec } from '@happier-dev/agents';
+import { resolvePlatformFromNodePlatform } from '@happier-dev/cli-common/agents';
 import { describe, expect, it, vi } from 'vitest';
+
+import { bindAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
+import { prepareManagedAgentCliLaunch } from '@/packagedRuntime/managedTools/prepareManagedAgentCliLaunch';
 
 import { resolveExecutablePluginRuntimeRegistry } from '../../../resolveExecutablePluginRuntimeRegistry';
 import { createRetainedAgentCliSystemToolService } from './agentCliBinding';
@@ -107,6 +115,87 @@ describe('Agent CLI system-tool binding (integration)', () => {
             })).resolves.toBe(delegatedGrant);
             expect(delegate.resolve).toHaveBeenCalledTimes(1);
         } finally {
+            await rm(toolRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('executes the exact managed_only Codex preparation despite a later override', async () => {
+        if (process.platform === 'win32') return;
+        const platform = resolvePlatformFromNodePlatform(process.platform);
+        if (!platform || (process.arch !== 'arm64' && process.arch !== 'x64')) return;
+        const runtimeSpec = getAgentCliRuntimeSpec('codex');
+        if (!runtimeSpec || runtimeSpec.managedInstall?.kind !== 'github_release_binary') {
+            throw new Error('Expected the bundled Codex managed release descriptor');
+        }
+        const assetName = runtimeSpec.managedInstall.assetNameByPlatform?.[platform][process.arch];
+        const archiveEntries = runtimeSpec.managedInstall.archiveEntriesByPlatform?.[platform];
+        if (!assetName || !archiveEntries) throw new Error('Expected the Codex package archive layout');
+
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-runner-managed-binding-home-'));
+        const toolRoot = await mkdtemp(join(tmpdir(), 'happier-runner-managed-binding-tools-'));
+        const previousOverride = process.env.HAPPIER_CODEX_PATH;
+        try {
+            const archiveRoot = join(toolRoot, 'archive');
+            for (const entry of archiveEntries) {
+                const path = join(archiveRoot, entry.archivePath);
+                await mkdir(dirname(path), { recursive: true });
+                await writeFile(path, '#!/bin/sh\nprintf %s managed-codex\n', 'utf8');
+                await chmod(path, 0o755);
+            }
+            const prepared = await prepareManagedAgentCliLaunch({
+                runtimeSpec,
+                platform,
+                processEnv: { ...process.env, HAPPIER_HOME_DIR: happyHomeDir, PATH: '' },
+                // GitHub is the external boundary; install, archive extraction,
+                // executable resolution and plugin execution remain real.
+                deps: {
+                    fetchGitHubLatestRelease: async () => ({
+                        tag_name: 'v0.0.0-fixture',
+                        assets: [{
+                            name: assetName,
+                            browser_download_url: `https://example.test/${assetName}`,
+                            digest: 'sha256:fixture',
+                        }],
+                    }),
+                    downloadGitHubReleaseAsset: async ({ destinationPath }) => {
+                        await createTar({ gzip: true, cwd: archiveRoot, file: destinationPath },
+                            archiveEntries.map((entry) => entry.archivePath));
+                    },
+                },
+            });
+            expect(prepared.ok).toBe(true);
+            if (!prepared.ok) throw new Error(prepared.errorMessage);
+            const managedCommand = join(happyHomeDir, 'tools', 'providers', 'codex', 'current', 'bin', 'codex');
+            expect(prepared.resolution.command).toBe(managedCommand);
+
+            const overridePath = join(toolRoot, 'codex-override');
+            await writeFile(overridePath, '#!/bin/sh\nprintf %s substituted-override\n', 'utf8');
+            await chmod(overridePath, 0o755);
+            process.env.HAPPIER_CODEX_PATH = overridePath;
+
+            const bound = bindAgentCliLaunchSpec({ localAgentId: 'codex', spec: prepared.launch });
+            const systemTools = createRetainedAgentCliSystemToolService({
+                agentId: bound.localAgentId,
+                binding: { toolId: 'codex-cli' },
+                definition: { toolId: 'codex-cli', displayName: 'Codex CLI', lookupNames: ['codex'] },
+                launch: bound.spec,
+                delegate: { resolve: async () => { throw new Error('Unexpected system fallback'); } },
+            });
+            const resolved = await systemTools.resolve({
+                toolId: 'codex-cli', purpose: 'Run the prepared Agent', cwd: toolRoot,
+            });
+            const result = spawnSync(resolved.launch.executablePath, [...(resolved.launch.args ?? [])], {
+                cwd: resolved.launch.cwd,
+                env: resolved.launch.env,
+                encoding: 'utf8',
+            });
+            expect(result.error).toBeUndefined();
+            expect(result.status).toBe(0);
+            expect(result.stdout).toBe('managed-codex');
+        } finally {
+            if (previousOverride === undefined) delete process.env.HAPPIER_CODEX_PATH;
+            else process.env.HAPPIER_CODEX_PATH = previousOverride;
+            await rm(happyHomeDir, { recursive: true, force: true });
             await rm(toolRoot, { recursive: true, force: true });
         }
     });

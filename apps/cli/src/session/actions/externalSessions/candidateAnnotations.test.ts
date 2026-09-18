@@ -10,6 +10,7 @@ import {
     resolveExternalSessionTagLookupCandidates,
 } from '@/api/session/external/linking/externalSessionTagLookupCandidates';
 import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 import { annotateExternalSessionCandidates } from './candidateAnnotations';
 import { resolveExternalSessionCandidateIdentityKey } from './candidateQuery';
 
@@ -46,13 +47,11 @@ function canonicalCandidateLookupTag(params: Readonly<{
     })[0].tag;
 }
 
-const plainAccountEncryptionCurrentness = {
+const plainAccountEncryptionCurrentness = createAccountEncryptionCurrentnessFixture({
     mode: 'plain',
     version: 1,
-    signingKeyFingerprint: null,
-    contentKeyFingerprint: null,
     updatedAt: 1,
-} satisfies AccountEncryptionCurrentnessResponse;
+}) satisfies AccountEncryptionCurrentnessResponse;
 
 const getPlainAccountEncryptionCurrentness = async () => plainAccountEncryptionCurrentness;
 

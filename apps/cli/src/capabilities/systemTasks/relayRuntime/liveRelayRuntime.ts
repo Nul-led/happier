@@ -12,6 +12,7 @@ import {
   listInstalledVersionIdsNewestFirst,
   type RelayRuntimeHealthResult,
   type PersonalHomeRelocationDestinationOwner,
+  type PersonalHomeOperations,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   checkLocalRelayRuntimeReachability,
@@ -72,6 +73,13 @@ export async function createLivePersonalHomeSystemTaskOperations(params: Readonl
   mode?: 'user' | 'system';
 }> = {}): Promise<PersonalHomeSystemTaskOperations> {
   return await createLiveLocalPersonalHomeHost(params).createSystemTaskOperations();
+}
+
+export async function createLivePersonalHomeOperations(params: Readonly<{
+  channel?: 'stable' | 'preview' | 'dev';
+  mode?: 'user' | 'system';
+}> = {}): Promise<PersonalHomeOperations> {
+  return await createLiveLocalPersonalHomeHost(params).createOperations();
 }
 
 export async function createLivePersonalHomeRelocationDestinationOwner(params: Readonly<{

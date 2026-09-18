@@ -44,6 +44,14 @@ describe('createAgentExternalSessionsExecutionSurface', () => {
             source,
             runtimeDescriptorV1,
             codexBackendMode: 'appServer',
+            codexSessionId: 'remote-1',
+            providerSessionInfoV1: {
+                v: 1,
+                provider: 'codex',
+                sessionId: 'remote-1',
+                observedAt: 1,
+                title: 'Native session title',
+            },
             // Owner-metadata and LinkedExternalSessionV1 both accept these keys,
             // so only the projection keeps them off the host's carriers.
             machineId: 'machine_attacker',
@@ -65,7 +73,9 @@ describe('createAgentExternalSessionsExecutionSurface', () => {
             source,
             remoteSessionId: 'remote-1',
         });
-        expect(result.vendorMetadata).toEqual({ codexBackendMode: 'appServer' });
+        expect(result.vendorMetadata).toEqual({
+            providerSessionInfoV1: linkData.providerSessionInfoV1,
+        });
         expect(result.externalSessionMetadata).toEqual({ linkData });
         expect(result.runtimeDescriptor).toEqual(runtimeDescriptorV1);
 

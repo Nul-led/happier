@@ -38,7 +38,8 @@ function pendingAuthStatePath(publicKey: Uint8Array): string {
   return join(pendingAuthStateDir(), `${publicKeyHex}.json`);
 }
 
-export async function handleAuthRequest(args: string[]): Promise<void> {
+export async function handleAuthRequest(args: string[], signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   args = await applyServerSelectionFromArgs(args);
 
   const json = args.includes('--json');
@@ -53,7 +54,7 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
     ? selectedTarget
     : await resolveCliHomeTarget({ kind: 'https_url', url: configuration.apiServerUrl });
   const acquired = target.descriptor
-    ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport)
+    ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport, signal)
     : {
         ok: true as const,
         runtime: {
@@ -68,7 +69,7 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
       };
   if (!acquired.ok) throw new Error('Unable to acquire the selected Home enrollment carrier');
   try {
-    const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin });
+    const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin, ...(signal ? { signal } : {}) });
     const verified = verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: featuresSnapshot });
     const serverIdentityId = featuresSnapshot.status === 'ready'
       ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
@@ -98,6 +99,7 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
       supportsV2: true,
       claimSecretHash,
       headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+      ...(signal ? { signal } : {}),
     });
 
     const statePath = pendingAuthStatePath(keypair.publicKey);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { RunnerBrokerReadinessRequestV1Schema } from '@happier-dev/protocol';
 
 import { createDaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
 
@@ -22,6 +23,12 @@ function nativeHarness(overrides: Record<string, unknown> = {}) {
     startMachineAcceptor: vi.fn(async () => ({})),
     stopMachineAcceptor: vi.fn(async () => undefined),
     startMachineTunnel: vi.fn(async () => ({
+      machineTunnelId: 'tunnel-1', endpointHandle: 'endpoint-1', localPort: 48123,
+      localCapability: 'c'.repeat(64),
+      connectionActive: true, remoteEndpointId: 'b'.repeat(64), observedPath: 'relay',
+      startedAtMs: 1, lastErrorCode: null,
+    })),
+    startMachineHttpTunnel: vi.fn(async () => ({
       machineTunnelId: 'tunnel-1', endpointHandle: 'endpoint-1', localPort: 48123,
       localCapability: 'c'.repeat(64),
       connectionActive: true, remoteEndpointId: 'b'.repeat(64), observedPath: 'relay',
@@ -52,6 +59,49 @@ async function createHarness(nativeOverrides: Record<string, unknown> = {}, conn
 }
 
 describe('createDaemonMachineIrohRuntime', () => {
+  it('reuses the installation key path and EndpointId across daemon restarts', async () => {
+    const endpointId = 'e'.repeat(64);
+    let nextHandle = 0;
+    const keyPaths: string[] = [];
+    const native = nativeHarness({
+      createEndpoint: vi.fn(async (input: { keyPath?: string }) => {
+        keyPaths.push(input.keyPath ?? '');
+        nextHandle += 1;
+        return { endpointHandle: `endpoint-${nextHandle}`, endpointId };
+      }),
+      getEndpointStatus: vi.fn(async (handle: string) => ({
+        endpointHandle: handle,
+        endpointId,
+        relayMode: 'custom',
+        relayUrls: ['https://relay.test/'],
+        capProfile: 'machineBulk',
+        directAddresses: [],
+        active: true,
+      })),
+    });
+    const input = {
+      happyHomeDir: '/daemon-home',
+      relayConfig: { relayPolicy: 'automatic' as const, relayUrls: ['https://relay.test/'] },
+      native: native as never,
+    };
+
+    const first = await createDaemonMachineIrohRuntime(input);
+    expect(first.available).toBe(true);
+    if (!first.available) return;
+    expect(first.endpoint.endpointId).toBe(endpointId);
+    await first.shutdown();
+
+    const restarted = await createDaemonMachineIrohRuntime(input);
+    expect(restarted.available).toBe(true);
+    if (!restarted.available) return;
+    expect(restarted.endpoint.endpointId).toBe(endpointId);
+    expect(keyPaths).toEqual([
+      '/daemon-home/runtime/iroh/endpoint.key',
+      '/daemon-home/runtime/iroh/endpoint.key',
+    ]);
+    await restarted.shutdown();
+  });
+
   it('owns one daemon-lifetime endpoint, attempt acceptors, and exact verified tunnel handshakes', async () => {
     const order: string[] = [];
     let failNextAcceptorStop = false;
@@ -184,6 +234,23 @@ describe('createDaemonMachineIrohRuntime', () => {
     expect(native.releaseHomeTunnel).toHaveBeenCalledTimes(1);
   });
 
+  it('fails closed and releases a finite-transfer raw tunnel if native publishes a local capability', async () => {
+    const { native, runtime } = await createHarness();
+    expect(runtime.available).toBe(true);
+    if (!runtime.available) return;
+
+    await expect(runtime.openTunnel({
+      alpn: 'happier/machine/1',
+      remoteEndpointId: 'b'.repeat(64),
+      flow: 'finite_transfer',
+      handshake: { v: 1, flow: 'finite_transfer' } as never,
+    }, { endpointId: 'b'.repeat(64) })).rejects.toThrow(
+      'Iroh finite-transfer tunnel unexpectedly published a local capability',
+    );
+    expect(native.stopMachineTunnel).toHaveBeenCalledWith('tunnel-1');
+    await runtime.shutdown();
+  });
+
   it('coalesces concurrent machine tunnel close callers onto one native stop', async () => {
     const { native, runtime } = await createHarness();
     expect(runtime.available).toBe(true);
@@ -203,13 +270,27 @@ describe('createDaemonMachineIrohRuntime', () => {
     expect(runtime.available).toBe(true);
     if (!runtime.available) return;
 
-    const handshake = { v: 1, flow: 'finite_transfer', exact: 'verified' };
-    const tunnel = await runtime.openTunnel({
-      alpn: 'happier/machine/1', remoteEndpointId: 'b'.repeat(64), flow: 'finite_transfer',
-      handshake: handshake as never,
+    const handshake = RunnerBrokerReadinessRequestV1Schema.parse({
+      v: 1,
+      kind: 'provider_broker_readiness',
+      homeServerIdentityId: 'srv_runner_home',
+      activationId: '00000000-0000-4000-8000-000000000010',
+      launchManifestCommitment: 'A'.repeat(43),
+      resourceId: 'resource-1',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
+      protocol: 'openai-responses',
+      modelId: 'gpt-5',
+      initiator: { installationId: 'installation-1', endpointId: 'a'.repeat(64) },
+      target: { machineId: 'broker-machine', endpointId: 'b'.repeat(64) },
+      activationSignature: 'A'.repeat(86),
+      installationSignature: 'A'.repeat(86),
+    });
+    const tunnel = await runtime.openHttpTunnel({
+      alpn: 'happier/machine/1', remoteEndpointId: 'b'.repeat(64),
+      flow: 'provider_broker_readiness', handshake,
     }, { endpointId: 'b'.repeat(64), directAddresses: ['10.0.0.2:7777'] });
 
-    expect(native.startMachineTunnel).toHaveBeenCalledWith(expect.objectContaining({
+    expect(native.startMachineHttpTunnel).toHaveBeenCalledWith(expect.objectContaining({
       endpointHandle: 'endpoint-1', endpointId: 'b'.repeat(64),
       handshakeJson: JSON.stringify(handshake), capProfile: 'machineBulk',
     }));

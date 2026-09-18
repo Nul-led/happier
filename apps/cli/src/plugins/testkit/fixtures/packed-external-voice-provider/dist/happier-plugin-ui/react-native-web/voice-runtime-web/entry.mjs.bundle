@@ -256,6 +256,8 @@ function activate(api) {
   });
   let activeMediatedInputCapture = null;
   let activeRawInputCapture = null;
+  let mediatedDesiredMuted = false;
+  let rawDesiredMuted = false;
   const mediatedRuntime = {
     kind: CONVERSATION_KIND,
     settingsOperations: {
@@ -373,6 +375,7 @@ function activate(api) {
         }
       });
       activeMediatedInputCapture = inputCapture;
+      inputCapture.setMuted(mediatedDesiredMuted);
       const emitCurrentUiRead = () => {
         if (!emitControl) return;
         const responseId = `${CURRENT_UI_READ_RESPONSE_PREFIX}${++nextCurrentUiResponse}`;
@@ -436,6 +439,9 @@ function activate(api) {
               arguments: { commandId }
             }));
           },
+          setOutputFocusState(state) {
+            fixtureEvents.push({ kind: "output_focus", state });
+          },
           async close(reason) {
             pendingCurrentUiCommands.clear();
             emitControl = null;
@@ -446,9 +452,9 @@ function activate(api) {
       });
     },
     setInputMuted(muted) {
+      mediatedDesiredMuted = muted;
       const inputCapture = activeMediatedInputCapture;
-      if (!inputCapture) throw new Error("fixture_provider_input_capture_unavailable");
-      inputCapture.setMuted(muted);
+      inputCapture?.setMuted(muted);
     },
     encodeToolResults(results) {
       return [{ kind: "fixture_tool_results", results }];
@@ -497,6 +503,7 @@ function activate(api) {
         }
       });
       activeRawInputCapture = inputCapture;
+      inputCapture.setMuted(rawDesiredMuted);
       return input.media.createSdkHandleConnection({
         driver: {
           async open() {
@@ -527,9 +534,9 @@ function activate(api) {
     outputLevelMeter: "unavailable",
     microphoneMode: "provider_managed",
     setInputMuted(muted) {
+      rawDesiredMuted = muted;
       const inputCapture = activeRawInputCapture;
-      if (!inputCapture) throw new Error("fixture_provider_input_capture_unavailable");
-      inputCapture.setMuted(muted);
+      inputCapture?.setMuted(muted);
     }
   };
   api.voiceProviders.register("conversation-raw", rawRuntime);

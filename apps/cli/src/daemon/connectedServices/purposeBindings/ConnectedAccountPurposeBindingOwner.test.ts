@@ -226,6 +226,32 @@ describe('ConnectedAccountPurposeBindingOwner', () => {
     expect(unavailable.store.current().bindings).toEqual([]);
   });
 
+  it('witnesses the exact member selected by a logical group intent and detects canonical reselection', async () => {
+    let currentGroupAccountId = 'alpha';
+    const { owner, store } = createOwner({ currentGroupAccountId: () => currentGroupAccountId });
+    const signal = new AbortController().signal;
+    const selection = await owner.resolveBindingIntentSelection({
+      purpose,
+      target: { kind: 'group', service, groupId: 'fallbacks' },
+      serviceRefs: [service],
+      signal,
+    });
+
+    expect(selection).toMatchObject({
+      binding: {
+        purpose,
+        target: { kind: 'group', service, groupId: 'fallbacks' },
+      },
+      resolved: {
+        account: { service, accountId: 'alpha' },
+      },
+    });
+    await expect(selection.isCurrent()).resolves.toBe(true);
+    currentGroupAccountId = 'beta';
+    await expect(selection.isCurrent()).resolves.toBe(false);
+    expect(store.current().bindings).toEqual([]);
+  });
+
   it('builds an immutable launch snapshot for a novel qualified service through the canonical selection owner', async () => {
     const externalPurpose = {
       consumer: { pluginId: 'acme.agent', localId: 'acme-agent' },

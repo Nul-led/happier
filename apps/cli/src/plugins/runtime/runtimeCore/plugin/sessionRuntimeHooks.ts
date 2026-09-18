@@ -13,6 +13,7 @@ export type PluginRuntimePromptAcceptedHandler = (info: Readonly<{
     localIds?: readonly string[];
     userMessageSeq: number | null;
     userMessageSeqs?: readonly number[];
+    deliveryBlockedReason?: string;
 }>) => void;
 
 export type PluginRuntimePromptDeliveryOutcome = HostProviderInputOutcomeEvidence;
@@ -34,7 +35,7 @@ export type PluginRuntimeInFlightConfigApplyOutcome = Readonly<
 
 export type PluginRuntimeApplyConfigDeltaInFlight = (
     delta: Readonly<{ permissionMode: string }>,
-) => Promise<PluginRuntimeInFlightConfigApplyOutcome> | PluginRuntimeInFlightConfigApplyOutcome;
+) => Promise<PluginRuntimeInFlightConfigApplyOutcome>;
 
 export type PluginRuntimeHookOperations = RuntimeTurnOperations & Readonly<{
     models?: AgentSessionModelsSource;
@@ -43,10 +44,9 @@ export type PluginRuntimeHookOperations = RuntimeTurnOperations & Readonly<{
     canSteerPrompt?: () => boolean;
     canInterruptForPendingInput?: () => boolean;
     notifyPromptQueuedDuringTurn?: () => void;
-    steerPrompt?: (message: string, options?: RuntimeTurnPromptMeta) => Promise<void> | void;
+    steerPrompt?: (message: string, options?: RuntimeTurnPromptMeta) => Promise<void>;
     applyConfigDeltaInFlight?: PluginRuntimeApplyConfigDeltaInFlight;
-    setOnPromptAcceptedByProvider?: (handler: PluginRuntimePromptAcceptedHandler | null) => void;
-    setOnPromptDeliveryOutcome?: (
+    setOnPromptDeliveryOutcome: (
         handler: ((outcome: PluginRuntimePromptDeliveryOutcome) => void) | null,
     ) => void;
     setOnPromptTerminallyRejectedBeforeProvider?: (handler: PluginRuntimePromptAcceptedHandler | null) => void;

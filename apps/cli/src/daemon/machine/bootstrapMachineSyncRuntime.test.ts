@@ -158,6 +158,7 @@ function createPeerMediationServerFeatures(options: Readonly<{
     tunnelDirectPeerEnabled?: boolean;
     tunnelServerRoutedEnabled?: boolean;
     liveStreamDirectPeerEnabled?: boolean;
+    grantSigningKeyExpiresAt?: number | null;
 }> = {}): FeaturesResponse {
     return FeaturesResponseSchema.parse({
         features: {
@@ -184,7 +185,9 @@ function createPeerMediationServerFeatures(options: Readonly<{
                     grantSigningKeys: [{
                         keyId: 'grant-key-1',
                         publicKey: 'grant-public-key-1',
-                        expiresAt: 602_000,
+                        expiresAt: options.grantSigningKeyExpiresAt === undefined
+                            ? 602_000
+                            : options.grantSigningKeyExpiresAt,
                     }],
                 },
             },
@@ -293,7 +296,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -589,7 +591,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -679,7 +680,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -732,7 +732,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -816,7 +815,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -950,7 +948,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1121,7 +1118,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1309,7 +1305,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             awaitAgentSessionOpen,
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1453,7 +1448,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             directory: '/repo/from-raw',
             backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
             connectedServices: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'happier.agent.claude/anthropic': {
                         source: 'connected', selection: 'profile', profileId: 'claude-work',
@@ -1560,7 +1555,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1723,7 +1717,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             daemonState: null,
             daemonStateVersion: 1,
         };
-
         const result = await bootstrapMachineSyncRuntime({
             cliVersion: '0.0.0-test',
             machineId: 'machine-1',
@@ -1748,7 +1741,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1893,6 +1885,14 @@ describe('bootstrapMachineSyncRuntime', () => {
                 close,
             };
         });
+        const resolveProviderBrokerApplicationTarget = vi.fn(async () => ({
+            port: 49_191,
+            localCapability: 'b'.repeat(64),
+        }));
+        const resolveRunnerBrokerReadinessApplicationTarget = vi.fn(async () => ({
+            port: 49_192,
+            localCapability: 'c'.repeat(64),
+        }));
         const machineIrohRuntime = {
             available: true as const,
             endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
@@ -1938,6 +1938,15 @@ describe('bootstrapMachineSyncRuntime', () => {
             daemonState,
             daemonStateVersion: 1,
         };
+        const currentAuthority: { snapshot: CliServerFeaturesSnapshot } = {
+            snapshot: { status: 'error', reason: 'network' },
+        };
+        const resolvePeerMediationTrustRoots = () => {
+            const snapshot = currentAuthority.snapshot;
+            return snapshot.status === 'ready'
+                ? snapshot.features.capabilities.machines.peerMediation.grantSigningKeys
+                : [];
+        };
 
         const result = await bootstrapMachineSyncRuntime({
             cliVersion: '0.0.0-test',
@@ -1963,7 +1972,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
@@ -1976,15 +1984,20 @@ describe('bootstrapMachineSyncRuntime', () => {
             daemonServerWorkScheduler: {} as never,
             startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> =>
                 createVoiceInferenceWorkerHandle()),
+            getServerFeaturesSnapshot: () => currentAuthority.snapshot,
+            resolvePeerMediationTrustRoots,
             peerMediationMachineRpc: {
                 accountId: 'account_1',
                 serverFeatures: createPeerMediationServerFeatures({
                     rpcDirectPeerEnabled: false,
                     tunnelDirectPeerEnabled: true,
+                    grantSigningKeyExpiresAt: null,
                 }),
                 nowMs: () => 2_000,
                 endpointFingerprint: () => 'endpoint_tunnel_1',
                 startPeerMediationLoopbackServer,
+                resolveProviderBrokerApplicationTarget,
+                resolveRunnerBrokerReadinessApplicationTarget,
             },
         });
         const connectOptions = connectOptionsRef.current;
@@ -2010,10 +2023,18 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(lifecycleOrder).toEqual(['loopback:start', 'acceptor:start']);
         const admission = (loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.irohMachineAdmission;
         if (!admission) throw new Error('expected Iroh machine admission');
+        expect((loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.resolveTrustRoots).toBe(resolvePeerMediationTrustRoots);
+        expect(admission.resolveTrustRoots?.()).toEqual([]);
+        const currentReadyWithoutRoots = createPeerMediationServerFeatures();
+        currentReadyWithoutRoots.capabilities.machines.peerMediation.grantSigningKeys = [];
+        currentAuthority.snapshot = { status: 'ready', features: currentReadyWithoutRoots };
+        expect(admission.resolveTrustRoots?.()).toEqual([]);
+        const admissionAbort = new AbortController();
         await expect(admission.resolveApplicationTarget({
             handshake: {
                 flow: 'workspace_sync',
                 operationId: 'operation-1',
+                grant: { payload: { exp: 301_000 } },
                 initiator: {
                     kind: 'machine',
                     machineId: 'machine-source',
@@ -2022,16 +2043,22 @@ describe('bootstrapMachineSyncRuntime', () => {
                 target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
             },
             authenticatedRemoteEndpointId: 'b'.repeat(64),
+            signal: admissionAbort.signal,
         } as never)).resolves.toEqual({ port: 48191, localCapability: 'a'.repeat(64) });
+        expect(admission.resolveProviderBrokerApplicationTarget).toBe(resolveProviderBrokerApplicationTarget);
+        expect(admission.resolveRunnerBrokerReadinessApplicationTarget).toBe(resolveRunnerBrokerReadinessApplicationTarget);
         expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledWith({
             operationId: 'operation-1',
             sourceMachineId: 'machine-source',
             targetMachineId: 'machine-1',
+            expiresAtMs: expect.any(Number),
+            signal: admissionAbort.signal,
         });
         await expect(admission.resolveApplicationTarget({
             handshake: {
                 flow: 'workspace_sync',
                 operationId: 'operation-2',
+                grant: { payload: { exp: 301_000 } },
                 initiator: {
                     kind: 'machine',
                     machineId: 'machine-source',
@@ -2180,7 +2207,6 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopSession: vi.fn(async () => true),
             isSessionAlreadyRunning: vi.fn(async () => false),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
-            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,

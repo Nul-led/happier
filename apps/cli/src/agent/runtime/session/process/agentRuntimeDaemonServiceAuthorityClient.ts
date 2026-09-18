@@ -11,9 +11,12 @@ import type {
   AgentRuntimeDaemonModelTransitionAuthorizationResultV1,
   AgentRuntimeDaemonTurnContributionsResultV1,
 } from './agentRuntimeRunnerProtocol';
-import type {
-  SessionInputAdmissionResultV1,
+import {
+  createProviderErrorV1,
+  ProviderErrorCodeV1Schema,
+  type SessionInputAdmissionResultV1,
 } from '@happier-dev/protocol';
+import { TeamCredentialErrorCodeV1Schema } from '@happier-dev/protocol/teams';
 import {
   readAgentRuntimeDaemonServiceAuthority,
   readCurrentRunnerAgentRuntimeDaemonServiceAuthority,
@@ -30,6 +33,7 @@ import {
   type RunnerDaemonPluginServiceOperationV1,
 } from './agentRuntimeDaemonPluginServicesProtocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
+import { TeamCredentialDirectMaterialOperationError } from '@/daemon/connectedServices/directMaterial/teamCredentialDirectMaterialClient';
 
 const DEFAULT_AGENT_RUNTIME_DAEMON_SERVICE_TIMEOUT_MS = 300_000;
 
@@ -148,6 +152,68 @@ type ManagedServiceEndpointReadClaimOperation = Extract<
   AgentRuntimeDaemonServiceRequestV1['operation'],
   { kind: 'managed_server.endpoint.read.claim' }
 >;
+type ProviderBrokerBindingOpenOperation = Extract<
+  AgentRuntimeDaemonServiceRequestV1['operation'],
+  { kind: 'provider_broker.binding.open' }
+>;
+type ProviderBrokerBindingCloseOperation = Extract<
+  AgentRuntimeDaemonServiceRequestV1['operation'],
+  { kind: 'provider_broker.binding.close' }
+>;
+
+export async function openCurrentRunnerTeamCredentialProviderBinding(
+  input: Readonly<{
+    authority: AgentRuntimeDaemonServiceAuthorityExpectedInput;
+    operation: Omit<ProviderBrokerBindingOpenOperation, 'requestId'>;
+    signal?: AbortSignal;
+  }>,
+) {
+  const response = await dispatchCurrentAgentRuntimeDaemonServiceRequest({
+    authority: input.authority,
+    createRequest: (capability) => ({
+      v: 1,
+      context: { token: capability, sessionId: input.authority.sessionId },
+      operation: { ...input.operation, requestId: randomUUID() },
+    }),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (response.ok && response.result.kind === 'provider_broker.binding') {
+    return response.result;
+  }
+  if (!response.ok) {
+    const providerCode = ProviderErrorCodeV1Schema.safeParse(response.error.code);
+    if (providerCode.success) {
+      throw createProviderErrorV1(providerCode.data, {
+        connectionId: input.operation.resourceId,
+      });
+    }
+    const teamCredentialCode = TeamCredentialErrorCodeV1Schema.safeParse(response.error.code);
+    if (teamCredentialCode.success) {
+      throw new TeamCredentialDirectMaterialOperationError({ error: teamCredentialCode.data });
+    }
+  }
+  throw createNativeAgentSessionEffectBoundaryError('authority_unavailable_before_effect');
+}
+
+export async function closeCurrentRunnerTeamCredentialProviderBinding(
+  input: Readonly<{
+    authority: AgentRuntimeDaemonServiceAuthorityExpectedInput;
+    operation: Omit<ProviderBrokerBindingCloseOperation, 'requestId'>;
+    signal?: AbortSignal;
+  }>,
+): Promise<void> {
+  const response = await dispatchCurrentAgentRuntimeDaemonServiceRequest({
+    authority: input.authority,
+    createRequest: (capability) => ({
+      v: 1,
+      context: { token: capability, sessionId: input.authority.sessionId },
+      operation: { ...input.operation, requestId: randomUUID() },
+    }),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (response.ok && response.result.kind === 'provider_broker.binding.closed') return;
+  throw createNativeAgentSessionEffectBoundaryError('authority_unavailable_before_effect');
+}
 
 async function dispatchReadAcrossOneProvenAuthorityTransition(
   dispatch: () => Promise<AgentRuntimeDaemonServiceResponseV1>,

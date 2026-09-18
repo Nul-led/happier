@@ -13,6 +13,7 @@ type TextDiffSignal = Readonly<{
   filePath: string;
   oldText: string;
   newText: string;
+  unifiedDiff?: string;
   description?: string;
 }>;
 
@@ -32,6 +33,7 @@ type Entry =
       filePath: string;
       oldText: string;
       newText: string;
+      unifiedDiff?: string;
       description?: string;
       order: number;
     }>
@@ -88,6 +90,7 @@ export class TurnDiffEmitter {
         filePath,
         oldText: signal.oldText,
         newText: signal.newText,
+        unifiedDiff: signal.unifiedDiff,
         description: signal.description,
         order: this.orderCounter++,
       });
@@ -101,6 +104,7 @@ export class TurnDiffEmitter {
         filePath,
         oldText: existing.oldText,
         newText: signal.newText,
+        unifiedDiff: signal.unifiedDiff ?? existing.unifiedDiff,
         description: signal.description ?? existing.description,
         order: existing.order,
       });
@@ -113,6 +117,7 @@ export class TurnDiffEmitter {
       filePath,
       oldText: signal.oldText,
       newText: signal.newText,
+      unifiedDiff: signal.unifiedDiff,
       description: signal.description ?? existing.description,
       order: existing.order,
     });
@@ -169,6 +174,7 @@ export class TurnDiffEmitter {
               file_path: entry.filePath,
               oldText: entry.oldText,
               newText: entry.newText,
+              ...(entry.unifiedDiff ? { unified_diff: entry.unifiedDiff } : {}),
               ...(entry.description ? { description: entry.description } : {}),
             };
           }

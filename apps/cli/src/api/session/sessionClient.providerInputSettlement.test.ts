@@ -1,3 +1,4 @@
+import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
 import axios from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +17,7 @@ import {
 let sessionSocketStub: ApiSessionSocketStub | null = null;
 let userSocketStub: ApiSessionSocketStub | null = null;
 const resolveAcceptedMock = vi.hoisted(() => vi.fn());
+const resolveAcceptedExecutionRunMock = vi.hoisted(() => vi.fn());
 const blockDeliveryMock = vi.hoisted(() => vi.fn());
 const listDeliveryStatusesMock = vi.hoisted(() => vi.fn());
 const sendSessionMessageMock = vi.hoisted(() => vi.fn());
@@ -65,6 +67,7 @@ vi.mock('./pendingQueueV2Transport', async (importOriginal) => {
   return {
     ...actual,
     resolveAcceptedPendingQueueV2Delivery: resolveAcceptedMock,
+    resolveAcceptedPendingExecutionRunDelivery: resolveAcceptedExecutionRunMock,
     blockPendingQueueV2Delivery: blockDeliveryMock,
     listPendingQueueV2DeliveryStatusesFromServer: listDeliveryStatusesMock,
   };
@@ -88,6 +91,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     resolveAcceptedMock.mockReset();
+    resolveAcceptedExecutionRunMock.mockReset();
     blockDeliveryMock.mockReset();
     listDeliveryStatusesMock.mockReset();
     sendSessionMessageMock.mockReset();
@@ -106,10 +110,10 @@ describe('ApiSessionClient provider-input settlement', () => {
       },
     });
     const credentials = { token: 'tok', encryption: null };
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
-      { credentials },
+      { metadataAuthority: { kind: 'owner', credentials } },
     );
 
     await expect(client.enqueueSessionUserMessage({
@@ -118,6 +122,32 @@ describe('ApiSessionClient provider-input settlement', () => {
     })).rejects.toThrow(
       'Session user input admission outcomeUnknown: machine_admission_acknowledgement_failed',
     );
+  });
+
+  it('preserves a conditional-steer request through canonical Session admission', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const localId = 'generated-completion-1';
+    sendSessionMessageMock.mockResolvedValueOnce({
+      admissionResult: { status: 'accepted', localId, code: 'accepted' },
+    });
+    const client = createTestApiSessionClient(ApiSessionClient,
+      'tok',
+      createPlainSessionFixture({ id: 's1' }),
+      { metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } } },
+    );
+
+    await client.enqueueSessionUserMessage({
+      text: 'Execution run run_1 succeeded.',
+      localId,
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    });
+
+    expect(sendSessionMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      localId,
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    }));
+    await client.close();
   });
 
   it('notifies prepared Composer attachments after durable admission and on an exact already-accepted retry, never from terminal settlement', async () => {
@@ -161,11 +191,11 @@ describe('ApiSessionClient provider-input settlement', () => {
           admissionResult: { status: 'alreadyAccepted', localId, code: 'already_accepted' },
         };
       });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           ...payload,
           preparedComposerAttachments: (payload.meta as {
@@ -273,11 +303,11 @@ describe('ApiSessionClient provider-input settlement', () => {
     sendSessionMessageMock.mockResolvedValueOnce({
       admissionResult: { status: 'accepted', localId, code: 'accepted' },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: {
             ...payload,
@@ -316,11 +346,11 @@ describe('ApiSessionClient provider-input settlement', () => {
     sendSessionMessageMock.mockResolvedValueOnce({
       admissionResult: { status: 'accepted', localId, code: 'accepted' },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: payload,
           settlement: {
@@ -357,11 +387,11 @@ describe('ApiSessionClient provider-input settlement', () => {
         code: 'machine_admission_acknowledgement_failed',
       },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           ...payload,
           preparedComposerAttachments: (payload.meta as {
@@ -416,11 +446,11 @@ describe('ApiSessionClient provider-input settlement', () => {
     sendSessionMessageMock.mockResolvedValueOnce({
       admissionResult: { status, localId, code },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: {
             ...payload,
@@ -462,11 +492,11 @@ describe('ApiSessionClient provider-input settlement', () => {
         code: 'machine_admission_acknowledgement_failed',
       },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: {
             ...payload,
@@ -512,11 +542,11 @@ describe('ApiSessionClient provider-input settlement', () => {
     sendSessionMessageMock.mockResolvedValueOnce({
       admissionResult: { status: 'rejected', code: 'session_input_cancelled' },
     });
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'tok',
       createPlainSessionFixture({ id: 's1' }),
       {
-        credentials: { token: 'tok', encryption: null },
+        metadataAuthority: { kind: 'owner', credentials: { token: 'tok', encryption: null } },
         transformSessionInputBeforeCommit: async (payload) => ({
           transformed: {
             ...payload,
@@ -557,7 +587,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const onAccepted = vi.fn(async () => undefined);
     const onDefinitiveAdmissionFailure = vi.fn(async () => undefined);
-    const client = new ApiSessionClient(
+    const client = createTestApiSessionClient(ApiSessionClient,
       'missing-credentials-token-never-stored',
       createPlainSessionFixture({ id: 's1' }),
       {
@@ -582,7 +612,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('retires only exact absent terminal custody without emitting a provider settlement', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('manual-handled-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
       { localId: 'later-local', status: 'queued', deliveryStatus: { status: 'queued' } },
@@ -598,7 +628,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('retires an exact discarded terminal custody claim', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('discarded-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
       { localId: 'discarded-local', status: 'discarded', deliveryStatus: { status: 'discarded', reason: null } },
@@ -609,12 +639,55 @@ describe('ApiSessionClient provider-input settlement', () => {
     expect(client.hasPendingProviderInput('discarded-local')).toBe(false);
   });
 
+  it('keeps archived uncertain custody available for delayed acceptance without blocking later Pending work', async () => {
+    resolveAcceptedMock.mockResolvedValueOnce({
+      didResolve: true,
+      pendingQueueState: { known: true, pendingCount: 1, pendingBlockedCount: 0, pendingVersion: 3 },
+      message: { localId: 'dismissed-local', seq: 42 },
+    });
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('dismissed-local');
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      {
+        localId: 'dismissed-local',
+        status: 'discarded',
+        deliveryStatus: { status: 'discarded', reason: 'dismissed_uncertain' },
+      },
+      { localId: 'later-local', status: 'queued', deliveryStatus: { status: 'queued' } },
+    ]);
+
+    await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(true);
+
+    expect(listDeliveryStatusesMock).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1',
+      includeDiscarded: true,
+    }));
+    expect(client.hasPendingProviderInput('dismissed-local')).toBe(true);
+
+    await expect(client.observeProviderInputSettlement({
+      kind: 'accepted',
+      localId: 'dismissed-local',
+      userMessageSeq: 42,
+    })).resolves.toBe(false);
+
+    expect(resolveAcceptedMock).toHaveBeenCalledWith({
+      socket: sessionSocketStub,
+      sessionId: 's1',
+      localId: 'dismissed-local',
+    });
+    expect(client.hasPendingProviderInput('dismissed-local')).toBe(false);
+    expect(client.getCommittedUserMessageSeq('dismissed-local')).toBe(42);
+    await client.close();
+  });
+
   it.each(['queued', 'delivering', 'blocked'] as const)(
     'retains exact local custody while the server row remains %s',
     async (status) => {
       sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
       userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-      const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+      const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
       const localId = `unresolved-${status}`;
       (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
       const deliveryStatus = status === 'blocked'
@@ -631,7 +704,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('retains exact local custody when status reconciliation fails', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('network-failure-local');
     listDeliveryStatusesMock.mockRejectedValueOnce(new Error('network unavailable'));
 
@@ -643,7 +716,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('does not retire exact local custody from another localId terminal status', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('exact-live-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
       { localId: 'wrong-terminal-local', status: 'discarded', deliveryStatus: { status: 'discarded', reason: null } },
@@ -658,7 +731,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('reads durable provider-input acceptance from the incumbent Pending delivery state', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     vi.spyOn(axios, 'get').mockRejectedValue(createTranscriptLookupHttpError({
       message: 'Message not found',
       status: 404,
@@ -720,7 +793,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('recovers exact committed provider-input acceptance after restart before consulting Pending status', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const transcriptGet = vi.spyOn(axios, 'get');
 
     expect(client.getCommittedUserMessageSeq('committed-after-restart')).toBeNull();
@@ -767,6 +840,134 @@ describe('ApiSessionClient provider-input settlement', () => {
     await client.close();
   });
 
+  it('recovers target-run rejection after reconnect from the exact Pending route', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    vi.spyOn(axios, 'get').mockRejectedValueOnce(createTranscriptLookupHttpError({
+      message: 'Message not found', status: 404, data: { error: 'Message not found' },
+    }));
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      {
+        localId: 'target-rejected-after-reconnect',
+        status: 'blocked',
+        deliveryStatus: { status: 'blocked', reason: 'provider_rejected_before_acceptance' },
+      },
+    ]);
+
+    await expect(client.readDurableProviderInputAcceptanceV1(
+      'target-rejected-after-reconnect',
+      'run-a',
+    )).resolves.toBe('not_accepted');
+    expect(listDeliveryStatusesMock).toHaveBeenCalledWith({
+      token: 'tok', sessionId: 's1', includeDiscarded: true,
+      recipient: { kind: 'execution_run', runId: 'run-a' },
+    });
+    await client.close();
+  });
+
+  it('recovers target-run acceptance after restart from the committed transcript anchor', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: {
+        message: {
+          id: 'target-message-after-restart', seq: 7, localId: 'target-accepted-after-restart',
+          sidechainId: 'run-sidechain', createdAt: 100, updatedAt: 101,
+          content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'target prompt' } } },
+        },
+      },
+    } as never);
+
+    const binding = client.bindExecutionRunPendingInput({
+      recipient: { kind: 'execution_run', runId: 'run-a' },
+      sidechainId: 'run-sidechain',
+      isCurrent: () => true,
+      foregroundState: () => 'ready',
+      getMetadataSnapshot: () => client.getMetadataSnapshot(),
+      consume: () => true,
+    });
+    await expect(binding.readDurableProviderInputAcceptanceV1(
+      'target-accepted-after-restart',
+    )).resolves.toBe('accepted');
+    expect(listDeliveryStatusesMock).not.toHaveBeenCalled();
+    binding.dispose();
+    await client.close();
+  });
+
+  it('reads target acceptance from the exact execution-run Pending route after reconnect', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const recipient = { kind: 'execution_run' as const, runId: 'run-a' };
+    const binding = client.bindExecutionRunPendingInput({
+      recipient,
+      sidechainId: 'sidechain-a',
+      isCurrent: () => true,
+      foregroundState: () => 'ready',
+      getMetadataSnapshot: () => client.getMetadataSnapshot(),
+      consume: () => true,
+    });
+    const localId = 'target-accepted-after-reconnect';
+    (client as any).executionRunPendingCustody.set(localId, (client as any).executionRunPendingBindings.get('run-a'));
+    vi.spyOn(axios, 'get').mockRejectedValueOnce(createTranscriptLookupHttpError({
+      message: 'Message not found',
+      status: 404,
+      data: { error: 'Message not found' },
+    }));
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      { localId, status: 'discarded', deliveryStatus: { status: 'discarded', reason: 'cancelled' } },
+    ]);
+
+    await expect(binding.readDurableProviderInputAcceptanceV1(localId)).resolves.toBe('not_accepted');
+    expect(listDeliveryStatusesMock).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1',
+      includeDiscarded: true,
+      recipient,
+    }));
+    binding.dispose();
+    await client.close();
+  });
+
+  it('releases exact execution-run custody after accepted delivery commits', async () => {
+    resolveAcceptedExecutionRunMock.mockResolvedValueOnce({
+      didResolve: true,
+      message: {
+        id: 'committed-target-message',
+        seq: 9,
+        localId: 'target-accepted-cleanup',
+      },
+    });
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
+    const binding = client.bindExecutionRunPendingInput({
+      recipient: { kind: 'execution_run', runId: 'run-a' },
+      sidechainId: 'sidechain-a',
+      isCurrent: () => true,
+      foregroundState: () => 'ready',
+      getMetadataSnapshot: () => client.getMetadataSnapshot(),
+      consume: () => true,
+    });
+    const localId = 'target-accepted-cleanup';
+    const internalBinding = (client as any).executionRunPendingBindings.get('run-a');
+    (client as any).executionRunPendingCustody.set(localId, internalBinding);
+    (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
+
+    await binding.observeProviderInputSettlement({
+      kind: 'accepted',
+      localId,
+      userMessageSeq: 9,
+    });
+
+    expect(client.hasPendingProviderInput(localId)).toBe(false);
+    expect((client as any).executionRunPendingCustody.has(localId)).toBe(false);
+    binding.dispose();
+    await client.close();
+  });
+
   it.each([
     ['auth failure', createTranscriptLookupHttpError({
       message: 'unauthorized',
@@ -780,7 +981,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   ])('keeps durable provider-input acceptance unknown on %s', async (_label, lookupError) => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     vi.spyOn(axios, 'get').mockRejectedValueOnce(lookupError);
 
     await expect(client.readDurableProviderInputAcceptanceV1('lookup-failed'))
@@ -793,7 +994,7 @@ describe('ApiSessionClient provider-input settlement', () => {
   it('keeps durable provider-input acceptance unknown on mismatched or invalid exact lookup responses', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     vi.spyOn(axios, 'get')
       .mockResolvedValueOnce({
         status: 200,
@@ -837,7 +1038,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const materializationRuntime = (client as any).materializationRuntime;
     for (const localId of ['accepted-local', 'rejected-local', 'uncertain-local']) {
       materializationRuntime.markPendingQueueMaterializedLocalId(localId);
@@ -890,7 +1091,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = 'conditional-steer-requeued-local';
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
     (client as any).materializationRuntime.markAgentQueueEchoSuppressedLocalId(localId);
@@ -921,7 +1122,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = 'conditional-steer-legacy-blocked-local';
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
     (client as any).materializationRuntime.markAgentQueueEchoSuppressedLocalId(localId);
@@ -947,7 +1148,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const fixture = createPlainSessionFixture({ id: 's1' });
-    const client = new ApiSessionClient('tok', {
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', {
       ...fixture,
       metadata: {
         ...fixture.metadata,
@@ -1008,7 +1209,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = `reversible-${reason}`;
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
 
@@ -1040,7 +1241,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = 'admission-unavailable-blocked-local';
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
 
@@ -1067,7 +1268,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     blockDeliveryMock.mockRejectedValueOnce(new Error('block unavailable'));
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = 'admission-unavailable-block-failed-local';
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
 
@@ -1091,7 +1292,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const localId = 'generic-provider-unavailable-local';
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
 
@@ -1123,7 +1324,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const materializationRuntime = (client as any).materializationRuntime;
     materializationRuntime.markPendingQueueMaterializedLocalId('accepted-local');
 
@@ -1153,7 +1354,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('accepted-first-local');
 
     client.observeProviderInputSettlement({
@@ -1179,7 +1380,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       .mockRejectedValueOnce(new PendingQueueAcceptedSettlementError('transaction-unavailable', 1_250));
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const materializationRuntime = (client as any).materializationRuntime;
     materializationRuntime.markPendingQueueMaterializedLocalId('response-lost-local');
 
@@ -1208,7 +1409,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       .mockResolvedValueOnce({ didResolve: true });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const materializationRuntime = (client as any).materializationRuntime;
     materializationRuntime.markPendingQueueMaterializedLocalId('epoch-fenced-local');
 
@@ -1235,7 +1436,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     const materializationRuntime = (client as any).materializationRuntime;
     materializationRuntime.markPendingQueueMaterializedLocalId('unrelated-noop-local');
 
@@ -1257,7 +1458,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     });
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
-    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('accepted-while-disconnected');
 
     sessionSocketStub.connected = false;

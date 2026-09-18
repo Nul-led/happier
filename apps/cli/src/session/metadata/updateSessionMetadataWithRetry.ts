@@ -6,6 +6,7 @@ import {
   type SessionMetadataLegacyOwnerMutationRequestV1,
   type SessionMetadataLegacyOwnerTupleMutationSnapshotV1,
   type SessionMetadataOwnerTupleMutationSnapshotV1,
+  type SessionMetadataSharedEditorTupleMutationSnapshotV1,
   type SessionMetadataTupleMutationSnapshotV1,
   type SessionMetadataTupleMutationV1,
 } from '@happier-dev/cli-common/sessionMetadata';
@@ -30,6 +31,11 @@ import {
   type SessionMetadataTuplePatchV1,
   type AccountEncryptionCurrentnessResponse,
 } from '@happier-dev/protocol';
+import type {
+  SessionTeamCredentialBindingIntentListV1,
+  SessionTeamCredentialBindingMutationOperationV1,
+} from '@happier-dev/protocol/teams';
+import type { SessionTeamCredentialBindingMetadataPatchV1 } from '@happier-dev/protocol/teams';
 
 import type { AgentState, Metadata } from '@/api/types';
 import type { StoredCredentials } from '@/persistence';
@@ -58,6 +64,7 @@ type MetadataUpdateErrorCode =
   | 'conflict'
   | 'metadata_privacy_upgrade_required'
   | 'session_publisher_authority_lost'
+  | 'session_team_credential_binding_rejected'
   | 'session_active'
   | 'session_not_found';
 
@@ -108,6 +115,29 @@ export type SessionMetadataTupleWriterSnapshot =
   | SessionMetadataLegacyOwnerSnapshot
   | SessionMetadataEnvelopeTupleSnapshot;
 
+export type SessionMetadataSharedEditorSnapshot =
+  SessionMetadataSharedEditorTupleMutationSnapshotV1<Metadata>;
+
+export type SessionMetadataWriterSnapshot =
+  | SessionMetadataTupleWriterSnapshot
+  | SessionMetadataSharedEditorSnapshot;
+
+/**
+ * The explicit authority a Session metadata tuple write is made under.
+ *
+ * `owner` carries the Account material required to open and reseal the owner
+ * envelope. `shared_editor` deliberately carries none: a shared editor writes
+ * only the Session-data-key shared projection the server's `shared_editor`
+ * tuple mode accepts, and can never reach owner metadata or full Agent state.
+ */
+export type SessionMetadataTupleWriteAuthority =
+  | Readonly<{
+    kind: 'owner';
+    credentials: StoredCredentials;
+    accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+  }>
+  | Readonly<{ kind: 'shared_editor' }>;
+
 export type SessionMetadataMutationCurrentness = Readonly<{
   signal?: AbortSignal;
   assertCurrent?: () => void;
@@ -137,7 +167,7 @@ export type SessionMetadataEnvelopeTupleMutation =
   SessionMetadataTupleMutationV1<Metadata, AgentState>;
 
 function toSharedTupleSnapshot(
-  snapshot: SessionMetadataTupleWriterSnapshot,
+  snapshot: SessionMetadataWriterSnapshot,
 ): SessionMetadataTupleMutationSnapshotV1<Metadata, AgentState> {
   return snapshot;
 }
@@ -432,6 +462,65 @@ export function readSessionMetadataEnvelopeTupleSnapshot(params: Readonly<{
   });
 }
 
+/**
+ * Reads the layout-1 shared projection a non-owner editor may see and rewrite.
+ *
+ * It opens only the Session-data-key shared metadata. The owner envelope and
+ * full Agent state are not read, because a shared editor holds no Account
+ * content key and the server never serves it either value.
+ */
+export function readSessionMetadataSharedEditorTupleSnapshot(
+  params: Readonly<{
+    rawSession: LayoutAwareRawSession;
+  }> & SessionStoredContentCryptoContext,
+): SessionMetadataSharedEditorSnapshot {
+  const cryptoContext: SessionStoredContentCryptoContext = params;
+  if (
+    readSessionMetadataLayoutVersion(params.rawSession.metadataLayoutVersion)
+    !== SESSION_METADATA_LAYOUT_VERSION_V1
+  ) {
+    throw createMetadataUpdateError(
+      'Shared-editor Session metadata requires the layout-1 tuple',
+      'metadata_privacy_upgrade_required',
+    );
+  }
+  const metadataVersion = readNonNegativeInteger(
+    params.rawSession.metadataVersion,
+  );
+  if (metadataVersion === null) {
+    throw createMetadataUpdateError(
+      'Session metadata tuple versions are invalid',
+      'metadata_privacy_upgrade_required',
+    );
+  }
+  const sharedMetadataCiphertext =
+    String(params.rawSession.metadata ?? '').trim();
+  const sharedMetadata = SessionSharedMetadataV1Schema.safeParse(
+    decryptStoredSessionPayload({
+      ...cryptoContext,
+      value: sharedMetadataCiphertext,
+    }),
+  );
+  if (!sharedMetadata.success) {
+    throw createMetadataUpdateError(
+      'Shared Session metadata is unavailable',
+      'metadata_privacy_upgrade_required',
+    );
+  }
+  return {
+    mode: 'shared_editor',
+    metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
+    metadataVersion,
+    sharedMetadataCiphertext,
+    value: {
+      metadata: sharedMetadata.data as unknown as Metadata,
+      sharedMetadata: sharedMetadata.data,
+      ownerMetadata: null,
+      agentState: null,
+    },
+  };
+}
+
 export function readSessionMetadataTupleWriterSnapshot(params: Readonly<{
   credentials: StoredCredentials;
   accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
@@ -536,6 +625,9 @@ export async function prepareSessionMetadataTuplePatchForTransaction(
 
 async function updateLegacyMetadataWithHttpRetry(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
   request: SessionMetadataLegacyOwnerMutationRequestV1<
     Metadata,
@@ -573,6 +665,9 @@ async function updateLegacyMetadataWithHttpRetry(params: Readonly<{
     assertSessionMetadataMutationCurrentness(params.currentness);
     const result = await patchSessionMetadata({
       token: params.token,
+      ...(params.resolveAuthorizationHeaders
+        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+        : {}),
       sessionId: params.sessionId,
       ciphertext,
       expectedVersion: request.current.metadataVersion,
@@ -670,14 +765,19 @@ async function updateLegacyMetadataWithHttpRetry(params: Readonly<{
 export async function updateSessionMetadataEnvelopeTupleWithRetry(
   params: Readonly<{
     token: string;
-    credentials: StoredCredentials;
-    accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+    resolveAuthorizationHeaders?: (request: Readonly<{
+      method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+    }>) => Readonly<Record<string, string>> | null;
+    authority: SessionMetadataTupleWriteAuthority;
     sessionId: string;
-    initialSnapshot: SessionMetadataTupleWriterSnapshot;
+    initialSnapshot: SessionMetadataWriterSnapshot;
     mutation: SessionMetadataEnvelopeTupleMutation;
     publisherPrecondition?: SessionMetadataPublisherPreconditionV1;
     sessionExpectation?:
       SessionMetadataInactiveModelIntentExpectationV1;
+    teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+    teamCredentialBindingOperation?: SessionTeamCredentialBindingMutationOperationV1;
+    teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
     mutateLegacy?: (
       request: SessionMetadataLegacyOwnerMutationRequestV1<
         Metadata,
@@ -687,9 +787,16 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
     currentness?: SessionMetadataMutationCurrentness;
     maxAttempts?: number;
   }> & SessionStoredContentCryptoContext,
-): Promise<SessionMetadataTupleWriterSnapshot> {
+): Promise<SessionMetadataWriterSnapshot> {
   const cryptoContext: SessionStoredContentCryptoContext = params;
-  let accountEncryptionCurrentness = params.accountEncryptionCurrentness;
+  const owner = params.authority.kind === 'owner' ? params.authority : null;
+  if (!owner && params.initialSnapshot.mode !== 'shared_editor') {
+    throw createMetadataUpdateError(
+      'Owner Session metadata authority is unavailable to a shared editor',
+      'metadata_privacy_upgrade_required',
+    );
+  }
+  let accountEncryptionCurrentness = owner?.accountEncryptionCurrentness;
   const updated = await updateSessionMetadataTupleWithRetry<
     Metadata,
     AgentState
@@ -702,18 +809,26 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
           ...cryptoContext,
           payload,
         }),
-      encodeOwnerMetadata: (ownerMetadata) =>
-        encodeSessionOwnerMetadataEnvelope({
-          credentials: params.credentials,
+      encodeOwnerMetadata: (ownerMetadata) => {
+        if (!owner || !accountEncryptionCurrentness) {
+          throw createMetadataUpdateError(
+            'Owner Session metadata material is unavailable to a shared editor',
+            'metadata_privacy_upgrade_required',
+          );
+        }
+        return encodeSessionOwnerMetadataEnvelope({
+          credentials: owner.credentials,
           accountEncryptionMode: accountEncryptionCurrentness.mode,
           ownerMetadata,
-        }),
+        });
+      },
     },
     commit: async (patch) => {
       assertSessionMetadataMutationCurrentness(params.currentness);
       let transportPatch:
         | SessionMetadataTuplePatchV1
-        | SessionMetadataInactiveModelIntentOwnerPatchV1 = patch;
+        | SessionMetadataInactiveModelIntentOwnerPatchV1
+        | SessionTeamCredentialBindingMetadataPatchV1 = patch;
       if (params.publisherPrecondition) {
         if (patch.mode !== 'owner' || params.sessionExpectation) {
           throw createMetadataUpdateError(
@@ -739,12 +854,39 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
           sessionExpectation: params.sessionExpectation,
         } satisfies SessionMetadataInactiveModelIntentOwnerPatchV1;
       }
+      if (params.teamCredentialBindings) {
+        if (patch.mode !== 'owner') {
+          throw createMetadataUpdateError(
+            'Team credential binding requires owner metadata authority',
+            'metadata_privacy_upgrade_required',
+          );
+        }
+        transportPatch = {
+          ...patch,
+          mode: 'owner_team_credential_binding',
+          operation: params.teamCredentialBindingOperation ?? 'session.model.set',
+          teamCredentialBindings: params.teamCredentialBindings,
+          ...(params.teamVisibilityGrantConsent ? { teamVisibilityGrantConsent: params.teamVisibilityGrantConsent } : {}),
+          ...(params.sessionExpectation ? { sessionExpectation: params.sessionExpectation } : {}),
+        };
+      }
       const result = await patchSessionMetadataEnvelopeTuple({
         token: params.token,
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         sessionId: params.sessionId,
         patch: transportPatch,
       });
       if (result.success) {
+        // A shared-editor commit never carries an Agent-state version because
+        // the server's shared-editor tuple mode does not write that value.
+        if (transportPatch.mode === 'shared_editor') {
+          return {
+            result: 'success' as const,
+            metadataVersion: result.sharedMetadata.version,
+          };
+        }
         if (!result.agentState) {
           throw createMetadataUpdateError(
             'Session AgentState tuple version is unavailable',
@@ -769,11 +911,49 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
           'session_publisher_authority_lost',
         );
       }
+      if (result.error === 'session_team_credential_binding_rejected') {
+        throw Object.assign(
+          createMetadataUpdateError(
+            'Team credential binding was rejected by current Session policy',
+            'session_team_credential_binding_rejected',
+          ),
+          { reason: result.reason },
+        );
+      }
       return { result: 'conflict' as const };
     },
     refreshAfterConflict: async () => {
       assertSessionMetadataMutationCurrentness(params.currentness);
-      if (params.credentials.token !== params.token) {
+      if (!owner) {
+        const sharedRaw = await fetchSessionByIdCompat({
+          token: params.token,
+          ...(params.resolveAuthorizationHeaders
+            ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+            : {}),
+          sessionId: params.sessionId,
+          reason: 'waitForMetadataUpdate',
+        });
+        assertSessionMetadataMutationCurrentness(params.currentness);
+        if (!sharedRaw) {
+          throw createMetadataUpdateError(
+            'Session not found',
+            'session_not_found',
+          );
+        }
+        if (
+          resolveSessionStoredContentEncryptionMode(sharedRaw) !== params.mode
+        ) {
+          throw createMetadataUpdateError(
+            'Session encryption context changed during tuple mutation',
+            'metadata_privacy_upgrade_required',
+          );
+        }
+        return readSessionMetadataSharedEditorTupleSnapshot({
+          rawSession: sharedRaw,
+          ...cryptoContext,
+        });
+      }
+      if (owner.credentials.token !== params.token) {
         throw createMetadataUpdateError(
           'Current Account credentials do not match the Session owner',
           'metadata_privacy_upgrade_required',
@@ -783,10 +963,22 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
         await Promise.all([
           fetchSessionByIdCompat({
             token: params.token,
+            ...(params.resolveAuthorizationHeaders
+              ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+              : {}),
             sessionId: params.sessionId,
             reason: 'waitForMetadataUpdate',
           }),
-          fetchAccountEncryptionCurrentness({ token: params.token }),
+          fetchAccountEncryptionCurrentness({
+            token: params.token,
+            ...(params.resolveAuthorizationHeaders
+              ? {
+                  authorizationHeaders: params.resolveAuthorizationHeaders({
+                    method: 'GET', path: '/v1/account/encryption/currentness',
+                  }) ?? undefined,
+                }
+              : {}),
+          }),
         ]);
       assertSessionMetadataMutationCurrentness(params.currentness);
       if (!authoritativeRaw) {
@@ -799,7 +991,7 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
       const authoritativeMode =
         resolveSessionStoredContentEncryptionMode(authoritativeRaw);
       const authoritativeContext = resolveStoredSessionCryptoContext({
-        credentials: params.credentials,
+        credentials: owner.credentials,
         rawSession: authoritativeRaw,
         mode: authoritativeMode,
       });
@@ -819,8 +1011,8 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
       }
       const authoritativeSnapshot = toSharedTupleSnapshot(
         readSessionMetadataTupleWriterSnapshot({
-          credentials: params.credentials,
-          accountEncryptionCurrentness,
+          credentials: owner.credentials,
+          accountEncryptionCurrentness: refreshedAccountCurrentness,
           rawSession: authoritativeRaw,
         }),
       );
@@ -833,24 +1025,38 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
       });
     },
     isAmbiguousCommitError: isAmbiguousTupleCommitError,
-    resolveOwnerMigrationCurrentness: () =>
-      resolveOwnerMigrationCurrentness({
-        credentials: params.credentials,
-        accountEncryptionCurrentness,
-      }),
+    ...(owner
+      ? {
+        resolveOwnerMigrationCurrentness: () =>
+          resolveOwnerMigrationCurrentness({
+            credentials: owner.credentials,
+            accountEncryptionCurrentness:
+              accountEncryptionCurrentness ?? owner.accountEncryptionCurrentness,
+          }),
+        mutateLegacy: params.mutateLegacy,
+      }
+      : {}),
     assertCurrent: () =>
       assertSessionMetadataMutationCurrentness(params.currentness),
-    mutateLegacy: params.mutateLegacy,
     maxAttempts: params.maxAttempts,
   });
-  if (updated.mode === 'owner') {
-    return fromSharedTupleSnapshot(updated);
-  }
   if (updated.mode === 'shared_editor') {
+    if (owner) {
+      throw createMetadataUpdateError(
+        'Owner session metadata mutation changed to shared-editor authority',
+        'metadata_privacy_upgrade_required',
+      );
+    }
+    return updated;
+  }
+  if (!owner) {
     throw createMetadataUpdateError(
-      'Owner session metadata mutation changed to shared-editor authority',
+      'Shared-editor session metadata mutation changed to owner authority',
       'metadata_privacy_upgrade_required',
     );
+  }
+  if (updated.mode === 'owner') {
+    return fromSharedTupleSnapshot(updated);
   }
   if (updated.mode !== 'legacy_owner') {
     throw createMetadataUpdateError(
@@ -863,6 +1069,9 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
 
 export async function updateSessionMetadataWithRetry(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
   credentials: StoredCredentials;
   accountEncryptionCurrentness?: AccountEncryptionCurrentnessResponse;
   sessionId: string;
@@ -872,12 +1081,24 @@ export async function updateSessionMetadataWithRetry(params: Readonly<{
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   sessionExpectation?:
     SessionMetadataInactiveModelIntentExpectationV1;
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
+  teamCredentialBindingOperation?: SessionTeamCredentialBindingMutationOperationV1;
+  teamVisibilityGrantConsent?: Readonly<{ teamId: string }>;
   currentness?: SessionMetadataMutationCurrentness;
   maxAttempts?: number;
 }>): Promise<{ version: number; metadata: Record<string, unknown> }> {
   assertSessionMetadataMutationCurrentness(params.currentness);
   const accountEncryptionCurrentness = params.accountEncryptionCurrentness
-    ?? await fetchAccountEncryptionCurrentness({ token: params.token });
+    ?? await fetchAccountEncryptionCurrentness({
+      token: params.token,
+      ...(params.resolveAuthorizationHeaders
+        ? {
+            authorizationHeaders: params.resolveAuthorizationHeaders({
+              method: 'GET', path: '/v1/account/encryption/currentness',
+            }) ?? undefined,
+          }
+        : {}),
+    });
   assertSessionMetadataMutationCurrentness(params.currentness);
   const mode = resolveSessionStoredContentEncryptionMode(params.rawSession);
   const cryptoContext = resolveStoredSessionCryptoContext({
@@ -890,16 +1111,31 @@ export async function updateSessionMetadataWithRetry(params: Readonly<{
     accountEncryptionCurrentness,
     rawSession: params.rawSession,
   });
+  if (params.teamCredentialBindings && initialSnapshot.mode === 'legacy_owner') {
+    throw createMetadataUpdateError(
+      'Team credential binding requires Session metadata layout v1',
+      'metadata_privacy_upgrade_required',
+    );
+  }
   assertSessionMetadataMutationCurrentness(params.currentness);
   const updated = await updateSessionMetadataEnvelopeTupleWithRetry({
     token: params.token,
-    credentials: params.credentials,
-    accountEncryptionCurrentness,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
+    authority: {
+      kind: 'owner',
+      credentials: params.credentials,
+      accountEncryptionCurrentness,
+    },
     sessionId: params.sessionId,
     ...cryptoContext,
     initialSnapshot,
     currentness: params.currentness,
     sessionExpectation: params.sessionExpectation,
+    teamCredentialBindings: params.teamCredentialBindings,
+    teamCredentialBindingOperation: params.teamCredentialBindingOperation,
+    teamVisibilityGrantConsent: params.teamVisibilityGrantConsent,
     mutation: {
       kind: 'metadata',
       update: async (metadata) =>
@@ -908,6 +1144,9 @@ export async function updateSessionMetadataWithRetry(params: Readonly<{
     mutateLegacy: async (request) =>
       await updateLegacyMetadataWithHttpRetry({
         token: params.token,
+        ...(params.resolveAuthorizationHeaders
+          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+          : {}),
         sessionId: params.sessionId,
         ...cryptoContext,
         request,

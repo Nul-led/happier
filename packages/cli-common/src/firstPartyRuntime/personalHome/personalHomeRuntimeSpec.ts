@@ -1,8 +1,12 @@
+import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../../happierCloud.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 
 /** Stable bootstrap origin shared by the browser-safe UI seam and the managed runtime defaults. */
 export const DEFAULT_PERSONAL_HOME_PORT = 3005;
 export const DEFAULT_PERSONAL_HOME_ORIGIN = `http://127.0.0.1:${DEFAULT_PERSONAL_HOME_PORT}`;
+/** Initial display name for the one canonical Team created during Personal Home bootstrap. */
+export const DEFAULT_PERSONAL_HOME_TEAM_NAME = 'Personal Home';
 
 /** The managed runtime purpose carried through the existing relay-host seam. */
 export type ManagedRelayPurpose =
@@ -24,7 +28,12 @@ export type PersonalHomeRuntimeEnvironment = Readonly<{
   HAPPIER_CANONICAL_SERVER_URL: string;
   HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only';
   HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain';
+  HAPPIER_FEATURE_TEAMS__ENABLED: '1';
   AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' | '0';
+  HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'external';
+  HAPPIER_AUTH_SIGN_IN_SERVICE_URL: typeof DEFAULT_HAPPIER_CLOUD_SERVER_URL;
+  HAPPIER_IROH_RELAY_POLICY?: 'automatic' | 'disabled';
+  HAPPIER_IROH_RELAY_URLS?: string;
 }>;
 
 const FIXED_ENVIRONMENT_KEYS = new Set([
@@ -33,8 +42,44 @@ const FIXED_ENVIRONMENT_KEYS = new Set([
   'HAPPIER_CANONICAL_SERVER_URL',
   'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY',
   'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE',
+  'HAPPIER_FEATURE_TEAMS__ENABLED',
   'AUTH_ANONYMOUS_SIGNUP_ENABLED',
+  'HAPPIER_AUTH_SIGN_IN_SERVICE_MODE',
+  'HAPPIER_AUTH_SIGN_IN_SERVICE_URL',
+  'HAPPIER_IROH_RELAY_POLICY',
+  'HAPPIER_IROH_RELAY_URLS',
 ]);
+
+export function normalizePersonalHomeIrohRelayEnvironment(
+  source: Readonly<Record<string, unknown>>,
+): Readonly<{
+  HAPPIER_IROH_RELAY_POLICY?: 'automatic' | 'disabled';
+  HAPPIER_IROH_RELAY_URLS?: string;
+}> {
+  const rawPolicy = String(source.HAPPIER_IROH_RELAY_POLICY ?? '').trim().toLowerCase();
+  const rawRelayUrls = String(source.HAPPIER_IROH_RELAY_URLS ?? '').trim();
+  if (!rawPolicy && !rawRelayUrls) return {};
+  if (rawPolicy && rawPolicy !== 'automatic' && rawPolicy !== 'disabled') {
+    throw new Error('HAPPIER_IROH_RELAY_POLICY must be automatic or disabled');
+  }
+  const policy = rawPolicy === 'disabled' ? 'disabled' : 'automatic';
+  if (policy === 'disabled' && rawRelayUrls) {
+    throw new Error('HAPPIER_IROH_RELAY_POLICY=disabled cannot be combined with HAPPIER_IROH_RELAY_URLS');
+  }
+  if (!rawRelayUrls) return { HAPPIER_IROH_RELAY_POLICY: policy };
+  const candidates = rawRelayUrls.split(',').map((entry) => entry.trim());
+  if (candidates.some((entry) => !entry)) {
+    throw new Error('HAPPIER_IROH_RELAY_URLS must not contain empty entries');
+  }
+  const parsed = IrohEndpointDescriptorV1Schema.shape.relayUrls.safeParse(candidates);
+  if (!parsed.success || parsed.data === undefined) {
+    throw new Error('HAPPIER_IROH_RELAY_URLS must contain unique absolute HTTP(S) relay URLs');
+  }
+  return {
+    HAPPIER_IROH_RELAY_POLICY: policy,
+    HAPPIER_IROH_RELAY_URLS: [...parsed.data].sort().join(','),
+  };
+}
 
 function requireCanonicalServerUrl(value: unknown): string {
   const canonicalServerUrl = typeof value === 'string' ? value.trim().replace(/\/+$/u, '') : '';
@@ -112,6 +157,7 @@ export function assertPersonalHomeEnvironmentKeys(value: unknown): void {
       throw new Error(`unsupported Personal Home environment key: ${key}`);
     }
   }
+  normalizePersonalHomeIrohRelayEnvironment(value as Record<string, unknown>);
 }
 
 export function renderPersonalHomeRuntimeEnv(params: Readonly<{
@@ -127,20 +173,40 @@ export function renderPersonalHomeRuntimeEnv(params: Readonly<{
   const port = requirePort(params.port);
   const signup = params.anonymousSignupEnabled === false ? '0' : '1';
   const overrides = params.overrides ?? {};
+  const baseEnv = params.baseEnv ?? {};
+  const relaySource = {
+    HAPPIER_IROH_RELAY_POLICY:
+      overrides.HAPPIER_IROH_RELAY_POLICY ?? baseEnv.HAPPIER_IROH_RELAY_POLICY,
+    HAPPIER_IROH_RELAY_URLS:
+      Object.prototype.hasOwnProperty.call(overrides, 'HAPPIER_IROH_RELAY_POLICY')
+      && !Object.prototype.hasOwnProperty.call(overrides, 'HAPPIER_IROH_RELAY_URLS')
+        ? undefined
+        : overrides.HAPPIER_IROH_RELAY_URLS ?? baseEnv.HAPPIER_IROH_RELAY_URLS,
+  };
+  const relayEnvironment = normalizePersonalHomeIrohRelayEnvironment(relaySource);
   const rendered: {
     HAPPIER_SERVER_HOST: '127.0.0.1';
     PORT: string;
     HAPPIER_CANONICAL_SERVER_URL: string;
     HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only';
     HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain';
+    HAPPIER_FEATURE_TEAMS__ENABLED: '1';
     AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' | '0';
+    HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'external';
+    HAPPIER_AUTH_SIGN_IN_SERVICE_URL: typeof DEFAULT_HAPPIER_CLOUD_SERVER_URL;
+    HAPPIER_IROH_RELAY_POLICY?: 'automatic' | 'disabled';
+    HAPPIER_IROH_RELAY_URLS?: string;
   } = {
     HAPPIER_SERVER_HOST: '127.0.0.1',
     PORT: port,
     HAPPIER_CANONICAL_SERVER_URL: params.spec.canonicalServerUrl,
     HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
     HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+    HAPPIER_FEATURE_TEAMS__ENABLED: '1',
     AUTH_ANONYMOUS_SIGNUP_ENABLED: signup,
+    HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'external',
+    HAPPIER_AUTH_SIGN_IN_SERVICE_URL: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
+    ...relayEnvironment,
   };
   for (const key of FIXED_ENVIRONMENT_KEYS) {
     if (key in overrides) {
@@ -162,17 +228,25 @@ export function renderPersonalHomeRuntimeEnv(params: Readonly<{
       if (key === 'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE' && value !== 'plain') {
         throw new Error('Personal Home account mode is fixed to plain');
       }
+      if (key === 'HAPPIER_FEATURE_TEAMS__ENABLED' && value !== '1') {
+        throw new Error('Personal Home Teams availability must remain enabled');
+      }
       if (key === 'AUTH_ANONYMOUS_SIGNUP_ENABLED' && value !== '0' && value !== '1') {
         throw new Error('Personal Home anonymous signup value must be 0 or 1');
+      }
+      if (key === 'HAPPIER_AUTH_SIGN_IN_SERVICE_MODE' && value !== 'external') {
+        throw new Error('Personal Home sign-in service mode is fixed to external');
+      }
+      if (key === 'HAPPIER_AUTH_SIGN_IN_SERVICE_URL' && value !== DEFAULT_HAPPIER_CLOUD_SERVER_URL) {
+        throw new Error('Personal Home sign-in service URL is fixed to the Happier Cloud endpoint');
       }
       if (key === 'AUTH_ANONYMOUS_SIGNUP_ENABLED') {
         rendered.AUTH_ANONYMOUS_SIGNUP_ENABLED = value === '0' ? '0' : '1';
       }
     }
   }
-  // baseEnv is deliberately not merged into the returned fixed map. The installer combines
-  // this map with its canonical generic defaults and then writes the service environment.
-  void params.baseEnv;
+  // Only the two validated relay keys are projected from baseEnv. The installer
+  // remains responsible for preserving every other operator-owned assignment.
   return Object.freeze(rendered) satisfies PersonalHomeRuntimeEnvironment;
 }
 

@@ -5,8 +5,11 @@ import {
   PluginSessionInputSourceV1Schema,
   SessionInputCausalPermissionAuthorityV1Schema,
   SessionInputRequestV1Schema,
+  SessionInputRequestV2Schema,
+  SessionInputWorkflowV2Schema,
   SessionInputSourceSessionV1Schema,
   SessionMessageProvenanceV1Schema,
+  SessionMessageProvenanceV2Schema,
   readPendingLocalId,
   type ActionPluginCaller,
   type ActionCaller,
@@ -15,8 +18,14 @@ import {
   type PluginSessionInputSourceV1,
   type SessionInputCausalPermissionAuthorityV1,
   type SessionInputRequestV1,
+  type SessionInputRequestV2,
+  type SessionInputSourceAuthorityV1,
+  type SessionInputWorkflowV2,
   type SessionMessageProvenanceV1,
+  type SessionMessageProvenanceV2,
 } from '@happier-dev/protocol';
+
+export { deriveWorkflowSessionInputLocalIdV2 } from '@happier-dev/protocol';
 
 function projectPluginInvocationSurface(
   surface: keyof ActionSurfaces | null | undefined,
@@ -140,6 +149,44 @@ export function buildAutomationSessionInputAdmissionV1(params: Readonly<{
       runId: automation.runId,
     }),
     request,
+  });
+}
+
+/** Host-only V2 admission for one workflow invocation or final result delivery. */
+export function buildWorkflowSessionInputAdmissionV2(
+  params: SessionInputWorkflowV2,
+  options: Readonly<{
+    requestedPermissionCeiling?: SessionInputRequestV2['permission']['requestedPermissionCeiling'];
+    sourceAuthority?: SessionInputSourceAuthorityV1;
+  }> = {},
+): Readonly<{
+  provenance: SessionMessageProvenanceV2;
+  request: SessionInputRequestV2;
+}> {
+  const workflow = SessionInputWorkflowV2Schema.parse(params);
+  return Object.freeze({
+    provenance: SessionMessageProvenanceV2Schema.parse(workflow.purpose === 'invocation'
+      ? {
+          v: 2,
+          kind: 'workflow_invocation',
+          runId: workflow.runId,
+          invocationRecordId: workflow.invocationRecordId,
+        }
+      : {
+          v: 2,
+          kind: 'workflow_result_delivery',
+          runId: workflow.runId,
+        }),
+    request: SessionInputRequestV2Schema.parse({
+      v: 2,
+      producer: 'workflow',
+      caller: { kind: 'host' },
+      ...(options.sourceAuthority ? { sourceAuthority: options.sourceAuthority } : {}),
+      workflow,
+      permission: options.requestedPermissionCeiling
+        ? { requestedPermissionCeiling: options.requestedPermissionCeiling }
+        : {},
+    }),
   });
 }
 

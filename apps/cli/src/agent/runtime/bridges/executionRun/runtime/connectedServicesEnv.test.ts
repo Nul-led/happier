@@ -21,7 +21,7 @@ import {
 } from './connectedServicesEnv';
 
 const CONNECTED_BINDINGS = {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
         [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
             source: 'connected',
@@ -32,7 +32,7 @@ const CONNECTED_BINDINGS = {
 } as const;
 
 const NATIVE_BINDINGS = {
-    v: 1,
+    v: 2,
     bindingsByServiceId: {
         [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: { source: 'native' },
     },
@@ -43,7 +43,7 @@ const CREDENTIALS = { token: 'token_1' } as never;
 const MATERIALIZED_ENV_VALUE = '/materialized/run_1/codex-home';
 const ACTIVATION_ID = '11111111-1111-4111-8111-111111111111';
 const REGISTRATION = {
-    v: 1 as const,
+    v: 2 as const,
     activationId: ACTIVATION_ID,
     runKey: 'run_1',
     agentId: 'codex',
@@ -208,7 +208,7 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             backendId: 'pi',
             backendSourceKind: 'built_in',
             connectedServices: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
                         source: 'connected',
@@ -235,6 +235,39 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             source: 'connected',
             selection: 'group',
             groupId: 'team',
+        });
+    });
+
+    it('accepts a current Team resource binding from the shared Session default owner', async () => {
+        const teamBinding = {
+            source: 'team_resource' as const,
+            resourceId: 'resource-a',
+            deliveryMode: 'brokered' as const,
+        };
+        const deps = createDeps({
+            resolveSessionSpawnDefaults: vi.fn(async () => ({
+                connectedServices: {
+                    v: 2,
+                    bindingsByServiceId: {
+                        [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: teamBinding,
+                    },
+                },
+                connectedServicesUpdatedAt: 1,
+            })),
+        });
+
+        await expect(resolveExecutionRunConnectedServicesSelection({
+            backendId: 'codex',
+            backendSourceKind: 'built_in',
+            connectedServicesDefaultServiceIds: [OPENAI_CODEX_ACCOUNT_SERVICE_ID],
+            deps,
+        })).resolves.toMatchObject({
+            bindings: {
+                bindingsByServiceId: {
+                    [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: teamBinding,
+                },
+            },
+            source: 'session_default',
         });
     });
 

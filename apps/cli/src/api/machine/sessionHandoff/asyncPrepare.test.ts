@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { RpcHandlerContext } from '@/api/rpc/types';
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -17,6 +18,91 @@ function createDeferred<T>() {
 }
 
 describe('rpcHandlers (session handoff async prepare)', () => {
+  it('forwards coordinator-refreshed private input to the destructive start leaf', async () => {
+    const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-fresh-private-input-'));
+    try {
+      const { registerMachineSessionHandoffRpcHandlers } = await import('./handlers');
+      const registered = new Map<string, (input: unknown, context?: RpcHandlerContext) => Promise<unknown>>();
+      const stopSessionForHandoff = vi.fn(async () => 'failed' as const);
+      const releaseOperationClaim = vi.fn(async () => undefined);
+      const captured: { start?: (input: unknown) => Promise<unknown> } = {};
+      const coordinateSessionHandoff = vi.fn(async ({ start }: { start: (input: unknown) => Promise<unknown> }) => {
+        captured.start = start;
+        return { ok: false as const, errorCode: 'captured', error: 'captured' };
+      });
+
+      registerMachineSessionHandoffRpcHandlers({
+        rpcHandlerManager: {
+          registerHandler(method: string, handler: (input: unknown, context?: RpcHandlerContext) => Promise<unknown>) {
+            registered.set(method, handler);
+          },
+        } as never,
+        runtimeConfig: { activeServerDir },
+        directPeerTransfer: {} as never,
+        sessionOperationExclusion: {
+          acquire: async () => ({
+            status: 'acquired' as const,
+            claim: {
+              renew: async () => true,
+              release: releaseOperationClaim,
+            },
+          }),
+        } as never,
+        loadSessionMetadata: async () => ({
+          path: '/tmp/project',
+          machineId: 'machine-source',
+          externalSessionV1: {
+            v: 1,
+            agentId: 'codex',
+            machineId: 'machine-source',
+            remoteSessionId: 'remote-1',
+            source: { kind: 'codexHome', home: 'user' },
+          },
+        }),
+        stopSessionForHandoff,
+        coordinateSessionHandoff: coordinateSessionHandoff as never,
+      });
+
+      const start = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3);
+      expect(start).toBeDefined();
+      await expect(start!({
+        sessionId: 'session-1',
+        sourceMachineId: 'machine-source',
+        targetMachineId: 'machine-target',
+        // This otherwise-valid predecessor/direct request is stale. The
+        // coordinator must replace it before invoking the destructive leaf.
+        sessionStorageMode: 'persisted',
+        preferredTransportStrategies: ['direct_peer'],
+      }, {
+        signal: AbortSignal.timeout(5_000),
+      } as never)).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'captured',
+      });
+      expect(coordinateSessionHandoff).toHaveBeenCalledOnce();
+      expect(captured.start).toBeTypeOf('function');
+
+      await expect(captured.start!({
+        sessionId: 'session-1',
+        sourceMachineId: 'machine-source',
+        targetMachineId: 'machine-target',
+        // The production coordinator refreshed this classification from the
+        // source owner after the public request was created.
+        sessionStorageMode: 'direct',
+        preferredTransportStrategies: ['direct_peer'],
+        negotiatedTransportStrategy: 'direct_peer',
+      })).resolves.toEqual({
+        ok: true,
+        result: expect.objectContaining({ ok: false, errorCode: 'source_stop_failed' }),
+      });
+      expect(stopSessionForHandoff).toHaveBeenCalledOnce();
+      expect(stopSessionForHandoff).toHaveBeenCalledWith('session-1');
+      expect(releaseOperationClaim).toHaveBeenCalledOnce();
+    } finally {
+      await rm(activeServerDir, { recursive: true, force: true });
+    }
+  });
+
   it('lets two daemon clients converge on one passive interrupted prepare-target hydration', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-prepare-lease-liveness-'));
     const targetPath = await mkdtemp(join(tmpdir(), 'happier-handoff-prepare-lease-target-'));

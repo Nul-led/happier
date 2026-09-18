@@ -32,6 +32,7 @@ import {
     RPC_ERROR_CODES,
     RPC_ERROR_MESSAGES,
 } from '@happier-dev/protocol/rpc';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 type OwnedHandlerRegistrationContext = {
     ownerId: string;
@@ -254,6 +255,7 @@ export class RpcHandlerManager {
             );
             const result = await handler(decryptedParams, Object.freeze({
                 signal: controller.signal,
+                ...(requestId ? { transportRequestId: requestId } : {}),
                 ...(request.authorization ? { authorization: request.authorization } : {}),
             }));
             this.logger('[RPC] Handler returned', { method: request.method, hasResult: result !== undefined });
@@ -289,8 +291,10 @@ export class RpcHandlerManager {
                     }
                     : error,
             });
+            const rpcErrorCode = readRpcErrorCode(error);
             const errorResponse = {
-                error: error instanceof Error ? error.message : 'Unknown error'
+                error: error instanceof Error ? error.message : 'Unknown error',
+                ...(rpcErrorCode ? { errorCode: rpcErrorCode } : {}),
             };
             return this.encodeTransportResponse(request, errorResponse);
         } finally {

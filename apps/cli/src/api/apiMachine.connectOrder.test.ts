@@ -270,9 +270,11 @@ describe('ApiMachineClient connect ordering', () => {
         {
           machineId: 'machine-1',
           capabilities: {
-            sessionInputAdmission: { protocolVersions: [1] },
+            sessionInputAdmission: { protocolVersions: [1, 2] },
             sessionSpawn: { protocolVersions: [1] },
             pluginWebhookClaim: { protocolVersions: [1] },
+            externalActionExecutionAuthorization: { protocolVersions: [1] },
+            sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
           },
         },
       ]));
@@ -473,9 +475,11 @@ describe('ApiMachineClient connect ordering', () => {
         {
           machineId: 'machine-1',
           capabilities: {
-            sessionInputAdmission: { protocolVersions: [1] },
+            sessionInputAdmission: { protocolVersions: [1, 2] },
             sessionSpawn: { protocolVersions: [1] },
             pluginWebhookClaim: { protocolVersions: [1] },
+            externalActionExecutionAuthorization: { protocolVersions: [1] },
+            sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
           },
         },
       ]);
@@ -798,13 +802,79 @@ describe('ApiMachineClient connect ordering', () => {
       expect(capabilityPayloads.at(-1)).toEqual({
         machineId: 'machine-1',
         capabilities: {
-          sessionInputAdmission: { protocolVersions: [1] },
+          sessionInputAdmission: { protocolVersions: [1, 2] },
           sessionSpawn: { protocolVersions: [1] },
           pluginWebhookClaim: { protocolVersions: [1] },
+          externalActionExecutionAuthorization: { protocolVersions: [1] },
+          sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
         },
       });
     } finally {
       await client.shutdown();
     }
   }, 5_000);
+
+  it('reconnects through the existing supervisor when capability publication cannot establish readiness', async () => {
+    vi.stubEnv('HAPPY_ENABLE_V2_CHANGES', 'false');
+    const firstSocket = createApiSessionSocketStub({
+      id: 'machine-socket-1',
+      disconnectReason: 'transport close',
+      emitWithAck: (event) => {
+        if (event === MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1) {
+          return { v: 1, result: 'error', code: 'internal_error' };
+        }
+        return { result: 'success', version: 1 };
+      },
+    });
+    const secondCapabilityPayloads: unknown[] = [];
+    const secondStatePayloads: unknown[] = [];
+    const secondSocket = createApiSessionSocketStub({
+      id: 'machine-socket-2',
+      disconnectReason: 'transport close',
+      emitWithAck: (event, payload) => {
+        if (event === MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1) {
+          secondCapabilityPayloads.push(payload);
+          return { v: 1, result: 'success', revision: 2 };
+        }
+        if (event === 'machine-update-state') {
+          secondStatePayloads.push(payload);
+          return {
+            result: 'success',
+            version: 2,
+            daemonState: (payload as { daemonState: string }).daemonState,
+          };
+        }
+        return { result: 'success', version: 2 };
+      },
+    });
+    bindApiSessionSocketSequenceMock(ioMock, [firstSocket, secondSocket]);
+    const client = new ApiMachineClient('token', {
+      id: 'machine-1',
+      encryptionKey: new Uint8Array(32).fill(1),
+      encryptionVariant: 'legacy',
+      metadata: null,
+      metadataVersion: 0,
+      daemonState: null,
+      daemonStateVersion: 0,
+    });
+    client.setRPCHandlers({
+      spawnSession: async () => ({ type: 'success', sessionId: 'session-1' }),
+      sessionSpawnV1OutcomeRequired: true,
+      resolveSpawnSessionByNonce: async () => ({ status: 'success', sessionId: 'session-1' }),
+      stopSession: async () => true,
+      requestShutdown: () => {},
+    });
+    const rpcHandlerManager = Reflect.get(client, 'rpcHandlerManager') as RpcHandlerManager;
+    registerRequiredMachineControlHandlers(rpcHandlerManager);
+    vi.spyOn(rpcHandlerManager, 'waitForRegisteredHandlers').mockResolvedValue({ status: 'ready' });
+
+    try {
+      client.connect();
+      await vi.waitFor(() => expect(ioMock).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+      await vi.waitFor(() => expect(secondCapabilityPayloads).toHaveLength(1), { timeout: 10_000 });
+      await vi.waitFor(() => expect(secondStatePayloads).toHaveLength(1), { timeout: 10_000 });
+    } finally {
+      await client.shutdown();
+    }
+  }, 20_000);
 });

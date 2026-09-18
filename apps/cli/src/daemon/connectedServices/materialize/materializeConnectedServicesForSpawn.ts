@@ -234,7 +234,7 @@ async function materializeQualifiedConnectedAccountLaunchForSpawn(params: Readon
       ? resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
           agentId: params.agentId,
           bindings: {
-            v: 1,
+            v: 2,
             bindingsByServiceId: Object.fromEntries(
               [...params.recordsByServiceId].map(([serviceId, record]) => [
                 serviceId,

@@ -55,6 +55,7 @@ export const connectedAccountProjectionFamily = definePluginProjectionFamilyV2({
           title: descriptor.title, ...(descriptor.description ? { description: descriptor.description } : {}),
           authentication: descriptor.authentication,
           capabilities: descriptor.capabilities ?? [],
+          ...(descriptor.recoveryCredits ? { recoveryCredits: descriptor.recoveryCredits } : {}),
           // UI-T28: Connected Account setup is host-rendered from the STATIC
           // descriptor, so it is blocked only when that declaration is itself
           // unusable (missing/invalid manifest or unapproved trust). A runtime

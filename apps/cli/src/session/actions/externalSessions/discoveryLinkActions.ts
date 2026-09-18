@@ -1,8 +1,10 @@
 import {
     buildLinkedExternalSessionQualifiedIdentityV1,
     deriveExternalSessionsAutoLinkSourcePolicyIdV1,
+    ExternalSessionCandidateDeleteRequestSchema,
     ExternalSessionLinkEnsureRequestSchema,
     ExternalSessionsCandidatesListRequestSchema,
+    type ExternalSessionCandidateDeleteResponse,
     type ExternalSessionLinkEnsureResponse,
     type ExternalSessionsCandidatesListResponse,
 } from '@happier-dev/protocol';
@@ -55,7 +57,7 @@ export async function executeExternalSessionCandidatesListAction(
             return externalSessionsError('agent_unavailable', 'candidates_list_not_supported') satisfies ExternalSessionsCandidatesListResponse;
         }
         const currentAgent = validatedSource.currentAgent;
-        const res = await executeExternalSessionCandidateQuery({
+        const runCandidateQuery = () => executeExternalSessionCandidateQuery({
             activeServerDir: configuration.activeServerDir,
             agentIdentity: currentAgent.identity,
             agentRuntimeGeneration: validatedSource.agentRuntimeGeneration,
@@ -79,6 +81,16 @@ export async function executeExternalSessionCandidatesListAction(
                 })
             ),
         });
+        /**
+         * The destructive-capability fact belongs to this one listing request:
+         * the host lifecycle scopes the query so the answer comes from the
+         * connection(s) that actually served these rows, never from a previous
+         * request or a page this request read out of the candidate index.
+         */
+        const listing = validatedSource.candidateLifecycle
+            ? await validatedSource.candidateLifecycle.runListingRequest(runCandidateQuery)
+            : { value: await runCandidateQuery(), negotiatedDeleteSupport: false };
+        const res = listing.value;
         const credentials = await readStoredCredentials().catch(() => null);
         if (!credentials) {
             return externalSessionsError('agent_unavailable', 'not_authenticated') satisfies ExternalSessionsCandidatesListResponse;
@@ -139,10 +151,20 @@ export async function executeExternalSessionCandidatesListAction(
             heapDeltaBytes: process.memoryUsage().heapUsed - startMemory.heapUsed,
             rssBytes: process.memoryUsage().rss,
         });
+        /**
+         * Destructive candidate controls are advertised only by the
+         * host-synthesized lifecycle for this exact source, and only when the
+         * Agent negotiated them on the connection that served this listing. A
+         * plugin-contributed source has no lifecycle and never advertises one.
+         */
+        const capabilities = listing.negotiatedDeleteSupport
+            ? { deleteCandidate: true as const }
+            : null;
         return {
             ok: true,
             candidates: [...annotationResult.candidates],
             nextCursor: res.nextCursor,
+            ...(capabilities ? { capabilities } : {}),
             ...(res.searchIncomplete ? { searchIncomplete: true } : {}),
             ...(annotationResult.annotationsIncomplete ? { annotationsIncomplete: true } : {}),
             ...(res.preparation ? { preparation: res.preparation } : {}),
@@ -262,5 +284,63 @@ export async function executeExternalSessionLinkEnsureAction(
             error,
             'external_session_link_ensure_failed',
         ) satisfies ExternalSessionLinkEnsureResponse;
+    }
+}
+
+/**
+ * Delete one Agent-owned session a resume-only listing surfaced. The Happier
+ * Session store is never touched here: the request addresses the Agent's own
+ * record through the host-synthesized session-lifecycle owner for that source,
+ * which re-checks negotiation on its own connection before acting.
+ */
+export async function executeExternalSessionCandidateDeleteAction(
+    raw: unknown,
+    options: Readonly<{ signal?: AbortSignal }> = {},
+): Promise<ExternalSessionCandidateDeleteResponse> {
+    const parsed = ExternalSessionCandidateDeleteRequestSchema.safeParse(raw);
+    if (!parsed.success) return externalSessionsError('invalid_request') satisfies ExternalSessionCandidateDeleteResponse;
+    try {
+        const validatedSource = await validateExternalMachineSource({
+            agentId: parsed.data.agentId,
+            source: parsed.data.source,
+            env: process.env,
+        });
+        if (!validatedSource.ok) {
+            return externalSessionsError(
+                validatedSource.errorCode ?? 'invalid_request',
+                validatedSource.error,
+            ) satisfies ExternalSessionCandidateDeleteResponse;
+        }
+        const lifecycle = validatedSource.candidateLifecycle;
+        if (!lifecycle) {
+            return externalSessionsError(
+                'agent_unavailable',
+                'candidate_delete_not_supported',
+            ) satisfies ExternalSessionCandidateDeleteResponse;
+        }
+        const result = await lifecycle.deleteCandidate({
+            source: validatedSource.source,
+            // The listing handed out opaque Agent bytes; deletion addresses the
+            // same record, so the identifier crosses unchanged.
+            remoteSessionId: parsed.data.remoteSessionId,
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
+        if (!result.ok) {
+            return externalSessionsError(
+                result.code === 'invalid_request' || result.code === 'source_invalid'
+                    ? 'invalid_request'
+                    : 'agent_unavailable',
+                result.message ?? `external_session_candidate_delete_${result.code}`,
+            ) satisfies ExternalSessionCandidateDeleteResponse;
+        }
+        return { ok: true, deleted: true } satisfies ExternalSessionCandidateDeleteResponse;
+    } catch (error) {
+        const providerFailure = mapExternalSessionProviderFailureToExternalSessionsError(error);
+        if (providerFailure) return providerFailure satisfies ExternalSessionCandidateDeleteResponse;
+        return internalErrorResponse(
+            'external_session_candidate_delete',
+            error,
+            'external_session_candidate_delete_failed',
+        ) satisfies ExternalSessionCandidateDeleteResponse;
     }
 }

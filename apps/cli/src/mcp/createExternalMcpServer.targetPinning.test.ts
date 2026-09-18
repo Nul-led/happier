@@ -35,14 +35,23 @@ async function startActionServer(observed: ObservedRequest[]): Promise<Readonly<
       return;
     }
     if (request.method === 'POST' && request.url === '/v1/actions/session.list') {
-      response.end(JSON.stringify({
-        v: 1,
-        actionId: 'session.list',
-        execution: {
-          ok: true,
-          result: { sessions: [], nextCursor: null, hasNext: false },
-        },
-      }));
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const parsed = JSON.parse(body) as Readonly<{ requestId?: unknown }>;
+        response.end(JSON.stringify({
+          v: 1,
+          actionId: 'session.list',
+          ...(typeof parsed.requestId === 'string' ? { requestId: parsed.requestId } : {}),
+          execution: {
+            ok: true,
+            result: { sessions: [], nextCursor: null, hasNext: false },
+          },
+        }));
+      });
       return;
     }
     response.statusCode = 404;
@@ -104,6 +113,7 @@ describe('createExternalMcpServer target pinning', () => {
       await client.connect(clientTransport);
       try {
         const result = await client.callTool({ name: 'session_list', arguments: { limit: 1 } });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(selectedRequests).toEqual(expect.arrayContaining([
           expect.objectContaining({
             method: 'POST',
@@ -113,7 +123,6 @@ describe('createExternalMcpServer target pinning', () => {
         ]));
         expect(selectedRequests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
         expect(attackerRequests).toEqual([]);
-        expect(result.isError).not.toBe(true);
         await expect(readFile(`${homeDir}/settings.json`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await client.close();

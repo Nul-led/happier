@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import { SUPPORTED_SCHEMA_VERSION, type Settings } from '@/persistence';
+
 import { resolveActiveServerAuthReadiness } from './resolveActiveServerAuthReadiness';
+
+function createSettings(overrides: Partial<Settings> = {}): Settings {
+  return {
+    schemaVersion: SUPPORTED_SCHEMA_VERSION,
+    onboardingCompleted: false,
+    ...overrides,
+  };
+}
 
 describe('resolveActiveServerAuthReadiness', () => {
   it('does not report a locally allocated machine id as server-registered', async () => {
@@ -10,10 +20,10 @@ describe('resolveActiveServerAuthReadiness', () => {
         encryption: null,
         credentialProvenance: 'stored_session',
       }),
-      readSettingsFn: async () => ({
+      readSettingsFn: async () => createSettings({
         machineId: 'machine-local-only',
         machineIdConfirmedByServer: false,
-      }) as Awaited<ReturnType<typeof import('@/persistence').readSettings>>,
+      }),
       validateTokenFn: async () => ({ state: 'valid', httpStatus: 200 }),
     });
 
@@ -33,10 +43,10 @@ describe('resolveActiveServerAuthReadiness', () => {
         encryption: null,
         credentialProvenance: 'stored_session',
       }),
-      readSettingsFn: async () => ({
+      readSettingsFn: async () => createSettings({
         machineId: 'machine-confirmed',
         machineIdConfirmedByServer: true,
-      }) as Awaited<ReturnType<typeof import('@/persistence').readSettings>>,
+      }),
       validateTokenFn: async () => ({
         state: 'unknown',
         httpStatus: null,
@@ -55,13 +65,31 @@ describe('resolveActiveServerAuthReadiness', () => {
     });
   });
 
+  it('passes caller cancellation to the canonical stored-credential validator', async () => {
+    const caller = new AbortController();
+    const observed: AbortSignal[] = [];
+
+    await resolveActiveServerAuthReadiness({
+      readCredentialsFn: async () => ({
+        token: 'stored-token',
+        encryption: null,
+        credentialProvenance: 'stored_session',
+      }),
+      readSettingsFn: async () => createSettings({ machineId: undefined }),
+      signal: caller.signal,
+      validateTokenFn: async (_token, signal) => {
+        if (signal) observed.push(signal);
+        return { state: 'unknown', httpStatus: null, reasonCode: 'fixture' };
+      },
+    });
+
+    expect(observed).toEqual([caller.signal]);
+  });
+
   it('distinguishes missing, rejected, and server-confirmed readiness facts', async () => {
     const missing = await resolveActiveServerAuthReadiness({
       readCredentialsFn: async () => null,
-      readSettingsFn: async () => ({
-        schemaVersion: 6,
-        onboardingCompleted: false,
-      }),
+      readSettingsFn: async () => createSettings(),
     });
     expect(missing).toMatchObject({
       credentialState: 'missing',
@@ -76,10 +104,10 @@ describe('resolveActiveServerAuthReadiness', () => {
         encryption: null,
         credentialProvenance: 'stored_session',
       }),
-      readSettingsFn: async () => ({
+      readSettingsFn: async () => createSettings({
         machineId: 'machine-confirmed',
         machineIdConfirmedByServer: true,
-      }) as Awaited<ReturnType<typeof import('@/persistence').readSettings>>,
+      }),
       validateTokenFn: async () => ({
         state: 'invalid',
         httpStatus: 401,

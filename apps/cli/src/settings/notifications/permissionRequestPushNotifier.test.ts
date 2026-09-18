@@ -1,3 +1,4 @@
+import * as pinnedHttp from '@/network/pinnedHttp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { accountSettingsParse } from '@happier-dev/protocol';
@@ -8,6 +9,25 @@ import type { PermissionRequestPushSender } from './permissionRequestPush';
 describe('PermissionRequestPushNotifier', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('delivers full questions and choices through the notifier', async () => {
+    const sendToAllDevicesAsync = vi.fn<PermissionRequestPushSender['sendToAllDevicesAsync']>(async () => {});
+    const notifier = new PermissionRequestPushNotifier({
+      pushSender: { sendToAllDevicesAsync },
+      getSettings: () => accountSettingsParse({ notificationsSettingsV1: { requestIncludeMessageText: true } }),
+      sessionId: 's1', logPrefix: '[test]',
+    });
+    notifier.notify({ permissionId: 'q1', toolName: 'AskUserQuestion', toolInput: {
+      questions: [{ question: 'Which environments should be updated?', multiSelect: true,
+        options: [{ label: 'Production', description: 'Customer-facing deployment' }, { label: 'Staging' }],
+        freeform: {} }],
+    } });
+    await vi.waitFor(() => expect(sendToAllDevicesAsync).toHaveBeenCalled());
+    const body = sendToAllDevicesAsync.mock.calls[0][1];
+    for (const text of ['Which environments should be updated?', 'Production', 'Customer-facing deployment', 'Staging', 'Select multiple', 'Custom answer']) expect(body).toContain(text);
+    notifier.dispose();
   });
 
   it('does not send when disabled by settings', async () => {
@@ -130,8 +150,11 @@ describe('PermissionRequestPushNotifier', () => {
   it('sends webhook requests during quiet hours when Expo push is suppressed', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-03T12:00:00.000Z'));
-    const fetchSpy = vi.fn(async () => ({ ok: true, status: 202 }));
-    vi.stubGlobal('fetch', fetchSpy);
+    const requests: pinnedHttp.PinnedHttpStreamRequest[] = [];
+    vi.spyOn(pinnedHttp, 'openPinnedHttpStream').mockImplementation(async (request) => {
+      requests.push(request);
+      return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} };
+    });
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const onNotifiedAt = vi.fn();
     const notifier = new PermissionRequestPushNotifier({
@@ -152,7 +175,7 @@ describe('PermissionRequestPushNotifier', () => {
               id: 'webhook-primary',
               kind: 'webhook',
               enabled: true,
-              url: 'https://hooks.example.test/happier',
+              url: 'https://93.184.216.34/happier',
               topics: {
                 ready: false,
                 permissionRequest: true,
@@ -180,8 +203,8 @@ describe('PermissionRequestPushNotifier', () => {
     await Promise.resolve();
 
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(onNotifiedAt).toHaveBeenCalledWith('p1', Date.parse('2026-05-03T12:00:00.000Z'));
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await vi.waitFor(() => expect(onNotifiedAt).toHaveBeenCalledWith('p1', Date.parse('2026-05-03T12:00:00.000Z')));
     notifier.dispose();
   });
 

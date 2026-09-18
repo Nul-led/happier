@@ -55,6 +55,9 @@ const DEFAULT_DEPS: MachineCommandDeps = {
       respond: async (params) => {
         await runner.respond(params as never);
       },
+      cancel: async (params) => {
+        await runner.cancel(params as never);
+      },
     };
   },
   readRelaySelection: () => ({

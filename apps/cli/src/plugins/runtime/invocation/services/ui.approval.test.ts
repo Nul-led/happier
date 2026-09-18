@@ -11,6 +11,7 @@ import type {
     HostSessionQuestionsRequest,
     HostSessionQuestionsResult,
 } from '@/agent/runtime/state/currentSessionUiTypes';
+import { createWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 
 import { createPluginInteractionsService } from './interactions';
 
@@ -80,6 +81,29 @@ describe('plugin invocation transient approval', () => {
             persistence: 'session',
         });
         expect(handle).toHaveBeenCalledWith(request, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    });
+
+    it('does not reinterpret durable Workflow interaction capacity failures as unavailable', async () => {
+        const capacityError = createWorkflowInteractionCapacityError();
+        const interactions = createPluginInteractionsService({
+            currentSession: { interactions: new TestInteractions(async () => { throw capacityError; }) },
+            signal: new AbortController().signal,
+            isGenerationCurrent: () => true,
+        });
+
+        await expect(interactions.requestApproval({
+            kind: 'approval',
+            title: 'Allow write?',
+            subject: { kind: 'tool', name: 'Write', input: { path: '/repo/a.txt' } },
+        })).rejects.toBe(capacityError);
+        await expect(interactions.askQuestions({
+            kind: 'questions',
+            questions: [{ id: 'destination', prompt: 'Where?', type: 'text' }],
+        })).rejects.toBe(capacityError);
+        await expect(interactions.confirm({
+            kind: 'confirmation',
+            message: 'Continue?',
+        })).rejects.toBe(capacityError);
     });
 
     it('settles requester abort and generation retirement with distinct exact terminals', async () => {

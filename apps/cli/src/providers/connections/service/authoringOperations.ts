@@ -46,7 +46,7 @@ import {
   parseProviderError,
   readSettings,
   replaceSettings,
-  savedSecretExists,
+  requireSavedSecretReferenceReady,
 } from './settings';
 import type {
   ProviderConnectionCreateInput,
@@ -491,13 +491,21 @@ function bindCreatedConnectionSecret(
   connection: ProviderConnectionV1,
   raw: Readonly<Record<string, unknown>>,
   registry: ProviderContributionRegistryView,
+  savedSecretCatalog: Pick<ProviderConnectionServiceSnapshot, 'savedSecretResources' | 'savedSecretCatalogState'>,
 ): ProviderSettingsV1 {
   const credential = validateConnectionCredentialTransport(input, connection, registry);
   if (input.enable && credential?.required === true && input.savedSecretId === null) {
     throw createProviderErrorV1('provider_secret_missing', { connectionId: connection.id, machineId: input.machineId });
   }
-  if (input.savedSecretId !== null && !savedSecretExists(raw, input.savedSecretId)) {
-    throw createProviderErrorV1('provider_secret_missing', { connectionId: connection.id, machineId: input.machineId });
+  if (input.savedSecretId !== null) {
+    requireSavedSecretReferenceReady({
+      rawAccountSettings: raw,
+      savedSecretId: input.savedSecretId,
+      savedSecretResources: savedSecretCatalog.savedSecretResources,
+      savedSecretCatalogState: savedSecretCatalog.savedSecretCatalogState,
+      connectionId: connection.id,
+      machineId: input.machineId,
+    });
   }
   return input.savedSecretId === null
     ? settings
@@ -636,7 +644,7 @@ export function createProviderAuthoringOperations(context: ProviderConnectionSer
       }
       const previewBase = addPreparedSavedSecret(snapshot.rawAccountSettings, input.preparedSavedSecret);
       const preview = createMutation(readSettings(previewBase), deps.now());
-      const previewSettings = bindCreatedConnectionSecret(preview.settings, input, preview.connection, previewBase, snapshot.registry);
+      const previewSettings = bindCreatedConnectionSecret(preview.settings, input, preview.connection, previewBase, snapshot.registry, snapshot);
       const previewRaw = replaceSettings(previewBase, previewSettings);
       const dnsEvidence = input.enable
         ? await deps.collectDnsEvidence({
@@ -670,7 +678,7 @@ export function createProviderAuthoringOperations(context: ProviderConnectionSer
           return { ...raw };
         }
         const rawWithPreparedSecret = addPreparedSavedSecret(raw, input.preparedSavedSecret);
-        let next = bindCreatedConnectionSecret(mutation.settings, input, mutation.connection, rawWithPreparedSecret, snapshot.registry);
+        let next = bindCreatedConnectionSecret(mutation.settings, input, mutation.connection, rawWithPreparedSecret, snapshot.registry, snapshot);
         if (input.enable) {
           const candidateRaw = replaceSettings(rawWithPreparedSecret, next);
           const resolution = deps.resolveConnection({

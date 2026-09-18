@@ -61,6 +61,11 @@ export async function loadRetainedAgentRuntimeLeaf(params: Readonly<{
         return Object.freeze({
             factory: createHostDeclarativeAcpAgentRuntimeFactory(
                 normalizePluginDeclarativeAcpRuntime(attested.runtime),
+                {
+                    executionRunContextV1: readAgentSessionCapabilities(
+                        attested.declaredAgent,
+                    )?.executionRunContext?.versions[0] === 1,
+                },
             ),
         });
     }

@@ -3,6 +3,7 @@ import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import { archiveSessionOnceInactive } from './archiveSessionOnceInactive';
 import { requestSessionStop } from './requestSessionStop';
 import { isSessionActiveArchiveError, setSessionArchivedStateById } from './sessionArchivedStateById';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export { setSessionArchivedStateById } from './sessionArchivedStateById';
 
@@ -22,6 +23,7 @@ export async function setSessionArchivedState(params: Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
   archived: boolean;
+  serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
 }>): Promise<
   | Readonly<{ ok: true; sessionId: string; archivedAt: number | null }>
   | Readonly<{ ok: false; code: 'session_not_found' | 'session_id_ambiguous' | 'session_lookup_timeout' | 'unsupported'; candidates?: string[] }>
@@ -29,6 +31,7 @@ export async function setSessionArchivedState(params: Readonly<{
   const resolved = await resolveSessionIdOrPrefix({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!resolved.ok) {
     return {

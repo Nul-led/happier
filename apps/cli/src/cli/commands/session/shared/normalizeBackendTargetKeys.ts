@@ -175,7 +175,7 @@ export async function resolveBackendTargetKeysFromCsv(params: Readonly<{
       sessionId: params.sessionId,
       includeDisabled: true,
     },
-    { surface: 'cli', defaultSessionId: params.sessionId },
+    { surface: 'cli', authority: 'present_user', defaultSessionId: params.sessionId },
   ));
   if (!actionResult.ok) {
     throw new Error(

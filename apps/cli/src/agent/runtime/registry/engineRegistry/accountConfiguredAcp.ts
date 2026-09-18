@@ -9,6 +9,8 @@ import {
   resolveAcpRuntimeLaunch,
 } from '@/agent/acp/runtime/definition';
 import type {
+  AgentExecutionRunOpenRequest,
+  AgentExecutionRunRuntimeContextV1,
   AgentAcpRuntimeOptions,
   AgentRuntime,
   AgentSessionOpenRequest,
@@ -52,6 +54,7 @@ export async function resolveAccountConfiguredAcpBackend(
     backend: configuredBackend,
     accountSettings: settings,
     credentials,
+    savedSecretResources: accountSnapshot.savedSecretResources,
   });
   const definition = normalizeConfiguredAcpDefinition({
     backend: configuredBackend,
@@ -115,6 +118,14 @@ export async function resolveAccountConfiguredAcpBackend(
       async open(request: AgentSessionOpenRequest, context: AgentSessionRuntimeContext) {
         return await context.protocols.acp.open(request, runtimeOptions);
       },
+      executionRunContextV1: Object.freeze({
+        async open(
+          request: AgentExecutionRunOpenRequest,
+          context: AgentExecutionRunRuntimeContextV1,
+        ) {
+          return await context.protocols.acp.openExecutionRunV1(request, runtimeOptions);
+        },
+      }),
     }),
   });
   const sessionCapabilities: AgentSessionCapabilities = {
@@ -127,6 +138,7 @@ export async function resolveAccountConfiguredAcpBackend(
     delivery: ['newTurn', 'steer', 'followUp'],
     cancel: true,
     configuration: true,
+    executionRunContext: { versions: [1] },
   };
   const engineAdapter = await resolveBackendRuntimeCore({
     backend,

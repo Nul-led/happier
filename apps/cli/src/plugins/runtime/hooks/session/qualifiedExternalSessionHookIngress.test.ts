@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { JsonValue } from '@happier-dev/plugin-sdk';
-import type {
-    AgentExternalSessionHooksContribution,
-    AgentExternalSessionsContribution,
+import {
+    AGENT_EXTERNAL_SESSION_HOOK_LIMITS,
+    type AgentExternalSessionHooksContribution,
+    type AgentExternalSessionsContribution,
 } from '@happier-dev/plugin-sdk/sessions/external';
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
 import {
@@ -1182,6 +1183,142 @@ describe('qualified External Session hook ingress', () => {
         )).resolves.toEqual({ state: 'rejected' });
         expect(harness.runtime.resolveSource).not.toHaveBeenCalled();
         expect(harness.admitFacts).not.toHaveBeenCalled();
+        expect(harness.ensureLink).not.toHaveBeenCalled();
+    });
+
+    it('never rewrites the exact provider-minted identity the leaf resolved', async () => {
+        // The Agent minted this id: surrounding whitespace, the embedded
+        // newline, `/`, `+` and `=` are part of the identity. The host reads it
+        // for presence only. Re-canonicalizing it anywhere on this path would
+        // address the link by bytes the source never issued — and when the
+        // Plugin SDK result validator still trimmed it, the mapped id and the
+        // leaf-resolved identity disagreed and the host fell closed on the
+        // Agent's own session.
+        const providerMinted = '  provider\nses/AB+cd==  ';
+        const harness = createHarness();
+        harness.runtime.mapHookEvent.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                kind: 'mapped',
+                sourceInput: source,
+                remoteSessionId: providerMinted,
+                linkData: { projectId: 'project-1' },
+                facts: [mappedFact],
+            },
+        });
+        harness.runtime.resolveLinkIdentity.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                source,
+                remoteSessionId: providerMinted,
+                linkData: { projectId: 'project-1' },
+            },
+        });
+
+        await expect(harness.ingress.handleAuthenticatedEvent(
+            delivery(harness.principal.token),
+        )).resolves.toEqual({ state: 'admitted', facts: 1 });
+        expect(harness.resolveCurrentLink).toHaveBeenCalledWith(
+            expect.objectContaining({
+                identity: expect.objectContaining({
+                    remoteSessionId: providerMinted,
+                }),
+            }),
+        );
+    });
+
+    it('carries the leaf-resolved provider bytes into link resolution unchanged', async () => {
+        const providerMinted = 'provider\nses/AB+cd==';
+        const harness = createHarness();
+        harness.runtime.mapHookEvent.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                kind: 'mapped',
+                sourceInput: source,
+                remoteSessionId: providerMinted,
+                linkData: { projectId: 'project-1' },
+                facts: [mappedFact],
+            },
+        });
+        harness.runtime.resolveLinkIdentity.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                source,
+                remoteSessionId: providerMinted,
+                linkData: { projectId: 'project-1' },
+            },
+        });
+
+        await expect(harness.ingress.handleAuthenticatedEvent(
+            delivery(harness.principal.token),
+        )).resolves.toEqual({ state: 'admitted', facts: 1 });
+        expect(harness.resolveCurrentLink).toHaveBeenCalledWith(
+            expect.objectContaining({
+                identity: expect.objectContaining({
+                    remoteSessionId: providerMinted,
+                }),
+            }),
+        );
+    });
+
+    it('measures the resolved identity bound on the preserved provider bytes', async () => {
+        // `maxIdCodeUnits` bounds what the host actually keeps. Measuring it
+        // after a trim admits an identity longer than the released ceiling.
+        const overBound = `  ${'x'.repeat(
+            AGENT_EXTERNAL_SESSION_HOOK_LIMITS.maxIdCodeUnits,
+        )}  `;
+        const harness = createHarness();
+        harness.runtime.mapHookEvent.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                kind: 'mapped',
+                sourceInput: source,
+                remoteSessionId: overBound,
+                linkData: { projectId: 'project-1' },
+                facts: [mappedFact],
+            },
+        });
+        harness.runtime.resolveLinkIdentity.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                source,
+                remoteSessionId: overBound,
+                linkData: { projectId: 'project-1' },
+            },
+        });
+
+        await expect(harness.ingress.handleAuthenticatedEvent(
+            delivery(harness.principal.token),
+        )).resolves.toEqual({ state: 'rejected' });
+        expect(harness.resolveCurrentLink).not.toHaveBeenCalled();
+        expect(harness.ensureLink).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on an all-whitespace resolved remote session id', async () => {
+        const harness = createHarness();
+        harness.runtime.mapHookEvent.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                kind: 'mapped',
+                sourceInput: source,
+                remoteSessionId: 'native-session-1',
+                linkData: { projectId: 'project-1' },
+                facts: [mappedFact],
+            },
+        });
+        harness.runtime.resolveLinkIdentity.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                source,
+                remoteSessionId: ' \n\t ',
+                linkData: { projectId: 'project-1' },
+            },
+        });
+
+        await expect(harness.ingress.handleAuthenticatedEvent(
+            delivery(harness.principal.token),
+        )).resolves.toEqual({ state: 'rejected' });
+        expect(harness.resolveCurrentLink).not.toHaveBeenCalled();
         expect(harness.ensureLink).not.toHaveBeenCalled();
     });
 

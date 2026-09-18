@@ -6,6 +6,8 @@ import {
   AccountDirectoryCapabilitiesSchema,
   AccountDirectoryHomePutRequestV1Schema,
   AccountDirectoryHomePutResponseV1Schema,
+  AccountDirectoryLinkDeleteRequestV1Schema,
+  AccountDirectoryLinkDeleteResponseV1Schema,
   AccountDirectoryLinkPutRequestV1Schema,
   AccountDirectoryLinkPutResponseV1Schema,
   AccountDirectoryMeResponseV1Schema,
@@ -23,13 +25,24 @@ import { getActiveServerProfile, getServerProfile, type ServerProfile } from '@/
 import {
   createCliAccountServiceSessionOwner,
   type CliAccountServiceRestrictedCredential,
-  type CliAccountServiceSelection,
+  type CliAccountServiceSelectionAuthority,
 } from './cliAccountServiceSession';
+
+export type CliHomeLinkUnavailableReason =
+  | 'home_profile_unavailable'
+  | 'home_credentials_unavailable'
+  | 'account_service_credentials_unavailable'
+  | 'home_transport_unavailable';
 
 export type CliHomeLinkResult =
   | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
   | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
-  | Readonly<{ kind: 'unavailable'; reason: 'home_profile_unavailable' | 'home_credentials_unavailable' | 'account_service_credentials_unavailable' | 'home_transport_unavailable' }>
+  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
+  | Readonly<{ kind: 'cancelled' | 'failed' }>;
+
+export type CliHomeUnlinkResult =
+  | Readonly<{ kind: 'unlinked'; homeServerIdentityId: string; issuerServerIdentityId: string }>
+  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
   | Readonly<{ kind: 'cancelled' | 'failed' }>;
 
 class CliHomeRelinkConflictError extends Error {}
@@ -37,6 +50,24 @@ class CliHomeTransportUnavailableError extends Error {}
 
 function endpointUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/+$/u, '')}${path}`;
+}
+
+/** The exact-authority Home profile a link operation may act on; null fails closed. */
+async function resolveExactHomeProfile(homeServerIdentityId: string | undefined): Promise<Readonly<{
+  profile: ServerProfile;
+  descriptor: NonNullable<ServerProfile['homeConnectionDescriptor']>;
+}> | null> {
+  let profile: ServerProfile;
+  try {
+    profile = homeServerIdentityId
+      ? await getServerProfile(homeServerIdentityId)
+      : await getActiveServerProfile();
+  } catch {
+    return null;
+  }
+  const descriptor = profile.homeConnectionDescriptor;
+  if (!descriptor || profile.homeConnectionDescriptorAuthority !== 'exact') return null;
+  return { profile, descriptor };
 }
 
 async function parsedRequest<T>(input: Readonly<{
@@ -69,30 +100,31 @@ export async function linkCliHomeToAccountService(input: Readonly<{
   homeServerIdentityId?: string;
   relink: boolean;
   signal?: AbortSignal;
+  expectedAccountServiceSelection?: Readonly<{ endpoint: string; serverIdentityId: string }>;
 }>): Promise<CliHomeLinkResult> {
-  let profile: ServerProfile;
-  try {
-    profile = input.homeServerIdentityId
-      ? await getServerProfile(input.homeServerIdentityId)
-      : await getActiveServerProfile();
-  } catch {
-    return { kind: 'unavailable', reason: 'home_profile_unavailable' };
-  }
-  const descriptor = profile.homeConnectionDescriptor;
-  if (!descriptor || profile.homeConnectionDescriptorAuthority !== 'exact') {
-    return { kind: 'unavailable', reason: 'home_profile_unavailable' };
-  }
+  const linked = await resolveExactHomeProfile(input.homeServerIdentityId);
+  if (!linked) return { kind: 'unavailable', reason: 'home_profile_unavailable' };
+  const { profile, descriptor } = linked;
 
   const session = createCliAccountServiceSessionOwner({
     happyHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
   });
-  let selection: CliAccountServiceSelection | null;
+  let selection: CliAccountServiceSelectionAuthority | null;
   try {
     selection = await session.readSelection();
   } catch {
     return { kind: 'failed' };
   }
   if (!selection) return { kind: 'unavailable', reason: 'account_service_credentials_unavailable' };
+  if (
+    input.expectedAccountServiceSelection
+    && (
+      selection.endpoint !== input.expectedAccountServiceSelection.endpoint
+      || selection.serverIdentityId !== input.expectedAccountServiceSelection.serverIdentityId
+    )
+  ) {
+    return { kind: 'failed' };
+  }
   let accountServiceCredential: CliAccountServiceRestrictedCredential | null;
   try {
     accountServiceCredential = await session.readCredential(selection);
@@ -140,7 +172,7 @@ export async function linkCliHomeToAccountService(input: Readonly<{
         signal: input.signal,
       })).accountId,
       publishLinkToHome: async ({ credential, issuerSubjectId, relink }) => {
-        const acquired = await acquireTerminalAuthEnrollmentRuntime(descriptor);
+        const acquired = await acquireTerminalAuthEnrollmentRuntime(descriptor, undefined, input.signal);
         if (!acquired.ok) throw new CliHomeTransportUnavailableError();
         try {
           const body = AccountDirectoryLinkPutRequestV1Schema.parse({
@@ -183,8 +215,64 @@ export async function linkCliHomeToAccountService(input: Readonly<{
   if (result.error instanceof CliHomeRelinkConflictError && !input.relink) {
     return { kind: 'relink_required', homeServerIdentityId: descriptor.homeServerIdentityId };
   }
+  if (input.signal?.aborted) return { kind: 'cancelled' };
   if (result.error instanceof CliHomeTransportUnavailableError) {
     return { kind: 'unavailable', reason: 'home_transport_unavailable' };
   }
   return { kind: 'failed' };
+}
+
+/**
+ * Stops the selected Account Service from signing in to this Home: deletes the Home's pinned trust
+ * link with the Home's own credential only. Future delegated assertions from that service are
+ * refused; Home credentials it already issued stay valid until revoked on the Home, and the
+ * service's Directory row is left in place. Only the selected service identity is read — no
+ * Account Service credential or feature probe is needed.
+ */
+export async function unlinkCliHomeFromAccountService(input: Readonly<{
+  homeServerIdentityId?: string;
+  signal?: AbortSignal;
+}>): Promise<CliHomeUnlinkResult> {
+  const linked = await resolveExactHomeProfile(input.homeServerIdentityId);
+  if (!linked) return { kind: 'unavailable', reason: 'home_profile_unavailable' };
+
+  const session = createCliAccountServiceSessionOwner({
+    happyHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
+  });
+  let selection: CliAccountServiceSelectionAuthority | null;
+  try {
+    selection = await session.readSelection();
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (!selection) return { kind: 'unavailable', reason: 'account_service_credentials_unavailable' };
+
+  const homeCredential = await readStoredCredentialsForServerId(linked.profile.id);
+  if (!homeCredential) return { kind: 'unavailable', reason: 'home_credentials_unavailable' };
+  if (input.signal?.aborted) return { kind: 'cancelled' };
+
+  const acquired = await acquireTerminalAuthEnrollmentRuntime(linked.descriptor, undefined, input.signal);
+  if (!acquired.ok) return { kind: 'unavailable', reason: 'home_transport_unavailable' };
+  try {
+    await parsedRequest({
+      url: endpointUrl(acquired.runtime.runtimeOrigin, buildAccountDirectoryLinkHttpPathV1(selection.serverIdentityId)),
+      token: homeCredential.token,
+      schema: AccountDirectoryLinkDeleteResponseV1Schema,
+      init: {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(AccountDirectoryLinkDeleteRequestV1Schema.parse({ v: 1 })),
+      },
+      signal: input.signal,
+    });
+    return {
+      kind: 'unlinked',
+      homeServerIdentityId: linked.descriptor.homeServerIdentityId,
+      issuerServerIdentityId: selection.serverIdentityId,
+    };
+  } catch {
+    return input.signal?.aborted ? { kind: 'cancelled' } : { kind: 'failed' };
+  } finally {
+    await acquired.close().catch(() => undefined);
+  }
 }

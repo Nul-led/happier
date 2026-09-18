@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '@happier-dev/cli-common/output';
 
 import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/captureOutput';
-import { SESSION_HELP_LINES } from './shared/sessionCommandUsage';
 
 const execute = vi.fn();
-const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute }));
+const resolveSessionTarget = vi.fn(async (idOrPrefix: string) => ({
+  ok: true as const,
+  sessionId: idOrPrefix,
+}));
+const createCliActionExecutorFromCredentials = vi.fn(() => ({ execute, resolveSessionTarget }));
 
 vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
   createCliActionExecutorFromCredentials,
@@ -14,13 +17,14 @@ vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
 describe('happier session send (action executor)', () => {
   beforeEach(() => {
     execute.mockReset();
+    resolveSessionTarget.mockClear();
     createCliActionExecutorFromCredentials.mockClear();
   });
 
   it('routes through ActionExecutor with the expected action id and args', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -45,14 +49,14 @@ describe('happier session send (action executor)', () => {
           wait: true,
           timeoutSeconds: 30,
         }),
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
 
       const parsed = output.json();
       expect(parsed).toEqual(expect.objectContaining({
         ok: true,
         kind: 'session_send',
-        data: { sessionId: 'sess-1', localId: 'local-1', waited: false },
+        data: { sessionId: 'sess-1', localId: 'local-1', waited: true },
       }));
     } finally {
       output.restore();
@@ -62,7 +66,7 @@ describe('happier session send (action executor)', () => {
   it('prints concise human success output without dumping the Action result', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -86,7 +90,7 @@ describe('happier session send (action executor)', () => {
   it('accepts --message and preserves model and wait flags', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: true },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -109,7 +113,7 @@ describe('happier session send (action executor)', () => {
           modelOverride: 'gpt-x',
           wait: true,
         }),
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
       expect(output.json()).toEqual(expect.objectContaining({
         ok: true,
@@ -124,7 +128,7 @@ describe('happier session send (action executor)', () => {
   it('accepts --prompt as a message alias', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -145,20 +149,17 @@ describe('happier session send (action executor)', () => {
           sessionId: 'sess-1',
           message: 'Hello from prompt',
         }),
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
     } finally {
       output.restore();
     }
   });
 
-  it('unwraps nested success action payloads before printing the JSON envelope', async () => {
+  it('prints the strict admission result through the session send JSON presentation', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: {
-        ok: true,
-        data: { sessionId: 'sess-1', localId: 'local-1', waited: true },
-      },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -185,7 +186,7 @@ describe('happier session send (action executor)', () => {
   it('rejects a flag token where the positional message belongs', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -205,7 +206,7 @@ describe('happier session send (action executor)', () => {
         kind: 'session_send',
         error: {
           code: 'invalid_arguments',
-          message: `Usage: ${SESSION_HELP_LINES.send}`,
+          message: 'message: Invalid input: expected string, received undefined',
         },
       });
       expect(execute).not.toHaveBeenCalled();
@@ -217,7 +218,7 @@ describe('happier session send (action executor)', () => {
   it('rejects ambiguous positional and --message inputs', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
 
     const { handleSessionCommand } = await import('./handleSessionCommand');
@@ -237,7 +238,7 @@ describe('happier session send (action executor)', () => {
         kind: 'session_send',
         error: {
           code: 'invalid_arguments',
-          message: 'Provide the message either positionally or with --message/--prompt, not both.',
+          message: 'Provide message either with --message or with <message>, not both.',
         },
       });
       expect(execute).not.toHaveBeenCalled();
@@ -248,12 +249,24 @@ describe('happier session send (action executor)', () => {
 
   it('rejects a malformed timeout before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionSend } = await import('./send');
+    const { handleSessionCommand } = await import('./handleSessionCommand');
 
-    await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--timeout', '10oops'], { readCredentialsFn }))
-      .rejects.toMatchObject({ code: 'invalid_arguments' });
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--timeout', '10oops', '--json'], { readCredentialsFn });
 
-    expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(output.json()).toMatchObject({
+        v: 1,
+        ok: false,
+        kind: 'session_send',
+        error: { code: 'invalid_arguments' },
+      });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
   });
 
   it.each([
@@ -262,13 +275,13 @@ describe('happier session send (action executor)', () => {
   ])('%s', async (_label, argv, expectedTimeoutSeconds) => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
+      result: { status: 'accepted', localId: 'local-1' },
     });
-    const { cmdSessionSend } = await import('./send');
+    const { handleSessionCommand } = await import('./handleSessionCommand');
 
     const output = captureConsoleJsonOutput();
     try {
-      await cmdSessionSend(argv, {
+      await handleSessionCommand(argv, {
         readCredentialsFn: async () => ({
           token: 'token_test',
           encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -278,7 +291,7 @@ describe('happier session send (action executor)', () => {
       expect(execute).toHaveBeenLastCalledWith(
         'session.message.send',
         expect.objectContaining({ timeoutSeconds: expectedTimeoutSeconds }),
-        { surface: 'cli', defaultSessionId: null },
+        expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
       );
     } finally {
       output.restore();
@@ -321,7 +334,7 @@ describe('happier session send (action executor)', () => {
     };
     const success = {
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-42', waited: false },
+      result: { status: 'accepted', localId: 'local-42' },
     };
 
     execute.mockResolvedValueOnce(success);
@@ -341,7 +354,7 @@ describe('happier session send (action executor)', () => {
         providerConnectionId: 'pc_work',
         localId: 'local-42',
       }),
-      { surface: 'cli', defaultSessionId: null },
+      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
     );
 
     execute.mockResolvedValueOnce(success);
@@ -357,24 +370,34 @@ describe('happier session send (action executor)', () => {
     expect(execute).toHaveBeenLastCalledWith(
       'session.message.send',
       expect.objectContaining({ modelOverride: 'sonnet', providerConnectionId: null }),
-      { surface: 'cli', defaultSessionId: null },
+      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
     );
 
     // An exact connection is only meaningful with a concrete model id.
-    await expect(handleSessionCommand(
-      ['send', 'sess-1', 'Hello', '--provider-connection', 'pc_work'],
-      credentials,
-    )).rejects.toThrow(/--provider-connection requires --model/u);
+    execute.mockClear();
+    let refusal = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--provider-connection', 'pc_work'], credentials);
+    } finally {
+      refusal.restore();
+      process.exitCode = undefined;
+    }
+    expect(refusal.text()).toMatch(/--provider-connection requires --model/u);
+    expect(execute).not.toHaveBeenCalled();
 
     // `native` is a source selection too: the Action refuses it without a
     // model override because there is no selection to apply it to. Refuse it
     // here with the same named reason instead of shipping an input the Action
     // rejects as an opaque `invalid_parameters`.
     execute.mockClear();
-    await expect(handleSessionCommand(
-      ['send', 'sess-1', 'Hello', '--provider-connection', 'native'],
-      credentials,
-    )).rejects.toThrow(/--provider-connection requires --model/u);
+    refusal = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--provider-connection', 'native'], credentials);
+    } finally {
+      refusal.restore();
+      process.exitCode = undefined;
+    }
+    expect(refusal.text()).toMatch(/--provider-connection requires --model/u);
     expect(execute).not.toHaveBeenCalled();
 
     // The reset sentinel IS a model override, so native plus `--model default`
@@ -392,14 +415,14 @@ describe('happier session send (action executor)', () => {
     expect(execute).toHaveBeenLastCalledWith(
       'session.message.send',
       expect.objectContaining({ modelOverride: null, providerConnectionId: null }),
-      { surface: 'cli', defaultSessionId: null },
+      expect.objectContaining({ surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-1' }),
     );
   });
 
   it('prints the durable local id so a human retry can rejoin the same input', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-42', waited: false },
+      result: { status: 'accepted', localId: 'local-42' },
     });
     const { handleSessionCommand } = await import('./handleSessionCommand');
 
@@ -438,12 +461,16 @@ describe('happier session send (action executor)', () => {
     // Human path: the id the send actually used must be nameable, or the only
     // safe retry is unavailable to a caller who did not pre-supply one.
     execute.mockResolvedValueOnce(ambiguous);
-    const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello'], credentials)
-      .then(() => null, (error: unknown) => error);
+    const guidance = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello'], credentials);
+    } finally {
+      guidance.restore();
+      process.exitCode = undefined;
+    }
     const humanInput = execute.mock.calls.at(-1)?.[1] as { localId?: unknown };
     expect(typeof humanInput.localId).toBe('string');
-    expect(String((thrown as Error | null)?.message))
-      .toContain(`--local-id ${String(humanInput.localId)}`);
+    expect(guidance.text()).toContain(`--local-id ${String(humanInput.localId)}`);
 
     // JSON path: the same identity is machine-readable on the failure envelope.
     execute.mockReset();
@@ -464,4 +491,254 @@ describe('happier session send (action executor)', () => {
     }));
   });
 
+});
+
+describe('happier session send truthfulness over the canonical admission status', () => {
+  const credentials = {
+    readCredentialsFn: async () => ({
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    }),
+  };
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it.each([
+    {
+      status: 'rejected',
+      result: { status: 'rejected', code: 'session_input_target_unavailable' },
+      code: 'session_input_target_unavailable',
+    },
+    {
+      status: 'failed',
+      result: { status: 'failed', localId: 'local-9', code: 'session_input_turn_failed' },
+      code: 'session_input_turn_failed',
+    },
+    {
+      status: 'cancelled',
+      result: { status: 'cancelled', localId: 'local-9', code: 'session_input_turn_cancelled' },
+      code: 'session_input_turn_cancelled',
+    },
+  ])('reports a $status send as a typed failure instead of "Message sent"', async ({ result, code }) => {
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+
+    // Human path: the Action succeeded, the operation did not. Retrying with
+    // the same local id cannot help here, so no retry hint may be printed.
+    execute.mockResolvedValueOnce({ ok: true, result });
+    const text = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', 'local-9'], credentials);
+    } finally {
+      text.restore();
+    }
+    expect(text.text()).not.toContain('Message sent');
+    expect(text.text()).toContain(code);
+    expect(text.text()).not.toContain('--local-id');
+    expect(process.exitCode).toBe(1);
+    process.exitCode = undefined;
+
+    // JSON path: the envelope is a failure carrying the admission code.
+    execute.mockResolvedValueOnce({ ok: true, result });
+    const output = captureConsoleJsonOutput();
+    let parsed: unknown;
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', 'local-9', '--json'], credentials);
+      parsed = output.json();
+    } finally {
+      output.restore();
+    }
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: false,
+      kind: 'session_send',
+      error: expect.objectContaining({ code, localId: 'local-9' }),
+    }));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('reports an unknown admission outcome explicitly and names the exact retry identity', async () => {
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const result = { status: 'outcomeUnknown', localId: 'local-7', code: 'timeout' };
+
+    execute.mockResolvedValueOnce({ ok: true, result });
+    const text = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', 'local-7'], credentials);
+    } finally {
+      text.restore();
+    }
+    expect(text.text()).not.toContain('Message sent');
+    expect(text.text()).toContain('--local-id local-7');
+    expect(process.exitCode).toBe(1);
+    process.exitCode = undefined;
+
+    execute.mockResolvedValueOnce({ ok: true, result });
+    const output = captureConsoleJsonOutput();
+    let parsed: unknown;
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', 'local-7', '--json'], credentials);
+      parsed = output.json();
+    } finally {
+      output.restore();
+    }
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: false,
+      kind: 'session_send',
+      error: expect.objectContaining({ code: 'timeout', localId: 'local-7' }),
+    }));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps alreadyAccepted as a delivered send', async () => {
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    execute.mockResolvedValueOnce({ ok: true, result: { status: 'alreadyAccepted', localId: 'local-1' } });
+    const text = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello'], credentials);
+    } finally {
+      text.restore();
+    }
+    expect(text.text()).toContain('Message sent');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('derives the session run send `sent` field from the admission status', async () => {
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+
+    execute.mockResolvedValueOnce({ ok: true, result: { status: 'accepted', localId: 'local-1' } });
+    let output = captureConsoleJsonOutput();
+    let parsed: unknown;
+    try {
+      await handleSessionCommand(['run', 'send', 'sess-1', 'run-1', 'hello', '--json'], credentials);
+      parsed = output.json();
+    } finally {
+      output.restore();
+    }
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: true,
+      kind: 'session_run_send',
+      data: { sessionId: 'sess-1', runId: 'run-1', sent: true },
+    }));
+
+    execute.mockResolvedValueOnce({ ok: true, result: { status: 'rejected', code: 'session_input_target_unavailable' } });
+    output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'send', 'sess-1', 'run-1', 'hello', '--json'], credentials);
+      parsed = output.json();
+    } finally {
+      output.restore();
+    }
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: false,
+      kind: 'session_run_send',
+      error: expect.objectContaining({ code: 'session_input_target_unavailable', sent: false }),
+    }));
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('happier session send --run (targeted execution-run convergence)', () => {
+  const credentials = {
+    readCredentialsFn: async () => ({
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    }),
+  };
+  const success = {
+    ok: true,
+    result: { status: 'accepted', localId: 'local-1' },
+  };
+
+  beforeEach(() => {
+    execute.mockReset();
+    resolveSessionTarget.mockClear();
+    createCliActionExecutorFromCredentials.mockClear();
+  });
+
+  async function canonicalInputFor(argv: readonly string[]): Promise<Record<string, unknown>> {
+    execute.mockResolvedValueOnce(success);
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand([...argv, '--json'], credentials);
+    } finally {
+      output.restore();
+    }
+    const call = execute.mock.calls.at(-1);
+    expect(call?.[0]).toBe('session.message.send');
+    return call?.[1] as Record<string, unknown>;
+  }
+
+  it('omits the recipient entirely when no run is named', async () => {
+    const input = await canonicalInputFor(['send', 'sess-1', 'Hello']);
+    expect(input).not.toHaveProperty('recipient');
+  });
+
+  it('binds --run to the strict execution_run recipient', async () => {
+    const input = await canonicalInputFor(['send', 'sess-1', 'Hello', '--run', 'run-9']);
+    expect(input.recipient).toEqual({ kind: 'execution_run', runId: 'run-9' });
+    expect(input.sessionId).toBe('sess-1');
+    expect(input.message).toBe('Hello');
+  });
+
+  it('produces one canonical Action input for the root, nested and compatibility spellings', async () => {
+    const root = await canonicalInputFor(['send', 'sess-1', 'Hello', '--run', 'run-9', '--local-id', 'lid-1']);
+    const nested = await canonicalInputFor(['send', 'sess-1', 'Hello', '--run', 'run-9', '--local-id', 'lid-1']);
+    const compatibility = await canonicalInputFor(['run', 'send', 'sess-1', 'run-9', 'Hello', '--local-id', 'lid-1']);
+    expect(nested).toEqual(root);
+    expect(compatibility).toEqual(root);
+  });
+
+  it('never strips the recipient or retries as a main-Session send when admission refuses the target', async () => {
+    execute.mockResolvedValueOnce({
+      ok: false,
+      errorCode: 'session_input_target_update_required',
+      error: 'The exact machine cannot accept a targeted input.',
+    });
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    let parsed: unknown;
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--run', 'run-9', '--json'], credentials);
+      parsed = output.json();
+    } finally {
+      output.restore();
+    }
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(parsed).toEqual(expect.objectContaining({
+      ok: false,
+      kind: 'session_send',
+      error: expect.objectContaining({ code: 'session_input_target_update_required' }),
+    }));
+  });
+
+  it('waits on the exact targeted turn through the canonical Action, with no CLI-side polling', async () => {
+    const input = await canonicalInputFor(['send', 'sess-1', 'Hello', '--run', 'run-9', '--wait', '--timeout', '45']);
+    expect(input).toMatchObject({
+      recipient: { kind: 'execution_run', runId: 'run-9' }, wait: true, timeoutSeconds: 45,
+    });
+    // One canonical invocation settles the wait; the CLI never reads run state.
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toBe('session.message.send');
+  });
+
+  it('rejects --run without a value before any executor is constructed', async () => {
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const refusal = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--run'], credentials);
+    } finally {
+      refusal.restore();
+      process.exitCode = undefined;
+    }
+    expect(refusal.text()).toMatch(/Option --run requires a value/u);
+    expect(createCliActionExecutorFromCredentials).not.toHaveBeenCalled();
+  });
+
+  it('preserves the exact message bytes a shell supplied alongside --run', async () => {
+    const literal = '  leading and trailing \n$(touch /tmp/sentinel); rm -rf & | < > "quotes" \\ 🙂 中文  ';
+    const input = await canonicalInputFor(['send', 'sess-1', literal, '--run', 'run-9']);
+    expect(input.message).toBe(literal);
+  });
 });

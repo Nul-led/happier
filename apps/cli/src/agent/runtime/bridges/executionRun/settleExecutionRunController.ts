@@ -1,4 +1,5 @@
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
+import { createExecutionRunCodedError } from './errors';
 
 export function isExecutionRunControllerCurrent(args: Readonly<{
   runId: string;
@@ -25,6 +26,47 @@ export async function settleExecutionRunController(args: Readonly<{
       }
       if (args.controller.kind === 'backend') {
         const backend = args.controller.backend;
+        args.controller.currentInputPermissionRequestStore?.releaseResponseTarget();
+        const liveInterventionRetired = createExecutionRunCodedError(
+          'execution_run_not_allowed',
+          'Execution run is no longer running',
+        );
+        const activeLiveIntervention = args.controller.activeLiveIntervention;
+        args.controller.activeLiveIntervention = undefined;
+        const queuedLiveInterventions = args.controller.admittedLiveInterventions.splice(0);
+        args.controller.admittedLiveInterventionsSignal?.resolve();
+        args.controller.admittedLiveInterventionsSignal = null;
+        const unsettledLiveInterventions = new Set([
+          ...(activeLiveIntervention ? [activeLiveIntervention] : []),
+          ...queuedLiveInterventions,
+        ]);
+        for (const pending of unsettledLiveInterventions) {
+          try {
+            pending.reject(liveInterventionRetired);
+          } catch {
+            // A caller callback cannot block controller retirement.
+          }
+        }
+        // Retire this occurrence's target input custody and witness before the
+        // provider is asked to dispose, so no late claim or settlement can be
+        // attributed to a controller that is no longer current.
+        const release = args.controller.releaseSessionInputAttachment;
+        args.controller.releaseSessionInputAttachment = undefined;
+        if (release) {
+          try {
+            await release();
+          } catch {
+            // Retirement is best effort; the terminal waiter still has to settle.
+          }
+        }
+        try {
+          await backend.abortPendingPermissionRequests?.('Execution run settled');
+        } catch {
+          // Permission cleanup is best effort, but it is awaited so a healthy
+          // runtime settles its exact pending rows before controller retirement.
+        } finally {
+          args.controller.currentInputPermissionRequestStore = undefined;
+        }
         // Plugin cleanup starts only after terminal-marker custody is settled,
         // but is deliberately detached. A provider may never settle dispose;
         // terminal waiters and controller retirement remain host-owned truth.

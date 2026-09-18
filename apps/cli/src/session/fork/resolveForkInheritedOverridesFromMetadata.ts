@@ -3,15 +3,14 @@ import {
   AcpConfigOptionOverridesV1Schema,
   AcpSessionModeOverrideV1Schema,
   AgentModelOptionOverrideRuleReadSchema,
-  BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   SessionModelSelectionResolutionError,
   buildBackendTargetKeyV2,
   readSessionMcpSelectionV1FromMetadata,
   sessionModelSelectionIntentRequiresAgentTargetV1,
   type AcpConfigOptionOverridesV1,
   type BackendTargetRefV2,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceMaterializationIdentityV1,
   type SessionMcpSelectionV1,
   type SessionModelSelectionV1,
@@ -40,7 +39,7 @@ type ForkInheritedSpawnOverrides = {
   modelSelection?: SessionModelSelectionV1;
   providerBindingMetadataV1?: SessionProviderBindingMetadataV1;
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
-  connectedServices?: ConnectedServiceBindingsV1;
+  connectedServices?: ConnectedServiceBindingsV2;
   connectedServicesUpdatedAt?: number;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1;
 };
@@ -366,13 +365,9 @@ function buildAcpConfigOptionOverrides(entries: ReadonlyArray<{
 function resolveInheritedConnectedServices(
   metadata: Record<string, unknown> | null | undefined,
   agentTarget: BackendTargetRefV2 | null,
-): ConnectedServiceBindingsV1 | null {
-  const explicit = ConnectedServiceBindingsV1Schema.safeParse(metadata?.connectedServices);
+): ConnectedServiceBindingsV2 | null {
+  const explicit = ConnectedServiceBindingsV2IngressSchema.safeParse(metadata?.connectedServices);
   if (explicit.success) return explicit.data;
-  const legacyExplicit = BuiltInLegacyConnectedServiceBindingsV1IngressSchema.safeParse(
-    metadata?.connectedServices,
-  );
-  if (legacyExplicit.success) return legacyExplicit.data;
 
   const legacyAgentId = agentTarget?.sourceKind === 'built_in'
     ? agentTarget.backendId
@@ -381,7 +376,7 @@ function resolveInheritedConnectedServices(
   const derivedBindings = readSessionMetadataConnectedServiceBindings(metadata, legacyAgentId);
   if (Object.keys(derivedBindings).length === 0) return null;
 
-  const derived = BuiltInLegacyConnectedServiceBindingsV1IngressSchema.safeParse({
+  const derived = ConnectedServiceBindingsV2IngressSchema.safeParse({
     v: 1,
     bindingsByServiceId: derivedBindings,
   });

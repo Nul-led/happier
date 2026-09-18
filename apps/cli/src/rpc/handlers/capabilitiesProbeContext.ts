@@ -16,9 +16,12 @@ export async function resolveProbeBackendContext(
   const parsedBackendTarget = BackendTargetRefSchema.safeParse((params ?? {}).backendTarget);
   const backendTarget = parsedBackendTarget.success ? parsedBackendTarget.data : undefined;
   const agentId = typeof params?.agentId === 'string' ? params.agentId : null;
+  const hasSelectedProfile = typeof params?.profileId === 'string' && params.profileId.trim().length > 0;
   const needsAccountSettingsForProbes =
     agentId && (AGENTS[agentId as keyof typeof AGENTS] as AgentCatalogEntry | undefined)?.needsAccountSettingsForProbes === true;
-  const shouldLoadAccountSettings = backendTarget?.kind === 'configuredAcpBackend' || needsAccountSettingsForProbes;
+  const shouldLoadAccountSettings = backendTarget?.kind === 'configuredAcpBackend'
+    || needsAccountSettingsForProbes
+    || hasSelectedProfile;
   if (!shouldLoadAccountSettings && options.requireCredentials !== true) {
     return { backendTarget, credentials: null, accountSettings: null };
   }

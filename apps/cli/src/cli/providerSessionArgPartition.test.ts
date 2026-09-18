@@ -20,6 +20,56 @@ function encodeNativeForkSourceTestVector(): string {
 }
 
 describe('partitionProviderSessionArgs', () => {
+  it('presents the cross-provider permission vocabulary when input is invalid', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => {
+      throw new Error(`exit:${code ?? 0}`);
+    });
+    try {
+      expect(() => partitionProviderSessionArgs({
+        args: ['pi', '--permission-mode', 'not-a-mode'],
+        providerSubcommand: 'pi',
+      })).toThrow('exit:1');
+
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('Valid values: read_only, default, auto, yolo');
+      expect(message).toContain('--permission-mode auto');
+    } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('keeps the one-shot initial-access file in host startup custody, including paths with spaces', () => {
+    const filePath = 'C:\\Users\\Alice Example\\.happier\\session-initial-access\\draft.json';
+    expect(partitionProviderSessionArgs({
+      args: ['codex', '--started-by', 'daemon', '--session-initial-access-file-v1', filePath, '--resume', 'vendor-session', '--sandbox', 'workspace-write'],
+      providerSubcommand: 'codex',
+    })).toMatchObject({
+      initialAccessFilePath: filePath,
+      resume: 'vendor-session',
+      providerArgs: ['--sandbox', 'workspace-write'],
+    });
+  });
+
+  it('refuses initial-access carriers outside fresh daemon startup', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => {
+      throw new Error(`exit:${code ?? 0}`);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const extraArgs of [[], ['--started-by', 'daemon', '--existing-session', 'existing']]) {
+        expect(() => partitionProviderSessionArgs({
+          args: ['codex', '--session-initial-access-file-v1', '/private/draft.json', ...extraArgs],
+          providerSubcommand: 'codex',
+        })).toThrow('exit:1');
+      }
+    } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+
   it('strips Happier-owned session flags while preserving provider-native arguments', () => {
     expect(partitionProviderSessionArgs({
       args: [

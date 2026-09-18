@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ProviderConnectionIdSchema,
+  ProviderConnectionSecurityFingerprintV1Schema,
   ProviderConnectionV1Schema,
   ProviderContributionV1Schema,
   type ProviderWireProtocol,
@@ -113,7 +114,8 @@ function record(options: Readonly<{
       machineOverrideApplied: false, normalizedUrl: 'https://gateway.example/v1', locality: 'public',
       endpointScope: 'account', resolvedAddresses: ['8.8.8.8'], nonPublicAddresses: [],
     }],
-    scope: 'account', connectionSecurityFingerprint: 'connection-security:v1:test',
+    scope: 'account',
+    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'),
     endpointSetFingerprint: 'endpoint-set:v1:test',
     authorization: {
       authorized: true,

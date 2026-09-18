@@ -1,14 +1,18 @@
-import type { StoredCredentials } from '@/persistence';
-import { isActionEnabledByEnv, readActionsSettingsFromEnv } from '@/settings/actionsSettings';
+import { sameStoredCredentials, type StoredCredentials } from '@/persistence';
 import { dispatchBuiltInHappierTool } from './dispatchBuiltInHappierTool';
 import { createActionToolExecutorBridge } from './createActionToolExecutorBridge';
 import { createChangeTitleToolHandler } from './createChangeTitleToolHandler';
-import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
+import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { resolveMcpToolCallRequestTimeoutMs } from '@/mcp/mcpToolCallRequestOptions';
+import { configuration } from '@/configuration';
+import { isActionEnabledByActionsSettings } from '@happier-dev/protocol';
+import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { ensureCliActionPolicySettings } from '@/session/actions/ensureCliActionPolicySettings';
 
 function normalizeNativeAgentToolResponse(value: unknown): Awaited<ReturnType<typeof dispatchBuiltInHappierTool>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -36,11 +40,25 @@ export async function callBuiltInHappierTool(params: Readonly<{
   args: unknown;
   surface?: 'cli' | 'agent';
   toolCallId?: string | null;
+  /** Live credential reader for the one-shot CLI fence; omitted callers retain their existing fixed snapshot. */
+  readCredentials?: () => Promise<StoredCredentials | null>;
 }>): Promise<Awaited<ReturnType<typeof dispatchBuiltInHappierTool>>> {
+  const credentialSnapshot = params.readCredentials
+    ? await params.readCredentials().catch(() => null)
+    : params.credentials;
+  if (!credentialSnapshot || !sameStoredCredentials(params.credentials, credentialSnapshot)) {
+    return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+  }
   const sessionTarget = await resolveSessionTransportContext({
-    credentials: params.credentials,
+    credentials: credentialSnapshot,
     idOrPrefix: params.sessionId,
   });
+  if (params.readCredentials) {
+    const currentCredentials = await params.readCredentials().catch(() => null);
+    if (!sameStoredCredentials(credentialSnapshot, currentCredentials)) {
+      return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+    }
+  }
   if (!sessionTarget.ok) {
     if (sessionTarget.code === 'session_id_ambiguous') {
       return {
@@ -70,7 +88,7 @@ export async function callBuiltInHappierTool(params: Readonly<{
   const surface = params.surface ?? 'cli';
   if (surface === 'agent') {
     const request = {
-      token: params.credentials.token,
+      token: credentialSnapshot.token,
       sessionId,
       method: SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
       request: {
@@ -94,14 +112,35 @@ export async function callBuiltInHappierTool(params: Readonly<{
   const sessionMachineId = typeof rawSession.machineId === 'string' && rawSession.machineId.trim().length > 0
     ? rawSession.machineId.trim()
     : null;
-  const executor = createCliActionExecutor({
-    ...sessionTarget,
-    token: params.credentials.token,
-    credentials: params.credentials,
-    sessionId,
-    rawSession,
+  await ensureCliActionPolicySettings(credentialSnapshot);
+  if (params.readCredentials) {
+    const currentCredentials = await params.readCredentials().catch(() => null);
+    if (!sameStoredCredentials(credentialSnapshot, currentCredentials)) {
+      return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+    }
+  }
+  const actionsSettingsProvider = createActionSettingsProvider({
+    scopeKey: resolveAccountSettingsScopeKeyForToken(credentialSnapshot.token),
   });
-  const actionsSettings = readActionsSettingsFromEnv();
+  const isActionEnabled = (id: Parameters<typeof isActionEnabledByActionsSettings>[0]) =>
+    isActionEnabledByActionsSettings(id, actionsSettingsProvider.getActionsSettings(), { surface });
+  const executor = createCliActionExecutorFromCredentials({
+    credentials: credentialSnapshot,
+    actionsSettingsProvider,
+    serverId: configuration.activeServerId,
+    serverApiUrl: configuration.apiServerUrl,
+    ...(params.readCredentials
+      ? {
+          readCredentials: async () => {
+            const currentCredentials = await params.readCredentials!().catch(() => null);
+            return sameStoredCredentials(credentialSnapshot, currentCredentials)
+              ? currentCredentials
+              : null;
+          },
+        }
+      : {}),
+    ...(sessionMachineId ? { machineId: sessionMachineId } : {}),
+  });
   const daemonCatalog = await readDaemonPluginCatalog().catch(() => ({
     kind: 'unavailable' as const,
     code: 'daemon_unavailable',
@@ -111,9 +150,9 @@ export async function callBuiltInHappierTool(params: Readonly<{
     : Object.freeze([]);
   const actionToolBridge = createActionToolExecutorBridge({
     executor,
-    isActionEnabled: (id) => isActionEnabledByEnv(id, { surface }),
+    isActionEnabled,
     surface,
-    actionsSettings,
+    getActionsSettings: actionsSettingsProvider.getActionsSettings,
     pluginToolCatalog,
     resolveCallerPermissionMode: () => callerPermissionMode,
     defaultSessionMachineId: sessionMachineId,
@@ -125,7 +164,7 @@ export async function callBuiltInHappierTool(params: Readonly<{
     sessionId,
     sessionMachineId,
     surface,
-    actionsSettings,
+    getActionsSettings: actionsSettingsProvider.getActionsSettings,
     pluginToolCatalog,
     deps: {
       changeTitle: createChangeTitleToolHandler({

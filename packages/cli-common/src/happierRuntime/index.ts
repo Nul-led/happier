@@ -2,6 +2,7 @@ export { discoverHappierInstallations } from './installations/discoverHappierIns
 export { resolvePreferredHappierCliInstallation } from './installations/resolvePreferredHappierCliInstallation.js';
 export { discoverHappierServices } from './services/discoverHappierServices.js';
 export {
+  daemonServiceMatchesInstallTarget,
   resolveDaemonServiceInstallConflictPlan,
 } from './daemonInstallConflict.js';
 export type {

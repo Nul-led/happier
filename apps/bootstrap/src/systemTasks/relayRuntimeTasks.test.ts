@@ -293,6 +293,16 @@ describe('installOrUpdateRelayRuntimeDefault', () => {
 describe('installOrUpdateRelayRuntimeDefault', () => {
     it('avoids piping the remote relay runtime installer over curl and bash', async () => {
         const fakeSsh = createFakeSsh();
+        const controller = new AbortController();
+        const installRemoteFirstPartyComponent = vi.fn(async ({ componentId }: Readonly<{
+            componentId: 'happier-cli' | 'happier-server';
+        }>) => ({
+            binaryPath: componentId === 'happier-cli'
+                ? '$HOME/.happier/cli/current/happier'
+                : '$HOME/.happier/server/current/happier-server',
+            versionId: '1.2.3',
+            source: 'https://example.test/payload.tgz',
+        }));
 
         try {
             await withPatchedPath(fakeSsh.binDir, async () => {
@@ -306,17 +316,15 @@ describe('installOrUpdateRelayRuntimeDefault', () => {
                     },
                     channel: 'stable',
                     mode: 'user',
+                    signal: controller.signal,
                 }, {}, {
-                    installRemoteFirstPartyComponent: async ({ componentId }) => ({
-                        binaryPath: componentId === 'happier-cli'
-                            ? '$HOME/.happier/cli/current/happier'
-                            : '$HOME/.happier/server/current/happier-server',
-                        versionId: '1.2.3',
-                        source: 'https://example.test/payload.tgz',
-                    }),
+                    installRemoteFirstPartyComponent,
                 });
             });
 
+            expect(installRemoteFirstPartyComponent).toHaveBeenCalledWith(expect.objectContaining({
+                signal: controller.signal,
+            }));
             const remoteCommands = fakeSsh.readInvocations().map((args) => args.join(' ')).join('\n');
             expect(remoteCommands).not.toContain('curl -fsSL https://happier.dev/install');
         } finally {

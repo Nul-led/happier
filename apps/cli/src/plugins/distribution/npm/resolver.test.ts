@@ -147,7 +147,7 @@ describe('resolveNpmArtifactMetadata', () => {
         automaticEligible: true,
         blockedNewerVersions: [{
           version: '2.0.0',
-          diagnostics: [expect.objectContaining({ code: 'plugin_manifest_semantic_invalid' })],
+          diagnostics: [expect.objectContaining({ code: 'plugin_manifest_invalid' })],
         }],
       },
     });

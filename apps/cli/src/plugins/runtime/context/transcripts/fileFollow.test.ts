@@ -75,7 +75,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: filePath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },
@@ -126,7 +126,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: grantedPath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },
@@ -168,7 +168,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         const grant = await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: filePath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },
@@ -220,7 +220,7 @@ describe('createPluginTranscriptFileFollowService', () => {
             await registry.grant({
                 pluginId: 'acme.transcript',
                 runtimeId: 'runtime-1',
-                sessionId: 'session-1',
+                scope: { kind: 'session', sessionId: 'session-1' },
                 path: filePath,
                 reason: 'testFixture',
                 evidence: { kind: 'testOnly' },
@@ -244,7 +244,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: filePath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },
@@ -281,7 +281,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: linkedPath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },
@@ -331,7 +331,7 @@ describe('createPluginTranscriptFileFollowService', () => {
         await registry.grant({
             pluginId: 'acme.transcript',
             runtimeId: 'runtime-1',
-            sessionId: 'session-1',
+            scope: { kind: 'session', sessionId: 'session-1' },
             path: filePath,
             reason: 'testFixture',
             evidence: { kind: 'testOnly' },

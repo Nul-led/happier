@@ -23,8 +23,10 @@ const destinationFacts = {
   expectedCanonicalServerUrl: 'https://source.example.test',
   sourceDescriptorRevision: 4,
   homeServerIdentityId: 'srv_home_1',
-  canonicalServerUrl: 'https://destination.example.test',
-  minimumOuterRevisionExclusive: 6,
+  connectionDescriptor: {
+    v: 1 as const, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://destination.example.test',
+    revision: 7, endpoints: [{ kind: 'https' as const, url: 'https://destination.example.test' }],
+  },
   authenticated: true as const,
   accountCount: 1,
   sessionCount: 0,
@@ -48,11 +50,11 @@ const sourceDescriptor = {
 const roots: string[] = [];
 afterEach(async () => await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
-async function fixture() {
+async function fixture(sourceInitiallyRunning = true) {
   const sourceDataDir = await mkdtemp(join(tmpdir(), 'happier-relocation-source-'));
   roots.push(sourceDataDir);
   const events: string[] = [];
-  let sourceRunning = true;
+  let sourceRunning = sourceInitiallyRunning;
   const destination = {
     stage: vi.fn(async (_input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationFacts> => (
       events.push('destination.stage'), destinationFacts
@@ -62,7 +64,9 @@ async function fixture() {
         .then(() => true, () => false);
       return sourceMarkerExists ? destinationFacts : { operationId: destinationFacts.operationId, status: 'absent' };
     }),
-    commit: vi.fn(async () => (events.push('destination.commit'), { ...destinationFacts, status: 'active' as const })),
+    commit: vi.fn(async (): Promise<PersonalHomeRelocationDestinationFacts> => (
+      events.push('destination.commit'), { ...destinationFacts, status: 'active' as const }
+    )),
     abort: vi.fn(async (): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence> => (
       events.push('destination.abort'), { ...destinationFacts, status: 'aborted' as const }
     )),
@@ -106,6 +110,139 @@ async function fixture() {
 }
 
 describe('Personal Home source relocation coordinator', () => {
+  it('cancels after destination staging while the source descriptor is still authoritative', async () => {
+    const { params, destination } = await fixture();
+    const controller = new AbortController();
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+    destination.stage.mockImplementationOnce(async () => {
+      controller.abort();
+      return destinationFacts;
+    });
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: 'operation_cancelled' });
+
+    expect(destination.abort).toHaveBeenCalledWith(destinationFacts.operationId);
+    expect(params.publishDestination).not.toHaveBeenCalled();
+    expect(destination.commit).not.toHaveBeenCalled();
+    expect(params.activateSource).toHaveBeenCalledTimes(1);
+    await expect(assertPersonalHomeRelocationSourceAllowsActivation(params.sourceDataDir)).resolves.toBeUndefined();
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toEqual({ status: 'none' });
+  });
+
+  it('returns the typed cancellation after an aborted transfer is cleaned before staging', async () => {
+    const { params, destination } = await fixture();
+    const controller = new AbortController();
+    destination.stage.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('transfer stopped');
+    });
+    destination.status
+      .mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' })
+      .mockResolvedValueOnce({ operationId: destinationFacts.operationId, status: 'absent' });
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: 'operation_cancelled' });
+
+    expect(params.publishDestination).not.toHaveBeenCalled();
+    expect(destination.commit).not.toHaveBeenCalled();
+    expect(params.activateSource).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes moving when cancellation races with the irreversible publication boundary', async () => {
+    const { params, destination } = await fixture();
+    const controller = new AbortController();
+    params.publishDestination.mockImplementationOnce(async () => {
+      controller.abort();
+      return publishedDescriptor;
+    });
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+    })).resolves.toMatchObject({ status: 'committed', publishedDescriptor });
+
+    expect(destination.abort).not.toHaveBeenCalled();
+    expect(params.activateSource).not.toHaveBeenCalled();
+    expect(destination.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors cancellation delivered immediately before publication is invoked', async () => {
+    const { params, destination } = await fixture();
+    const controller = new AbortController();
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+      progress: (step) => {
+        if (step === 'publishing_destination') controller.abort();
+      },
+    })).rejects.toMatchObject({ code: 'operation_cancelled' });
+
+    expect(params.publishDestination).not.toHaveBeenCalled();
+    expect(destination.abort).toHaveBeenCalledTimes(1);
+    expect(params.activateSource).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores an initially stopped source without activating it when cancellation arrives after source quarantine', async () => {
+    const { params, destination } = await fixture(false);
+    const controller = new AbortController();
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+      progress: (step) => {
+        if (step === 'publishing_destination') controller.abort();
+      },
+    })).rejects.toMatchObject({ code: 'operation_cancelled' });
+
+    expect(params.publishDestination).not.toHaveBeenCalled();
+    expect(destination.abort).toHaveBeenCalledTimes(1);
+    expect(params.activateSource).not.toHaveBeenCalled();
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toEqual({ status: 'none' });
+  });
+
+  it('activates an initially stopped source when the user explicitly chooses Return to Original Home', async () => {
+    const { params } = await fixture(false);
+    params.publishDestination.mockRejectedValueOnce(new Error('publication unavailable'));
+    params.readPublishedDescriptor.mockResolvedValueOnce(null);
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({ status: 'pending' });
+
+    params.readPublishedDescriptor.mockResolvedValueOnce(sourceDescriptor);
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      recoveryAction: 'return_to_source',
+    })).resolves.toMatchObject({ status: 'returned' });
+
+    expect(params.activateSource).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores cancellation after durable destination publication and continues the existing move', async () => {
+    const { params, destination } = await fixture();
+    destination.commit.mockRejectedValueOnce(new Error('destination process stopped after publication'));
+    await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('destination process stopped after publication');
+
+    const controller = new AbortController();
+    controller.abort();
+    destination.status.mockResolvedValueOnce({ ...destinationFacts, status: 'quarantined' });
+    params.readPublishedDescriptor.mockResolvedValueOnce(publishedDescriptor);
+
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      signal: controller.signal,
+    })).resolves.toMatchObject({ status: 'committed', publishedDescriptor });
+
+    expect(destination.abort).not.toHaveBeenCalled();
+    expect(params.activateSource).not.toHaveBeenCalled();
+    expect(destination.commit).toHaveBeenCalledTimes(2);
+  });
+
   it('moves writable authority source → neither → destination through the destination-local owner', async () => {
     const { params, events, destination } = await fixture();
     const stopSource = params.stopSource.getMockImplementation()!;
@@ -160,6 +297,24 @@ describe('Personal Home source relocation coordinator', () => {
       destinationMachineId: 'machine-b',
       sourceDescriptorRevision: 4,
       primaryAction: 'finish_move',
+      secondaryAction: 'return_to_source',
+    });
+  });
+
+  it('offers Return to Original Home when restart inspection finds quarantine before publication', async () => {
+    const { params } = await fixture();
+    params.publishDestination.mockRejectedValueOnce(new Error('publication transport lost'));
+    params.readPublishedDescriptor.mockRejectedValueOnce(new Error('publication authority unreadable'));
+
+    await expect(coordinatePersonalHomeRelocation(params)).rejects.toThrow('publication authority unreadable');
+
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toEqual({
+      status: 'recovery_available',
+      operationId: destinationFacts.operationId,
+      destinationMachineId: 'machine-b',
+      sourceDescriptorRevision: 4,
+      primaryAction: 'finish_move',
+      secondaryAction: 'return_to_source',
     });
   });
 
@@ -493,6 +648,40 @@ describe('Personal Home source relocation coordinator', () => {
     expect(destination.stage).toHaveBeenCalledTimes(1);
     expect(destination.abort).not.toHaveBeenCalled();
     expect(params.createFinalBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-enters destination commit to converge retained post-commit cleanup attention', async () => {
+    const { params, destination } = await fixture();
+    destination.commit.mockResolvedValueOnce({
+      ...destinationFacts,
+      status: 'active' as const,
+      cleanupNeedsAttention: true,
+    });
+
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({
+      status: 'committed',
+      destinationCleanupNeedsAttention: true,
+    });
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toEqual({
+      status: 'recovery_available',
+      operationId: destinationFacts.operationId,
+      destinationMachineId: 'machine-b',
+      sourceDescriptorRevision: 4,
+      primaryAction: 'finish_move',
+    });
+
+    destination.status.mockResolvedValueOnce({ ...destinationFacts, status: 'active' as const });
+    await expect(coordinatePersonalHomeRelocation({
+      ...params,
+      recoveryAction: 'finish_move',
+    })).resolves.toMatchObject({
+      status: 'committed',
+      publishedDescriptor,
+    });
+
+    expect(destination.commit).toHaveBeenCalledTimes(2);
+    expect(destination.stage).toHaveBeenCalledTimes(1);
+    await expect(inspectPersonalHomeRelocationSourceRecovery(params.sourceDataDir)).resolves.toEqual({ status: 'none' });
   });
 
   it('keeps both Homes intact when the destination cannot prove it owns the relocation candidate', async () => {

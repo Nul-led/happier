@@ -1,5 +1,6 @@
 import {
     PluginDiagnosticDataV1Schema,
+    ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1Schema,
 } from '@happier-dev/protocol';
 import type {
     ConnectedAccountHealthResult as PluginConnectedAccountHealthResult,
@@ -22,6 +23,34 @@ type PluginConnectedAccountRevocationResult = Awaited<
 type PluginConnectedAccountQuotaSnapshot = Awaited<
     ReturnType<NonNullable<PluginConnectedAccountRuntime['quota']>>
 >;
+type RecoveryFacet = NonNullable<PluginConnectedAccountRuntime['recoveryCredits']>;
+type RecoveryInventory = Awaited<ReturnType<RecoveryFacet['read']>>;
+type RecoveryOutcome = Awaited<ReturnType<RecoveryFacet['consume']>>;
+
+function snapshotRecoveryResult(raw: unknown, operation: 'recoveryCredits.read' | 'recoveryCredits.consume'): RecoveryInventory | RecoveryOutcome | null {
+    const value = cloneStrictJsonResult(raw, operation);
+    if (operation === 'recoveryCredits.consume') {
+        const result = readStrictConnectedAccountProducerRecord(value, ['status'], ['status']);
+        if (!result || !['consumed', 'already_consumed', 'not_available', 'nothing_to_reset'].includes(String(result.status))) return null;
+        return Object.freeze({ status: result.status as RecoveryOutcome['status'] });
+    }
+    const result = readStrictConnectedAccountProducerRecord(value, ['observedAtMs', 'availableCount', 'credits'], ['observedAtMs', 'availableCount', 'credits']);
+    if (!result || !Number.isSafeInteger(result.observedAtMs) || Number(result.observedAtMs) < 0
+        || !Number.isSafeInteger(result.availableCount) || Number(result.availableCount) < 0 || !Array.isArray(result.credits)) return null;
+    const credits: RecoveryInventory['credits'][number][] = [];
+    const ids = new Set<string>();
+    for (const rawCredit of result.credits) {
+        const credit = readStrictConnectedAccountProducerRecord(rawCredit, ['providerCreditId', 'status', 'expiresAtMs'], ['providerCreditId', 'status']);
+        if (!credit || typeof credit.providerCreditId !== 'string'
+            || !ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1Schema.shape.providerCreditId.unwrap().safeParse(credit.providerCreditId).success
+            || ids.has(credit.providerCreditId.trim()) || (credit.status !== 'available' && credit.status !== 'unavailable')
+            || (credit.expiresAtMs !== undefined && (!Number.isSafeInteger(credit.expiresAtMs) || Number(credit.expiresAtMs) < 0))) return null;
+        ids.add(credit.providerCreditId.trim());
+        credits.push(Object.freeze({ providerCreditId: credit.providerCreditId.trim(), status: credit.status,
+            ...(credit.expiresAtMs === undefined ? {} : { expiresAtMs: Number(credit.expiresAtMs) }) }));
+    }
+    return Object.freeze({ observedAtMs: Number(result.observedAtMs), availableCount: Number(result.availableCount), credits: Object.freeze(credits) });
+}
 
 export type ConnectedAccountProducerResultErrorCode =
     | 'connected_account_producer_result_invalid'
@@ -655,8 +684,14 @@ export function snapshotConnectedAccountEstablishedResult<
             | PluginConnectedAccountQuotaSnapshot
             | PluginConnectedAccountRevocationResult
             | PluginConnectedAccountMaterialization
+            | RecoveryInventory
+            | RecoveryOutcome
             | null;
         switch (operation.kind) {
+            case 'recoveryCredits.read':
+            case 'recoveryCredits.consume':
+                snapshot = options.quotaLeafUnavailable ? null : snapshotRecoveryResult(raw, operation.kind);
+                break;
             case 'refresh':
                 snapshot = snapshotHealthResult(
                     raw,
@@ -694,7 +729,7 @@ export function snapshotConnectedAccountEstablishedResult<
         if (
             snapshot === null
             && !(
-                operation.kind === 'quota'
+                (operation.kind === 'quota' || operation.kind === 'recoveryCredits.read' || operation.kind === 'recoveryCredits.consume')
                 && options.quotaLeafUnavailable
                 && raw === null
             )

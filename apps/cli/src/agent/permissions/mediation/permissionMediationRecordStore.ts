@@ -13,9 +13,9 @@ import {
 
 import type { SessionClientPort } from '@/api/session/sessionClientPort';
 import {
-  decryptSessionPayload,
-  encryptSessionPayload,
-  type SessionEncryptionContext,
+  openSessionStoredContent,
+  sealSessionStoredContent,
+  type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 
 /**
@@ -123,15 +123,12 @@ export type PermissionMediationRecordStore = Readonly<{
   >;
 }>;
 
-type StoredContentContext = Readonly<
-  | { mode: 'plain' }
-  | { mode: 'e2ee'; ctx: SessionEncryptionContext }
->;
+type StoredContentContext = SessionStoredContentCryptoContext;
 
 function storedContentContext(session: SessionClientPort): StoredContentContext | null {
   const context = session.getStoredContentEncryptionContext?.();
   if (!context) return null;
-  if (context.mode === 'plain') return { mode: 'plain' };
+  if (context.mode === 'plain') return { mode: 'plain', ctx: null };
   return context.ctx ? { mode: 'e2ee', ctx: context.ctx } : null;
 }
 
@@ -148,9 +145,8 @@ function sealRecord(
 ): SessionSystemRecordContent | null {
   const record = parseRecord(write.kind, write.record);
   if (!record) return null;
-  if (context.mode === 'plain') return { t: 'plain', v: record };
   try {
-    return { t: 'encrypted', c: encryptSessionPayload({ ctx: context.ctx, payload: record }) };
+    return sealSessionStoredContent({ ...context, payload: record });
   } catch {
     return null;
   }
@@ -195,16 +191,7 @@ function openMediationRecordPayload(
 ): PermissionMediationStoredRecord | null {
   let payload: unknown;
   try {
-    if (context.mode === 'plain') {
-      if (raw.content.t !== 'plain') return null;
-      payload = raw.content.v;
-    } else {
-      if (raw.content.t !== 'encrypted') return null;
-      payload = decryptSessionPayload({
-        ctx: context.ctx,
-        ciphertextBase64: raw.content.c,
-      });
-    }
+    payload = openSessionStoredContent({ ...context, content: raw.content });
   } catch {
     return null;
   }

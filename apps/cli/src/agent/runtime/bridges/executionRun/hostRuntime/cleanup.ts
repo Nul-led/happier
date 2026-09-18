@@ -7,15 +7,21 @@ export function withExecutionRunHostRuntimeCleanup(
 ): ExecutionRunHostRuntime {
     return wrapExecutionRunHostRuntime({
         readPermissionCapability: () => runtime.permissionCapability,
+        readInteraction: () => runtime.interaction,
         readResumeSupport: (opts) => runtime.readResumeSupport(opts),
-        provisionSession: (opts) => runtime.provisionSession(opts),
-        sendPrompt: (sessionId, prompt, meta) => runtime.sendPrompt(sessionId, prompt, meta),
-        readSendSteerPrompt: () => runtime.sendSteerPrompt,
-        cancel: (sessionId) => runtime.cancel(sessionId),
+        provisionRuntime: (opts) => runtime.provisionRuntime(opts),
+        deliverInput: (runtimeId, input, context) => runtime.deliverInput(runtimeId, input, context),
+        readSteerInput: () => runtime.steerInput?.bind(runtime),
+        getRuntimeLifetimeSignal: () => runtime.getRuntimeLifetimeSignal(),
+        readSubscribeProviderInputOutcomes: () => runtime.subscribeProviderInputOutcomes?.bind(runtime),
+        readSubscribeRuntimeEvents: () => runtime.subscribeRuntimeEvents?.bind(runtime),
+        readActiveTurnAdmissionWitness: () => runtime.readActiveTurnAdmissionWitness?.bind(runtime),
+        cancel: (runtimeId) => runtime.cancel(runtimeId),
         subscribeMessages: (handler) => runtime.subscribeMessages(handler),
         readRespondToPermission: () => runtime.permissionCapability === 'responds'
             ? runtime.respondToPermission
             : undefined,
+        readAbortPendingPermissionRequests: () => runtime.abortPendingPermissionRequests?.bind(runtime),
         readWaitForTurnCompletion: () => runtime.waitForTurnCompletion,
         readProbeTurnLiveness: () => runtime.probeTurnLiveness,
         async dispose() {

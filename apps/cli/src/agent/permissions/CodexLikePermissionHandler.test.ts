@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildHappierToolsShellBridgeCommand } from '@/agent/tools/happierTools/runtime/buildHappierToolsShellBridgeCommand';
+import { createRunScopedExecutionPermissionHandler } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
 import { CodexLikePermissionHandler } from './CodexLikePermissionHandler';
 import { ServerBoundPermissionRpcHandlerManager } from './testkit/serverBoundPermissionRpcHandlerManager';
 
@@ -32,10 +33,16 @@ class DeferredUpdateSession extends FakeSession {
   private deferredUpdate: Promise<void> | null = null;
   private resolveDeferredUpdate: (() => void) | null = null;
   private deferredUpdater: ((state: any) => any) | null = null;
+  private shouldDeferUpdate: () => boolean = () => true;
+  private onUpdateDeferred: (() => void) | null = null;
 
-  deferNextUpdate(): void {
+  deferNextUpdate(when: () => boolean = () => true): Promise<void> {
+    this.shouldDeferUpdate = when;
     this.deferredUpdate = new Promise<void>((resolve) => {
       this.resolveDeferredUpdate = resolve;
+    });
+    return new Promise<void>((resolve) => {
+      this.onUpdateDeferred = resolve;
     });
   }
 
@@ -49,8 +56,10 @@ class DeferredUpdateSession extends FakeSession {
   }
 
   override updateAgentState(updater: any) {
-    if (!this.deferredUpdate) return super.updateAgentState(updater);
+    if (!this.deferredUpdate || !this.shouldDeferUpdate()) return super.updateAgentState(updater);
     this.deferredUpdater = updater;
+    this.onUpdateDeferred?.();
+    this.onUpdateDeferred = null;
     return this.deferredUpdate;
   }
 }
@@ -68,6 +77,47 @@ async function settledState<T>(promise: Promise<T>): Promise<'pending' | 'fulfil
 }
 
 describe('CodexLikePermissionHandler', () => {
+  it('isolates identical provider permission ids by execution run and settles only the disposed run', async () => {
+    const session = new FakeSession();
+    const owner = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[ExecutionRun]' });
+    const runA = createRunScopedExecutionPermissionHandler({
+      runId: 'run-a', controllerOccurrenceId: 'occurrence-a', handler: owner,
+    });
+    const runB = createRunScopedExecutionPermissionHandler({
+      runId: 'run-b', controllerOccurrenceId: 'occurrence-b', handler: owner,
+    });
+
+    const approvalA = runA.handler.handleToolCall('call_1', 'Write', { path: '/tmp/a' });
+    const approvalB = runB.handler.handleToolCall('call_1', 'Write', { path: '/tmp/b' });
+    const requestIds = Object.keys(session.agentState.requests);
+    expect(requestIds).toHaveLength(2);
+    const requestAId = requestIds.find((id) => session.agentState.requests[id]?.arguments?.path === '/tmp/a');
+    const requestBId = requestIds.find((id) => session.agentState.requests[id]?.arguments?.path === '/tmp/b');
+    expect(requestAId).toBeDefined();
+    expect(requestBId).toBeDefined();
+    expect(requestAId).not.toBe(requestBId);
+
+    await runA.dispose('Execution run stopped');
+    await expect(approvalA).rejects.toThrow('Execution run stopped');
+    expect(await settledState(approvalB)).toBe('pending');
+    expect(session.agentState.requests[requestAId!]).toBeUndefined();
+    expect(session.agentState.completedRequests[requestAId!]).toEqual(expect.objectContaining({
+      status: 'canceled',
+      decision: 'abort',
+      reason: 'Execution run stopped',
+    }));
+    expect(session.agentState.requests[requestBId!]).toBeDefined();
+    expect(session.agentState.completedRequests[requestBId!]).toBeUndefined();
+
+    const rpc = session.rpcHandlerManager.handlers.get('permission');
+    expect(rpc).toBeDefined();
+    await rpc!({ id: requestBId, approved: true, decision: 'approved' });
+    await expect(approvalB).resolves.toEqual({ decision: 'approved' });
+
+    await runB.dispose('Test cleanup');
+    await owner.reset();
+  });
+
   it('hard-denies an explicitly malformed causal permission authority', async () => {
     const session = new FakeSession();
     const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });
@@ -263,7 +313,10 @@ describe('CodexLikePermissionHandler', () => {
     );
     expect(session.agentState.requests['metadata-narrowed-during-present-terminal-write']).toBeTruthy();
 
-    session.deferNextUpdate();
+    // Let the durable claim persist, then pause the terminal AgentState write.
+    const terminalWriteStarted = session.deferNextUpdate(() => Boolean(
+      session.agentState.requests['metadata-narrowed-during-present-terminal-write']?.permissionResponseClaimV1,
+    ));
     const rpc = session.rpcHandlerManager.handlers.get('permission');
     expect(rpc).toBeDefined();
     const response = rpc!({
@@ -271,8 +324,7 @@ describe('CodexLikePermissionHandler', () => {
       approved: true,
       decision: 'approved',
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await terminalWriteStarted;
     session.setMetadataSnapshot({ permissionMode: 'read-only', permissionModeUpdatedAt: 1 });
     session.releaseNextUpdate();
 
@@ -396,7 +448,7 @@ describe('CodexLikePermissionHandler', () => {
     expect(result.decision).toBe('approved');
   });
 
-  it('fails closed for an opaque prior claim across mode changes and reset', async () => {
+  it('does not authorize an opaque prior claim on mode widening and cancels it on reset', async () => {
     const session = new FakeSession();
     const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });
     handler.setPermissionMode('safe-yolo');
@@ -412,9 +464,13 @@ describe('CodexLikePermissionHandler', () => {
     expect(session.agentState.completedRequests['mode-claim-race']).toBeUndefined();
 
     await handler.reset();
-    expect(await settledState(pending)).toBe('pending');
-    expect(session.agentState.requests['mode-claim-race']).toBeDefined();
-    expect(session.agentState.completedRequests['mode-claim-race']).toBeUndefined();
+    await expect(pending).rejects.toBeInstanceOf(Error);
+    expect(session.agentState.requests['mode-claim-race']).toBeUndefined();
+    expect(session.agentState.completedRequests['mode-claim-race']).toEqual(expect.objectContaining({
+      status: 'canceled',
+      decision: 'abort',
+    }));
+    expect(session.agentState.completedRequests['mode-claim-race'].permissionResponseClaimV1).toBeUndefined();
   });
 
   it('does not let an immediate automatic decision overwrite an opaque outstanding claim after handler recovery', async () => {
@@ -639,7 +695,7 @@ describe('CodexLikePermissionHandler', () => {
     );
   });
 
-  it('suppresses provider prompts for Happier MCP tools only when Happier approval is required', async () => {
+  it('delegates recognized Happier Action confirmation to the shared Action executor', async () => {
     const session = new FakeSession();
     const handler = new CodexLikePermissionHandler({
       session: session as any,
@@ -662,12 +718,46 @@ describe('CodexLikePermissionHandler', () => {
     });
     expect(session.agentState.requests['list-1']).toBeUndefined();
 
-    const pending = handler.handleToolCall('status-1', 'happier_action_execute', { actionId: 'session.status.get' });
-    expect(session.agentState.requests['status-1']).toEqual(
-      expect.objectContaining({ tool: 'happier_action_execute' }),
-    );
-    const rpc = session.rpcHandlerManager.handlers.get('permission');
-    await rpc!({ id: 'status-1', approved: false, decision: 'denied' });
+    await expect(
+      handler.handleToolCall('status-1', 'happier_action_execute', { actionId: 'session.status.get' }),
+    ).resolves.toEqual({ decision: 'approved' });
+    expect(session.agentState.requests['status-1']).toBeUndefined();
+
+    await expect(handler.handleToolCall('remove-1', 'happier_action_execute', {
+      actionId: 'session.board.item.remove',
+    })).resolves.toEqual({ decision: 'approved' });
+    expect(session.agentState.requests['remove-1']).toBeUndefined();
+  });
+
+  it.each(['read-only', 'plan'] as const)(
+    'denies mutating Happier Actions in %s mode without publishing a provider request',
+    async (permissionMode) => {
+      const session = new FakeSession();
+      const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });
+      handler.setPermissionMode(permissionMode);
+
+      await expect(handler.handleToolCall(`remove-${permissionMode}`, 'happier_action_execute', {
+        actionId: 'session.board.item.remove',
+      })).resolves.toEqual({ decision: 'denied' });
+      expect(session.agentState.requests[`remove-${permissionMode}`]).toBeUndefined();
+
+      await expect(handler.handleToolCall(`read-${permissionMode}`, 'happier_action_execute', {
+        actionId: 'session.board.get',
+      })).resolves.toEqual({ decision: 'approved' });
+      expect(session.agentState.requests[`read-${permissionMode}`]).toBeUndefined();
+    },
+  );
+
+  it('retains provider-native permission ownership for an unrecognized action name', async () => {
+    const session = new FakeSession();
+    const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });
+    const pending = handler.handleToolCall('unknown-action', 'happier_action_execute', {
+      actionId: 'not.a.happier.action',
+    });
+    expect(session.agentState.requests['unknown-action']).toBeDefined();
+    await session.rpcHandlerManager.handlers.get('permission')?.({
+      id: 'unknown-action', approved: false, decision: 'denied',
+    });
     await expect(pending).resolves.toEqual({ decision: 'denied' });
   });
 

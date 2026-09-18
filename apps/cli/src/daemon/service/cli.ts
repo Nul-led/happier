@@ -336,6 +336,23 @@ async function printJson(data: unknown): Promise<void> {
   await writeJsonStdout(data);
 }
 
+type DaemonServiceCliFailure = Readonly<{
+  json: Readonly<{ ok: false; error: string; message: string } & Record<string, unknown>>;
+  humanLines: readonly string[];
+}>;
+
+async function reportDaemonServiceCliFailure(
+  failure: DaemonServiceCliFailure,
+  json: boolean,
+): Promise<void> {
+  if (json) {
+    await printJson(failure.json);
+  } else {
+    for (const line of failure.humanLines) process.stderr.write(`${line}\n`);
+  }
+  process.exitCode = typeof process.exitCode === 'number' && process.exitCode > 1 ? process.exitCode : 1;
+}
+
 function shouldStopCurrentWindowsServiceOwnerBeforeLifecycleAction(params: Readonly<{
   platform: SupportedPlatform;
   ownership: Awaited<ReturnType<typeof evaluateCurrentDaemonOwner>>;
@@ -666,7 +683,7 @@ async function assertExpectedDaemonServiceOwnership(params: Readonly<{
   const effectiveTimeoutMs = serviceHealthyButStillConverging ? timeoutMs + activeGraceTimeoutMs : timeoutMs;
 
   let message =
-    `Background service ${params.action} completed, but the expected background service did not become the active daemon for the selected relay ` +
+    `Background service ${params.action} completed, but the expected background service did not become the active daemon for the selected Home ` +
     `within ${effectiveTimeoutMs}ms. Run \`${params.commandPath} status\` to inspect the active owner and system service state.`;
 
   if (params.platform === 'win32' && params.windowsLaunchDiagnostics) {
@@ -1437,19 +1454,15 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       const lines = takeoverDecision.conflict.kind === 'manual-owner-conflict'
         ? [...message.lines, buildDaemonServiceTakeoverHint({ commandPath: 'happier service', action: 'install' })]
         : [...message.lines];
-      if (flags.json) {
-        await printJson({
+      await reportDaemonServiceCliFailure({
+        json: {
           ok: false,
           error: 'owner_conflict',
           message: `${message.title} ${lines.join(' ')}`.trim(),
           platform: installRuntime.platform,
-        });
-        return;
-      }
-      process.stderr.write(`${message.title}\n`);
-      for (const line of lines) {
-        process.stderr.write(`  ${line}\n`);
-      }
+        },
+        humanLines: [message.title, ...lines.map((line) => `  ${line}`)],
+      }, flags.json);
       return;
     }
 
@@ -1600,13 +1613,16 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
     } catch (error) {
       const conflict = error as Error & { code?: string; conflicts?: Array<{ label?: string }> };
       if (flags.json && conflict.code === 'daemon_service_conflict') {
-        await printJson({
-          ok: false,
-          error: conflict.code,
-          message: conflict.message,
-          conflicts: conflict.conflicts ?? [],
-          platform: installRuntime.platform,
-        });
+        await reportDaemonServiceCliFailure({
+          json: {
+            ok: false,
+            error: conflict.code,
+            message: conflict.message,
+            conflicts: conflict.conflicts ?? [],
+            platform: installRuntime.platform,
+          },
+          humanLines: [conflict.message],
+        }, true);
         return;
       }
       throw error;
@@ -1780,8 +1796,10 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       expectedLabel: paths.label,
     })) {
       const msg = `Background service is not installed (${paths.installedPath}). Run: happier service install`;
-      if (flags.json) await printJson({ ok: false, error: 'not_installed', message: msg, platform: runtime.platform });
-      else process.stderr.write(`${msg}\n`);
+      await reportDaemonServiceCliFailure({
+        json: { ok: false, error: 'not_installed', message: msg, platform: runtime.platform },
+        humanLines: [msg],
+      }, flags.json);
       return;
     }
 
@@ -1904,19 +1922,15 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         const lines = takeoverDecision.conflict.kind === 'manual-owner-conflict'
           ? [...message.lines, buildDaemonServiceTakeoverHint({ commandPath: 'happier service', action })]
           : [...message.lines];
-        if (flags.json) {
-          await printJson({
+        await reportDaemonServiceCliFailure({
+          json: {
             ok: false,
             error: 'owner_conflict',
             message: `${message.title} ${lines.join(' ')}`.trim(),
             platform: runtime.platform,
-          });
-          return;
-        }
-        process.stderr.write(`${message.title}\n`);
-        for (const line of lines) {
-          process.stderr.write(`  ${line}\n`);
-        }
+          },
+          humanLines: [message.title, ...lines.map((line) => `  ${line}`)],
+        }, flags.json);
         return;
       }
       const warningText = [takeoverNotice ? `${takeoverNotice.title} ${takeoverNotice.lines.join(' ')}`.trim() : undefined, stopOwnershipNote
@@ -2176,23 +2190,45 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
 
   if (action === 'tail') {
     if (flags.json) {
-      await printJson({ ok: false, error: 'not_supported', message: 'tail is interactive; omit --json', platform: runtime.platform });
+      await reportDaemonServiceCliFailure({
+        json: { ok: false, error: 'not_supported', message: 'tail is interactive; omit --json', platform: runtime.platform },
+        humanLines: ['tail is interactive; omit --json'],
+      }, true);
       return;
     }
     if (runtime.platform === 'win32') {
-      process.stderr.write('tail is not supported on Windows yet. Use: happier service logs\n');
+      await reportDaemonServiceCliFailure({
+        json: { ok: false, error: 'not_supported', message: 'tail is not supported on Windows yet. Use: happier service logs', platform: runtime.platform },
+        humanLines: ['tail is not supported on Windows yet. Use: happier service logs'],
+      }, false);
       return;
     }
     // Best-effort: follow both stdout + stderr if tail exists.
     if (!commandExistsInPath({ cmd: 'tail', envPath: process.env.PATH, platform: process.platform, pathext: process.env.PATHEXT })) {
-      process.stderr.write('tail not found on PATH\n');
+      await reportDaemonServiceCliFailure({
+        json: { ok: false, error: 'tail_not_found', message: 'tail not found on PATH', platform: runtime.platform },
+        humanLines: ['tail not found on PATH'],
+      }, false);
       return;
     }
-    spawnSync('tail', ['-n', '200', '-f', paths.stdoutPath, paths.stderrPath], { stdio: 'inherit', env: process.env });
+    const tailResult = spawnSync('tail', ['-n', '200', '-f', paths.stdoutPath, paths.stderrPath], { stdio: 'inherit', env: process.env });
+    if (tailResult.error || tailResult.status !== 0) {
+      const message = tailResult.error
+        ? `tail failed: ${tailResult.error.message}`
+        : tailResult.signal
+          ? `tail exited after signal ${tailResult.signal}`
+          : `tail exited with status ${tailResult.status ?? 'unknown'}`;
+      await reportDaemonServiceCliFailure({
+        json: { ok: false, error: 'tail_failed', message, platform: runtime.platform },
+        humanLines: [message],
+      }, false);
+    }
     return;
   }
 
   const msg = `Unknown background service subcommand: ${action}`;
-  if (flags.json) await printJson({ ok: false, error: 'invalid_subcommand', message: msg });
-  else process.stderr.write(`${msg}\n`);
+  await reportDaemonServiceCliFailure({
+    json: { ok: false, error: 'invalid_subcommand', message: msg },
+    humanLines: [msg],
+  }, flags.json);
 }

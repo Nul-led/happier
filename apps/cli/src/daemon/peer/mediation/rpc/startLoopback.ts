@@ -29,6 +29,8 @@ export type StartPeerMediationLoopbackInput = Readonly<{
   machineId: string;
   accountSigningSeed?: Uint8Array;
   serverFeatures: FeaturesResponse;
+  /** Current authenticated Home authority. Startup features remain eligibility evidence only. */
+  resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
   rpcHandlerManager?: PeerMachineRpcDirectHandlerManager;
   stream?: PeerMachineLiveStreamDirectRuntimeOptions;
   tunnel?: PeerTcpTunnelDirectRuntimeOptions;
@@ -191,6 +193,7 @@ export async function startPeerMediationLoopback(
       ...(voiceMediaEnabled ? { voice_media: voiceMediaExpected } : {}),
     },
     trustRoots,
+    ...(input.resolveTrustRoots ? { resolveTrustRoots: input.resolveTrustRoots } : {}),
     endpointExpiresAt: now + (input.endpointTtlMs ?? defaultEndpointTtlMs),
     directRouteGrantProofVerifierVersions: supportsEphemeralProofV2 ? [2] : [],
     host: input.host ?? PEER_MEDIATION_MACHINE_RPC_DEFAULT_HOST,

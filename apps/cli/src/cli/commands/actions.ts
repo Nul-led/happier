@@ -1,71 +1,298 @@
 import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
-import { definitionList, renderHelpPage, sectionTitle } from '@happier-dev/cli-common/output';
+import { renderHelpPage } from '@happier-dev/cli-common/output';
 import {
+  ActionDefinitionV1Schema,
+  actionSpecToActionDefinitionV1,
+  compilePluginJsonSchema,
   ExternalActionRequestIdV1Schema,
+  getActionSpec,
+  isValidPluginJsonSchemaValue,
   parseQualifiedPluginActionId,
-  PublicActionIdSchema,
+  SignedRootActionIdSchema,
+  type ActionDefinitionV1,
   type ActionExecuteFailure,
   type ActionExecuteResult,
-  type PublicActionId,
-  type PublicActionResultById,
+  type SignedRootActionId,
 } from '@happier-dev/protocol';
 
+import {
+  compileActionCliFields,
+  compileActionCliFieldsFromJsonSchema,
+  findCompiledActionCliCommand,
+  listCompiledActionCliCommands,
+} from '@/cli/actions/compiledCommands';
+import {
+  buildActionCliCommandUsageLine,
+  buildActionCliInvokeHelpModel,
+  renderActionCliHelpModel,
+} from '@/cli/actions/commandHelp';
+import {
+  runCompiledActionCliCommand,
+  type ActionCliExecutionDeps,
+} from '@/cli/actions/executeCommand';
+import {
+  ACTION_CLI_HELP_FLAGS,
+  ACTION_CLI_JSON_OUTPUT_FLAG,
+  ACTION_CLI_MACHINE_ID_FLAG,
+  ACTION_CLI_REQUEST_ID_FLAG,
+  ACTION_CLI_WHOLE_INPUT_FLAG,
+  describeActionCliCommandFlags,
+  composeActionCliInput,
+  parseActionCliInput,
+  stripCliOwnedFlags,
+} from '@/cli/actions/parseCommandInput';
 import type { CommandContext } from '@/cli/commandRegistry';
-import { assertCommandArguments, readCommandPositionals, readFlagValue, readIntFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
+import { assertCommandArguments, readFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { readStoredCredentials, type StoredCredentials } from '@/persistence';
-import type { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
+import { readStoredCredentials, readStoredCredentialsForServerId } from '@/persistence';
+import { getServerProfile } from '@/server/serverProfiles';
+import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
+import {
+  ACTION_CLI_SERVER_ID_FLAG,
+  readActionCliServerId,
+  resolveActionCliCredentialTarget,
+} from '@/cli/actions/actionServerTarget';
 
-const SEARCH_USAGE = 'Usage: happier actions search [query...] [--limit <n>] [--machine-id <id>] [--json]';
-const GET_USAGE = 'Usage: happier actions get <action-id> [--machine-id <id>] [--json]';
-const INVOKE_USAGE = 'Usage: happier actions invoke <action-id> [--input-json <json>] [--request-id <id>] [--machine-id <id>] [--json]';
+const ACTION_CLI_PROJECT_DIRECTORY_FLAG = '--project-directory' as const;
+const ACTION_CLI_WORKSPACE_REF_ID_FLAG = '--workspace-ref-id' as const;
+const INVOKE_USAGE = 'Usage: happier actions invoke <action-id> [--<field> <value>...] [--input-json <json>] [--request-id <id>] [--server-id <id>] [--machine-id <id>] [--project-directory <path>] [--workspace-ref-id <id>] [--json]';
 
-type Executor = Pick<ReturnType<typeof createCliActionExecutorFromCredentials>, 'execute'>;
-type ExecutorParams = Parameters<typeof createCliActionExecutorFromCredentials>[0];
-type ActionsDeps = Readonly<{
-  readCredentialsFn: () => Promise<StoredCredentials | null>;
-  createExecutorFn: (params: ExecutorParams) => Executor | Promise<Executor>;
-}>;
+/** CLI-owned transport flags; they never become Action input. */
+const INVOKE_TRANSPORT_VALUE_FLAGS = [
+  ACTION_CLI_MACHINE_ID_FLAG,
+  ACTION_CLI_REQUEST_ID_FLAG,
+  ACTION_CLI_SERVER_ID_FLAG,
+  ACTION_CLI_PROJECT_DIRECTORY_FLAG,
+  ACTION_CLI_WORKSPACE_REF_ID_FLAG,
+] as const;
+
+type ActionsDeps = ActionCliExecutionDeps;
 type ActionCommandError = Error & Readonly<{
   actionFailure?: boolean;
+  expectedFailure?: boolean;
   code?: unknown;
   candidates?: unknown;
   details?: unknown;
 }>;
 const DEFAULT_DEPS: ActionsDeps = {
   readCredentialsFn: readStoredCredentials,
+  readCredentialsForServerIdFn: readStoredCredentialsForServerId,
+  getServerProfileFn: getServerProfile,
+  createServerFeaturesSnapshotStoreFn: createServerUrlServerFeaturesSnapshotStore,
   createExecutorFn: async (params) => (
     await import('@/session/actions/createCliActionExecutorFromCredentials')
   ).createCliActionExecutorFromCredentials(params),
 };
 
 function showHelp(): void {
+  const discoveryCommands = listCompiledActionCliCommands().filter((command) => (
+    command.path[0] === 'actions' && command.visibility !== 'hidden'
+  ));
   console.log(renderHelpPage({
     title: 'happier actions',
     subtitle: 'Discover and invoke built-in and contributed Actions',
     usage: [
-      { label: 'happier actions search [query...] [options]', description: 'Search the Action catalog' },
-      { label: 'happier actions get <action-id> [options]', description: 'Show one Action specification' },
+      ...discoveryCommands.map((command) => ({
+        label: buildActionCliCommandUsageLine(command),
+        description: command.spec.title,
+      })),
       { label: 'happier actions invoke <action-id> [options]', description: 'Invoke an Action' },
     ],
     sections: [
       { title: 'Options:', rows: [
+        { label: '--server-id <id>', description: 'Use credentials and endpoint for an exact saved Home' },
         { label: '--machine-id <id>', description: 'Target an exact machine' },
-        { label: '--input-json <json>', description: 'Action input for invoke' },
+        { label: '--project-directory <path>', description: 'Bind a Machine-local Workflow project directory' },
+        { label: '--workspace-ref-id <id>', description: 'Bind the saved Workspace reference for the project' },
+        { label: '--<field> <value>', description: 'Ordinary Action input field for invoke' },
+        { label: '--<field>-json <json>', description: 'One nested Action input field for invoke' },
+        { label: '--input-json <json>', description: 'Whole Action input for invoke' },
         { label: '--request-id <id>', description: 'Request correlation identifier' },
         { label: '--limit <n>', description: 'Bound search results' },
-        { label: '--json', description: 'Stable JSON envelope' },
+        { label: ACTION_CLI_JSON_OUTPUT_FLAG, description: 'Stable JSON envelope' },
       ] },
     ],
     notes: ['Use a query and --limit for a concise catalog search.', 'Contributed IDs use <pluginId>/actions/<localId>.', 'Authentication may come from happier auth login or HAPPIER_TOKEN.'],
   }));
 }
 
-function parseInput(raw: string | null): unknown {
-  if (raw === null) return {};
-  try { return JSON.parse(raw); } catch { throw Object.assign(new Error('Invalid --input-json: expected JSON.'), { code: 'invalid_arguments' }); }
+function invalidInvokeArguments(message: string): never {
+  throw Object.assign(new Error(`${message}\n${INVOKE_USAGE}`), { code: 'invalid_arguments' });
+}
+
+function hasInvokeOption(args: readonly string[], ...flags: readonly string[]): boolean {
+  for (const token of args) {
+    if (token === '--') return false;
+    if (flags.includes(token)) return true;
+  }
+  return false;
+}
+
+type InvokeCompiledFields =
+  | Readonly<{
+      kind: 'local';
+      fields: ReturnType<typeof compileActionCliFieldsFromJsonSchema>;
+      actionId: SignedRootActionId;
+      spec: ReturnType<typeof getActionSpec>;
+      callerSchema: ReturnType<typeof compileActionCliFields>['callerSchema'];
+      wholeInputSchema: ReturnType<typeof compileActionCliFields>['wholeInputSchema'];
+      bindInput?: ReturnType<typeof compileActionCliFields>['bindInput'];
+    }>
+  | Readonly<{
+      kind: 'definition';
+      fields: ReturnType<typeof compileActionCliFieldsFromJsonSchema>;
+    }>;
+
+/**
+ * The generic invocation reads ordinary fields of the selected Action through
+ * the same compiled descriptor a friendly command uses, so an Action's flags,
+ * coercion and duplicate-source rules do not depend on whether it happens to own
+ * a dedicated command path. Whole-input JSON stays available for nested values.
+ * A discovered contributed definition supplies only canonical data fields: it
+ * never receives a host-executable input binder.
+ */
+function resolveInvokeActionInput(
+  args: readonly string[],
+  compiled: InvokeCompiledFields,
+): unknown {
+  const target = { fields: compiled.fields, positionals: [] as const };
+  const flags = describeActionCliCommandFlags(target);
+  // Unknown flags, missing values and surplus positionals fail here, before any
+  // credential read or executor construction.
+  assertCommandArguments(args, {
+    usage: INVOKE_USAGE,
+    startIndex: 1,
+    booleanFlags: [ACTION_CLI_JSON_OUTPUT_FLAG, ...flags.booleanFlags],
+    valueFlags: [...INVOKE_TRANSPORT_VALUE_FLAGS, ACTION_CLI_WHOLE_INPUT_FLAG, ...flags.valueFlags],
+    maxPositionals: 1,
+  });
+  const stripped = stripCliOwnedFlags(args.slice(1), { valueFlags: [...INVOKE_TRANSPORT_VALUE_FLAGS] });
+  // The exact Action id is the first positional after `invoke`. Removing that
+  // exact slot, rather than searching by value, preserves a field value that
+  // happens to equal the Action id.
+  const tokens = stripped.slice(1);
+  const parsed = parseActionCliInput(target, tokens);
+  if (!parsed.ok) invalidInvokeArguments(parsed.message);
+  if (compiled.kind === 'local') {
+    const composed = composeActionCliInput({
+      parsed,
+      canonicalSchema: compiled.spec.inputSchema,
+      wholeInputSchema: compiled.wholeInputSchema,
+      callerSchema: compiled.callerSchema,
+      bindInput: compiled.bindInput,
+      context: {
+        actionId: compiled.actionId,
+        invocationId: randomUUID(),
+        output: wantsJson(args) ? 'json' : 'human',
+      },
+    });
+    if (!composed.ok) invalidInvokeArguments(composed.message);
+    return composed.input;
+  }
+  return Object.freeze({ ...(parsed.canonicalBase ?? {}), ...parsed.callerOverlay });
+}
+
+function compileDiscoveredActionFields(definition: ActionDefinitionV1): InvokeCompiledFields {
+  return Object.freeze({
+    kind: 'definition',
+    fields: compileActionCliFieldsFromJsonSchema({
+      jsonSchema: definition.inputSchema,
+      hints: definition.inputHints ?? undefined,
+      reservedFlags: INVOKE_TRANSPORT_VALUE_FLAGS,
+    }),
+  });
+}
+
+export function readDiscoveredActionDefinition(
+  result: ActionExecuteResult,
+  expectedActionId?: string,
+): ActionDefinitionV1 {
+  const payload = unwrapOuterActionResult(result);
+  const raw = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Readonly<Record<string, unknown>>).actionSpec
+    : undefined;
+  const parsed = ActionDefinitionV1Schema.safeParse(raw);
+  if (!parsed.success) {
+    throw Object.assign(new Error('Action discovery returned an invalid definition.'), {
+      code: 'invalid_action_definition',
+    });
+  }
+  if (expectedActionId !== undefined && parsed.data.id !== expectedActionId) {
+    throw Object.assign(new Error('Action discovery returned a definition for a different Action.'), {
+      code: 'invalid_action_definition',
+    });
+  }
+  return parsed.data;
+}
+
+/** Best-effort discovery for shell completion; invocation retains typed errors. */
+export async function resolveActionDefinitionForCliCompletion(
+  actionId: string,
+  argv: readonly string[],
+  overrides: Partial<ActionsDeps> = {},
+): Promise<ActionDefinitionV1 | null> {
+  try {
+    const deps = { ...DEFAULT_DEPS, ...overrides };
+    const builtIn = SignedRootActionIdSchema.safeParse(actionId);
+    if (builtIn.success) {
+      return actionSpecToActionDefinitionV1(getActionSpec(builtIn.data), { surface: 'cli' });
+    }
+    if (!parseQualifiedPluginActionId(actionId)) return null;
+    const requestedServerId = readActionCliServerId(argv, true);
+    const { credentials, fixedServer } = await resolveActionCliCredentialTarget({ requestedServerId, deps });
+    if (!credentials) return null;
+    const executorOptions = { credentials, externalActionClient: true as const };
+    const executor = await deps.createExecutorFn(fixedServer
+      ? { ...executorOptions, ...fixedServer }
+      : executorOptions);
+    return readDiscoveredActionDefinition(
+      await executor.execute(
+        'action.spec.get',
+        { id: actionId },
+        actionContext(),
+      ),
+      actionId,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function validateDiscoveredActionInput(definition: ActionDefinitionV1, input: unknown): void {
+  let validate: ReturnType<typeof compilePluginJsonSchema>;
+  try {
+    validate = compilePluginJsonSchema(definition.inputSchema);
+  } catch {
+    throw Object.assign(new Error('The contributed Action published an invalid input schema.'), {
+      code: 'invalid_action_definition',
+    });
+  }
+  if (!isValidPluginJsonSchemaValue(validate, input)) {
+    invalidInvokeArguments(`Invalid input for ${definition.id}.`);
+  }
+}
+
+function renderInvokeDefinitionHelp(definition: ActionDefinitionV1, compiled: InvokeCompiledFields): void {
+  console.log(renderActionCliHelpModel(buildActionCliInvokeHelpModel({
+    actionId: definition.id,
+    definition,
+    fields: compiled.fields,
+  })));
+}
+
+function renderMissingInvokeDefinitionHelp(actionId: string): void {
+  console.log(renderActionCliHelpModel(buildActionCliInvokeHelpModel({
+    actionId,
+    fields: Object.freeze([]),
+  })));
+}
+
+function emitLegacyJsonOnlyDiagnostic(actionId: string): void {
+  console.error(
+    `Warning: ${actionId} is using the legacy JSON-only Action adapter because this runtime cannot publish Action definitions. Use --input-json or update the runtime for field flags and generated help.`,
+  );
 }
 
 function throwActionFailure(result: ActionExecuteFailure): never {
@@ -78,7 +305,8 @@ function throwActionFailure(result: ActionExecuteFailure): never {
 
 function actionContext(signal?: AbortSignal) {
   return {
-    surface: 'api' as const,
+    surface: 'cli' as const,
+    authority: 'present_user' as const,
     ...(signal ? { signal } : {}),
   };
 }
@@ -93,82 +321,193 @@ async function execute(args: string[], deps: ActionsDeps, signal?: AbortSignal):
   if (
     !subcommand
     || subcommand === 'help'
-    || args.includes('--help')
-    || args.includes('-h')
+    || ACTION_CLI_HELP_FLAGS.includes(subcommand as typeof ACTION_CLI_HELP_FLAGS[number])
   ) { showHelp(); return; }
   const json = wantsJson(args);
-  const usage = subcommand === 'search' ? SEARCH_USAGE : subcommand === 'get' ? GET_USAGE : INVOKE_USAGE;
-  if (!['search', 'get', 'invoke'].includes(subcommand)) throw Object.assign(new Error(`Unknown actions subcommand: ${subcommand}\n${usage}`), { code: 'unknown_subcommand' });
-  assertCommandArguments(args, {
-    usage,
-    startIndex: 1,
-    booleanFlags: ['--json'],
-    valueFlags: subcommand === 'search' ? ['--limit', '--machine-id'] : subcommand === 'get' ? ['--machine-id'] : ['--machine-id', '--input-json', '--request-id'],
-    maxPositionals: subcommand === 'search' ? undefined : 1,
+  if (subcommand !== 'invoke') throw Object.assign(new Error(`Unknown actions subcommand: ${subcommand}\n${INVOKE_USAGE}`), { code: 'unknown_subcommand' });
+  const requested = args[1];
+  if (!requested || requested.startsWith('-')) throw Object.assign(new Error(INVOKE_USAGE), { code: 'invalid_arguments' });
+
+  // The invoked Action, its request identity and its input are resolved before
+  // authentication so an argument defect never constructs an executor.
+  const requestId = readRawFlagValue(args, ACTION_CLI_REQUEST_ID_FLAG) ?? randomUUID();
+  if (!ExternalActionRequestIdV1Schema.safeParse(requestId).success) {
+    throw Object.assign(new Error('Invalid --request-id.'), { code: 'invalid_arguments' });
+  }
+  const contributed = parseQualifiedPluginActionId(requested);
+  const localInvocation = contributed
+    ? null
+    : (() => {
+        const signedRootActionId = SignedRootActionIdSchema.safeParse(requested);
+        if (!signedRootActionId.success) throw Object.assign(new Error(`Unknown Action id: ${requested}`), { code: 'invalid_arguments' });
+        const spec = getActionSpec(signedRootActionId.data);
+        const compiled = compileActionCliFields(spec, {
+          reservedFlags: INVOKE_TRANSPORT_VALUE_FLAGS,
+        });
+        const invokeFields: InvokeCompiledFields = {
+          kind: 'local',
+          fields: compiled.fields,
+          actionId: signedRootActionId.data,
+          spec,
+          callerSchema: compiled.callerSchema,
+          wholeInputSchema: compiled.wholeInputSchema,
+          bindInput: compiled.bindInput,
+        };
+        if (hasInvokeOption(args, ...ACTION_CLI_HELP_FLAGS)) {
+          renderInvokeDefinitionHelp(
+            actionSpecToActionDefinitionV1(spec, { surface: 'cli' }),
+            invokeFields,
+          );
+          return null;
+        }
+        return {
+          actionId: signedRootActionId.data,
+          input: resolveInvokeActionInput(args, invokeFields),
+          requestId,
+          requiresServerId: spec.cli?.requiresServerId === true,
+        };
+      })();
+  if (!contributed && localInvocation === null) return;
+
+  const requestedServerId = readActionCliServerId(args, true);
+  if (localInvocation?.requiresServerId && requestedServerId === null) {
+    throw Object.assign(
+      new Error(`Option ${ACTION_CLI_SERVER_ID_FLAG} is required for this Home-scoped Action.`),
+      { code: 'invalid_arguments' },
+    );
+  }
+  const { credentials, fixedServer } = await resolveActionCliCredentialTarget({
+    requestedServerId,
+    requireServerIdentityId: localInvocation?.requiresServerId === true,
+    deps,
   });
-  const positionals = readCommandPositionals(args, { startIndex: 1, valueFlags: ['--limit', '--machine-id', '--input-json', '--request-id'] });
-  if (subcommand !== 'search' && !positionals[0]) throw Object.assign(new Error(usage), { code: 'invalid_arguments' });
-  const credentials = await deps.readCredentialsFn();
   if (!credentials) throw Object.assign(new Error('Not authenticated. Run "happier auth login" first.'), { code: 'not_authenticated' });
-  const machineId = readFlagValue(args, '--machine-id') ?? undefined;
-  const executor = await deps.createExecutorFn({ credentials, externalActionClient: true, ...(machineId ? { machineId } : {}) });
-  let actionId: PublicActionId;
-  let input: unknown;
-  if (subcommand === 'search') {
-    actionId = 'action.spec.search';
-    const limit = readIntFlagValue(args, '--limit', { min: 1, max: 100 });
-    input = { query: positionals.join(' '), ...(limit === null ? {} : { limit }) };
-  } else if (subcommand === 'get') {
-    actionId = 'action.spec.get'; input = { id: positionals[0] };
+  const machineId = readFlagValue(args, ACTION_CLI_MACHINE_ID_FLAG) ?? undefined;
+  const projectDirectory = readFlagValue(args, ACTION_CLI_PROJECT_DIRECTORY_FLAG) ?? undefined;
+  const workspaceRefId = readFlagValue(args, ACTION_CLI_WORKSPACE_REF_ID_FLAG) ?? undefined;
+  if ((projectDirectory || workspaceRefId) && !machineId) {
+    invalidInvokeArguments(`${ACTION_CLI_MACHINE_ID_FLAG} is required for a Workflow project target.`);
+  }
+  if (workspaceRefId && !projectDirectory) {
+    invalidInvokeArguments(`${ACTION_CLI_PROJECT_DIRECTORY_FLAG} is required with ${ACTION_CLI_WORKSPACE_REF_ID_FLAG}.`);
+  }
+  const executorOptions = {
+    credentials,
+    readCredentials: fixedServer
+      ? () => deps.readCredentialsForServerIdFn(fixedServer.serverId)
+      : deps.readCredentialsFn,
+    externalActionClient: true as const,
+    ...(machineId ? { machineId } : {}),
+  };
+  const executor = await deps.createExecutorFn(fixedServer
+    ? { ...executorOptions, ...fixedServer }
+    : executorOptions);
+  let invocation: Readonly<{ actionId: SignedRootActionId; input: unknown; requestId: string }>;
+  if (contributed) {
+    const discovery = await executor.execute(
+      'action.spec.get',
+      { id: requested },
+      { ...actionContext(signal), actionRequestId: requestId },
+    );
+    let compiled: InvokeCompiledFields;
+    let input: unknown;
+    if (!discovery.ok && discovery.errorCode === 'unsupported_action') {
+      emitLegacyJsonOnlyDiagnostic(requested);
+      if (hasInvokeOption(args, ...ACTION_CLI_HELP_FLAGS)) {
+        renderMissingInvokeDefinitionHelp(requested);
+        return;
+      }
+      compiled = Object.freeze({ kind: 'definition', fields: Object.freeze([]) });
+      input = resolveInvokeActionInput(args, compiled);
+    } else {
+      const definition = readDiscoveredActionDefinition(discovery, requested);
+      compiled = compileDiscoveredActionFields(definition);
+      if (hasInvokeOption(args, ...ACTION_CLI_HELP_FLAGS)) {
+        renderInvokeDefinitionHelp(definition, compiled);
+        return;
+      }
+      input = resolveInvokeActionInput(args, compiled);
+      validateDiscoveredActionInput(definition, input);
+    }
+    invocation = {
+      actionId: 'action.invoke',
+      input: { action: contributed, input },
+      requestId,
+    };
   } else {
-    const requested = positionals[0]!;
-    const requestId = readRawFlagValue(args, '--request-id') ?? randomUUID();
-    if (!ExternalActionRequestIdV1Schema.safeParse(requestId).success) {
-      throw Object.assign(new Error('Invalid --request-id.'), { code: 'invalid_arguments' });
-    }
-    const contributed = parseQualifiedPluginActionId(requested);
-    if (contributed) { actionId = 'action.invoke'; input = { action: contributed, input: parseInput(readFlagValue(args, '--input-json')) }; }
-    else {
-      const publicActionId = PublicActionIdSchema.safeParse(requested);
-      if (!publicActionId.success) throw Object.assign(new Error(`Unknown Action id: ${requested}`), { code: 'invalid_arguments' });
-      actionId = publicActionId.data;
-      input = parseInput(readFlagValue(args, '--input-json'));
-    }
-    const options = { ...actionContext(signal), actionRequestId: requestId };
-    const data = unwrapOuterActionResult(await executor.execute(actionId, input, options));
-    if (json) await printJsonEnvelope({ ok: true, kind: 'actions_invoke', data }); else await writeJsonStdout(data, { pretty: true });
-    return;
+    invocation = localInvocation!;
   }
-  const data = unwrapOuterActionResult(await executor.execute(actionId, input, actionContext(signal)));
-  if (json) { await printJsonEnvelope({ ok: true, kind: `actions_${subcommand}`, data }); return; }
-  if (subcommand === 'search') {
-    const rows = (data as PublicActionResultById['action.spec.search']).actionSpecs;
-    console.log(rows.length ? definitionList(rows.map((row) => ({ label: row.id, value: [row.title, row.description].filter(Boolean).join(' — ') }))) : '(no matching Actions)');
-    return;
+  let resolvedInput = invocation.input;
+  let defaultSessionId: string | null = null;
+  if (!contributed && resolvedInput && typeof resolvedInput === 'object' && !Array.isArray(resolvedInput)) {
+    const candidateSessionId = (resolvedInput as Readonly<Record<string, unknown>>).sessionId;
+    if (typeof candidateSessionId === 'string') {
+      const resolved = await executor.resolveSessionTarget(candidateSessionId);
+      if (!resolved.ok) {
+        throw Object.assign(new Error(`Could not resolve Session: ${candidateSessionId}`), {
+          expectedFailure: true,
+          code: resolved.code,
+          candidates: resolved.candidates,
+        });
+      }
+      defaultSessionId = resolved.sessionId;
+      resolvedInput = Object.freeze({ ...resolvedInput, sessionId: resolved.sessionId });
+    }
   }
-  const spec = (data as PublicActionResultById['action.spec.get']).actionSpec;
-  console.log(sectionTitle('Action'));
-  console.log(definitionList([
-    { label: 'ID', value: spec.id },
-    { label: 'Title', value: spec.title },
-    { label: 'Description', value: spec.description ?? '' },
-    { label: 'Safety', value: spec.safety },
-  ].filter((row) => row.value)));
-  console.log(sectionTitle('Input schema'));
-  await writeJsonStdout(spec.inputSchema, { pretty: true });
+  const invocationOptions = {
+    ...actionContext(signal),
+    actionRequestId: invocation.requestId,
+    ...(defaultSessionId ? { defaultSessionId } : {}),
+    ...(machineId ? {
+      externalActionTarget: {
+        kind: 'machine' as const,
+        machineId,
+        ...(projectDirectory ? {
+          project: {
+            machineId,
+            directory: projectDirectory,
+            ...(workspaceRefId ? { workspaceRefId } : {}),
+          },
+        } : {}),
+      },
+    } : {}),
+  };
+  const data = unwrapOuterActionResult(
+    await executor.execute(invocation.actionId, resolvedInput, invocationOptions),
+  );
+  if (json) await printJsonEnvelope({ ok: true, kind: 'actions_invoke', data }); else await writeJsonStdout(data, { pretty: true });
 }
 
-export async function handleActionsCommand(args: string[], deps: Partial<ActionsDeps> = {}, signal?: AbortSignal): Promise<void> {
+export async function handleActionsCommand(
+  args: string[],
+  deps: Partial<ActionsDeps & ActionCliExecutionDeps> = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  const subcommand = args[0];
+  if (subcommand === 'search' || subcommand === 'get') {
+    const command = findCompiledActionCliCommand(
+      ['actions', subcommand],
+      listCompiledActionCliCommands(),
+    );
+    if (!command) throw new Error(`Missing compiled actions ${subcommand} command.`);
+    await runCompiledActionCliCommand({
+      command,
+      argv: ['actions', ...args],
+      ...(signal ? { signal } : {}),
+      deps,
+    });
+    return;
+  }
   try { await execute(args, { ...DEFAULT_DEPS, ...deps }, signal); }
   catch (error) {
     const candidate = error instanceof Error ? error as ActionCommandError : null;
-    const mapped = candidate?.actionFailure === true
+    const mapped = candidate?.actionFailure === true || candidate?.expectedFailure === true
       ? { code: String(candidate.code ?? 'action_failed'), unexpected: false, message: candidate.message }
       : mapUnknownErrorToControlError(error);
     const structured = {
       code: mapped.code,
       ...(mapped.message ? { message: mapped.message } : {}),
-      ...(candidate?.actionFailure === true && Array.isArray(candidate.candidates) ? { candidates: candidate.candidates } : {}),
+      ...(Array.isArray(candidate?.candidates) ? { candidates: candidate.candidates } : {}),
       ...(candidate?.actionFailure === true && candidate.details !== undefined ? { details: candidate.details } : {}),
     };
     if (wantsJson(args)) await printJsonEnvelope({ ok: false, kind: `actions_${args[0] ?? 'help'}`, error: structured }, { exitCode: mapped.unexpected ? 2 : 1 });

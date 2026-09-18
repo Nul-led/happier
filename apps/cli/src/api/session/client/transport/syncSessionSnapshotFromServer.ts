@@ -3,7 +3,10 @@ import type { ManagedConnectionSupervisor } from '@happier-dev/connection-superv
 
 import type { AgentState, Metadata } from '../../../types';
 import type { StoredCredentials } from '@/persistence';
-import type { SessionMetadataEnvelopeTupleSnapshot } from '@/session/metadata/updateSessionMetadataWithRetry';
+import type {
+    SessionMetadataEnvelopeTupleSnapshot,
+    SessionMetadataSharedEditorSnapshot,
+} from '@/session/metadata/updateSessionMetadataWithRetry';
 import type { KnownPendingQueueState } from '../../pendingQueueState';
 import { fetchSessionSnapshotUpdateFromServer } from '../../snapshotSync';
 import type { SessionSnapshotRefreshReason } from '../../sessionSnapshotRefreshReason';
@@ -17,7 +20,8 @@ export async function syncSessionSnapshotFromServer(
         token: string;
         sessionId: string;
         credentials?: StoredCredentials | null;
-        accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+        metadataAuthority?: 'owner' | 'shared_editor';
+        accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse | null;
         currentMetadataLayoutVersion: number;
         currentMetadataVersion: number;
         currentAgentStateVersion: number;
@@ -30,7 +34,11 @@ export async function syncSessionSnapshotFromServer(
         setMetadataEnvelopeTupleSnapshot: (
             snapshot: SessionMetadataEnvelopeTupleSnapshot,
         ) => void;
+        setSharedMetadataTupleSnapshot?: (
+            snapshot: SessionMetadataSharedEditorSnapshot,
+        ) => void;
         applyPendingQueueState: (state: KnownPendingQueueState) => void;
+        reconcilePendingExecutionRunTarget?: (runId: string) => Promise<void>;
         applyLatestTurnStatus: (status: LatestTurnStatusSnapshot, observedAt?: number) => void;
         reason: SessionSnapshotRefreshReason;
     }> & SessionStoredContentCryptoContext,
@@ -39,6 +47,9 @@ export async function syncSessionSnapshotFromServer(
         token: params.token,
         sessionId: params.sessionId,
         credentials: params.credentials,
+        ...(params.metadataAuthority
+            ? { metadataAuthority: params.metadataAuthority }
+            : {}),
         accountEncryptionCurrentness: params.accountEncryptionCurrentness,
         ...(params.mode === 'plain'
             ? { mode: 'plain' as const, ctx: null }
@@ -63,6 +74,8 @@ export async function syncSessionSnapshotFromServer(
 
     if (update.metadataTuple) {
         params.setMetadataEnvelopeTupleSnapshot(update.metadataTuple);
+    } else if (update.sharedMetadataTuple) {
+        params.setSharedMetadataTupleSnapshot?.(update.sharedMetadataTuple);
     } else if (update.metadata) {
         const metadataLayoutVersion = update.metadataLayoutVersion === undefined
             ? params.currentMetadataLayoutVersion
@@ -76,13 +89,17 @@ export async function syncSessionSnapshotFromServer(
         }
     }
 
-    if (!update.metadataTuple && update.agentState) {
+    if (!update.metadataTuple && !update.sharedMetadataTuple && update.agentState) {
         params.setAgentStateSnapshot(update.agentState.agentState, update.agentState.agentStateVersion);
     }
 
     if (update.pendingQueueState) {
         params.applyPendingQueueState(update.pendingQueueState);
     }
+
+    await Promise.all((update.pendingExecutionRunIds ?? []).map(async (runId) => {
+        await params.reconcilePendingExecutionRunTarget?.(runId);
+    }));
 
     const latestTurnStatus = update.latestTurnStatus;
     if (latestTurnStatus !== undefined) {

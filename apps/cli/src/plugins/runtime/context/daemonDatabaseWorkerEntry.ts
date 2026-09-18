@@ -151,10 +151,17 @@ export async function runDaemonDatabaseWorkerChild(): Promise<void> {
                         rows.push(row);
                         encodedBytes += separatorBytes + rowBytes;
                     }
+                    const changesRow = database.prepare('SELECT changes() AS changes').get() as Readonly<{
+                        changes: Parameters<typeof encodeDaemonDatabaseWorkerValue>[0];
+                    }>;
                     write({
                         id: request.id,
                         ok: true,
-                        result: { kind: 'rows', rows },
+                        result: {
+                            kind: 'rows',
+                            rows,
+                            changes: encodeDaemonDatabaseWorkerValue(changesRow.changes),
+                        },
                     });
                     return;
                 }

@@ -12,6 +12,116 @@ describe('session handoff start operation exclusion', () => {
     vi.useRealTimers();
   });
 
+  it('replaces an unavailable negotiated transport with the first available preference before source preparation', async () => {
+    const prepareStartedState = vi.fn(async ({ handoffId, request }: {
+      handoffId: string;
+      request: { negotiatedTransportStrategy?: 'direct_peer' | 'server_routed_stream' };
+    }) => ({
+      nextState: {
+        status: {
+          handoffId,
+          status: 'pending' as const,
+          phase: 'preparing' as const,
+          transportStrategy: request.negotiatedTransportStrategy,
+          recoveryActions: [],
+        },
+      },
+      endpointCandidates: [],
+      targetPath: '/tmp/project',
+    }));
+    const handler = createSessionHandoffStartActionHandler({
+      activeServerDir: '/tmp/happier-handoff-transport-negotiation-test',
+      createUuid: () => 'transport-negotiation',
+      loadSessionMetadata: async () => ({ path: '/tmp/project' }),
+      machineTransferChannelPresent: true,
+      directPeerTransfer: undefined,
+      stopSessionForHandoff: vi.fn(async () => 'already_inactive' as const),
+      prepareJobStore: { write: vi.fn() },
+      sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
+      prepareStartedState: prepareStartedState as never,
+      exportSessionBundle: vi.fn() as never,
+      waitForPersistedSourceExport: vi.fn() as never,
+      invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
+      buildStartPendingStatus: vi.fn() as never,
+      buildStartRecoveryStatus: vi.fn() as never,
+      buildPrepareJobRecord: vi.fn() as never,
+      invalidRequest: () => ({ ok: false, errorCode: 'invalid_request' }),
+      sessionOperationExclusion: {
+        acquire: vi.fn(async () => ({
+          status: 'acquired' as const,
+          claim: {
+            renew: vi.fn(async () => true),
+            release: vi.fn(async () => undefined),
+            record: { claimId: 'transport-negotiation-claim' },
+          },
+        })),
+      } as never,
+      retainSessionOperationClaim: vi.fn(),
+      releaseSessionOperationClaim: vi.fn(async () => undefined),
+    });
+
+    await expect(handler({
+      sessionId: 'session-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+      negotiatedTransportStrategy: 'direct_peer',
+    })).resolves.toMatchObject({
+      status: { transportStrategy: 'server_routed_stream' },
+    });
+    expect(prepareStartedState).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        negotiatedTransportStrategy: 'server_routed_stream',
+      }),
+    }));
+  });
+
+  it('returns transport_unavailable before metadata, claim, stop, or prepare when no preferred transport is available', async () => {
+    const loadSessionMetadata = vi.fn(async () => ({ path: '/tmp/project' }));
+    const acquire = vi.fn();
+    const stopSessionForHandoff = vi.fn(async () => 'already_inactive' as const);
+    const prepareStartedState = vi.fn();
+    const handler = createSessionHandoffStartActionHandler({
+      activeServerDir: '/tmp/happier-handoff-transport-unavailable-test',
+      createUuid: () => 'transport-unavailable',
+      loadSessionMetadata,
+      machineTransferChannelPresent: false,
+      directPeerTransfer: undefined,
+      stopSessionForHandoff,
+      prepareJobStore: { write: vi.fn() },
+      sourceExportStore: { save: vi.fn(), writeAgentBundleFile: vi.fn() } as never,
+      prepareStartedState: prepareStartedState as never,
+      exportSessionBundle: vi.fn() as never,
+      waitForPersistedSourceExport: vi.fn() as never,
+      invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
+      buildStartPendingStatus: vi.fn() as never,
+      buildStartRecoveryStatus: vi.fn() as never,
+      buildPrepareJobRecord: vi.fn() as never,
+      invalidRequest: () => ({ ok: false, errorCode: 'invalid_request' }),
+      sessionOperationExclusion: { acquire } as never,
+      retainSessionOperationClaim: vi.fn(),
+      releaseSessionOperationClaim: vi.fn(async () => undefined),
+    });
+
+    await expect(handler({
+      sessionId: 'session-1',
+      sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target',
+      sessionStorageMode: 'persisted',
+      preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+      negotiatedTransportStrategy: 'direct_peer',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'transport_unavailable',
+      error: 'transport_unavailable',
+    });
+    expect(loadSessionMetadata).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(stopSessionForHandoff).not.toHaveBeenCalled();
+    expect(prepareStartedState).not.toHaveBeenCalled();
+  });
+
   it('cancels transport wait behind passive repair without starting handoff effects after release', async () => {
     const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-handoff-start-barrier-cancel-'));
     const sessionOperationExclusion = createExternalSessionOperationExclusion({

@@ -3166,11 +3166,15 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
             contributes: createMergedContributionRegistry(localContributes, {}),
             generationAuthority: localGenerationAuthority,
             accountSettingsRecordAdapter: {
-                async readRecord() {
-                    return { status: 'absent' };
-                },
-                async writeRecord() {
-                    return { status: 'unavailable' };
+                async bindOperation() {
+                    return {
+                        async readRecord() {
+                            return { status: 'absent' };
+                        },
+                        async writeRecord() {
+                            return { status: 'unavailable' };
+                        },
+                    };
                 },
             },
         });
@@ -3515,8 +3519,8 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                             createArgs(target) {
                                 return ['attach', '--session', target.providerSessionId];
                             },
-                            buildHealthUrl(target) {
-                                return 'https://attach.example.test/' + target.providerSessionId;
+                            resolveReachability(target) {
+                                return { kind: 'http', url: 'https://attach.example.test/' + target.providerSessionId };
                             },
                         },
                         terminalPromptSubmitVerification: {

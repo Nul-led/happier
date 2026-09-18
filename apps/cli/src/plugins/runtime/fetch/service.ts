@@ -806,35 +806,58 @@ export function createPluginHttpService(params: CreatePluginHttpServiceParams): 
         if (!registry) return request;
         const privateCredentialHeaderNames = params.readPrivateCredentialHeaderNames?.(request)
             ?? NO_PRIVATE_CREDENTIAL_HEADER_NAMES;
-
-        const matchingDeclarations = registry.declarations.filter((declaration) => (
-            contributionAllowsRequest(declaration.contribution, request)
-        ));
-        if (matchingDeclarations.length === 0) return request;
-
-        try {
-            await registry.activateContributionsOnDemand(Object.freeze(matchingDeclarations.map((declaration) => Object.freeze({
-                pluginId: declaration.pluginId,
-                family: 'requestInterceptors' as const,
-                localId: declaration.contribution.id,
-            }))));
-        } catch {
-            throw new PluginError({
-                code: 'plugin_fetch_interceptor_failed',
-                message: 'Request interceptor activation failed',
-            });
-        }
-
-        const bindings = resolveDemandedBindings({
-            declarations: matchingDeclarations,
-            bindings: registry.readBindings(),
-        });
+        const demandedInterceptorKeys = new Set<string>();
+        const appliedInterceptorKeys = new Set<string>();
         let effectiveRequest = request;
-        for (const binding of bindings) {
+        while (true) {
             assertNotAborted(signal);
-            if (!contributionAllowsRequest(binding.contribution, effectiveRequest)) continue;
+            const matchingDeclarations = registry.declarations.filter((declaration) => {
+                const key = bindingIdentity(declaration.pluginId, declaration.contribution.id);
+                return !appliedInterceptorKeys.has(key)
+                    && contributionAllowsRequest(declaration.contribution, effectiveRequest);
+            });
+            if (matchingDeclarations.length === 0) break;
+
+            const undemandedDeclarations = matchingDeclarations.filter((declaration) => (
+                !demandedInterceptorKeys.has(bindingIdentity(
+                    declaration.pluginId,
+                    declaration.contribution.id,
+                ))
+            ));
+            if (undemandedDeclarations.length > 0) {
+                try {
+                    await registry.activateContributionsOnDemand(Object.freeze(undemandedDeclarations.map((declaration) => Object.freeze({
+                        pluginId: declaration.pluginId,
+                        family: 'requestInterceptors' as const,
+                        localId: declaration.contribution.id,
+                    }))));
+                } catch {
+                    throw new PluginError({
+                        code: 'plugin_fetch_interceptor_failed',
+                        message: 'Request interceptor activation failed',
+                    });
+                }
+                for (const declaration of undemandedDeclarations) {
+                    demandedInterceptorKeys.add(bindingIdentity(
+                        declaration.pluginId,
+                        declaration.contribution.id,
+                    ));
+                }
+            }
+
+            const bindings = resolveDemandedBindings({
+                declarations: matchingDeclarations,
+                bindings: registry.readBindings(),
+            });
+            const binding = bindings.find((candidate) => (
+                !activeInterceptorKeys.has(bindingIdentity(
+                    candidate.pluginId,
+                    candidate.contribution.id,
+                ))
+            ));
+            if (!binding) break;
+
             const key = bindingIdentity(binding.pluginId, binding.contribution.id);
-            if (activeInterceptorKeys.has(key)) continue;
 
             const snapshot = snapshotInterceptorRequest(
                 effectiveRequest,
@@ -866,6 +889,7 @@ export function createPluginHttpService(params: CreatePluginHttpServiceParams): 
                     message: `Request interceptor '${binding.pluginId}/${binding.contribution.id}' denied the request`,
                 });
             }
+            appliedInterceptorKeys.add(key);
             effectiveRequest = adaptContinuedRequest({
                 pluginId: binding.pluginId,
                 interceptorId: binding.contribution.id,

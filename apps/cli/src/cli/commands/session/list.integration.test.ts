@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 
 import {
+  AccountEncryptionCurrentnessResponseSchema,
   deriveBoxPublicKeyFromSeed,
   sealEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
@@ -19,12 +20,14 @@ describe('happier session list (integration)', () => {
   let envScope = createEnvKeyScope(envKeys);
   let server: Server | null = null;
   let happyHomeDir = '';
+  let queryRequests: unknown[] = [];
 
   const normalSessionId = 'sess_integration_list_123';
   const systemSessionId = 'sess_integration_system_456';
   const archivedSessionId = 'sess_integration_archived_999';
 
   beforeEach(async () => {
+    queryRequests = [];
     process.env.HAPPIER_ACCOUNT_SETTINGS_MODE = 'never';
 
     happyHomeDir = await createTempDir('happier-cli-session-list-');
@@ -86,6 +89,31 @@ describe('happier session list (integration)', () => {
 
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+      if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(AccountEncryptionCurrentnessResponseSchema.parse({
+          mode: 'e2ee', version: 1, signingKeyFingerprint: null,
+          contentKeyFingerprint: null, updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'available' },
+        })));
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/v2/sessions/query') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', () => {
+          queryRequests.push(JSON.parse(body));
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({
+            sessions: [],
+            nextCursor: null,
+            hasNext: false,
+            attentionNextCursor: 'cursor_v1_attention-next',
+            attentionHasNext: true,
+          }));
+        });
+        return;
+      }
       if (req.method === 'GET' && url.pathname === `/v2/sessions`) {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
@@ -229,6 +257,101 @@ describe('happier session list (integration)', () => {
       expect(parsed.data?.sessions?.[0]?.host).toBe('host1');
       expect(parsed.data?.sessions?.[0]?.encryption?.type).toBe('dataKey');
       expect(parsed.data?.sessions?.some((s: any) => s.id === systemSessionId)).toBe(false);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('preserves unfinished attention paging in the summary JSON', async () => {
+    const { handleSessionCommand } = await import('./index');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['list', '--scope', 'my_work', '--json'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+      const result = output.json();
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          sessions: [],
+          nextCursor: null,
+          hasNext: false,
+          attentionNextCursor: 'cursor_v1_attention-next',
+          attentionHasNext: true,
+          queryVersion: 1,
+        },
+      });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('emits the marked awareness query page with truthful attention continuation', async () => {
+    const { handleSessionCommand } = await import('./index');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['list', '--scope', 'my_work', '--json', '--awareness'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+      const result = output.json();
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result.data).toEqual({
+        view: 'awareness',
+        projectionVersion: 1,
+        sessions: [],
+        nextCursor: null,
+        hasNext: false,
+        attentionNextCursor: 'cursor_v1_attention-next',
+        attentionHasNext: true,
+      });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('continues attention paging independently through the session query endpoint', async () => {
+    const { handleSessionCommand } = await import('./index');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['list', '--attention-cursor', 'cursor_v1_attention-next', '--json'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+      const result = output.json();
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, data: { attentionHasNext: true } });
+      expect(queryRequests).toEqual([{
+        v: 1, storage: 'active', includeInactive: false, scope: 'my_work',
+        attention: 'any', audiences: [], tagIds: [], attentionCursor: 'cursor_v1_attention-next',
+      }]);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it.each([
+    ['--attention-cursor', ''],
+    ['--attention-cursor', 'garbage'],
+    ['--attention-cursor', 'cursor_v1_attention-next', '--cursor', 'cursor_v1_ordinary-next'],
+  ])('rejects invalid attention continuation before credentials: %j', async (...flags) => {
+    const { handleSessionCommand } = await import('./index');
+    let credentialReads = 0;
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['list', ...flags, '--json'], {
+        readCredentialsFn: async () => { credentialReads += 1; return null; },
+      });
+      expect(output.json()).toMatchObject({ ok: false });
+      expect(credentialReads).toBe(0);
+      expect(queryRequests).toEqual([]);
     } finally {
       output.restore();
     }

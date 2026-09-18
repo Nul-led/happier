@@ -6,6 +6,7 @@ import {
 
 import {
     createConnectedAccountConfigurationOwner,
+    parseConnectedAccountConfigurationRecordContent,
     type ConnectedAccountConfigurationRecord,
     type ConnectedAccountConfigurationTarget,
 } from './configurationOwner';
@@ -159,6 +160,60 @@ function createHarness(records: readonly Readonly<{
 }
 
 describe('ConnectedAccountConfigurationOwner', () => {
+    it('accepts schema-valid nested objects without imposing a duplicate field budget', () => {
+        const nested = Object.fromEntries(
+            Array.from({ length: 65 }, (_value, index) => [`field-${index}`, index]),
+        );
+
+        expect(parseConnectedAccountConfigurationRecordContent({
+            values: { nested },
+            secretRefs: {},
+        }, 'revision-nested')).toMatchObject({
+            values: { nested },
+            secretRefs: {},
+        });
+    });
+
+    it('accepts every field declared by the configuration schema without a private host field budget', async () => {
+        const fields = Array.from({ length: 65 }, (_value, index) => ({
+            id: `field${index}`,
+            title: `Field ${index}`,
+            schema: { type: 'string' as const },
+            required: true,
+        }));
+        const values = Object.fromEntries(fields.map((field) => [field.id, field.id]));
+        const mode = PluginConnectedAccountAuthenticationModeV2Schema.parse({
+            ...configuredMode('service'),
+            configuration: {
+                scope: 'service',
+                changeBehavior: 'refresh',
+                fields,
+            },
+        });
+        const target = Object.freeze({
+            kind: 'service' as const,
+            service,
+            modeId: mode.id,
+        });
+        const harness = createHarness([{
+            target,
+            record: {
+                revision: 'revision-wide',
+                values,
+                secretRefs: {},
+            },
+        }]);
+
+        await expect(harness.owner.inspect({
+            target,
+            mode,
+            ...generation,
+        })).resolves.toMatchObject({
+            status: 'ready',
+            values,
+        });
+    });
+
     it('inspects normalized readiness without exposing secret refs and binds explicit secret replacements', async () => {
         const target = Object.freeze({
             kind: 'service' as const,

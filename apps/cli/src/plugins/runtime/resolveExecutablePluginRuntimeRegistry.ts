@@ -123,7 +123,8 @@ import {
     resolveCurrentSessionCapabilityBinding,
     resolveCurrentSessionUiBinding,
 } from '@/session/presentation/currentSessionUiBindings';
-import { readStoredCredentials } from '@/persistence';
+import { readStoredCredentials, type StoredCredentials } from '@/persistence';
+import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import { createPluginSessionsInventory } from '@/session/services/pluginSessionsInventory';
 import { executePluginSessionMessageAction } from '@/session/services/executePluginSessionMessageAction';
 import { createAgentExternalSessionsExecutionSurface } from '@/agent/runtime/registry/agentExternalSessionsExecutionSurface';
@@ -148,7 +149,10 @@ import {
 import { createUnavailablePluginServices } from './invocation/services/unavailable';
 import { projectOrdinaryPluginSessionLiveCapabilities } from './context/session/ordinaryPluginSessionLiveCapabilities';
 import type { createTargetActionInvocationRegistry } from './invocation/targetActionRegistry';
-import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
+import {
+    createCliActionExecutorFromCredentials,
+    type CliActionMachineAdmissionTransport,
+} from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
     createAutomationEventAdoptedDefinitionSetHostV1,
 } from '@/plugins/runtime/automations/automationEventAdoptedDefinitionSetHost';
@@ -537,6 +541,26 @@ export type ManagedProviderRuntimeOperationClaim = Readonly<
         machineId: string;
     }
     | {
+        kind: 'providerBroker';
+        operation:
+            | Readonly<{ kind: 'session'; sessionId: string }>
+            | Readonly<{
+                kind: 'execution_run';
+                executionRunId: string;
+            }>
+            | Readonly<{
+                kind: 'external_api_key';
+                externalApiKeyId: string;
+                assignedAccountId: string;
+                assignedTeamMembershipId: string;
+            }>
+            | Readonly<{
+                kind: 'resource_test';
+                actorAccountId: string;
+                requestId: string;
+            }>;
+    }
+    | {
         kind: 'sessionDemand';
         sessionId: string;
         runtimeBindingBasis: ProviderRuntimeBindingBasisV1;
@@ -561,7 +585,13 @@ export type ManagedProviderExplicitStartJoinInput = Readonly<{
     identity: PluginContributionRef;
     purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
     machineId: string;
+    operationClaim?: Extract<
+        ManagedProviderRuntimeOperationClaim,
+        { kind: 'providerBroker' }
+    >;
+    signal?: AbortSignal;
     isCurrent(): boolean;
+    revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
     establish: ManagedProviderExplicitStartOperationInput['establish'];
 }>;
 
@@ -784,6 +814,22 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     runManagedProviderExplicitStart?(
         input: ManagedProviderExplicitStartJoinInput,
     ): Promise<ManagedProviderExplicitStartJoinResult>;
+    retireManagedProviderExplicitStart?(input: Readonly<{
+        identity: PluginContributionRef;
+        machineId: string;
+        operationClaim?: Extract<
+            ManagedProviderRuntimeOperationClaim,
+            { kind: 'providerBroker' }
+        >;
+    }>): Promise<boolean>;
+    retireManagedProviderExternalApiKey?(input: Readonly<{
+        identity: PluginContributionRef;
+        externalApiKeyId: string;
+    }>): Promise<boolean>;
+    revalidateManagedProviderExplicitStarts?(signal?: AbortSignal): Promise<number>;
+    retireManagedProviderExplicitStarts?(
+        lifecycleKind: 'publicExplicitStart' | 'providerBroker',
+    ): Promise<number>;
     createRetainedManagedProviderRuntimeInvocationServices?(input: Readonly<{
         scope: RetainedManagedProviderRuntimeInvocationScope;
         signal: AbortSignal;
@@ -824,7 +870,10 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     resolveQualifiedConnectedAccountEstablishedRuntimeOwner?():
         Pick<QualifiedConnectedAccountEstablishedRuntimeOwner, 'invoke'> | null;
     resolveConnectedAccountPurposeBindingOwner?():
-        Pick<StablePluginConnectedAccountsOwner, 'getBinding' | 'materialize' | 'watch'> | null;
+        Pick<
+            StablePluginConnectedAccountsOwner,
+            'getBinding' | 'materialize' | 'watch' | 'listAccounts'
+        > | null;
     /** Host-private credential-file custody shared by managed services and Agent launch. */
     resolveManagedServiceCredentialFileOwner?(): ManagedServiceCredentialFileOwner | null;
     managedDependencies?: StablePluginManagedDependenciesHost;
@@ -1569,6 +1618,8 @@ export type PluginRuntimeNetworkDependencies = Readonly<{
     resolveNetworkAddresses?: PluginNetworkAddressResolver;
 }> & GlobalFetchRuntimeDependencies;
 
+export type PluginRuntimeMachineAdmissionTransport = CliActionMachineAdmissionTransport;
+
 export async function resolveExecutablePluginRuntimeRegistry(
     params?: Readonly<{
         happyHomeDir?: string;
@@ -1576,6 +1627,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
         generation?: number;
         /** Daemon-owned live machine identity for host-stamped nested Action callers. */
         resolveCurrentMachineId?: () => string | null;
+        /** Existing authenticated Machine admission authority for protected Session input. */
+        machineAdmissionTransport?: PluginRuntimeMachineAdmissionTransport;
         /** Existing daemon-local transfer carrier for host-authored media bytes. */
         resolveComposerMediaStageTransferRpcHandler?: () => RpcHandlerInvoker | null;
         /** Fresh server/machine identity; never a retained feature snapshot. */
@@ -1611,6 +1664,15 @@ export async function resolveExecutablePluginRuntimeRegistry(
         recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
         stableEventsBroker?: import('./invocation/services/events').StablePluginEventsBroker;
         runtimeActionExecute?: RuntimeActionExecute;
+        /**
+         * Exact host-admitted Action authority for a scoped executable registry.
+         * When present, every nested plugin Action uses this credential/policy
+         * pair and this registry never consults ambient CLI Account storage.
+         */
+        scopedActionRuntime?: Readonly<{
+            credentials: StoredCredentials | null;
+            actionsSettingsProvider: RuntimeActionSettingsProvider;
+        }>;
         /** Controller-lifetime target-local observer owner; never generation-local. */
         targetedContributions?: StableTargetedContributionsOwner;
         managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
@@ -1636,6 +1698,16 @@ export async function resolveExecutablePluginRuntimeRegistry(
     }>,
 ): Promise<ResolvedExecutablePluginRuntimeRegistry> {
     const generation = params?.generation ?? 0;
+    const scopedActionRuntime = params?.scopedActionRuntime;
+    const readSessionCredentials = scopedActionRuntime
+        ? async () => scopedActionRuntime.credentials
+        : readStoredCredentials;
+    const accountCredentialAuthority = scopedActionRuntime
+        ? Object.freeze({
+            readCredentials: readSessionCredentials,
+            actionsSettingsProvider: scopedActionRuntime.actionsSettingsProvider,
+        })
+        : undefined;
     const pluginStorePaths = resolvePluginStorePaths({
         happyHomeDir: params?.happyHomeDir,
     });
@@ -1663,6 +1735,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
         selectBundledExecutableImmutableArtifacts({
             artifacts: BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
             activationTargets: contributes.activationTargets,
+            ...(params?.pluginIds === undefined ? {} : { pluginIds: params.pluginIds }),
         });
     if (!params?.generationAuthority) {
         await prepareBundledExecutableGenerationAdmission({
@@ -2123,10 +2196,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
         happyHomeDir: params?.happyHomeDir,
         resolveActivationSource: resolveCommittedActivationSource,
         adoptActivationComponent: (component) => adoptActivationComponent(component),
-        // A generation-long background service that stops while its generation
-        // is current is the same terminal activation failure a rejected
-        // readiness participant is; only the owner that observed it differs.
-        // Route both through this registry's fence before the host callback, so
+        // Route terminal activation failures through this registry's fence
+        // before the host callback, so
         // no reader keeps seeing a fenced plugin's applied generation, stale
         // diagnostics, or live consumer generation.
         onTerminalActivationFailure: (pluginId: string) => {
@@ -2336,9 +2407,19 @@ export async function resolveExecutablePluginRuntimeRegistry(
     );
     const resolveServerFeaturesSnapshot = params?.resolveServerFeaturesSnapshot;
     const accountStorageHost = createAccountPluginDataStorageHost({
-        contracts: (authoritativeContributes.accountCollections ?? Object.freeze([]))
-            .map((entry) => entry.definition),
+        contracts: scopedActionRuntime
+            ? Object.freeze([])
+            : (authoritativeContributes.accountCollections ?? Object.freeze([]))
+                .map((entry) => entry.definition),
         ...(params?.accountStorageDependencies ?? {}),
+        ...(accountCredentialAuthority
+            ? {
+                readCredentials: accountCredentialAuthority.readCredentials,
+                isCurrentAccount: () => false,
+                resolveAccountScopeKey: () => null,
+                subscribeChanges: () => () => {},
+            }
+            : {}),
         // Collection admission and plugin-facing feature decisions consume the SAME
         // daemon snapshot resolver; the host does not keep a second one.
         ...(resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot } : {}),
@@ -2389,6 +2470,11 @@ export async function resolveExecutablePluginRuntimeRegistry(
             registry: {
                 resources: committedResourceContributes.flatMap((resource) => {
                     if (resource.pluginId === undefined) return [];
+                    if (
+                        scopedActionRuntime
+                        && isDynamicPluginResourceContributionV2(resource.definition)
+                        && (resource.definition.hostAccess?.length ?? 0) > 0
+                    ) return [];
                     const generation = committed?.generations.get(resource.pluginId);
                     if (!generation) return [];
                     if (!hasCommittedResourceActivationTarget(resource.pluginId)) {
@@ -2400,7 +2486,11 @@ export async function resolveExecutablePluginRuntimeRegistry(
             generations: committedResourceGenerations,
             immutableGenerationIdsByPluginId:
                 committedImmutableGenerationIdsByPluginId,
-            dynamicProducers: dynamicResourceProducers,
+            dynamicProducers: scopedActionRuntime
+                ? dynamicResourceProducers.filter((producer) => (
+                    producer.hostAccessRequests.length === 0
+                ))
+                : dynamicResourceProducers,
             bindDynamicResourceAccountStorage,
             ...(params?.resolveSessionResourceAccess
                 ? { resolveSessionResourceAccess: params.resolveSessionResourceAccess }
@@ -2997,20 +3087,22 @@ export async function resolveExecutablePluginRuntimeRegistry(
             agentRuntimesByAgentId.set(agentId, lease);
         }
     };
-    const sessionCredentials = await readStoredCredentials();
-    const configuredExternalSessionAgentDemands = Object.freeze(
-        authoritativeContributes.agents.flatMap((agent) => (
-            agent.pluginId
-            && agent.richDefinition?.definition.surfaces?.externalSession.sources
-                .some((source) => (source.instances?.length ?? 0) > 0) === true
-                ? [Object.freeze({
-                    pluginId: agent.pluginId,
-                    family: 'agents' as const,
-                    localId: agent.identity?.localId ?? agent.id,
-                })]
-                : []
-        )),
-    );
+    const sessionCredentials = await readSessionCredentials();
+    const configuredExternalSessionAgentDemands = scopedActionRuntime
+        ? Object.freeze([])
+        : Object.freeze(
+            authoritativeContributes.agents.flatMap((agent) => (
+                agent.pluginId
+                && agent.richDefinition?.definition.surfaces?.externalSession.sources
+                    .some((source) => (source.instances?.length ?? 0) > 0) === true
+                    ? [Object.freeze({
+                        pluginId: agent.pluginId,
+                        family: 'agents' as const,
+                        localId: agent.identity?.localId ?? agent.id,
+                    })]
+                    : []
+            )),
+        );
     let currentGlobalExternalSessions: Awaited<
         ReturnType<typeof createCurrentGlobalExternalSessionsAuthorService>
     > | null = null;
@@ -3048,6 +3140,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             : String(cause);
     };
     const refreshCurrentGlobalExternalSessionsAuthorUnlocked = async (): Promise<void> => {
+        if (scopedActionRuntime) return;
         if (!sessionCredentials) return;
         const activeAgents = authoritativeContributes.agents.flatMap((agent) => {
             const lease = agentRuntimesByAgentId.get(agent.id);
@@ -3108,7 +3201,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 ...(params?.externalSessionsActiveServerId
                     ? { activeServerId: params.externalSessionsActiveServerId }
                     : {}),
-                readCredentials: readStoredCredentials,
+                readCredentials: readSessionCredentials,
                 resolveMachineId: () =>
                     params?.resolveExternalSessionCurrentMachineId?.() ?? null,
                 resolveAgentRuntime(agentId) {
@@ -3256,8 +3349,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 };
             },
         });
-    const publicCurrentGlobalExternalSessions =
-        params?.currentGlobalExternalSessionsRouter;
+    const publicCurrentGlobalExternalSessions = scopedActionRuntime
+        ? undefined
+        : params?.currentGlobalExternalSessionsRouter;
     /**
      * The public External Sessions service has one router binding regardless of
      * whether it came from an ordinary SDK context or a retained Runner. The
@@ -4007,6 +4101,12 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 }),
             ),
             input: request.input,
+            ...(params?.scopedActionRuntime
+                ? {
+                    actionsSettings:
+                        params.scopedActionRuntime.actionsSettingsProvider.getActionsSettings(),
+                }
+                : {}),
             ...(request.captureExecutionOrigin ? { captureExecutionOrigin: true as const } : {}),
             ...(request.expectedExecutionOrigin === undefined
                 ? {}
@@ -4066,7 +4166,14 @@ export async function resolveExecutablePluginRuntimeRegistry(
     const pluginActionExecutor = sessionCredentials
         ? createCliActionExecutorFromCredentials({
             credentials: sessionCredentials,
-            readCredentials: readStoredCredentials,
+            readCredentials: readSessionCredentials,
+            ...(params?.scopedActionRuntime
+                ? { actionsSettingsProvider: params.scopedActionRuntime.actionsSettingsProvider }
+                : {}),
+            ...(resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot } : {}),
+            ...(params?.machineAdmissionTransport
+                ? { machineAdmissionTransport: params.machineAdmissionTransport }
+                : {}),
             readRegisteredPromptAssetAdapters: () => promptAssetAdapters,
             revalidatePluginActionCallerMaterialization,
             revalidatePluginActionCallerImmutableGeneration,
@@ -4133,6 +4240,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
         ...(params?.accountSettingsRecordAdapter
             ? { accountSettingsRecordAdapter: params.accountSettingsRecordAdapter }
             : {}),
+        ...(accountCredentialAuthority ? { accountCredentialAuthority } : {}),
         ...(pluginActionExecutor ? { actionExecutor: pluginActionExecutor } : {}),
         resolveCurrentPluginMaterializationRef,
         invokeContributedAction,
@@ -4162,6 +4270,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                                 ),
                                 pluginId: seed.plugin.id,
                                 contributionLocalId: seed.contribution.id,
+                                immutableGenerationId,
                                 ...(seed.resolveCurrentPluginMaterializationRef
                                     ? {
                                         resolveCallerMaterialization:
@@ -4175,7 +4284,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
                         ),
                         credentials: sessionCredentials,
                         signal: seed.signal,
-                        readCredentials: readStoredCredentials,
+                        readCredentials: readSessionCredentials,
+                        ...(resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot } : {}),
                         currentSessionId: seed.session?.id ?? null,
                         sessionScopes: binding.sessionScopes ?? Object.freeze([]),
                         isCurrent: seed.isGenerationCurrent,
@@ -4193,7 +4303,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                         createHandleCapabilities: ({ sessionId, readSummary }) => (
                             createPluginSessionHandleCapabilitiesFactory({
                                 credentials: sessionCredentials,
-                                readCredentials: readStoredCredentials,
+                                readCredentials: readSessionCredentials,
                                 caller: {
                                     pluginId: seed.plugin.id,
                                     contributionId: seed.contribution.id,
@@ -4275,6 +4385,12 @@ export async function resolveExecutablePluginRuntimeRegistry(
             channels: authoritativeContributes.notificationChannels ?? Object.freeze([]),
             preferencePolicy: {
                 read(preference) {
+                    if (scopedActionRuntime) {
+                        return Object.freeze({
+                            enabled: true,
+                            revision: 'unavailable',
+                        });
+                    }
                     const snapshot = getActiveAccountSettingsSnapshot();
                     const enabled = preference.channelKind === 'plugin'
                         ? true
@@ -4292,6 +4408,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
                     });
                 },
                 watch(preference) {
+                    if (scopedActionRuntime) {
+                        return Object.freeze({ dispose: () => {} });
+                    }
                     const unsubscribe = subscribeActiveAccountSettingsSnapshot(() => {
                         preference.listener();
                     });
@@ -5073,7 +5192,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
             }
             const lifetime = createPluginInvocationLifetime(input.signal);
             const immutableGenerationId = immutableGenerationIdsByPluginId.get(input.attachment.pluginId);
-            const currentSession = resolveCurrentSessionUiBinding(input.sessionId);
+            const currentSession = input.scope.kind === 'session'
+                ? resolveCurrentSessionUiBinding(input.scope.sessionId)
+                : null;
             const seed = Object.freeze({
                 plugin: Object.freeze({ id: input.attachment.pluginId, version: pluginVersion }),
                 contribution: Object.freeze({
@@ -5083,7 +5204,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 generation: input.generation,
                 correlationId: randomUUID(),
                 surface: 'cli' as const,
-                session: Object.freeze({ id: input.sessionId }),
+                scope: input.scope,
+                ...(input.scope.kind === 'session'
+                    ? { session: Object.freeze({ id: input.scope.sessionId }) }
+                    : {}),
                 signal: lifetime.signal,
                 redactionLifetimeSignal: lifetime.redactionLifetimeSignal,
                 isGenerationCurrent: () => (
@@ -5108,13 +5232,15 @@ export async function resolveExecutablePluginRuntimeRegistry(
                     seed.contribution.qualifiedId,
                 );
                 const services = invocationServiceOwners.createServices(seed, serviceBinding);
-                return Object.freeze({
-                    context: Object.freeze({
+                const scope = input.scope;
+                const context = scope.kind === 'session'
+                    ? Object.freeze({
                         plugin: seed.plugin,
                         contribution: seed.contribution,
                         surface: seed.surface,
                         invokedAtMs: lifetime.invokedAtMs,
-                        session: seed.session,
+                        scope,
+                        session: Object.freeze({ id: scope.sessionId }),
                         signal: seed.signal,
                         services,
                         ui: createPluginInvocationPresentation({
@@ -5123,7 +5249,23 @@ export async function resolveExecutablePluginRuntimeRegistry(
                             isGenerationCurrent: seed.isGenerationCurrent,
                             ...(presentationOwner ? { presentationOwner } : {}),
                         }),
-                    }),
+                    })
+                    : Object.freeze({
+                        plugin: seed.plugin,
+                        contribution: seed.contribution,
+                        surface: seed.surface,
+                        invokedAtMs: lifetime.invokedAtMs,
+                        scope,
+                        signal: seed.signal,
+                        services,
+                        ui: createPluginInvocationPresentation({
+                            currentSession: null,
+                            signal: seed.signal,
+                            isGenerationCurrent: seed.isGenerationCurrent,
+                        }),
+                    });
+                return Object.freeze({
+                    context,
                     complete: () => lifetime.complete(),
                 });
             } catch (error) {
@@ -5265,11 +5407,31 @@ export async function resolveExecutablePluginRuntimeRegistry(
     // The activation owner has already recorded the one `unavailable` fact and
     // dropped the plugin from the activated set, so the derived final-policy
     // generation is already fenced for every reader. Refresh the diagnostics
-    // projection, which is materialized, and then retire the plugin's live
-    // consumer generation.
+    // projection, which is materialized, then retire the plugin's live consumer
+    // generation and release its per-plugin activation component. A terminally
+    // fenced component cannot serve a successor, so retaining its cleanup and
+    // runtime-disposable custody until whole-registry shutdown has no owner.
     async function fenceTerminalActivationFailure(pluginId: string): Promise<void> {
         refreshPluginDiagnostics(pluginId, readCurrentScmBackendDiagnostics());
-        await retirePluginConsumers([pluginId]);
+        const activationComponentLeases = retainedActivationRegistryLeases.filter((lease) => (
+            lease.pluginIds.size === 1 && lease.pluginIds.has(pluginId)
+        ));
+        const retireConsumers = retirePluginConsumers([pluginId]);
+        const cleanupResults = await Promise.allSettled([
+            retireConsumers,
+            activatedRegistry.settleRetiredBackgroundServices([pluginId]),
+            ...activationComponentLeases.map((lease) => lease.release()),
+        ]);
+        const failures = cleanupResults.flatMap((result) => (
+            result.status === 'rejected' ? [result.reason] : []
+        ));
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) {
+            throw new AggregateError(
+                failures,
+                `Failed to settle terminal activation failure for plugin '${pluginId}'`,
+            );
+        }
     }
     terminalActivationFailureFence = fenceTerminalActivationFailure;
 
@@ -5408,7 +5570,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
     // an isolated plugin that stays advertised as ready is exactly the fail-open
     // this fence exists to close. The activation owner records the one typed
     // diagnostic and drops the plugin from the activated set; retiring its
-    // consumers here fences the live generation while its peers keep serving.
+    // consumers and settling its activation component here fences and cleans
+    // the failed generation while its peers keep serving.
     async function recordPluginActivationFailure(pluginId: string, message: string): Promise<void> {
         activatedRegistry.recordPluginActivationFailure(pluginId, message);
         await fenceTerminalActivationFailure(pluginId);
@@ -5516,6 +5679,51 @@ export async function resolveExecutablePluginRuntimeRegistry(
             : null;
     }
 
+    function resolveExplicitManagedProviderOperationClaimId(input: Readonly<{
+        identity: PluginContributionRef;
+        machineId: string;
+        operationClaim?: Extract<
+            ManagedProviderRuntimeOperationClaim,
+            { kind: 'providerBroker' }
+        >;
+    }>): string | null {
+        const operation = input.operationClaim?.operation;
+        if (!operation) {
+            return createExplicitManagedProviderOperationClaimId(
+                input.identity,
+                input.machineId,
+            );
+        }
+        const operationIdentity = operation.kind === 'session'
+            ? operation.sessionId.trim()
+            : operation.kind === 'execution_run'
+                ? operation.executionRunId.trim()
+                : operation.kind === 'external_api_key'
+                    ? operation.externalApiKeyId.trim()
+                    : operation.requestId.trim();
+        return createManagedProviderBrokerOperationClaimId({
+            identity: input.identity,
+            operationKind: operation.kind,
+            operationIdentity,
+        });
+    }
+
+    function createManagedProviderBrokerOperationClaimId(input: Readonly<{
+        identity: PluginContributionRef;
+        operationKind: 'session' | 'execution_run' | 'external_api_key' | 'resource_test';
+        operationIdentity: string;
+    }>): string | null {
+        const operationIdentity = input.operationIdentity.trim();
+        if (!operationIdentity) return null;
+        return JSON.stringify([
+            'managed-provider-broker',
+            input.operationKind,
+            operationIdentity,
+            input.identity.pluginId,
+            input.identity.localId,
+        ]);
+    }
+
     async function runManagedProviderExplicitStart(
         input: ManagedProviderExplicitStartJoinInput,
     ): Promise<ManagedProviderExplicitStartJoinResult> {
@@ -5536,10 +5744,13 @@ export async function resolveExecutablePluginRuntimeRegistry(
         let operationId: string | null;
         let purposeBindingsEqualityKey: string;
         try {
-            operationId = createExplicitManagedProviderOperationClaimId(
+            operationId = resolveExplicitManagedProviderOperationClaimId({
                 identity,
-                input.machineId,
-            );
+                machineId: input.machineId,
+                ...(input.operationClaim
+                    ? { operationClaim: input.operationClaim }
+                    : {}),
+            });
             purposeBindingsEqualityKey =
                 createProviderManagedPurposeBindingsEqualityKeyV1(
                     input.purposeBindings,
@@ -5587,9 +5798,72 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 `${identity.pluginId}/providers/${identity.localId}`,
             generation: String(activatedRegistry.generation),
             purposeBindingsEqualityKey,
+            ...(input.signal ? { signal: input.signal } : {}),
+            lifecycleKind: input.operationClaim
+                ? 'providerBroker'
+                : 'publicExplicitStart',
+            ...(input.revalidateRetainedCurrentness
+                ? {
+                    revalidateRetainedCurrentness:
+                        input.revalidateRetainedCurrentness,
+                }
+                : {}),
             isCurrent: readsOperationCurrent,
             establish: input.establish,
         });
+    }
+
+    async function retireManagedProviderExplicitStart(input: Readonly<{
+        identity: PluginContributionRef;
+        machineId: string;
+        operationClaim?: Extract<
+            ManagedProviderRuntimeOperationClaim,
+            { kind: 'providerBroker' }
+        >;
+    }>): Promise<boolean> {
+        const operationId = resolveExplicitManagedProviderOperationClaimId(
+            input,
+        );
+        if (!operationId) return false;
+        return await daemonManagedServicesOwner
+            .retireManagedProviderExplicitStart({
+                operationId,
+                pluginId: input.identity.pluginId,
+                contributionQualifiedId:
+                    `${input.identity.pluginId}/providers/${input.identity.localId}`,
+            });
+    }
+
+    async function retireManagedProviderExternalApiKey(input: Readonly<{
+        identity: PluginContributionRef;
+        externalApiKeyId: string;
+    }>): Promise<boolean> {
+        const operationId = createManagedProviderBrokerOperationClaimId({
+            identity: input.identity,
+            operationKind: 'external_api_key',
+            operationIdentity: input.externalApiKeyId,
+        });
+        if (!operationId) return false;
+        return await daemonManagedServicesOwner.retireManagedProviderExplicitStart({
+            operationId,
+            pluginId: input.identity.pluginId,
+            contributionQualifiedId:
+                `${input.identity.pluginId}/providers/${input.identity.localId}`,
+        });
+    }
+
+    async function revalidateManagedProviderExplicitStarts(
+        signal?: AbortSignal,
+    ): Promise<number> {
+        return await daemonManagedServicesOwner
+            .revalidateManagedProviderExplicitStarts(signal);
+    }
+
+    async function retireManagedProviderExplicitStarts(
+        lifecycleKind: 'publicExplicitStart' | 'providerBroker',
+    ): Promise<number> {
+        return await daemonManagedServicesOwner
+            .retireManagedProviderExplicitStarts(lifecycleKind);
     }
 
     async function createManagedProviderRuntimeInvocationServicesInternal(
@@ -5738,6 +6012,13 @@ export async function resolveExecutablePluginRuntimeRegistry(
                     input.identity,
                     input.operationClaim.machineId,
                 );
+            }
+            if (input.operationClaim.kind === 'providerBroker') {
+                return resolveExplicitManagedProviderOperationClaimId({
+                    identity: input.identity,
+                    machineId: '',
+                    operationClaim: input.operationClaim,
+                });
             }
             const sessionId = input.operationClaim.sessionId.trim();
             return sessionId
@@ -6371,6 +6652,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
             getBinding: params.connectedAccounts.getBinding,
             materialize: params.connectedAccounts.materialize,
             watch: params.connectedAccounts.watch,
+            // Credential-free bounded metadata. SCM hosting routing needs the configured
+            // deployment bases of the accounts already authorized for its own purpose; a
+            // self-managed forge cannot recognize its own remotes without them.
+            listAccounts: params.connectedAccounts.listAccounts,
         })
         : null;
     // One currentness/generation guard for every live-resource call, so a
@@ -6559,10 +6844,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
         contributes: authoritativeContributes,
         durableRevision: committed?.commit?.revision ?? -1,
         generation: activatedRegistry.generation,
-        // Background-service settlement changes the existing activation fact
-        // in place at the lifecycle owner. Do not freeze the startup snapshot
-        // into the resolved registry or an invalidated daemon projection would
-        // still advertise the stopped runner as active.
+        // Component retirement changes the activation facts at the lifecycle
+        // owner. Do not freeze the startup snapshot into the resolved registry.
+        // Ordinary finite background-runner settlement remains diagnostic-only.
         get targetActivationFacts() {
             return activatedRegistry.targetActivationFacts;
         },
@@ -6628,6 +6912,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
         acquireManagedProviderRuntime,
         acquireProviderCatalogParsers,
         runManagedProviderExplicitStart,
+        retireManagedProviderExplicitStart,
+        retireManagedProviderExternalApiKey,
+        revalidateManagedProviderExplicitStarts,
+        retireManagedProviderExplicitStarts,
         createManagedProviderRuntimeInvocationServices,
         createRetainedManagedProviderRuntimeInvocationServices,
         activatePluginsForValidation,
@@ -7089,9 +7377,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                         [],
                         seed.contribution.qualifiedId,
                     );
-            return invocationServiceOwners
-                .createServices(seed, binding)
-                .actions;
+            return invocationServiceOwners.createServices(seed, binding).actions;
         },
         async createRetainedRunnerAgentCurrentGlobalMcpService(
             agentParams,
@@ -7482,6 +7768,16 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 });
             }
             const agentCliSystemTool = declaredAgent.catalogEntry?.agentCliSystemTool;
+            const declaredAgentLocalId = declaredAgent.identity?.localId ?? declaredAgent.id;
+            if (
+                agentParams.agentCliLaunch
+                && agentParams.agentCliLaunch.localAgentId !== declaredAgentLocalId
+            ) {
+                throw new PluginError({
+                    code: 'plugin_agent_cli_system_tool_unavailable',
+                    message: `Agent '${agentParams.agentId}' CLI launch binding does not match its declared identity`,
+                });
+            }
             const agentSystemTools = agentCliSystemTool
                 ? (() => {
                     const definitions = projectPluginSystemToolContributions(
@@ -7497,25 +7793,33 @@ export async function resolveExecutablePluginRuntimeRegistry(
                             message: `Agent '${agentParams.agentId}' CLI system tool is unavailable`,
                         });
                     }
-                    return createAgentCliSystemToolService({
-                        agentId: agentParams.agentId,
-                        runtimeSpec: declaredAgent.runtimeSpec
-                            ?? (() => {
-                                throw new PluginError({
-                                    code: 'plugin_agent_cli_runtime_metadata_unavailable',
-                                    message: `Agent '${agentParams.agentId}' CLI runtime metadata is unavailable`,
-                                });
-                            })(),
-                        binding: agentCliSystemTool,
-                        definition,
-                        processEnv: createAgentCliHostResolutionEnvironment({
-                            processEnv: process.env,
-                            ...(params?.happyHomeDir
-                                ? { happyHomeDir: params.happyHomeDir }
-                                : {}),
-                        }),
-                        delegate,
-                    });
+                    return agentParams.agentCliLaunch
+                        ? createRetainedAgentCliSystemToolService({
+                            agentId: agentParams.agentId,
+                            binding: agentCliSystemTool,
+                            definition,
+                            launch: agentParams.agentCliLaunch.spec,
+                            delegate,
+                        })
+                        : createAgentCliSystemToolService({
+                            agentId: agentParams.agentId,
+                            runtimeSpec: declaredAgent.runtimeSpec
+                                ?? (() => {
+                                    throw new PluginError({
+                                        code: 'plugin_agent_cli_runtime_metadata_unavailable',
+                                        message: `Agent '${agentParams.agentId}' CLI runtime metadata is unavailable`,
+                                    });
+                                })(),
+                            binding: agentCliSystemTool,
+                            definition,
+                            processEnv: createAgentCliHostResolutionEnvironment({
+                                processEnv: process.env,
+                                ...(params?.happyHomeDir
+                                    ? { happyHomeDir: params.happyHomeDir }
+                                    : {}),
+                            }),
+                            delegate,
+                        });
                 })()
                 : undefined;
             const storePaths = resolvePluginStorePaths({ happyHomeDir: params?.happyHomeDir });
@@ -7525,6 +7829,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             // `{pluginId, localId}`, so it is resolved from the Agent's own
             // durable identity here rather than re-read from the routing id.
             const agentLocalId = declaredAgent.identity?.localId ?? agentParams.agentId;
+            const currentSession = agentParams.currentSession ?? agentParams.session?.current;
             const seed = Object.freeze({
                 plugin: Object.freeze({ id: agentParams.pluginId, version: agentParams.pluginVersion }),
                 contribution: Object.freeze({
@@ -7539,8 +7844,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 surface: 'agent' as const,
                 ...(agentParams.session ? {
                     session: Object.freeze({ id: agentParams.session.id }),
-                    currentSession: agentParams.session.current,
                 } : {}),
+                ...(currentSession ? { currentSession } : {}),
                 signal: agentParams.signal,
                 isGenerationCurrent: () => (
                     isPluginConsumerCurrent(agentParams.pluginId)

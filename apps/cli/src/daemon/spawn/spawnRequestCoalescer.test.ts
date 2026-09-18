@@ -61,6 +61,18 @@ const providerBindingSecurityChangeConfirmation = {
 };
 
 describe('computeDaemonSpawnRequestKey', () => {
+  it('distinguishes fresh access semantics and absent versus personal Team context', () => {
+    const base = { directory: '/workspace' };
+    const initialAccess = { grants: [{ subject: { kind: 'team' as const, teamId: 'team-1' }, accessLevel: 'edit' as const, canApprovePermissions: false }] };
+    const key = (fields: Partial<SpawnSessionOptions>) => computeDaemonSpawnRequestKey({ ...base, ...fields }).key;
+    expect(key({ initialAccess })).not.toBe(key({}));
+    expect(key({ initialAccess })).not.toBe(key({ initialAccess: { grants: [{ ...initialAccess.grants[0], canApprovePermissions: true }] } }));
+    expect(key({ primaryTeamId: null })).not.toBe(key({}));
+    expect(key({ primaryTeamId: 'team-1' })).not.toBe(key({ primaryTeamId: null }));
+    // Stable creation identity still rejoins one attempt when a mutable draft changes.
+    expect(key({ spawnNonce: 'same-create', initialAccess })).toBe(key({ spawnNonce: 'same-create' }));
+  });
+
   it('keeps qualified Agent targets stable and distinct for new and existing Session requests', () => {
     const target = (pluginId: string) => ({
       kind: 'agent' as const,
@@ -146,6 +158,31 @@ describe('computeDaemonSpawnRequestKey', () => {
     expect(k.key).toMatch(/^existing:sess_1:request:[a-f0-9]{64}$/);
     if (k.kind !== 'existing') throw new Error('Expected existing-session key');
     expect(k.serializationKey).toBe('existing:sess_1');
+  });
+
+  it('keys the Agent resume id byte-exact so a stripped sibling never coalesces with it', () => {
+    const exactResume = '  provider\nses/AB+cd==  ';
+    const strippedResume = 'provider\nses/AB+cd==';
+    const keys = (resume: string | undefined) => ({
+      fresh: computeDaemonSpawnRequestKey({
+        directory: '/tmp/repo',
+        backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+        ...(resume === undefined ? {} : { resume }),
+      } satisfies SpawnSessionOptions),
+      existing: computeDaemonSpawnRequestKey({
+        directory: '/tmp/repo',
+        existingSessionId: 'sess_1',
+        backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+        executionAuthorization: { provenance: 'user_request', requestId: 'local-1' },
+        ...(resume === undefined ? {} : { resume }),
+      } satisfies SpawnSessionOptions),
+    });
+
+    expect(keys(exactResume)).toEqual(keys(exactResume));
+    expect(keys(exactResume).fresh.key).not.toBe(keys(strippedResume).fresh.key);
+    expect(keys(exactResume).existing.key).not.toBe(keys(strippedResume).existing.key);
+    // Whitespace alone is still "no resume identity", exactly as before.
+    expect(keys('   ')).toEqual(keys(undefined));
   });
 
   it('distinguishes a one-shot Provider confirmation while retaining one existing-session serialization lane', () => {

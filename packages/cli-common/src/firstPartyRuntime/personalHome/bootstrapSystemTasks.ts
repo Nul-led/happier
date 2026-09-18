@@ -120,7 +120,7 @@ export class PersonalHomeDescriptorUnverifiedError extends Error {
     readonly code = 'personal_home_descriptor_unverified';
 
     constructor() {
-        super('Personal Home did not publish a matching Iroh connection descriptor.');
+        super('Personal Home did not publish a matching connection descriptor.');
         this.name = 'PersonalHomeDescriptorUnverifiedError';
     }
 }
@@ -581,12 +581,12 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
             if (serverIdentityId !== endpoint.serverIdentityId) {
                 throw new Error('Personal Home identity changed during bootstrap.');
             }
-            // Completion requires the server-owned descriptor/Iroh publication.
-            // Missing or mismatched identity never falls back to URL authority.
+            // Completion requires a server-owned descriptor for the authenticated identity.
+            // Remote-carrier publication is independent of local bootstrap readiness.
             const connectionDescriptor = endpoint.homeConnectionDescriptor?.homeServerIdentityId === serverIdentityId
                 ? endpoint.homeConnectionDescriptor
                 : undefined;
-            if (!connectionDescriptor || !connectionDescriptor.endpoints.some((candidate) => candidate.kind === 'iroh')) {
+            if (!connectionDescriptor) {
                 throw new PersonalHomeDescriptorUnverifiedError();
             }
             // The canonical runner reaches completion persistence only after the token-only

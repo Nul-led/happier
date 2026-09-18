@@ -104,7 +104,7 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
     const targetHome = join(fixtureRoot, 'target-home');
     const sourceRoot = join(fixtureRoot, 'source-workspace');
     const targetRoot = join(fixtureRoot, 'target-workspace');
-    const stagingDirectory = join(targetHome, 'daemon', 'workspace-sync', 'bootstrap');
+    const materializationDirectory = join(targetHome, 'daemon', 'workspace-sync', 'bootstrap');
     const lockDirectory = join(targetHome, 'daemon', 'workspace-sync', 'root-ownership');
     await Promise.all([
       mkdir(sourceHome, { recursive: true }),
@@ -135,7 +135,7 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
       localMachineId: targetMachineId,
       getSettingsSnapshot: () => snapshot,
       callMachineRpc,
-      bootstrap: { stagingDirectory, rootOwnershipManager },
+      bootstrap: { materializationDirectory, rootOwnershipManager },
       // The managed Mutagen agent is a genuine child-process boundary. This faithful
       // duplex substitutes only that external artifact and echoes the bytes its stdin consumes.
       openRootedAgent: async () => {

@@ -87,8 +87,9 @@ function buildBaseEnvironment(params: ResolvePreflightSessionControlsProbeEnviro
 export async function resolvePreflightSessionControlsProbeEnvironment(
   params: ResolvePreflightSessionControlsProbeEnvironmentParams,
 ): Promise<PreflightSessionControlsProbeEnvironment> {
-  // Ambient values are always cold-probe sanitized. A caller may add only the explicit output of
-  // the selected Agent plugin's connected-account materializer after that boundary.
+  // Ambient values are always cold-probe sanitized. The capability owner may add only explicit
+  // output selected for this launch: the chosen profile/Saved Secrets and connected-account
+  // materialization. Arbitrary ambient credentials never cross this boundary.
   return buildBaseEnvironment(params);
 }
 

@@ -1,5 +1,10 @@
+import { assertResolvedHomeTargetIdentity } from '@happier-dev/cli-common/homeTarget';
+import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
+
 import { readFlagValue } from '@/cli/commands/shared/argvFlags';
 import { reloadConfiguration } from '@/configuration';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { enableMcpStdioConsolePatch } from '@/mcp/server/mcpStdioConsolePatch';
 import {
   applyResolvedServerSelection,
@@ -26,7 +31,26 @@ export async function runMcpServeCommand(
   clearServerSelectionEnvOverrides();
   reloadConfiguration();
   if (explicitServerSelection) {
-    await applyResolvedServerSelection(explicitServerSelection);
+    const target = explicitServerSelection.homeTarget;
+    await applyResolvedServerSelection({
+      ...explicitServerSelection,
+      serverUrl: target.canonicalAuthUrl,
+      localServerUrl: target.applicationUrl === target.canonicalAuthUrl
+        ? null
+        : target.applicationUrl,
+    });
+    if (target.homeServerIdentityId) {
+      const snapshot = await (deps.observeServerFeaturesSnapshot ?? observeServerFeaturesSnapshot)({
+        serverUrl: target.applicationUrl,
+        projection: 'public',
+      });
+      const observedIdentity = snapshot.status === 'ready'
+        ? normalizeServerIdentityIdCapability(
+            snapshot.features.capabilities.serverIdentity?.serverIdentityId,
+          )
+        : null;
+      assertResolvedHomeTargetIdentity(target, observedIdentity ?? '');
+    }
   }
 
   const defaultSessionId = readFlagValue(argv, '--session');
@@ -34,7 +58,7 @@ export async function runMcpServeCommand(
   if (!credentials) {
     throw new Error('not_authenticated');
   }
-  await deps.ensureMachineIdForCredentials(credentials);
+  const { machineId } = await deps.ensureMachineIdForCredentials(credentials);
   const accountSettingsContext = await deps.bootstrapAccountSettingsContext({
     credentials,
     mode: 'blocking',
@@ -58,6 +82,12 @@ export async function runMcpServeCommand(
         explicitServerSelection.activeServerId,
       ).catch(() => null) ?? null
     : undefined;
+  const serverFeaturesSnapshot = deps.fetchServerFeaturesSnapshot
+    ? await deps.fetchServerFeaturesSnapshot({
+        serverUrl: resolveServerHttpBaseUrl(),
+        token: credentials.token,
+      })
+    : undefined;
   const daemonCatalog = explicitServerSelection && !daemonControlTarget
     ? { kind: 'unavailable' as const, code: 'daemon_unavailable' }
     : await deps.readDaemonPluginCatalog?.(
@@ -69,9 +99,11 @@ export async function runMcpServeCommand(
   const { mcp } = deps.createExternalMcpServer({
     credentials,
     defaultSessionId,
+    machineId,
     pluginToolCatalog: daemonCatalog?.kind === 'available'
       ? daemonCatalog.tools
       : Object.freeze([]),
+    ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
     ...(explicitServerSelection ? { daemonControlTarget } : {}),
   });
 

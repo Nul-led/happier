@@ -54,12 +54,14 @@ function mutableConfigurationForTest(): {
   apiServerUrl: string;
   publicServerUrl: string;
   webappUrl: string;
+  clientEncryptionRequirement: 'follow_account' | 'require_e2ee';
 } {
   return configuration as unknown as {
     serverUrl: string;
     apiServerUrl: string;
     publicServerUrl: string;
     webappUrl: string;
+    clientEncryptionRequirement: 'follow_account' | 'require_e2ee';
   };
 }
 
@@ -68,6 +70,7 @@ describe('updateAccountSettingsV2WithRetry', () => {
   const originalApiServerUrl = configuration.apiServerUrl;
   const originalPublicServerUrl = configuration.publicServerUrl;
   const originalWebappUrl = configuration.webappUrl;
+  const originalClientEncryptionRequirement = configuration.clientEncryptionRequirement;
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -76,7 +79,26 @@ describe('updateAccountSettingsV2WithRetry', () => {
       apiServerUrl: originalApiServerUrl,
       publicServerUrl: originalPublicServerUrl,
       webappUrl: originalWebappUrl,
+      clientEncryptionRequirement: originalClientEncryptionRequirement,
     });
+  });
+
+  it('refuses to read or rewrite plaintext settings when the environment requires E2EE', async () => {
+    Object.assign(mutableConfigurationForTest(), { clientEncryptionRequirement: 'require_e2ee' });
+    const updateSettings = vi.fn();
+    await expect(updateAccountSettingsV2WithRetry({
+      credentials: createLegacyCredentialsStub(),
+      mutation: { operations: [{ op: 'reset', key: 'reviewPromptLikedApp' }] },
+      deps: {
+        fetchSettings: async () => ({
+          content: { t: 'plain', v: accountSettingsParse({ schemaVersion: 2 }) },
+          version: 5,
+        }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings,
+      },
+    })).rejects.toMatchObject({ code: 'CLIENT_E2EE_REQUIRED' });
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 
   it('does not begin a settings mutation for a retired prompt action', async () => {

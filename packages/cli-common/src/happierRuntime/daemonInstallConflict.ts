@@ -3,7 +3,6 @@ import type {
     HappierServiceBackend,
     HappierServicePlatform,
     HappierServiceTargetMode,
-    HappierServiceVerification,
 } from './types.js';
 import type { PublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
@@ -22,31 +21,47 @@ export type DaemonServiceInstallTarget = Readonly<{
 
 export type DaemonServiceInstallConflictPlan = Readonly<{
     exactTargetExists: boolean;
+    exactTargetRunning: boolean;
+    exactTargetIsConverged: boolean;
     competingServices: readonly HappierService[];
     foreignHomeConflicts: readonly HappierService[];
     servicesToRemove: readonly HappierService[];
 }>;
 
-function normalizeHomeDir(value: string | null | undefined): string | null {
-    const trimmed = String(value ?? '').trim();
-    return trimmed || null;
+function normalizeHomeDir(
+    value: string | null | undefined,
+    platform: HappierServicePlatform,
+): string | null {
+    let normalized = String(value ?? '').trim().replace(/[\\/]+$/u, '');
+    if (!normalized) return null;
+
+    const posixWindowsDriveMatch = platform === 'win32' ? /^\/([a-zA-Z])\/(.*)$/u.exec(normalized) : null;
+    if (posixWindowsDriveMatch) {
+        normalized = `${posixWindowsDriveMatch[1]?.toLowerCase()}:/${String(posixWindowsDriveMatch[2] ?? '').replace(/[\\]+/gu, '/')}`;
+    }
+    if (platform === 'win32') {
+        if (normalized.startsWith('\\\\')) normalized = normalized.replace(/^\\\\+/u, '//');
+        normalized = normalized.replace(/[\\]+/gu, '/').replace(/\/{3,}/gu, '//').toLowerCase().replace(/\/+$/u, '');
+    }
+    return normalized || null;
 }
 
-function matchesTarget(service: HappierService, target: DaemonServiceInstallTarget): boolean {
+export function daemonServiceMatchesInstallTarget(service: HappierService, target: DaemonServiceInstallTarget): boolean {
     const serviceTargetMode = service.targetMode ?? 'pinned';
     if (serviceTargetMode !== target.targetMode) {
         return false;
     }
-    const targetHomeDir = normalizeHomeDir(target.happierHomeDir);
-    const serviceHomeDir = normalizeHomeDir(service.happierHomeDir);
-    if (targetHomeDir !== null && serviceHomeDir !== null && targetHomeDir !== serviceHomeDir) {
+    const targetHomeDir = normalizeHomeDir(target.happierHomeDir, target.platform);
+    const serviceHomeDir = normalizeHomeDir(service.happierHomeDir, target.platform);
+    if (targetHomeDir !== null && serviceHomeDir !== targetHomeDir) {
         return false;
     }
     if (target.targetMode === 'default-following') {
         return (
             service.serviceType === 'daemon' &&
             service.platform === target.platform &&
-            service.backend === target.backend
+            service.backend === target.backend &&
+            (target.ring === null || service.ring === target.ring)
         );
     }
     return (
@@ -83,6 +98,7 @@ function resolveTupleKey(service: HappierService): string {
         service.targetMode ?? 'pinned',
         service.ring ?? 'stable',
         service.instanceId ?? 'cloud',
+        normalizeHomeDir(service.happierHomeDir, service.platform) ?? 'unknown-home',
     ].join(':');
 }
 
@@ -99,25 +115,35 @@ function sharesServerUrl(service: HappierService, target: DaemonServiceInstallTa
 }
 
 function isCompetingService(service: HappierService, target: DaemonServiceInstallTarget): boolean {
-    if (!isVerifiedDaemonService(service) || matchesTarget(service, target)) {
+    if (!isVerifiedDaemonService(service) || daemonServiceMatchesInstallTarget(service, target)) {
         return false;
     }
     if (target.targetMode === 'default-following') {
-        return service.platform === target.platform && service.backend === target.backend;
+        return service.platform === target.platform;
     }
     if (service.instanceId && service.instanceId === target.instanceId) {
         return true;
     }
-    if (service.ring === target.ring && sharesServerUrl(service, target)) {
+    if (service.ring === target.ring && (target.serverUrl === null || sharesServerUrl(service, target))) {
         return true;
     }
     return false;
 }
 
 function isForeignHomeConflict(service: HappierService, target: DaemonServiceInstallTarget): boolean {
-    const targetHomeDir = normalizeHomeDir(target.happierHomeDir);
-    const serviceHomeDir = normalizeHomeDir(service.happierHomeDir);
-    return targetHomeDir !== null && serviceHomeDir !== null && targetHomeDir !== serviceHomeDir;
+    const targetHomeDir = normalizeHomeDir(target.happierHomeDir, target.platform);
+    if (targetHomeDir === null) return false;
+    return normalizeHomeDir(service.happierHomeDir, target.platform) !== targetHomeDir;
+}
+
+function isReplaceAllAllowedForeignHomeCleanup(
+    service: HappierService,
+    target: DaemonServiceInstallTarget,
+): boolean {
+    return target.targetMode === 'default-following'
+        && (service.targetMode ?? 'pinned') === 'default-following'
+        && service.backend === target.backend
+        && (service.instanceId === null || service.instanceId === 'default');
 }
 
 export function resolveDaemonServiceInstallConflictPlan(params: Readonly<{
@@ -126,7 +152,9 @@ export function resolveDaemonServiceInstallConflictPlan(params: Readonly<{
     services: readonly HappierService[];
 }>): DaemonServiceInstallConflictPlan {
     const verifiedDaemons = params.services.filter(isVerifiedDaemonService);
-    const exactTargetExists = verifiedDaemons.some((service) => matchesTarget(service, params.target));
+    const exactTargetServices = verifiedDaemons.filter((service) => daemonServiceMatchesInstallTarget(service, params.target));
+    const exactTargetExists = exactTargetServices.length > 0;
+    const exactTargetRunning = exactTargetServices.some((service) => service.running);
     const duplicateTupleKeys = new Set<string>();
     const countsByTuple = new Map<string, number>();
     for (const service of verifiedDaemons) {
@@ -138,7 +166,10 @@ export function resolveDaemonServiceInstallConflictPlan(params: Readonly<{
     const competingServices = verifiedDaemons.filter((service) =>
         isCompetingService(service, params.target) || duplicateTupleKeys.has(resolveTupleKey(service)),
     );
-    const foreignHomeConflicts = competingServices.filter((service) => isForeignHomeConflict(service, params.target));
+    const foreignHomeConflicts = competingServices.filter((service) => (
+        isForeignHomeConflict(service, params.target)
+        && (params.strategy !== 'replace-all' || !isReplaceAllAllowedForeignHomeCleanup(service, params.target))
+    ));
     const resolveServicesToRemove = (): readonly HappierService[] => {
         if (params.strategy === 'replace-all') {
             return competingServices.filter((service) => !foreignHomeConflicts.includes(service));
@@ -147,6 +178,7 @@ export function resolveDaemonServiceInstallConflictPlan(params: Readonly<{
             if (params.target.targetMode === 'default-following') {
                 return competingServices.filter((service) => (
                     (service.targetMode ?? 'pinned') === 'default-following'
+                    && (params.target.ring === null || service.ring === params.target.ring)
                     && !foreignHomeConflicts.includes(service)
                 ));
             }
@@ -155,46 +187,17 @@ export function resolveDaemonServiceInstallConflictPlan(params: Readonly<{
         return [];
     };
 
-    if (exactTargetExists) {
-        return {
-            exactTargetExists: true,
-            competingServices,
-            foreignHomeConflicts,
-            servicesToRemove: resolveServicesToRemove(),
-        };
-    }
-
-    if (params.strategy === 'add') {
-        return {
-            exactTargetExists: false,
-            competingServices,
-            foreignHomeConflicts,
-            servicesToRemove: [],
-        };
-    }
-
-    if (params.strategy === 'replace-ring') {
-        return {
-            exactTargetExists: false,
-            competingServices,
-            foreignHomeConflicts,
-            servicesToRemove: resolveServicesToRemove(),
-        };
-    }
-
-    if (params.strategy === 'replace-all') {
-        return {
-            exactTargetExists: false,
-            competingServices,
-            foreignHomeConflicts,
-            servicesToRemove: resolveServicesToRemove(),
-        };
-    }
-
+    const servicesToRemove = resolveServicesToRemove();
+    const removableServices = new Set(servicesToRemove);
     return {
-        exactTargetExists: false,
+        exactTargetExists,
+        exactTargetRunning,
+        exactTargetIsConverged: exactTargetExists && (
+            competingServices.length === 0
+            || competingServices.every((service) => removableServices.has(service))
+        ),
         competingServices,
         foreignHomeConflicts,
-        servicesToRemove: [],
+        servicesToRemove,
     };
 }

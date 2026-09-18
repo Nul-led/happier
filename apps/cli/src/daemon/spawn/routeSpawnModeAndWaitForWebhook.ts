@@ -47,6 +47,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   terminalRequest: ResolvedTerminalRequest;
   directory: string;
   options: SpawnSessionOptions;
+  initialAccessFilePath?: string;
   trackedSpawnOptions: SpawnSessionOptions;
   normalizedExistingSessionId: string;
   effectiveResume: string;
@@ -85,7 +86,11 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     nativeForkSource: params.options.nativeForkSource,
     sessionCreationTag: params.options.sessionCreationTag,
     sessionCreationCorrespondence: params.options.sessionCreationCorrespondence,
+    placementOrigin: params.options.placementOrigin,
     initialTitle: params.options.initialTitle,
+    initialAccessFilePath: params.initialAccessFilePath,
+    primaryTeamId: params.options.primaryTeamId,
+    teamCredentialBindings: params.options.teamCredentialBindings,
     existingSessionId: params.normalizedExistingSessionId,
     backendTarget: params.effectiveBackendTargetV2,
     permissionMode: params.permissionMode,

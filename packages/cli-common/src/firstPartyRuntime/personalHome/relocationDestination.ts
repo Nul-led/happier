@@ -5,13 +5,11 @@ import { join } from 'node:path';
 
 import {
   HomeConnectionDescriptorV1Schema,
-  IrohEndpointDescriptorV1Schema,
   type HomeConnectionDescriptorV1,
-  type IrohEndpointDescriptorV1,
 } from '@happier-dev/protocol';
 
 import { replacePersonalHomeFileDurably } from './durableFile.js';
-import { withPersonalHomeOperationLock } from './lock.js';
+import { withPersonalHomeOperationAdmission, type PersonalHomeOperationAdmissionTarget } from './operationAdmission.js';
 import { createPersonalHomePathProtection } from './protection.js';
 import type { PersonalHomeAuthenticatedReadiness } from './readiness.js';
 import { cleanupPersonalHomeRelocationUpload, hasPersonalHomeRelocationUploadReservation } from './relocationTransfer.js';
@@ -34,9 +32,7 @@ export type PersonalHomeRelocationDestinationFacts = Readonly<{
   expectedCanonicalServerUrl: string;
   sourceDescriptorRevision: number;
   homeServerIdentityId?: string;
-  canonicalServerUrl?: string;
-  minimumOuterRevisionExclusive?: number;
-  endpoint?: IrohEndpointDescriptorV1;
+  connectionDescriptor?: HomeConnectionDescriptorV1;
   authenticated?: true;
   accountCount?: number;
   sessionCount?: number;
@@ -64,6 +60,9 @@ export type PersonalHomeRelocationDestinationStageInput = Readonly<{
   expectedHomeServerIdentityId: string;
   expectedCanonicalServerUrl: string;
   sourceDescriptorRevision: number;
+  /** Attempt-scoped cancellation for reversible transfer/staging only. Cleanup,
+   * status reconciliation, and commit deliberately use their own lifetimes. */
+  signal?: AbortSignal;
 }>;
 
 export type PersonalHomeRelocationDestinationCommitInput = Readonly<{
@@ -77,15 +76,6 @@ export type PersonalHomeRelocationDestinationOwner = Readonly<{
   commit(input: PersonalHomeRelocationDestinationCommitInput): Promise<PersonalHomeRelocationDestinationFacts>;
   abort(operationId: string): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence>;
 }>;
-
-export function resolvePersonalHomeRelocationDestinationEndpoints(
-  destination: PersonalHomeRelocationDestinationFacts,
-): HomeConnectionDescriptorV1['endpoints'] {
-  if (!destination.canonicalServerUrl) return [];
-  return destination.endpoint
-    ? [{ kind: 'iroh', ...destination.endpoint }]
-    : [{ kind: 'https', url: destination.canonicalServerUrl }];
-}
 
 /**
  * Durable proof that the destination bytes are this relocation's own candidate:
@@ -110,12 +100,10 @@ export function personalHomeRelocationDescriptorMatchesDestination(
   descriptor: HomeConnectionDescriptorV1 | null,
   destination: PersonalHomeRelocationDestinationFacts,
 ): boolean {
-  if (!descriptor || !destination.homeServerIdentityId || !destination.canonicalServerUrl) return false;
-  const revisionFloor = destination.minimumOuterRevisionExclusive ?? destination.sourceDescriptorRevision;
-  return descriptor.homeServerIdentityId === destination.homeServerIdentityId
-    && descriptor.canonicalServerUrl === destination.canonicalServerUrl
-    && descriptor.revision > revisionFloor
-    && JSON.stringify(descriptor.endpoints) === JSON.stringify(resolvePersonalHomeRelocationDestinationEndpoints(destination));
+  return Boolean(descriptor && destination.connectionDescriptor
+    && descriptor.homeServerIdentityId === destination.expectedHomeServerIdentityId
+    && descriptor.revision > destination.sourceDescriptorRevision
+    && JSON.stringify(descriptor) === JSON.stringify(destination.connectionDescriptor));
 }
 
 export class PersonalHomeRelocationDestinationError extends Error {
@@ -142,9 +130,7 @@ export type PersonalHomeRelocationDestinationStagedCandidate = Readonly<{
   homeServerIdentityId: string;
   accountCount: number;
   sessionCount: number;
-  canonicalServerUrl?: string;
-  minimumOuterRevisionExclusive?: number;
-  endpoint?: IrohEndpointDescriptorV1;
+  connectionDescriptor: HomeConnectionDescriptorV1;
 }>;
 
 /** Outcome of inspecting the candidate left behind when a destination process
@@ -159,6 +145,7 @@ export type PersonalHomeRelocationDestinationReceivedCandidate =
 
 export type PersonalHomeRelocationDestinationDeps = Readonly<{
   dataDir: string;
+  readValidatedTarget(): Promise<PersonalHomeOperationAdmissionTarget>;
   /** Verifies that an unreserved destination has no unrelated Home bytes.
    * Runs while the destination operation lock is held, before `absent` is
    * reported to the source as safe to reserve. */
@@ -218,7 +205,7 @@ function parseMarker(raw: string): Marker {
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid marker');
   const value = parsed as Record<string, unknown>;
-  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'canonicalServerUrl', 'minimumOuterRevisionExclusive', 'endpoint', 'authenticated', 'accountCount', 'sessionCount', 'failureCode', 'transferCleanupNeedsAttention', 'cleanupNeedsAttention']);
+  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'connectionDescriptor', 'authenticated', 'accountCount', 'sessionCount', 'failureCode', 'transferCleanupNeedsAttention', 'cleanupNeedsAttention']);
   if (Object.keys(value).some((key) => !allowed.has(key))
     || value.version !== 1
     || typeof value.operationId !== 'string' || !OPERATION_ID.test(value.operationId)
@@ -228,8 +215,6 @@ function parseMarker(raw: string): Marker {
     || typeof value.sourceDescriptorRevision !== 'number' || !Number.isSafeInteger(value.sourceDescriptorRevision) || value.sourceDescriptorRevision < 1
     || typeof value.status !== 'string' || !['receiving', 'staged', 'quarantined', 'activating', 'active', 'aborted', 'recovery_required'].includes(value.status)
     || (value.homeServerIdentityId !== undefined && (typeof value.homeServerIdentityId !== 'string' || !value.homeServerIdentityId))
-    || (value.canonicalServerUrl !== undefined && (typeof value.canonicalServerUrl !== 'string' || !value.canonicalServerUrl))
-    || (value.minimumOuterRevisionExclusive !== undefined && (typeof value.minimumOuterRevisionExclusive !== 'number' || !Number.isSafeInteger(value.minimumOuterRevisionExclusive) || value.minimumOuterRevisionExclusive < value.sourceDescriptorRevision))
     || (value.authenticated !== undefined && value.authenticated !== true)
     || (value.accountCount !== undefined && (typeof value.accountCount !== 'number' || !Number.isSafeInteger(value.accountCount) || value.accountCount < 1))
     || (value.sessionCount !== undefined && (typeof value.sessionCount !== 'number' || !Number.isSafeInteger(value.sessionCount) || value.sessionCount < 0))
@@ -242,8 +227,10 @@ function parseMarker(raw: string): Marker {
     && (value.authenticated !== true || typeof value.accountCount !== 'number' || typeof value.sessionCount !== 'number')) {
     throw new Error('invalid marker');
   }
-  const parsedEndpoint = value.endpoint === undefined ? undefined : IrohEndpointDescriptorV1Schema.safeParse(value.endpoint);
-  if (parsedEndpoint && !parsedEndpoint.success) throw new Error('invalid marker');
+  const descriptor = value.connectionDescriptor === undefined ? undefined : HomeConnectionDescriptorV1Schema.parse(value.connectionDescriptor);
+  if (descriptor && (descriptor.homeServerIdentityId !== value.expectedHomeServerIdentityId
+    || descriptor.revision <= value.sourceDescriptorRevision)) throw new Error('invalid marker');
+  if (['staged', 'quarantined', 'activating', 'active'].includes(value.status) && !descriptor) throw new Error('invalid marker');
   return {
     version: 1,
     operationId: value.operationId,
@@ -253,9 +240,7 @@ function parseMarker(raw: string): Marker {
     expectedCanonicalServerUrl: value.expectedCanonicalServerUrl,
     sourceDescriptorRevision: value.sourceDescriptorRevision,
     ...(value.homeServerIdentityId === undefined ? {} : { homeServerIdentityId: value.homeServerIdentityId as string }),
-    ...(value.canonicalServerUrl === undefined ? {} : { canonicalServerUrl: value.canonicalServerUrl as string }),
-    ...(value.minimumOuterRevisionExclusive === undefined ? {} : { minimumOuterRevisionExclusive: value.minimumOuterRevisionExclusive as number }),
-    ...(parsedEndpoint?.success ? { endpoint: parsedEndpoint.data } : {}),
+    ...(descriptor ? { connectionDescriptor: descriptor } : {}),
     ...(value.authenticated === true ? { authenticated: true as const } : {}),
     ...(typeof value.accountCount === 'number' ? { accountCount: value.accountCount } : {}),
     ...(typeof value.sessionCount === 'number' ? { sessionCount: value.sessionCount } : {}),
@@ -275,6 +260,25 @@ async function readMarker(dataDir: string): Promise<Marker | null> {
       'Personal Home relocation destination state is invalid; activation remains blocked.',
     );
   }
+}
+
+/** The remote management carrier consumes the same strict facts as local recovery. */
+export function parsePersonalHomeRelocationDestinationFacts(
+  value: unknown,
+  expectedOperationId: string,
+): PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid relocation destination facts');
+  const record = value as Record<string, unknown>;
+  if (record.operationId !== expectedOperationId || 'version' in record) throw new Error('Invalid relocation destination operation');
+  if (record.status === 'absent') {
+    if (Object.keys(record).some((key) => !['operationId', 'status', 'transferCleanupNeedsAttention'].includes(key))
+      || (record.transferCleanupNeedsAttention !== undefined && record.transferCleanupNeedsAttention !== true)) {
+      throw new Error('Invalid absent relocation destination facts');
+    }
+    return { operationId: expectedOperationId, status: 'absent',
+      ...(record.transferCleanupNeedsAttention === true ? { transferCleanupNeedsAttention: true } : {}) };
+  }
+  return publicFacts(parseMarker(JSON.stringify({ ...record, version: 1 })));
 }
 
 export class PersonalHomeRelocationDestinationActivationBlockedError extends Error {
@@ -342,6 +346,13 @@ export async function assertPersonalHomeRelocationDestinationAllowsActivation(da
   }
 }
 
+/** Only the exact destination operation may work on an uncommitted candidate. */
+export async function assertPersonalHomeRelocationDestinationAllowsOperation(dataDir: string, operationId: string): Promise<void> {
+  const marker = await readMarker(dataDir);
+  if (!marker || marker.operationId === operationId || marker.status === 'aborted') return;
+  throw new PersonalHomeRelocationDestinationActivationBlockedError('Another Personal Home relocation operation owns this destination.');
+}
+
 async function writeMarker(dataDir: string, marker: Marker): Promise<void> {
   const path = markerPath(dataDir);
   await mkdir(join(dataDir, '.operations'), { recursive: true, mode: 0o700 });
@@ -405,6 +416,15 @@ async function resumeReceivedCandidate(
 }
 
 export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeRelocationDestinationDeps): PersonalHomeRelocationDestinationOwner {
+  const withAdmission = <T>(operationId: string, operation: () => Promise<T>) => withPersonalHomeOperationAdmission({
+    request: { kind: 'relocate', role: 'destination', operationId },
+    readValidatedTarget: async () => {
+      const target = await deps.readValidatedTarget();
+      if (target.layout.dataDir !== deps.dataDir) throw new PersonalHomeRelocationDestinationError('relocation_operation_conflict', 'Personal Home destination layout changed before admission.');
+      return target;
+    },
+    isHomeRunning: async () => (await deps.readServiceStatus()).running,
+  }, operation);
   const hasUploadReservation = deps.hasUploadReservation
     ?? (async (operationId: string) => await hasPersonalHomeRelocationUploadReservation({ operationId }));
   const cleanupUploadReservation = deps.cleanupUploadReservation
@@ -433,14 +453,10 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
   };
 
   return Object.freeze({
-    status: async (operationId) => await withPersonalHomeOperationLock(
-      deps.dataDir,
-      'relocate',
-      () => statusWithLease(operationId),
-    ),
+    status: async (operationId) => await withAdmission(operationId, () => statusWithLease(operationId)),
     stage: async (input) => {
       assertStageInput(input);
-      return await withPersonalHomeOperationLock(deps.dataDir, 'relocate', async () => {
+      return await withAdmission(input.operationId, async () => {
         let existing = await readMarker(deps.dataDir);
         // An aborted candidate has relinquished destination authority. Keep it
         // visible and idempotent to its own operation, while treating it as
@@ -504,6 +520,11 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
           if (candidate.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
             throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Staged Personal Home identity does not match the relocation target.');
           }
+          const descriptor = HomeConnectionDescriptorV1Schema.parse(candidate.connectionDescriptor);
+          if (descriptor.homeServerIdentityId !== input.expectedHomeServerIdentityId
+            || descriptor.revision <= input.sourceDescriptorRevision) {
+            throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Staged descriptor does not match the relocation target or source revision.');
+          }
           if (candidate.authenticated !== true
             || !Number.isSafeInteger(candidate.accountCount) || candidate.accountCount < 1
             || !Number.isSafeInteger(candidate.sessionCount) || candidate.sessionCount < 0) {
@@ -515,9 +536,7 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
             authenticated: true,
             accountCount: candidate.accountCount,
             sessionCount: candidate.sessionCount,
-            ...(candidate.canonicalServerUrl ? { canonicalServerUrl: candidate.canonicalServerUrl } : {}),
-            ...(candidate.minimumOuterRevisionExclusive === undefined ? {} : { minimumOuterRevisionExclusive: candidate.minimumOuterRevisionExclusive }),
-            ...(candidate.endpoint ? { endpoint: candidate.endpoint } : {}),
+            connectionDescriptor: descriptor,
           };
           await writeMarker(deps.dataDir, staged);
           await deps.quarantine();
@@ -542,7 +561,7 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
     commit: async (input) => {
       assertOperationId(input.operationId);
       const publishedDescriptor = HomeConnectionDescriptorV1Schema.parse(input.publishedDescriptor);
-      return await withPersonalHomeOperationLock(deps.dataDir, 'relocate', async () => {
+      return await withAdmission(input.operationId, async () => {
         const marker = await readMarker(deps.dataDir);
         if (!marker) throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not staged.');
         assertSameOperation(marker, input.operationId);
@@ -606,7 +625,7 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
     },
     abort: async (operationId) => {
       assertOperationId(operationId);
-      return await withPersonalHomeOperationLock(deps.dataDir, 'relocate', async () => {
+      return await withAdmission(operationId, async () => {
         const marker = await readMarker(deps.dataDir);
         if (marker) assertSameOperation(marker, operationId);
         if (!marker) {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActionExecutorDeps } from '@happier-dev/protocol';
 import { createSessionTranscriptFollowLeaseRegistry } from '@/api/session/transcriptQueries';
 import type { SessionSpawnDirectTargetTransport } from './createCliActionDeps';
@@ -11,6 +11,12 @@ const prepare = vi.fn();
 const createCliActionExecutor = vi.fn((_options: CreateCliActionExecutorOptions) => ({ execute, prepare }));
 const ensureCliActionPolicySettings = vi.fn();
 const importHistoricalSessionTranscript = vi.fn();
+const createAccountServerActionDeps = vi.fn(() => ({}));
+const replaceSessionVoiceInclusions = vi.fn();
+const createSessionFollowActionDeps = vi.fn(() => ({ replaceSessionVoiceInclusions }));
+const createSessionTrackedTargetCompatibilityDep = vi.fn(() => ({}));
+const createSessionFollowSourceKeyPreparationAfterSet = vi.fn(() => vi.fn());
+const readSettings = vi.fn(async () => ({ machineId: 'machine-active-home' }));
 
 vi.mock('./createCliActionExecutor', () => ({
   createCliActionExecutor,
@@ -20,15 +26,107 @@ vi.mock('./ensureCliActionPolicySettings', () => ({
   ensureCliActionPolicySettings,
 }));
 
+vi.mock('@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet', () => ({ createSessionFollowSourceKeyPreparationAfterSet }));
+
 vi.mock('@/session/transport/http/sessionsHttp', () => ({
   importHistoricalSessionTranscript,
+}));
+
+vi.mock('@/api/accountServerActionDeps', () => ({
+  createAccountServerActionDeps,
+}));
+
+vi.mock('@/api/sessionFollowActionDeps', () => ({
+  createSessionFollowActionDeps,
+  createSessionTrackedTargetCompatibilityDep,
 }));
 
 vi.mock('@/session/transport/encryption/sessionEncryptionContext', () => ({
   resolveSessionEncryptionContextFromCredentials: vi.fn(() => ({ kind: 'legacy' })),
 }));
 
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/persistence')>()),
+  readSettings,
+}));
+
 describe('createCliActionExecutorFromCredentials', () => {
+  beforeEach(() => {
+    execute.mockClear();
+    prepare.mockClear();
+    createCliActionExecutor.mockClear();
+    ensureCliActionPolicySettings.mockClear();
+    importHistoricalSessionTranscript.mockClear();
+    createAccountServerActionDeps.mockClear();
+    createSessionFollowActionDeps.mockClear();
+    createSessionTrackedTargetCompatibilityDep.mockClear();
+    replaceSessionVoiceInclusions.mockClear();
+    createSessionFollowSourceKeyPreparationAfterSet.mockClear();
+    readSettings.mockClear();
+  });
+
+  it('requires and propagates one qualified Home identity with a fixed endpoint', async () => {
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const credentials = {
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const resolveServerFeaturesSnapshot = vi.fn();
+
+    expect(() => createCliActionExecutorFromCredentials({
+      credentials,
+      serverApiUrl: 'https://home-b.example.test',
+    } as Parameters<typeof createCliActionExecutorFromCredentials>[0])).toThrow('fixed_action_server_target_incomplete');
+    expect(() => createCliActionExecutorFromCredentials({
+      credentials,
+      serverId: 'home-b',
+    } as Parameters<typeof createCliActionExecutorFromCredentials>[0])).toThrow('fixed_action_server_target_incomplete');
+    expect(() => createCliActionExecutorFromCredentials({
+      credentials,
+      serverId: 'home-b',
+      serverApiUrl: '   ',
+    })).toThrow('fixed_action_server_target_incomplete');
+
+    createCliActionExecutorFromCredentials({
+      credentials,
+      serverId: 'home-b',
+      serverApiUrl: 'https://home-b.example.test/',
+      resolveServerFeaturesSnapshot,
+    });
+
+    expect(createAccountServerActionDeps).toHaveBeenLastCalledWith({
+      token: 'token_test',
+      credentials,
+      resolveServerFeaturesSnapshot,
+      serverId: 'home-b',
+      serverHttpBaseUrl: 'https://home-b.example.test',
+    });
+    expect(createSessionFollowActionDeps).toHaveBeenLastCalledWith({
+      token: 'token_test',
+      serverId: 'home-b',
+      serverHttpBaseUrl: 'https://home-b.example.test',
+      prepareSourceKeyAfterSet: expect.any(Function),
+    });
+    expect(createSessionTrackedTargetCompatibilityDep).toHaveBeenLastCalledWith({
+      serverId: 'home-b',
+      replaceSessionVoiceInclusions,
+    });
+  });
+
+  it('composes Follow source-key preparation through the shared authenticated runtime owner', async () => {
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const credentials = {
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    createCliActionExecutorFromCredentials({ credentials, serverId: 'home-b', serverApiUrl: 'https://home-b.example.test' });
+    expect(createSessionFollowSourceKeyPreparationAfterSet).toHaveBeenCalledWith({
+      credentials,
+      serverHttpBaseUrl: 'https://home-b.example.test',
+      resolveServerFeaturesSnapshot: expect.any(Function),
+    });
+  });
+
   it('loads action policy settings lazily before delegated action execution', async () => {
     const events: string[] = [];
     ensureCliActionPolicySettings.mockImplementationOnce(async () => {
@@ -59,6 +157,63 @@ describe('createCliActionExecutorFromCredentials', () => {
     expect(events).toEqual(['settings', 'execute']);
   });
 
+  it('binds authenticated Home and current Machine routing facts before local approval admission', async () => {
+    execute.mockResolvedValueOnce({ ok: true, result: { sessions: [] } });
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const credentials = {
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const resolveServerFeaturesSnapshot = vi.fn(async () => ({
+      status: 'ready' as const,
+      provenance: 'authenticated' as const,
+      features: {
+        capabilities: {
+          serverIdentity: { serverIdentityId: 'srv_portable_home' },
+        },
+      },
+    } as never));
+    const executor = createCliActionExecutorFromCredentials({
+      credentials,
+      machineId: 'machine-current',
+      resolveServerFeaturesSnapshot,
+    });
+
+    await executor.execute('session.list', {}, {
+      surface: 'mcp',
+      authority: 'account_automation',
+      defaultSessionId: 'session-current',
+      sessionListAccess: 'current_session',
+      actionRequestId: 'request-1',
+    });
+
+    expect(execute).toHaveBeenLastCalledWith('session.list', {}, expect.objectContaining({
+      serverIdentityId: 'srv_portable_home',
+      defaultSessionMachineId: 'machine-current',
+    }));
+  });
+
+  it('never borrows the active Home Machine for a fixed-Home executor', async () => {
+    execute.mockResolvedValueOnce({ ok: true, result: { sessions: [] } });
+    const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
+    const executor = createCliActionExecutorFromCredentials({
+      credentials: {
+        token: 'token_home_b',
+        encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+      },
+      serverId: 'home-b',
+      serverApiUrl: 'https://home-b.example.test',
+      serverIdentityId: 'srv_home_b',
+    });
+
+    await executor.execute('session.list', {}, { surface: 'cli' });
+
+    expect(readSettings).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenLastCalledWith('session.list', {}, expect.not.objectContaining({
+      defaultSessionMachineId: 'machine-active-home',
+    }));
+  });
+
   it('loads action policy settings before preparation and preserves the prepared invocation', async () => {
     const events: string[] = [];
     const invocation = { run: vi.fn(async () => ({ ok: true as const, result: { childSessionId: 'child-1' } })) };
@@ -78,14 +233,18 @@ describe('createCliActionExecutorFromCredentials', () => {
     const executor = createCliActionExecutorFromCredentials({ credentials });
     const executeCallsBeforePrepare = execute.mock.calls.length;
 
-    await expect(executor.prepare(
+    const prepared = await executor.prepare(
       'session.fork',
       { sessionId: 'sess-1' },
       { surface: 'rpc', authority: 'present_user', actionCaller: { kind: 'host' } },
-    )).resolves.toEqual({ kind: 'ready', invocation });
+    );
+    expect(prepared).toMatchObject({ kind: 'ready' });
     expect(events).toEqual(['settings', 'prepare']);
     expect(execute).toHaveBeenCalledTimes(executeCallsBeforePrepare);
     expect(invocation.run).not.toHaveBeenCalled();
+    if (prepared.kind !== 'ready') throw new Error('Expected prepared invocation');
+    await expect(prepared.invocation.run()).resolves.toEqual({ ok: true, result: { childSessionId: 'child-1' } });
+    expect(invocation.run).toHaveBeenCalledTimes(1);
   });
 
   it('passes the live registered prompt adapter reader to the canonical CLI action deps', async () => {

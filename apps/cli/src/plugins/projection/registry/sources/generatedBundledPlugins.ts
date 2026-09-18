@@ -58,6 +58,30 @@ export const BUNDLED_FIRST_PARTY_AGENT_REGISTRATION_BINDINGS: readonly BundledFi
   }),
   Object.freeze({
     identity: Object.freeze({
+      pluginId: "happier.agent.devin",
+      localId: "devin",
+    }),
+    implementationOwnerId: "devin",
+    registrationFamily: "agents",
+  }),
+  Object.freeze({
+    identity: Object.freeze({
+      pluginId: "happier.agent.droid",
+      localId: "droid",
+    }),
+    implementationOwnerId: "droid",
+    registrationFamily: "agents",
+  }),
+  Object.freeze({
+    identity: Object.freeze({
+      pluginId: "happier.agent.fx",
+      localId: "fx",
+    }),
+    implementationOwnerId: "fx",
+    registrationFamily: "agents",
+  }),
+  Object.freeze({
+    identity: Object.freeze({
       pluginId: "happier.agent.gemini",
       localId: "gemini",
     }),

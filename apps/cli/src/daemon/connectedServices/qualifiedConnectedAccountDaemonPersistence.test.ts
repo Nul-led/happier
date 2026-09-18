@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
   accountSettingsParse,
   CONNECTED_ACCOUNT_SERVICE_CONFIGURATIONS_SETTINGS_KEY,
   ConnectedServiceCredentialRecordV1Schema,
@@ -14,6 +15,7 @@ import {
   QualifiedConnectedAccountConfigurationSnapshotV4Schema,
   QualifiedConnectedAccountCredentialSnapshotV4Schema,
   SavedSecretSchema,
+  sealSavedSecretResourceStoredContentV1,
   openQualifiedConnectedAccountContentEnvelope,
   openConnectedServiceCredentialCiphertext,
   sealAccountScopedBlobCiphertext,
@@ -35,6 +37,7 @@ import {
 } from '@/api/client/qualifiedConnectedAccountApi';
 
 import {
+  createActiveAccountSettingsConnectedAccountSecrets,
   createQualifiedConnectedAccountDaemonPersistence,
 } from './qualifiedConnectedAccountDaemonPersistence';
 
@@ -158,6 +161,45 @@ const ReleasedCredentialRecordSchema = z.discriminatedUnion('kind', [
 ]);
 
 describe('createQualifiedConnectedAccountDaemonPersistence', () => {
+  it('resolves shared Saved Secret references through the active Account catalog', async () => {
+    resetActiveAccountSettingsSnapshotForTests();
+    const resourceId = 'shared-resource-1';
+    const secretRef = `happier:shared-secret:v1:${resourceId}`;
+    commitActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: accountSettingsParse({}),
+      settingsVersion: 1,
+      loadedAtMs: 100,
+      settingsSecretsReadKeys: [],
+      savedSecretResources: [{
+        resourceId,
+        ownerAccountId: 'owner-account',
+        displayName: 'Shared configuration token',
+        kind: 'token',
+        encryptionMode: 'plain',
+        revision: 1,
+        storedContent: sealSavedSecretResourceStoredContentV1({
+          resourceId,
+          mode: 'plain',
+          content: {
+            v: 1,
+            name: 'Shared configuration token',
+            kind: 'token',
+            value: 'shared-token-value',
+          },
+        }),
+        materialStatus: 'ready',
+      }],
+      scopeKey: 'account-a-scope',
+    });
+
+    const secrets = createActiveAccountSettingsConnectedAccountSecrets();
+    await expect(secrets.has(secretRef)).resolves.toBe(true);
+    await expect(secrets.read(secretRef)).resolves.toBe('shared-token-value');
+
+    resetActiveAccountSettingsSnapshotForTests();
+  });
+
   it('does not publish a late Account A Settings settlement after Account B becomes active', async () => {
     resetActiveAccountSettingsSnapshotForTests();
     const credentials = {
@@ -1304,7 +1346,9 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         });
       expect(mutation).toMatchObject({
         ref: account,
-        authenticationModeId: 'oauth',
+        authenticationModeId: 'manual',
+        directExportContract: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+        contributionContractVersion: 'artifact-acme-1',
         expectedCredentialRevision: null,
         metadata: {
           providerIdentity: {
@@ -1342,7 +1386,9 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       intent: 'connect',
       service,
       accountId: account.accountId,
-      authenticationModeId: 'oauth',
+      authenticationModeId: 'manual',
+      directExportContract: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+      contributionContractVersion: 'artifact-acme-1',
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',

@@ -75,7 +75,7 @@ type Invocation = {
     managedProviderStart: Promise<void> | null;
     managedProviderMaterialization: Readonly<{
         endpointUrl: string;
-        credentialPlaceholder: string;
+        credentialPlaceholder: string | null;
         promise: Promise<unknown>;
     }> | null;
     readonly disposeOwner: () => void | Promise<void>;
@@ -116,7 +116,7 @@ type ManagedProviderInvocation = Readonly<{
     start(): void | Promise<void>;
     materializeAgentBinding(input: Readonly<{
         endpointUrl: string;
-        credentialPlaceholder: string;
+        credentialPlaceholder: string | null;
     }>): unknown | Promise<unknown>;
 }>;
 

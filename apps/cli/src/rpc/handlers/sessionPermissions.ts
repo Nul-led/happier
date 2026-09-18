@@ -20,7 +20,10 @@ async function resolveProductionActionExecutor(): Promise<RpcActionExecutor> {
             }),
         };
     }
-    return createCliActionExecutorFromCredentials({ credentials });
+    return createCliActionExecutorFromCredentials({
+        credentials,
+        readCredentials: async () => await readStoredCredentials().catch(() => null),
+    });
 }
 
 export function registerSessionPermissionRpcHandlers(params: Readonly<{

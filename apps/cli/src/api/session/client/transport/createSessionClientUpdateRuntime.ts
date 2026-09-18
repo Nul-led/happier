@@ -7,6 +7,10 @@ import { extractAssistantTextSnapshotFromSessionContent } from '../../turns/extr
 import type { TurnAssistantTextSnapshotStore } from '../../turns/assistantTextSnapshot';
 import type { PendingQueueRuntimeActivityProjection } from '@/agent/runtime/session/input/pendingQueueDrainPolicy';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import {
+    ParticipantExecutionRunRecipientRoutingIdentityV1Schema,
+    type ParticipantExecutionRunRecipientRoutingIdentityV1,
+} from '@happier-dev/protocol';
 
 export type SessionClientUpdateRuntime = Readonly<{
     handleUpdate: (data: Update, opts: {
@@ -34,7 +38,11 @@ export function createSessionClientUpdateRuntime(
         syncMetadataEnvelopeTupleFromServer?: () => Promise<void>;
         getPendingQueueState?: () => PendingQueueState;
         applyPendingQueueState: (state: KnownPendingQueueState) => boolean;
-        onPendingChangedDrainTrigger?: (state: KnownPendingQueueState) => void;
+        onPendingChangedDrainTrigger?: (
+            state: KnownPendingQueueState,
+            recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1,
+            observedPendingVersion?: number,
+        ) => void;
         onConnectedServiceTurnLifecycleEvent?: (event: 'prompt_or_steer' | 'task_started' | 'assistant_message_end' | 'turn_cancelled') => void;
         emit: (event: string, payload?: unknown) => void;
         markAgentQueueEchoSuppressedLocalId: (localId: string) => void;
@@ -49,6 +57,7 @@ export function createSessionClientUpdateRuntime(
     let lastObservedMessageSeq = deps.initialLastObservedMessageSeq;
     let lastObservedUserMessageSeq = 0;
     let pendingWakeSeq = 0;
+    const latestExecutionRunPendingWakeVersion = new Map<string, number>();
 
     return {
         handleUpdate(data, opts) {
@@ -165,7 +174,26 @@ export function createSessionClientUpdateRuntime(
                         const canonicalPendingQueueState = deps.getPendingQueueState?.()
                             ?? stateUpdateResult.pendingQueueState;
                         if (canonicalPendingQueueState?.known) {
-                            deps.onPendingChangedDrainTrigger?.(canonicalPendingQueueState);
+                            const recipient = ParticipantExecutionRunRecipientRoutingIdentityV1Schema
+                                .safeParse(bodyRecord?.recipient);
+                            if (recipient.success) {
+                                const observedPendingVersion = typeof bodyRecord?.pendingVersion === 'number'
+                                    && Number.isInteger(bodyRecord.pendingVersion)
+                                    && bodyRecord.pendingVersion >= 0
+                                    ? bodyRecord.pendingVersion
+                                    : canonicalPendingQueueState.pendingVersion;
+                                const previousVersion = latestExecutionRunPendingWakeVersion.get(recipient.data.runId);
+                                if (previousVersion === undefined || observedPendingVersion > previousVersion) {
+                                    latestExecutionRunPendingWakeVersion.set(recipient.data.runId, observedPendingVersion);
+                                    deps.onPendingChangedDrainTrigger?.(
+                                        canonicalPendingQueueState,
+                                        recipient.data,
+                                        observedPendingVersion,
+                                    );
+                                }
+                            } else {
+                                deps.onPendingChangedDrainTrigger?.(canonicalPendingQueueState);
+                            }
                         }
                     }
                     if (stateUpdateResult.runtimeActivityProjection) {

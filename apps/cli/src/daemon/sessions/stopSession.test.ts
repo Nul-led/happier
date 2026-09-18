@@ -1024,7 +1024,16 @@ describe('createStopSession', () => {
     const { createStopSession } = await import('./stopSession');
     const attachmentId = 'attachment-timeout' as NonNullable<import('@happier-dev/agents').TerminalHostHandle['attachmentId']>;
     const dispose = vi.fn(async () => undefined);
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
+    let runnerAlive = true;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      // This non-detached runner ignores TERM, then becomes absent after KILL.
+      // Signal-zero probes must observe that exit through the real liveness owner.
+      if (pid !== 551 || !runnerAlive) {
+        throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+      }
+      if (signal === 'SIGKILL') runnerAlive = false;
+      return true;
+    });
     const waitForTrackedRunnersExit = vi.fn()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);

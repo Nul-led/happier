@@ -14,7 +14,6 @@ import {
   SavedSecretSchema,
   applyAccountSettingsSavedSecretMutation,
   accountSettingsParse,
-  decryptSecretValueWithKeysV1,
   sameQualifiedConnectedAccountRef,
   parseBuiltInLegacyConnectedServiceCredentialRecordV1,
   parseConnectedAccountServiceConfigurationsV1,
@@ -67,8 +66,8 @@ import {
   type AccountSettingsUpdateV2Deps,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import {
-  indexSavedSecretsByIdFromAccountSettings,
-} from '@/settings/secrets/indexSavedSecretsById';
+  createSavedSecretMaterializerFromSnapshotV1,
+} from '@/settings/secrets/savedSecretCatalog';
 import {
   deriveSettingsSecretsReadKeysForCredentials,
 } from '@/settings/secrets/settingsSecretsKey';
@@ -508,7 +507,7 @@ export function createActiveAccountSettingsConnectedAccountSecrets():
       const snapshot = getActiveAccountSettingsSnapshot();
       return Boolean(
         snapshot
-        && indexSavedSecretsByIdFromAccountSettings(snapshot.settings).has(secretId),
+        && createSavedSecretMaterializerFromSnapshotV1(snapshot).inspect(secretId).status === 'ready',
       );
     },
     async read(secretId, options) {
@@ -517,18 +516,12 @@ export function createActiveAccountSettingsConnectedAccountSecrets():
       }
       const snapshot = getActiveAccountSettingsSnapshot();
       if (!snapshot) return null;
-      const savedSecret =
-        indexSavedSecretsByIdFromAccountSettings(snapshot.settings).get(secretId)
-        ?? null;
-      if (!savedSecret) return null;
-      const value = decryptSecretValueWithKeysV1(
-        savedSecret,
-        snapshot.settingsSecretsReadKeys,
-      );
+      const resolved = createSavedSecretMaterializerFromSnapshotV1(snapshot).resolve(secretId);
+      if (resolved.status !== 'ready') return null;
       if (options?.signal?.aborted) {
         throw options.signal.reason ?? new Error('Operation aborted');
       }
-      return getActiveAccountSettingsSnapshot() === snapshot ? value : null;
+      return getActiveAccountSettingsSnapshot() === snapshot ? resolved.value : null;
     },
   });
 }
@@ -1637,6 +1630,10 @@ export function createQualifiedConnectedAccountDaemonPersistence(
                   mutation: {
                     ref: account,
                     authenticationModeId: request.authenticationModeId,
+                    directExportContract: request.directExportContract ?? null,
+                    ...(request.contributionContractVersion
+                      ? { contributionContractVersion: request.contributionContractVersion }
+                      : {}),
                     content,
                     metadata: preparedCredentialMetadata,
                     expectedCredentialRevision:

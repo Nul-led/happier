@@ -55,3 +55,52 @@ export function createMissingSystemToolDiagnostic(params: Readonly<{
         },
     });
 }
+
+/**
+ * A runnable candidate (or a superseded executable name) observably belongs to
+ * a retired generation: the ACP fingerprint or the missing current install
+ * says so. The detail carries the provider-owned migration guidance; the
+ * human-visible message is composed by the resolution owner.
+ */
+export function createLegacySystemToolDiagnostic(params: Readonly<{
+    toolId: string;
+    displayName: string;
+    observedPath: string;
+    guidance: string;
+}>): SystemToolDiagnosticV1 {
+    return createSystemToolDiagnostic({
+        code: 'system_tool_legacy',
+        severity: 'error',
+        messageKey: 'plugins.exec.systemTools.legacy',
+        detail: {
+            toolId: params.toolId,
+            displayName: params.displayName,
+            observedPath: params.observedPath,
+            guidance: params.guidance,
+        },
+    });
+}
+
+/**
+ * Candidates exist but none answered the capability probe with a recognizable
+ * fingerprint. Truthful by construction: the caller names the exact binary it
+ * could not identify instead of guessing a generation.
+ */
+export function createUnidentifiedSystemToolDiagnostic(params: Readonly<{
+    toolId: string;
+    displayName: string;
+    observedPath: string;
+    guidance: string;
+}>): SystemToolDiagnosticV1 {
+    return createSystemToolDiagnostic({
+        code: 'system_tool_unidentified',
+        severity: 'error',
+        messageKey: 'plugins.exec.systemTools.unidentified',
+        detail: {
+            toolId: params.toolId,
+            displayName: params.displayName,
+            observedPath: params.observedPath,
+            guidance: params.guidance,
+        },
+    });
+}

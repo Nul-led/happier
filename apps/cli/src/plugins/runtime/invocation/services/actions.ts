@@ -24,6 +24,7 @@ import type {
     PluginInvocationSurface,
 } from '@happier-dev/plugin-sdk/interactions';
 import {
+    ActionApprovalRequestCreatedResultSchema,
     ActionIdSchema,
     type ActionExecuteResult,
     type ActionExecutorContext,
@@ -57,8 +58,10 @@ import {
 } from '@happier-dev/protocol/actions/actionSpecs';
 import type { AdmittedTargetedOperationExecutionRequest } from '../actions/executeContributedAction';
 import { resolvePluginActionCaller } from './actionCaller';
+import type { PluginExternalActionContext } from './types';
 
 export type PluginActionsServiceSeed = Readonly<{
+    sessionListAccess?: ActionExecutorContext['sessionListAccess'];
     plugin: Readonly<{ id: string; version: string }>;
     /** The host-stamped immediate contribution that owns this invocation. */
     contribution?: PluginInvocationContributionIdentity;
@@ -69,6 +72,8 @@ export type PluginActionsServiceSeed = Readonly<{
     surface: PluginInvocationSurface;
     /** Host-stamped provenance from the invocation that created this service. */
     caller?: PluginInvocationCaller;
+    /** Host-private external PAT authority; never projected into plugin input. */
+    externalActionContext?: PluginExternalActionContext;
     /** Host-private lookup of this invocation's current plugin materialization. */
     resolveCurrentPluginMaterializationRef?(): import('@happier-dev/protocol').PluginMachineMaterializationRefV1 | null;
     /** Untrusted, transient settlement forwarded from one mounted UI caller. */
@@ -496,7 +501,7 @@ function resolveContributedActionCaller(
     seed: PluginActionsServiceSeed,
     caller: ActionPluginCaller,
 ): Extract<PluginInvocationCaller, Readonly<{ kind: 'plugin' }>> | null {
-    if (!seed.contribution || !caller.materialization) return null;
+    if (!seed.contribution || !caller.materialization || !caller.immutableGenerationId) return null;
     const originSurface = seed.surface === 'plugin'
         && seed.caller?.kind === 'plugin'
         ? seed.caller.originSurface
@@ -507,6 +512,7 @@ function resolveContributedActionCaller(
         kind: 'plugin' as const,
         pluginId: seed.plugin.id,
         contribution: seed.contribution,
+        immutableGenerationId: caller.immutableGenerationId,
         materialization: caller.materialization,
         ...(originSurface ? { originSurface } : {}),
     });
@@ -724,14 +730,19 @@ export function createPluginInvocationActionsService(params: Readonly<{
         );
         throwIfInactive(params.seed, signal);
         actionInvocationSequence += 1;
-        const actionRequestId = params.seed.correlationId
+        const actionRequestId = params.seed.externalActionContext?.actionRequestId ?? (params.seed.correlationId
             ? `${params.seed.correlationId}:${actionId}:${actionInvocationSequence}`
-            : undefined;
+            : undefined);
         const agentWitness = params.seed.surface === 'agent'
             ? params.seed.readActiveTurnAdmissionWitness?.() ?? null
             : null;
         const result = await actionExecutor.execute(actionId, parsedPluginInput.data, {
+            ...(params.seed.externalActionContext ?? {}),
+            ...(params.seed.sessionListAccess ? { sessionListAccess: params.seed.sessionListAccess } : {}),
             ...(params.seed.session ? { defaultSessionId: params.seed.session.id } : {}),
+            ...(params.seed.session && !params.seed.sessionListAccess
+                ? { sessionListAccess: 'current_session' as const }
+                : {}),
             surface: params.seed.surface === 'agent' ? 'agent' : 'plugin',
             authority: 'account_automation',
             actionCaller,
@@ -752,7 +763,9 @@ export function createPluginInvocationActionsService(params: Readonly<{
                     },
                 }
                 : {}),
-            ...(actionRequestId ? { actionRequestId } : {}),
+            ...(params.seed.externalActionContext
+                ? { actionRequestId: params.seed.externalActionContext.actionRequestId }
+                : actionRequestId ? { actionRequestId } : {}),
             ...(params.seed.bypassActionInterception === true
                 ? { bypassActionInterception: true }
                 : {}),
@@ -762,6 +775,17 @@ export function createPluginInvocationActionsService(params: Readonly<{
             : undefined;
         throwIfInactive(params.seed, signal, inactiveStartDetails);
         if (!result.ok) throw executorFailure(actionId, result);
+
+        const deferredApproval = ActionApprovalRequestCreatedResultSchema.safeParse(result.result);
+        if (deferredApproval.success) {
+            if (deferredApproval.data.actionId !== actionId) {
+                throw new PluginError({
+                    code: 'plugin_action_result_schema_invalid',
+                    message: 'Plugin Action approval result does not match the invoked Action',
+                });
+            }
+            return deferredApproval.data;
+        }
 
         let projectedResult = result.result;
         if (spec.surfaceBindings?.plugin?.projectOutput) {

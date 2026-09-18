@@ -24,7 +24,7 @@ function createExecutorForTest(
         executionRunStart: unexpectedDependency,
         executionRunList: unexpectedDependency,
         executionRunGet: unexpectedDependency,
-        executionRunSend: unexpectedDependency,
+        detachedExecutionRunSend: unexpectedDependency,
         executionRunStop: unexpectedDependency,
         executionRunAction: unexpectedDependency,
         executionRunWait: unexpectedDependency,
@@ -111,6 +111,7 @@ describe('createHostContributedActionInvoker', () => {
                     id: 'caller',
                     qualifiedId: 'acme.caller/caller',
                 },
+                immutableGenerationId: 'generation-1',
                 materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',
@@ -141,6 +142,34 @@ describe('createHostContributedActionInvoker', () => {
         expect(invokeContributedAction).not.toHaveBeenCalled();
     });
 
+    it('rejects generationless caller provenance before contributed dispatch', async () => {
+        const invokeContributedAction = vi.fn<InvokeContributedAction>(async () => Object.freeze({
+            status: 'executed' as const,
+            value: null,
+        }));
+        const executor = createExecutorForTest(createInvokerForTest(invokeContributedAction));
+
+        await expect(executor.execute('action.invoke', {
+            action: { pluginId: 'acme.target', localId: 'run' },
+        }, {
+            surface: 'plugin',
+            actionCaller: {
+                kind: 'plugin',
+                pluginId: 'acme.caller',
+                contributionLocalId: 'caller',
+                materialization: {
+                    pluginId: 'acme.caller',
+                    machineId: 'machine-1',
+                    materializationId: 'materialization-1',
+                },
+            },
+        })).resolves.toMatchObject({
+            ok: false,
+            errorCode: 'plugin_action_caller_unavailable',
+        });
+        expect(invokeContributedAction).not.toHaveBeenCalled();
+    });
+
     it('returns a committed target failure without converting it into success', async () => {
         const invokeContributedAction = vi.fn<InvokeContributedAction>(async () => Object.freeze({
             status: 'failed' as const,
@@ -160,6 +189,7 @@ describe('createHostContributedActionInvoker', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contributionLocalId: 'caller',
+                immutableGenerationId: 'generation-1',
                 materialization: {
                     pluginId: 'acme.caller',
                     machineId: 'machine-1',

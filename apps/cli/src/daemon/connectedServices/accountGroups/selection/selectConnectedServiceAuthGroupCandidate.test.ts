@@ -5,13 +5,52 @@ import { ConnectedServiceAuthGroupPolicyV1Schema } from '@happier-dev/protocol';
 import {
   DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1,
   hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason,
+  isConnectedServiceAuthGroupProviderLimitSelected,
   isConnectedServiceAuthGroupSoftSwitchCandidateMeaningfullyBetter,
   resolveConnectedServiceAuthGroupSoftSwitchSourceEvidence,
   selectConnectedServiceAuthGroupCandidate,
+  resolveConnectedServiceAuthGroupQuotaResetCandidates,
   type ConnectedServiceAuthGroupMemberRuntimeState,
 } from './selectConnectedServiceAuthGroupCandidate';
 
 const basePolicy = DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1;
+
+describe('quota reset admission', () => {
+  const exhausted: ConnectedServiceAuthGroupMemberRuntimeState = {
+    quotaSnapshot: {
+      capturedAtMs: 900,
+      effectiveRemainingPercent: 0,
+      meters: [{ meterId: 'weekly', limitCategory: 'usage_limit', remainingPct: 0, resetAtMs: 100_000, providerLimitId: null }],
+    },
+  };
+  const resolve = (backup: ConnectedServiceAuthGroupMemberRuntimeState) => resolveConnectedServiceAuthGroupQuotaResetCandidates({
+    nowMs: 1_000,
+    quotaFreshnessMs: 60_000,
+    activeProfileId: 'primary',
+    policy: basePolicy,
+    members: [member('primary', 1, 1), member('backup', 2, 2)],
+    memberStatesByProfileId: new Map([['primary', exhausted], ['backup', backup]]),
+  });
+
+  it('admits exhausted usable accounts including the current member, but not reconnect-required members', () => {
+    expect(resolve(exhausted).map((candidate) => candidate.profileId)).toEqual(['primary', 'backup']);
+    expect(resolve({ ...exhausted, credentialHealthStatus: 'needs_reauth' }).map((candidate) => candidate.profileId)).toEqual(['primary']);
+  });
+
+  it('does not turn unknown evidence, transient cooldown, or capacity backoff into quota exhaustion', () => {
+    expect(resolve({})).toEqual([]);
+    expect(resolve({ cooldownUntilMs: 2_000 })).toEqual([]);
+    expect(resolve({ capacityLimitedUntilMs: 2_000 })).toEqual([]);
+    expect(resolve({ ...exhausted, quotaSnapshot: { ...exhausted.quotaSnapshot!, capturedAtMs: 0 } })).toHaveLength(2);
+    expect(resolve({ ...exhausted, quotaSnapshot: { ...exhausted.quotaSnapshot!, capturedAtMs: -100_000 } })).toEqual([]);
+  });
+
+  it('does not spend a usage reset for a rate-limit-only exhausted member', () => {
+    expect(resolve({ quotaSnapshot: { capturedAtMs: 900, effectiveRemainingPercent: 0, meters: [
+      { meterId: 'requests', limitCategory: 'rate_limit', remainingPct: 0, resetAtMs: 2_000, providerLimitId: null },
+    ] } })).toEqual([]);
+  });
+});
 
 function member(profileId: string, priority: number, createdAtMs: number) {
   return {
@@ -33,6 +72,136 @@ describe('DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1', () => {
     expect(DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1).toEqual(
       ConnectedServiceAuthGroupPolicyV1Schema.parse({}),
     );
+  });
+});
+
+describe('pool quota-limit selection', () => {
+  const selectedWeeklyPolicy = {
+    ...basePolicy,
+    strategy: 'least_limited' as const,
+    quotaLimitSelection: {
+      mode: 'selected' as const,
+      providerLimitIds: ['weekly'],
+    },
+  };
+
+  function quotaState(weekly: number | null, spark: number | null): ConnectedServiceAuthGroupMemberRuntimeState {
+    return {
+      quotaSnapshot: {
+        capturedAtMs: 900,
+        effectiveMeterId: 'spark',
+        effectiveRemainingPercent: spark,
+        exhausted: spark === 0,
+        meters: [
+          { meterId: 'weekly-window', limitCategory: 'usage_limit', remainingPct: weekly, resetAtMs: 10_000, providerLimitId: 'weekly' },
+          { meterId: 'spark-window', limitCategory: 'usage_limit', remainingPct: spark, resetAtMs: 20_000, providerLimitId: 'spark' },
+        ],
+      },
+    };
+  }
+
+  it('ranks and exhausts candidates from only the selected provider limits', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: null,
+      policy: selectedWeeklyPolicy,
+      members: [member('weekly-healthy', 1, 1), member('weekly-exhausted', 2, 2)],
+      memberStatesByProfileId: new Map([
+        ['weekly-healthy', quotaState(40, 0)],
+        ['weekly-exhausted', quotaState(0, 100)],
+      ]),
+    });
+
+    expect(result.selected?.profileId).toBe('weekly-healthy');
+    expect(result.selected?.leastLimitedScore).toBe(40);
+    expect(result.excluded).toContainEqual({
+      profileId: 'weekly-exhausted',
+      reason: 'quota_exhausted',
+      retryAtMs: 10_000,
+    });
+  });
+
+  it('keeps selected-but-unreported limits unknown instead of falling back to every meter', () => {
+    const result = selectConnectedServiceAuthGroupCandidate({
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: null,
+      policy: {
+        ...selectedWeeklyPolicy,
+        quotaLimitSelection: { mode: 'selected', providerLimitIds: ['not-reported'] },
+      },
+      members: [member('only', 1, 1)],
+      memberStatesByProfileId: new Map([['only', quotaState(0, 95)]]),
+    });
+
+    expect(result.selected).toMatchObject({ profileId: 'only', leastLimitedScore: null });
+    expect(result.excluded).toEqual([]);
+    expect(result.decisionTrace.candidates[0]?.quotaEvidence).toMatchObject({
+      status: 'fresh',
+      remainingPercent: null,
+      exhausted: false,
+    });
+  });
+
+  it('uses the same selected limits for soft-source evidence', () => {
+    expect(resolveConnectedServiceAuthGroupSoftSwitchSourceEvidence({
+      activeProfileId: 'active',
+      policy: selectedWeeklyPolicy,
+      memberStatesByProfileId: new Map([['active', quotaState(12, 100)]]),
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+    })).toEqual({
+      status: 'at_or_below_threshold',
+      remainingPercent: 12,
+      thresholdPercent: 15,
+    });
+  });
+
+  it('rejects hard-switch evidence for an unselected provider limit', () => {
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'usage_limit',
+      providerLimitId: 'spark',
+      policy: selectedWeeklyPolicy,
+      profileId: 'candidate',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: new Map([['candidate', quotaState(40, 100)]]),
+    })).toBe(false);
+    expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+      reason: 'usage_limit',
+      providerLimitId: 'weekly',
+      policy: selectedWeeklyPolicy,
+      profileId: 'candidate',
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      memberStatesByProfileId: new Map([['candidate', quotaState(40, 0)]]),
+    })).toBe(true);
+  });
+
+  it('keeps unknown hard-failure allowance identity participating for backward-compatible recovery', () => {
+    expect(isConnectedServiceAuthGroupProviderLimitSelected({
+      policy: selectedWeeklyPolicy,
+      providerLimitId: null,
+    })).toBe(true);
+    expect(isConnectedServiceAuthGroupProviderLimitSelected({
+      policy: selectedWeeklyPolicy,
+      providerLimitId: 'spark',
+    })).toBe(false);
+  });
+
+  it('does not apply quota-family selection to auth or entitlement failures', () => {
+    for (const reason of ['auth_expired', 'plan']) {
+      expect(hasConnectedServiceAuthGroupCandidateEvidenceForSwitchReason({
+        reason,
+        providerLimitId: 'model-not-in-quota-policy',
+        policy: selectedWeeklyPolicy,
+        profileId: 'candidate',
+        nowMs: 1_000,
+        quotaFreshnessMs: 60_000,
+        memberStatesByProfileId: new Map([['candidate', quotaState(40, 0)]]),
+      })).toBe(true);
+    }
   });
 });
 
@@ -609,6 +778,28 @@ describe('selectConnectedServiceAuthGroupCandidate', () => {
     expect(result.selected?.profileId).toBe('backup');
   });
 
+  it('does not treat a future-dated quota observation as fresh soft-switch evidence', () => {
+    expect(resolveConnectedServiceAuthGroupSoftSwitchSourceEvidence({
+      activeProfileId: 'active',
+      policy: {
+        ...basePolicy,
+        softSwitchRemainingPercent: 15,
+      },
+      memberStatesByProfileId: new Map([[
+        'active',
+        {
+          quotaSnapshot: {
+            capturedAtMs: 10_000,
+            effectiveMeterId: 'weekly',
+            effectiveRemainingPercent: 0,
+          },
+        },
+      ]]),
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+    })).toEqual({ status: 'unknown', reason: 'missing_fresh_quota_snapshot' });
+  });
+
   it('soft-switches from a low-quota current member under priority strategy when a safer candidate exists', () => {
     const result = selectConnectedServiceAuthGroupCandidate({
       nowMs: 1_000,
@@ -961,6 +1152,33 @@ describe('selectConnectedServiceAuthGroupCandidate', () => {
       { profileId: 'plan-blocked', reason: 'plan_unavailable', retryAtMs: 5_000 },
       { profileId: 'validation-blocked', reason: 'validation_blocked', retryAtMs: 5_000 },
     ]));
+  });
+
+  it('excludes a member only for the model whose entitlement cooldown is active', () => {
+    const input = {
+      nowMs: 1_000,
+      quotaFreshnessMs: 60_000,
+      activeProfileId: 'active',
+      policy: basePolicy,
+      members: [member('restricted', 1, 1), member('fallback', 2, 2)],
+      memberStatesByProfileId: new Map<string, ConnectedServiceAuthGroupMemberRuntimeState>([
+        ['restricted', { modelUnavailableUntilMsByModelId: { 'gpt-5.6-sol': 86_401_000 } }],
+      ]),
+    };
+
+    expect(selectConnectedServiceAuthGroupCandidate({
+      ...input,
+      providerLimitId: 'gpt-5.6-sol',
+    })).toMatchObject({
+      selected: { profileId: 'fallback' },
+      excluded: expect.arrayContaining([
+        { profileId: 'restricted', reason: 'plan_unavailable', retryAtMs: 86_401_000 },
+      ]),
+    });
+    expect(selectConnectedServiceAuthGroupCandidate({
+      ...input,
+      providerLimitId: 'gpt-5.6-codex',
+    }).selected?.profileId).toBe('restricted');
   });
 
   it('does not make auth- or capacity-blocked profiles selectable from quota headroom alone', () => {

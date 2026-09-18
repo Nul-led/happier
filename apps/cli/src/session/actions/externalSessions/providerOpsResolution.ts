@@ -7,6 +7,9 @@ import { createAgentExternalSessionsExecutionSurface } from '@/agent/runtime/reg
 import { readCurrentExternalSessionAgentIdentity } from '@/api/session/external/linking/qualifiedLinkIdentityRegistry';
 import type { ExternalSessionFollowResource } from '@/api/session/external/leases/createExternalSessionFollowLeaseManager';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import type {
+    GenerationBoundExternalSessionCandidateLifecycle,
+} from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import {
     createExternalSessionSourceKeyOwnerFromAgentProjection,
     resolveExternalSessionSourceFromAgentProjection,
@@ -72,6 +75,13 @@ export async function resolveExternalSessionSourceSurface(
          * the contribution rather than only by the contribution's identity.
          */
         agentRuntimeGeneration: string | null;
+        /**
+         * Host-synthesized Agent session-lifecycle controls for a resume-only
+         * ACP source, absent for every plugin-contributed source. Deliberately
+         * not part of `providerOps`: the External Sessions contribution owns
+         * discovery and transcripts, never Agent session lifecycle.
+         */
+        candidateLifecycle: GenerationBoundExternalSessionCandidateLifecycle | null;
         sourceKeyOwner: NonNullable<ReturnType<typeof createExternalSessionSourceKeyOwnerFromAgentProjection>>;
     }>
     | Extract<ResolvedExternalSessionSourceProjection, { ok: false }>
@@ -125,6 +135,9 @@ export async function resolveExternalSessionSourceSurface(
             agentRuntimeGeneration:
                 runtimeRegistryLease.registry.agentRuntimesByAgentId
                     .get(agentId)?.immutableGenerationId ?? null,
+            candidateLifecycle:
+                runtimeRegistryLease.registry.agentRuntimesByAgentId
+                    .get(agentId)?.externalSessionCandidateLifecycle ?? null,
             sourceKeyOwner,
         });
     } finally {

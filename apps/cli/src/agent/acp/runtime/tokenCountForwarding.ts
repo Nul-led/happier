@@ -17,50 +17,16 @@ export type UsageObservedRuntimeMeasurement = Readonly<Pick<
   'source' | 'scope' | 'modelId' | 'tokens' | 'cost' | 'context'
 >>;
 
-function asFiniteNonNegativeNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function normalizeTokenCountCostForForwarding(raw: unknown): { total: number; [key: string]: number } | null {
-  if (raw == null) return null;
-
-  const direct = asFiniteNonNegativeNumber(raw);
-  if (direct != null) {
-    const out = Object.create(null) as Record<string, number>;
-    out.total = direct;
-    return out as { total: number; [key: string]: number };
-  }
-
-  const record = asRecord(raw);
-  if (!record) return null;
-  const out = Object.create(null) as Record<string, number>;
-
-  let added = 0;
-  for (const [key, value] of Object.entries(record)) {
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-    if (key.trim().length === 0 || key.length > 64) continue;
-    const num = asFiniteNonNegativeNumber(value);
-    if (num == null) continue;
-    out[key] = num;
-    added++;
-    if (added >= 20) break;
-  }
-
-  if (added === 0) return null;
-
-  if (out.total == null) {
-    const total = Object.entries(out)
-      .filter(([k]) => k !== 'total')
-      .reduce((acc, [, v]) => acc + v, 0);
-    out.total = total;
-  }
-
-  return out as { total: number; [key: string]: number };
+function clampTokenCountCostForForwarding(
+  cost: UsageObservation['cost'],
+): UsageObservation['cost'] {
+  if (!cost?.breakdown) return cost;
+  const breakdown = Object.fromEntries(Object.entries(cost.breakdown)
+    .filter(([key]) => key !== '__proto__' && key !== 'constructor' && key !== 'prototype')
+    .filter(([key]) => key.trim().length > 0 && key.length <= 64)
+    .slice(0, 20));
+  const { breakdown: _unboundedBreakdown, ...semanticCost } = cost;
+  return Object.keys(breakdown).length === 0 ? semanticCost : { ...semanticCost, breakdown };
 }
 
 function clampTokenCountTokensForForwarding(tokens: Record<string, number>): Record<string, number> {
@@ -110,7 +76,7 @@ export function buildTokenCountSessionMessageForForwarding(
   return buildTokenCountSessionMessageFromUsageObservation({
     ...observation,
     tokens: observation.tokens ? (clampTokenCountTokensForForwarding(observation.tokens) as any) : null,
-    cost: normalizeTokenCountCostForForwarding(agentMessage.cost),
+    cost: clampTokenCountCostForForwarding(observation.cost),
   });
 }
 

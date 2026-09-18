@@ -43,14 +43,17 @@ function countUnifiedDiffChangedLines(unifiedDiff: string): Readonly<{ addedLine
 function buildTruncatedEntry(params: Readonly<{
     entry: TurnDiffFileEntry;
     stats: TurnDiffFileStats;
+    maxPayloadBytes: number;
 }>): BoundedTurnDiffFileEntry {
     const { oldText: _oldText, newText: _newText, unified_diff: _unifiedDiff, ...metadata } = params.entry;
+    const placeholder = buildPlaceholderUnifiedDiff(
+        params.entry.file_path,
+        params.entry.description ?? 'Diff too large',
+    );
     return {
         ...metadata,
-        unified_diff: buildPlaceholderUnifiedDiff(
-            params.entry.file_path,
-            params.entry.description ?? 'Diff too large',
-        ),
+        confidence: 'best_effort',
+        ...(byteLength(placeholder) <= params.maxPayloadBytes ? { unified_diff: placeholder } : {}),
         truncated: true,
         stats: params.stats,
     };
@@ -135,14 +138,23 @@ export function boundTurnDiffFiles(params: Readonly<{
                 const { oldText: _oldText, newText: _newText, ...metadata } = entry;
                 files.push({
                     ...metadata,
+                    confidence: 'best_effort',
                     unified_diff: boundedDiff,
+                    truncated: true,
                     stats: { oldTextBytes, newTextBytes },
                 });
+                truncatedFileCount += 1;
                 remainingTurnBudget -= byteLength(boundedDiff);
                 continue;
             }
 
-            files.push(buildTruncatedEntry({ entry, stats: { oldTextBytes, newTextBytes } }));
+            const truncated = buildTruncatedEntry({
+                entry,
+                stats: { oldTextBytes, newTextBytes },
+                maxPayloadBytes: allowed,
+            });
+            files.push(truncated);
+            remainingTurnBudget -= byteLength(truncated.unified_diff ?? '');
             truncatedFileCount += 1;
             continue;
         }
@@ -155,13 +167,16 @@ export function boundTurnDiffFiles(params: Readonly<{
                 continue;
             }
 
-            files.push(buildTruncatedEntry({
+            const truncated = buildTruncatedEntry({
                 entry,
                 stats: {
                     unifiedDiffBytes,
                     ...countUnifiedDiffChangedLines(entry.unified_diff),
                 },
-            }));
+                maxPayloadBytes: allowed,
+            });
+            files.push(truncated);
+            remainingTurnBudget -= byteLength(truncated.unified_diff ?? '');
             truncatedFileCount += 1;
             continue;
         }

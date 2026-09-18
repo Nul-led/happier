@@ -329,6 +329,46 @@ describe('startSessionHookServer', () => {
     );
   });
 
+  it('preserves the exact opaque provider session id bytes through publication and the session callback', async () => {
+    const paddedProviderSessionId = ' provider/session+1=\n';
+    const publishHostEvent = vi.fn<(
+      name: string,
+      payload?: unknown,
+    ) => Promise<void>>(async () => {});
+    const onSessionHook = vi.fn();
+    const server = await startSessionHookServer({
+      session: {
+        providerId: 'claude',
+        sessionId: 'happier-session-padded',
+      },
+      onSessionHook,
+      publishHostEvent,
+      requestReadTimeoutMs: 20,
+    });
+    servers.push(server);
+
+    const res = await postSessionHook({
+      port: server.port,
+      body: {
+        hook_event_name: 'SessionStart',
+        session_id: paddedProviderSessionId,
+      },
+    });
+
+    expect(res).toEqual({ status: 200, text: 'ok' });
+    expect(onSessionHook).toHaveBeenCalledWith(
+      paddedProviderSessionId,
+      expect.objectContaining({ hook_event_name: 'SessionStart' }),
+    );
+    expect(publishHostEvent).toHaveBeenCalledWith(
+      SESSION_PROVIDER_HOOK_EVENT_ID_V1,
+      expect.objectContaining({
+        sessionId: 'happier-session-padded',
+        providerSessionId: paddedProviderSessionId,
+      }),
+    );
+  });
+
   it('publishes provider-hook events when the legacy session callback fails', async () => {
     const privateTranscript = 'private provider transcript that must not enter hook logs';
     const publishHostEvent = vi.fn<(

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  accountSettingsParse,
   AgentSessionProviderBindingV1Schema,
   ProviderBoundModelRefSchema,
+  sealSavedSecretResourceStoredContentV1,
+  type SecretReferenceOverlayV1,
 } from '@happier-dev/protocol';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
@@ -11,6 +14,12 @@ import type {
   ExecutionRunPermissionCapability,
   RuntimePermissionResponseOutcome,
 } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { createEnvKeyScope } from '@/testkit/env/envScope';
+
+// One runtime, one lifetime: the signal must stay stable across calls so
+// subscribers do not accumulate against a fresh controller each read.
+const TEST_RUNTIME_LIFETIME_SIGNAL = new AbortController().signal;
 
 const resolveBackendEngineAdapterResolutionMock = vi.fn();
 const requestExecutionRunConnectedServicesMaterializationMock = vi.fn();
@@ -36,6 +45,10 @@ vi.mock('./providerLaunch', () => ({
     prepareExecutionRunProviderLaunchMock(...args),
 }));
 
+// Keep the large CLI graph in the collection phase. Per-test isolation is owned by
+// the boundary fixtures below rather than repeatedly evicting and rebuilding modules.
+import { createExecutionRunRuntime } from './create';
+
 function createStubRuntimeCoreBackend(opts?: Readonly<{
   permissionCapability?: ExecutionRunPermissionCapability;
   dynamicPermissionCapability?: ExecutionRunPermissionCapability;
@@ -44,8 +57,8 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
   runtimeFacets?: unknown;
 }>): ExecutionRunHostRuntime & {
   readonly calls: Readonly<{
-    provisionSession: ReturnType<typeof vi.fn>;
-    sendPrompt: ReturnType<typeof vi.fn>;
+    provisionRuntime: ReturnType<typeof vi.fn>;
+    deliverInput: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
     subscribeMessages: ReturnType<typeof vi.fn>;
     respondToPermission: ReturnType<typeof vi.fn>;
@@ -59,7 +72,7 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
   let provisioned = false;
   const calls = {
     readResumeSupport: vi.fn(async () => false),
-    provisionSession: vi.fn(async () => {
+    provisionRuntime: vi.fn(async () => {
       provisioned = true;
       if (!emittedRuntimeEvents) {
         if (opts?.runtimeDescriptor !== undefined) {
@@ -73,10 +86,14 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
         }
         emittedRuntimeEvents = true;
       }
-      return { sessionId: 'plugin-session-1' };
+      return { runtimeId: 'plugin-runtime-1' };
     }),
-    sendPrompt: vi.fn(async (_sessionId: string, prompt: string) => {
-      messageHandler?.({ type: 'model-output', fullText: `plugin:${prompt}` });
+    deliverInput: vi.fn(async (
+      _runtimeId: string,
+      input: Parameters<ExecutionRunHostRuntime['deliverInput']>[1],
+    ) => {
+      messageHandler?.({ type: 'model-output', fullText: `plugin:${input.text}` });
+      return { status: 'admitted' as const };
     }),
     cancel: vi.fn(async () => undefined),
     subscribeMessages: vi.fn((handler: ExecutionRunHostRuntimeMessageHandler) => {
@@ -94,8 +111,9 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
 
   return {
     readResumeSupport: calls.readResumeSupport,
-    provisionSession: calls.provisionSession,
-    sendPrompt: calls.sendPrompt,
+    provisionRuntime: calls.provisionRuntime,
+    deliverInput: calls.deliverInput,
+    getRuntimeLifetimeSignal: () => TEST_RUNTIME_LIFETIME_SIGNAL,
     cancel: calls.cancel,
     subscribeMessages: calls.subscribeMessages,
     waitForTurnCompletion: calls.waitForTurnCompletion,
@@ -121,9 +139,137 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
 
 describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
   beforeEach(() => {
-    vi.resetModules();
     resolveBackendEngineAdapterResolutionMock.mockReset();
+    requestExecutionRunConnectedServicesMaterializationMock.mockReset();
+    releaseExecutionRunConnectedServicesMock
+      .mockReset()
+      .mockResolvedValue({ ok: true as const, released: true });
     prepareExecutionRunProviderLaunchMock.mockReset();
+  });
+
+  it('materializes a one-launch Saved Secret reference into runtime env without persisting its value', async () => {
+    const createExecutionRunBackendMock = vi.fn((options) => {
+      expect(options.isolation.env).toMatchObject({ API_KEY: 'run-secret-value' });
+      return createStubRuntimeCoreBackend();
+    });
+    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
+      backendId: 'codex',
+      agentId: 'codex',
+      provenance: 'first_party',
+      // The overlay merge belongs to the shared execution-run shell and must
+      // not depend on bundled-plugin isolation/catalog projection.
+      runtimeOwner: { selected: { kind: 'host_configured' } },
+      backend: { id: 'codex', agentId: 'codex', provenance: 'first_party' },
+      agent: { id: 'codex', provenance: 'first_party' },
+      engineAdapter: { runtimeCore: { createExecutionRunBackend: createExecutionRunBackendMock } },
+      executionSurfaces: {},
+      diagnostics: [],
+    });
+    const runtime = createExecutionRunRuntime({
+      cwd: '/repo',
+      scope: 'detached',
+      runId: 'run-secret-overlay',
+      backendId: 'codex',
+      permissionMode: 'default',
+      secretReferenceOverlay: {
+        v: 1,
+        bindings: {
+          API_KEY: { ref: 'happier:shared-secret:v1:run-secret', revision: 4 },
+        },
+      },
+      resolveAccountSettingsSnapshot: async () => ({
+        source: 'cache',
+        settings: accountSettingsParse({}),
+        settingsVersion: 1,
+        loadedAtMs: 1,
+        settingsSecretsReadKeys: [],
+        scopeKey: 'account:owner',
+        savedSecretResources: [{
+          resourceId: 'run-secret',
+          ownerAccountId: 'owner-account',
+          displayName: 'Run secret',
+          kind: 'apiKey',
+          encryptionMode: 'plain',
+          revision: 4,
+          materialStatus: 'ready',
+          storedContent: sealSavedSecretResourceStoredContentV1({
+            resourceId: 'run-secret',
+            mode: 'plain',
+            content: { v: 1, name: 'Run secret', kind: 'apiKey', value: 'run-secret-value' },
+          }),
+        }],
+      }),
+      start: { intent: 'delegate', retentionPolicy: 'resumable' },
+    });
+
+    await runtime.provisionRuntime({ initialPrompt: 'delegate' });
+    await runtime.dispose();
+    expect(createExecutionRunBackendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates the admitted Saved Secret overlay on resume recreation before creating a backend', async () => {
+    const overlay = {
+      v: 1 as const,
+      bindings: {
+        API_KEY: { ref: 'happier:shared-secret:v1:run-secret', revision: 4 },
+      },
+    };
+    const createExecutionRunBackendMock = vi.fn(() => createStubRuntimeCoreBackend());
+    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
+      backendId: 'codex',
+      agentId: 'codex',
+      provenance: 'first_party',
+      runtimeOwner: { selected: { kind: 'host_configured' } },
+      backend: { id: 'codex', agentId: 'codex', provenance: 'first_party' },
+      agent: { id: 'codex', provenance: 'first_party' },
+      engineAdapter: { runtimeCore: { createExecutionRunBackend: createExecutionRunBackendMock } },
+      executionSurfaces: {},
+      diagnostics: [],
+    });
+    const resolveAccountSettingsSnapshot = vi.fn(async (input?: Readonly<{
+      secretReferenceOverlay?: SecretReferenceOverlayV1;
+    }>) => {
+      throw new SavedSecretOperationAdmissionError({
+        reason: 'reference_stale',
+        reference: input?.secretReferenceOverlay?.bindings.API_KEY?.ref ?? 'missing',
+      });
+    });
+
+    const initiallyAdmittedRuntime = createExecutionRunRuntime({
+      cwd: '/repo',
+      scope: 'detached',
+      runId: 'run-secret-overlay-resume',
+      backendId: 'codex',
+      permissionMode: 'default',
+      secretReferenceOverlay: overlay,
+      secretReferenceEnvironment: { API_KEY: 'initially-admitted-value' },
+      resolveAccountSettingsSnapshot,
+      start: { intent: 'delegate', retentionPolicy: 'resumable' },
+    });
+    await initiallyAdmittedRuntime.provisionRuntime({ initialPrompt: 'delegate' });
+    await initiallyAdmittedRuntime.dispose();
+    expect(resolveAccountSettingsSnapshot).not.toHaveBeenCalled();
+    expect(createExecutionRunBackendMock).toHaveBeenCalledTimes(1);
+
+    const resumedRuntime = createExecutionRunRuntime({
+      cwd: '/repo',
+      scope: 'detached',
+      runId: 'run-secret-overlay-resume',
+      backendId: 'codex',
+      permissionMode: 'default',
+      secretReferenceOverlay: overlay,
+      resolveAccountSettingsSnapshot,
+      start: { intent: 'delegate', retentionPolicy: 'resumable' },
+    });
+
+    await expect(resumedRuntime.provisionRuntime({
+      initialPrompt: 'delegate again',
+      resumeRuntimeId: 'provider-session-1',
+    })).rejects.toMatchObject({ code: 'provider_binding_changed' });
+    expect(resolveAccountSettingsSnapshot).toHaveBeenCalledExactlyOnceWith({
+      secretReferenceOverlay: overlay,
+    });
+    expect(createExecutionRunBackendMock).toHaveBeenCalledTimes(1);
   });
 
   it('revalidates and carries exact Provider-bound open inputs before runtime creation, then cleans up', async () => {
@@ -190,9 +336,17 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const { createExecutionRunRuntime } = await import('./create');
+    const ownerAccountSettingsSnapshot = {
+      source: 'cache' as const,
+      settings: accountSettingsParse({}),
+      settingsVersion: 7,
+      loadedAtMs: 10,
+      settingsSecretsReadKeys: [],
+      scopeKey: 'account:owner',
+    };
     const runtime = createExecutionRunRuntime({
       cwd: '/repo',
+      scope: 'detached',
       runId: 'run-provider',
       backendId: 'codex',
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
@@ -210,22 +364,24 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       permissionMode: 'default',
       connectedServices: null,
       machineId: 'machine-1',
+      resolveAccountSettingsSnapshot: async () => ownerAccountSettingsSnapshot,
       resolveProvidersFeatureEnabled: () => true,
       start: { intent: 'delegate', retentionPolicy: 'resumable' },
     });
 
-    await runtime.provisionSession({ initialPrompt: 'delegate' });
+    await runtime.provisionRuntime({ initialPrompt: 'delegate' });
     expect(events).toEqual(['revalidate', 'create']);
     expect(prepareExecutionRunProviderLaunchMock).toHaveBeenCalledWith(
       expect.objectContaining({
         machineId: 'machine-1',
         agentId: 'codex',
         runId: 'run-provider',
+        accountSettingsSnapshot: ownerAccountSettingsSnapshot,
       }),
     );
     await runtime.dispose();
     expect(events).toEqual(['revalidate', 'create', 'cleanup']);
-  }, 10_000);
+  });
 
   it('exposes a host-owned execution-run runtime surface without interpreting a malformed Agent descriptor', async () => {
     const runtimeCoreBackend = createStubRuntimeCoreBackend({
@@ -270,13 +426,13 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const runtimeModule = await import('./create');
-    const runtimeFactory = (runtimeModule as Record<string, unknown>).createExecutionRunRuntime;
+    const runtimeFactory = createExecutionRunRuntime;
     expect(typeof runtimeFactory).toBe('function');
     if (typeof runtimeFactory !== 'function') return;
 
     const runtime = runtimeFactory({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -286,9 +442,10 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         retentionPolicy: 'ephemeral',
       },
     }) as Readonly<{
-      provisionSession: (opts?: { initialPrompt?: string; resumeSessionId?: string; captureReplay?: boolean }) => Promise<{ sessionId: string }>;
-      sendPrompt: (sessionId: string, prompt: string) => Promise<void>;
-      cancel: (sessionId: string) => Promise<void>;
+      provisionRuntime: (opts?: { initialPrompt?: string; resumeRuntimeId?: string; captureReplay?: boolean }) => Promise<{ runtimeId: string }>;
+      deliverInput: ExecutionRunHostRuntime['deliverInput'];
+      getRuntimeLifetimeSignal: ExecutionRunHostRuntime['getRuntimeLifetimeSignal'];
+      cancel: (runtimeId: string) => Promise<void>;
       subscribeMessages: (handler: (message: AgentMessage) => void) => () => void;
       permissionCapability?: ExecutionRunPermissionCapability;
       respondToPermission?: (requestId: string, approved: boolean) => Promise<RuntimePermissionResponseOutcome>;
@@ -301,9 +458,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       messages.push(message);
     });
 
-    await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
-    await expect(runtime.sendPrompt('plugin-session-1', 'hello')).resolves.toBeUndefined();
-    await expect(runtime.cancel('plugin-session-1')).resolves.toBeUndefined();
+    await expect(runtime.provisionRuntime({ initialPrompt: 'boot' })).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
+    await expect(runtime.deliverInput('plugin-runtime-1', { text: 'hello' })).resolves.toEqual({ status: 'admitted' });
+    await expect(runtime.cancel('plugin-runtime-1')).resolves.toBeUndefined();
     expect(runtime.permissionCapability).toBe('static');
     expect(runtime.respondToPermission).toBeUndefined();
     await expect(runtime.waitForTurnCompletion(500)).resolves.toBeUndefined();
@@ -386,9 +543,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -404,9 +561,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       messages.push(message);
     });
 
-    await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
-    await expect(runtime.sendPrompt('plugin-session-1', 'hello')).resolves.toBeUndefined();
-    await expect(runtime.cancel('plugin-session-1')).resolves.toBeUndefined();
+    await expect(runtime.provisionRuntime({ initialPrompt: 'boot' })).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
+    await expect(runtime.deliverInput('plugin-runtime-1', { text: 'hello' })).resolves.toEqual({ status: 'admitted' });
+    await expect(runtime.cancel('plugin-runtime-1')).resolves.toBeUndefined();
     expect(runtime.respondToPermission).toBeUndefined();
     await expect(runtime.waitForTurnCompletion?.(500)).resolves.toBeUndefined();
     unsubscribe();
@@ -428,8 +585,8 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         retentionPolicy: 'ephemeral',
       },
     }));
-    expect(runtimeCoreBackend.calls.provisionSession).toHaveBeenCalledWith({ initialPrompt: 'boot' });
-    expect(runtimeCoreBackend.calls.sendPrompt).toHaveBeenCalledWith('plugin-session-1', 'hello', undefined);
+    expect(runtimeCoreBackend.calls.provisionRuntime).toHaveBeenCalledWith({ initialPrompt: 'boot' });
+    expect(runtimeCoreBackend.calls.deliverInput).toHaveBeenCalledWith('plugin-runtime-1', { text: 'hello' }, undefined);
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'event',
@@ -500,16 +657,16 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
       runId: 'run_isolated',
     });
 
-    await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'plugin-session-1' });
+    await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
     await expect(runtime.dispose()).resolves.toBeUndefined();
 
     expect(createExecutionRunBackendMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -569,9 +726,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -579,7 +736,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     });
 
     expect(runtime.respondToPermission).toBeUndefined();
-    await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'plugin-session-1' });
+    await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
     expect(runtime.respondToPermission).toBeTypeOf('function');
     await expect(runtime.respondToPermission?.('permission-1', true)).resolves.toEqual({ delivered: true });
 
@@ -631,9 +788,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      diagnostics: [],
 	    });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -649,8 +806,8 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       messages.push(message);
     });
 
-    await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
-    await expect(runtime.sendPrompt('plugin-session-1', 'hello')).resolves.toBeUndefined();
+    await expect(runtime.provisionRuntime({ initialPrompt: 'boot' })).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
+    await expect(runtime.deliverInput('plugin-runtime-1', { text: 'hello' })).resolves.toEqual({ status: 'admitted' });
     unsubscribe();
     await expect(runtime.dispose()).resolves.toBeUndefined();
 
@@ -718,9 +875,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      diagnostics: [],
 	    });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -736,7 +893,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       messages.push(message);
     });
 
-    await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
+    await expect(runtime.provisionRuntime({ initialPrompt: 'boot' })).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
     unsubscribe();
 
     expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(0);
@@ -776,9 +933,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      diagnostics: [],
 	    });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
@@ -794,8 +951,8 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       messages.push(message);
     });
 
-    await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
-    await expect(runtime.sendPrompt('plugin-session-1', 'hello')).resolves.toBeUndefined();
+    await expect(runtime.provisionRuntime({ initialPrompt: 'boot' })).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
+    await expect(runtime.deliverInput('plugin-runtime-1', { text: 'hello' })).resolves.toEqual({ status: 'admitted' });
     unsubscribe();
 
     expect(createExecutionRunBackendMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -861,28 +1018,28 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      diagnostics: [],
 	    });
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
     });
 
-    await expect(runtime.provisionSession()).rejects.toThrow(/terminal runtime launch/i);
+    await expect(runtime.provisionRuntime()).rejects.toThrow(/terminal runtime launch/i);
   });
 
   it('fails with unsupported backend when descriptor fallback resolves a non-plugin engine source', async () => {
     resolveBackendEngineAdapterResolutionMock.mockResolvedValue(null);
 
-    const { createExecutionRunRuntime } = await import('./create');
     const runtime = createExecutionRunRuntime({
       cwd: '/tmp/non-plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       permissionMode: 'read_only',
     });
 
-    await expect(runtime.provisionSession()).rejects.toThrow('Unsupported execution-run backend: acme.sample.backend');
+    await expect(runtime.provisionRuntime()).rejects.toThrow('Unsupported execution-run backend: acme.sample.backend');
   });
 
   it('does not subscribe late when the caller unsubscribes before runtimeCore resolution finishes', async () => {
@@ -896,18 +1053,18 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     const runtimeCoreBackend = createStubRuntimeCoreBackend();
     const createExecutionRunBackendMock = vi.fn(() => runtimeCoreBackend);
 
-    const runtimeModule = await import('./create');
-    const runtimeFactory = (runtimeModule as Record<string, unknown>).createExecutionRunRuntime;
+    const runtimeFactory = createExecutionRunRuntime;
     expect(typeof runtimeFactory).toBe('function');
     if (typeof runtimeFactory !== 'function') return;
 
     const runtime = runtimeFactory({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
     }) as Readonly<{
-      provisionSession: () => Promise<{ sessionId: string }>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
       subscribeMessages: (handler: (message: AgentMessage) => void) => () => void;
     }>;
 
@@ -940,7 +1097,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      diagnostics: [],
 	    });
 
-    await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'plugin-session-1' });
+    await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'plugin-runtime-1' });
 
     expect(createExecutionRunBackendMock).toHaveBeenCalled();
     expect(runtimeCoreBackend.calls.subscribeMessages).toHaveBeenCalledTimes(1);
@@ -977,21 +1134,21 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
 	      }],
 	    });
 
-    const runtimeModule = await import('./create');
-    const runtimeFactory = (runtimeModule as Record<string, unknown>).createExecutionRunRuntime;
+    const runtimeFactory = createExecutionRunRuntime;
     expect(typeof runtimeFactory).toBe('function');
     if (typeof runtimeFactory !== 'function') return;
 
     const runtime = runtimeFactory({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
     }) as Readonly<{
-      provisionSession: () => Promise<{ sessionId: string }>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
     }>;
 
-    await expect(runtime.provisionSession()).rejects.toThrow(
+    await expect(runtime.provisionRuntime()).rejects.toThrow(
       'Plugin trust approval is required before this backend can run.',
     );
     expect(createExecutionRunBackendMock).not.toHaveBeenCalled();
@@ -1028,27 +1185,32 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       }],
     });
 
-    const runtimeModule = await import('./create');
-    const runtimeFactory = (runtimeModule as Record<string, unknown>).createExecutionRunRuntime;
+    const runtimeFactory = createExecutionRunRuntime;
     expect(typeof runtimeFactory).toBe('function');
     if (typeof runtimeFactory !== 'function') return;
 
     const runtime = runtimeFactory({
       cwd: '/tmp/plugin-backend',
+      scope: 'detached',
       backendId: 'acme.sample.backend',
       backendTarget: { kind: 'builtInAgent', agentId: 'acme.sample.backend' as never },
       permissionMode: 'read_only',
     }) as Readonly<{
-      provisionSession: () => Promise<{ sessionId: string }>;
+      provisionRuntime: () => Promise<{ runtimeId: string }>;
     }>;
 
-    await expect(runtime.provisionSession()).rejects.toThrow(
+    await expect(runtime.provisionRuntime()).rejects.toThrow(
       'Refusing to load executable plugin daemon entry from an untrusted source.',
     );
     expect(createExecutionRunBackendMock).not.toHaveBeenCalled();
   });
 
   it('merges daemon-materialized connected-services env into the backend isolation env', async () => {
+    const connectedServiceSelectionsEnvJson = JSON.stringify([{
+      kind: 'profile',
+      serviceId: OPENAI_CODEX_ACCOUNT_SERVICE_ID,
+      profileId: 'profile_1',
+    }]);
     const registration = {
       v: 1 as const,
       activationId: '11111111-1111-4111-8111-111111111111',
@@ -1065,7 +1227,9 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
           },
         },
       },
-      connectedServiceSelectionsEnv: { HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: '{"v":1}' },
+      connectedServiceSelectionsEnv: {
+        HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: connectedServiceSelectionsEnvJson,
+      },
       sessionDirectory: '/tmp/project',
       materializedRoot: '/materialized/run_cs_1',
     };
@@ -1073,7 +1237,11 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       ok: true,
       result: {
         activationId: registration.activationId,
-        env: { CODEX_HOME: '/materialized/run_cs_1/codex-home' },
+        env: {
+          CODEX_HOME: '/materialized/run_cs_1/codex-home',
+          HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: connectedServiceSelectionsEnvJson,
+          HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_JSON: JSON.stringify(['CODEX_HOME']),
+        },
         connectedServicesBindings: {
           v: 1,
           bindingsByServiceId: {
@@ -1115,17 +1283,17 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const runtimeModule = await import('./create');
     const onConnectedServicesRegistration = vi.fn(async () => undefined);
-    const runtime = runtimeModule.createExecutionRunRuntime({
+    const runtime = createExecutionRunRuntime({
       cwd: '/tmp/project',
+      scope: 'detached',
       runId: 'run_cs_1',
       backendId: 'codex',
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
       permissionMode: 'default',
       onConnectedServicesRegistration,
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
             source: 'connected',
@@ -1136,7 +1304,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       },
     });
 
-    await runtime.provisionSession();
+    await runtime.provisionRuntime();
 
     expect(onConnectedServicesRegistration).toHaveBeenCalledWith(registration);
 
@@ -1152,6 +1320,8 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         isolation: expect.objectContaining({
           env: expect.objectContaining({
             CODEX_HOME: '/materialized/run_cs_1/codex-home',
+            HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: connectedServiceSelectionsEnvJson,
+            HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_JSON: JSON.stringify(['CODEX_HOME']),
           }),
         }),
       }),
@@ -1165,6 +1335,107 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         activationId: registration.activationId,
       }),
     );
+  });
+
+  it('starts an explicitly native plugin run without inheriting its parent connected-service identity', async () => {
+    const envScope = createEnvKeyScope([
+      'OPENAI_API_KEY',
+      'CODEX_HOME',
+      'NATIVE_AGENT_HOME',
+      'HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON',
+      'HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_JSON',
+      'HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT',
+    ]);
+    envScope.patch({
+      OPENAI_API_KEY: 'parent-connected-secret',
+      CODEX_HOME: '/materialized/parent/codex-home',
+      NATIVE_AGENT_HOME: '/native/agent/home',
+      HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: JSON.stringify([{
+        kind: 'profile',
+        serviceId: 'openai-codex',
+        profileId: 'parent',
+      }]),
+      HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_JSON: JSON.stringify([
+        'OPENAI_API_KEY',
+        'CODEX_HOME',
+      ]),
+      HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT: '/materialized/parent',
+    });
+    try {
+      const runtimeCoreBackend = createStubRuntimeCoreBackend();
+      const createExecutionRunBackendMock = vi.fn((_options: unknown) => runtimeCoreBackend);
+      resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
+        backendId: 'pi',
+        agentId: 'pi',
+        provenance: 'built_in',
+        runtimeOwner: {
+          backendId: 'pi',
+          selected: {
+            kind: 'plugin_engine',
+            ownerId: 'happier.agent.pi',
+            provenance: 'built_in',
+            pluginId: 'happier.agent.pi',
+          },
+          candidates: [],
+        },
+        backend: {
+          id: 'pi',
+          agentId: 'pi',
+          provenance: 'built_in',
+          source: { kind: 'built_in' },
+          runtimeKind: 'native',
+          capabilities: { executionRun: true },
+        },
+        agent: {
+          id: 'pi',
+          provenance: 'built_in',
+          source: { kind: 'built_in' },
+        },
+        engineAdapter: {
+          runtimeCore: {
+            createExecutionRunBackend: createExecutionRunBackendMock,
+          },
+        },
+        executionSurfaces: {},
+        diagnostics: [],
+      });
+
+      const runtime = createExecutionRunRuntime({
+        cwd: '/tmp/project',
+        scope: 'detached',
+        runId: 'run_native_pi',
+        backendId: 'pi',
+        backendTarget: { kind: 'builtInAgent', agentId: 'pi' },
+        permissionMode: 'safe-yolo',
+        connectedServices: {
+          v: 2,
+          bindingsByServiceId: {},
+        },
+      });
+
+      await runtime.provisionRuntime();
+
+      expect(requestExecutionRunConnectedServicesMaterializationMock).not.toHaveBeenCalled();
+      expect(createExecutionRunBackendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isolation: expect.objectContaining({
+            env: expect.objectContaining({
+              NATIVE_AGENT_HOME: '/native/agent/home',
+            }),
+          }),
+        }),
+      );
+      const launch = createExecutionRunBackendMock.mock.calls[0]?.[0] as {
+        isolation?: { env?: Record<string, string> };
+      };
+      expect(launch.isolation?.env).not.toHaveProperty('OPENAI_API_KEY');
+      expect(launch.isolation?.env).not.toHaveProperty('CODEX_HOME');
+      expect(launch.isolation?.env).not.toHaveProperty('HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON');
+      expect(launch.isolation?.env).not.toHaveProperty('HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_JSON');
+      expect(launch.isolation?.env).not.toHaveProperty('HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT');
+    } finally {
+      envScope.restore();
+    }
   });
 
   it('fails closed at backend resolution when the connected-services bridge is unreachable', async () => {
@@ -1198,15 +1469,15 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       diagnostics: [],
     });
 
-    const runtimeModule = await import('./create');
-    const runtime = runtimeModule.createExecutionRunRuntime({
+    const runtime = createExecutionRunRuntime({
       cwd: '/tmp/project',
+      scope: 'detached',
       runId: 'run_cs_2',
       backendId: 'codex',
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
       permissionMode: 'default',
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
             source: 'connected',
@@ -1217,7 +1488,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       },
     });
 
-    await expect(runtime.provisionSession()).rejects.toThrow('No daemon running');
+    await expect(runtime.provisionRuntime()).rejects.toThrow('No daemon running');
     expect(createExecutionRunBackendMock).not.toHaveBeenCalled();
   });
 });

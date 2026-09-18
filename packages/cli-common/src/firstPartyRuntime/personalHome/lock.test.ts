@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { acquirePersonalHomeOperationLock, isPersonalHomeOperationLockHeld, normalizePersonalHomeLockOrder, PersonalHomeOperationError, withPersonalHomeOperationLock, withPersonalHomeOperationLocks } from './lock.js';
+import { acquirePersonalHomeOperationLock, isPersonalHomeOperationLockHeld, PersonalHomeOperationError, withPersonalHomeOperationLock } from './lock.js';
 
 describe('Personal Home operation lock', () => {
   it('serializes operations and writes owner metadata', async () => {
@@ -133,34 +133,32 @@ describe('Personal Home operation lock', () => {
     });
   });
 
-  it('owns both relocation locks for nested lifecycle without admitting an independent flow', async () => {
-    const source = await mkdtemp(join(tmpdir(), 'happier-home-lock-relocation-source-'));
-    const destination = await mkdtemp(join(tmpdir(), 'happier-home-lock-relocation-destination-'));
-    let signalRelocationEntered: () => void = () => undefined;
-    const relocationEntered = new Promise<void>((resolveReady) => { signalRelocationEntered = resolveReady; });
-    let signalIndependentSettled: () => void = () => undefined;
-    const independentSettled = new Promise<void>((resolveSettled) => { signalIndependentSettled = resolveSettled; });
-
-    const independentFlow = (async () => {
-      await relocationEntered;
-      try {
-        await expect(withPersonalHomeOperationLock(source, 'lifecycle', async () => undefined)).rejects.toMatchObject({ code: 'operation_in_progress' });
-      } finally {
-        signalIndependentSettled();
+  it('fails opposite-direction relocation admission fast when each source Home is already owned', async () => {
+    const homeA = await mkdtemp(join(tmpdir(), 'happier-home-lock-opposite-a-'));
+    const homeB = await mkdtemp(join(tmpdir(), 'happier-home-lock-opposite-b-'));
+    const releaseA = await acquirePersonalHomeOperationLock(homeA, 'relocate', { role: 'source' });
+    const releaseB = await acquirePersonalHomeOperationLock(homeB, 'relocate', { role: 'source' });
+    let admittedWrites = 0;
+    try {
+      const attempts = await Promise.allSettled([
+        withPersonalHomeOperationLock(homeB, 'relocate', async () => { admittedWrites += 1; return 'a-to-b'; }),
+        withPersonalHomeOperationLock(homeA, 'relocate', async () => { admittedWrites += 1; return 'b-to-a'; }),
+      ]);
+      expect(attempts).toHaveLength(2);
+      for (const attempt of attempts) {
+        expect(attempt.status).toBe('rejected');
+        if (attempt.status === 'rejected') {
+          expect(attempt.reason).toMatchObject({ code: 'operation_in_progress' });
+        }
       }
-    })();
+      expect(admittedWrites).toBe(0);
+    } finally {
+      await releaseB();
+      await releaseA();
+    }
 
-    await withPersonalHomeOperationLocks([
-      { dataDir: source, role: 'source' },
-      { dataDir: destination, role: 'destination' },
-    ], 'relocate', async () => {
-      signalRelocationEntered();
-      await expect(withPersonalHomeOperationLock(source, 'lifecycle', async () => 'source-stopped')).resolves.toBe('source-stopped');
-      await expect(withPersonalHomeOperationLock(destination, 'lifecycle', async () => 'destination-started')).resolves.toBe('destination-started');
-      await expect(withPersonalHomeOperationLock(source, 'backup', async () => undefined)).rejects.toMatchObject({ code: 'operation_in_progress' });
-      await independentSettled;
-    });
-    await independentFlow;
+    await expect(withPersonalHomeOperationLock(homeA, 'relocate', async () => 'retry-a')).resolves.toBe('retry-a');
+    await expect(withPersonalHomeOperationLock(homeB, 'relocate', async () => 'retry-b')).resolves.toBe('retry-b');
   });
 
   it('allows only one contender to replace a proven stale inode and preserves the live successor', async () => {
@@ -195,9 +193,5 @@ describe('Personal Home operation lock', () => {
     await expect(readFile(takeoverPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(pinnedTakeoverPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await release();
-  });
-
-  it('deduplicates casing aliases using Windows lock identity semantics', () => {
-    expect(normalizePersonalHomeLockOrder(['C:\\Homes\\Primary', 'c:\\homes\\primary'], 'win32')).toHaveLength(1);
   });
 });

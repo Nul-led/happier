@@ -74,6 +74,7 @@ const resolvePlainAccountEncryptionCurrentness = async () => Object.freeze({
     signingKeyFingerprint: null,
     contentKeyFingerprint: null,
     updatedAt: 1,
+    recipientEnvelopeReadiness: { status: 'unavailable' as const, reason: 'plain_account' as const },
 });
 // r0.22 extends the incumbent per-generation Resource bound into the one
 // owner-local aggregate cap for active exact Resource/Session contexts.

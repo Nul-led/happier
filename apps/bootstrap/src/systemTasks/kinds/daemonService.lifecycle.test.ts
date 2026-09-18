@@ -5,7 +5,6 @@ const localDaemonCliMock = vi.hoisted(() => ({
   restartService: vi.fn(),
   startService: vi.fn(),
   stopService: vi.fn(),
-  waitForReadyDaemon: vi.fn(),
 }));
 
 vi.mock('../localDaemonCli.js', () => localDaemonCliMock);
@@ -86,17 +85,6 @@ describe('daemonService lifecycle handlers', () => {
       daemonAccountId: 'acct_123',
       daemonMachineRegistered: true,
     });
-    localDaemonCliMock.waitForReadyDaemon.mockResolvedValue({
-      serviceInstalled: true,
-      daemonRunning: true,
-      needsAuth: false,
-      machineId: 'machine-local-1',
-      daemonServerUrl: 'https://relay.example.test',
-      daemonComparableKey: 'https://relay.example.test',
-      daemonAccountId: 'acct_123',
-      daemonMachineRegistered: true,
-    });
-
     const handler = createDaemonServiceRestartHandler();
     const outcome = await collectResult(handler, {
       target: { kind: 'local' },

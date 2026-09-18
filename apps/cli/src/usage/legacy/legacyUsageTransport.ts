@@ -38,8 +38,12 @@ function getCompatibleLegacyTokens(observation: UsageObservation): LegacyUsageNu
     if (observation.tokens) {
         const out = createLegacyNumberMap();
         out.total = observation.tokens.total;
-        if (observation.tokens.input > 0) out.input = observation.tokens.input;
-        if (observation.tokens.output > 0) out.output = observation.tokens.output;
+        if (observation.availability?.inputTokens === true || observation.tokens.input > 0) {
+            out.input = observation.tokens.input;
+        }
+        if (observation.availability?.outputTokens === true || observation.tokens.output > 0) {
+            out.output = observation.tokens.output;
+        }
         if (observation.tokens.reasoning > 0) out.thought = observation.tokens.reasoning;
         if (observation.tokens.cacheRead > 0) out.cache_read = observation.tokens.cacheRead;
         if (observation.tokens.cacheWrite > 0) out.cache_creation = observation.tokens.cacheWrite;
@@ -63,8 +67,10 @@ function getCompatibleLegacyCost(
     const out = createLegacyNumberMap() as LegacyUsageCostMap;
     Object.assign(out, observation.cost.breakdown ?? {});
     out.total = observation.cost.reportedUsd || observation.cost.estimatedUsd || observation.cost.invoiceUsd || 0;
-    if (carries('reportedUsd') && observation.cost.reportedUsd > 0) out.reportedUsd = observation.cost.reportedUsd;
-    if (carries('estimatedUsd') && observation.cost.estimatedUsd > 0) out.estimatedUsd = observation.cost.estimatedUsd;
+    if (carries('reportedUsd') && (
+        observation.availability?.reportedCostUsd === true || observation.cost.reportedUsd > 0
+    )) out.reportedUsd = observation.cost.reportedUsd;
+    if (carries('estimatedUsd')) out.estimatedUsd = observation.cost.estimatedUsd;
     if (carries('invoiceUsd') && observation.cost.invoiceUsd != null) out.invoiceUsd = observation.cost.invoiceUsd;
     if (carries('billingContext') && observation.cost.billingContext) out.billingContext = observation.cost.billingContext;
     if (carries('costSource') && observation.cost.costSource) out.costSource = observation.cost.costSource;

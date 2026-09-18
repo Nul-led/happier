@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeBootstrapChannel } from './taskRuntime.js';
+import { normalizeBootstrapChannel, runCommandCapture } from './taskRuntime.js';
 
 describe('normalizeBootstrapChannel', () => {
   it('maps preview to preview', () => {
@@ -45,5 +45,21 @@ describe('normalizeBootstrapChannel', () => {
       commandChannel: 'stable',
       releaseChannel: 'stable',
     });
+  });
+});
+
+describe('runCommandCapture', () => {
+  it('terminates the child process when its AbortSignal is cancelled', async () => {
+    const controller = new AbortController();
+    const running = runCommandCapture({
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    });
+
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

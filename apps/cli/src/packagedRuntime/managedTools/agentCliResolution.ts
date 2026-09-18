@@ -1,6 +1,7 @@
 export type {
   AgentCliCommandResolution,
   AgentCliResolutionSource,
+  AgentCliSourcePolicy,
 } from '@happier-dev/cli-common/agents';
 export {
   readBackendCliSourcePreference,

@@ -14,6 +14,7 @@ import { createPluginRegistryStateStore } from '@/plugins/store/registry/current
 import { resolveLocalPathPluginSource } from '@/plugins/discovery/sources/localPath';
 import { downloadRemoteArchiveToTempFile } from './archive/download';
 import { resolveLocalPluginInstallTrust } from './trustPolicy';
+import { canonicalizeRemotePluginArchiveUrl, isRemotePluginArchiveLocator } from './trustIdentity';
 
 export type PluginSourceInspectionKind = 'path' | 'archive';
 
@@ -40,11 +41,8 @@ export function inferPluginSourceInspectionKind(locator: string): PluginSourceIn
     return 'path';
   }
 
-  if (isRemoteArchiveLocator(normalizedLocator)) {
-    const remotePathname = new URL(normalizedLocator).pathname.toLowerCase();
-    if (remotePathname.endsWith('.tar.gz') || remotePathname.endsWith('.tgz') || remotePathname.endsWith('.tar.xz') || remotePathname.endsWith('.zip')) {
-      return 'archive';
-    }
+  if (isRemotePluginArchiveLocator(normalizedLocator)) {
+    return 'archive';
   }
 
   const normalized = normalizedLocator.toLowerCase();
@@ -52,15 +50,6 @@ export function inferPluginSourceInspectionKind(locator: string): PluginSourceIn
     return 'archive';
   }
   return 'path';
-}
-
-function isRemoteArchiveLocator(locator: string): boolean {
-  try {
-    const parsed = new URL(locator);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 function normalizeInspectedTrustPolicy(
@@ -123,6 +112,7 @@ export async function inspectPluginSource(params: Readonly<{
 
   try {
     if (sourceKind === 'path') {
+      if (isRemotePluginArchiveLocator(params.locator)) throw new Error('Remote plugin sources require archive inspection');
       const resolvedSource = await resolveLocalPathPluginSource({ locator: params.locator });
       if (!resolvedSource.ok) {
         return {
@@ -185,8 +175,8 @@ export async function inspectPluginSource(params: Readonly<{
 
     let downloadedArchiveTempDir: string | null = null;
     const archivePath = await (async () => {
-      if (isRemoteArchiveLocator(params.locator)) {
-        const archiveUrl = new URL(params.locator).toString();
+      if (isRemotePluginArchiveLocator(params.locator)) {
+        const archiveUrl = canonicalizeRemotePluginArchiveUrl(params.locator);
         const archiveName = basename(new URL(archiveUrl).pathname) || 'plugin-archive.tar.gz';
         const downloaded = await downloadRemoteArchiveToTempFile({
           happyHomeDir: params.happyHomeDir,
@@ -221,7 +211,7 @@ export async function inspectPluginSource(params: Readonly<{
     let stagedCandidate: StagedNpmCompatiblePluginArchive | undefined;
     try {
       let candidateArchivePath = archivePath;
-      if (!isRemoteArchiveLocator(params.locator)) {
+      if (!isRemotePluginArchiveLocator(params.locator)) {
         await mkdir(stateStore.paths.cacheDir, { recursive: true });
         localArchiveTempDir = await mkdtemp(join(stateStore.paths.cacheDir, 'plugin-archive-preview-'));
         candidateArchivePath = join(localArchiveTempDir, 'candidate.tgz');
@@ -260,13 +250,13 @@ export async function inspectPluginSource(params: Readonly<{
         };
       }
 
-      const sourceLocator = isRemoteArchiveLocator(params.locator)
+      const sourceLocator = isRemotePluginArchiveLocator(params.locator)
         ? params.locator.trim()
         : archivePath;
       const archiveSourceOverride = params.sourceSpecOverride?.kind === 'archive'
         ? params.sourceSpecOverride
         : null;
-      const remoteArchive = isRemoteArchiveLocator(params.locator);
+      const remoteArchive = isRemotePluginArchiveLocator(params.locator);
       const trustPolicy = normalizeInspectedTrustPolicy(
         remoteArchive ? 'prompt' : archiveSourceOverride?.trustPolicy ?? 'prompt',
       );

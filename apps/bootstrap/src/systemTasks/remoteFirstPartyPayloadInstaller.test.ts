@@ -19,6 +19,8 @@ describe('installRemoteFirstPartyComponent', () => {
     it('uploads a verified payload and promotes it by updating the current symlink (no curl bash)', async () => {
         const remoteCommands: string[] = [];
         const copiedPaths: Array<Readonly<{ localPath: string; remotePath: string }>> = [];
+        const controller = new AbortController();
+        const observedSignals: Array<AbortSignal | undefined> = [];
         const rootDir = mkdtempSync(join(tmpdir(), 'hsetup-bootstrap-first-party-payload-'));
         tempDirs.push(rootDir);
         const payloadRoot = join(rootDir, 'happier-linux-x64');
@@ -34,12 +36,13 @@ describe('installRemoteFirstPartyComponent', () => {
                 auth: 'agent',
             },
             knownHostsMode: 'system',
+            signal: controller.signal,
         }, {
             now: () => 1700000000000,
-            resolveRemoteReleaseTarget: async () => ({
-                os: 'linux',
-                arch: 'x64',
-            }),
+            resolveRemoteReleaseTarget: async ({ signal }) => {
+                observedSignals.push(signal);
+                return { os: 'linux', arch: 'x64' };
+            },
             preparePayload: async () => ({
                 componentId: 'happier-cli',
                 channel: 'preview',
@@ -48,10 +51,12 @@ describe('installRemoteFirstPartyComponent', () => {
                 source: 'https://example.test/happier.tgz',
                 cleanup: async () => undefined,
             }),
-            copyLocalDirectoryToRemote: async ({ localPath, remotePath }) => {
+            copyLocalDirectoryToRemote: async ({ localPath, remotePath, signal }) => {
+                observedSignals.push(signal);
                 copiedPaths.push({ localPath, remotePath });
             },
-            runRemoteText: async ({ remoteCommand }) => {
+            runRemoteText: async ({ remoteCommand, signal }) => {
+                observedSignals.push(signal);
                 remoteCommands.push(remoteCommand);
                 return {
                     status: 0,
@@ -69,6 +74,12 @@ describe('installRemoteFirstPartyComponent', () => {
         expect(remoteCommands.join('\n')).not.toContain('curl -fsSL https://happier.dev/install');
         expect(remoteCommands.at(-1)).toContain('ln -sfn');
         expect(remoteCommands.at(-1)).toContain('/versions/');
+        expect(observedSignals).toEqual([
+            controller.signal,
+            controller.signal,
+            controller.signal,
+            controller.signal,
+        ]);
         expect(result).toEqual({
             binaryPath: '$HOME/.happier/cli-preview/current/happier',
             versionId: '1.2.3',

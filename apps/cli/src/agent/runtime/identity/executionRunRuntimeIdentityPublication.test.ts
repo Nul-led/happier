@@ -21,12 +21,14 @@ function createMinimalRuntime(): ExecutionRunHostRuntime {
     async readResumeSupport() {
       return false;
     },
-    async provisionSession() {
-      return { sessionId: 'runtime-session-1' };
+    async provisionRuntime() {
+      return { runtimeId: 'runtime-1' };
     },
-    async sendPrompt(_sessionId, prompt) {
-      handler?.({ type: 'model-output', fullText: prompt } satisfies AgentMessage);
+    async deliverInput(_runtimeId, input) {
+      handler?.({ type: 'model-output', fullText: input.text } satisfies AgentMessage);
+      return { status: 'admitted' };
     },
+    getRuntimeLifetimeSignal: () => new AbortController().signal,
     async cancel() {},
     subscribeMessages(next) {
       handler = next;
@@ -134,7 +136,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
       },
     });
 
-    expect(runtime.sendSteerPrompt).toBeUndefined();
+    expect(runtime.steerInput).toBeUndefined();
     expect(runtime.respondToPermission).toBeUndefined();
     expect(runtime.waitForTurnCompletion).toBeUndefined();
   });
@@ -151,9 +153,9 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
         get respondToPermission() {
           return started ? respondToPermission : undefined;
         },
-        async provisionSession() {
+        async provisionRuntime() {
           started = true;
-          return { sessionId: 'runtime-session-1' };
+          return { runtimeId: 'runtime-1' };
         },
       },
       identity: {
@@ -164,7 +166,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
     });
 
     expect(runtime.permissionCapability).toBeUndefined();
-    await expect(runtime.provisionSession()).resolves.toEqual({ sessionId: 'runtime-session-1' });
+    await expect(runtime.provisionRuntime()).resolves.toEqual({ runtimeId: 'runtime-1' });
     expect(runtime.permissionCapability).toBe('responds');
     expect(runtime.respondToPermission).toBeTypeOf('function');
     await expect(runtime.respondToPermission?.('permission-1', true)).resolves.toEqual({ delivered: true });
@@ -197,7 +199,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
       messages.push(message);
     });
 
-    await runtime.provisionSession({ initialPrompt: 'boot' });
+    await runtime.provisionRuntime({ initialPrompt: 'boot' });
     unsubscribe();
 
     expect(messages).toEqual([
@@ -248,8 +250,8 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
     const runtime = withExecutionRunRuntimeIdentityPublication({
       runtime: {
         ...createMinimalRuntime(),
-        async provisionSession() {
-          return { sessionId: 'runtime-session-1' };
+        async provisionRuntime() {
+          return { runtimeId: 'runtime-1' };
         },
         subscribeMessages(handler) {
           handler({
@@ -286,7 +288,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
       messages.push(message);
     });
 
-    await runtime.provisionSession({ initialPrompt: 'boot' });
+    await runtime.provisionRuntime({ initialPrompt: 'boot' });
     unsubscribe();
 
     expect(messages).toEqual([
@@ -336,8 +338,8 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
     const runtime = withExecutionRunRuntimeIdentityPublication({
       runtime: {
         ...createMinimalRuntime(),
-        async provisionSession() {
-          return { sessionId: 'runtime-session-1' };
+        async provisionRuntime() {
+          return { runtimeId: 'runtime-1' };
         },
         subscribeMessages(handler) {
           handler({
@@ -360,7 +362,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
       messages.push(message);
     });
 
-    await runtime.provisionSession({ initialPrompt: 'boot' });
+    await runtime.provisionRuntime({ initialPrompt: 'boot' });
     unsubscribe();
 
     expect(messages).toEqual([

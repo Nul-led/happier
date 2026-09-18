@@ -1,0 +1,371 @@
+import axios from 'axios';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+  decodeBase64,
+  deriveBoxPublicKeyFromSeed,
+  openEncryptedDataKeyEnvelopeV1,
+  signAccountContentKeyBindingV1,
+  type SessionInitialAccessDraftV1,
+} from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
+import { getOrCreateSessionByTag } from '@/session/transport/http/sessionsHttp';
+import { ApiClient } from './api';
+import { initializeBackendRunSession } from '@/agent/runtime/initializeBackendRunSession';
+import { createSpawnedSession } from '@/session/services/createSpawnedSession';
+
+const initialAccess: SessionInitialAccessDraftV1 = {
+  grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'edit', canApprovePermissions: false }],
+};
+const credentials = { token: 'token-1', encryption: null };
+const metadata = {
+  path: '/workspace', host: 'host', homeDir: '/home/user',
+  happyHomeDir: '/home/user/.happier', happyLibDir: '/lib', happyToolsDir: '/tools',
+};
+const creation = { credentials, tag: 'access-create', metadata, agentState: null, state: null };
+
+function features(
+  collaboration: boolean | undefined,
+  storagePolicy: 'required_e2ee' | 'optional' | 'plaintext_only' = 'plaintext_only',
+) {
+  return {
+    features: {
+      sessions: { enabled: true, ...(collaboration === undefined ? {} : { collaboration: { enabled: collaboration } }) },
+      sharing: { session: { enabled: true } },
+    },
+    capabilities: {
+      accountStoredContentCompatibility: {
+        v: 1, minimumProtocolVersion: 2, currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+        declarationTransport: 'http-header-and-socket-auth-v1',
+      },
+      encryption: { storagePolicy, allowAccountOptOut: false, defaultAccountMode: storagePolicy === 'plaintext_only' ? 'plain' : 'e2ee' },
+    },
+  };
+}
+
+for (const owner of ['api', 'http'] as const) {
+  describe(`${owner} fresh Session initial access HTTP boundary`, () => {
+    let createdByServer = true;
+    const create = async (accessFields: Record<string, unknown>) => {
+      const params = { ...creation, ...accessFields };
+      if (owner === 'http') return getOrCreateSessionByTag(params);
+      const api = await ApiClient.create(credentials);
+      return api.getOrCreateSession(params);
+    };
+    beforeEach(() => {
+      createdByServer = true;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true)))));
+      vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: {
+        mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
+      } });
+      vi.spyOn(axios, 'post').mockImplementation(async (_url, body) => {
+        const payload = body as { sharedMetadata: { ciphertext: string }; ownerMetadata: unknown };
+        return { status: 200, data: { created: createdByServer, organizationPlacement: { folderId: null, tagIds: [] }, session: {
+          id: 'created-session', seq: 0, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+          encryptionMode: 'plain', metadataLayoutVersion: 1, metadata: payload.sharedMetadata.ciphertext,
+          share: null,
+          ownerMetadata: payload.ownerMetadata, metadataVersion: 0, agentState: null, agentStateVersion: 0, dataEncryptionKey: null,
+        } } };
+      });
+    });
+    afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+    it('transports initial grants and explicit Team context only as create fields', async () => {
+      await create({ initialAccess, primaryTeamId: 'team-1' });
+      const body = vi.mocked(axios.post).mock.calls[0]?.[1];
+      expect(body).toMatchObject({ metadataLayoutVersion: 1, initialAccess, primaryTeamId: 'team-1' });
+      expect(JSON.stringify((body as { ownerMetadata: unknown }).ownerMetadata)).not.toContain('initialAccess');
+      expect(JSON.stringify((body as { sharedMetadata: unknown }).sharedMetadata)).not.toContain('initialAccess');
+    });
+
+    it.each([
+      [403, 'session_access_external_sharing_disabled'],
+      [503, 'session_access_authentication_unavailable'],
+    ] as const)('preserves server-rejected initial-access code %s/%s without retrying', async (status, code) => {
+      const response = {
+        status,
+        data: { error: code },
+      };
+      if (owner === 'api') {
+        vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response });
+      } else {
+        vi.mocked(axios.post).mockResolvedValueOnce(response);
+      }
+
+      await expect(create({ initialAccess, primaryTeamId: 'team-1' })).rejects.toMatchObject({
+        code,
+        retryable: false,
+      });
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps direct Account initial access key-free for a Plain Session', async () => {
+      const directAccess: SessionInitialAccessDraftV1 = { grants: [{
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view', canApprovePermissions: false,
+      }] };
+      await create({ initialAccess: directAccess });
+      expect((vi.mocked(axios.post).mock.calls[0]?.[1] as { initialAccess: unknown }).initialAccess).toEqual(directAccess);
+      expect(vi.mocked(axios.get).mock.calls.some((call) => String(call[0]).includes('/v1/user/'))).toBe(false);
+    });
+
+    it('materializes a ready direct E2EE recipient envelope only at the physical create boundary', async () => {
+      const callerMachineKey = new Uint8Array(32).fill(7);
+      const callerPublicKey = deriveBoxPublicKeyFromSeed(callerMachineKey);
+      const recipientContentKey = tweetnacl.box.keyPair();
+      const recipientSigningKey = tweetnacl.sign.keyPair();
+      const recipientContentKeySignature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: recipientSigningKey.secretKey,
+        contentPublicKey: recipientContentKey.publicKey,
+      });
+      const e2eeCredentials = {
+        token: 'token-1',
+        encryption: { type: 'dataKey' as const, publicKey: callerPublicKey, machineKey: callerMachineKey },
+      };
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true, 'required_e2ee')))));
+      vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+        if (String(url).endsWith('/v1/account/encryption/currentness')) {
+          return { status: 200, data: {
+            mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'available' },
+          } };
+        }
+        if (String(url).endsWith('/v1/user/recipient-account')) {
+          return { status: 200, data: { user: {
+            id: 'recipient-account', firstName: 'Recipient', lastName: null, avatar: null,
+            username: 'recipient', bio: null, badges: [], status: 'none',
+            publicKey: Buffer.from(recipientSigningKey.publicKey).toString('hex'),
+            contentPublicKey: Buffer.from(recipientContentKey.publicKey).toString('base64'),
+            contentPublicKeySig: Buffer.from(recipientContentKeySignature).toString('base64'),
+            recipientEnvelopeReadiness: { status: 'available' },
+          } } };
+        }
+        throw new Error(`Unexpected GET ${String(url)}`);
+      });
+      vi.mocked(axios.post).mockImplementation(async (_url, body) => {
+        const payload = body as Record<string, any>;
+        return { status: 200, data: { created: true, organizationPlacement: { folderId: null, tagIds: [] }, session: {
+          id: 'created-session', seq: 0, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+          encryptionMode: 'e2ee', metadataLayoutVersion: 1, metadata: payload.sharedMetadata.ciphertext,
+          share: null, ownerMetadata: payload.ownerMetadata, metadataVersion: 0,
+          agentState: payload.agentState, agentStateVersion: 0, dataEncryptionKey: payload.dataEncryptionKey,
+        } } };
+      });
+
+      const directAccess: SessionInitialAccessDraftV1 = { grants: [{
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'edit', canApprovePermissions: false,
+      }] };
+      const params = { ...creation, credentials: e2eeCredentials, initialAccess: directAccess };
+      if (owner === 'http') await getOrCreateSessionByTag(params);
+      else await (await ApiClient.create(e2eeCredentials)).getOrCreateSession(params);
+
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      const body = vi.mocked(axios.post).mock.calls[0]?.[1] as Record<string, any>;
+      expect(directAccess.grants[0]).not.toHaveProperty('accountEnvelopeInput');
+      expect(body.initialAccess.grants[0]).toMatchObject({
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accountEnvelopeInput: { v: 1, encryptedDataKey: expect.any(String) },
+      });
+      const ownerDataKey = openEncryptedDataKeyEnvelopeV1({
+        envelope: decodeBase64(body.dataEncryptionKey),
+        recipientSecretKeyOrSeed: callerMachineKey,
+      });
+      expect(ownerDataKey).not.toBeNull();
+      expect(openEncryptedDataKeyEnvelopeV1({
+        envelope: decodeBase64(body.initialAccess.grants[0].accountEnvelopeInput.encryptedDataKey),
+        recipientSecretKeyOrSeed: recipientContentKey.secretKey,
+      })).toEqual(ownerDataKey);
+    });
+
+    it.each(['encryption_setup_required', 'encryption_inconsistent'] as const)('keeps %s direct E2EE initial access key-free', async (reason) => {
+      const callerMachineKey = new Uint8Array(32).fill(7);
+      const e2eeCredentials = {
+        token: 'token-1',
+        encryption: { type: 'dataKey' as const, publicKey: deriveBoxPublicKeyFromSeed(callerMachineKey), machineKey: callerMachineKey },
+      };
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true, 'required_e2ee')))));
+      vi.spyOn(axios, 'get').mockImplementation(async (url) => String(url).endsWith('/v1/account/encryption/currentness')
+        ? { status: 200, data: {
+            mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'available' },
+          } }
+        : { status: 200, data: { user: {
+            id: 'recipient-account', firstName: 'Recipient', lastName: null, avatar: null,
+            username: 'recipient', bio: null, badges: [], status: 'none',
+            publicKey: null, contentPublicKey: null, contentPublicKeySig: null,
+            recipientEnvelopeReadiness: { status: 'unavailable', reason },
+          } } });
+      vi.mocked(axios.post).mockImplementation(async (_url, body) => {
+        const payload = body as Record<string, any>;
+        return { status: 200, data: { created: true, organizationPlacement: { folderId: null, tagIds: [] }, session: {
+          id: 'created-session', seq: 0, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+          encryptionMode: 'e2ee', metadataLayoutVersion: 1, metadata: payload.sharedMetadata.ciphertext,
+          share: null, ownerMetadata: payload.ownerMetadata, metadataVersion: 0,
+          agentState: payload.agentState, agentStateVersion: 0, dataEncryptionKey: payload.dataEncryptionKey,
+        } } };
+      });
+      const directAccess: SessionInitialAccessDraftV1 = { grants: [{
+        subject: { kind: 'account', accountId: 'recipient-account' }, accessLevel: 'view', canApprovePermissions: false,
+      }] };
+      const params = { ...creation, credentials: e2eeCredentials, initialAccess: directAccess };
+      if (owner === 'http') await getOrCreateSessionByTag(params);
+      else await (await ApiClient.create(e2eeCredentials)).getOrCreateSession(params);
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      expect((vi.mocked(axios.post).mock.calls[0]?.[1] as Record<string, any>).initialAccess).toEqual(directAccess);
+    });
+
+    it('rejects malformed direct-recipient binding before Session creation', async () => {
+      const callerMachineKey = new Uint8Array(32).fill(7);
+      const e2eeCredentials = {
+        token: 'token-1',
+        encryption: { type: 'dataKey' as const, publicKey: deriveBoxPublicKeyFromSeed(callerMachineKey), machineKey: callerMachineKey },
+      };
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true, 'required_e2ee')))));
+      vi.spyOn(axios, 'get').mockImplementation(async (url) => String(url).endsWith('/v1/account/encryption/currentness')
+        ? { status: 200, data: {
+            mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'available' },
+          } }
+        : { status: 200, data: { user: {
+            id: 'recipient-account', firstName: 'Recipient', lastName: null, avatar: null,
+            username: 'recipient', bio: null, badges: [], status: 'none',
+            publicKey: 'not-hex', contentPublicKey: 'not-base64', contentPublicKeySig: 'not-base64',
+            recipientEnvelopeReadiness: { status: 'available' },
+          } } });
+      const directAccess: SessionInitialAccessDraftV1 = { grants: [{
+        subject: { kind: 'account', accountId: 'recipient-account' }, accessLevel: 'view', canApprovePermissions: false,
+      }] };
+      const params = { ...creation, credentials: e2eeCredentials, initialAccess: directAccess };
+      const promise = owner === 'http'
+        ? getOrCreateSessionByTag(params)
+        : (await ApiClient.create(e2eeCredentials)).getOrCreateSession(params);
+      await expect(promise).rejects.toMatchObject({ code: 'session_access_invalid_recipient_envelope' });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    if (owner === 'http') it('creates Replay access once and removes it from the existing-row runner attachment', async () => {
+      const transportFailure = new Error('transport unavailable');
+      let attached: unknown;
+      await expect(createSpawnedSession({
+        credentials, directory: metadata.path, initialAccess, primaryTeamId: 'team-1',
+        replaySeededCreation: {
+          tag: creation.tag, flavor: 'codex', metadata,
+          sourceRecipe: { sourceSessionId: 'source', cutoffSeqInclusive: 1 },
+        },
+        directTransport: {
+          spawn: async (request) => { attached = request; throw transportFailure; },
+          resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }),
+        },
+      })).rejects.toBe(transportFailure);
+      expect(vi.mocked(axios.post).mock.calls[0]?.[1]).toMatchObject({ initialAccess, primaryTeamId: 'team-1' });
+      expect(attached).toMatchObject({ existingSessionId: 'created-session' });
+      expect(attached).not.toHaveProperty('initialAccess');
+      expect(attached).not.toHaveProperty('primaryTeamId');
+    });
+
+    if (owner === 'api') it('carries fresh bootstrap access through the real API and preserves refusal before opening a session', async () => {
+      const refusal = {
+        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
+      };
+      vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response: {
+        status: 409, data: { error: 'update_required', ...refusal },
+      } });
+      await expect(initializeBackendRunSession({
+        api: await ApiClient.create(credentials),
+        sessionTag: creation.tag,
+        initialAccess,
+        primaryTeamId: 'team-1',
+        metadata,
+        state: { controlledByUser: false },
+        uiLogPrefix: '[test]',
+        startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
+      })).rejects.toMatchObject(refusal);
+      expect(vi.mocked(axios.post).mock.calls[0]?.[1]).toMatchObject({ initialAccess, primaryTeamId: 'team-1' });
+    });
+
+    it.each([false, undefined])('refuses explicit initial access before POST when collaboration=%s', async (enabled) => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(enabled)))));
+      await expect(create({ initialAccess })).rejects.toMatchObject({
+        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('preserves the explicit update-required refusal from a mixed server peer', async () => {
+      const updateRequired = {
+        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
+      };
+      const response = { status: 409, data: { error: 'update_required', ...updateRequired } };
+      if (owner === 'api') vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response });
+      else vi.mocked(axios.post).mockResolvedValueOnce(response);
+      await expect(create({ initialAccess })).rejects.toMatchObject(updateRequired);
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reinterpret a generic bad request as an update requirement', async () => {
+      const response = { status: 400, data: { error: 'invalid-params' } };
+      if (owner === 'api') vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response });
+      else vi.mocked(axios.post).mockResolvedValueOnce(response);
+      const result = await create({ initialAccess }).catch((error: unknown) => error);
+      expect(result).not.toMatchObject({ kind: 'update_required' });
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry without access or infer no effect after a transport timeout', async () => {
+      vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, code: 'ETIMEDOUT', message: 'timeout' });
+      const result = await create({ initialAccess }).catch((error: unknown) => error);
+      expect(result).not.toMatchObject({ kind: 'update_required' });
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(axios.post).mock.calls[0]?.[1]).toMatchObject({ initialAccess });
+    });
+
+    it('preserves create-or-load settlement without a follow-up access mutation', async () => {
+      createdByServer = false;
+      const result = await create({ initialAccess, primaryTeamId: 'team-1' });
+      expect(result).toMatchObject(owner === 'api'
+        ? { sessionCreationOutcome: { disposition: 'rejoined' } }
+        : { created: false });
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects malformed grant authority before POST', async () => {
+      await expect(create({ initialAccess: { grants: [{ ...initialAccess.grants[0], requiredByTeamPolicy: true }] } })).rejects.toThrow();
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('uses the shared sharing dependency even when collaboration itself is enabled', async () => {
+      const snapshot = features(true);
+      snapshot.features.sharing.session.enabled = false;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(snapshot))));
+      await expect(create({ initialAccess })).rejects.toMatchObject({ kind: 'update_required' });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    if (owner === 'api') it('retains access and creation identity across the existing transient-server retry', async () => {
+      vi.stubEnv('HAPPIER_API_CREATE_SESSION_RETRY_BASE_DELAY_MS', '0');
+      vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response: { status: 503, data: { error: 'unavailable' } } });
+      await create({ initialAccess, primaryTeamId: 'team-1' });
+      expect(vi.mocked(axios.post).mock.calls.map((call) => call[1])).toMatchObject([
+        { tag: creation.tag, initialAccess, primaryTeamId: 'team-1' },
+        { tag: creation.tag, initialAccess, primaryTeamId: 'team-1' },
+      ]);
+    });
+
+    it('still creates without collaboration when no access or Team context was requested', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(false)))));
+      await create({});
+      const body = vi.mocked(axios.post).mock.calls[0]?.[1];
+      expect(body).not.toHaveProperty('initialAccess');
+      expect(body).not.toHaveProperty('primaryTeamId');
+    });
+
+    it('preserves an explicit personal context and omits absent initial grants', async () => {
+      await create({ primaryTeamId: null });
+      const body = vi.mocked(axios.post).mock.calls[0]?.[1];
+      expect(body).toHaveProperty('primaryTeamId', null);
+      expect(body).not.toHaveProperty('initialAccess');
+    });
+  });
+}

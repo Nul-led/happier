@@ -97,12 +97,8 @@ describe('generated scaffold UI products', () => {
       expect(generatedSurface.renderSurface).toEqual(expect.any(Function));
       const executeAction = vi.fn(async () => ({ note: 'hello' }));
       const fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: manifest.id,
-          pluginVersion: manifest.version,
-          viewId: 'main',
-          generation: 'generated-rn-scaffold',
-        },
+        identity: { instanceId: 'fixture-instance-3', mountNonce: 'fixture-mount-3' },
+        authorPlugin: { id: manifest.id, version: manifest.version },
         surface: generatedSurface.renderSurface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),
@@ -160,12 +156,8 @@ describe('generated scaffold UI products', () => {
 
       const generatedSurface = await importGeneratedModule<GeneratedReactNativeSurfaceModule>(entryPath);
       const fixture = await createPluginUiTestkit({
-        identity: {
-          pluginId: manifest.id,
-          pluginVersion: manifest.version,
-          viewId: 'main',
-          generation: 'generated-rn-mutant',
-        },
+        identity: { instanceId: 'fixture-instance-4', mountNonce: 'fixture-mount-4' },
+        authorPlugin: { id: manifest.id, version: manifest.version },
         surface: generatedSurface.renderSurface,
         surfaceContext: createSurfaceContextFixture(),
         adapter: createPluginUiRnwSemanticSurfaceAdapter(),

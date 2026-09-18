@@ -1,3 +1,4 @@
+import { NonBlankOpaqueIdentifierSchema } from '@happier-dev/protocol';
 import { z } from 'zod';
 
 import {
@@ -37,12 +38,19 @@ import {
 } from './agentRuntimeDaemonServiceTurnWitness';
 import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 
+/** Happier-minted ids on this seam (request/follow/boundary/generation). */
 const BoundedIdSchema = z.string().trim().min(1).max(512);
 const HostPluginContributionIdentityV1Schema = asHostProtocolZod(
   PluginContributionIdentityV1Schema,
 );
+/**
+ * An Agent-minted external Session id crossing the runner/daemon seam. The
+ * runtime transports it back to its issuer, so this schema bounds and
+ * presence-checks it through Protocol's one opaque-identifier rule owner and
+ * never re-canonicalizes the bytes.
+ */
 const ExternalSessionRemoteIdSchema =
-  z.string().trim().min(1).max(2_000);
+  NonBlankOpaqueIdentifierSchema.max(2_000);
 const ExternalSessionJsonObjectSchema = z.record(
   z.string(),
   AgentRuntimeJsonValueV1Schema,
@@ -51,7 +59,8 @@ export const RunnerAgentDaemonExternalSessionCursorV1Schema =
   z.string().max(32_768);
 export const RunnerAgentDaemonExternalSessionRefV1Schema = z.object({
   agentId: AgentIdV1Schema,
-  remoteSessionId: z.string().trim().min(1).max(2_000),
+  remoteSessionId: ExternalSessionRemoteIdSchema,
+  // A plugin-declared contribution id, not an Agent-minted identity.
   sourceId: z.string().trim().min(1).max(2_000),
 }).strict();
 
@@ -159,7 +168,7 @@ const FollowTargetSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('providerSession'),
     agentId: AgentIdV1Schema,
-    providerSessionId: z.string().trim().min(1).max(2_000),
+    providerSessionId: NonBlankOpaqueIdentifierSchema.max(2_000),
   }).strict(),
 ]);
 

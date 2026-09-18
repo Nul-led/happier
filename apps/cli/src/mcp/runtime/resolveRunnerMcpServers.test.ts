@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { accountSettingsParse } from '@happier-dev/protocol';
+import { accountSettingsParse, sealSavedSecretResourceStoredContentV1 } from '@happier-dev/protocol';
 
 const { createHappierMcpBridgeMock } = vi.hoisted(() => ({
   createHappierMcpBridgeMock: vi.fn(async () => ({
@@ -23,6 +23,10 @@ import type { HappyMcpSessionClient } from '../startHappyServer';
 function createSessionStub(): HappyMcpSessionClient {
   return {
     sessionId: 'session-1',
+    getServerBinding: () => ({
+      serverId: 'test-home',
+      serverUrl: 'https://test-home.example.test',
+    }),
     rpcHandlerManager: {
       registerHandler: () => undefined,
       invokeLocal: async () => ({}),
@@ -32,6 +36,56 @@ function createSessionStub(): HappyMcpSessionClient {
 }
 
 describe('resolveRunnerMcpServers', () => {
+  it('does not silently drop a selected non-strict MCP server whose Saved Secret is forbidden', async () => {
+    const promise = resolveRunnerMcpServers({
+      session: createSessionStub(),
+      credentials: { token: 'plain-token', encryption: null },
+      accountSettings: accountSettingsParse({
+        mcpServersSettingsV1: {
+          v: 1,
+          strictMode: false,
+          servers: [{
+            id: 'shared-server',
+            name: 'shared-server',
+            transport: 'stdio',
+            stdio: { command: 'node', args: ['server.js'] },
+            env: { API_KEY: { t: 'savedSecret', secretId: 'happier:shared-secret:v1:resource_1' } },
+            createdAt: 1,
+            updatedAt: 1,
+          }],
+          bindings: [{
+            id: 'shared-binding',
+            serverId: 'shared-server',
+            enabled: true,
+            target: { t: 'allMachines' },
+            createdAt: 1,
+            updatedAt: 1,
+          }],
+        },
+      }),
+      savedSecretResources: [{
+        resourceId: 'resource_1',
+        ownerAccountId: 'owner-account',
+        displayName: 'Shared MCP token',
+        kind: 'token',
+        encryptionMode: 'plain',
+        revision: 3,
+        materialStatus: 'access_removed',
+        storedContent: sealSavedSecretResourceStoredContentV1({
+          resourceId: 'resource_1',
+          mode: 'plain',
+          content: { v: 1, name: 'Shared MCP token', kind: 'token', value: 'unused' },
+        }),
+      }],
+      machineId: 'machine-1',
+      directory: '/tmp/repo',
+      env: {},
+      tmpDir: null,
+    });
+
+    await expect(promise).rejects.toMatchObject({ status: 'forbidden', consumer: 'mcp' });
+  });
+
   it('materializes plain Settings secrets for a token-only runner without fabricating a write key', async () => {
     const result = await resolveRunnerMcpServers({
       session: createSessionStub(),
@@ -144,7 +198,66 @@ describe('resolveRunnerMcpServers', () => {
       directory: '/tmp/repo',
       env: {},
       tmpDir: null,
-    })).rejects.toThrow(/missing env:API_KEY/i);
+    })).rejects.toMatchObject({
+      code: 'saved_secret_resolution_failed',
+      status: 'temporarily_unavailable',
+      consumer: 'mcp',
+      field: 'env:API_KEY',
+    });
+  });
+
+  it('materializes a shared Saved Secret for a Session-owned MCP server', async () => {
+    const resourceId = 'shared-mcp-resource';
+    const secretId = `happier:shared-secret:v1:${resourceId}`;
+    const result = await resolveRunnerMcpServers({
+      session: createSessionStub(),
+      credentials: { token: 'plain-token', encryption: null },
+      accountSettings: accountSettingsParse({
+        mcpServersSettingsV1: {
+          v: 1,
+          strictMode: true,
+          servers: [{
+            id: 'shared-server',
+            name: 'shared-server',
+            transport: 'stdio',
+            stdio: { command: 'node', args: ['server.js'] },
+            env: { API_KEY: { t: 'savedSecret', secretId } },
+            createdAt: 1,
+            updatedAt: 1,
+          }],
+          bindings: [{
+            id: 'shared-binding',
+            serverId: 'shared-server',
+            enabled: true,
+            target: { t: 'allMachines' },
+            createdAt: 1,
+            updatedAt: 1,
+          }],
+        },
+      }),
+      savedSecretResources: [{
+        resourceId,
+        ownerAccountId: 'owner-account',
+        displayName: 'Shared MCP token',
+        kind: 'token',
+        encryptionMode: 'plain',
+        revision: 3,
+        materialStatus: 'ready',
+        storedContent: sealSavedSecretResourceStoredContentV1({
+          resourceId,
+          mode: 'plain',
+          content: { v: 1, name: 'Shared MCP token', kind: 'token', value: 'shared-mcp-token' },
+        }),
+      }],
+      machineId: 'machine-1',
+      directory: '/tmp/repo',
+      env: {},
+      tmpDir: null,
+    });
+
+    expect(result.mcpServers['shared-server']).toMatchObject({
+      env: { API_KEY: 'shared-mcp-token' },
+    });
   });
 
   it('passes runner credentials and account settings into the built-in Happier MCP bridge', async () => {
@@ -178,6 +291,32 @@ describe('resolveRunnerMcpServers', () => {
     expect(createHappierMcpBridgeMock).toHaveBeenCalledWith(session, expect.objectContaining({
       credentials,
       accountSettings,
+    }));
+  });
+
+  it('separates restricted Session transport authentication from Account Action authority', async () => {
+    const session = createSessionStub();
+    const credentials = { token: 'restricted-token', encryption: null } as const;
+    const sessionList = vi.fn();
+
+    await resolveRunnerMcpServers({
+      session,
+      credentials,
+      accountCredentials: null,
+      sessionList,
+      accountSettings: accountSettingsParse({}),
+      machineId: 'runner-machine',
+      directory: '/tmp/restricted-run',
+      env: {},
+      tmpDir: null,
+    });
+
+    expect(createHappierMcpBridgeMock).toHaveBeenCalledWith(session, expect.objectContaining({
+      sessionCredentials: credentials,
+      credentials: null,
+      authorityScope: 'session',
+      sessionList,
+      accountSettings: null,
     }));
   });
 

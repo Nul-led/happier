@@ -19,7 +19,14 @@ import {
   runRemoteBootstrapCommandDefault,
   createRemoteEnrollmentExecutorDefault,
 } from '../systemTasks/remoteSshBootstrapTasks.js';
-import { createSetupThisComputerInteractiveTaskKind } from '../systemTasks/kinds/setupThisComputerInteractiveKind.js';
+import {
+  createProductionSetupRepairThisComputerInteractiveDeps,
+  createSetupRepairThisComputerInteractiveTaskKind,
+} from '../systemTasks/kinds/setupRepairThisComputerInteractiveKind.js';
+import {
+  createProductionSetupThisComputerInteractiveDeps,
+  createSetupThisComputerInteractiveTaskKind,
+} from '../systemTasks/kinds/setupThisComputerInteractiveKind.js';
 
 export type HsetupIo = Readonly<{
   stdin: {
@@ -170,9 +177,14 @@ async function readSpecJsonFromStdin(stdin: HsetupIo['stdin']): Promise<string> 
   return fallback;
 }
 
-function createDefaultInteractiveKinds(): InteractiveSystemTaskKindMap {
+export function createDefaultInteractiveKinds(): InteractiveSystemTaskKindMap {
   return {
-    'setup.thisComputer.v1': createSetupThisComputerInteractiveTaskKind(),
+    'setup.thisComputer.v1': createSetupThisComputerInteractiveTaskKind(
+      createProductionSetupThisComputerInteractiveDeps(),
+    ),
+    'setup.repairThisComputer.v1': createSetupRepairThisComputerInteractiveTaskKind(
+      createProductionSetupRepairThisComputerInteractiveDeps(),
+    ),
     'remote.ssh.bootstrapMachine.v1': systemTasks.createRemoteSshBootstrapMachineTaskKind({
       resolveHostTrust: resolveRemoteSshHostTrustDefault,
       installRemoteCli: installRemoteCliDefault,

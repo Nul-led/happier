@@ -127,7 +127,7 @@ export function normalizeExecutionRunStartToolInput(params: Readonly<{
     ...(typeof parsed.data.initialContextMode !== 'undefined' ? { initialContextMode: parsed.data.initialContextMode } : {}),
     ...(typeof parsed.data.resumeHandle !== 'undefined' ? { resumeHandle: parsed.data.resumeHandle } : {}),
     ...(typeof parsed.data.replay !== 'undefined' ? { replay: parsed.data.replay } : {}),
-    ...(connectedServices ? { connectedServices } : {}),
+    ...(connectedServices !== undefined ? { connectedServices } : {}),
     ...(typeof parsed.data.modelId === 'string' ? { modelId: parsed.data.modelId } : {}),
     ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
   });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     extractUsageObservationFromTokenCountMessage,
+    normalizeUsageObservation,
 } from './usageObservation';
 import {
     buildLegacyUsageReportFromUsageObservation,
@@ -67,6 +68,11 @@ describe('usageObservation', () => {
             cost: null,
             contextUsedTokens: 23,
             contextWindowTokens: 258400,
+            availability: {
+                inputTokens: true,
+                outputTokens: true,
+                reportedCostUsd: false,
+            },
         });
     });
 
@@ -95,6 +101,11 @@ describe('usageObservation', () => {
         });
 
         expect(observation?.contextUsedTokens).toBe(23);
+        expect(observation?.availability).toEqual({
+            inputTokens: false,
+            outputTokens: false,
+            reportedCostUsd: false,
+        });
     });
 
     it('normalizes raw provider token aliases into canonical protocol keys only', () => {
@@ -122,6 +133,76 @@ describe('usageObservation', () => {
         expect(observation?.tokens).not.toHaveProperty('thought');
         expect(observation?.tokens).not.toHaveProperty('cache_read');
         expect(observation?.tokens).not.toHaveProperty('cache_creation');
+        expect(observation?.availability).toEqual(expect.objectContaining({
+            inputTokens: true,
+            outputTokens: true,
+        }));
+    });
+
+    it('distinguishes an explicit provider-reported zero from an estimated direct cost', () => {
+        const reported = extractUsageObservationFromTokenCountMessage({
+            provider: 'acp-provider',
+            body: { cost: { reportedUsd: 0, costSource: 'provider_reported' } },
+        });
+        const estimated = extractUsageObservationFromTokenCountMessage({
+            provider: 'acp-provider',
+            body: { cost: 0.25 },
+        });
+        const normalizedEstimate = extractUsageObservationFromTokenCountMessage({
+            provider: 'acp-provider',
+            body: { cost: { reportedUsd: 0, estimatedUsd: 0.25 } },
+        });
+
+        expect(reported?.availability?.reportedCostUsd).toBe(true);
+        expect(reported?.cost?.reportedUsd).toBe(0);
+        expect(estimated?.availability?.reportedCostUsd).toBe(false);
+        expect(normalizedEstimate?.availability?.reportedCostUsd).toBe(false);
+        expect(estimated && normalizeUsageObservation(estimated)?.availability?.reportedCostUsd).toBe(false);
+    });
+
+    it('preserves explicitly reported zero dimensions through the legacy transcript projection', () => {
+        const projected = buildTokenCountSessionMessageFromUsageObservation({
+            provider: 'acp-provider',
+            source: 'provider_result',
+            scope: 'turn_delta',
+            key: null,
+            modelId: null,
+            tokens: {
+                input: 8,
+                output: 0,
+                reasoning: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                total: 8,
+            },
+            cost: {
+                reportedUsd: 0,
+                estimatedUsd: 0,
+                currency: 'USD',
+                costSource: 'provider_reported',
+            },
+            contextUsedTokens: null,
+            contextWindowTokens: null,
+            availability: {
+                inputTokens: true,
+                outputTokens: true,
+                reportedCostUsd: true,
+            },
+        });
+
+        expect(projected?.tokens).toMatchObject({ input: 8, output: 0 });
+        expect(projected?.cost).toMatchObject({
+            reportedUsd: 0,
+            costSource: 'provider_reported',
+            currency: 'USD',
+        });
+        expect(projected && extractUsageObservationFromTokenCountMessage({
+            provider: 'acp-provider', body: projected,
+        })?.availability).toEqual({
+            inputTokens: true,
+            outputTokens: true,
+            reportedCostUsd: true,
+        });
     });
 
     it('extracts a strict context snapshot from token_count payloads', () => {

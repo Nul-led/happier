@@ -1,12 +1,16 @@
 import {
   isActionDirectToolExposedOn,
+  isActionEnabledByActionsSettings,
+  isApprovalRequiredByActionsSettings,
   listActionSpecs,
+  parseQualifiedPluginContributionKey,
   resolveActionSurfaceAvailability,
   type ActionId,
   type ActionSurfaceAvailability,
   type ActionSurfaces,
   type ActionsSettingsV1,
 } from '@happier-dev/protocol';
+import { formatQualifiedPluginActionId } from '@happier-dev/protocol/actions';
 
 import { readCurrentContributionRegistry } from '@/agent/catalog/snapshot';
 import type {
@@ -190,6 +194,35 @@ function getActionAvailableSurfaces(
     .map(([surface]) => surface);
 }
 
+function resolvePluginActionSettings(
+  actionId: string,
+  surface: HappierBuiltInToolSurface,
+  settings: ActionsSettingsV1 | null | undefined,
+): Readonly<{
+  enabled: boolean;
+  settingsState: ActionToolCatalogAvailability['settingsState'];
+  effectiveToolExposureMode: 'direct' | 'discoverable_only';
+}> {
+  const identity = parseQualifiedPluginContributionKey(actionId);
+  const settingsActionId = identity ? formatQualifiedPluginActionId(identity) : null;
+  const override = settingsActionId ? settings?.actions[settingsActionId] : undefined;
+  const enabled = settingsActionId !== null && (
+    !settings
+    || isActionEnabledByActionsSettings(settingsActionId, settings, { surface })
+  );
+  return {
+    enabled,
+    settingsState: !settings
+      ? 'unknown'
+      : !enabled
+        ? 'disabled'
+        : settingsActionId && isApprovalRequiredByActionsSettings(settingsActionId, settings, { surface })
+          ? 'approval_required'
+          : 'enabled',
+    effectiveToolExposureMode: override?.toolExposureModes?.[surface] ?? 'direct',
+  };
+}
+
 export function resolveActionToolCatalogAvailability(params: Readonly<{
   actionId: ActionId | string;
   surface?: HappierBuiltInToolSurface;
@@ -221,25 +254,41 @@ export function resolveActionToolCatalogAvailability(params: Readonly<{
   });
   if (projectedTool) {
     const availableSurfaces = getActionAvailableSurfaces(projectedTool.surfaces);
-    return projectedTool.surfaces[surface]
-      ? {
-          available: true,
-          reason: 'available',
-          actionId,
-          surface,
-          availableSurfaces,
-          defaultToolExposureMode: 'direct',
-          effectiveToolExposureMode: 'direct',
-          provenance: 'external',
-        }
-      : {
-          available: false,
-          reason: 'unsupported_surface',
-          actionId,
-          surface,
-          availableSurfaces,
-          provenance: 'external',
+    if (!projectedTool.surfaces[surface]) {
+      return {
+        available: false,
+        reason: 'unsupported_surface',
+        actionId,
+        surface,
+        availableSurfaces,
+        provenance: 'external',
       };
+    }
+    const settings = resolvePluginActionSettings(actionId, surface, params.actionsSettings);
+    if (!settings.enabled) {
+      return {
+        available: false,
+        reason: 'disabled_by_settings',
+        actionId,
+        surface,
+        availableSurfaces,
+        settingsState: settings.settingsState,
+        defaultToolExposureMode: 'direct',
+        effectiveToolExposureMode: settings.effectiveToolExposureMode,
+        provenance: 'external',
+      };
+    }
+    return {
+      available: true,
+      reason: 'available',
+      actionId,
+      surface,
+      availableSurfaces,
+      defaultToolExposureMode: 'direct',
+      effectiveToolExposureMode: settings.effectiveToolExposureMode,
+      settingsState: settings.settingsState,
+      provenance: 'external',
+    };
   }
 
   // An explicitly supplied catalog is a bounded admission snapshot (for
@@ -293,6 +342,20 @@ export function resolveActionToolCatalogAvailability(params: Readonly<{
       provenance: pluginAction.provenance,
     };
   }
+  const settings = resolvePluginActionSettings(actionId, surface, params.actionsSettings);
+  if (!settings.enabled) {
+    return {
+      available: false,
+      reason: 'disabled_by_settings',
+      actionId,
+      surface,
+      availableSurfaces,
+      settingsState: settings.settingsState,
+      defaultToolExposureMode: 'direct',
+      effectiveToolExposureMode: settings.effectiveToolExposureMode,
+      provenance: pluginAction.provenance,
+    };
+  }
   if (params.requireToolBinding && !getActionToolEntryById(actionId, {
     registry: params.registry,
     pluginToolCatalog: params.pluginToolCatalog,
@@ -316,7 +379,8 @@ export function resolveActionToolCatalogAvailability(params: Readonly<{
     surface,
     availableSurfaces,
     defaultToolExposureMode: 'direct',
-    effectiveToolExposureMode: 'direct',
+    effectiveToolExposureMode: settings.effectiveToolExposureMode,
+    settingsState: settings.settingsState,
     provenance: pluginAction.provenance,
   };
 }
@@ -393,19 +457,34 @@ export function isActionDirectToolAvailableOnToolSurface(params: Readonly<{
   surface?: HappierBuiltInToolSurface;
   isActionEnabled?: ActionEnabledPredicate;
   actionsSettings?: ActionsSettingsV1 | null;
+  requiredDirectActionIds?: readonly ActionId[];
   registry?: ResolvedContributionRegistry;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
 }>): boolean {
   const surface = params.surface ?? 'agent';
   const builtInSpec = BUILT_IN_ACTION_SPECS_BY_ID.get(String(params.actionId));
   if (builtInSpec) {
-    return isActionDirectToolExposedOn(builtInSpec, surface, {
+    const ordinarilyExposed = isActionDirectToolExposedOn(builtInSpec, surface, {
       settings: params.actionsSettings ?? null,
       isActionEnabled: params.isActionEnabled ?? null,
     });
+    if (ordinarilyExposed) return true;
+    if (
+      surface !== 'agent'
+      || !params.requiredDirectActionIds?.includes(params.actionId as ActionId)
+      || params.actionsSettings?.actions?.[params.actionId as ActionId]?.toolExposureModes?.agent === 'discoverable_only'
+    ) return false;
+    return resolveActionToolCatalogAvailability({
+      actionId: params.actionId,
+      surface,
+      isActionEnabled: params.isActionEnabled,
+      actionsSettings: params.actionsSettings ?? null,
+      registry: params.registry,
+      pluginToolCatalog: params.pluginToolCatalog,
+    }).available;
   }
 
-  return resolveActionToolCatalogAvailability({
+  const availability = resolveActionToolCatalogAvailability({
     actionId: params.actionId,
     surface,
     isActionEnabled: params.isActionEnabled,
@@ -413,13 +492,15 @@ export function isActionDirectToolAvailableOnToolSurface(params: Readonly<{
     requireToolBinding: true,
     registry: params.registry,
     pluginToolCatalog: params.pluginToolCatalog,
-  }).available;
+  });
+  return availability.available && availability.effectiveToolExposureMode === 'direct';
 }
 
 export function createActionToolNameToIdMap(params?: Readonly<{
   surface?: HappierBuiltInToolSurface;
   isActionEnabled?: ActionEnabledPredicate;
   actionsSettings?: ActionsSettingsV1 | null;
+  requiredDirectActionIds?: readonly ActionId[];
   registry?: ResolvedContributionRegistry;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
 }>): ReadonlyMap<string, string> {
@@ -437,6 +518,7 @@ export function createActionToolNameToIdMap(params?: Readonly<{
           surface,
           isActionEnabled: params?.isActionEnabled,
           actionsSettings: params?.actionsSettings ?? null,
+          requiredDirectActionIds: params?.requiredDirectActionIds,
           registry: params?.registry,
           pluginToolCatalog: params?.pluginToolCatalog,
         })
@@ -451,6 +533,7 @@ export function isDirectManualToolAvailable(params: Readonly<{
   surface?: HappierBuiltInToolSurface;
   isActionEnabled?: ActionEnabledPredicate;
   actionsSettings?: ActionsSettingsV1 | null;
+  requiredDirectActionIds?: readonly ActionId[];
   registry?: ResolvedContributionRegistry;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
 }>): boolean {
@@ -473,6 +556,7 @@ export function isDirectManualToolAvailable(params: Readonly<{
     surface,
     isActionEnabled: params.isActionEnabled,
     actionsSettings: params.actionsSettings ?? null,
+    requiredDirectActionIds: params.requiredDirectActionIds,
     registry: params.registry,
     pluginToolCatalog: params.pluginToolCatalog,
   });
@@ -484,6 +568,7 @@ export function filterBuiltInToolsForSurface(
     surface?: HappierBuiltInToolSurface;
     isActionEnabled?: ActionEnabledPredicate;
     actionsSettings?: ActionsSettingsV1 | null;
+    requiredDirectActionIds?: readonly ActionId[];
     registry?: ResolvedContributionRegistry;
     pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
   }>,
@@ -500,6 +585,7 @@ export function filterBuiltInToolsForSurface(
       surface: params?.surface,
       isActionEnabled: params?.isActionEnabled,
       actionsSettings: params?.actionsSettings ?? null,
+      requiredDirectActionIds: params?.requiredDirectActionIds,
       registry: params?.registry,
       pluginToolCatalog: params?.pluginToolCatalog,
     })) {
@@ -510,6 +596,7 @@ export function filterBuiltInToolsForSurface(
       surface: params?.surface,
       isActionEnabled: params?.isActionEnabled,
       actionsSettings: params?.actionsSettings ?? null,
+      requiredDirectActionIds: params?.requiredDirectActionIds,
       registry: params?.registry,
       pluginToolCatalog: params?.pluginToolCatalog,
     });

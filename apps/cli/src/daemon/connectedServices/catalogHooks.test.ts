@@ -63,9 +63,9 @@ describe('connected-service catalog hooks', () => {
         profileId: 'work',
         groupId: null,
       },
-      fromBindings: { v: 1, bindingsByServiceId: { openai: { source: 'native' } } },
+      fromBindings: { v: 2, bindingsByServiceId: { openai: { source: 'native' } } },
       toBindings: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           openai: { source: 'connected', selection: 'profile', profileId: 'work' },
         },
@@ -110,8 +110,8 @@ describe('connected-service catalog hooks', () => {
         profileId: 'work',
         groupId: null,
       },
-      fromBindings: { v: 1, bindingsByServiceId: {} },
-      toBindings: { v: 1, bindingsByServiceId: {} },
+      fromBindings: { v: 2, bindingsByServiceId: {} },
+      toBindings: { v: 2, bindingsByServiceId: {} },
     })).resolves.toEqual({ mode: 'restart_same_home' });
   });
 
@@ -191,8 +191,8 @@ describe('connected-service catalog hooks', () => {
       sessionId: 'sess_1',
       agentId: 'gemini' as const,
       serviceId: 'gemini' as const,
-      fromBindings: { v: 1 as const, bindingsByServiceId: { gemini: { source: 'native' as const } } },
-      toBindings: { v: 1 as const, bindingsByServiceId: { gemini: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { gemini: { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { gemini: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
       previousBinding: {
         source: 'native' as const,
         selection: 'native' as const,
@@ -218,8 +218,8 @@ describe('connected-service catalog hooks', () => {
       serviceId: 'anthropic' as const,
       previousBinding: { ...baseParams.previousBinding, serviceId: 'anthropic' as const },
       nextBinding: { ...baseParams.nextBinding, serviceId: 'anthropic' as const },
-      fromBindings: { v: 1 as const, bindingsByServiceId: { anthropic: { source: 'native' as const } } },
-      toBindings: { v: 1 as const, bindingsByServiceId: { anthropic: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { anthropic: { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { anthropic: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
     };
     await expect(resolveConnectedServiceSwitchContinuity('claude', claudeParams)).resolves.toEqual({
       mode: 'restart_shared_state_required',
@@ -231,8 +231,8 @@ describe('connected-service catalog hooks', () => {
       serviceId: 'openai-codex' as const,
       previousBinding: { ...baseParams.previousBinding, serviceId: 'openai-codex' as const },
       nextBinding: { ...baseParams.nextBinding, serviceId: 'openai-codex' as const },
-      fromBindings: { v: 1 as const, bindingsByServiceId: { 'openai-codex': { source: 'native' as const } } },
-      toBindings: { v: 1 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'native' as const } } },
+      toBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } },
     };
     await expect(resolveConnectedServiceSwitchContinuity('codex', codexNativeToConnectedParams)).resolves.toEqual({
       mode: 'restart_shared_state_required',
@@ -246,7 +246,7 @@ describe('connected-service catalog hooks', () => {
         profileId: 'old',
         groupId: null,
       },
-      fromBindings: { v: 1 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'old' } } },
+      fromBindings: { v: 2 as const, bindingsByServiceId: { 'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'old' } } },
     })).resolves.toEqual({ mode: 'restart_shared_state_required' });
   });
 

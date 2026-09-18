@@ -7,7 +7,7 @@ import { createConnectedServiceForkLaunchContext } from '@/session/fork/connecte
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { isAmbiguousSpawnSessionFailure } from '@/session/shared/spawnNonce';
 import type { ForkResultV1 } from '@happier-dev/agents';
-import { readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
+import { readNonBlankOpaqueIdentifier, readRuntimeDescriptorV1FromMetadata } from '@happier-dev/protocol';
 import { applyAgentAuthoredSessionStateUpdatesToMetadata } from '@/agent/runtime/state/agentAuthoredSessionStateUpdates';
 
 import {
@@ -16,7 +16,6 @@ import {
     fetchForkChildSessionOrThrow,
 } from './forkChildSessionRecovery';
 import { resolveEstablishedForkLineageCutoff } from './resolveEstablishedForkLineageCutoff';
-import { normalizeForkProviderSessionId } from './forkProviderSessionId';
 import type {
     ForkBackendResolution,
     ForkBridgeSurface,
@@ -49,7 +48,7 @@ export async function attemptAcpLatestFork(params: Readonly<{
 
     try {
         const spawnFinalForkResult = async (forked: ForkResultV1): Promise<ForkStrategyAttemptResult> => {
-            const forkedProviderSessionId = normalizeForkProviderSessionId(forked.providerSessionId);
+            const forkedProviderSessionId = readNonBlankOpaqueIdentifier(forked.providerSessionId);
             if (!forkedProviderSessionId) {
                 return {
                     ok: false,
@@ -63,6 +62,9 @@ export async function attemptAcpLatestFork(params: Readonly<{
                 'fork.launch.sessionStateUpdates',
             );
             const runtimeDescriptorV1 = readRuntimeDescriptorV1FromMetadata(launchMetadata) ?? undefined;
+            const backendMode = typeof runtimeDescriptorV1?.agent.backendMode === 'string'
+                ? runtimeDescriptorV1.agent.backendMode.trim()
+                : '';
             const inheritedForkOverrides = createConnectedServiceForkLaunchContext({
                 inherited: params.inheritedForkOverrides,
             }).inherited;
@@ -128,7 +130,8 @@ export async function attemptAcpLatestFork(params: Readonly<{
                             ...(requestId ? { requestId } : {}),
                             agentHint: {
                                 agentId: params.forkBackendResolution.agentHintAgentId,
-                                providerSessionId: forkedProviderSessionId,
+                                ...(backendMode ? { backendMode } : {}),
+                                agentSessionId: forkedProviderSessionId,
                             },
                         },
                     }),

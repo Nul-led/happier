@@ -27,7 +27,7 @@ export type PluginCompatibilityProjectionEvaluation =
 
 /**
  * Compatibility selection deliberately delegates manifest semantics to the
- * incumbent manifest validator. The projection grammar only supplies the
+ * canonical manifest ingestion owner. The projection grammar only supplies the
  * bounded generated facts needed before archive acquisition; specialist
  * runtime/UI adoption remains owned by its existing activation owners.
  */
@@ -55,10 +55,19 @@ export function evaluatePluginCompatibilityProjection(
     uiArtifacts: parsed.data.uiArtifacts,
   });
   if (!manifestValidation.ok) {
+    // Author diagnostics may restate unverified manifest content. Only the
+    // host validator's explicitly value-free reason can replace the closed
+    // ingestion code; identical safe projections collapse.
+    const messages = [...new Set(manifestValidation.diagnostics.map((entry) => (
+      entry.safeCompatibilityMessage ?? `Plugin manifest compatibility check failed: ${entry.code}.`
+    )))];
     return Object.freeze({
       kind: 'incompatible',
       projection,
-      diagnostics: Object.freeze([...manifestValidation.diagnostics]),
+      diagnostics: Object.freeze(messages.map((message) => Object.freeze({
+        code: 'plugin_manifest_invalid' as const,
+        message,
+      }))),
     });
   }
   for (const artifact of projection.uiArtifacts.entries) {

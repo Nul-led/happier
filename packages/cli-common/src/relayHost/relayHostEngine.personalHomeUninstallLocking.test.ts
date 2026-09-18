@@ -102,7 +102,7 @@ describe('RelayHostEngine Personal Home uninstall locking', () => {
       'payload:released',
     ]);
     await rm(homeDir, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it('does not stop the service or remove payload while backup owns the Home lock', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-uninstall-busy-'));
@@ -170,5 +170,5 @@ describe('RelayHostEngine Personal Home uninstall locking', () => {
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });

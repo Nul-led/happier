@@ -19,6 +19,7 @@ import {
   PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS,
   parsePersonalHomeRestorableConfigurationV1,
   personalHomeRestorableConfigurationEnvOverrides,
+  resolveHomeDeviceApprovalRequiredFromEnv,
   type PersonalHomeRestorableConfigurationV1,
 } from './configuration.js';
 import { createPersonalHomePathProtection } from './protection.js';
@@ -38,8 +39,7 @@ import {
   createPersonalHomeRelocationDestinationOwner,
   type PersonalHomeRelocationDestinationOwner,
 } from './relocationDestination.js';
-import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
-import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
+import { HomeConnectionDescriptorV1Schema, type HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import { execFileWithDeadline } from '../../process/index.js';
 import {
   parsePersonalHomeAuthenticatedReadiness,
@@ -239,14 +239,16 @@ export async function readCanonicalPersonalHomeIdentity(layout: PersonalHomeRunt
   return readPersonalHomeIdentityFromSqlite(databasePath, await readInstalledMigrationCatalog(layout));
 }
 
-export async function readPersonalHomeSanitizedConfiguration(layout: PersonalHomeRuntimeLayout): Promise<Record<string, string>> {
+export async function readPersonalHomeSanitizedConfiguration(layout: PersonalHomeRuntimeLayout): Promise<Record<string, unknown>> {
   const env = parseEnvText(await readFile(join(layout.configDir, 'server.env'), 'utf8'));
-  const result: Record<string, string> = {};
+  const result: Record<string, unknown> = {};
   for (const [field, envKey] of Object.entries(PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS)) {
     const value = env[envKey];
     if (field === 'anonymousSignupPhase') {
       if (value !== undefined && value !== '0') throw new Error('Personal Home anonymous signup must be disabled before backup');
       if (value === '0') result[field] = 'loopback-bootstrap-then-disabled';
+    } else if (field === 'homeDeviceApprovalRequired') {
+      result[field] = resolveHomeDeviceApprovalRequiredFromEnv(env);
     } else if (typeof value === 'string' && value) result[field] = value;
   }
   if (!result.canonicalServerUrl) {
@@ -297,12 +299,28 @@ export async function preparePersonalHomeSanitizedConfiguration(
   };
 }
 
+function removeEnvironmentAssignment(envText: string, key: string): string {
+  const next = envText.split('\n').filter((line) => {
+    const trimmed = line.trim();
+    const separatorIndex = trimmed.indexOf('=');
+    return separatorIndex < 0 || trimmed.slice(0, separatorIndex).trim() !== key;
+  }).join('\n');
+  return next.endsWith('\n') ? next : `${next}\n`;
+}
+
 async function renderPersonalHomeSanitizedConfiguration(layout: PersonalHomeRuntimeLayout, configuration: PersonalHomeRestorableConfigurationV1): Promise<Readonly<{ envPath: string; previous: Buffer; next: string }>> {
   const envPath = join(layout.configDir, 'server.env'); const previous = await readFile(envPath);
-  const overrides = personalHomeRestorableConfigurationEnvOverrides(
-    parsePersonalHomeRestorableConfigurationV1(configuration),
+  const validated = parsePersonalHomeRestorableConfigurationV1(configuration);
+  const overrides = personalHomeRestorableConfigurationEnvOverrides(validated);
+  const previousWithoutIrohRelayPolicy = removeEnvironmentAssignment(
+    previous.toString('utf8'),
+    PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.irohRelayPolicy,
   );
-  const next = applyEnvOverridesToEnvText(previous.toString('utf8'), overrides);
+  const previousText = removeEnvironmentAssignment(
+    previousWithoutIrohRelayPolicy,
+    PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS.irohRelayUrls,
+  );
+  const next = applyEnvOverridesToEnvText(previousText, overrides);
   return { envPath, previous, next };
 }
 
@@ -401,10 +419,7 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
     operationId: string;
     sourceDescriptorRevision: number;
   }>): Promise<Readonly<{
-    homeServerIdentityId: string;
-    canonicalServerUrl: string;
-    minimumOuterRevisionExclusive: number;
-    endpoint?: IrohEndpointDescriptorV1;
+    connectionDescriptor: HomeConnectionDescriptorV1;
   }>>;
 }>): Promise<PersonalHomeRelocationDestinationOwner> {
   const platform = params.platform ?? process.platform;
@@ -433,6 +448,16 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
 
   return createPersonalHomeRelocationDestinationOwner({
     dataDir: initialLayout.dataDir,
+    readValidatedTarget: async () => {
+      const layout = await resolveAttestedLayout();
+      const configuration = await readPersonalHomeSanitizedConfiguration(layout);
+      const database = await lstat(layout.databasePath).catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      return {
+        layout,
+        canonicalServerUrl: typeof configuration.canonicalServerUrl === 'string' ? configuration.canonicalServerUrl : null,
+        homeServerIdentityId: database ? (await readPersonalHomeIdentityValueFromSqlite(layout.databasePath)).homeServerIdentityId : null,
+      };
+    },
     preflightDestination: async () => {
       const layout = await resolveAttestedLayout();
       if (await hasMeaningfulPersonalHomeData(layout)) {
@@ -485,7 +510,7 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
         operationId: input.operationId,
         sourceDescriptorRevision: input.sourceDescriptorRevision,
       });
-      if (endpoint.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
+      if (endpoint.connectionDescriptor.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
         throw new Error('Materialized relocation endpoint identity does not match the restored Home');
       }
       return { ...endpoint, ...authenticatedReadiness };
@@ -548,7 +573,7 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
           operationId: input.operationId,
           sourceDescriptorRevision: input.sourceDescriptorRevision,
         });
-        if (endpoint.homeServerIdentityId !== manifest.homeServerIdentityId) {
+        if (endpoint.connectionDescriptor.homeServerIdentityId !== manifest.homeServerIdentityId) {
           throw new Error('Interrupted relocation endpoint identity does not match the restored Home');
         }
         return { outcome: 'restored', ...endpoint, ...authenticatedReadiness };
@@ -632,10 +657,7 @@ export async function materializePersonalHomeRelocationEndpointWithServerCommand
   sourceDescriptorRevision: number;
   processEnv?: NodeJS.ProcessEnv;
 }>): Promise<Readonly<{
-  homeServerIdentityId: string;
-  canonicalServerUrl: string;
-  minimumOuterRevisionExclusive: number;
-  endpoint?: IrohEndpointDescriptorV1;
+  connectionDescriptor: HomeConnectionDescriptorV1;
 }>> {
   const envText = await readFile(join(params.layout.configDir, 'server.env'), 'utf8');
   const { stdout } = await execFileWithDeadline(params.serverBinary, [
@@ -655,23 +677,14 @@ export async function materializePersonalHomeRelocationEndpointWithServerCommand
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid stopped endpoint materialization result');
   const result = value as Record<string, unknown>;
   const identity = await readCanonicalPersonalHomeIdentity(params.layout);
-  if (result.status === 'unavailable') {
-    return {
-      homeServerIdentityId: identity.homeServerIdentityId,
-      canonicalServerUrl: params.canonicalServerUrl,
-      minimumOuterRevisionExclusive: params.sourceDescriptorRevision,
-    };
-  }
-  const endpoint = IrohEndpointDescriptorV1Schema.safeParse(result.endpoint);
-  if (result.status !== 'ready' || result.homeServerIdentityId !== identity.homeServerIdentityId || !endpoint.success
-    || typeof result.minimumOuterRevisionExclusive !== 'number' || !Number.isSafeInteger(result.minimumOuterRevisionExclusive)
-    || result.minimumOuterRevisionExclusive < params.sourceDescriptorRevision) {
+  const descriptor = HomeConnectionDescriptorV1Schema.safeParse(result.connectionDescriptor);
+  if (result.status !== 'ready' || !descriptor.success
+    || descriptor.data.homeServerIdentityId !== identity.homeServerIdentityId
+    || descriptor.data.canonicalServerUrl !== params.canonicalServerUrl
+    || descriptor.data.revision <= params.sourceDescriptorRevision) {
     throw new Error('Stopped endpoint materialization failed or returned inconsistent facts');
   }
   return {
-    homeServerIdentityId: identity.homeServerIdentityId,
-    canonicalServerUrl: params.canonicalServerUrl,
-    minimumOuterRevisionExclusive: result.minimumOuterRevisionExclusive,
-    endpoint: endpoint.data,
+    connectionDescriptor: descriptor.data,
   };
 }

@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +26,7 @@ import {
 } from './selfHostServerEnv.js';
 import {
     relocateServerRuntimeArtifactClosure,
+    resolveServerRuntimePrismaEngineFileName,
     resolveServerRuntimePayloadRootFromBinaryPath,
 } from './serverRuntimeArtifactLayout.js';
 import { copyDirectoryTreePreservingSymlinks } from './copyDirectoryTreePreservingSymlinks.js';
@@ -35,26 +36,39 @@ import { isPidPresent } from '../process/processLiveness.js';
 import {
     assertPersonalHomeEnvironmentKeys,
     createPersonalHomeRuntimeSpec,
+    parsePersonalHomeRuntimePurpose,
     renderPersonalHomeRuntimeEnv,
     type ManagedRelayPurpose,
 } from './personalHome/personalHomeRuntimeSpec.js';
-import { withPersonalHomeOperationLock } from './personalHome/lock.js';
-import { assertPersonalHomeRelocationSourceAllowsActivation } from './personalHome/relocationCoordinator.js';
-import { assertPersonalHomeRelocationDestinationAllowsActivation } from './personalHome/relocationDestination.js';
+import { withPersonalHomeOperationAdmission } from './personalHome/operationAdmission.js';
+import { readPersonalHomeIdentityValueFromSqlite, validateCanonicalPersonalHomeLayout } from './personalHome/productionAdapters.js';
 import { resolvePersonalHomeRuntimeLayout } from './personalHome/layout.js';
 import type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
 import type { PersonalHomeRestorePoint } from './personalHome/restorePoint.js';
 import type { PersonalHomeRestoreHooks } from './personalHome/restore.js';
+import { syncPersonalHomeParentDirectory, syncPersonalHomeTree } from './personalHome/durableFile.js';
 import { parsePersonalHomeAuthenticatedReadiness, type PersonalHomeAuthenticatedReadiness } from './personalHome/readiness.js';
 import {
     readPersonalHomeUpdateRecoveryRecord,
     removePersonalHomeUpdateRecoveryRecord,
     resolvePersonalHomeUpdateRecoveryReferences,
     writePersonalHomeUpdateRecoveryRecord,
+    type PersonalHomeUpdateCandidateState,
     type PersonalHomeUpdateRecoveryRecordV1,
 } from './personalHome/updateRecovery.js';
 import { readEffectivePersonalHomeSignupPolicy } from './personalHomeSignupPolicy.js';
 import { withFirstPartyPayloadMutationLock } from './withFirstPartyPayloadMutationLock.js';
+import {
+    PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
+    PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV,
+    RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS,
+} from './serverRuntimeContract.js';
+
+export {
+    PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
+    PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV,
+    RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS,
+} from './serverRuntimeContract.js';
 
 const RELAY_RUNTIME_MANAGED_ROOT_ENTRIES = Object.freeze([
     'bin',
@@ -66,11 +80,7 @@ const RELAY_RUNTIME_STARTUP_RECEIPT_WAIT_MS = 10_000;
 const RELAY_RUNTIME_STARTUP_RECEIPT_POLL_MS = 100;
 const SERVER_STARTUP_RECEIPT_PATH_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_PATH';
 const SERVER_STARTUP_RECEIPT_NONCE_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_NONCE';
-export const PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV = 'HAPPIER_UPDATER_FORWARD_RECOVERY_CAPABILITY';
-export const PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY = 'personal-home-update-record-v1';
 const MANAGED_RELAY_PURPOSE_ENV = 'HAPPIER_MANAGED_RELAY_PURPOSE';
-const QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION =
-    '20260725100000_activate_qualified_connected_accounts_v4';
 const MIGRATION_NOT_APPLIED_EXIT_CODE = 3;
 
 type MigrationAppliedCheckRunner = (params: Readonly<{
@@ -296,13 +306,13 @@ async function resolveRelayRuntimeInstallRootMigrationSource(params: Readonly<{
     };
 }
 
-async function resolvePersonalHomeRuntimeDataDirForInstallRoot(params: Readonly<{
+async function resolvePersonalHomeRuntimeLayoutForInstallRoot(params: Readonly<{
     platform: NodeJS.Platform;
     mode: 'user' | 'system';
     channel: 'stable' | 'preview' | 'publicdev';
     homeDir: string;
     installRoot: string;
-}>): Promise<string> {
+}>): Promise<PersonalHomeRuntimeLayout> {
     const defaults = resolveRelayRuntimeDefaults(params);
     const configDir = params.mode === 'user' ? join(params.installRoot, 'config') : defaults.configDir;
     const logsDir = params.mode === 'user' ? join(params.installRoot, 'logs') : defaults.logDir;
@@ -325,7 +335,7 @@ async function resolvePersonalHomeRuntimeDataDirForInstallRoot(params: Readonly<
         platform: params.platform,
         mode: params.mode,
         channel: params.channel,
-    }).dataDir;
+    });
 }
 
 async function migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded(params: Readonly<{
@@ -698,6 +708,38 @@ async function listRelayRuntimeManagedRootEntries(rootDir: string): Promise<stri
     return result;
 }
 
+async function computeRelayRuntimePayloadDigest(rootDir: string): Promise<string> {
+    const digest = createHash('sha256');
+    digest.update('happier:relay-runtime-payload:v1\0');
+
+    const visit = async (relativeDirectory: string): Promise<void> => {
+        const directoryPath = relativeDirectory ? join(rootDir, relativeDirectory) : rootDir;
+        const entries = await readdir(directoryPath, { withFileTypes: true });
+        entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+        for (const entry of entries) {
+            const relativePath = relativeDirectory ? join(relativeDirectory, entry.name) : entry.name;
+            const normalizedPath = relativePath.replaceAll('\\', '/');
+            const entryPath = join(rootDir, relativePath);
+            if (entry.isDirectory()) {
+                digest.update(`dir\0${normalizedPath}\0`);
+                await visit(relativePath);
+                continue;
+            }
+            if (entry.isSymbolicLink()) {
+                digest.update(`link\0${normalizedPath}\0${await readlink(entryPath)}\0`);
+                continue;
+            }
+            if (!entry.isFile()) throw new Error(`[relay-runtime] unsupported managed payload entry (${entryPath})`);
+            digest.update(`file\0${normalizedPath}\0`);
+            for await (const chunk of createReadStream(entryPath)) digest.update(chunk);
+            digest.update('\0');
+        }
+    };
+
+    await visit('');
+    return `sha256:${digest.digest('hex')}`;
+}
+
 async function copyNamedRootEntries(params: Readonly<{
     sourceDir: string;
     destDir: string;
@@ -964,7 +1006,8 @@ function buildRelayRuntimeServiceSpec(params: Readonly<{
     };
 }
 
-async function assertQualifiedConnectedAccountsV4RollbackAllowed(params: Readonly<{
+async function assertIrreversibleMigrationRollbackAllowed(params: Readonly<{
+    migration: (typeof RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS)[number];
     platform: NodeJS.Platform;
     installRoot: string;
     env: Record<string, string>;
@@ -974,7 +1017,7 @@ async function assertQualifiedConnectedAccountsV4RollbackAllowed(params: Readonl
         ? 'happier-server-migrate.exe'
         : 'happier-server-migrate';
     const command = join(params.installRoot, 'bin', migrationBinaryName);
-    const args = [`--is-migration-applied=${QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION}`];
+    const args = [`--is-migration-applied=${params.migration.name}`];
     const completion = params.runCommand
         ? await params.runCommand({ command, args, cwd: params.installRoot, env: params.env })
         : spawnSync(command, args, {
@@ -991,9 +1034,44 @@ async function assertQualifiedConnectedAccountsV4RollbackAllowed(params: Readonl
     const applied = !completion.error && completion.signal === null && completion.status === 0;
     throw new Error(
         applied
-            ? '[relay-runtime] Qualified Connected Accounts V4 is applied; old-server rollback is prohibited'
-            : `[relay-runtime] cannot determine whether Qualified Connected Accounts V4 is applied; refusing old-server rollback: ${detail}`,
+            ? `[relay-runtime] ${params.migration.label} is applied; old-server rollback is prohibited`
+            : `[relay-runtime] cannot determine whether ${params.migration.label} is applied; refusing old-server rollback: ${detail}`,
     );
+}
+
+export class PersonalHomeUpdateRecoveryRequiredError extends Error {
+    readonly code: 'personal_home_update_retry_required';
+    constructor(
+        readonly recoveryAction: 'retry_prior_runtime' | 'retry_exact_candidate',
+        message: string,
+        options?: ErrorOptions,
+    ) {
+        super(message, options);
+        this.name = 'PersonalHomeUpdateRecoveryRequiredError';
+        this.code = 'personal_home_update_retry_required';
+    }
+}
+
+async function runInstalledRelayRuntimeMigrations(params: Readonly<{
+    serverBinaryPath: string;
+    installRoot: string;
+    platform: NodeJS.Platform;
+    env: Record<string, string>;
+    runMigrationCommand?: (params: Readonly<{ command: string; args: readonly string[]; cwd: string; env: Record<string, string> }>) => Promise<void>;
+}>): Promise<void> {
+    const plan = resolveSelfHostServerMigrationPlan(params);
+    if (!plan) return;
+    if (params.runMigrationCommand) {
+        await params.runMigrationCommand({ ...plan, cwd: params.installRoot, env: params.env });
+        return;
+    }
+    const completion = spawnSync(plan.command, [...plan.args], {
+        cwd: params.installRoot,
+        env: { ...process.env, ...params.env },
+        stdio: 'inherit',
+    });
+    if (completion.error) throw new Error(`[relay-runtime] database migration failed to start: ${completion.error.message}`);
+    if (completion.status !== 0) throw new Error(`[relay-runtime] database migration exited with status ${completion.status ?? 'unknown'}`);
 }
 
 async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{
@@ -1004,76 +1082,214 @@ async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{
     serviceName: string;
     serverBinaryName: string;
     installRoot: string;
+    shimPath: string;
     stdoutPath: string;
     stderrPath: string;
     runServiceCommands: boolean;
-}>): Promise<void> {
+    assertPersonalHomeStopped: () => Promise<void>;
+    openPersonalHomeRestorePoint?: (context: Readonly<{
+        archivePath: string;
+        expectedHomeServerIdentityId: string;
+        schemaVersion: string;
+        layout: PersonalHomeRuntimeLayout;
+    }>) => Promise<PersonalHomeRestorePoint>;
+    personalHomeRestoreHooks?: PersonalHomeRestoreHooks;
+    runMigrationCommand?: (params: Readonly<{ command: string; args: readonly string[]; cwd: string; env: Record<string, string> }>) => Promise<void>;
+}>): Promise<Readonly<{ baseUrl: string; version: string | null }>> {
     const references = resolvePersonalHomeUpdateRecoveryReferences({ layout: params.layout, record: params.record });
-    if (params.record.phase === 'committed' || params.record.phase === 'activated') {
+    const cleanup = async () => {
         await rm(references.runtimeBackupRoot, { recursive: true, force: true });
         await rm(references.restorePointPath, { force: true });
         await removePersonalHomeUpdateRecoveryRecord(params.layout);
-        return;
+    };
+    const serverBinaryPath = join(params.installRoot, 'bin', params.serverBinaryName);
+    if (params.record.phase === 'committed') {
+        // The state file was written before this terminal phase, including by the earlier
+        // record shape without candidate metadata. Only cleanup remains; do not restart it
+        // or let the retry's input silently replace the completed installation.
+        const state = tryParseJsonObject(await readFile(join(params.installRoot, 'self-host-state.json'), 'utf8'));
+        const purpose = parsePersonalHomeRuntimePurpose(state?.purpose);
+        if (!(await lstat(serverBinaryPath)).isFile()) throw new Error('The committed Personal Home runtime is unavailable');
+        const result = { baseUrl: purpose.canonicalServerUrl, version: typeof state?.version === 'string' ? state.version : null };
+        await cleanup();
+        return result;
     }
-
-    if (params.record.phase === 'prepared') {
-        const receipt = params.record.expectedStartupNonce
-            ? await readFile(join(params.layout.dataDir, 'startup-receipt.json'), 'utf8').then(tryParseJsonObject).catch(() => null)
-            : null;
-        const receiptReadiness = parsePersonalHomeAuthenticatedReadiness(receipt?.personalHomeReadiness);
-        const receiptNonce = typeof receipt?.nonce === 'string' ? receipt.nonce : '';
-        const receiptIdentityMatches = receiptReadiness?.homeServerIdentityId === params.record.restorePoint.homeServerIdentityId;
-        const receiptPid = Number(receipt?.pid);
-        const receiptHost = String(receipt?.host ?? '').trim().toLowerCase();
-        const receiptPort = Number(receipt?.port);
-        const configuredEnv = await readFile(join(params.layout.configDir, 'server.env'), 'utf8')
-            .then(parseEnvText)
-            .catch(() => null);
-        const configuredPort = Number(configuredEnv?.PORT);
-        if (receiptNonce === params.record.expectedStartupNonce
-            && receiptIdentityMatches
-            && Number.isSafeInteger(receiptPid) && receiptPid > 0 && isPidPresent(receiptPid)
-            && receiptHost === '127.0.0.1'
-            && Number.isInteger(configuredPort) && configuredPort >= 1 && configuredPort <= 65535
-            && receiptPort === configuredPort) {
-            // The exact authenticated candidate became writable. Recovery is forward-only: an
-            // older snapshot must never erase writes that candidate may already have acknowledged.
-            await writePersonalHomeUpdateRecoveryRecord(params.layout, Object.freeze({
-                ...params.record,
-                phase: 'activated',
-                activation: {
-                    nonce: receiptNonce,
-                    pid: receiptPid,
-                    host: receiptHost,
-                    port: receiptPort,
-                    readiness: receiptReadiness,
-                },
-            }));
-            await rm(references.runtimeBackupRoot, { recursive: true, force: true });
-            await rm(references.restorePointPath, { force: true });
-            await removePersonalHomeUpdateRecoveryRecord(params.layout);
-            return;
-        }
-
-        const candidateSpec = buildRelayRuntimeServiceSpec({
-            serviceName: params.serviceName,
-            installRoot: params.installRoot,
-            serverBinaryPath: join(params.installRoot, 'bin', params.serverBinaryName),
-            env: {},
-            stdoutPath: params.stdoutPath,
-            stderrPath: params.stderrPath,
-        });
-        const candidateDefinition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir, spec: candidateSpec });
+    const candidateSpec = buildRelayRuntimeServiceSpec({
+        serviceName: params.serviceName, installRoot: params.installRoot, serverBinaryPath,
+        env: {}, stdoutPath: params.stdoutPath, stderrPath: params.stderrPath,
+    });
+    const candidateDefinition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir, spec: candidateSpec });
+    const quarantine = async () => {
         await applyServicePlan(planServiceAction({
-            backend: params.backend,
-            action: 'quarantine',
-            label: candidateSpec.label,
-            definitionPath: candidateDefinition.path,
-            persistent: true,
+            backend: params.backend, action: 'quarantine', label: candidateSpec.label,
+            definitionPath: candidateDefinition.path, persistent: true,
         }), { runCommands: params.runServiceCommands });
-        throw new Error('[relay-runtime] interrupted Personal Home update cannot authenticate the exact candidate; the service remains quarantined for forward recovery');
+    };
+    const candidate = params.record.candidate;
+    const nonce = params.record.expectedStartupNonce;
+    if (!candidate || !nonce) {
+        try {
+            if (!params.openPersonalHomeRestorePoint) {
+                throw new Error('The canonical Personal Home restore-point owner is unavailable');
+            }
+            await quarantine();
+            await params.assertPersonalHomeStopped();
+            await restoreRelayRuntimeInstallState({
+                platform: params.layout.platform,
+                payloadDir: params.installRoot,
+                shimPath: params.shimPath,
+                migrationsDir: join(params.layout.dataDir, 'migrations', 'sqlite'),
+                envPath: join(params.layout.configDir, 'server.env'),
+                statePath: join(params.installRoot, 'self-host-state.json'),
+                payloadBackupDir: references.payloadBackupDir,
+                migrationsBackupDir: references.migrationsBackupDir,
+                previousEnvText: params.record.runtimeBackup.previousEnvText,
+                previousStateText: params.record.runtimeBackup.previousStateText,
+            });
+            const restorePoint = await params.openPersonalHomeRestorePoint({
+                archivePath: references.restorePointPath,
+                expectedHomeServerIdentityId: params.record.restorePoint.homeServerIdentityId,
+                schemaVersion: params.record.restorePoint.schemaVersion,
+                layout: params.layout,
+            });
+            const restored = await restorePoint.restore(params.personalHomeRestoreHooks ?? {});
+            if (restored.outcome !== 'restored') {
+                throw new Error(`Personal Home restore did not complete (${restored.outcome})${restored.error ? `: ${restored.error}` : ''}`);
+            }
+            if (params.record.previousServiceDefinitionExisted) {
+                const priorEnv = parseEnvText(params.record.runtimeBackup.previousEnvText ?? '');
+                const priorSpec = buildRelayRuntimeServiceSpec({
+                    serviceName: params.serviceName,
+                    installRoot: params.installRoot,
+                    serverBinaryPath,
+                    env: priorEnv,
+                    stdoutPath: params.stdoutPath,
+                    stderrPath: params.stderrPath,
+                });
+                const priorDefinition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir, spec: priorSpec });
+                await applyServicePlan(planServiceAction({
+                    backend: params.backend,
+                    action: 'install',
+                    label: priorSpec.label,
+                    definitionPath: priorDefinition.path,
+                    definitionContents: priorDefinition.contents,
+                    persistent: true,
+                }), { runCommands: params.runServiceCommands && params.record.priorRunning });
+                if (params.runServiceCommands && params.record.priorRunning) {
+                    const priorBaseUrl = resolveConfiguredSelfHostBaseUrl({
+                        fallbackBaseUrl: 'http://127.0.0.1:3005',
+                        envText: params.record.runtimeBackup.previousEnvText ?? '',
+                    });
+                    const origin = new URL(priorBaseUrl);
+                    const health = await checkRelayRuntimeHealth({
+                        host: origin.hostname,
+                        port: Number(origin.port),
+                        timeoutMs: resolveRelayRuntimeInstallHealthcheckTimeoutMs(),
+                        probePortOpen,
+                        fetchJson,
+                    });
+                    if (!health.reachable) throw new Error('The prior Personal Home runtime did not become healthy');
+                }
+            }
+            const finalization = await restorePoint.finalize();
+            if (finalization.outcome !== 'finalized' && finalization.outcome !== 'none') {
+                throw new Error(`Personal Home restore finalization did not complete (${finalization.outcome})${finalization.error ? `: ${finalization.error}` : ''}`);
+            }
+            await restorePoint.dispose();
+            const priorState = tryParseJsonObject(params.record.runtimeBackup.previousStateText ?? '');
+            const priorBaseUrl = resolveConfiguredSelfHostBaseUrl({
+                fallbackBaseUrl: 'http://127.0.0.1:3005',
+                envText: params.record.runtimeBackup.previousEnvText ?? '',
+            });
+            await cleanup();
+            return { baseUrl: priorBaseUrl, version: typeof priorState?.version === 'string' ? priorState.version : null };
+        } catch (error) {
+            await quarantine().catch(() => undefined);
+            throw new PersonalHomeUpdateRecoveryRequiredError('retry_prior_runtime',
+                '[relay-runtime] interrupted Personal Home update has no completed candidate selection; retry recovery of the prior runtime', { cause: error });
+        }
     }
+    const result = { baseUrl: candidate.state.purpose.canonicalServerUrl, version: candidate.state.version };
+    try {
+        // Both the Home and payload mutation locks are held. Every managed payload writer
+        // reconciles here before considering the retry's input. New records retain the exact
+        // staged payload under the existing runtime-backup owner, so interruption immediately
+        // after the durable boundary can still finish that candidate. Earlier candidate-bearing
+        // records remain reachable when their already-installed bytes are intact.
+        if (candidate.payload) {
+            if (!references.candidatePayloadDir
+                || await computeRelayRuntimePayloadDigest(references.candidatePayloadDir) !== candidate.payload.sha256) {
+                throw new Error('The selected Personal Home update payload is unavailable or does not match its durable digest');
+            }
+        } else if (await readFile(join(params.layout.configDir, 'server.env'), 'utf8') !== candidate.envText
+            || !(await lstat(serverBinaryPath)).isFile()) {
+            throw new Error('The completed candidate payload or configuration is no longer available');
+        }
+        if (!params.runServiceCommands) throw new Error('Exact candidate recovery requires service activation and authenticated readiness');
+        await quarantine();
+        await params.assertPersonalHomeStopped();
+        if (candidate.payload && references.candidatePayloadDir) {
+            const candidateMigrationsSource = join(references.candidatePayloadDir, 'bin', 'prisma', 'sqlite', 'migrations');
+            const migrationsDir = join(params.layout.dataDir, 'migrations', 'sqlite');
+            await mkdir(migrationsDir, { recursive: true });
+            if (existsSync(candidateMigrationsSource)) {
+                await copyDirectoryContents({ sourceDir: candidateMigrationsSource, destDir: migrationsDir });
+            }
+            await installPersistentPayload({
+                sourceDir: references.candidatePayloadDir,
+                destDir: params.installRoot,
+                executablePath: serverBinaryPath,
+            });
+            await installBinaryShim({ platform: params.layout.platform, sourcePath: serverBinaryPath, destPath: params.shimPath });
+            await mkdir(params.layout.configDir, { recursive: true });
+            await writeFile(join(params.layout.configDir, 'server.env'), candidate.envText, 'utf8');
+        }
+        const receiptPath = join(params.layout.dataDir, 'startup-receipt.json');
+        const env = {
+            ...parseEnvText(candidate.envText),
+            [PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY_ENV]: PERSONAL_HOME_UPDATER_FORWARD_RECOVERY_CAPABILITY,
+            [SERVER_STARTUP_RECEIPT_PATH_ENV]: receiptPath,
+            [SERVER_STARTUP_RECEIPT_NONCE_ENV]: nonce,
+        };
+        await runInstalledRelayRuntimeMigrations({ serverBinaryPath, installRoot: params.installRoot,
+            platform: params.layout.platform, env, runMigrationCommand: params.runMigrationCommand });
+        await rm(receiptPath, { force: true });
+        const definition = buildServiceDefinition({ backend: params.backend, homeDir: params.homeDir,
+            spec: { ...candidateSpec, env } });
+        await applyServicePlan(planServiceAction({ backend: params.backend, action: 'install',
+            label: candidateSpec.label, definitionPath: definition.path, definitionContents: definition.contents,
+            persistent: true }), { runCommands: true });
+        const origin = new URL(result.baseUrl);
+        const health = await checkRelayRuntimeHealth({ host: origin.hostname, port: Number(origin.port),
+            timeoutMs: resolveRelayRuntimeInstallHealthcheckTimeoutMs(), probePortOpen, fetchJson });
+        if (!health.reachable) throw new Error('The exact update candidate did not become healthy');
+        const receipt = await waitForRelayRuntimeStartupReceipt({ path: receiptPath, nonce });
+        if (receipt.host !== '127.0.0.1' || receipt.port !== Number(origin.port)
+            || receipt.readiness?.homeServerIdentityId !== params.record.restorePoint.homeServerIdentityId) {
+            throw new Error('The exact update candidate did not authenticate the expected Home and listener');
+        }
+        const activated = { ...params.record, phase: 'activated' as const,
+            activation: { nonce, pid: receipt.pid, host: receipt.host, port: receipt.port, readiness: receipt.readiness } };
+        await writePersonalHomeUpdateRecoveryRecord(params.layout, activated);
+        await writeJsonFile(join(params.installRoot, 'self-host-state.json'), candidate.state);
+        await writePersonalHomeUpdateRecoveryRecord(params.layout, { ...activated, phase: 'committed' });
+    } catch (error) {
+        await quarantine();
+        throw new PersonalHomeUpdateRecoveryRequiredError('retry_exact_candidate',
+            '[relay-runtime] the selected Personal Home update remains quarantined; retry Install/update to finish this exact candidate without restoring older data', { cause: error });
+    }
+    await cleanup();
+    return result;
+}
 
+function removeEnvironmentAssignments(envText: string, keys: ReadonlySet<string>): string {
+    const lines = envText.split('\n').filter((line) => {
+        const trimmed = line.trim();
+        const separatorIndex = trimmed.indexOf('=');
+        return separatorIndex < 0 || !keys.has(trimmed.slice(0, separatorIndex).trim());
+    });
+    const rendered = lines.join('\n');
+    return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
 }
 
 function removeLegacyPersonalHomePublicOrigin(envText: string, canonicalServerUrl: string): string {
@@ -1082,17 +1298,10 @@ function removeLegacyPersonalHomePublicOrigin(envText: string, canonicalServerUr
     const canonical = canonicalServerUrl.trim().replace(/\/+$/u, '');
     if (!publicServerUrl || publicServerUrl !== canonical) return envText;
 
-    const retiredKeys = new Set([
+    return removeEnvironmentAssignments(envText, new Set([
         'HAPPIER_PUBLIC_SERVER_URL',
         'HAPPIER_PUBLIC_SERVER_URL_INFERRED',
-    ]);
-    const lines = envText.split('\n').filter((line) => {
-        const trimmed = line.trim();
-        const separatorIndex = trimmed.indexOf('=');
-        return separatorIndex < 0 || !retiredKeys.has(trimmed.slice(0, separatorIndex).trim());
-    });
-    const rendered = lines.join('\n');
-    return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
+    ]));
 }
 
 async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readonly<{
@@ -1118,6 +1327,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     /** Verified lease-held Personal Home restore point; an empty first install returns null. */
     createPersonalHomeRestorePoint?: (context: Readonly<{
         happierVersion: string | null;
+        layout: PersonalHomeRuntimeLayout;
     }>) => Promise<PersonalHomeRestorePoint | null>;
     /** Actual pre-stop service state, persisted so recovery does not start a previously stopped Home. */
     readPersonalHomeWasRunning?: () => Promise<boolean>;
@@ -1126,6 +1336,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         archivePath: string;
         expectedHomeServerIdentityId: string;
         schemaVersion: string;
+        layout: PersonalHomeRuntimeLayout;
     }>) => Promise<PersonalHomeRestorePoint>;
     /** Exact persisted layout used by both restore-point creation and interrupted-update recovery. */
     resolvePersonalHomeUpdateLayout?: () => Promise<PersonalHomeRuntimeLayout>;
@@ -1159,6 +1370,12 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         }
     }
     const serviceName = String(params.serviceNameOverride ?? '').trim() || defaults.serviceName;
+    const incumbentInstallRoot = rootMigrationSource?.sourceInstallRoot ?? defaults.installRoot;
+    const incumbentConfigDir = rootMigrationSource && mode === 'user'
+        ? join(incumbentInstallRoot, 'config')
+        : defaults.configDir;
+    const incumbentStatePath = join(incumbentInstallRoot, 'self-host-state.json');
+    const incumbentConfigEnvPath = join(incumbentConfigDir, 'server.env');
     const installServerBinaryPath = join(defaults.installRoot, 'bin', serverBinaryName);
     const statePath = join(defaults.installRoot, 'self-host-state.json');
     const configEnvPath = join(defaults.configDir, 'server.env');
@@ -1173,13 +1390,43 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         platform,
         mode,
     });
+    const migrateInstallRootAfterCandidateBoundary = async (): Promise<Readonly<{
+        owned: RelayRuntimeInstallRootMigration | null;
+        legacy: RelayRuntimeInstallRootMigration | null;
+    }>> => {
+        const owned = rootMigrationSource?.kind === 'owned-current-lane'
+            ? await migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+                runServiceCommands: params.runServiceCommands !== false,
+                sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
+                assertPersonalHomeStopped: params.assertPersonalHomeStopped,
+            })
+            : null;
+        const legacy = owned
+            ? null
+            : rootMigrationSource?.kind === 'legacy-unsuffixed'
+                ? await migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded({
+                    platform,
+                    mode,
+                    channel: params.channel,
+                    homeDir,
+                    runServiceCommands: params.runServiceCommands !== false,
+                    sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
+                    assertPersonalHomeStopped: params.assertPersonalHomeStopped,
+                })
+                : null;
+        return { owned, legacy };
+    };
     const previousServiceSpec = buildRelayRuntimeServiceSpec({
         serviceName,
-        installRoot: defaults.installRoot,
-        serverBinaryPath: installServerBinaryPath,
+        installRoot: incumbentInstallRoot,
+        serverBinaryPath: join(incumbentInstallRoot, 'bin', serverBinaryName),
         env: {},
-        stdoutPath,
-        stderrPath,
+        stdoutPath: rootMigrationSource && mode === 'user' ? join(incumbentInstallRoot, 'logs', 'server.out.log') : stdoutPath,
+        stderrPath: rootMigrationSource && mode === 'user' ? join(incumbentInstallRoot, 'logs', 'server.err.log') : stderrPath,
     });
     const previousServiceDefinition = buildServiceDefinition({
         backend,
@@ -1188,14 +1435,32 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     });
     const previousServiceDefinitionExisted = existsSync(previousServiceDefinition.path);
 
-    const personalHomeUpdateLayout = params.purpose?.kind === 'personal-home' && params.resolvePersonalHomeUpdateLayout
-        ? await params.resolvePersonalHomeUpdateLayout()
+    let personalHomeUpdateLayout = params.purpose?.kind === 'personal-home' && params.resolvePersonalHomeUpdateLayout
+        ? rootMigrationSource
+            ? await resolvePersonalHomeRuntimeLayoutForInstallRoot({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+                installRoot: incumbentInstallRoot,
+            })
+            : await params.resolvePersonalHomeUpdateLayout()
         : null;
     const interruptedUpdate = personalHomeUpdateLayout
         ? await readPersonalHomeUpdateRecoveryRecord(personalHomeUpdateLayout)
         : null;
     if (interruptedUpdate && personalHomeUpdateLayout) {
-        await reconcileInterruptedPersonalHomeUpdate({
+        if (rootMigrationSource) {
+            await migrateInstallRootAfterCandidateBoundary();
+            personalHomeUpdateLayout = await resolvePersonalHomeRuntimeLayoutForInstallRoot({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+                installRoot: defaults.installRoot,
+            });
+        }
+        return await reconcileInterruptedPersonalHomeUpdate({
             layout: personalHomeUpdateLayout,
             record: interruptedUpdate,
             homeDir,
@@ -1203,9 +1468,14 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             serviceName,
             serverBinaryName,
             installRoot: defaults.installRoot,
+            shimPath: join(defaults.binDir, serverBinaryName),
             stdoutPath,
             stderrPath,
             runServiceCommands: params.runServiceCommands !== false,
+            assertPersonalHomeStopped: params.assertPersonalHomeStopped!,
+            openPersonalHomeRestorePoint: params.openPersonalHomeRestorePoint,
+            personalHomeRestoreHooks: params.personalHomeRestoreHooks,
+            runMigrationCommand: params.runMigrationCommand,
         });
     }
 
@@ -1222,7 +1492,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     let legacyRootMigration: RelayRuntimeInstallRootMigration | null = null;
     let restoreInstallRoot = defaults.installRoot;
     let candidateServiceActivationAttempted = false;
-    let candidateCanApplyIrreversibleBoundary = false;
+    let candidateIrreversibleMigrations: ReadonlyArray<(typeof RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS)[number]> = [];
     let candidateEnv: Record<string, string> | null = null;
     let personalHomeRestorePoint: PersonalHomeRestorePoint | null = null;
     let personalHomeRestoreRollbackPaths: readonly string[] | undefined;
@@ -1230,64 +1500,46 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     let candidateStateCommitted = false;
     let personalHomeWasRunning = previousServiceDefinitionExisted;
     let personalHomeUpdateRecoveryRecord: PersonalHomeUpdateRecoveryRecordV1 | null = null;
+    let pendingPersonalHomeUpdateRecoveryRecord: PersonalHomeUpdateRecoveryRecordV1 | null = null;
 
     try {
-        ownedRootMigration = rootMigrationSource?.kind === 'owned-current-lane'
-            ? await migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded({
-                platform,
-                mode,
-                channel: params.channel,
-                homeDir,
-                runServiceCommands: params.runServiceCommands !== false,
-                sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
-                assertPersonalHomeStopped: params.assertPersonalHomeStopped,
-            })
-            : null;
-
-        legacyRootMigration = ownedRootMigration
-            ? null
-            : rootMigrationSource?.kind === 'legacy-unsuffixed'
-                ? await migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded({
-                    platform,
-                    mode,
-                    channel: params.channel,
-                    homeDir,
-                    runServiceCommands: params.runServiceCommands !== false,
-                    sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
-                    assertPersonalHomeStopped: params.assertPersonalHomeStopped,
-                })
-                : null;
+        if (params.purpose?.kind !== 'personal-home') {
+            const migrated = await migrateInstallRootAfterCandidateBoundary();
+            ownedRootMigration = migrated.owned;
+            legacyRootMigration = migrated.legacy;
+        }
 
         restoreInstallRoot = ownedRootMigration?.originalInstallRoot
             ?? legacyRootMigration?.originalInstallRoot
-            ?? defaults.installRoot;
+            ?? (params.purpose?.kind === 'personal-home' ? incumbentInstallRoot : defaults.installRoot);
 
-        await mkdir(defaults.installRoot, { recursive: true });
+        const backupInstallRoot = params.purpose?.kind === 'personal-home'
+            ? incumbentInstallRoot
+            : defaults.installRoot;
+        const backupMigrationsDir = params.purpose?.kind === 'personal-home' && personalHomeUpdateLayout
+            ? join(personalHomeUpdateLayout.dataDir, 'migrations', 'sqlite')
+            : migrationsDir;
         previousInstallState = await backupRelayRuntimeInstallState({
-            installRoot: defaults.installRoot,
-            payloadDir: defaults.installRoot,
+            installRoot: backupInstallRoot,
+            payloadDir: backupInstallRoot,
             serverBinaryName,
-            migrationsDir,
-            envPath: configEnvPath,
-            statePath,
+            migrationsDir: backupMigrationsDir,
+            envPath: params.purpose?.kind === 'personal-home' ? incumbentConfigEnvPath : configEnvPath,
+            statePath: params.purpose?.kind === 'personal-home' ? incumbentStatePath : statePath,
         });
 
-        if (params.purpose?.kind === 'personal-home') {
+        if (params.purpose?.kind === 'personal-home' && !params.createPersonalHomeRestorePoint) {
             const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
             // The existing state file is the runtime-classification owner. Publish the immutable
-            // requested purpose before payload, data, environment, or service mutation so a hard
-            // termination cannot turn the runtime Lane 03 created into an unclassified install.
-            await writeJsonFile(statePath, {
+            // requested purpose before a fresh install's first service or payload mutation. An
+            // existing Home instead remains byte-for-byte on its prior runtime until the durable
+            // candidate-bearing recovery boundary below has been committed.
+            await mkdir(dirname(incumbentStatePath), { recursive: true });
+            await writeJsonFile(incumbentStatePath, {
                 ...(previousState ?? {}),
                 purpose: params.purpose,
             });
         }
-
-        await mkdir(defaults.configDir, { recursive: true });
-        await mkdir(defaults.dataDir, { recursive: true });
-        await mkdir(filesDir, { recursive: true });
-        await mkdir(dbDir, { recursive: true });
-        await mkdir(defaults.logDir, { recursive: true });
 
         if (params.purpose?.kind === 'personal-home' && params.readPersonalHomeWasRunning) {
             personalHomeWasRunning = await params.readPersonalHomeWasRunning();
@@ -1296,11 +1548,17 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         if (params.runServiceCommands !== false) {
             const stopServiceSpec = buildRelayRuntimeServiceSpec({
                 serviceName,
-                installRoot: defaults.installRoot,
-                serverBinaryPath: installServerBinaryPath,
+                installRoot: params.purpose?.kind === 'personal-home' ? incumbentInstallRoot : defaults.installRoot,
+                serverBinaryPath: params.purpose?.kind === 'personal-home'
+                    ? join(incumbentInstallRoot, 'bin', serverBinaryName)
+                    : installServerBinaryPath,
                 env: {},
-                stdoutPath,
-                stderrPath,
+                stdoutPath: params.purpose?.kind === 'personal-home' && rootMigrationSource && mode === 'user'
+                    ? join(incumbentInstallRoot, 'logs', 'server.out.log')
+                    : stdoutPath,
+                stderrPath: params.purpose?.kind === 'personal-home' && rootMigrationSource && mode === 'user'
+                    ? join(incumbentInstallRoot, 'logs', 'server.err.log')
+                    : stderrPath,
             });
             const stopDefinition = buildServiceDefinition({
                 backend,
@@ -1321,6 +1579,13 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         await params.assertPersonalHomeStopped?.();
 
         if (params.createPersonalHomeRestorePoint) {
+            const restorePointLayout = personalHomeUpdateLayout ?? await resolvePersonalHomeRuntimeLayoutForInstallRoot({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+                installRoot: incumbentInstallRoot,
+            });
             const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
             const previousVersion = typeof previousState?.version === 'string' && previousState.version.trim()
               ? previousState.version.trim()
@@ -1332,12 +1597,13 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 : null;
             personalHomeRestorePoint = await params.createPersonalHomeRestorePoint({
                 happierVersion: previousVersion ?? candidateVersion,
+                layout: restorePointLayout,
             });
             if (personalHomeRestorePoint && personalHomeUpdateLayout) {
                 if (!params.openPersonalHomeRestorePoint || !params.readPersonalHomeWasRunning) {
                     throw new Error('[relay-runtime] Personal Home update recovery requires the canonical running-state and restore-point owners');
                 }
-                personalHomeUpdateRecoveryRecord = Object.freeze({
+                pendingPersonalHomeUpdateRecoveryRecord = Object.freeze({
                     version: 1,
                     phase: 'prepared',
                     expectedStartupNonce: startupReceiptNonce,
@@ -1358,46 +1624,34 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                         schemaVersion: personalHomeRestorePoint.backup.manifest.schemaVersion,
                     }),
                 });
-                await writePersonalHomeUpdateRecoveryRecord(personalHomeUpdateLayout, personalHomeUpdateRecoveryRecord);
             }
         }
 
         const payloadRoot = preparedPayload.payloadRoot;
-        const migrationsSourceDir = join(payloadRoot, 'bin', 'prisma', 'sqlite', 'migrations');
-        await mkdir(migrationsDir, { recursive: true });
-        if (existsSync(migrationsSourceDir)) {
-            await copyDirectoryContents({
-                sourceDir: migrationsSourceDir,
-                destDir: migrationsDir,
-            });
-        }
-
-        await installPersistentPayload({
-            sourceDir: payloadRoot,
-            destDir: defaults.installRoot,
-            executablePath: installServerBinaryPath,
-        });
-        await installBinaryShim({
-            platform,
-            sourcePath: installServerBinaryPath,
-            destPath: join(defaults.binDir, serverBinaryName),
-        });
-
         const uiDir = platform === 'win32'
             ? win32Path.join(defaults.installRoot, 'ui-web', 'current')
             : join(defaults.installRoot, 'ui-web', 'current');
-        const uiIndexPath = join(uiDir, 'index.html');
-        const uiDeployment = existsSync(uiIndexPath)
+        const candidateUiDir = platform === 'win32'
+            ? win32Path.join(payloadRoot, 'ui-web', 'current')
+            : join(payloadRoot, 'ui-web', 'current');
+        const candidateUiIndexPath = join(candidateUiDir, 'index.html');
+        const uiDeployment = existsSync(candidateUiIndexPath)
             ? resolveUiDeploymentIdentity({
-                digest: await computeUiDeploymentDigest(uiDir),
+                digest: await computeUiDeploymentDigest(candidateUiDir),
                 previousStateText: previousInstallState.previousStateText,
                 generateId: randomUUID,
             })
             : null;
-        const existingEnvTextRaw = existsSync(configEnvPath) ? await readFile(configEnvPath, 'utf8').catch(() => '') : '';
-        const existingEnvText = params.purpose?.kind === 'personal-home'
+        const existingEnvTextRaw = previousInstallState.previousEnvText ?? '';
+        const normalizedExistingEnvText = params.purpose?.kind === 'personal-home'
             ? removeLegacyPersonalHomePublicOrigin(existingEnvTextRaw, params.purpose.canonicalServerUrl)
             : existingEnvTextRaw;
+        const relayPolicyOverride = String(params.env?.HAPPIER_IROH_RELAY_POLICY ?? '').trim().toLowerCase();
+        const existingEnvText = params.purpose?.kind === 'personal-home'
+            && (relayPolicyOverride === 'automatic' || relayPolicyOverride === 'disabled')
+            && !Object.prototype.hasOwnProperty.call(params.env ?? {}, 'HAPPIER_IROH_RELAY_URLS')
+            ? removeEnvironmentAssignments(normalizedExistingEnvText, new Set(['HAPPIER_IROH_RELAY_URLS']))
+            : normalizedExistingEnvText;
         const existingEnv = parseEnvText(existingEnvText);
         const existingPortRaw = String(existingEnv.PORT ?? '').trim();
         const overridePortRaw = String((params.env ?? {}).PORT ?? '').trim();
@@ -1431,6 +1685,11 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 || join(renderedDataDir, 'pglite')
             : dbDir;
         startupReceiptPath = join(renderedDataDir, 'startup-receipt.json');
+        const prismaEngineFileName = resolveServerRuntimePrismaEngineFileName({ platform, arch });
+        const candidatePrismaEngineRelativePath = [
+            join('bin', 'node_modules', '.prisma', 'client', prismaEngineFileName),
+            join('bin', 'generated', 'sqlite-client', prismaEngineFileName),
+        ].find((relativePath) => existsSync(join(payloadRoot, relativePath)));
         const baseEnvText = renderSelfHostServerEnvText({
             port: resolvedPort,
             host: defaults.serverHost,
@@ -1440,6 +1699,9 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             uiDir,
             uiDeploymentId: uiDeployment?.deploymentId,
             serverBinDir: dirname(installServerBinaryPath),
+            ...(candidatePrismaEngineRelativePath
+                ? { prismaEnginePath: join(defaults.installRoot, candidatePrismaEngineRelativePath) }
+                : {}),
             arch,
             platform,
         });
@@ -1453,6 +1715,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                     ...(params.env ?? {}),
                     ...(preservedClosedSignup ? { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' } : {}),
                 },
+                baseEnv: existingEnv,
             })
             : null;
         // Home device approval is owned by the Home auth/enrollment path. It is
@@ -1477,6 +1740,116 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 PORT: String(resolvedPort),
             },
         });
+        const state: Omit<PersonalHomeUpdateCandidateState, 'purpose'> & { purpose?: ManagedRelayPurpose } = {
+            channel: params.channel,
+            mode,
+            version: typeof params.version === 'string' && params.version.trim() ? params.version.trim() : null,
+            updatedAt: new Date().toISOString(),
+            ...(params.purpose ? { purpose: params.purpose } : {}),
+            ...(uiDeployment ? {
+                uiDeploymentDigest: uiDeployment.digest,
+                uiDeploymentId: uiDeployment.deploymentId,
+            } : {}),
+        };
+        let selectedPayloadRoot = payloadRoot;
+        if (pendingPersonalHomeUpdateRecoveryRecord && personalHomeUpdateLayout && params.purpose?.kind === 'personal-home') {
+            selectedPayloadRoot = join(previousInstallState.backupRoot, 'candidate');
+            const candidateEntryNames = await listRelayRuntimeManagedRootEntries(payloadRoot);
+            await copyNamedRootEntries({
+                sourceDir: payloadRoot,
+                destDir: selectedPayloadRoot,
+                entryNames: candidateEntryNames,
+            });
+            if (!existsSync(join(selectedPayloadRoot, 'bin', serverBinaryName))) {
+                throw new Error('[relay-runtime] staged Personal Home update candidate has no server binary');
+            }
+            const candidatePayloadSha256 = await computeRelayRuntimePayloadDigest(selectedPayloadRoot);
+            // The record is allowed to select this candidate only after both its exact payload and
+            // the prior-runtime rollback bytes it references have reached the durable boundary.
+            await syncPersonalHomeTree(previousInstallState.backupRoot, { allowSymbolicLinks: true });
+            await syncPersonalHomeParentDirectory(previousInstallState.backupRoot);
+            const nextPersonalHomeUpdateRecoveryRecord = Object.freeze({
+                ...pendingPersonalHomeUpdateRecoveryRecord,
+                candidate: {
+                    envText,
+                    state: { ...state, purpose: params.purpose },
+                    payload: { directoryName: 'candidate', sha256: candidatePayloadSha256 },
+                },
+            } satisfies PersonalHomeUpdateRecoveryRecordV1);
+            personalHomeUpdateRecoveryRecord = nextPersonalHomeUpdateRecoveryRecord;
+            await writePersonalHomeUpdateRecoveryRecord(personalHomeUpdateLayout, nextPersonalHomeUpdateRecoveryRecord);
+            pendingPersonalHomeUpdateRecoveryRecord = null;
+        }
+
+        if (params.purpose?.kind === 'personal-home' && rootMigrationSource) {
+            // The source root, its payload/configuration, and its persisted classification stay
+            // untouched until the exact candidate and rollback facts above are durable. The root
+            // move is the first incumbent-runtime mutation after that boundary.
+            const migrated = await migrateInstallRootAfterCandidateBoundary();
+            ownedRootMigration = migrated.owned;
+            legacyRootMigration = migrated.legacy;
+            restoreInstallRoot = ownedRootMigration?.originalInstallRoot
+                ?? legacyRootMigration?.originalInstallRoot
+                ?? incumbentInstallRoot;
+            personalHomeUpdateLayout = await resolvePersonalHomeRuntimeLayoutForInstallRoot({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+                installRoot: defaults.installRoot,
+            });
+            if (personalHomeUpdateRecoveryRecord && personalHomeRestorePoint) {
+                if (!params.openPersonalHomeRestorePoint) {
+                    throw new Error('[relay-runtime] Personal Home update recovery requires the canonical restore-point owner');
+                }
+                const references = resolvePersonalHomeUpdateRecoveryReferences({
+                    layout: personalHomeUpdateLayout,
+                    record: personalHomeUpdateRecoveryRecord,
+                });
+                personalHomeRestorePoint = null;
+                personalHomeRestorePoint = await params.openPersonalHomeRestorePoint({
+                    archivePath: references.restorePointPath,
+                    expectedHomeServerIdentityId: personalHomeUpdateRecoveryRecord.restorePoint.homeServerIdentityId,
+                    schemaVersion: personalHomeUpdateRecoveryRecord.restorePoint.schemaVersion,
+                    layout: personalHomeUpdateLayout,
+                });
+            }
+        }
+
+        if (params.purpose?.kind === 'personal-home' && !personalHomeUpdateRecoveryRecord && params.createPersonalHomeRestorePoint) {
+            const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
+            await mkdir(dirname(statePath), { recursive: true });
+            await writeJsonFile(statePath, {
+                ...(previousState ?? {}),
+                purpose: params.purpose,
+            });
+        }
+
+        await mkdir(defaults.installRoot, { recursive: true });
+        await mkdir(defaults.configDir, { recursive: true });
+        await mkdir(defaults.dataDir, { recursive: true });
+        await mkdir(filesDir, { recursive: true });
+        await mkdir(dbDir, { recursive: true });
+        await mkdir(defaults.logDir, { recursive: true });
+
+        const migrationsSourceDir = join(selectedPayloadRoot, 'bin', 'prisma', 'sqlite', 'migrations');
+        await mkdir(migrationsDir, { recursive: true });
+        if (existsSync(migrationsSourceDir)) {
+            await copyDirectoryContents({
+                sourceDir: migrationsSourceDir,
+                destDir: migrationsDir,
+            });
+        }
+        await installPersistentPayload({
+            sourceDir: selectedPayloadRoot,
+            destDir: defaults.installRoot,
+            executablePath: installServerBinaryPath,
+        });
+        await installBinaryShim({
+            platform,
+            sourcePath: installServerBinaryPath,
+            destPath: join(defaults.binDir, serverBinaryName),
+        });
         await writeFile(configEnvPath, envText, 'utf8');
         const env = parseEnvText(envText);
         const migrationEnv = {
@@ -1486,38 +1859,21 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         };
         candidateEnv = migrationEnv;
         const provider = String(env.HAPPIER_DB_PROVIDER ?? env.HAPPY_DB_PROVIDER ?? 'sqlite').trim().toLowerCase();
-        const candidateBoundaryMigrationPath = provider === 'mysql'
-            ? join(defaults.installRoot, 'bin', 'prisma', 'mysql', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION)
+        const candidateMigrationsDir = provider === 'mysql'
+            ? join(defaults.installRoot, 'bin', 'prisma', 'mysql', 'migrations')
             : provider === 'sqlite'
-                ? join(migrationsDir, QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION)
-                : join(defaults.installRoot, 'bin', 'prisma', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION);
-        candidateCanApplyIrreversibleBoundary = existsSync(candidateBoundaryMigrationPath);
-        const migrationPlan = resolveSelfHostServerMigrationPlan({
+                ? migrationsDir
+                : join(defaults.installRoot, 'bin', 'prisma', 'migrations');
+        candidateIrreversibleMigrations = RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS.filter(
+            ({ name }) => existsSync(join(candidateMigrationsDir, name)),
+        );
+        await runInstalledRelayRuntimeMigrations({
             serverBinaryPath: installServerBinaryPath,
-            env,
+            installRoot: defaults.installRoot,
+            env: migrationEnv,
             platform,
+            runMigrationCommand: params.runMigrationCommand,
         });
-        if (migrationPlan) {
-            if (params.runMigrationCommand) {
-                await params.runMigrationCommand({
-                    ...migrationPlan,
-                    cwd: defaults.installRoot,
-                    env: migrationEnv,
-                });
-            } else {
-                const completion = spawnSync(migrationPlan.command, [...migrationPlan.args], {
-                    cwd: defaults.installRoot,
-                    env: { ...process.env, ...migrationEnv },
-                    stdio: 'inherit',
-                });
-                if (completion.error) {
-                    throw new Error(`[relay-runtime] database migration failed to start: ${completion.error.message}`);
-                }
-                if (completion.status !== 0) {
-                    throw new Error(`[relay-runtime] database migration exited with status ${completion.status ?? 'unknown'}`);
-                }
-            }
-        }
 
         await rm(startupReceiptPath, { force: true });
         const serviceSpec = buildRelayRuntimeServiceSpec({
@@ -1551,17 +1907,6 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             runCommands: params.runServiceCommands !== false,
         });
 
-        const state = {
-            channel: params.channel,
-            mode,
-            version: typeof params.version === 'string' && params.version.trim() ? params.version.trim() : null,
-            updatedAt: new Date().toISOString(),
-            ...(params.purpose ? { purpose: params.purpose } : {}),
-            ...(uiDeployment ? {
-                uiDeploymentDigest: uiDeployment.digest,
-                uiDeploymentId: uiDeployment.deploymentId,
-            } : {}),
-        };
         const baseUrl = resolveConfiguredSelfHostBaseUrl({
             fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
             envText,
@@ -1648,7 +1993,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         const rollbackFailures: RelayRuntimeInstallRollbackFailure[] = [];
         let rollbackCanProceed = !candidateMayHaveAcceptedWrites && !candidateActivationAmbiguous;
 
-        if (candidateServiceActivationAttempted) {
+        if (candidateServiceActivationAttempted || candidateMayHaveAcceptedWrites || candidateActivationAmbiguous) {
             try {
                 const candidateStopSpec = buildRelayRuntimeServiceSpec({
                     serviceName,
@@ -1670,7 +2015,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                     definitionPath: candidateStopDefinition.path,
                     persistent: true,
                 });
-                await applyServicePlan(candidateStopPlan, { runCommands: true });
+                await applyServicePlan(candidateStopPlan, { runCommands: params.runServiceCommands !== false });
                 await params.assertPersonalHomeStopped?.();
             } catch (rollbackError) {
                 rollbackFailures.push({ phase: 'candidate_stop', error: rollbackError });
@@ -1683,14 +2028,17 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             throw error;
         }
 
-        if (rollbackCanProceed && candidateCanApplyIrreversibleBoundary && candidateEnv) {
+        if (rollbackCanProceed && candidateEnv) {
             try {
-                await assertQualifiedConnectedAccountsV4RollbackAllowed({
-                    platform,
-                    installRoot: defaults.installRoot,
-                    env: candidateEnv,
-                    runCommand: params.runMigrationAppliedCheckCommand,
-                });
+                for (const migration of candidateIrreversibleMigrations) {
+                    await assertIrreversibleMigrationRollbackAllowed({
+                        migration,
+                        platform,
+                        installRoot: defaults.installRoot,
+                        env: candidateEnv,
+                        runCommand: params.runMigrationAppliedCheckCommand,
+                    });
+                }
             } catch (rollbackError) {
                 rollbackFailures.push({ phase: 'irreversible_boundary', error: rollbackError });
                 rollbackCanProceed = false;
@@ -1961,34 +2309,45 @@ export async function installOrUpdateRelayRuntimeLocal(
                 // persistent data directory. Lock that existing Home before the move; creating a
                 // second destination lock would itself create the destination and defeat the
                 // atomic rename. The lock owner releases the same token at its moved path.
-                const sourceDataDir = await resolvePersonalHomeRuntimeDataDirForInstallRoot({
+                const readLayout = () => resolvePersonalHomeRuntimeLayoutForInstallRoot({
                     platform,
                     mode,
                     channel: params.channel,
                     homeDir,
                     installRoot: rootMigrationSource?.sourceInstallRoot ?? defaults.installRoot,
                 });
-                const destinationDataDir = rootMigrationSource
-                    ? await resolvePersonalHomeRuntimeDataDirForInstallRoot({
+                const sourceLayout = await readLayout();
+                const destinationLayout = rootMigrationSource
+                    ? await resolvePersonalHomeRuntimeLayoutForInstallRoot({
                         platform,
                         mode,
                         channel: params.channel,
                         homeDir,
                         installRoot: defaults.installRoot,
                     })
-                    : sourceDataDir;
-                return withPersonalHomeOperationLock(
-                    sourceDataDir,
-                    'upgrade',
-                    async () => {
-                        await assertPersonalHomeRelocationSourceAllowsActivation(sourceDataDir);
-                        await assertPersonalHomeRelocationDestinationAllowsActivation(sourceDataDir);
-                        return installUnderHeldLocks();
+                    : sourceLayout;
+                const purpose = params.purpose;
+                return withPersonalHomeOperationAdmission({
+                    request: { kind: 'upgrade' },
+                    readValidatedTarget: async () => {
+                        const layout = await readLayout();
+                        await validateCanonicalPersonalHomeLayout(layout, {
+                            homeDir,
+                            installRoot: rootMigrationSource?.sourceInstallRoot ?? defaults.installRoot,
+                            configDir: rootMigrationSource && mode === 'user' ? join(rootMigrationSource.sourceInstallRoot, 'config') : defaults.configDir,
+                        });
+                        const envText = await readFile(join(layout.configDir, 'server.env'), 'utf8').catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+                        const canonicalServerUrl = parseEnvText(envText).HAPPIER_CANONICAL_SERVER_URL ?? purpose.canonicalServerUrl;
+                        if (canonicalServerUrl !== purpose.canonicalServerUrl) throw new Error('Personal Home canonical origin changed before update admission.');
+                        return {
+                            layout,
+                            canonicalServerUrl,
+                            homeServerIdentityId: existsSync(layout.databasePath) ? (await readPersonalHomeIdentityValueFromSqlite(layout.databasePath)).homeServerIdentityId : null,
+                        };
                     },
-                    rootMigrationSource && sourceDataDir !== destinationDataDir
-                        ? { movedToDataDir: destinationDataDir }
-                        : {},
-                );
+                    isHomeRunning: async () => params.readPersonalHomeWasRunning ? await params.readPersonalHomeWasRunning() : false,
+                    ...(rootMigrationSource && sourceLayout.dataDir !== destinationLayout.dataDir ? { movedToDataDir: destinationLayout.dataDir } : {}),
+                }, installUnderHeldLocks);
             }
             return installUnderHeldLocks();
         },

@@ -11,16 +11,22 @@ import {
   createProviderEndpointFingerprintV1,
   createProviderObservationAuthorizationFingerprintV1,
   createProviderProbeRequestFingerprintV1,
+  createProviderSavedSecretRecordFingerprintV1,
   createEmptyProviderRuntimeStateFileV1,
+  encryptSecretStringV1,
   readProviderSettingsFromAccountSettingsV1,
 } from '@happier-dev/protocol';
+import { TeamCredentialSourceBindingV1Schema } from '@happier-dev/protocol/teams';
 
 import type { ProviderRuntimeStateStore } from '@/providers/runtimeState';
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
-import { resolveProviderSpawnAuthorization } from '@/providers/spawn/resolve';
+import {
+  resolveProviderProbeAuthorization,
+  resolveProviderSpawnAuthorization,
+} from '@/providers/spawn/resolve';
 import {
   createProviderProbeHttpClient,
   type ProviderProbeTransportRequest,
@@ -79,15 +85,40 @@ describe('runtime provider model-management composition', () => {
           statefulResponses: 'unknown', reasoningControls: 'unknown',
         },
       }],
+      credential: {
+        kind: 'apiKey',
+        required: false,
+        transports: [{
+          id: 'authorization',
+          protocols: ['openai-chat'],
+          uses: ['probe', 'runtime'],
+          destination: { kind: 'httpHeader', name: 'Authorization', format: 'bearer' },
+        }],
+      },
       catalog: {
         source: 'static+probe', manualModelPolicy: 'catalog-only',
-        staticModels: [{ id: 'same-id', name: 'Provider Same', capabilities: { toolRoundTrips: 'supported' } }],
+        staticModels: [{
+          id: 'same-id',
+          name: 'Provider Same',
+          aliases: ['same-alias'],
+          modelOptions: [{
+            id: 'reasoning_effort',
+            name: 'Reasoning effort',
+            type: 'select',
+            currentValue: 'high',
+            options: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+            ],
+          }],
+          capabilities: { toolRoundTrips: 'supported', reasoningControls: 'supported' },
+        }],
         probes: [{ endpointTemplateId: 'chat', path: '/models', parser: 'openai-models' }],
       },
-      compatibilityOverrides: [{
-        agentTargetKey: 'backend:codex', protocol: 'openai-chat', status: 'verified', reason: 'real integration',
+      compatibilityOverrides: ['backend:codex', 'agent:happier.agent.codex/codex'].map((agentTargetKey) => ({
+        agentTargetKey, protocol: 'openai-chat' as const, status: 'verified' as const, reason: 'real integration',
         evidence: { sourceUrls: ['https://docs.example.test'], verifiedAt: '2026-07-11', testIds: ['real-session'] },
-      }],
+      })),
     });
     const contribution: ResolvedProviderContribution = {
       provenance: 'external', source: { kind: 'path' }, pluginId: 'acme.gateway',
@@ -101,7 +132,7 @@ describe('runtime provider model-management composition', () => {
         ...definition.catalog,
         staticModels: [{
           id: 'same-id',
-          name: 'Prepared generation',
+          name: 'Reasoning 200k thinking generation',
           capabilities: { toolRoundTrips: 'supported' },
         }],
       },
@@ -126,13 +157,22 @@ describe('runtime provider model-management composition', () => {
     if (resolved.status !== 'resolved') throw new Error('Expected provider connection');
     const settings = ProviderSettingsV1Schema.parse({
       ...base,
+      secretBindingsByConnectionId: {
+        [connectionId]: { account: { apiKey: 'secret-gateway' } },
+      },
       accountGrants: [{
         v: 1, connectionId, connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint, confirmedAt: 1,
       }],
     });
     const support = {
       acceptsProtocols: ['openai-chat'], required: { streaming: true },
-      credentialSupport: { supportsNoAuth: true, apiKeyTransports: [] },
+      credentialSupport: {
+        supportsNoAuth: true,
+        apiKeyTransports: [{
+          protocol: 'openai-chat',
+          destination: { kind: 'httpHeader', names: 'anyValidated', formats: ['bearer'] },
+        }],
+      },
       authIsolation: { suppressConnectedServiceIds: ['openai-codex'], ownedEnvKeys: [] },
       materialization: 'engineConfig', applyPolicy: 'restart_session', supportsFreeformModelIds: false,
     } as const;
@@ -184,10 +224,23 @@ describe('runtime provider model-management composition', () => {
       release: vi.fn(async () => undefined),
     };
     let currentLease = lease;
+    const settingsSecretReadKey = new Uint8Array(32).fill(19);
+    const encryptedSecretValue = encryptSecretStringV1(
+      'gateway-secret',
+      settingsSecretReadKey,
+      (length) => new Uint8Array(length).fill(23),
+    );
     const observationAuthorizationFingerprint = createProviderObservationAuthorizationFingerprintV1({
-      selectedSecretBindingId: null,
-      selectedSecretRecordFingerprint: null,
-      credential: null,
+      selectedSecretBindingId: 'secret-gateway',
+      selectedSecretRecordFingerprint: createProviderSavedSecretRecordFingerprintV1({
+        secretId: 'secret-gateway',
+        persistedEncryptedEnvelope: encryptedSecretValue,
+      }),
+      credential: {
+        selectedProtocol: 'openai-chat',
+        selectedUse: 'probe',
+        transport: definition.credential!.transports[0]!,
+      },
     });
     const probeRequestFingerprint = createProviderProbeRequestFingerprintV1({
       method: 'GET',
@@ -255,7 +308,21 @@ describe('runtime provider model-management composition', () => {
       }),
       update: vi.fn(async (transform) => transform(state)),
     };
-    let accountSettings = AccountSettingsSchema.parse({ providerSettingsV1: settings });
+    const authorizedAccountSettings = AccountSettingsSchema.parse({
+      providerSettingsV1: settings,
+      secrets: [{
+        id: 'secret-gateway',
+        name: 'Gateway key',
+        kind: 'apiKey',
+        encryptedValue: {
+          _isSecretValue: true,
+          encryptedValue: encryptedSecretValue,
+        },
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    });
+    let accountSettings = authorizedAccountSettings;
     const transport = vi.fn(async () => ({
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -269,7 +336,7 @@ describe('runtime provider model-management composition', () => {
       client: createProviderProbeHttpClient({ resolveAddresses: async () => ['1.1.1.1'], transport }),
       getAccountSettingsSnapshot: () => ({
         source: 'cache', settings: accountSettings,
-        settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: 'account-a',
+        settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [settingsSecretReadKey], scopeKey: 'account-a',
       }),
       featureGate: { isEnabled: () => true },
       modelSettingsMutation,
@@ -285,6 +352,13 @@ describe('runtime provider model-management composition', () => {
       status: 'success', agentTargetKey: 'backend:codex',
       groups: [{
         connectionId, connectionRevision: 2, supportsFreeformModelIds: false,
+        sourceAuthority: {
+          provider: {
+            identity: { pluginId: 'acme.gateway', localId: 'main' },
+            definitionRevision: 1,
+          },
+          connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint,
+        },
         suppressedConnectedServiceIds: ['openai-codex'],
         modelLoadAction: 'descriptor_absent',
         modelLoadPreflightPolicy: null,
@@ -292,9 +366,163 @@ describe('runtime provider model-management composition', () => {
           ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'same-id' },
           descriptor: { name: 'Provider Same' },
           compatibility: { result: { status: 'verified' }, confirmed: true },
-          endpointHealth: 'unreachable',
+          endpointHealth: 'not_checked',
         }],
       }],
+    });
+    if (result.status !== 'success') throw new Error('Expected model projection');
+    expect(result.groups[0]?.rows[0]).not.toHaveProperty('requestPolicySupport');
+    const requestPolicyProjection = await services.projectModels({
+      machineId: 'machine-a',
+      agentTargetKey: 'backend:codex',
+      includeTeamCredentialRequestPolicySupport: true,
+    });
+    expect(requestPolicyProjection).toMatchObject({
+      status: 'success',
+      groups: [{
+        rows: [{
+          requestPolicySupport: {
+            application: {
+              agentTargetKey: 'backend:codex',
+              implementationIdentity: { pluginId: 'acme.gateway', localId: 'main' },
+              endpointTemplateId: 'chat',
+              protocol: 'openai-chat',
+            },
+            sourceRevision: result.groups[0]?.sourceRevision,
+            protocolKind: 'openai_chat_completions',
+            model: { canonicalId: 'same-id', aliases: ['same-alias'] },
+            reasoningEffort: {
+              supported: true,
+              allowedValues: ['low', 'high'],
+              defaultValue: 'high',
+            },
+            maxOutputTokens: { supported: false },
+            maxThinkingBudgetTokens: { supported: false },
+          },
+        }],
+      }],
+    });
+    expect(JSON.stringify(requestPolicyProjection)).not.toContain('models.example');
+    expect(JSON.stringify(requestPolicyProjection)).not.toContain('Authorization');
+    const parsedTeamProviderSource = TeamCredentialSourceBindingV1Schema.parse({
+      v: 1 as const,
+      kind: 'provider_connection' as const,
+      connectionId,
+      connectionSecurityFingerprint: resolved.record.connectionSecurityFingerprint,
+      credentialSlotId: 'apiKey',
+    });
+    if (parsedTeamProviderSource.kind !== 'provider_connection') {
+      throw new Error('Expected Provider Connection source');
+    }
+    const teamProviderSource = parsedTeamProviderSource;
+    await expect(services.resolveTeamCredentialResourceTestCandidate({
+      machineId: 'machine-a',
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 3,
+      source: teamProviderSource,
+    })).resolves.toMatchObject({
+      status: 'success',
+      application: {
+        agentTargetKey: 'agent:happier.agent.codex/codex',
+        implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+        endpointTemplateId: 'cliproxyapi-openai-chat',
+        protocol: 'openai-chat',
+      },
+      request: { route: 'chat_completions', pathAndQuery: '/v1/chat/completions' },
+    });
+    const brokerApplication = {
+      agentTargetKey: 'backend:codex',
+      implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+      endpointTemplateId: 'cliproxyapi-openai-chat',
+      protocol: 'openai-chat' as const,
+    };
+    await expect(services.projectModels({
+      machineId: 'machine-a',
+      agentTargetKey: brokerApplication.agentTargetKey,
+      providerConnection: {
+        connectionId,
+        expectedConnectionSecurityFingerprint: teamProviderSource.connectionSecurityFingerprint,
+      },
+      application: brokerApplication,
+    })).resolves.toMatchObject({
+      status: 'success',
+      groups: [{ rows: [{ application: brokerApplication }] }],
+    });
+    const directApplication = {
+      agentTargetKey: 'backend:codex',
+      implementationIdentity: { pluginId: 'acme.gateway', localId: 'main' },
+      endpointTemplateId: 'chat',
+      protocol: 'openai-chat' as const,
+    };
+    await expect(services.projectModels({
+      machineId: 'machine-a',
+      agentTargetKey: directApplication.agentTargetKey,
+      providerConnection: {
+        connectionId,
+        expectedConnectionSecurityFingerprint: teamProviderSource.connectionSecurityFingerprint,
+      },
+      application: directApplication,
+      includeDirectMaterialization: true,
+    })).resolves.toMatchObject({
+      status: 'success',
+      groups: [{ rows: [{
+        application: directApplication,
+        directMaterialization: { endpoint: { endpointTemplateId: 'chat' } },
+      }] }],
+    });
+    const canonicalBrokerApplication = {
+      ...brokerApplication,
+      agentTargetKey: 'agent:happier.agent.codex/codex',
+    };
+    const canonicalProjection = await services.projectModels({
+      machineId: 'machine-a',
+      agentTargetKey: canonicalBrokerApplication.agentTargetKey,
+      providerConnection: {
+        connectionId,
+        expectedConnectionSecurityFingerprint: teamProviderSource.connectionSecurityFingerprint,
+      },
+      application: canonicalBrokerApplication,
+      refreshPolicy: 'current_only',
+    });
+    if (canonicalProjection.status !== 'success' || !canonicalProjection.groups[0]?.sourceRevision) {
+      throw new Error('Expected canonical broker source revision');
+    }
+    await expect(services.resolveTeamCredentialRequestPolicySupport({
+      machineId: 'machine-a',
+      source: teamProviderSource,
+      refreshPolicy: 'current_only',
+    })).resolves.toMatchObject({
+      status: 'success',
+      models: [{
+        application: canonicalBrokerApplication,
+        sourceRevision: canonicalProjection.groups[0].sourceRevision,
+        descriptor: { id: 'same-id', name: 'Provider Same', aliases: ['same-alias'] },
+        model: { canonicalId: 'same-id', aliases: ['same-alias'] },
+        protocolKind: 'openai_chat_completions',
+        maxOutputTokens: { supported: false },
+        maxThinkingBudgetTokens: { supported: false },
+      }],
+    });
+    await expect(services.resolveTeamCredentialRequestPolicySupport({
+      machineId: 'machine-a',
+      source: { ...teamProviderSource, connectionId: ProviderConnectionIdSchema.parse('missing-connection') },
+      refreshPolicy: 'current_only',
+    })).resolves.toEqual({ status: 'unavailable', reason: 'source_unavailable' });
+    await expect(services.resolveTeamCredentialBrokerSourceSelection({
+      machineId: 'machine-a',
+      teamId: 'team-1',
+      resourceId: 'resource-1',
+      expectedResourceRevision: 3,
+      source: teamProviderSource,
+      application: canonicalBrokerApplication,
+      modelId: 'same-id',
+      sourceRevision: canonicalProjection.groups[0].sourceRevision,
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      endpointTemplateId: 'chat',
+      protocol: 'openai-chat',
+      credentialTransport: { destination: { kind: 'httpHeader' } },
     });
     // A prepared projection exists concurrently, but the held lease is the
     // operation's authority. The next operation observes that prepared lease.
@@ -302,15 +530,24 @@ describe('runtime provider model-management composition', () => {
     const nextResult = await services.projectModels({
       machineId: 'machine-a',
       agentTargetKey: 'backend:codex',
+      includeTeamCredentialRequestPolicySupport: true,
     });
     expect(nextResult).toMatchObject({
       status: 'success',
-      groups: [{ rows: [{ descriptor: { name: 'Prepared generation' } }] }],
+      groups: [{ rows: [{
+        descriptor: { name: 'Reasoning 200k thinking generation' },
+        requestPolicySupport: {
+          reasoningEffort: { supported: false },
+          maxOutputTokens: { supported: false },
+          maxThinkingBudgetTokens: { supported: false },
+        },
+      }] }],
     });
+    if (nextResult.status !== 'success') throw new Error('Expected next model projection');
+    expect(nextResult.groups[0]?.sourceRevision).not.toBe(result.groups[0]?.sourceRevision);
     currentLease = lease;
     expect(JSON.stringify(result)).not.toContain('models.example');
     expect(JSON.stringify(result)).not.toContain('publicHeaders');
-    if (result.status !== 'success') throw new Error('Expected model projection');
     const projectedRow = result.groups[0]?.rows[0];
     if (!projectedRow) throw new Error('Expected projected model row');
     await expect(services.mutateModelSettings({
@@ -334,7 +571,7 @@ describe('runtime provider model-management composition', () => {
     };
     const authorization = resolveProviderSpawnAuthorization({
       selection, machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex',
-      accountSettings: AccountSettingsSchema.parse({ providerSettingsV1: settings }), providerSettings: settings,
+      accountSettings, providerSettings: settings,
       registry, dnsEvidenceByEndpointUrl: new Map([['https://models.example/v1', ['1.1.1.1']]]), lease,
     });
     if (!authorization.ok) throw new Error('Expected provider authorization');
@@ -363,14 +600,43 @@ describe('runtime provider model-management composition', () => {
       machineId: 'machine-a',
       agentTargetKey: 'backend:codex',
       agentId: 'codex',
-      accountSettings: AccountSettingsSchema.parse({ providerSettingsV1: settings }),
+      accountSettings,
       providerSettings: settings,
       registry,
       dnsEvidenceByEndpointUrl: new Map([['https://models.example/v1', ['1.1.1.1']]]),
       lease,
       runtimeModelDescriptor: { id: modelId, name: modelId },
     });
-    state = ProviderRuntimeStateFileV1Schema.parse({ ...state, catalogs: [currentCatalogRecord] });
+    const currentProbeAuthorization = resolveProviderProbeAuthorization({
+      request: {
+        connectionId,
+        machineId: 'machine-a',
+        endpointTemplateId: 'chat',
+        endpointUrl: 'https://models.example/v1',
+        protocol: 'openai-chat',
+        path: '/models',
+        parser: 'openai-models',
+        probeRequestFingerprint,
+      },
+      accountSettings,
+      providerSettings: settings,
+      registry,
+      dnsEvidenceByEndpointUrl: new Map([['https://models.example/v1', ['1.1.1.1']]]),
+    });
+    if (!currentProbeAuthorization.ok) {
+      throw new Error('Expected current probe authorization');
+    }
+    state = ProviderRuntimeStateFileV1Schema.parse({
+      ...state,
+      catalogs: [{
+        ...currentCatalogRecord,
+        key: {
+          ...currentCatalogRecord.key,
+          observationAuthorizationFingerprint:
+            currentProbeAuthorization.observationAuthorizationFingerprint,
+        },
+      }],
+    });
     const activeProbeAuthorization = authorizePreviouslyCurrentProbe('probe-current');
     const disappearedProbeAuthorization = authorizePreviouslyCurrentProbe('probe-disappeared');
     if (!activeProbeAuthorization.ok || !disappearedProbeAuthorization.ok) {
@@ -473,7 +739,7 @@ describe('runtime provider model-management composition', () => {
       currentSelectionRecovery: null,
     });
     registry.providersByContributionKey.set(contributionKey, contribution);
-    accountSettings = AccountSettingsSchema.parse({ providerSettingsV1: settings });
+    accountSettings = authorizedAccountSettings;
 
     registry.providersByContributionKey.delete(contributionKey);
     await expect(services.projectModels({
@@ -663,7 +929,19 @@ describe('runtime provider model-management composition', () => {
       modelSettingsMutation: successfulModelSettingsMutation,
     });
 
-    // The very first picker read is cold: nothing has ever probed this connection,
+    // Pool fanout is observation-only: it must neither await nor schedule a
+    // refresh on every candidate Machine when no observation exists yet.
+    const currentOnly = await services.projectModels({
+      machineId: 'machine-a',
+      agentTargetKey: 'backend:codex',
+      refreshPolicy: 'current_only',
+    });
+    expect(currentOnly.status).toBe('success');
+    if (currentOnly.status !== 'success') throw new Error('Expected current-only projection');
+    expect(currentOnly.groups).toEqual([]);
+    expect(transport).not.toHaveBeenCalled();
+
+    // The very first ordinary picker read is cold: nothing has ever probed this connection,
     // so a projection that returns before its own demand settles is a silently
     // empty list with nothing to follow it.
     const projection = await services.projectModels({

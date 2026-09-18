@@ -20,7 +20,7 @@ describe('Agent provider CLI attach catalog projection', () => {
                         : { ok: false, reason: 'missing server URL' };
                 },
                 createArgs: (target) => ['attach', target.baseUrl],
-                buildHealthUrl: () => null,
+                resolveReachability: () => null,
             },
         });
         const attach = (await hooks.resolveHostAgentRuntimeSurfaces?.())?.attach;

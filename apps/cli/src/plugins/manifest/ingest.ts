@@ -4,11 +4,18 @@ import {
 } from '@happier-dev/protocol';
 
 import type { CanonicalPluginManifest } from './types';
-import { validatePluginManifest, type PluginManifestValidationOptions } from './validate';
+import {
+  validatePluginManifest,
+  type PluginManifestValidationDiagnostic,
+  type PluginManifestValidationOptions,
+} from './validate';
+
+type CanonicalPluginManifestIngestionDiagnostic = PluginManifestIngestionDiagnostic
+  & Pick<PluginManifestValidationDiagnostic, 'safeCompatibilityMessage'>;
 
 export type CanonicalPluginManifestIngestionResult =
   | Readonly<{ ok: true; manifest: CanonicalPluginManifest }>
-  | Readonly<{ ok: false; diagnostics: readonly PluginManifestIngestionDiagnostic[] }>;
+  | Readonly<{ ok: false; diagnostics: readonly CanonicalPluginManifestIngestionDiagnostic[] }>;
 
 export function ingestCanonicalPluginManifest(
   input: unknown,
@@ -26,6 +33,9 @@ export function ingestCanonicalPluginManifest(
       diagnostics: validation.diagnostics.map((diagnostic) => ({
         code: 'plugin_manifest_invalid',
         message: diagnostic.message,
+        ...(diagnostic.safeCompatibilityMessage === undefined
+          ? {}
+          : { safeCompatibilityMessage: diagnostic.safeCompatibilityMessage }),
       })),
     };
   }

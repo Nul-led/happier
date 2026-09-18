@@ -2,6 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
+  LIVE_ACTIVITY_CONTENT_STATE_MAX_BYTES,
+  LIVE_ACTIVITY_ALERT_TITLE_MAX_LENGTH,
+  LIVE_ACTIVITY_ALERT_BODY_MAX_LENGTH,
   LiveActivityRemoteUpdateRequestV1Schema,
   PUSH_NOTIFICATION_BUNDLED_SOUND_FILES,
   resolveExpoNotificationSoundName,
@@ -11,6 +14,8 @@ import {
   type LiveActivityRemoteTransportMode,
   type LiveActivityRemoteUpdateRequestV1,
 } from '@happier-dev/protocol';
+
+import { logger } from '@/ui/logger';
 
 import type { ActivityNotificationEvent } from '../activityNotificationEvent';
 import { buildActivityNotificationContent } from '../buildActivityNotificationContent';
@@ -28,11 +33,46 @@ const LIVE_ACTIVITY_ACTION_BUTTONS_ENABLED = true;
 
 type LiveActivityInterruptiveAlert =
   NonNullable<Extract<LiveActivityRemoteUpdateRequestV1, { event: 'update' }>['interruptiveAlert']>;
+type LiveActivityNotificationEvent = Exclude<
+  ActivityNotificationEvent,
+  Readonly<{ topic: 'workflow_run_update' }>
+>;
 
 function normalizeText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function truncateDisplayText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 0) return '';
+  let prefix = value.slice(0, maxLength - 1);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return `${prefix}…`;
+}
+
+function fitContentStateBudget(state: HappierFocusLiveActivityContentStateV1): HappierFocusLiveActivityContentStateV1 {
+  const bytes = (value: HappierFocusLiveActivityContentStateV1) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+  if (bytes(state) <= LIVE_ACTIVITY_CONTENT_STATE_MAX_BYTES) return state;
+  const fields = ['title', 'subtitle', 'previewText', 'statusText'] as const;
+  const project = (maxLength: number) => {
+    const next = { ...state };
+    for (const field of fields) {
+      const value = state[field];
+      if (typeof value === 'string') next[field] = truncateDisplayText(value, maxLength);
+    }
+    return next;
+  };
+  // Share the available display space; never truncate session routing or state facts.
+  let low = 0;
+  let high = Math.max(...fields.map((field) => state[field]?.length ?? 0));
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (bytes(project(middle)) <= LIVE_ACTIVITY_CONTENT_STATE_MAX_BYTES) low = middle;
+    else high = middle - 1;
+  }
+  return project(low);
 }
 
 function resolveTransportMode(mode: string | null | undefined): LiveActivityRemoteTransportMode | null {
@@ -57,7 +97,7 @@ function buildSessionTarget(params: Readonly<{ serverId: string; sessionId: stri
 }
 
 function resolveTitle(params: Readonly<{
-  event: ActivityNotificationEvent;
+  event: LiveActivityNotificationEvent;
   notificationTitle: string;
   previewBehavior: AttentionDeliveryDecision['previewBehavior'];
 }>): string {
@@ -148,8 +188,8 @@ function resolveInterruptiveAlert(params: Readonly<{
   if (params.decision.sound.kind === 'none') return undefined;
   const sound = resolveInterruptiveAlertSound(params.decision);
   return {
-    title: params.title,
-    body: params.body,
+    title: truncateDisplayText(params.title, LIVE_ACTIVITY_ALERT_TITLE_MAX_LENGTH),
+    body: truncateDisplayText(params.body, LIVE_ACTIVITY_ALERT_BODY_MAX_LENGTH),
     ...(sound ? { sound } : {}),
   };
 }
@@ -162,6 +202,9 @@ export function buildLiveActivityRemoteUpdateRequest(params: Readonly<{
   requestId?: string;
 }>): LiveActivityRemoteUpdateRequestV1 | null {
   if (params.decision.delivery === 'suppress') return null;
+  const event = params.event;
+  if (event.topic === 'workflow_run_update') return null;
+  if (!event.sessionId) return null;
 
   const behavior = params.decision.liveActivityRemoteBehavior;
   const transportMode = resolveTransportMode(behavior?.mode);
@@ -173,45 +216,46 @@ export function buildLiveActivityRemoteUpdateRequest(params: Readonly<{
   const staleAt = Date.parse(behavior.staleAt ?? '');
   if (!Number.isFinite(staleAt) || staleAt <= params.nowMs) return null;
 
-  const built = buildActivityNotificationContent(params.event, {
+  const built = buildActivityNotificationContent(event, {
     readyIncludeMessageText: params.decision.previewBehavior === 'include_preview',
+    requestIncludeMessageText: params.decision.previewBehavior === 'include_preview',
   });
-  const contentState = {
+  const contentState = fitContentStateBudget({
     version: 1,
     generatedAt: params.nowMs,
     staleAt,
-    sessionId: params.event.sessionId,
+    sessionId: event.sessionId,
     title: resolveTitle({
-      event: params.event,
+      event,
       notificationTitle: built.title,
       previewBehavior: params.decision.previewBehavior,
     }),
     subtitle: resolveSubtitle({
-      event: params.event,
+      event,
       previewBehavior: params.decision.previewBehavior,
     }),
     previewText: resolvePreviewText({
-      event: params.event,
+      event,
       notificationBody: built.body,
       toolDetails: built.toolDetails,
       previewBehavior: params.decision.previewBehavior,
     }),
     statusText: resolveStatusText({
-      event: params.event,
+      event,
       notificationBody: built.body,
       previewBehavior: params.decision.previewBehavior,
     }),
-    attentionState: resolveAttentionState(params.event),
+    attentionState: resolveAttentionState(event),
     defaultTarget: LIVE_ACTIVITY_DEFAULT_TARGET,
-    sessionTarget: buildSessionTarget({ serverId, sessionId: params.event.sessionId }),
+    sessionTarget: buildSessionTarget({ serverId, sessionId: event.sessionId }),
     overflowCount: 0,
     totalAttentionCount: 1,
     allowActionButtons: LIVE_ACTIVITY_ACTION_BUTTONS_ENABLED,
     labels: LIVE_ACTIVITY_LABELS,
-  } satisfies HappierFocusLiveActivityContentStateV1;
+  } satisfies HappierFocusLiveActivityContentStateV1);
 
   const interruptiveAlert = resolveInterruptiveAlert({
-    event: params.event,
+    event,
     decision: params.decision,
     title: contentState.title,
     body: contentState.statusText ?? contentState.title,
@@ -224,7 +268,7 @@ export function buildLiveActivityRemoteUpdateRequest(params: Readonly<{
     transportMode,
     activityKey: {
       serverId,
-      sessionId: params.event.sessionId,
+      sessionId: event.sessionId,
       activityName: HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
     },
     event: 'update',
@@ -234,5 +278,9 @@ export function buildLiveActivityRemoteUpdateRequest(params: Readonly<{
   } satisfies LiveActivityRemoteUpdateRequestV1;
 
   const parsed = LiveActivityRemoteUpdateRequestV1Schema.safeParse(request);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) {
+    logger.warn('[activityNotifications] Live Activity update rejected by payload validation', { issueCount: parsed.error.issues.length });
+    return null;
+  }
+  return parsed.data;
 }

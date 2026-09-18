@@ -460,7 +460,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
 
     expect(result.spawn).toEqual({
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'happier.agent.codex/openai-codex': {
             source: 'connected',
@@ -473,7 +473,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
     });
     expect(result.metadata).toEqual({
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'happier.agent.codex/openai-codex': {
             source: 'connected',
@@ -614,7 +614,7 @@ describe('resolveForkInheritedOverridesFromMetadata', () => {
         },
       },
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
           'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
         },

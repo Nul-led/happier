@@ -6,13 +6,19 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { PLUGIN_MANIFEST as CLIPROXYAPI_PLUGIN_MANIFEST } from '@happier-dev/plugins-cliproxyapi/manifest';
+import { PLUGIN_MANIFEST as OLLAMA_PLUGIN_MANIFEST } from '@happier-dev/plugins-ollama/manifest';
+import { OLLAMA_PUBLIC_MANAGED_PROVIDER_RUNTIME } from '@happier-dev/plugins-ollama';
 import { PLUGIN_MANIFEST as OPENCODE_PLUGIN_MANIFEST } from '@happier-dev/plugins-opencode/manifest';
 import {
+    ProviderConnectionIdSchema,
     ProviderManagedRuntimeDeclarationV1Schema,
     resolveProviderManagedRuntimeDeclarationV1,
     type PluginEnginesV2,
 } from '@happier-dev/protocol';
-import type { ManagedServiceSpec } from '@happier-dev/plugin-sdk/managed-services';
+import type {
+    ManagedServiceHandle,
+    ManagedServiceSpec,
+} from '@happier-dev/plugin-sdk/managed-services';
 
 import {
     createAgentSessionRunnerFactoryBinding,
@@ -352,6 +358,186 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
     };
 }
 
+async function prepareOllamaProviderSupervisionFixture() {
+    const happyHomeDir = await mkdtemp(join(
+        tmpdir(),
+        'happier-ollama-supervision-home-',
+    ));
+    const sourceRootPath = await mkdtemp(join(
+        tmpdir(),
+        'happier-ollama-supervision-source-',
+    ));
+    const toolRootPath = await mkdtemp(join(
+        tmpdir(),
+        'happier-ollama-supervision-tool-',
+    ));
+    const paths = resolvePluginStorePaths({ happyHomeDir });
+    await mkdir(join(sourceRootPath, '.happier-plugin'), {
+        recursive: true,
+    });
+    await writeFile(
+        join(sourceRootPath, '.happier-plugin', 'plugin.json'),
+        JSON.stringify(OLLAMA_PLUGIN_MANIFEST),
+        'utf8',
+    );
+    const record = await createImmutablePluginGenerationRecordFromSource({
+        pluginId: OLLAMA_PLUGIN_MANIFEST.id,
+        sourceRootPath,
+        manifestRelativePath: '.happier-plugin/plugin.json',
+        distribution: {
+            kind: 'localPath',
+            canonicalPath: sourceRootPath,
+        },
+        updatePolicy: 'reviewEveryUpdate',
+        createdAtMs: 1,
+        immutableGenerationId: 'ollama-provider-generation-p',
+    });
+    await prepareImmutablePluginGeneration({
+        paths,
+        sourceRootPath,
+        record,
+    });
+    const provider = OLLAMA_PLUGIN_MANIFEST.contributes.providers?.[0];
+    if (!provider) throw new Error('Expected the Ollama Provider declaration');
+    const managedRuntime = resolveProviderManagedRuntimeDeclarationV1({
+        implementationIdentity: {
+            pluginId: OLLAMA_PLUGIN_MANIFEST.id,
+            localId: provider.id,
+        },
+        managedRuntime: ProviderManagedRuntimeDeclarationV1Schema.parse(
+            provider.managedRuntime,
+        ),
+    });
+    let managedSpec: ManagedServiceSpec | null = null;
+    const service: ManagedServiceHandle = {
+        snapshot: () => ({
+            id: 'ollama-managed',
+            state: 'healthy' as const,
+            mode: 'spawn' as const,
+            baseUrl: null,
+            startedAtMs: 1,
+            lastHealthyAtMs: 1,
+            diagnostics: [],
+            diagnosticsTruncated: false,
+        }),
+        observe: () => ({ dispose() {} }),
+        waitUntilHealthy: async () => service.snapshot(),
+        request: async () => {
+            throw new Error('Unexpected request');
+        },
+        stop: async () => ({ status: 'stopped' as const }),
+        dispose: async () => undefined,
+    };
+    await OLLAMA_PUBLIC_MANAGED_PROVIDER_RUNTIME.start({
+        reason: 'sessionDemand',
+        connectionId: ProviderConnectionIdSchema.parse('ollama-test-connection'),
+        connectionRevision: 1,
+        endpointTemplateIds: managedRuntime.endpointTemplateIds,
+    }, {
+        connectedAccounts: {} as never,
+        managedServices: {
+            dependencies: {} as never,
+            supervise: async (spec) => {
+                managedSpec = spec;
+                return service;
+            },
+        },
+        signal: new AbortController().signal,
+    });
+    if (!managedSpec) throw new Error('Expected Ollama managed-service spec');
+    const expectedLaunch = projectRunnerManagedProviderServerLaunchAuthority(
+        managedSpec,
+    );
+    if (!expectedLaunch) throw new Error('Expected Ollama spawn authority');
+    const bootstrap = RunnerDaemonManagedProviderBootstrapV1Schema.parse({
+        v: 1,
+        scope: {
+            v: 1,
+            sessionId: 'session-ollama-p',
+            runtimeBindingBasis: {
+                v: 1,
+                agentTargetKey: 'agent:acme-agent',
+                connectionId: 'provider-connection-ollama',
+                contributionKey: `${OLLAMA_PLUGIN_MANIFEST.id}/${provider.id}`,
+                runtimeCredentialTransport: null,
+                prepared: { v: 1, materialization: 'spawnEnv' },
+                adapterVersion: 1,
+                agentSupport: {
+                    acceptsProtocols: ['openai-responses'],
+                    required: { streaming: true },
+                    credentialSupport: {
+                        supportsNoAuth: true,
+                        apiKeyTransports: [],
+                    },
+                    authIsolation: {
+                        suppressConnectedServiceIds: [],
+                        ownedEnvKeys: [],
+                    },
+                    materialization: 'spawnEnv',
+                    applyPolicy: 'restart_session',
+                    supportsFreeformModelIds: true,
+                },
+                deployment: {
+                    kind: 'managedLocal',
+                    implementationIdentity: {
+                        pluginId: OLLAMA_PLUGIN_MANIFEST.id,
+                        localId: provider.id,
+                    },
+                    managedRuntime,
+                    purposeBindings: { v: 1, bindings: [] },
+                },
+                endpoint: {
+                    endpointTemplateId: 'ollama-openai-responses',
+                    protocol: 'openai-responses',
+                    publicHeaders: {},
+                },
+                credentialAuthorization: {
+                    connectionSecurityFingerprint: 'security-ollama',
+                    grantFingerprint: 'grant-ollama',
+                },
+            },
+            pluginId: OLLAMA_PLUGIN_MANIFEST.id,
+            providerLocalId: provider.id,
+            activationGeneration: 'activation-ollama',
+            immutableGenerationId: record.immutableGenerationId,
+            manifestAuthority: 'bundled_first_party',
+            operationClaimId: 'provider-operation-ollama',
+        },
+        // Ollama's managed runtime declares no request-auth uses, and the
+        // canonical bootstrap contract requires the absence of uses and the
+        // absence of a capability to agree.
+        requestAuth: null,
+        providerPluginHardRevocationRevisionAtAdmission: 0,
+    });
+    const executableName = process.platform === 'win32'
+        ? 'ollama.exe'
+        : 'ollama';
+    const executablePath = join(toolRootPath, executableName);
+    await writeFile(executablePath, '', 'utf8');
+    if (process.platform !== 'win32') await chmod(executablePath, 0o700);
+    return {
+        paths,
+        bootstrap,
+        expectedLaunch,
+        processEnv: { PATH: toolRootPath },
+        executablePath: await realpath(executablePath),
+        request: {
+            contributionId:
+                `${OLLAMA_PLUGIN_MANIFEST.id}/providers/${provider.id}`,
+            operationClaimId: bootstrap.scope.operationClaimId,
+            serverId: expectedLaunch.serverId,
+            immutableGenerationId: bootstrap.scope.immutableGenerationId,
+            executable: expectedLaunch.executable,
+            environmentKeys: expectedLaunch.environmentKeys,
+        },
+        async cleanup() {
+            await rm(happyHomeDir, { recursive: true, force: true });
+            await rm(sourceRootPath, { recursive: true, force: true });
+            await rm(toolRootPath, { recursive: true, force: true });
+        },
+    };
+}
+
 describe('runner managed-server supervision authorization', () => {
     it('projects a detached exact Provider spawn input while leaving attach unstamped', () => {
         const spawn = {
@@ -523,6 +709,43 @@ describe('runner managed-server supervision authorization', () => {
                 request: fixture.request,
             })).resolves.toEqual({
                 launch: { kind: 'runnerPackagedRuntime' },
+            });
+        } finally {
+            await fixture.cleanup();
+        }
+    });
+
+    it('authorizes the exact retained Ollama system tool and rejects an undeclared replacement', async () => {
+        const fixture = await prepareOllamaProviderSupervisionFixture();
+        try {
+            await expect(authorizeRunnerManagedProviderServerSupervision({
+                paths: fixture.paths,
+                sessionId: fixture.bootstrap.scope.sessionId,
+                bootstrap: fixture.bootstrap,
+                expectedLaunch: fixture.expectedLaunch,
+                request: fixture.request,
+                processEnv: fixture.processEnv,
+            })).resolves.toMatchObject({
+                launch: {
+                    kind: 'daemonResolved',
+                    value: { command: fixture.executablePath },
+                },
+            });
+            await expect(authorizeRunnerManagedProviderServerSupervision({
+                paths: fixture.paths,
+                sessionId: fixture.bootstrap.scope.sessionId,
+                bootstrap: fixture.bootstrap,
+                expectedLaunch: fixture.expectedLaunch,
+                request: {
+                    ...fixture.request,
+                    executable: {
+                        kind: 'systemTool',
+                        id: 'different-tool',
+                    },
+                },
+                processEnv: fixture.processEnv,
+            })).rejects.toMatchObject({
+                code: 'plugin_managed_server_launch_denied',
             });
         } finally {
             await fixture.cleanup();

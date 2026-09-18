@@ -5,8 +5,6 @@ import type {
 } from '@/session/shared/spawnSessionContract';
 import type { StoredCredentials } from '@/persistence';
 import type {
-  SessionInputAdmissionResultV1,
-  SessionPendingEnqueueByMachineRequestV1,
   SessionServerStartDispatchResultV1,
   SessionServerStartIngressRequestV1,
 } from '@happier-dev/protocol';
@@ -54,9 +52,33 @@ import {
   type AutomationTemplateEncryption,
 } from './automationTemplateExecution';
 import { logAutomationWarn } from './automationTelemetry';
-import type { AutomationClaimedRunPayload } from './automationTypes';
+import type {
+  AutomationClaimedRunPayload,
+  AutomationV3ClaimedAutomation,
+} from './automationTypes';
+import type { createProductionWorkflowRunCoordinator } from '@/daemon/workflows/production';
+import {
+  WORKFLOW_AUTHORIZATION_NOT_CURRENT_ABORT_REASON,
+  WORKFLOW_CANCEL_REQUESTED_ABORT_REASON,
+} from '@/daemon/workflows/coordinator';
 
 export type ClaimableRunPayload = AutomationClaimedRunPayload;
+
+type ClaimableAutomationRunPayload = Exclude<ClaimableRunPayload, { automation: null }>;
+type ClaimableV3AutomationRunPayload = Extract<
+  ClaimableAutomationRunPayload,
+  { protocol: 'v3'; automation: AutomationV3ClaimedAutomation }
+>;
+type ClaimableDirectWorkflowRunPayload = Extract<
+  ClaimableRunPayload,
+  { protocol: 'v3'; automation: null }
+>;
+
+function isDirectWorkflowRunClaim(
+  claimed: ClaimableRunPayload,
+): claimed is ClaimableDirectWorkflowRunPayload {
+  return claimed.protocol === 'v3' && claimed.run.automationId === null;
+}
 
 const EXISTING_SESSION_MACHINE_UNAVAILABLE_ERROR_CODES = new Set<SpawnSessionErrorCode>([
   'CHILD_EXITED_BEFORE_WEBHOOK',
@@ -176,6 +198,10 @@ type DispatchSessionServerStart = (
   options?: Readonly<{ signal?: AbortSignal }>,
 ) => Promise<SessionServerStartDispatchResultV1>;
 
+type AutomationMachineAdmissionTransport = NonNullable<
+  Parameters<typeof sessionMessageService.sendSessionMessage>[0]['machineAdmissionTransport']
+>;
+
 async function resolveMatchingAutomationCurrentness(params: Readonly<{
   signal: AbortSignal;
   expected: AutomationAccountCurrentnessWitnessV1;
@@ -201,7 +227,7 @@ async function resolveMatchingAutomationCurrentness(params: Readonly<{
  */
 function createV3RunFailureSettlement(params: Readonly<{
   machineId: string;
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   accountEncryption: AvailableAutomationAccountEncryptionV1;
   errorCode: string;
   errorMessage: string;
@@ -253,7 +279,7 @@ function createV3RunFailureSettlement(params: Readonly<{
  * outer Run settlement remains the sole terminality owner.
  */
 function createV3RunFinalResultEnvelope(params: Readonly<{
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   accountEncryption: AvailableAutomationAccountEncryptionV1;
   resultDelivery: AutomationV3WorkerResultDelivery;
   text: string;
@@ -294,7 +320,7 @@ function createV3RunFinalResultEnvelope(params: Readonly<{
  */
 async function settleStrictV3SessionFinalResult(params: Readonly<{
   credentials: StoredCredentials | undefined;
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   accountEncryption: AvailableAutomationAccountEncryptionV1;
   resultDelivery: AutomationV3WorkerResultDelivery;
   sessionId: string;
@@ -342,6 +368,7 @@ async function settleStrictV3SessionFinalResult(params: Readonly<{
         return;
       case 'session_lookup_timeout':
       case 'encryption_material_unavailable':
+      case 'cancelled':
       case 'result_read_failed':
         return;
     }
@@ -398,7 +425,7 @@ async function settleStrictV3SessionFinalResult(params: Readonly<{
  */
 async function failV3ClaimedRunBeforeStart(params: Readonly<{
   machineId: string;
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   claimClient: AutomationRunClaimClient;
   signal: AbortSignal;
   isCurrent: () => boolean;
@@ -510,12 +537,9 @@ function parseRetainedV2ExecutionInputForClaim(params: Readonly<{
 async function executeParsedAutomationTemplate(params: Readonly<{
   credentials?: StoredCredentials;
   machineId: string;
-  claimed: ClaimableRunPayload;
+  claimed: ClaimableAutomationRunPayload;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-  machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<SessionInputAdmissionResultV1>;
+  machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   signal: AbortSignal;
   isCurrent: () => boolean;
   template: ParsedAutomationExecution;
@@ -698,19 +722,18 @@ async function executeParsedAutomationTemplate(params: Readonly<{
 async function executeStrictV3Run(params: Readonly<{
   machineId: string;
   leaseDurationMs: number;
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   claimClient: AutomationRunClaimClient;
   credentials?: StoredCredentials;
-  machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<SessionInputAdmissionResultV1>;
+  machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   signal: AbortSignal;
   isCurrent: () => boolean;
   resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
   executeAction?: ExecuteAutomationAction;
   /** Session-owned ingress; Automation supplies only its Run correspondence and opaque V2 request. */
   dispatchSessionServerStart?: DispatchSessionServerStart;
+  /** Origin-neutral workflow claim/start owner; Automation supplies only its frozen envelopes. */
+  coordinateWorkflowRun?: ReturnType<typeof createProductionWorkflowRunCoordinator>;
   onPromptSessionId: (sessionId: string) => void;
   /**
    * Observes the only canonical Session result before its terminal Run
@@ -888,6 +911,7 @@ async function executeStrictV3Run(params: Readonly<{
       return;
     }
     params.onProducedNewSession(result.sessionId, currentnessBeforeEffect);
+    params.onPromptSessionId(result.sessionId);
 
     const preserveKnownSessionAfterCancellation = async (): Promise<void> => {
       if (!isAuthoritativeAutomationRunCancellation(params.signal)) return;
@@ -1069,7 +1093,12 @@ async function executeStrictV3Run(params: Readonly<{
           // execution that may still be running, so the one dispatch
           // settlement owner receives it before the stop attempt.
           if (parsed.success && isAuthoritativeAutomationRunCancellation(params.signal)) {
-            await reportExecutionDispatchSettlement(outcome);
+            try {
+              await reportExecutionDispatchSettlement(outcome);
+            } finally {
+              await stopKnownNativeRunAfterAuthoritativeCancellation();
+            }
+            return;
           }
           await stopKnownNativeRunAfterAuthoritativeCancellation();
           return;
@@ -1174,14 +1203,11 @@ async function executeStrictV3Run(params: Readonly<{
 
 async function executeRetainedV2InputOnV3Lifecycle(params: Readonly<{
   machineId: string;
-  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimed: ClaimableV3AutomationRunPayload;
   claimClient: AutomationRunClaimClient;
   credentials?: StoredCredentials;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-  machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<SessionInputAdmissionResultV1>;
+  machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   signal: AbortSignal;
   isCurrent: () => boolean;
   resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
@@ -1297,10 +1323,7 @@ export async function executeClaimedRun(params: {
   heartbeatMs: number;
   leaseDurationMs: number;
   encryption?: AutomationTemplateEncryption;
-  machineAdmissionTransport?: (
-    request: SessionPendingEnqueueByMachineRequestV1,
-    options?: Readonly<{ signal?: AbortSignal }>,
-  ) => Promise<SessionInputAdmissionResultV1>;
+  machineAdmissionTransport?: AutomationMachineAdmissionTransport;
   /** Canonical Account-currentness/material owner for strict V3 recipes. */
   resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
   /** Canonical Action boundary used for detached execution targets. */
@@ -1309,6 +1332,8 @@ export async function executeClaimedRun(params: {
   dispatchSessionServerStart?: DispatchSessionServerStart;
   /** Worker-owned currentness signal for this exact claimed Run attempt. */
   signal?: AbortSignal;
+  /** Origin-neutral workflow coordinator supplied by daemon bootstrap. */
+  coordinateWorkflowRun?: ReturnType<typeof createProductionWorkflowRunCoordinator>;
   claimed: ClaimableRunPayload;
 }): Promise<void> {
   const {
@@ -1324,6 +1349,8 @@ export async function executeClaimedRun(params: {
 
   const executionController = new AbortController();
   let heartbeat: ReturnType<typeof startAutomationLeaseHeartbeat> | null = null;
+  let workflowAuthorizationCurrentnessCheck: ((signal?: AbortSignal) => Promise<boolean>) | null = null;
+  let workflowControlCheck: (() => Promise<'running' | 'pause_requested' | 'cancel_requested'>) | null = null;
   let cancellationPromptSessionId: string | null = null;
   let knownProducedNewSessionId: string | undefined;
   let knownProducedNewSessionEncryption: AvailableAutomationAccountEncryptionV1 | undefined;
@@ -1340,6 +1367,7 @@ export async function executeClaimedRun(params: {
     params.signal?.addEventListener('abort', abortFromWorker, { once: true });
   }
   const isCurrent = () => !executionController.signal.aborted;
+  const claimedAutomationId = claimed.run.automationId;
 
   try {
     if (!isCurrent()) return;
@@ -1356,18 +1384,66 @@ export async function executeClaimedRun(params: {
           attempt,
           leaseDurationMs,
         });
+        if (workflowAuthorizationCurrentnessCheck
+          && !await workflowAuthorizationCurrentnessCheck(executionController.signal)) {
+          abortExecution(WORKFLOW_AUTHORIZATION_NOT_CURRENT_ABORT_REASON);
+        }
+        if (workflowControlCheck && await workflowControlCheck() === 'cancel_requested') {
+          abortExecution(WORKFLOW_CANCEL_REQUESTED_ABORT_REASON);
+        }
       },
       onError: (error) => {
         abortExecution();
         logAutomationWarn('Lease heartbeat failed', error, {
           runId: claimed.run.id,
-          automationId: claimed.automation.id,
+          automationId: claimedAutomationId,
         });
       },
     });
 
     if (claimed.protocol === 'v3') {
       try {
+        if (isDirectWorkflowRunClaim(claimed)) {
+          if (!params.coordinateWorkflowRun) throw new Error('Workflow Run coordinator is unavailable');
+          await params.coordinateWorkflowRun({
+            runId: claimed.run.id,
+            attempt: claimed.run.attempt,
+            expectedRevision: claimed.run.revision,
+            accountCurrentness: claimed.accountCurrentness,
+            acceptedEnvelope: claimed.run.workflowAcceptedSnapshotEnvelope,
+            registerAuthorizationCurrentnessCheck: (check) => {
+              workflowAuthorizationCurrentnessCheck = check;
+            },
+            registerControlCheck: (check) => {
+              workflowControlCheck = check;
+            },
+            signal: executionController.signal,
+          });
+          return;
+        }
+        if (claimed.run.recipeKind === 'workflow-v2') {
+          if (claimed.run.executionInputEnvelope === null || !params.coordinateWorkflowRun) {
+            throw new Error('Workflow Run coordinator is unavailable');
+          }
+          await params.coordinateWorkflowRun({
+            runId: claimed.run.id,
+            automationId: claimed.run.automationId,
+            attempt: claimed.run.attempt,
+            expectedRevision: claimed.run.revision,
+            accountCurrentness: claimed.accountCurrentness,
+            definitionEnvelope: claimed.run.executionInputEnvelope,
+            automationEvidenceEnvelope: claimed.run.automationEvidenceEnvelope,
+            automationCause: claimed.run.cause,
+            registerAuthorizationCurrentnessCheck: (check) => {
+              workflowAuthorizationCurrentnessCheck = check;
+            },
+            registerControlCheck: (check) => {
+              workflowControlCheck = check;
+            },
+            signal: executionController.signal,
+          });
+          return;
+        }
         // Current V3 Runs carry one Protocol-owned strict recipe. Parse and
         // materialize it before start: C never authorizes a target effect.
         const strictRecipe = parseAutomationRunExecutionRecipeV1(
@@ -1455,7 +1531,8 @@ export async function executeClaimedRun(params: {
       } catch (error) {
         const authoritativeCancellation = isAuthoritativeAutomationRunCancellation(params.signal);
         if (
-          knownProducedNewSessionId
+          !isDirectWorkflowRunClaim(claimed)
+          && knownProducedNewSessionId
           && knownProducedNewSessionEncryption
           && (isCurrent() || authoritativeCancellation)
         ) {
@@ -1473,7 +1550,7 @@ export async function executeClaimedRun(params: {
           })).catch((innerError) => {
             logAutomationWarn('Failed to record automation run failure', innerError, {
               runId: claimed.run.id,
-              automationId: claimed.automation.id,
+              automationId: claimedAutomationId,
             });
           });
           return;
@@ -1484,7 +1561,7 @@ export async function executeClaimedRun(params: {
         if (isCurrent()) {
           logAutomationWarn('Strict Automation Run execution failed before a proven terminal outcome', error, {
             runId: claimed.run.id,
-            automationId: claimed.automation.id,
+            automationId: claimedAutomationId,
           });
         }
       }
@@ -1574,7 +1651,7 @@ export async function executeClaimedRun(params: {
     }).catch((innerError) => {
       logAutomationWarn('Failed to record automation run failure', innerError, {
         runId: claimed.run.id,
-        automationId: claimed.automation.id,
+        automationId: claimedAutomationId,
       });
     });
   } finally {
@@ -1583,17 +1660,18 @@ export async function executeClaimedRun(params: {
     if (
       cancellationPromptSessionId
       && params.credentials
+      && claimedAutomationId !== null
       && isAuthoritativeAutomationRunCancellation(params.signal)
     ) {
       await discardAutomationPromptAfterRunCancellation({
         credentials: params.credentials,
         sessionId: cancellationPromptSessionId,
-        automationId: claimed.automation.id,
+        automationId: claimedAutomationId,
         runId: claimed.run.id,
       }).catch((error) => {
         logAutomationWarn('Failed to discard cancelled Automation Session input', error, {
           runId: claimed.run.id,
-          automationId: claimed.automation.id,
+          automationId: claimedAutomationId,
           sessionId: cancellationPromptSessionId,
         });
       });

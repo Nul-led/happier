@@ -1,26 +1,43 @@
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
 
-import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
-import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
+import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import {
+  AccountEncryptionCurrentnessUnavailableError,
+  fetchAccountEncryptionCurrentness,
+} from '@/api/client/connectedServiceCredentialApi';
 import {
   assertCurrentAccountStoredContentServerCompatibility,
 } from '@/api/clientCompatibility/accountStoredContentActivation';
+import { assertSessionEncryptionModeAllowedByEffectiveClientRequirement } from '@/settings/accountSettings/resolveEffectiveClientEncryptionRequirement';
 
 export type DesiredSessionCreateEncryptionModeResult = Readonly<{
   desiredSessionEncryptionMode: 'e2ee' | 'plain';
   accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
   serverSupportsFeatureSnapshot: boolean;
+  serverFeaturesSnapshot: CliServerFeaturesSnapshot;
   storagePolicy: 'required_e2ee' | 'optional' | 'plaintext_only';
 }>;
+
+/**
+ * The preflight either resolves the Session mode or reports that the Account
+ * currentness read could not be served. Server-compatibility and client
+ * encryption-requirement refusals still throw: they are decisions, not
+ * transport outcomes. The caller owns the transport classification (offline
+ * mode, stable auth errors) because the same transport serves its own request.
+ */
+export type SessionCreateEncryptionModeResolution =
+  | (Readonly<{ status: 'resolved' }> & DesiredSessionCreateEncryptionModeResult)
+  | Readonly<{
+      status: 'currentness_unavailable';
+      error: AccountEncryptionCurrentnessUnavailableError;
+    }>;
 
 export async function resolveSessionCreateEncryptionMode(params: Readonly<{
   token: string;
   serverBaseUrl: string;
   accountTimeoutMs?: number;
   accountEncryptionCurrentness?: AccountEncryptionCurrentnessResponse;
-}>): Promise<DesiredSessionCreateEncryptionModeResult> {
-  const accountTimeoutMs = typeof params.accountTimeoutMs === 'number' && params.accountTimeoutMs > 0 ? params.accountTimeoutMs : 10_000;
-
+}>): Promise<SessionCreateEncryptionModeResolution> {
   const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: params.serverBaseUrl });
   assertCurrentAccountStoredContentServerCompatibility(featuresSnapshot);
   const serverSupportsFeatureSnapshot = featuresSnapshot.status === 'ready';
@@ -29,21 +46,35 @@ export async function resolveSessionCreateEncryptionMode(params: Readonly<{
       ? featuresSnapshot.features.capabilities.encryption.storagePolicy
       : 'required_e2ee';
 
-  const accountEncryptionCurrentness = params.accountEncryptionCurrentness
-    ?? await fetchAccountEncryptionCurrentness({
-      token: params.token,
-      serverBaseUrl: params.serverBaseUrl,
-      timeoutMs: accountTimeoutMs,
-    });
+  let accountEncryptionCurrentness = params.accountEncryptionCurrentness;
+  if (!accountEncryptionCurrentness) {
+    try {
+      accountEncryptionCurrentness = await fetchAccountEncryptionCurrentness({
+        token: params.token,
+        serverBaseUrl: params.serverBaseUrl,
+        ...(typeof params.accountTimeoutMs === 'number' && params.accountTimeoutMs > 0
+          ? { timeoutMs: params.accountTimeoutMs }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof AccountEncryptionCurrentnessUnavailableError) {
+        return { status: 'currentness_unavailable', error };
+      }
+      throw error;
+    }
+  }
   const desiredSessionEncryptionMode = storagePolicy === 'plaintext_only'
     ? 'plain'
     : storagePolicy === 'optional'
       ? accountEncryptionCurrentness.mode
       : 'e2ee';
+  assertSessionEncryptionModeAllowedByEffectiveClientRequirement(desiredSessionEncryptionMode);
   return {
+    status: 'resolved',
     desiredSessionEncryptionMode,
     accountEncryptionCurrentness,
     serverSupportsFeatureSnapshot,
+    serverFeaturesSnapshot: featuresSnapshot,
     storagePolicy,
   };
 }

@@ -1,13 +1,13 @@
 import {
   BackendTargetKeyV2InputSchema,
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2Schema,
   SessionModelSelectionV1Schema,
   SessionProviderBindingSecurityChangeConfirmationV1Schema,
   buildBackendTargetKeyV2,
   createProviderErrorV1,
   readBackendTargetRefV2,
   type BackendTargetRefV2Input,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ProviderErrorV1,
   type QualifiedConnectedAccountPurposeBindingsV1,
   type SessionModelSelectionV1,
@@ -40,7 +40,7 @@ export type PreparedProviderLaunch = Readonly<{
   kind: 'provider';
   agentTargetKey: string;
   attempt: ProviderSpawnAuthorizationAttempt;
-  connectedServices: ConnectedServiceBindingsV1 | null;
+  connectedServices: ConnectedServiceBindingsV2 | null;
   suppressedConnectedServiceIds: readonly string[];
 }>;
 
@@ -65,7 +65,7 @@ export async function prepareProviderLaunch(input: Readonly<{
   confirmSecurityChange?: (
     confirmation: SessionProviderBindingSecurityChangeConfirmationV1,
   ) => Promise<boolean>;
-  connectedServices: ConnectedServiceBindingsV1 | null;
+  connectedServices: ConnectedServiceBindingsV2 | null;
   featureEnabled: boolean;
   resolvePrerequisites: (
     context: ProviderLaunchPrerequisiteContext,
@@ -127,7 +127,7 @@ export async function prepareProviderLaunch(input: Readonly<{
 
   const connectedServices = input.connectedServices === null
     ? null
-    : ConnectedServiceBindingsV1Schema.safeParse(input.connectedServices);
+    : ConnectedServiceBindingsV2Schema.safeParse(input.connectedServices);
   if (connectedServices !== null && !connectedServices.success) {
     return { ok: false, error: createProviderErrorV1('provider_settings_invalid', errorContext) };
   }

@@ -600,7 +600,7 @@ describe('BasePermissionHandler allowlist', () => {
           agentRequestSummary: {
             kind: 'permission',
             title: 'Read: /work/project/report.txt',
-            detail: 'File: project/report.txt',
+            detail: 'File: /work/project/report.txt',
           },
         });
       const projectedQuestion = projected.requests.find(

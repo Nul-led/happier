@@ -4,7 +4,7 @@ import type { StoredCredentials } from '@/persistence';
 import type {
   SessionEncryptionContext,
   SessionStoredContentEncryptionMode,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+} from '@/session/transport/encryption/sessionStoredContentCodec';
 import {
   upsertSessionSystemRecord,
 } from '@/session/transport/http/sessionSystemRecordsHttp';

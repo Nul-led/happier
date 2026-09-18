@@ -3,8 +3,8 @@ import { z } from 'zod';
 import {
   AgentIdV1Schema,
   BackendTargetRefV2Schema,
-  ConnectedServiceBindingsV1Schema,
   ProviderErrorV1Schema,
+  SecretReferenceOverlayV1Schema,
   SessionModelSelectionV1Schema,
   SessionProviderBindingMetadataV1Schema,
   StrictJsonValueSchema,
@@ -15,6 +15,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { AgentRuntimeDaemonSessionDescriptorV1Schema } from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
+import { ConnectedServicesBindingsIngressSchema } from '@/daemon/connectedServices/parseConnectedServicesBindings';
 
 const BoundedIdSchema = z.string().trim().min(1).max(256);
 
@@ -67,8 +68,21 @@ export const ForegroundAgentRuntimeAdmissionRequestV1Schema = z.object({
   accountSettingsVersion: z.number().int().nonnegative().optional(),
   selection: SessionModelSelectionV1Schema.optional(),
   previousBinding: SessionProviderBindingMetadataV1Schema.nullable().optional(),
-  connectedServices: ConnectedServiceBindingsV1Schema.optional(),
+  connectedServices: ConnectedServicesBindingsIngressSchema,
   vendorResumeId: BoundedIdSchema.optional(),
+  /**
+   * Optional one-shot, value-free Saved Secret reference override for this
+   * launch. It carries references and revisions only; the daemon materializer
+   * stays the sole resolver and the selected Profile is never written.
+   *
+   * This seam needs no capability negotiation: the admission client calls
+   * `ensureDaemonRunningForSessionCommand()` first, which restarts the daemon
+   * unless it already runs the exact installed CLI version
+   * (`isDaemonRunningCurrentlyInstalledHappyVersion`). A predecessor daemon
+   * therefore cannot receive this request, and this schema is `.strict()` so
+   * it would reject rather than silently launch with different credentials.
+   */
+  secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
 }).strict().superRefine((value, ctx) => {
   if (
     value.profileId !== undefined
@@ -82,6 +96,16 @@ export const ForegroundAgentRuntimeAdmissionRequestV1Schema = z.object({
       path: ['profileId'],
       message:
         'Foreground Profile admission requires an exact account settings scope and version',
+    });
+  }
+  if (value.secretReferenceOverlay !== undefined && value.profileId === undefined) {
+    // The overlay overrides Profile-declared secret requirement bindings, so
+    // without a selected Profile there is nothing declared to override.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['secretReferenceOverlay'],
+      message:
+        'A Saved Secret reference overlay requires an exact selected profileId',
     });
   }
 });

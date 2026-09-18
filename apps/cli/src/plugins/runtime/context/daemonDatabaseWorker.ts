@@ -38,7 +38,7 @@ type WorkerRequest =
 type WorkerResult =
     | Readonly<{ kind: 'void' }>
     | Readonly<{ kind: 'row'; row: WireDatabaseRow | null }>
-    | Readonly<{ kind: 'rows'; rows: readonly WireDatabaseRow[] }>
+    | Readonly<{ kind: 'rows'; rows: readonly WireDatabaseRow[]; changes: WireDatabaseValue }>
     | Readonly<{
         kind: 'run';
         changes: WireDatabaseValue | null;
@@ -96,6 +96,11 @@ export type DaemonDatabaseWorkerLease = Readonly<{
         values: readonly DaemonDatabaseValue[],
         options: DaemonDatabaseWorkerAllRequestOptions,
     ): Promise<readonly unknown[]>;
+    allWithChanges(
+        sql: string,
+        values: readonly DaemonDatabaseValue[],
+        options: DaemonDatabaseWorkerAllRequestOptions,
+    ): Promise<Readonly<{ rows: readonly unknown[]; changes: DaemonDatabaseValue }>>;
     run(sql: string, values?: readonly DaemonDatabaseValue[], options?: DaemonDatabaseWorkerRequestOptions): Promise<unknown>;
     isRetired(): boolean;
 }>;
@@ -413,22 +418,8 @@ export function createDaemonDatabaseWorkerClient(filePath: string): DaemonDataba
         }
     };
 
-    const leaseFor = (session: WorkerSession): DaemonDatabaseWorkerLease => Object.freeze({
-        sessionId: session.id,
-        exec: async (sql, options) => {
-            const result = await request(session, { kind: 'exec', sql }, options);
-            if (result.kind !== 'void') throw workerProtocolError();
-        },
-        get: async (sql, values = [], options) => {
-            const result = await request(session, {
-                kind: 'get',
-                sql,
-                values: values.map(encodeDatabaseValue),
-            }, options);
-            if (result.kind !== 'row') throw workerProtocolError();
-            return result.row === null ? undefined : decodeDatabaseRow(result.row);
-        },
-        all: async (sql, values, options) => {
+    const leaseFor = (session: WorkerSession): DaemonDatabaseWorkerLease => {
+        const allWithChanges: DaemonDatabaseWorkerLease['allWithChanges'] = async (sql, values, options) => {
             const result = await request(session, {
                 kind: 'all',
                 sql,
@@ -436,22 +427,45 @@ export function createDaemonDatabaseWorkerClient(filePath: string): DaemonDataba
                 resultLimits: options.resultLimits,
             }, options);
             if (result.kind !== 'rows') throw workerProtocolError();
-            return Object.freeze(result.rows.map((row) => decodeDatabaseRow(row)));
-        },
-        run: async (sql, values = [], options) => {
-            const result = await request(session, {
-                kind: 'run',
-                sql,
-                values: values.map(encodeDatabaseValue),
-            }, options);
-            if (result.kind !== 'run') throw workerProtocolError();
             return Object.freeze({
-                changes: result.changes === null ? undefined : decodeDatabaseValue(result.changes),
-                lastInsertRowId: result.lastInsertRowId === null ? undefined : decodeDatabaseValue(result.lastInsertRowId),
+                rows: Object.freeze(result.rows.map((row) => decodeDatabaseRow(row))),
+                changes: decodeDatabaseValue(result.changes),
             });
-        },
-        isRetired: () => session.retired || active !== session,
-    });
+        };
+        return Object.freeze({
+            sessionId: session.id,
+            exec: async (sql, options) => {
+                const result = await request(session, { kind: 'exec', sql }, options);
+                if (result.kind !== 'void') throw workerProtocolError();
+            },
+            get: async (sql, values = [], options) => {
+                const result = await request(session, {
+                    kind: 'get',
+                    sql,
+                    values: values.map(encodeDatabaseValue),
+                }, options);
+                if (result.kind !== 'row') throw workerProtocolError();
+                return result.row === null ? undefined : decodeDatabaseRow(result.row);
+            },
+            allWithChanges,
+            all: async (sql, values, options) => (
+                await allWithChanges(sql, values, options)
+            ).rows,
+            run: async (sql, values = [], options) => {
+                const result = await request(session, {
+                    kind: 'run',
+                    sql,
+                    values: values.map(encodeDatabaseValue),
+                }, options);
+                if (result.kind !== 'run') throw workerProtocolError();
+                return Object.freeze({
+                    changes: result.changes === null ? undefined : decodeDatabaseValue(result.changes),
+                    lastInsertRowId: result.lastInsertRowId === null ? undefined : decodeDatabaseValue(result.lastInsertRowId),
+                });
+            },
+            isRetired: () => session.retired || active !== session,
+        });
+    };
 
     return Object.freeze({
         acquire: async () => leaseFor(await acquireSession()),

@@ -22,6 +22,7 @@ function createTargetActionApprovalRequestCandidate(
     surface,
     invocationSurface,
     replayPlacement,
+    executionOriginV1,
   } = currentIntent;
   const requestedSurface = invocationSurface ?? surface;
   const approvalRequiredByActionSettings = action.approvalRequiredByActionSettings === true;
@@ -48,6 +49,7 @@ function createTargetActionApprovalRequestCandidate(
     policyFingerprint: action.policyFingerprint,
     subjectFingerprint: fingerprint,
     ...(replayPlacement === undefined ? {} : { replayPlacement }),
+    ...(executionOriginV1 === undefined ? {} : { executionOriginV1 }),
     summary: action.confirmation
       ? resolveLocalizedConfirmationText(action.confirmation.title)
       : 'Action approval required',

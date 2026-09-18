@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { linkCliHomeToAccountService } from './linkCliHomeToAccountService';
+import { linkCliHomeToAccountService, unlinkCliHomeFromAccountService } from './linkCliHomeToAccountService';
 
 const controller = vi.hoisted(() => ({ current: null as AbortController | null }));
 const closeRuntimeMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -10,7 +10,6 @@ const readSelectionMock = vi.hoisted(() => vi.fn(async () => ({
   endpoint: 'https://accounts.example.test',
   serverIdentityId: 'srv_account_service',
   canonicalServerUrl: 'https://accounts.example.test',
-  advertisedMethods: { keyLoginAvailable: true, oauthProviderIds: [], preferredProvisionProviderId: null },
 })));
 const readCredentialMock = vi.hoisted(() => vi.fn(async () => ({ token: 'account-service-token' })));
 
@@ -147,5 +146,57 @@ describe('linkCliHomeToAccountService production adapter', () => {
       'Bearer account-service-token',
     ]);
     expect(closeRuntimeMock).toHaveBeenCalledOnce();
+  });
+
+  it('revokes the selected service link on the Home with the Home credential only', async () => {
+    const requests: Array<{ url: string; method: string | undefined; authorization: string | null; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (urlInput: string | URL | Request, init?: RequestInit) => {
+      requests.push({
+        url: String(urlInput),
+        method: init?.method,
+        authorization: new Headers(init?.headers).get('Authorization'),
+        body: init?.body,
+      });
+      return Response.json({ v: 1, deleted: true, issuerServerIdentityId: 'srv_account_service' });
+    }));
+
+    await expect(unlinkCliHomeFromAccountService({
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      signal: controller.current!.signal,
+    })).resolves.toEqual({
+      kind: 'unlinked',
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      issuerServerIdentityId: 'srv_account_service',
+    });
+
+    expect(requests).toEqual([{
+      url: 'https://home.example.test/v1/account/directory-links/srv_account_service',
+      method: 'DELETE',
+      authorization: 'Bearer home-token',
+      body: JSON.stringify({ v: 1 }),
+    }]);
+    expect(readCredentialMock).not.toHaveBeenCalled();
+    expect(fetchServerFeaturesSnapshotMock).not.toHaveBeenCalled();
+    expect(closeRuntimeMock).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed before credential or network use when the selected Account Service changed after confirmation', async () => {
+    readSelectionMock.mockResolvedValueOnce({
+      endpoint: 'https://other-accounts.example.test',
+      serverIdentityId: 'srv_other_account_service',
+      canonicalServerUrl: 'https://other-accounts.example.test',
+    });
+
+    await expect(linkCliHomeToAccountService({
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      relink: false,
+      expectedAccountServiceSelection: {
+        endpoint: 'https://accounts.example.test',
+        serverIdentityId: 'srv_account_service',
+      },
+    })).resolves.toEqual({ kind: 'failed' });
+
+    expect(readCredentialMock).not.toHaveBeenCalled();
+    expect(fetchServerFeaturesSnapshotMock).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import type {
-  ConnectedServiceBindingsV1,
+  ConnectedServiceBindingSelectionV2,
+  ConnectedServiceBindingsV2,
   ConnectedAccountServiceKey,
   ConnectedServiceUxDiagnosticV1,
 } from '@happier-dev/protocol';
@@ -16,11 +17,14 @@ import {
 import type { ConnectedServiceAccountTransitionVerificationResult } from '../../runtimeAuth/types';
 
 export type PostSwitchVerificationEffectiveBinding = Readonly<{
-  source: 'native' | 'connected';
-  selection: 'native' | 'profile' | 'group';
+  source: 'native' | 'connected' | 'team_resource';
+  selection: 'native' | 'profile' | 'group' | 'team_resource';
   serviceId: ConnectedAccountServiceKey;
   profileId: string | null;
   groupId: string | null;
+  resourceId?: string;
+  deliveryMode?: Extract<ConnectedServiceBindingSelectionV2, Readonly<{ source: 'team_resource' }>>['deliveryMode'];
+  disclosedMember?: Extract<ConnectedServiceBindingSelectionV2, Readonly<{ source: 'team_resource' }>>['disclosedMember'];
 }>;
 
 export type RuntimeAuthSelectionsByServiceId = ReadonlyMap<ConnectedAccountServiceKey, unknown>;
@@ -70,7 +74,7 @@ export async function runPostSwitchVerification<TFailure>(input: Readonly<{
       profileId: string | null;
       groupId?: string | null;
     }>;
-    normalizedBindings: ConnectedServiceBindingsV1;
+    normalizedBindings: ConnectedServiceBindingsV2;
     action: 'hot_applied' | 'restart_requested';
     runtimeAuthSelection?: unknown;
   }>) => Promise<ConnectedServiceAccountTransitionVerificationResult>;
@@ -79,7 +83,7 @@ export async function runPostSwitchVerification<TFailure>(input: Readonly<{
   tracked: TrackedSession;
   sessionId: string;
   agentId: CatalogAgentId;
-  normalizedBindings: ConnectedServiceBindingsV1;
+  normalizedBindings: ConnectedServiceBindingsV2;
   nextByServiceId: ReadonlyMap<ConnectedAccountServiceKey, PostSwitchVerificationEffectiveBinding>;
   serviceIds: ReadonlySet<ConnectedAccountServiceKey>;
   action: 'hot_applied' | 'restart_requested';

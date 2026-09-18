@@ -147,12 +147,19 @@ export async function resolveCliFeatureDecisionForServer(params: {
   env: NodeJS.ProcessEnv;
   serverUrl: string;
   timeoutMs?: number;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET';
+    path: string;
+  }>) => Readonly<Record<string, string>> | null;
 }): Promise<Readonly<{ decision: FeatureDecision; serverSnapshot?: CliServerFeaturesSnapshot }>> {
   const inputs = await loadCliFeatureDecisionInputsForServer({
     featureId: params.featureId,
     env: params.env,
     serverUrl: params.serverUrl,
     timeoutMs: params.timeoutMs,
+    ...(params.resolveAuthorizationHeaders
+      ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+      : {}),
   });
 
   const decision = resolveCliFeatureDecisionFromInputs(inputs);

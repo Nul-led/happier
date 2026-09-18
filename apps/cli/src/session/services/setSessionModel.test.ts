@@ -90,6 +90,20 @@ describe('setSessionModel', () => {
     updateSessionMetadataWithRetry.mockReset();
   });
 
+  it('rejects a request without either model selection input', async () => {
+    resolveSessionTransportContext.mockResolvedValue(transport(false));
+
+    await expect(setSessionModel({
+      credentials,
+      idOrPrefix: 'sess-1',
+    })).rejects.toMatchObject({
+      code: 'model_selection_agent_target_unknown',
+    });
+
+    expect(callSessionRpc).not.toHaveBeenCalled();
+    expect(updateSessionMetadataWithRetry).not.toHaveBeenCalled();
+  });
+
   it('routes an active literal native-default selection to the exact private owner', async () => {
     resolveSessionTransportContext.mockResolvedValue(transport(true));
     callSessionRpc.mockResolvedValue({
@@ -427,6 +441,125 @@ describe('setSessionModel', () => {
         providerConnectionId: null,
         modelId: 'default',
       },
+    });
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('commits an exact Team resource V2 model intent and revision witness in one inactive CAS', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100);
+    resolveSessionTransportContext.mockResolvedValue(transport(false));
+    updateSessionMetadataWithRetry.mockImplementation(async (input) => ({
+      metadata: input.updater(metadata),
+      version: 2,
+    }));
+
+    await expect(setSessionModel({
+      credentials,
+      idOrPrefix: 'sess-1',
+      teamCredentialModel: {
+        kind: 'team_credential_provider_model',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+        deliveryMode: 'brokered',
+        agentTargetKey: 'backend:codex',
+        modelId: 'team-model',
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      status: 'intent_updated',
+      selection: {
+        v: 2,
+        updatedAt: 100,
+        ref: {
+          source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+          expectedResourceRevision: 7, deliveryMode: 'brokered',
+          agentTargetKey: 'backend:codex', modelId: 'team-model',
+        },
+      },
+    });
+
+    expect(updateSessionMetadataWithRetry).toHaveBeenCalledWith(expect.objectContaining({
+      sessionExpectation: { kind: 'inactive_model_intent' },
+      teamCredentialBindings: [{
+        v: 1,
+        slot: { kind: 'provider_model' },
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+        deliveryMode: 'brokered',
+        teamId: 'team-1',
+      }],
+    }));
+    const update = updateSessionMetadataWithRetry.mock.calls[0]?.[0]?.updater;
+    expect(update(metadata)).toMatchObject({
+      modelSelectionIntentV2: {
+        v: 2,
+        updatedAt: 100,
+        ref: {
+          source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
+          expectedResourceRevision: 7, deliveryMode: 'brokered',
+          agentTargetKey: 'backend:codex', modelId: 'team-model',
+        },
+      },
+    });
+    expect(update(metadata)).not.toHaveProperty('modelSelectionIntentV1');
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('commits an active Team selection and truthfully requires the existing restart lifecycle', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100);
+    resolveSessionTransportContext.mockResolvedValue(transport(true));
+    updateSessionMetadataWithRetry.mockImplementation(async (input) => ({ metadata: input.updater(metadata), version: 2 }));
+
+    await expect(setSessionModel({
+      credentials,
+      idOrPrefix: 'sess-1',
+      teamCredentialModel: {
+        kind: 'team_credential_provider_model', teamId: 'team-1', resourceId: 'resource-1',
+        expectedResourceRevision: 7, deliveryMode: 'brokered',
+        agentTargetKey: 'backend:codex', modelId: 'team-model',
+      },
+      teamVisibilityGrantConsent: { teamId: 'team-1' },
+    })).resolves.toMatchObject({
+      ok: false,
+      status: 'restart_required',
+      requestedTeamSelection: expect.objectContaining({
+        teamId: 'team-1', resourceId: 'resource-1', deliveryMode: 'brokered',
+      }),
+    });
+    expect(updateSessionMetadataWithRetry).toHaveBeenCalledWith(expect.objectContaining({
+      sessionExpectation: undefined,
+      teamVisibilityGrantConsent: { teamId: 'team-1' },
+    }));
+  });
+
+  it('refuses a Team resource transition when activation wins the inactive CAS', async () => {
+    resolveSessionTransportContext
+      .mockResolvedValueOnce(transport(false))
+      .mockResolvedValueOnce(transport(true));
+    updateSessionMetadataWithRetry.mockRejectedValue(Object.assign(new Error('active'), {
+      code: 'session_active' as const,
+      retryable: false as const,
+    }));
+
+    await expect(setSessionModel({
+      credentials,
+      idOrPrefix: 'sess-1',
+      teamCredentialModel: {
+        kind: 'team_credential_provider_model',
+        teamId: 'team-1',
+        resourceId: 'resource-1',
+        expectedResourceRevision: 7,
+        deliveryMode: 'brokered',
+        agentTargetKey: 'backend:codex',
+        modelId: 'team-model',
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      status: 'team_resource_active_transition_unsupported',
+      reason: 'session_activated_before_team_resource_commit',
     });
     expect(callSessionRpc).not.toHaveBeenCalled();
   });

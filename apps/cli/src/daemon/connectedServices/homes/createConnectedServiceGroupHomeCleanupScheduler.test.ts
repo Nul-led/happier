@@ -22,7 +22,7 @@ describe('createConnectedServiceGroupHomeCleanupScheduler', () => {
               directory: '/tmp/project',
               backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
               connectedServices: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                   'openai-codex': {
                     source: 'connected',
@@ -88,7 +88,7 @@ describe('createConnectedServiceGroupHomeCleanupScheduler', () => {
               happyLibDir: '/tmp/home/.happier/lib',
               happyToolsDir: '/tmp/home/.happier/tools',
               connectedServices: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                   'openai-codex': {
                     source: 'connected',

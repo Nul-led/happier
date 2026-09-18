@@ -24,6 +24,7 @@ export type RawTranscriptRow = Readonly<{
   messageRole?: unknown;
   sidechainId?: unknown;
   externalShareableActor?: unknown;
+  accountActor?: unknown;
 }>;
 
 export type FetchEncryptedTranscriptMessagesPageResult = Readonly<{
@@ -79,6 +80,9 @@ function parseOptionalTranscriptCursor(value: unknown): number | null {
 
 export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
   token: string;
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET'; path: string;
+  }>) => Readonly<Record<string, string>> | null;
   sessionId: string;
   limit: number;
   beforeSeq?: number;
@@ -100,21 +104,24 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
     error.name = 'AbortError';
     throw error;
   }
-  const response = await axios.get(`${serverUrl}/v1/sessions/${params.sessionId}/messages`, {
+  const query = new URLSearchParams();
+  query.set('limit', String(params.limit));
+  if (typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq)) query.set('beforeSeq', String(Math.max(0, Math.floor(params.beforeSeq))));
+  if (typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq)) query.set('afterSeq', String(Math.max(0, Math.floor(params.afterSeq))));
+  if (params.scope) query.set('scope', params.scope);
+  if (params.sidechainId) query.set('sidechainId', params.sidechainId);
+  if (params.role) query.set('role', params.role);
+  if (params.roles && params.roles.length > 0) query.set('roles', params.roles.join(','));
+  if (params.projection) query.set('projection', params.projection);
+  const path = `/v1/sessions/${encodeURIComponent(params.sessionId)}/messages?${query.toString()}`;
+  const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'GET', path })
+    ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+  if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+  const response = await axios.get(`${serverUrl}${path}`, {
     headers: {
       ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-      Authorization: `Bearer ${params.token}`,
+      ...authorizationHeaders,
       'Content-Type': 'application/json',
-    },
-    params: {
-      limit: params.limit,
-      ...(typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq) ? { beforeSeq: Math.max(0, Math.floor(params.beforeSeq)) } : {}),
-      ...(typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq) ? { afterSeq: Math.max(0, Math.floor(params.afterSeq)) } : {}),
-      ...(params.scope ? { scope: params.scope } : {}),
-      ...(params.sidechainId ? { sidechainId: params.sidechainId } : {}),
-      ...(params.role ? { role: params.role } : {}),
-      ...(params.roles && params.roles.length > 0 ? { roles: params.roles.join(',') } : {}),
-      ...(params.projection ? { projection: params.projection } : {}),
     },
     timeout: remainingMs === null ? 10_000 : Math.min(10_000, remainingMs),
     ...(params.signal ? { signal: params.signal } : {}),

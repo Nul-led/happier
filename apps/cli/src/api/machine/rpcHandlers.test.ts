@@ -7,10 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import axios from 'axios';
 
-import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import type { ForkResultV1, ForkSurfaceV1 } from '@happier-dev/agents';
-import { accountSettingsParse, sealEncryptedDataKeyEnvelopeV1, SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
+import {
+  accountSettingsParse,
+  normalizeActionsSettingsV1,
+  sealEncryptedDataKeyEnvelopeV1,
+  SPAWN_SESSION_ERROR_CODES,
+} from '@happier-dev/protocol';
 import {
   buildTestCodexRuntimeDescriptorV1 as buildCodexAgentRuntimeDescriptor,
   buildTestOpenCodeRuntimeDescriptorV1 as buildOpenCodeAgentRuntimeDescriptor,
@@ -26,6 +31,7 @@ import { DEFAULT_MEMORY_SETTINGS } from '@/settings/memorySettings';
 import { setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { createAuthenticationHttpStatusError } from '@/api/client/httpStatusError';
 import { createExternalSessionOperationExclusion } from '@/session/external/operationExclusion';
+import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/testkit';
 
 const {
   readCredentialsMock,
@@ -58,6 +64,10 @@ const { createCodexAppServerClientMock } = vi.hoisted(() => ({
     registerNotificationHandler: vi.fn(() => () => {}),
     dispose: vi.fn(async () => {}),
   })),
+}));
+
+const { createExecutionRunBridgeRuntimeMock } = vi.hoisted(() => ({
+  createExecutionRunBridgeRuntimeMock: vi.fn(),
 }));
 
 const { fetchServerFeaturesSnapshotMock } = vi.hoisted(() => ({
@@ -113,6 +123,10 @@ vi.mock('@happier-dev/plugins-codex/agent/runtime/appServer/client', () => ({
 
 vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: fetchServerFeaturesSnapshotMock,
+}));
+
+vi.mock('@/agent/runtime/bridges/executionRun/createExecutionRunBridgeRuntime', () => ({
+  createExecutionRunBridgeRuntime: createExecutionRunBridgeRuntimeMock,
 }));
 
 vi.mock('@happier-dev/agents', async (importOriginal) => ({
@@ -302,6 +316,7 @@ describe('registerMachineRpcHandlers', () => {
       dispose: vi.fn(async () => {}),
     } as any);
     fetchServerFeaturesSnapshotMock.mockClear();
+    createExecutionRunBridgeRuntimeMock.mockReset();
     fetchServerFeaturesSnapshotMock.mockResolvedValue({
       status: 'ready',
       features: {
@@ -535,33 +550,6 @@ describe('registerMachineRpcHandlers', () => {
     const firstSpawnOptions = firstSpawnCall?.[0];
     expect(firstSpawnOptions).toBeDefined();
     expect(firstSpawnOptions).not.toHaveProperty('token');
-  });
-
-  it('forwards savePreparedTargetLocalMetadata into session handoff registration', async () => {
-    const sessionHandoff = await import('./sessionHandoff/handlers');
-    const registerMachineSessionHandoffRpcHandlersSpy = vi
-      .spyOn(sessionHandoff, 'registerMachineSessionHandoffRpcHandlers')
-      .mockImplementation(() => {});
-    const rpcHandlerManager = {
-      registerHandler: vi.fn(),
-    } as any;
-    const savePreparedTargetLocalMetadata = vi.fn(async () => {});
-
-    registerMachineRpcHandlers({
-      rpcHandlerManager,
-      handlers: {
-        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
-        stopSession: async () => true,
-        requestShutdown: () => {},
-        savePreparedTargetLocalMetadata,
-      } as any,
-    });
-
-    expect(registerMachineSessionHandoffRpcHandlersSpy).toHaveBeenCalledTimes(1);
-    expect(registerMachineSessionHandoffRpcHandlersSpy).toHaveBeenCalledWith(expect.objectContaining({
-      rpcHandlerManager,
-      savePreparedTargetLocalMetadata,
-    }));
   });
 
   it('injects one daemon operation exclusion owner into external-session and handoff handlers', async () => {
@@ -1583,6 +1571,7 @@ describe('registerMachineRpcHandlers', () => {
     });
 
     expect(registered.has((RPC_METHODS as any).DAEMON_EXECUTION_RUNS_LIST)).toBe(true);
+    expect(registered.has(RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE)).toBe(true);
 
     const runId = `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     try {
@@ -1617,6 +1606,211 @@ describe('registerMachineRpcHandlers', () => {
     } finally {
       await removeExecutionRunMarker(runId);
     }
+  });
+
+  it('routes execution-run authority through the exact live Session owner', async () => {
+    const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const resolveExecutionRunLiveBrokerAuthority = vi.fn(async () => ({
+      status: 'current' as const,
+      executionRunId: 'run-live-authority',
+      occurrenceId: 'occurrence-live',
+      parentSessionId: 'session-live-authority',
+      intent: 'agent' as const,
+      runtimeState: 'active_turn' as const,
+    }));
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+      deps: {
+        currentMachineId: 'machine-live',
+        executionRunRuntimeAccountId: 'account-live',
+        getServerFeaturesSnapshot: () => ({
+          status: 'ready',
+          features: { capabilities: { serverIdentity: { serverIdentityId: 'server-live' } } },
+        } as never),
+        resolveExecutionRunLiveBrokerAuthority,
+      },
+    });
+    try {
+      await writeExecutionRunMarker({
+        pid: process.pid,
+        happySessionId: 'session-live-authority',
+        runId: 'run-live-authority',
+        callId: 'call-live-authority',
+        sidechainId: 'side-live-authority',
+        intent: 'agent',
+        backendTarget: { kind: 'backend', backendId: 'claude' },
+        status: 'running',
+        startedAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+      const handler = registered.get(RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE);
+      await expect(handler?.({
+        v: 1,
+        requestNonce: '11111111-1111-4111-8111-111111111111',
+        serverIdentityId: 'server-live',
+        requestingAccountId: 'account-live',
+        workerMachineId: 'machine-live',
+        executionRunId: 'run-live-authority',
+        expectedOccurrenceId: null,
+      })).resolves.toMatchObject({ status: 'current', occurrenceId: 'occurrence-live' });
+      expect(resolveExecutionRunLiveBrokerAuthority).toHaveBeenCalledWith({
+        sessionId: 'session-live-authority',
+        executionRunId: 'run-live-authority',
+        expectedOccurrenceId: null,
+      });
+    } finally {
+      await removeExecutionRunMarker('run-live-authority');
+    }
+  });
+
+  it('routes detached execution-run authority through the daemon-owned live controller', async () => {
+    let active = false;
+    const runtime = {
+      ...createTestExecutionRunHostRuntime({
+        runtimeId: 'detached-provider-runtime',
+        onSendPrompt: async () => {
+          active = true;
+        },
+      }),
+      readActiveTurnAdmissionWitness: () => active
+        ? ({
+            inputId: 'detached-input-1',
+            turnId: 'detached-turn-1',
+            userMessageSeq: null,
+            userMessageSeqs: [],
+          })
+        : null,
+    };
+    createExecutionRunBridgeRuntimeMock.mockReturnValue(runtime);
+
+    const registered = new Map<string, (params: unknown) => Promise<any>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: unknown) => Promise<any>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+    const registration = registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+      deps: {
+        currentMachineId: 'machine-detached',
+        executionRunRuntimeAccountId: 'account-detached',
+        getServerFeaturesSnapshot: () => ({
+          status: 'ready',
+          features: { capabilities: { serverIdentity: { serverIdentityId: 'server-detached' } } },
+        } as never),
+      },
+    });
+
+    const start = registered.get(SESSION_RPC_METHODS.EXECUTION_RUN_START);
+    const streamStart = registered.get(SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START);
+    const stop = registered.get(SESSION_RPC_METHODS.EXECUTION_RUN_STOP);
+    const resolveAuthority = registered.get(RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE);
+    expect(start).toBeDefined();
+    expect(streamStart).toBeDefined();
+    expect(stop).toBeDefined();
+    expect(resolveAuthority).toBeDefined();
+
+    const started = await start!({
+      intent: 'agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    });
+    expect(started.runId).toMatch(/^run_/);
+
+    const authorityRequest = {
+      v: 1,
+      requestNonce: '22222222-2222-4222-8222-222222222222',
+      serverIdentityId: 'server-detached',
+      requestingAccountId: 'account-detached',
+      workerMachineId: 'machine-detached',
+      executionRunId: started.runId,
+      expectedIntent: 'agent',
+      expectedOccurrenceId: null,
+    } as const;
+    const idle = await resolveAuthority!(authorityRequest);
+    expect(idle).toMatchObject({
+      status: 'current',
+      parentSessionId: null,
+      intent: 'agent',
+      runtimeState: 'idle',
+    });
+
+    await expect(streamStart!({
+      runId: started.runId,
+      message: 'Use the selected resource.',
+    })).resolves.toMatchObject({ ok: true });
+    await expect(resolveAuthority!({
+      ...authorityRequest,
+      requestNonce: '33333333-3333-4333-8333-333333333333',
+      expectedOccurrenceId: idle.occurrenceId,
+    })).resolves.toMatchObject({
+      status: 'current',
+      parentSessionId: null,
+      occurrenceId: idle.occurrenceId,
+      runtimeState: 'active_turn',
+    });
+
+    await expect(stop!({ runId: started.runId })).resolves.toMatchObject({ ok: true });
+    await expect(resolveAuthority!({
+      ...authorityRequest,
+      requestNonce: '44444444-4444-4444-8444-444444444444',
+      expectedOccurrenceId: idle.occurrenceId,
+    })).resolves.toMatchObject({ status: 'not_current' });
+    await registration.dispose();
+  });
+
+  it('binds detached execution-run Actions to the injected Account policy', async () => {
+    const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+    const rpcHandlerManager = {
+      registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => {
+        registered.set(method, handler);
+      },
+    } as any;
+
+    registerMachineRpcHandlers({
+      rpcHandlerManager,
+      handlers: {
+        spawnSession: async () => ({ type: 'success', sessionId: 's1' } as const),
+        stopSession: async () => true,
+        requestShutdown: () => {},
+      },
+      deps: {
+        actionsSettingsProvider: {
+          getActionsSettings: () => normalizeActionsSettingsV1({
+            v: 1,
+            actions: {
+              'execution.run.list': { enabled: false },
+            },
+          }),
+        },
+      },
+    });
+
+    const handler = registered.get(SESSION_RPC_METHODS.EXECUTION_RUN_LIST);
+    expect(handler).toBeDefined();
+    await expect(handler!({ limit: 1 })).resolves.toEqual({
+      ok: false,
+      error: 'action_disabled',
+      errorCode: 'action_disabled',
+    });
   });
 
   it('continues a session by spawning a new one and storing a Happier replay seed in child metadata', async () => {
@@ -3714,7 +3908,7 @@ describe('registerMachineRpcHandlers', () => {
       agent: { backendMode: 'acp', providerSessionId: 'codex_forked' },
     });
     expect(updated.forkV1).toMatchObject({ v: 1, parentSessionId: 'sess_parent', strategy: 'acp_fork_latest' });
-    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'codex', backendMode: 'acp', providerSessionId: 'codex_forked' });
+    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'codex', backendMode: 'acp', agentSessionId: 'codex_forked' });
     expect(updated.replaySeedV1).toBeUndefined();
   });
 
@@ -4143,7 +4337,7 @@ describe('registerMachineRpcHandlers', () => {
       v: 1,
       parentSessionId: 'sess_parent',
       strategy: 'acp_fork_latest',
-      agentHint: { agentId: 'acp:review-bot', providerSessionId: 'review_forked' },
+      agentHint: { agentId: 'acp:review-bot', agentSessionId: 'review_forked' },
     });
     expect(updated.replaySeedV1).toBeUndefined();
   });
@@ -4294,7 +4488,7 @@ describe('registerMachineRpcHandlers', () => {
       },
     });
     expect(updated.forkV1).toMatchObject({ v: 1, parentSessionId: 'sess_parent', strategy: 'acp_fork_latest' });
-    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'opencode', backendMode: 'acp', providerSessionId: 'op_forked' });
+    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'opencode', backendMode: 'acp', agentSessionId: 'op_forked' });
     expect(updated.replaySeedV1).toBeUndefined();
   });
 
@@ -4433,7 +4627,7 @@ describe('registerMachineRpcHandlers', () => {
       agent: { backendMode: 'acp', providerSessionId: 'codex_forked' },
     });
     expect(updated.forkV1).toMatchObject({ v: 1, parentSessionId: 'sess_parent', strategy: 'acp_fork_latest' });
-    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'codex', backendMode: 'acp', providerSessionId: 'codex_forked' });
+    expect(updated.forkV1.agentHint).toMatchObject({ agentId: 'codex', backendMode: 'acp', agentSessionId: 'codex_forked' });
     expect(updated.replaySeedV1).toBeUndefined();
   });
 
@@ -4931,7 +5125,7 @@ describe('registerMachineRpcHandlers', () => {
       parentSessionId: 'sess_parent',
       parentCutoffSeqInclusive: 5,
       strategy: 'provider_native',
-      agentHint: { agentId: 'opencode', backendMode: 'server', providerSessionId: 'op_ses_forked' },
+      agentHint: { agentId: 'opencode', backendMode: 'server', agentSessionId: 'op_ses_forked' },
     });
   });
 
@@ -5303,7 +5497,7 @@ describe('registerMachineRpcHandlers', () => {
       parentSessionId: 'sess_parent',
       parentCutoffSeqInclusive: 5,
       strategy: 'provider_native',
-      agentHint: { agentId: 'codex', backendMode: 'appServer', providerSessionId: 'codex-thread-forked' },
+      agentHint: { agentId: 'codex', backendMode: 'appServer', agentSessionId: 'codex-thread-forked' },
     });
     expect(updated.replaySeedV1).toBeUndefined();
   });

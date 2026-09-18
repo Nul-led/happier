@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { PermissionMode } from '@/api/types';
 import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers';
-import type { ConnectedServiceBindingsV1, ProviderBoundModelRef, SessionMcpSelectionV1 } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingsV2, ProviderBoundModelRef, SessionMcpSelectionV1 } from '@happier-dev/protocol';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 
 type RuntimeSnapshotValue<T> = Readonly<{ value: T; updatedAt: number }>;
@@ -18,7 +18,7 @@ type RuntimeSnapshotModule = Readonly<{
   }>) => Readonly<{
     snapshot: Readonly<{
       sessionId: string | null;
-      connectedServices: ConnectedServiceBindingsV1 | null;
+      connectedServices: ConnectedServiceBindingsV2 | null;
       connectedServicesUpdatedAt: number | null;
       mcpSelection: SessionMcpSelectionV1 | null;
       permissionMode: RuntimeSnapshotValue<PermissionMode> | null;
@@ -44,6 +44,13 @@ const persistedConnectedServices = {
       profileId: 'persisted-profile',
     },
   },
+} as const;
+
+// Retained V1 records stay readable, but the owner normalizes every persisted
+// envelope through the canonical V2 ingress, so they read back upgraded.
+const persistedConnectedServicesAsV2 = {
+  v: 2,
+  bindingsByServiceId: persistedConnectedServices.bindingsByServiceId,
 } as const;
 
 const persistedMaterializationIdentity = {
@@ -140,7 +147,7 @@ describe('resolveSessionRuntimeSnapshot', () => {
     });
 
     expect(result.spawnOptions).toMatchObject({
-      connectedServices: persistedConnectedServices,
+      connectedServices: persistedConnectedServicesAsV2,
       permissionMode: 'yolo',
       permissionModeUpdatedAt: 510,
       agentModeId: 'plan',
@@ -407,11 +414,44 @@ describe('resolveSessionRuntimeSnapshot', () => {
       },
     });
 
+    // The Agent minted this id: its surrounding whitespace is part of the identity.
     expect(result.snapshot.vendorResumeId).toEqual({
-      value: 'codex-thread-from-metadata',
+      value: ' codex-thread-from-metadata ',
       updatedAt: null,
     });
     expect(result.spawnOptions.resume).toBeUndefined();
+  });
+
+  it('keeps observed persisted and tracked vendor resume ids byte-exact', async () => {
+    const runtimeSnapshot = await loadRuntimeSnapshotModule();
+    expect(runtimeSnapshot).not.toBeNull();
+    if (!runtimeSnapshot) return;
+
+    const exactResume = '  provider\nses/AB+cd==  ';
+    const incomingOptions = {
+      directory: '/tmp/repo',
+      existingSessionId: 'session-external-1',
+      backendTarget: { kind: 'backend', backendId: 'acme.review-agent', sourceKind: 'built_in' },
+    } satisfies SpawnSessionOptions;
+
+    const persisted = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions,
+      persistedVendorResumeId: exactResume,
+      trackedVendorResumeId: 'stale-tracked',
+    });
+    const tracked = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions,
+      trackedVendorResumeId: exactResume,
+    });
+    const blank = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions,
+      persistedVendorResumeId: ' \n ',
+      trackedVendorResumeId: '   ',
+    });
+
+    expect(persisted.snapshot.vendorResumeId).toEqual({ value: exactResume, updatedAt: null });
+    expect(tracked.snapshot.vendorResumeId).toEqual({ value: exactResume, updatedAt: null });
+    expect(blank.snapshot.vendorResumeId).toBeNull();
   });
 
   it('restores the persisted canonical Codex runtime descriptor for a default respawn', async () => {
@@ -627,6 +667,43 @@ describe('resolveSessionRuntimeSnapshot', () => {
 
     expect(incoming.spawnOptions.resume).toBe('explicit-incoming-resume');
     expect(tracked.spawnOptions.resume).toBe('explicit-tracked-resume');
+  });
+
+  it('hands an explicit resume id to the durable snapshot byte-exact and treats whitespace alone as absent', async () => {
+    const runtimeSnapshot = await loadRuntimeSnapshotModule();
+    expect(runtimeSnapshot).not.toBeNull();
+    if (!runtimeSnapshot) return;
+
+    const exactResume = '  provider\nses/AB+cd==  ';
+    const base = {
+      directory: '/tmp/repo',
+      existingSessionId: 'session-1',
+      backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+    } satisfies SpawnSessionOptions;
+    const persistedMetadata = { flavor: 'claude', claudeSessionId: 'observed-only' };
+
+    const incoming = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: { ...base, resume: exactResume },
+      persistedMetadata,
+    });
+    const tracked = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: base,
+      persistedMetadata,
+      trackedSpawnOptions: { directory: '/tmp/repo', resume: exactResume },
+    });
+    const blank = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: { ...base, resume: ' \n ' },
+      persistedMetadata,
+      trackedSpawnOptions: { directory: '/tmp/repo', resume: '   ' },
+    });
+
+    expect(incoming.spawnOptions.resume).toBe(exactResume);
+    expect(incoming.snapshot.vendorResumeId).toEqual({ value: exactResume, updatedAt: null });
+    expect(tracked.spawnOptions.resume).toBe(exactResume);
+    expect(tracked.snapshot.vendorResumeId).toEqual({ value: exactResume, updatedAt: null });
+    // Whitespace alone is no explicit authority: the observed identity still wins.
+    expect(blank.spawnOptions.resume).toBeUndefined();
+    expect(blank.snapshot.vendorResumeId).toEqual({ value: 'observed-only', updatedAt: null });
   });
 
   it('retains an external Agent’s observed resume identity without consulting built-in policy', async () => {

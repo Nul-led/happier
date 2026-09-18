@@ -8,11 +8,8 @@ vi.mock('@/ui/logger', () => ({
   logger: { debug: vi.fn() },
 }))
 
-vi.mock('../client/loopbackUrl', () => ({
-  resolveLoopbackHttpUrl: (url: string) => url,
-}))
-
 import axios, { AxiosError, AxiosHeaders, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
+import { encodeBase64, encrypt } from '@/api/encryption'
 
 import { HttpStatusError, isAuthenticationError } from '@/api/client/httpStatusError'
 import { logger } from '@/ui/logger'
@@ -36,7 +33,39 @@ afterEach(() => {
 })
 
 describe('transcriptQueries (plaintext envelopes)', () => {
-  it('ignores plaintext permission intent on an E2EE session', async () => {
+  it.each(['legacy', 'dataKey'] as const)('preserves authenticated %s text and permission intent', async (encryptionVariant) => {
+    const payload = { role: 'user', content: { type: 'text', text: 'authenticated request' }, meta: { permissionMode: 'yolo' } }
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      status: 200,
+      data: { messages: [{ createdAt: 123, content: { t: 'encrypted', c: encodeBase64(encrypt(queryParams.encryptionKey, encryptionVariant, payload)) } }] },
+    } as AxiosResponse)
+    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer({ ...queryParams, encryptionVariant })).resolves.toEqual([
+      { role: 'user', text: 'authenticated request' },
+    ])
+    await expect(fetchLatestUserPermissionIntentFromEncryptedTranscript({ ...queryParams, encryptionVariant })).resolves.toEqual({ intent: 'yolo', updatedAt: 123 })
+  })
+
+  it.each([
+    { encryptionMode: 'e2ee' as const, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'do not disclose' } } } },
+    { encryptionMode: 'plain' as const, content: { t: 'encrypted', c: 'unavailable' } },
+    { encryptionMode: 'e2ee' as const, content: { t: 'encrypted', c: 'unavailable' } },
+  ])('rejects unreadable $encryptionMode content instead of empty import or default permission intent', async ({ encryptionMode, content }) => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      status: 200,
+      data: { messages: [{ createdAt: 123, content }] },
+    } as AxiosResponse)
+    const params = encryptionMode === 'plain'
+      ? { token: 't', sessionId: 's1', encryptionMode }
+      : queryParams
+    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer(params)).rejects.toMatchObject({
+      code: 'session_transcript_stored_content_unavailable',
+    })
+    await expect(fetchLatestUserPermissionIntentFromEncryptedTranscript(params)).rejects.toMatchObject({
+      code: 'session_transcript_stored_content_unavailable',
+    })
+  })
+
+  it('rejects plaintext permission intent on an E2EE session', async () => {
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: {
         messages: [
@@ -55,11 +84,9 @@ describe('transcriptQueries (plaintext envelopes)', () => {
       },
     } as any)
 
-    const res = await fetchLatestUserPermissionIntentFromEncryptedTranscript({
+    await expect(fetchLatestUserPermissionIntentFromEncryptedTranscript({
       ...queryParams,
-    })
-
-    expect(res).toBeNull()
+    })).rejects.toMatchObject({ code: 'session_transcript_stored_content_unavailable' })
   })
 
   it('resolves permission intent from plaintext transcript messages on a plaintext session', async () => {
@@ -109,7 +136,7 @@ describe('transcriptQueries (plaintext envelopes)', () => {
       },
     } as any)
 
-    await expect(fetchLatestUserPermissionIntentFromEncryptedTranscript(queryParams)).resolves.toBeNull()
+    await expect(fetchLatestUserPermissionIntentFromEncryptedTranscript({ token: 't', sessionId: 's1', encryptionMode: 'plain' })).resolves.toBeNull()
   })
 
   it('prefilters ACP import transcript text to user and agent rows on the server', async () => {
@@ -143,7 +170,7 @@ describe('transcriptQueries (plaintext envelopes)', () => {
       },
     } as any)
 
-    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer(queryParams)).resolves.toEqual([
+    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer({ token: 't', sessionId: 's1', encryptionMode: 'plain' })).resolves.toEqual([
       { role: 'agent', text: 'codex reply' },
     ])
   })
@@ -229,7 +256,7 @@ describe('transcriptQueries (plaintext envelopes)', () => {
       },
     } as AxiosResponse)
 
-    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer(queryParams)).resolves.toEqual([
+    await expect(fetchRecentTranscriptTextItemsForAcpImportFromServer({ token: 't', sessionId: 's1', encryptionMode: 'plain' })).resolves.toEqual([
       { role: 'user', text: 'legacy coding request' },
       { role: 'agent', text: 'explicit Agent reply' },
     ])

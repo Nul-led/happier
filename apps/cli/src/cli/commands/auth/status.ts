@@ -7,10 +7,11 @@ import { printJsonEnvelope, wantsJson } from '@/cli/output/jsonEnvelope';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
 import { definitionList, fail, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
 
-export async function handleAuthStatus(argv: string[] = []): Promise<void> {
+export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const resolvedArgv = await applyServerSelectionFromArgs(argv);
   const json = wantsJson(resolvedArgv);
-  const readiness = await resolveActiveServerAuthReadiness();
+  const readiness = await resolveActiveServerAuthReadiness({ ...(signal ? { signal } : {}) });
   const credentials = readiness.credentials;
 
   if (json && !credentials) {

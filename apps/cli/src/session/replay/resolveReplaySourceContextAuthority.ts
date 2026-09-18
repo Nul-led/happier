@@ -1,13 +1,14 @@
 import type { StoredCredentials } from '@/persistence';
 import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
+import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol';
 
 /**
  * The source-context creation flow is Account-owned, unlike ordinary Replay
  * readers (which intentionally allow an authorized shared participant to read
- * a Session). `share: null` is the V2 session projection's owner proof; any
- * other value, including an absent legacy projection, is deliberately not
- * enough to clone replay context into a new Account-owned child.
+ * a Session). Current effective access is authoritative; the canonical access
+ * projection reader retains only the released owner/direct compatibility
+ * interpretation when that current projection is absent.
  */
 export type ReplaySourceContextAuthority =
   | Readonly<{ status: 'owned'; sourceMachineId: string | null }>
@@ -37,7 +38,9 @@ export async function resolveReplaySourceContextAuthority(params: Readonly<{
     sessionId: params.sourceSessionId,
   });
   if (!rawSession) return { status: 'unavailable' };
-  if (rawSession.share !== null) return { status: 'not_owned' };
+  const accessRole = readSessionAccessProjectionRoleV1(rawSession);
+  if (accessRole === 'unavailable') return { status: 'unavailable' };
+  if (accessRole !== 'owner') return { status: 'not_owned' };
 
   const rawMachineId = readNonBlankString(rawSession.machineId);
   const metadata = tryDecryptSessionMetadata({

@@ -9,14 +9,15 @@ import {
   type SessionSubagentCustodyContentV1,
   type SessionSubagentCustodyRecordV1,
 } from '@happier-dev/protocol';
+import { SessionSubagentCustodyContentV1Schema } from '@happier-dev/protocol/sessions/subagents';
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 
 import type { StoredCredentials } from '@/persistence';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
 import {
-  encryptStoredSessionPayload,
   resolveSessionEncryptionContextFromCredentials,
   resolveSessionStoredContentEncryptionMode,
+  sealSessionStoredContent,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import type {
   PluginSubagentDurableCustody,
@@ -184,7 +185,9 @@ export function createServerPluginSubagentDurableCustody(params: Readonly<{
     const mode = resolveSessionStoredContentEncryptionMode(rawSession);
     if (mode === 'plain') {
       return {
-        content: { t: 'plain', v: payload },
+        content: SessionSubagentCustodyContentV1Schema.parse(
+          sealSessionStoredContent({ mode: 'plain', ctx: null, payload }),
+        ),
         contentFingerprint: createSessionSubagentCustodyPlainContentFingerprintV1(payload),
       };
     }
@@ -193,10 +196,9 @@ export function createServerPluginSubagentDurableCustody(params: Readonly<{
       throw new SessionSubagentCustodyHttpError('encryption_material_unavailable');
     }
     return {
-      content: {
-        t: 'encrypted',
-        c: encryptStoredSessionPayload({ mode, ctx, payload }),
-      },
+      content: SessionSubagentCustodyContentV1Schema.parse(
+        sealSessionStoredContent({ mode, ctx, payload }),
+      ),
       contentFingerprint: encryptedContentFingerprint({
         key: ctx.encryptionKey,
         sessionId: params.identity.parentSessionId,

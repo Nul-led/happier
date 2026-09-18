@@ -142,6 +142,7 @@ function registerRealDirectOpenRoute(
     app: ReturnType<typeof createPeerMediationLoopbackApp>,
     input: Readonly<{
         nowMs?: () => number;
+        resolveTrustRoots?: () => readonly { keyId: string; publicKey: string }[];
         connectTcp: NonNullable<Parameters<typeof mod.registerPeerTcpTunnelLoopbackRoutes>[1]['connectTcp']>;
         openStreamTimeoutMs?: number;
         voiceBinaryAppendConsumer?: NonNullable<Parameters<typeof mod.registerPeerTcpTunnelLoopbackRoutes>[1]['voiceBinaryAppendConsumer']>;
@@ -157,6 +158,7 @@ function registerRealDirectOpenRoute(
             accountPublicKey: Buffer.from(routeAccountKeyPair.publicKey).toString('base64url'),
         },
         trustRoots: routeTrustRoots,
+        ...(input.resolveTrustRoots ? { resolveTrustRoots: input.resolveTrustRoots } : {}),
         connectTcp: input.connectTcp,
         ...(input.openStreamTimeoutMs !== undefined ? { openStreamTimeoutMs: input.openStreamTimeoutMs } : {}),
         ...(input.voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer: input.voiceBinaryAppendConsumer } : {}),
@@ -197,6 +199,41 @@ function waitForBinaryFrameKind(
 }
 
 describe('registerPeerTcpTunnelLoopbackRoutes', () => {
+    it('uses current Home signing roots for each tunnel open and fails closed when authority is unavailable', async () => {
+        const mod = await loadRegisterRoutesModule();
+        if (!mod) throw new Error('expected direct tunnel route module');
+        const app = createPeerMediationLoopbackApp(loopbackOptions);
+        const connectTcp = vi.fn(async () => ({ close: vi.fn(async () => undefined) }));
+        let currentTrustRoots: readonly { keyId: string; publicKey: string }[] = routeTrustRoots;
+        registerRealDirectOpenRoute(mod, app, {
+            connectTcp,
+            resolveTrustRoots: () => currentTrustRoots,
+        });
+
+        try {
+            currentTrustRoots = [];
+            const unavailable = await app.inject({
+                method: 'POST',
+                url: '/peer-mediation/v1/tunnel/open',
+                payload: createSignedDirectOpen({ grantId: 'grant_unavailable', tunnelId: 'tun_unavailable' }),
+            });
+            expect(unavailable.statusCode).toBe(400);
+            expect(unavailable.json()).toMatchObject({ ok: false, reasonCode: 'grant_unknown_key' });
+            expect(connectTcp).not.toHaveBeenCalled();
+
+            currentTrustRoots = routeTrustRoots;
+            const accepted = await app.inject({
+                method: 'POST',
+                url: '/peer-mediation/v1/tunnel/open',
+                payload: createSignedDirectOpen({ grantId: 'grant_current', tunnelId: 'tun_current' }),
+            });
+            expect(accepted.statusCode).toBe(200);
+            expect(connectTcp).toHaveBeenCalledOnce();
+        } finally {
+            await app.close();
+        }
+    });
+
     it('admits typed direct Voice application readiness without opening a base TCP connection', async () => {
         const mod = await loadRegisterRoutesModule();
         if (!mod) throw new Error('expected direct tunnel route module');
@@ -472,7 +509,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 flowKind: 'voice_media',
             }),
             selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-            supportedEncodings: ['json_base64_v1', PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
+            supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
         } as const;
 
         try {
@@ -557,7 +594,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 v: 1 as const,
                 tunnelId: 'tun_1',
                 streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-                encoding: 'json_base64_v1' as const,
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: 1024 * 1024,
                 maxFrameBytes: 64 * 1024,
             },
@@ -596,7 +633,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
             v: 1,
             tunnelId: 'tun_1',
             streamPath: '/peer-mediation/v1/tunnel/stream',
-            encoding: 'json_base64_v1',
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             initialWindowBytes: 1024 * 1024,
             maxFrameBytes: 64 * 1024,
         });
@@ -616,7 +653,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 v: 1 as const,
                 tunnelId: (input.open as { tunnelId: string }).tunnelId,
                 streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-                encoding: 'json_base64_v1' as const,
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: 1024 * 1024,
                 maxFrameBytes: 64 * 1024,
             },
@@ -816,6 +853,9 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 maxFrameBytes: 64 * 1024,
             },
             receipt: 'peer.tunnel.opened' as const,
+            // The open owner already normalized the bracketed loopback literal below; the mux
+            // must dial that canonical destination instead of re-deriving one from the frame.
+            destination: { host: '::1', port: 3000 },
             connection: baseConnection,
             limits: testTunnelLimits,
         }));
@@ -841,7 +881,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 tunnelId: 'tun_mux',
                 targetMachineId: 'machine_1',
                 routeKind: 'loopback_direct',
-                destination: { host: '127.0.0.1', port: 3000 },
+                destination: { host: '[::1]', port: 3000 },
                 selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
             },
         });
@@ -872,6 +912,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
 
         await firstWrite;
         expect(connectTcp).toHaveBeenCalledOnce();
+        expect(connectTcp).toHaveBeenCalledWith({ host: '::1', port: 3000 });
         expect(writesByConnection).toEqual([['hello']]);
 
         const responseFrame = new Promise<Buffer>((resolve) => {
@@ -1481,6 +1522,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 maxFrameBytes: 64 * 1024,
             },
             receipt: 'peer.tunnel.opened' as const,
+            destination: { host: '127.0.0.1', port: 3000 },
             connection: { close: vi.fn(async () => undefined) },
             limits: testTunnelLimits,
         }));
@@ -1554,7 +1596,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 v: 1 as const,
                 tunnelId: 'tun_1',
                 streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-                encoding: 'json_base64_v1' as const,
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: 1024 * 1024,
                 maxFrameBytes: 64 * 1024,
             },
@@ -1607,7 +1649,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                 v: 1 as const,
                 tunnelId: (input.open as { tunnelId: string }).tunnelId,
                 streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-                encoding: 'json_base64_v1' as const,
+                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 initialWindowBytes: 1024 * 1024,
                 maxFrameBytes: 64 * 1024,
             },
@@ -1681,7 +1723,7 @@ describe('registerPeerTcpTunnelLoopbackRoutes', () => {
                     v: 1 as const,
                     tunnelId: (input.open as { tunnelId: string }).tunnelId,
                     streamPath: '/peer-mediation/v1/tunnel/stream' as const,
-                    encoding: 'json_base64_v1' as const,
+                    encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                     initialWindowBytes: 1024 * 1024,
                     maxFrameBytes: 64 * 1024,
                 },

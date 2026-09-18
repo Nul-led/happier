@@ -5,6 +5,7 @@ import {
   zodSchemaToJsonSchemaObject,
   type ActionId,
   type ActionsSettingsV1,
+  type FeatureId,
 } from '@happier-dev/protocol';
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
 import type { AgentSessionNativeToolDescriptor } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -61,6 +62,8 @@ export function resolveSessionNativeToolDescriptors(params: Readonly<{
   sessionId: string;
   sessionMachineId?: string | null;
   memoryRecallGuidanceEnabled: boolean;
+  /** Current decision for the Session runtime's exact Home. Missing is fail-closed. */
+  isServerFeatureEnabled?: (featureId: FeatureId) => boolean;
 }>): readonly AgentSessionNativeToolDescriptor[] {
   const actionsSettings = resolveActionsSettingsWithEnvironmentOverride(params.accountSettings);
   const isActionEnabled = (actionId: ActionId) => isActionEnabledByActionsSettings(
@@ -77,6 +80,7 @@ export function resolveSessionNativeToolDescriptors(params: Readonly<{
     surface: 'agent',
     actionsSettings,
     isActionEnabled,
+    isServerFeatureEnabled: params.isServerFeatureEnabled ?? (() => false),
     requiredDirectActionIds: params.memoryRecallGuidanceEnabled
       ? MEMORY_RECALL_GUIDANCE_REQUIRED_ACTION_IDS
       : [],

@@ -177,6 +177,7 @@ export async function probeAgentModesBestEffort(params: {
   env?: NodeJS.ProcessEnv;
   materializedEnv?: Readonly<Record<string, string>>;
   connectedServiceSelectionCacheKey?: string | null;
+  profileCacheKey?: string | null;
 }): Promise<ProbedAgentModesResult> {
   const nowMs = Date.now();
   const cwd = typeof params.cwd === 'string' && params.cwd.trim().length > 0 ? params.cwd.trim() : process.cwd();
@@ -185,6 +186,7 @@ export async function probeAgentModesBestEffort(params: {
     probeKind: 'modes',
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
+    env: params.env,
   });
   const cacheKey = buildAgentProbeCacheKey({
     agentId: params.agentId,
@@ -192,6 +194,7 @@ export async function probeAgentModesBestEffort(params: {
     backendTarget: params.backendTarget,
     variant: probeVariant,
     connectedServiceSelection: params.connectedServiceSelectionCacheKey,
+    profile: params.profileCacheKey,
   });
 
   const cached = agentModesProbeCache.get(cacheKey);
@@ -254,6 +257,7 @@ export async function probeAgentModesBestEffort(params: {
         cwd,
         accountSettings: params.accountSettings,
         credentials: params.credentials,
+        processEnv: params.env,
         onBackend: async (backend) => await probeModesFromAcpBackend({ backend, timeoutMs }).catch(() => null),
       });
       if (configuredAcpProbe.kind === 'present') {

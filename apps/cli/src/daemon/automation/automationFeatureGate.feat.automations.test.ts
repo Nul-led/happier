@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getAutomationWorkerFeatureDecision, isAutomationWorkerEnabled } from './automationFeatureGate';
+import { getWorkflowRuntimeFeatureDecision, isWorkflowRuntimeEnabled } from './workflowFeatureGate';
 
 describe('isAutomationWorkerEnabled', () => {
   it('defaults to enabled when env is unset', () => {
@@ -26,6 +27,24 @@ describe('isAutomationWorkerEnabled', () => {
         HAPPIER_BUILD_FEATURES_DENY: 'automations',
       } as NodeJS.ProcessEnv),
     ).toBe(false);
+  });
+});
+
+describe('Workflow runtime activation', () => {
+  it('fails closed when the server bit is missing or malformed', () => {
+    const ready = (features: unknown) => ({ status: 'ready' as const, features: features as never });
+    expect(isWorkflowRuntimeEnabled({} as NodeJS.ProcessEnv, ready({ features: { automations: { enabled: true } }, capabilities: {} }))).toBe(false);
+    expect(isWorkflowRuntimeEnabled({} as NodeJS.ProcessEnv, ready({ features: { automations: { enabled: true }, workflows: { enabled: 'yes' } }, capabilities: {} }))).toBe(false);
+  });
+
+  it('requires the canonical Workflow bit and its Automations dependency', () => {
+    const ready = (automations: boolean, workflows: boolean) => ({
+      status: 'ready' as const,
+      features: { features: { automations: { enabled: automations }, workflows: { enabled: workflows } }, capabilities: {} } as never,
+    });
+    expect(isWorkflowRuntimeEnabled({} as NodeJS.ProcessEnv, ready(true, true))).toBe(true);
+    expect(isWorkflowRuntimeEnabled({} as NodeJS.ProcessEnv, ready(false, true))).toBe(false);
+    expect(getWorkflowRuntimeFeatureDecision({} as NodeJS.ProcessEnv, ready(false, true)).blockedBy).toBe('dependency');
   });
 });
 

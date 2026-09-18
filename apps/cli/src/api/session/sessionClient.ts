@@ -1,5 +1,10 @@
 import { logger } from '@/ui/logger'
 import { randomUUID } from 'node:crypto'
+import {
+    createSessionActionConfirmationAdapter,
+    retireRecoveredSessionActionConfirmations,
+    type SessionActionConfirmationRuntimeBinding,
+} from '@/session/actions/approvals/sessionActionConfirmation';
 import { EventEmitter } from 'node:events'
 import { Socket } from 'socket.io-client'
 import { AgentState, ClientToServerEvents, Metadata, ServerToClientEvents, Session, Update, UserMessage } from '../types'
@@ -12,10 +17,12 @@ import {
     updateSessionRuntimeActivityProjectionWithAck,
 } from './stateUpdates';
 import {
+    readSessionMetadataSharedEditorTupleSnapshot,
     readSessionMetadataTupleWriterSnapshot,
     updateSessionMetadataEnvelopeTupleWithRetry,
     type SessionMetadataEnvelopeTupleSnapshot,
     type SessionMetadataLegacyOwnerSnapshot,
+    type SessionMetadataSharedEditorSnapshot,
     type SessionMetadataTupleWriterSnapshot,
 } from '@/session/metadata/updateSessionMetadataWithRetry';
 import type {
@@ -70,10 +77,15 @@ import type { SessionClientConnectionContractResult } from './client/transport/s
 import { ensureSessionConnectionSupervisionActive } from './connection/ensureSessionConnectionSupervisionActive';
 import {
     createSessionClientInteractionApi,
+    type ExecutionRunPendingInputBinding,
     type SessionClientInteractionApi,
 } from './client/transport/sessionClientInteractionApi';
 import { syncSessionSnapshotFromServer } from './client/transport/syncSessionSnapshotFromServer';
 import { createSessionClientUsageObservationPublisher } from './client/createSessionClientUsageObservationPublisher';
+import type {
+    SessionClientServerBinding,
+    SessionClientTransport,
+} from './client/transport/sessionClientTransport';
 import {
     createSessionClientRecoveryRuntime,
     type SessionClientRecoveryRuntime,
@@ -106,7 +118,7 @@ import {
 } from './committedUserMessageSeqTracker';
 import { loadCommittedTranscriptLocalIdBaseline } from './client/transcript/committedTranscriptLocalIdBaseline';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { findTranscriptEncryptedMessageByLocalIdV2 } from './transcriptMessageLookup';
 import {
     mergeLocallyConsumedUserMessageSeqsV1,
@@ -116,10 +128,14 @@ import {
     catchUpSessionMessagesViaPort,
     scheduleNextStartupCatchUpRetryViaPort,
 } from './client/lifecycle/startupCatchUpRuntime';
-import type { AgentStateRequestStore } from '@/agent/permissions/agentStateRequestStore';
+import {
+    AgentStateRequestStore,
+    AgentStateResponseTargetDispatcher,
+    type PermissionResponseClaim,
+} from '@/agent/permissions/agentStateRequestStore';
+import { HAPPIER_ACTION_REQUEST_SOURCE } from '@/agent/permissions/requestKind';
 import type {
     LegacyHostSessionSystemRecord as SessionSystemRecord,
-    SessionSystemRecordNamespace,
     LegacyHostSessionSystemRecordUpsertRequest as SessionSystemRecordUpsertRequest,
     SessionTurnMutationV1,
     SessionOwnerMetadataV1,
@@ -148,9 +164,29 @@ import {
     SessionRuntimeActivityCloseAckSchema,
     SessionRuntimeActivityCloseRequestSchema,
     SessionRuntimeActivitySnapshotSchema,
+    SessionActionConfirmationsV1Schema,
+    SessionActionConfirmationResponseTargetV1Schema,
+    SESSION_FOLLOW_OBSERVE_PENDING_EVENT_V1,
+    SESSION_FOLLOW_ACKNOWLEDGE_EVENT_V1,
+    SESSION_DISCUSSION_AGENT_POST_EVENT_V1,
+    SessionDiscussionAgentPostRequestV1Schema,
+    SessionDiscussionAgentPostResponseV1Schema,
+    SessionFollowObservePendingRequestV1Schema,
+    SessionFollowObservePendingResponseV1Schema,
+    SessionFollowAcknowledgeRequestV1Schema,
+    SessionFollowAcknowledgeResponseV1Schema,
+    type SessionFollowAcknowledgeRequestV1,
+    ACCOUNT_VOICE_FOLLOW_OBSERVE_PENDING_EVENT_V1,
+    ACCOUNT_VOICE_FOLLOW_ACKNOWLEDGE_EVENT_V1,
+    AccountVoiceFollowObservePendingRequestV1Schema,
+    AccountVoiceFollowObservePendingResponseV1Schema,
+    AccountVoiceFollowAcknowledgeRequestV1Schema,
+    AccountVoiceFollowAcknowledgeResponseV1Schema,
+    type AccountVoiceFollowAcknowledgeRequestV1,
+    type SessionDiscussionAgentPostRequestV1,
 } from '@happier-dev/protocol';
 import { configuration } from '@/configuration';
-import { readStoredCredentials, type StoredCredentials } from '@/persistence';
+import type { StoredCredentials } from '@/persistence';
 import type {
     SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -165,7 +201,7 @@ import {
     supportsSessionSyncPendingInputV1,
     type SessionSyncPendingInputServerContractResult,
 } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
-import { countMaterializablePendingRows, readKnownPendingQueueState, UNKNOWN_PENDING_QUEUE_STATE, type KnownPendingQueueState, type PendingQueueState } from './pendingQueueState';
+import { countMaterializablePendingRows, readKnownPendingQueueState, readPendingExecutionRunIds, UNKNOWN_PENDING_QUEUE_STATE, type KnownPendingQueueState, type PendingQueueState } from './pendingQueueState';
 import type { SessionSnapshotRefreshReason } from './sessionSnapshotRefreshReason';
 import type {
     LocallyConsumedUserMessageConfirmation,
@@ -204,13 +240,17 @@ import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '@/daemon/connected
 import { isActiveLatestTurnStatus, readLatestTurnStatusSnapshot } from './sessionTurnStatusSnapshot';
 import {
     blockPendingQueueV2Delivery,
+    blockPendingExecutionRunDelivery,
     isAcceptedPendingQueueV2DeliveryAckResponseLoss,
     listPendingQueueV2DeliveryStatusesFromServer,
     readAcceptedPendingQueueV2DeliveryRetryDirective,
     resolveAcceptedPendingQueueV2Delivery,
+    resolveAcceptedPendingExecutionRunDelivery,
+    type PendingQueueV2DeliveryStatusEntry,
 } from './pendingQueueV2Transport';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import { delayUnrefAbortable } from '@/utils/time';
+import type { SessionProviderInputConsumerSession } from '@/agent/runtime/session/input/_types';
 import {
     isReversibleSessionProviderInputBlockReason,
     type DurableProviderInputAcceptanceV1,
@@ -230,6 +270,13 @@ type AcceptedPendingSettlementOperationAuthority = Readonly<{
     socket: Socket<ServerToClientEvents, ClientToServerEvents>;
     providerInputConsumer: ((message: UserMessage) => boolean | void) | null;
     abortSignal: AbortSignal;
+    executionRun?: ExecutionRunPendingInputBinding;
+}>;
+
+export type ExecutionRunPendingInputPort = SessionProviderInputConsumerSession & Readonly<{
+    observeProviderInputSettlement: (outcome: SessionProviderInputOutcome) => Promise<boolean>;
+    readDurableProviderInputAcceptanceV1: (localId: string, runId?: string) => Promise<DurableProviderInputAcceptanceV1>;
+    dispose: () => void;
 }>;
 
 type DurableMutationSocketTransport = Readonly<{
@@ -369,8 +416,42 @@ function createSessionSocketNotReadyError(params: Readonly<{
     return error;
 }
 
+/**
+ * The explicit Session metadata authority this client was constructed with.
+ *
+ * `owner` is the ordinary CLI/daemon composition: it holds the Account
+ * credentials required to open and reseal the layout-1 owner envelope and to
+ * write owner Agent state. `shared_editor` is the restricted runtime
+ * composition (Lane 13 Happier Runner): it holds only the Session data key and
+ * a Session-scoped runtime token, so it writes the shared projection through
+ * the server's `shared_editor` tuple mode, never discovers stored Account
+ * credentials, and never reaches owner metadata, owner Agent state, or
+ * Account-wide surfaces.
+ */
+export type SessionMetadataAuthority =
+    | Readonly<{
+        kind: 'owner';
+        credentials: StoredCredentials;
+        readCurrentCredentials?: () => Promise<StoredCredentials | null>;
+    }>
+    | Readonly<{ kind: 'shared_editor' }>;
+
+export class SessionOwnerAuthorityUnavailableError extends Error {
+    readonly code = 'session_owner_authority_required' as const;
+    readonly retryable = false as const;
+
+    constructor(operation: string) {
+        super(`${operation} requires owner Session authority`);
+        this.name = 'SessionOwnerAuthorityUnavailableError';
+    }
+}
+
 export type ApiSessionClientOptions = Readonly<{
-    credentials?: StoredCredentials;
+    metadataAuthority: SessionMetadataAuthority;
+    /** Stable execution Account from a verified restricted-runtime principal. */
+    runtimePrincipalAccountId?: string;
+    actionsSettingsProvider?: import('@/settings/actionsSettingsProvider').RuntimeActionSettingsProvider;
+    transport: SessionClientTransport;
     getAccountEncryptionCurrentness?: () => Promise<AccountEncryptionCurrentnessResponse>;
     getBrowserDaemonControlRoutes?: (() => BrowserDaemonControlRoutes | null) | null;
     getBrowserDaemonContextRoutes?: (() => BrowserContextRoutes | null) | null;
@@ -397,6 +478,10 @@ export type ApiSessionClientOptions = Readonly<{
     localMachineId?: string | null;
     initialRegisteredSessionStateFieldMutations?: readonly RegisteredSessionStateFieldMutationV1[];
     durableMutationDeliveryInitiallyActive?: boolean;
+    /** Exact destination Session update/reconnect hint for the shared host Follow reconciler. */
+    onSessionFollowInvalidated?: () => void;
+    /** Publishes Runner wake support only for the lifetime of the installed Session receiver. */
+    installSessionFollowWakeReceiver?: () => () => void;
 }>;
 
 export class ApiSessionClient extends EventEmitter {
@@ -408,13 +493,21 @@ export class ApiSessionClient extends EventEmitter {
     private metadataLayoutVersion: number;
     private metadataVersion: number;
     private ownerMetadata: SessionOwnerMetadataV1 | null;
+    private readonly metadataAuthorityKind: SessionMetadataAuthority['kind'];
+    private readonly runtimePrincipalAccountId: string | null;
     private readonly ownerCredentials: StoredCredentials | null;
+    private readonly transport: SessionClientTransport;
+    private readonly serverBinding: SessionClientServerBinding;
+    private readonly readInjectedOwnerCredentials: (() => Promise<StoredCredentials | null>) | null;
     private readonly getAccountEncryptionCurrentness: () => Promise<AccountEncryptionCurrentnessResponse>;
     private agentState: AgentState | null;
     private agentStateRequestStore: AgentStateRequestStore | null = null;
+    private sessionActionConfirmationRequestStore: AgentStateRequestStore | null = null;
+    private readonly agentStateResponseTargetDispatcher = new AgentStateResponseTargetDispatcher();
     private agentStateVersion: number;
+    private ownerActivityDelivery: 'rich_sender' | 'home_required' = 'home_required';
     private socket!: Socket<ServerToClientEvents, ClientToServerEvents>;
-    private userSocket: Socket<ServerToClientEvents, ClientToServerEvents>;
+    private userSocket: Socket<ServerToClientEvents, ClientToServerEvents> | null;
     private providerInputBacklog: UserMessage[] = [];
     private providerInputConsumer: ((message: UserMessage) => boolean | void) | null = null;
     private providerInputConsumerAttachedAtMs: number | null = null;
@@ -475,6 +568,13 @@ export class ApiSessionClient extends EventEmitter {
     private readonly pendingProviderInputSettlementWrites = new Set<Promise<void>>();
     private readonly acceptedPendingSettlementWrites = new Set<Promise<void>>();
     private readonly acceptedPendingSettlementLocalIds = new Set<string>();
+    // Archived uncertainty is no longer eligible for queue materialization, but its exact local
+    // provider custody must survive until delayed acceptance can settle the canonical server row.
+    private readonly nonBlockingArchivedPendingDeliveryLocalIds = new Set<string>();
+    private readonly executionRunPendingBindings = new Map<string, ExecutionRunPendingInputBinding>();
+    private readonly executionRunPendingCustody = new Map<string, ExecutionRunPendingInputBinding>();
+    private readonly executionRunPendingTargetListeners = new Set<(runId: string) => void | Promise<void>>();
+    private readonly initialExecutionRunPendingTargetIds: readonly string[];
     private readonly acceptedPendingSettlementLocalIdsInFlight = new Set<string>();
     private readonly acceptedPendingSettlementOperationAbortController = new AbortController();
     private readonly pendingRegisteredSessionStateFieldUpdates = new Set<Promise<void>>();
@@ -482,6 +582,9 @@ export class ApiSessionClient extends EventEmitter {
     private endSessionAndClosePromise: Promise<void> | null = null;
     private readonly sessionRuntimeControls: Partial<SessionRuntimeControls> = {};
     readonly executionRuns: HappyMcpExecutionRunService;
+    private sessionActionConfirmationAdapter: ReturnType<typeof createSessionActionConfirmationAdapter> | null = null;
+    private sessionActionConfirmationRecovery: Promise<void> | null = null;
+    private disposeSessionFollowWakeReceiver: (() => void) | null = null;
 
     /**
      * Returns the latest known agentState (may be stale if socket is disconnected).
@@ -492,10 +595,14 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async readSessionTurnsProjection(): Promise<SessionTurnsProjectionV1 | null> {
-        return await fetchSessionTurnsProjection({
+        return await this.runSessionRequest(async () => fetchSessionTurnsProjection({
             token: this.token,
             sessionId: this.sessionId,
-        });
+        }));
+    }
+
+    getAgentStateResponseTargetDispatcher(): AgentStateResponseTargetDispatcher {
+        return this.agentStateResponseTargetDispatcher;
     }
 
     bindAgentStateRequestStore(store: AgentStateRequestStore): void {
@@ -504,6 +611,150 @@ export class ApiSessionClient extends EventEmitter {
 
     getAgentStateRequestStore(): AgentStateRequestStore | null {
         return this.agentStateRequestStore;
+    }
+
+    async confirmSessionAction(
+        request: Parameters<ReturnType<typeof createSessionActionConfirmationAdapter>['confirm']>[0],
+        binding: SessionActionConfirmationRuntimeBinding | null,
+    ) {
+        await this.sessionActionConfirmationRecovery;
+        const adapter = this.initializeSessionActionConfirmation();
+        return adapter ? await adapter.confirm(request, binding) : null;
+    }
+
+    private initializeSessionActionConfirmation() {
+        const store = this.hasOwnerMetadataAuthority()
+            ? this.agentStateRequestStore
+            : this.getOrCreateScopedSessionActionConfirmationRequestStore();
+        if (!store) return null;
+        this.sessionActionConfirmationAdapter ??= createSessionActionConfirmationAdapter({
+            sessionId: this.sessionId,
+            store,
+            sessionSignal: this.acceptedPendingSettlementOperationAbortController.signal,
+            getAuthenticatedAccountId: () => this.getAuthenticatedAccountId(),
+        });
+        return this.sessionActionConfirmationAdapter;
+    }
+
+    private getOrCreateScopedSessionActionConfirmationRequestStore(): AgentStateRequestStore | null {
+        if (this.metadataAuthorityKind !== 'shared_editor'
+            || this.metadataLayoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) return null;
+        this.sessionActionConfirmationRequestStore ??= new AgentStateRequestStore({
+            target: {
+                scopeId: this.sessionId,
+                readState: () => {
+                    const metadata = this.metadata && typeof this.metadata === 'object'
+                        ? this.metadata as Record<string, unknown>
+                        : {};
+                    const parsed = SessionActionConfirmationsV1Schema.safeParse(
+                        metadata.actionConfirmationsV1,
+                    );
+                    return parsed.success
+                        ? {
+                            requests: parsed.data.requests as AgentState['requests'],
+                            completedRequests: parsed.data.completedRequests as AgentState['completedRequests'],
+                        }
+                        : { requests: {}, completedRequests: {} };
+                },
+                updateState: async (updater) => {
+                    await this.updateMetadata((metadata) => {
+                        const currentMetadata = metadata as Metadata & Record<string, unknown>;
+                        const current = SessionActionConfirmationsV1Schema.safeParse(
+                            currentMetadata.actionConfirmationsV1,
+                        );
+                        if (currentMetadata.actionConfirmationsV1 !== undefined && !current.success) {
+                            throw Object.assign(new Error('Invalid Session Action confirmation projection'), {
+                                code: 'metadata_privacy_upgrade_required' as const,
+                                retryable: false as const,
+                            });
+                        }
+                        const next = updater(current.success
+                            ? {
+                                requests: current.data.requests as AgentState['requests'],
+                                completedRequests: current.data.completedRequests as AgentState['completedRequests'],
+                            }
+                            : { requests: {}, completedRequests: {} });
+                        return {
+                            ...metadata,
+                            actionConfirmationsV1: SessionActionConfirmationsV1Schema.parse({
+                                v: 1,
+                                requests: next.requests ?? {},
+                                completedRequests: next.completedRequests ?? {},
+                            }),
+                        } as Metadata;
+                    });
+                },
+                getResponseTargetDispatcher: () => this.agentStateResponseTargetDispatcher,
+            },
+            logPrefix: '[session-action-confirmation]',
+        });
+        return this.sessionActionConfirmationRequestStore;
+    }
+
+    async respondToSessionActionConfirmation(
+        response: Readonly<{ id: string; turnId?: string; approved: boolean; decision?: string }>,
+        actor: import('@happier-dev/protocol').SessionPermissionAccountUserDecisionActorV1,
+    ): Promise<'resolved' | 'not_found' | 'invalid'> {
+        const store = this.getOrCreateScopedSessionActionConfirmationRequestStore();
+        if (!store) return 'not_found';
+        const responseRecord = response as unknown as Readonly<Record<string, unknown>>;
+        const hasForbiddenNativeFields = ['allowedTools', 'allowTools', 'updatedPermissions', 'answers'].some(
+            (key) => Object.prototype.hasOwnProperty.call(responseRecord, key),
+        );
+        const decision: Extract<PermissionResponseClaim, { origin: 'presentUser' }>['decision'] | null = response.approved
+            ? response.decision === undefined || response.decision === 'approved' ? 'approved' : null
+            : response.decision === undefined || response.decision === 'denied' ? 'denied'
+                : response.decision === 'abort' ? 'abort' : null;
+        const outstanding = store.readOutstandingRequest(response.id);
+        if (!outstanding || outstanding.source !== HAPPIER_ACTION_REQUEST_SOURCE) {
+            const completedTarget = store.readCompletedResponseTarget(response.id);
+            if (!completedTarget) return 'not_found';
+            if (!decision || hasForbiddenNativeFields) return 'invalid';
+            const completed = store.readCompletedPermissionResponseClaim({
+                requestId: response.id,
+                claim: {
+                    version: 1,
+                    origin: 'presentUser',
+                    actor,
+                    ...(response.turnId ? { turnId: response.turnId } : {}),
+                    decision,
+                    scope: 'request',
+                },
+            });
+            return completed.status === 'rejoined' ? 'resolved' : 'not_found';
+        }
+        if (hasForbiddenNativeFields) return 'invalid';
+        const target = SessionActionConfirmationResponseTargetV1Schema.safeParse(outstanding.responseTarget);
+        if (!target.success || !decision || response.turnId !== target.data.turnId) return 'invalid';
+        if (await this.getAuthenticatedAccountId() !== target.data.runtimeAccountId) return 'not_found';
+        const claim = {
+            version: 1 as const,
+            origin: 'presentUser' as const,
+            actor,
+            turnId: target.data.turnId,
+            decision,
+            scope: 'request' as const,
+        };
+        const acquired = await store.acquirePermissionResponseClaim({ requestId: response.id, claim });
+        if (acquired.status === 'conflict') return 'not_found';
+        if (acquired.status === 'not_pending') {
+            return store.readCompletedPermissionResponseClaim({ requestId: response.id, claim }).status === 'rejoined'
+                ? 'resolved'
+                : 'not_found';
+        }
+        const runtimeStillCurrent = await this.getAuthenticatedAccountId() === target.data.runtimeAccountId;
+        const completed = await store.completeRequest({
+            requestId: response.id,
+            status: decision === 'approved' ? 'approved' : 'denied',
+            decision,
+            extraCompletedFields: { permissionDecisionActorV1: actor },
+            isCurrent: () => runtimeStillCurrent,
+        });
+        if (!completed) {
+            await store.releasePermissionResponseClaim({ requestId: response.id, claim });
+            return 'not_found';
+        }
+        return 'resolved';
     }
 
     // Keep the historical test-touch points wired to the extracted owners on the live snapshot.
@@ -703,17 +954,33 @@ export class ApiSessionClient extends EventEmitter {
         return true;
     }
 
-	    constructor(token: string, session: Session, options: ApiSessionClientOptions = {}) {
+	    constructor(token: string, session: Session, options: ApiSessionClientOptions) {
 	        super()
 	        this.token = token;
+	        this.transport = options.transport;
+	        this.serverBinding = Object.freeze({
+                serverId: options.transport.serverId,
+                serverUrl: options.transport.serverUrl,
+            });
 	        this.sessionId = session.id;
+	        this.initialExecutionRunPendingTargetIds = readPendingExecutionRunIds(session) ?? [];
 	        this.metadata = session.metadata;
             this.metadataLayoutVersion = readSessionMetadataLayoutVersion(session.metadataLayoutVersion);
 	        this.metadataVersion = session.metadataVersion;
             this.ownerMetadata = session.ownerMetadata ?? null;
-            this.ownerCredentials = options.credentials ?? null;
+            const metadataAuthority = options.metadataAuthority;
+            this.metadataAuthorityKind = metadataAuthority.kind;
+            this.runtimePrincipalAccountId = metadataAuthority.kind === 'shared_editor'
+                ? options.runtimePrincipalAccountId || null
+                : null;
+            this.ownerCredentials = metadataAuthority.kind === 'owner'
+                ? metadataAuthority.credentials
+                : null;
+            this.readInjectedOwnerCredentials = metadataAuthority.kind === 'owner'
+                ? metadataAuthority.readCurrentCredentials ?? null
+                : null;
             this.getAccountEncryptionCurrentness = options.getAccountEncryptionCurrentness
-                ?? (async () => await fetchAccountEncryptionCurrentness({ token: this.token }));
+                ?? (async () => await this.runSessionRequest(async () => fetchAccountEncryptionCurrentness({ token: this.token })));
             this.storedContentCrypto = session.encryptionMode === 'plain'
                 ? { mode: 'plain', ctx: null }
                 : {
@@ -732,6 +999,7 @@ export class ApiSessionClient extends EventEmitter {
             this.applyRuntimeActivityProjectionFromServer(session);
             this.usageObservationPublisher = createSessionClientUsageObservationPublisher({
                 token: this.token,
+                transport: options.transport,
                 getSocket: () => ({
                     connected: this.socket?.connected ?? false,
                     emit: (event, report) => {
@@ -740,6 +1008,7 @@ export class ApiSessionClient extends EventEmitter {
                 }),
             });
             this.executionRuns = createSessionClientExecutionRunService({
+            serverUrl: this.transport.serverUrl,
                 token: this.token,
                 sessionId: this.sessionId,
                 getStoredContentCryptoContext: () => this.storedContentCrypto,
@@ -799,12 +1068,20 @@ export class ApiSessionClient extends EventEmitter {
             },
             getPendingQueueState: () => this.materializationRuntime.getPendingQueueState(),
             applyPendingQueueState: (state) => this.materializationRuntime.applyPendingQueueState(state),
-            onPendingChangedDrainTrigger: (state) => {
+            onPendingChangedDrainTrigger: (state, recipient) => {
                 logger.debug('[pendingQueue] pending-changed drain trigger', {
                     sessionId: this.sessionId,
                     pendingCount: state.pendingCount,
                     pendingBlockedCount: state.pendingBlockedCount,
                     pendingVersion: state.pendingVersion,
+                });
+                if (!recipient) return;
+                void this.notifyExecutionRunPendingTarget(recipient.runId).catch((error) => {
+                    logger.debug('[pendingQueue] execution-run target reconciliation failed closed', {
+                        sessionId: this.sessionId,
+                        runId: recipient.runId,
+                        error: serializeAxiosErrorForLog(error),
+                    });
                 });
             },
             onConnectedServiceTurnLifecycleEvent: (event) => {
@@ -827,8 +1104,11 @@ export class ApiSessionClient extends EventEmitter {
                     : 0,
         });
         this.recoveryRuntime = createSessionClientRecoveryRuntime({
+            ...this.storedContentCrypto,
             startupMessageCatchUpRetryDelaysMs: ApiSessionClient.STARTUP_MESSAGE_CATCH_UP_RETRY_DELAYS_MS,
             token: this.token,
+            serverUrl: this.transport.serverUrl,
+            accountChangesEnabled: this.hasOwnerMetadataAuthority(),
             sessionId: this.sessionId,
             getClosed: () => this.closed,
             getSessionConnectionSupervisor: () => this.sessionConnectionSupervisor,
@@ -850,8 +1130,10 @@ export class ApiSessionClient extends EventEmitter {
                     this.emit('metadata-updated');
                 }
             },
+            reconcilePendingExecutionRunTarget: (runId) => this.notifyExecutionRunPendingTarget(runId),
         });
         this.commitQueueRuntime = createSessionClientCommitQueueRuntime({
+            serverUrl: this.transport.serverUrl,
             token: this.token,
             sessionId: this.sessionId,
             transcriptStorage: this.transcriptStorage,
@@ -861,7 +1143,7 @@ export class ApiSessionClient extends EventEmitter {
             addPendingMaterializedLocalId: (localId) => this.materializationRuntime.addPendingMaterializedLocalId(localId),
             hasPendingMaterializedLocalId: (localId) => this.materializationRuntime.hasMaterializedLocalId(localId),
             markCommittedLocalIdAwaitingEcho: (localId) => this.materializationRuntime.markCommittedLocalIdAwaitingEcho(localId),
-            deleteMaterializedLocalId: (localId) => this.materializationRuntime.deleteMaterializedLocalId(localId),
+            deleteMaterializedLocalId: (localId) => this.deletePendingProviderInputLocalState(localId),
             observeCommittedAck: (params) => this.updateRuntime.observeCommittedAck(params),
             requestReconnect: (localId) => {
                 const supervisor = this.sessionConnectionSupervisor;
@@ -875,6 +1157,7 @@ export class ApiSessionClient extends EventEmitter {
             },
         });
         this.durableMutationOutbox = createRuntimeSessionClientDurableMutationOutbox({
+            serverUrl: this.transport.serverUrl,
             token: this.token,
             sessionId: this.sessionId,
             initialRegisteredSessionStateFieldMutations: this.initialRegisteredSessionStateFieldMutations,
@@ -945,6 +1228,7 @@ export class ApiSessionClient extends EventEmitter {
             });
         };
         this.transcriptApi = createSessionClientTranscriptApi({
+            serverUrl: this.transport.serverUrl,
             token: this.token,
             sessionId: this.sessionId,
             turnAssistantTextSnapshotStore: this.turnAssistantTextSnapshotStore,
@@ -1025,17 +1309,19 @@ export class ApiSessionClient extends EventEmitter {
             maxToolCallCacheEntries: SESSION_CLIENT_TOOL_CALL_CACHE_MAX_ENTRIES,
             transformSessionInputBeforeCommit: options.transformSessionInputBeforeCommit,
             findPersistedSessionUserMessageAdmission: ({ localId }) =>
-                findPersistedSessionUserMessageAdmission({
+                this.runSessionRequest(async () => findPersistedSessionUserMessageAdmission({
                     token: this.token,
                     sessionId: this.sessionId,
                     localId,
                     queryContext: this.getTranscriptQueryContext(),
-                }),
+                })),
             admitSessionUserMessage: async ({
                 localId,
                 text,
                 meta,
                 composerAttachments,
+                requestedAction,
+                recipient,
                 settlement,
                 inputAdmission,
             }) => {
@@ -1059,17 +1345,24 @@ export class ApiSessionClient extends EventEmitter {
                     // No admission request can be made without the current
                     // Account authority. This is definitive (unlike an
                     // acknowledgement timeout), so release any staged-media
-                    // custody before surfacing the failure.
+                    // custody before surfacing the failure. A shared editor
+                    // never authors Session user input on the Account's behalf.
                     await settle('onDefinitiveAdmissionFailure');
+                    if (!this.hasOwnerMetadataAuthority()) {
+                        throw new SessionOwnerAuthorityUnavailableError(
+                            'Session user-input admission',
+                        );
+                    }
                     throw new Error('Current Account credentials are required to admit Session user input');
                 }
-                const result = await sendSessionMessage({
+                const result = await this.runSessionRequest(async () => sendSessionMessage({
                     credentials,
                     idOrPrefix: this.sessionId,
                     message: text,
                     messageMeta: meta,
                     localId,
-                    requestedAction: { v: 1, kind: 'enqueue' },
+                    requestedAction: requestedAction ?? { v: 1, kind: 'enqueue' },
+                    ...(recipient ? { recipient } : {}),
                     inputAdmission: inputAdmission ?? buildTrustedHostSessionInputAdmissionV1('ui'),
                     wait: false,
                     timeoutMs: 30_000,
@@ -1082,7 +1375,7 @@ export class ApiSessionClient extends EventEmitter {
                     signal:
                         this.acceptedPendingSettlementOperationAbortController
                             .signal,
-                });
+                }));
                 const admissionResult = result.admissionResult;
                 if (
                     admissionResult.status === 'accepted'
@@ -1101,20 +1394,16 @@ export class ApiSessionClient extends EventEmitter {
                     // not make an already accepted Message wait for the daemon
                     // cleanup round trip before its caller can observe success.
                     void settle('onAccepted');
-                    return;
+                    return admissionResult;
                 }
                 if (admissionResult.status === 'outcomeUnknown') {
                     // The machine may already have admitted this exact local id. Preserve both
                     // the transfer stage and any just-created durable media for reconciliation;
                     // only an explicit rejected result is a safe cleanup boundary.
-                    throw new Error(
-                        `Session user input admission ${admissionResult.status}: ${admissionResult.code}`,
-                    );
+                    return admissionResult;
                 }
                 await settle('onDefinitiveAdmissionFailure');
-                throw new Error(
-                    `Session user input admission ${admissionResult.status}: ${admissionResult.code}`,
-                );
+                return admissionResult;
             },
             getTranscriptQueryContext: () =>
                 this.getTranscriptQueryContext(),
@@ -1144,6 +1433,12 @@ export class ApiSessionClient extends EventEmitter {
         registerSessionClientRuntimeHandlers({
             rpcHandlerManager: this.rpcHandlerManager,
             token: this.token,
+            ...this.serverBinding,
+            ...(this.runtimePrincipalAccountId
+                ? { runtimePrincipalAccountId: this.runtimePrincipalAccountId }
+                : {}),
+            readOwnerAccountCredentials: () => this.readCurrentOwnerCredentials(),
+            ...(options.actionsSettingsProvider ? { actionsSettingsProvider: options.actionsSettingsProvider } : {}),
             metadataPath: this.metadata?.path ?? process.cwd(),
             metadata: this.metadata,
             sessionId: this.sessionId,
@@ -1188,6 +1483,7 @@ export class ApiSessionClient extends EventEmitter {
         });
 
         this.interactionApi = createSessionClientInteractionApi({
+            serverUrl: this.transport.serverUrl,
             sessionId: this.sessionId,
             token: this.token,
             getClosed: () => this.closed,
@@ -1265,15 +1561,18 @@ export class ApiSessionClient extends EventEmitter {
             handleSessionScopedUpdate: (data) => this.updateRuntime.handleUpdate(data, {
                 source: 'session-scoped',
             }),
+            onSessionFollowInvalidated: options.onSessionFollowInvalidated,
             deliverMaterializedUserMessageToAgentQueue: (message, providerAction, requestedAction) =>
                 this.deliverUserMessageToAgentQueue(message, providerAction, requestedAction),
             clearStartupMessageCatchUpRetryTimer: () => this.recoveryRuntime.clearStartupMessageCatchUpRetryTimer(),
             clearCommittedLocalIdCleanupTimers: () => this.materializationRuntime.clearCommittedLocalIdCleanupTimers(),
             clearPendingMaterializedState: () => {
                 this.materializationRuntime.clearPendingMaterializedState();
+                this.nonBlockingArchivedPendingDeliveryLocalIds.clear();
                 this.commitQueueRuntime.clearState();
             },
-            getPendingQueueMaterializedLocalIdsSize: () => this.materializationRuntime.getPendingQueueMaterializedLocalIdsSize(),
+            getPendingQueueMaterializedLocalIdsSize: () => [...this.materializationRuntime.pendingQueueMaterializedLocalIds]
+                .filter((localId) => !this.executionRunPendingCustody.has(localId)).length,
             markPendingQueueMaterializedLocalId: (localId) =>
                 this.materializationRuntime.markPendingQueueMaterializedLocalId(localId),
             shouldAttemptPendingMaterialization: () => this.materializationRuntime.shouldAttemptPendingMaterialization(),
@@ -1294,8 +1593,10 @@ export class ApiSessionClient extends EventEmitter {
 
         const { userSocket, sessionConnectionSupervisor } = initializeSessionClientConnection({
             token: this.token,
+            transport: options.transport,
             sessionId: this.sessionId,
             localMachineId: options.localMachineId,
+            userScopedAccountUpdates: this.hasOwnerMetadataAuthority(),
             getMetadataSnapshot: () => this.metadata,
             setSessionSocket: (socket) => {
                 this.socket = socket;
@@ -1396,10 +1697,27 @@ export class ApiSessionClient extends EventEmitter {
                     this.wakePendingMaterialization();
                 }
             },
+            onSessionFollowInvalidated: options.onSessionFollowInvalidated,
         });
         this.userSocket = userSocket;
         this.sessionConnectionSupervisor = sessionConnectionSupervisor;
         void this.sessionConnectionSupervisor.start();
+        // A recovered request has no in-process Action continuation. Retire it
+        // during owner startup, even if the user never invokes another Action.
+        const recoveredActionStore = this.hasOwnerMetadataAuthority()
+            ? this.agentStateRequestStore
+            : this.getOrCreateScopedSessionActionConfirmationRequestStore();
+        if (recoveredActionStore?.listOutstandingRequests().some((request) => request.source === HAPPIER_ACTION_REQUEST_SOURCE)) {
+            this.sessionActionConfirmationRecovery = retireRecoveredSessionActionConfirmations(recoveredActionStore);
+            void this.sessionActionConfirmationRecovery?.catch((error) => {
+                logger.debug('[API] Failed to retire recovered Action confirmations', {
+                    error: serializeAxiosErrorForLog(error),
+                });
+            });
+        }
+        if (options.onSessionFollowInvalidated && options.installSessionFollowWakeReceiver) {
+            this.disposeSessionFollowWakeReceiver = options.installSessionFollowWakeReceiver();
+        }
     }
 
     private handleUserScopedUpdate(
@@ -1467,7 +1785,7 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         const current = (async (): Promise<boolean> => {
-            const credentials = await readStoredCredentials();
+            const credentials = await this.readCurrentOwnerCredentials();
             if (!credentials || credentials.token !== this.token) {
                 throw new Error('Live account settings require the active session credentials');
             }
@@ -1522,6 +1840,11 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     private async refreshAccountSettingsForMinimumVersion(settingsVersion: number | null): Promise<void> {
+        // Account settings are Account-owner state. A shared editor neither
+        // reads nor persists them, so reconnect stays a transport concern.
+        if (!this.hasOwnerMetadataAuthority()) {
+            throw new SessionOwnerAuthorityUnavailableError('Account settings convergence');
+        }
         if (settingsVersion !== null) {
             this.accountSettingsHighestObservedVersion = Math.max(
                 this.accountSettingsHighestObservedVersion,
@@ -1540,7 +1863,7 @@ export class ApiSessionClient extends EventEmitter {
             && connectionEpoch === this.sessionConnectionEpoch
         );
         const current = (async (): Promise<boolean> => {
-            const credentials = await readStoredCredentials();
+            const credentials = await this.readCurrentOwnerCredentials();
             if (!credentials || credentials.token !== this.token) {
                 throw new Error('Reconnect account settings require the active session credentials');
             }
@@ -1628,8 +1951,20 @@ export class ApiSessionClient extends EventEmitter {
         );
     }
 
+    hasOwnerMetadataAuthority(): boolean {
+        return this.metadataAuthorityKind === 'owner';
+    }
+
+    private runSessionRequest<T>(request: () => T): T {
+        return runWithServerHttpBaseUrl(this.transport.serverUrl, request);
+    }
+
     private async readCurrentOwnerCredentials(): Promise<StoredCredentials | null> {
-        const active = await readStoredCredentials().catch(() => null);
+        // A shared editor must never discover globally stored Account
+        // credentials: an unrelated signed-in Account on the endpoint machine
+        // is not this Session's owner and cannot retarget this client.
+        if (!this.hasOwnerMetadataAuthority()) return null;
+        const active = await this.readInjectedOwnerCredentials?.().catch(() => null);
         if (active?.token === this.token) return active;
         return this.ownerCredentials?.token === this.token
             ? this.ownerCredentials
@@ -1645,11 +1980,14 @@ export class ApiSessionClient extends EventEmitter {
                 const credentials = this.metadataLayoutVersion === SESSION_METADATA_LAYOUT_VERSION_V1
                     ? await this.readCurrentOwnerCredentials()
                     : this.ownerCredentials;
-                const accountEncryptionCurrentness = await this.getAccountEncryptionCurrentness();
-                return await syncSessionSnapshotFromServer({
+                const accountEncryptionCurrentness = this.hasOwnerMetadataAuthority()
+                    ? await this.runSessionRequest(() => this.getAccountEncryptionCurrentness())
+                    : null;
+                return await this.runSessionRequest(async () => syncSessionSnapshotFromServer({
                     token: this.token,
                     sessionId: this.sessionId,
                     credentials,
+                    metadataAuthority: this.metadataAuthorityKind,
                     accountEncryptionCurrentness,
                     ...this.storedContentCrypto,
                     currentMetadataLayoutVersion: this.metadataLayoutVersion,
@@ -1673,16 +2011,21 @@ export class ApiSessionClient extends EventEmitter {
                         this.applyMetadataEnvelopeTupleSnapshot(snapshot);
                         this.emit('metadata-updated');
                     },
+                    setSharedMetadataTupleSnapshot: (snapshot) => {
+                        this.applySharedMetadataSnapshot(snapshot);
+                        this.emit('metadata-updated');
+                    },
                     applyPendingQueueState: (state) => {
                         if (this.materializationRuntime.applyPendingQueueState(state)) {
                             this.emit('metadata-updated');
                         }
                     },
+                    reconcilePendingExecutionRunTarget: (runId) => this.notifyExecutionRunPendingTarget(runId),
                     applyLatestTurnStatus: (status, observedAt) => {
                         this.materializationRuntime.applyLatestTurnStatus(status, observedAt);
                     },
                     reason: opts.reason,
-                });
+                }));
             } catch (error) {
                 logger.debug('[API] Failed to sync session snapshot from server', {
                     reason: opts.reason,
@@ -1784,7 +2127,7 @@ export class ApiSessionClient extends EventEmitter {
             clearTimeout(this.userSocketDisconnectTimer);
             this.userSocketDisconnectTimer = null;
         }
-        if (this.userSocket.connected) return;
+        if (!this.userSocket || this.userSocket.connected) return;
         try {
             this.userSocket.connect();
         } catch {
@@ -1798,7 +2141,7 @@ export class ApiSessionClient extends EventEmitter {
             hasProviderInputConsumer: this.providerInputConsumer !== null,
             hasQueuedDisconnectedSessionMessages: this.commitQueueRuntime.queuedDisconnectedSessionMessages.size > 0,
         })) return;
-        if (!this.userSocket.connected) return;
+        if (!this.userSocket?.connected) return;
         if (this.userSocketDisconnectTimer) return;
 
         // Short idle grace to avoid thrashing if multiple pending items get materialized back-to-back.
@@ -1808,7 +2151,7 @@ export class ApiSessionClient extends EventEmitter {
                 hasProviderInputConsumer: this.providerInputConsumer !== null,
                 hasQueuedDisconnectedSessionMessages: this.commitQueueRuntime.queuedDisconnectedSessionMessages.size > 0,
             })) return;
-            if (!this.userSocket.connected) return;
+            if (!this.userSocket?.connected) return;
             try {
                 this.userSocket.disconnect();
             } catch {
@@ -1935,14 +2278,32 @@ export class ApiSessionClient extends EventEmitter {
         text: string;
         localId?: string;
         meta?: Record<string, unknown>;
+        requestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
+        recipient?: import('@happier-dev/protocol').ParticipantRecipientV1;
         structuredInputAdmissionPolicy?: SessionStructuredInputAdmissionPolicyV1;
         inputAdmission?: Readonly<{
-            provenance: import('@happier-dev/protocol').SessionMessageProvenanceV1;
-            request: import('@happier-dev/protocol').SessionInputRequestV1;
+            provenance: import('@happier-dev/protocol').SessionMessageProvenance;
+            request: import('@happier-dev/protocol').SessionInputRequest;
         }>;
     }>): Promise<void> {
         void this.notifyDaemonConnectedServiceTurnLifecycle('prompt_or_steer');
         await this.transcriptApi.enqueueSessionUserMessage(params);
+    }
+
+    async enqueueSessionUserMessageWithDisposition(params: Readonly<{
+        text: string;
+        localId: string;
+        meta?: Record<string, unknown>;
+        requestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
+        recipient?: import('@happier-dev/protocol').ParticipantRecipientV1;
+        structuredInputAdmissionPolicy?: SessionStructuredInputAdmissionPolicyV1;
+        inputAdmission?: Readonly<{
+            provenance: import('@happier-dev/protocol').SessionMessageProvenance;
+            request: import('@happier-dev/protocol').SessionInputRequest;
+        }>;
+    }>): Promise<import('@happier-dev/protocol').SessionInputAdmissionResultV1> {
+        void this.notifyDaemonConnectedServiceTurnLifecycle('prompt_or_steer');
+        return await this.transcriptApi.enqueueSessionUserMessageWithDisposition(params);
     }
 
     enqueueAgentMessageCommitted(
@@ -1960,7 +2321,7 @@ export class ApiSessionClient extends EventEmitter {
         signal?: AbortSignal;
         deadlineAtMs?: number;
     }) {
-        const request = async () => await loadCommittedTranscriptLocalIdBaseline({
+        const request = async () => await this.runSessionRequest(async () => loadCommittedTranscriptLocalIdBaseline({
             ...(opts?.take === undefined ? {} : { take: opts.take }),
             ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
             ...(opts?.deadlineAtMs === undefined
@@ -1977,7 +2338,7 @@ export class ApiSessionClient extends EventEmitter {
                     ...(signal === undefined ? {} : { signal }),
                     ...(deadlineAtMs === undefined ? {} : { deadlineAtMs }),
                 }),
-        });
+        }));
         const supervisor = this.sessionConnectionSupervisor;
         return supervisor
             ? await runSupervisedRequest({
@@ -1996,6 +2357,10 @@ export class ApiSessionClient extends EventEmitter {
         const update = this.transcriptApi.enqueueSessionEventCommitted(event, id);
         this.trackPendingUpdate(this.pendingTranscriptMessageUpdates, update);
         return update;
+    }
+
+    setOwnerActivityDelivery(delivery: 'rich_sender' | 'home_required'): void {
+        this.ownerActivityDelivery = delivery;
     }
 
     enqueueVoiceAgentTranscriptTurnCommitted(
@@ -2200,6 +2565,7 @@ export class ApiSessionClient extends EventEmitter {
         const result = await updateSessionAgentStateWithAck({
             socket: this.socket as any,
             sessionId: this.sessionId,
+            ownerActivityDelivery: this.ownerActivityDelivery,
             ...(this.storedContentCrypto.mode === 'plain'
                 ? { sessionEncryptionMode: 'plain' as const }
                 : {
@@ -2257,6 +2623,13 @@ export class ApiSessionClient extends EventEmitter {
     updateMetadataAsCurrentPublisher(
         handler: (metadata: Metadata) => Metadata,
     ): Promise<void> {
+        // The current-publisher precondition is an owner tuple-write condition.
+        // Refuse before the authority-check round trip rather than emitting it.
+        if (!this.hasOwnerMetadataAuthority()) {
+            return Promise.reject(new SessionOwnerAuthorityUnavailableError(
+                'Current-publisher Session metadata authority',
+            ));
+        }
         return this.metadataLock.inLock(async () => {
             const publisherPrecondition =
                 await this.readCurrentPublisherPrecondition();
@@ -2290,6 +2663,10 @@ export class ApiSessionClient extends EventEmitter {
                 retryable: false,
             });
         }
+        if (!this.hasOwnerMetadataAuthority()) {
+            await this.updateSharedMetadataLocked(handler, publisherPrecondition);
+            return;
+        }
         const credentials = await this.readCurrentOwnerCredentials();
         if (!credentials || credentials.token !== this.token) {
             throw Object.assign(
@@ -2300,13 +2677,16 @@ export class ApiSessionClient extends EventEmitter {
                 },
             );
         }
-        const accountEncryptionCurrentness = await this.getAccountEncryptionCurrentness();
-        const updated = await updateSessionMetadataEnvelopeTupleWithRetry({
+        const accountEncryptionCurrentness = await this.runSessionRequest(() => this.getAccountEncryptionCurrentness());
+        const updated = await this.runSessionRequest(async () => updateSessionMetadataEnvelopeTupleWithRetry({
             token: this.token,
             sessionId: this.sessionId,
-            credentials,
+            authority: {
+                kind: 'owner',
+                credentials,
+                accountEncryptionCurrentness,
+            },
             ...this.getMetadataTupleCryptoContext(),
-            accountEncryptionCurrentness,
             initialSnapshot:
                 await this.acquireMetadataTupleWriterSnapshot(
                     credentials,
@@ -2321,21 +2701,102 @@ export class ApiSessionClient extends EventEmitter {
                 : {}),
             mutateLegacy: async (request) =>
                 await this.mutateLegacySessionTuple(request),
-        });
+        }));
+        if (updated.mode === 'shared_editor') {
+            throw Object.assign(
+                new Error('Owner session metadata mutation changed to shared-editor authority'),
+                {
+                    code: 'metadata_privacy_upgrade_required',
+                    retryable: false,
+                },
+            );
+        }
         if (updated.metadataLayoutVersion === 1) {
             this.applyMetadataEnvelopeTupleSnapshot(updated);
         }
+    }
+
+    /**
+     * Writes the shared projection under the server's `shared_editor` tuple
+     * mode. Owner-only metadata fields are rejected by the canonical shared
+     * metadata schema rather than being silently dropped or escalated.
+     */
+    private async updateSharedMetadataLocked(
+        handler: (metadata: Metadata) => Metadata,
+        publisherPrecondition?: SessionMetadataPublisherPreconditionV1,
+    ): Promise<void> {
+        if (publisherPrecondition) {
+            throw new SessionOwnerAuthorityUnavailableError(
+                'Current-publisher Session metadata authority',
+            );
+        }
+        if (this.metadataLayoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) {
+            throw Object.assign(
+                new Error('Shared-editor Session metadata requires the layout-1 tuple'),
+                {
+                    code: 'metadata_privacy_upgrade_required',
+                    retryable: false,
+                },
+            );
+        }
+        const updated = await this.runSessionRequest(async () => updateSessionMetadataEnvelopeTupleWithRetry({
+            token: this.token,
+            sessionId: this.sessionId,
+            authority: { kind: 'shared_editor' },
+            ...this.getMetadataTupleCryptoContext(),
+            initialSnapshot: await this.acquireSharedMetadataSnapshot(),
+            mutation: {
+                kind: 'metadata',
+                update: handler,
+            },
+        }));
+        if (updated.mode !== 'shared_editor') {
+            throw Object.assign(
+                new Error('Shared-editor session metadata mutation changed authority'),
+                {
+                    code: 'metadata_privacy_upgrade_required',
+                    retryable: false,
+                },
+            );
+        }
+        this.applySharedMetadataSnapshot(updated);
+    }
+
+    private async acquireSharedMetadataSnapshot(): Promise<SessionMetadataSharedEditorSnapshot> {
+        const rawSession = await this.runSessionRequest(async () => fetchSessionByIdCompat({
+            token: this.token,
+            sessionId: this.sessionId,
+            reason: 'waitForMetadataUpdate',
+        }));
+        if (!rawSession) {
+            throw Object.assign(new Error('Session not found'), {
+                code: 'session_not_found' as const,
+                retryable: false as const,
+            });
+        }
+        return readSessionMetadataSharedEditorTupleSnapshot({
+            rawSession,
+            ...this.getMetadataTupleCryptoContext(),
+        });
+    }
+
+    private applySharedMetadataSnapshot(
+        snapshot: SessionMetadataSharedEditorSnapshot,
+    ): void {
+        this.metadataLayoutVersion = snapshot.metadataLayoutVersion;
+        this.metadata = snapshot.value.metadata;
+        this.metadataVersion = snapshot.metadataVersion;
     }
 
     private async acquireMetadataTupleWriterSnapshot(
         credentials: StoredCredentials,
         accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse,
     ): Promise<SessionMetadataTupleWriterSnapshot> {
-        const rawSession = await fetchSessionByIdCompat({
+        const rawSession = await this.runSessionRequest(async () => fetchSessionByIdCompat({
             token: this.token,
             sessionId: this.sessionId,
             reason: 'waitForMetadataUpdate',
-        });
+        }));
         if (!rawSession) {
             throw Object.assign(new Error('Session not found'), {
                 code: 'session_not_found' as const,
@@ -2396,8 +2857,12 @@ export class ApiSessionClient extends EventEmitter {
         };
     }
 
+    getServerBinding(): SessionClientServerBinding {
+        return this.serverBinding;
+    }
+
     async getAuthenticatedAccountId(): Promise<string | null> {
-        return await this.recoveryRuntime.getAccountId();
+        return this.runtimePrincipalAccountId ?? await this.recoveryRuntime.getAccountId();
     }
 
     private getMetadataTupleCryptoContext(): SessionStoredContentCryptoContext {
@@ -2641,26 +3106,26 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async upsertSessionSystemRecord(request: SessionSystemRecordUpsertRequest): Promise<void> {
-        await upsertSessionSystemRecordHttp({
+        await this.runSessionRequest(async () => upsertSessionSystemRecordHttp({
             token: this.token,
             sessionId: this.sessionId,
             namespace: request.namespace,
             kind: request.kind,
             localId: request.localId,
             content: request.content,
-        });
+        }));
     }
 
     async fetchSessionSystemRecord(params: Readonly<{
-        namespace: SessionSystemRecordNamespace;
+        namespace: SessionSystemRecord['namespace'];
         localId: string;
     }>): Promise<SessionSystemRecord | null> {
-        return fetchSessionSystemRecordHttp({
+        return this.runSessionRequest(async () => fetchSessionSystemRecordHttp({
             token: this.token,
             sessionId: this.sessionId,
             namespace: params.namespace,
             localId: params.localId,
-        });
+        }));
     }
 
     async readPermissionMediationRecord(params: Readonly<{
@@ -2670,11 +3135,11 @@ export class ApiSessionClient extends EventEmitter {
         if (params.identity.sessionId !== this.sessionId) {
             throw new Error("Permission mediation identity session does not match this client");
         }
-        return await readPermissionMediationRecordHttp({
+        return await this.runSessionRequest(async () => readPermissionMediationRecordHttp({
             token: this.token,
             identity: params.identity,
             ...(params.signal ? { signal: params.signal } : {}),
-        });
+        }));
     }
 
     async writePermissionMediationRecord(params: Readonly<{
@@ -2685,12 +3150,12 @@ export class ApiSessionClient extends EventEmitter {
         if (params.identity.sessionId !== this.sessionId) {
             throw new Error("Permission mediation identity session does not match this client");
         }
-        return await writePermissionMediationRecordHttp({
+        return await this.runSessionRequest(async () => writePermissionMediationRecordHttp({
             token: this.token,
             identity: params.identity,
             request: params.request,
             ...(params.signal ? { signal: params.signal } : {}),
-        });
+        }));
     }
 
     async prunePermissionMediationRecord(params: Readonly<{
@@ -2701,12 +3166,12 @@ export class ApiSessionClient extends EventEmitter {
         if (params.identity.sessionId !== this.sessionId) {
             throw new Error("Permission mediation identity session does not match this client");
         }
-        await prunePermissionMediationRecordHttp({
+        await this.runSessionRequest(async () => prunePermissionMediationRecordHttp({
             token: this.token,
             identity: params.identity,
             request: params.request,
             ...(params.signal ? { signal: params.signal } : {}),
-        });
+        }));
     }
 
     async listPermissionMediationRecords(params?: Readonly<{
@@ -2717,12 +3182,12 @@ export class ApiSessionClient extends EventEmitter {
         nextCursor: string | null;
         hasNext: boolean;
     }>> {
-        return await listPermissionMediationRecordsHttp({
+        return await this.runSessionRequest(async () => listPermissionMediationRecordsHttp({
             token: this.token,
             sessionId: this.sessionId,
             ...(params?.query ? { query: params.query } : {}),
             ...(params?.signal ? { signal: params.signal } : {}),
-        });
+        }));
     }
 
     private persistVoiceAgentRunMetadataFromPublicRun(run: unknown, welcomedEpoch?: number): void {
@@ -2749,6 +3214,14 @@ export class ApiSessionClient extends EventEmitter {
      * @param handler - Handler function that returns the updated agent state
      */
     updateAgentState(handler: (metadata: AgentState) => AgentState): Promise<void> {
+        // Full Agent state is owner-only in every supported layout: the server
+        // neither serves nor accepts it for a shared editor. Refuse before any
+        // fetch or socket effect instead of emulating owner credentials.
+        if (!this.hasOwnerMetadataAuthority()) {
+            return Promise.reject(
+                new SessionOwnerAuthorityUnavailableError('Session Agent-state write'),
+            );
+        }
         logger.debugLargeJson('Updating agent state', this.agentState);
         return this.metadataLock.inLock(async () => {
             if (
@@ -2771,13 +3244,16 @@ export class ApiSessionClient extends EventEmitter {
                     },
                 );
             }
-            const accountEncryptionCurrentness = await this.getAccountEncryptionCurrentness();
-            const updated = await updateSessionMetadataEnvelopeTupleWithRetry({
+            const accountEncryptionCurrentness = await this.runSessionRequest(() => this.getAccountEncryptionCurrentness());
+            const updated = await this.runSessionRequest(async () => updateSessionMetadataEnvelopeTupleWithRetry({
                 token: this.token,
                 sessionId: this.sessionId,
-                credentials,
+                authority: {
+                    kind: 'owner',
+                    credentials,
+                    accountEncryptionCurrentness,
+                },
                 ...this.getMetadataTupleCryptoContext(),
-                accountEncryptionCurrentness,
                 initialSnapshot:
                     await this.acquireMetadataTupleWriterSnapshot(
                         credentials,
@@ -2789,7 +3265,16 @@ export class ApiSessionClient extends EventEmitter {
                 },
                 mutateLegacy: async (request) =>
                     await this.mutateLegacySessionTuple(request),
-            });
+            }));
+            if (updated.mode === 'shared_editor') {
+                throw Object.assign(
+                    new Error('Owner session Agent-state mutation changed to shared-editor authority'),
+                    {
+                        code: 'metadata_privacy_upgrade_required',
+                        retryable: false,
+                    },
+                );
+            }
             if (updated.metadataLayoutVersion === 1) {
                 this.applyMetadataEnvelopeTupleSnapshot(updated);
             }
@@ -2995,6 +3480,108 @@ export class ApiSessionClient extends EventEmitter {
         return (await this.readCurrentPublisherPrecondition()) !== null;
     }
 
+    /** Observe content-free Follow progress for this authenticated destination Session. */
+    async observePendingSessionFollow() {
+        const request = SessionFollowObservePendingRequestV1Schema.parse({
+            v: 1,
+            sessionId: this.sessionId,
+        });
+        const raw = await emitSocketWithAck<unknown>({
+            socket: this.socket as any,
+            event: SESSION_FOLLOW_OBSERVE_PENDING_EVENT_V1,
+            payload: request,
+        });
+        return SessionFollowObservePendingResponseV1Schema.parse(raw);
+    }
+
+    /**
+     * Runs a Follow source read against this exact Session client's Home.
+     *
+     * The daemon can hold Sessions from several Homes at once, while the
+     * legacy HTTP helpers resolve their base URL from async context. Keep that
+     * ambient detail inside the Session transport owner and reject credentials
+     * that do not belong to this authenticated client before any source read.
+     */
+    runSessionFollowSourceRequest<T>(input: Readonly<{
+        credentials: Pick<StoredCredentials, 'token'>;
+        request: () => T;
+    }>): T {
+        if (input.credentials.token !== this.token) {
+            throw new Error('Session Follow source credentials do not belong to the destination Session Home');
+        }
+        return this.runSessionRequest(input.request);
+    }
+
+    /** Acknowledge one exact Follow frontier after provider acceptance. */
+    async acknowledgeSessionFollow(input: Omit<SessionFollowAcknowledgeRequestV1, 'v' | 'destinationSessionId'>) {
+        const request = SessionFollowAcknowledgeRequestV1Schema.parse({
+            ...input,
+            v: 1,
+            destinationSessionId: this.sessionId,
+        });
+        const raw = await emitSocketWithAck<unknown>({
+            socket: this.socket as any,
+            event: SESSION_FOLLOW_ACKNOWLEDGE_EVENT_V1,
+            payload: request,
+        });
+        return SessionFollowAcknowledgeResponseV1Schema.parse(raw);
+    }
+
+    /** Observe Account Follow sources selected for this bound Voice Session. */
+    async observePendingAccountVoiceFollow(input: Readonly<{ executionRunId: string }>) {
+        const request = AccountVoiceFollowObservePendingRequestV1Schema.parse({
+            v: 1,
+            voiceSessionId: this.sessionId,
+            executionRunId: input.executionRunId,
+        });
+        const raw = await emitSocketWithAck<unknown>({
+            socket: this.socket as any,
+            event: ACCOUNT_VOICE_FOLLOW_OBSERVE_PENDING_EVENT_V1,
+            payload: request,
+        });
+        return AccountVoiceFollowObservePendingResponseV1Schema.parse(raw);
+    }
+
+    /** Advance one Account Voice frontier after the exact provider input is accepted. */
+    async acknowledgeAccountVoiceFollow(input: Omit<AccountVoiceFollowAcknowledgeRequestV1, 'v' | 'voiceSessionId'>) {
+        const request = AccountVoiceFollowAcknowledgeRequestV1Schema.parse({
+            ...input,
+            v: 1,
+            voiceSessionId: this.sessionId,
+        });
+        const raw = await emitSocketWithAck<unknown>({
+            socket: this.socket as any,
+            event: ACCOUNT_VOICE_FOLLOW_ACKNOWLEDGE_EVENT_V1,
+            payload: request,
+        });
+        return AccountVoiceFollowAcknowledgeResponseV1Schema.parse(raw);
+    }
+
+    /**
+     * Posts through this exact authenticated current-publisher socket. The
+     * server derives Agent provenance after rechecking publisher authority;
+     * callers cannot supply a producer projection.
+     */
+    async postAgentDiscussionMessage(
+        input: Omit<SessionDiscussionAgentPostRequestV1, 'v' | 'sessionId'>,
+        options?: Readonly<{ signal?: AbortSignal }>,
+    ) {
+        options?.signal?.throwIfAborted();
+        const request = SessionDiscussionAgentPostRequestV1Schema.parse({
+            ...input,
+            v: 1,
+            sessionId: this.sessionId,
+        });
+        const raw = await emitSocketWithAck<unknown>({
+            socket: this.socket as any,
+            event: SESSION_DISCUSSION_AGENT_POST_EVENT_V1,
+            payload: request,
+            ...(options?.signal ? { signal: options.signal } : {}),
+        });
+        options?.signal?.throwIfAborted();
+        return SessionDiscussionAgentPostResponseV1Schema.parse(raw);
+    }
+
     private async closeRegisteredRuntimeActivityPublisher(): Promise<void> {
         await this.durableMutationOutbox.flush('flush');
         if (!this.socket.connected) return;
@@ -3009,11 +3596,11 @@ export class ApiSessionClient extends EventEmitter {
             });
         } catch (error) {
             try {
-                const authoritativeSession = await fetchSessionByIdCompat({
+                const authoritativeSession = await this.runSessionRequest(async () => fetchSessionByIdCompat({
                     token: this.token,
                     sessionId: this.sessionId,
                     reason: 'legacy-compat-proof',
-                });
+                }));
                 if (authoritativeSession?.active === false) return;
             } catch {
                 // Preserve the socket close failure when the authoritative read is unavailable.
@@ -3062,8 +3649,15 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async close() {
+        const disposeSessionFollowWakeReceiver = this.disposeSessionFollowWakeReceiver;
+        this.disposeSessionFollowWakeReceiver = null;
+        disposeSessionFollowWakeReceiver?.();
         this.acceptedPendingSettlementOperationAbortController.abort();
+        await this.sessionActionConfirmationRecovery;
+        await this.sessionActionConfirmationAdapter?.dispose();
+        this.agentStateResponseTargetDispatcher.dispose();
         this.committedUserMessageSeqTracker.clear();
+        this.executionRunPendingTargetListeners.clear();
         await this.drainPendingLifecycleWritesBeforeClose();
         await this.closeRegisteredRuntimeActivityPublisher().catch((error) => {
             logger.debug('[API] Failed to close registered runtime Activity publisher (non-fatal)', {
@@ -3098,10 +3692,104 @@ export class ApiSessionClient extends EventEmitter {
         return await this.interactionApi.materializeNextPendingMessageSafely(opts);
     }
 
+    bindExecutionRunPendingInput(options: ExecutionRunPendingInputBinding): ExecutionRunPendingInputPort {
+        const { runId } = options.recipient;
+        let disposed = false;
+        const binding: ExecutionRunPendingInputBinding = {
+            ...options,
+            isCurrent: () => !disposed && !this.closed
+                && this.executionRunPendingBindings.get(runId) === binding && options.isCurrent(),
+        };
+        this.executionRunPendingBindings.set(runId, binding);
+        const ownsLocalId = (localId: string): boolean => this.executionRunPendingCustody.get(localId) === binding;
+        return {
+            getMetadataSnapshot: options.getMetadataSnapshot,
+            waitForMetadataUpdate: (signal) => this.waitForMetadataUpdate(signal),
+            shouldAttemptPendingMaterialization: () => binding.isCurrent(),
+            reconcilePendingProviderInputCustodyBeforeMaterialization: async () => binding.isCurrent()
+                && ![...this.materializationRuntime.pendingQueueMaterializedLocalIds].some(ownsLocalId),
+            materializeNextPendingMessageSafely: (opts) => this.interactionApi.materializeNextExecutionRunPendingMessageSafely({
+                ...binding,
+                hasCustody: (localId) => this.hasPendingProviderInput(localId),
+                markCustody: (localId) => {
+                    const incumbent = this.executionRunPendingCustody.get(localId);
+                    if (incumbent && incumbent !== binding) throw new Error('Pending input already belongs to another run binding');
+                    this.executionRunPendingCustody.set(localId, binding);
+                    this.materializationRuntime.markPendingQueueMaterializedLocalId(localId);
+                    this.materializationRuntime.markAgentQueueEchoSuppressedLocalId(localId);
+                },
+            }, opts),
+            observeProviderInputSettlement: (outcome) => binding.isCurrent() && ownsLocalId(outcome.localId)
+                ? this.observeProviderInputSettlement(outcome) : Promise.resolve(false),
+            // Rejoin reads are scoped by the exact current Run binding and the
+            // persisted recipient anchor; local in-memory custody is not required
+            // after an acknowledgement loss or process restart.
+            readDurableProviderInputAcceptanceV1: (localId) => binding.isCurrent()
+                ? this.readDurableProviderInputAcceptanceV1(localId, runId) : Promise.resolve('unknown'),
+            dispose: () => {
+                disposed = true;
+                if (this.executionRunPendingBindings.get(runId) === binding) this.executionRunPendingBindings.delete(runId);
+            },
+        };
+    }
+
+    private async notifyExecutionRunPendingTarget(runId: string): Promise<void> {
+        const binding = this.executionRunPendingBindings.get(runId);
+        if (binding?.isCurrent()) binding.wake?.();
+        await Promise.all([...this.executionRunPendingTargetListeners].map(async (listener) => {
+            await listener(runId);
+        }));
+    }
+
+    subscribeExecutionRunPendingTarget(
+        listener: (runId: string) => void | Promise<void>,
+    ): () => void {
+        this.executionRunPendingTargetListeners.add(listener);
+        for (const runId of this.initialExecutionRunPendingTargetIds) {
+            void Promise.resolve().then(() => listener(runId)).catch((error) => {
+                logger.debug('[pendingQueue] initial execution-run target reconciliation failed closed', {
+                    sessionId: this.sessionId,
+                    runId,
+                    error: serializeAxiosErrorForLog(error),
+                });
+            });
+        }
+        return () => this.executionRunPendingTargetListeners.delete(listener);
+    }
+
+    async listExecutionRunPendingDeliveryStatuses(
+        runId: string,
+    ): Promise<PendingQueueV2DeliveryStatusEntry[]> {
+        return await this.runSessionRequest(async () => listPendingQueueV2DeliveryStatusesFromServer({
+            token: this.token,
+            sessionId: this.sessionId,
+            recipient: { kind: 'execution_run', runId },
+        }));
+    }
+
+    async blockExecutionRunPendingDelivery(runId: string, localId: string): Promise<boolean> {
+        const result = await blockPendingExecutionRunDelivery({
+            socket: this.socket,
+            sessionId: this.sessionId,
+            recipient: { kind: 'execution_run', runId },
+            localId,
+            reason: 'session_input_target_unavailable',
+        });
+        if (result.pendingQueueState && this.materializationRuntime.applyPendingQueueState(result.pendingQueueState)) {
+            this.emit('metadata-updated');
+        }
+        return result.didUpdate;
+    }
+
     hasPendingProviderInput(localId: string): boolean {
         const normalizedLocalId = readPendingLocalId(localId);
         return normalizedLocalId !== null
             && this.materializationRuntime.hasPendingQueueMaterializedLocalId(normalizedLocalId);
+    }
+
+    private deletePendingProviderInputLocalState(localId: string): void {
+        this.materializationRuntime.deleteMaterializedLocalId(localId);
+        this.nonBlockingArchivedPendingDeliveryLocalIds.delete(localId);
     }
 
     /**
@@ -3117,14 +3805,18 @@ export class ApiSessionClient extends EventEmitter {
      */
     async readDurableProviderInputAcceptanceV1(
         localId: string,
+        runId?: string,
     ): Promise<DurableProviderInputAcceptanceV1> {
         const normalizedLocalId = readPendingLocalId(localId);
         if (!normalizedLocalId) return 'unknown';
+        const targetRecipient = runId === undefined
+            ? undefined
+            : { kind: 'execution_run' as const, runId };
         if (this.getCommittedUserMessageSeq(normalizedLocalId) !== null) return 'accepted';
         try {
             const transcriptLookup = await findTranscriptEncryptedMessageByLocalIdV2({
                 token: this.token,
-                serverUrl: resolveServerHttpBaseUrl(),
+                serverUrl: this.transport.serverUrl,
                 sessionId: this.sessionId,
                 localId: normalizedLocalId,
             });
@@ -3134,12 +3826,17 @@ export class ApiSessionClient extends EventEmitter {
                     : 'unknown';
             }
             if (transcriptLookup.type !== 'not_found') return 'unknown';
+            // Main pending absence is not evidence about an execution-run row. For the main
+            // route, local provider custody also remains ambiguous; target reads use their
+            // exact route so a restart/reconnect can recover a definitive pre-effect outcome.
+            if (!targetRecipient && this.executionRunPendingCustody.has(normalizedLocalId)) return 'unknown';
 
-            const statuses = await listPendingQueueV2DeliveryStatusesFromServer({
+            const statuses = await this.runSessionRequest(async () => listPendingQueueV2DeliveryStatusesFromServer({
                 token: this.token,
                 sessionId: this.sessionId,
                 includeDiscarded: true,
-            });
+                ...(targetRecipient ? { recipient: targetRecipient } : {}),
+            }));
             const entry = statuses.find((candidate) => candidate.localId === normalizedLocalId);
             if (!entry) return 'unknown';
             return isPendingDeliveryProviderEffectPossibleV1(entry.deliveryStatus)
@@ -3158,25 +3855,37 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     async reconcilePendingProviderInputCustodyBeforeMaterialization(): Promise<boolean> {
-        const localIds = [...this.materializationRuntime.pendingQueueMaterializedLocalIds];
+        const localIds = [...this.materializationRuntime.pendingQueueMaterializedLocalIds]
+            .filter((localId) => (
+                !this.executionRunPendingCustody.has(localId)
+                && !this.nonBlockingArchivedPendingDeliveryLocalIds.has(localId)
+            ));
         if (localIds.length === 0) return true;
 
         try {
-            const statuses = await listPendingQueueV2DeliveryStatusesFromServer({
+            const statuses = await this.runSessionRequest(async () => listPendingQueueV2DeliveryStatusesFromServer({
                 token: this.token,
                 sessionId: this.sessionId,
-            });
-            const statusByLocalId = new Map(statuses.map((entry) => [entry.localId, entry.status]));
+                includeDiscarded: true,
+            }));
+            const statusByLocalId = new Map(statuses.map((entry) => [entry.localId, entry.deliveryStatus]));
             for (const localId of localIds) {
                 const status = statusByLocalId.get(localId);
-                if (status !== undefined && status !== 'discarded') continue;
+                if (
+                    status?.status === 'discarded'
+                    && isPendingDeliveryArchivedUncertaintyReasonV1(status.reason)
+                ) {
+                    this.nonBlockingArchivedPendingDeliveryLocalIds.add(localId);
+                    continue;
+                }
+                if (status !== undefined && status.status !== 'discarded') continue;
                 if (!this.materializationRuntime.hasPendingQueueMaterializedLocalId(localId)) continue;
                 logger.debug('[pendingQueue] exact terminal server truth retired local provider custody', {
                     sessionId: this.sessionId,
                     localId,
-                    serverStatus: status ?? 'absent',
+                    serverStatus: status?.status ?? 'absent',
                 });
-                this.materializationRuntime.deleteMaterializedLocalId(localId);
+                this.deletePendingProviderInputLocalState(localId);
                 this.acceptedPendingSettlementLocalIds.delete(localId);
             }
         } catch (error) {
@@ -3187,7 +3896,11 @@ export class ApiSessionClient extends EventEmitter {
             });
         }
 
-        return this.materializationRuntime.pendingQueueMaterializedLocalIds.size === 0;
+        return ![...this.materializationRuntime.pendingQueueMaterializedLocalIds]
+            .some((localId) => (
+                !this.executionRunPendingCustody.has(localId)
+                && !this.nonBlockingArchivedPendingDeliveryLocalIds.has(localId)
+            ));
     }
 
     /**
@@ -3203,7 +3916,9 @@ export class ApiSessionClient extends EventEmitter {
             && authority.socket === this.socket
             && authority.socket.connected === true
             && authority.sessionConnectionEpoch === this.sessionConnectionEpoch
-            && authority.providerInputConsumer === this.providerInputConsumer
+            && (authority.executionRun
+                ? authority.executionRun.isCurrent() && this.executionRunPendingCustody.get(localId) === authority.executionRun
+                : authority.providerInputConsumer === this.providerInputConsumer)
             && this.materializationRuntime.hasPendingQueueMaterializedLocalId(localId);
     }
 
@@ -3217,13 +3932,16 @@ export class ApiSessionClient extends EventEmitter {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 if (!this.isAcceptedPendingSettlementOperationCurrent(authority, localId)) return;
                 try {
-                    const result = await resolveAcceptedPendingQueueV2Delivery({
+                    const result = authority.executionRun ? await resolveAcceptedPendingExecutionRunDelivery({
+                        socket: authority.socket, sessionId: this.sessionId, localId,
+                        recipient: authority.executionRun.recipient, sidechainId: authority.executionRun.sidechainId,
+                    }) : await resolveAcceptedPendingQueueV2Delivery({
                         socket: authority.socket,
                         sessionId: this.sessionId,
                         localId,
                     });
                     if (!this.isAcceptedPendingSettlementOperationCurrent(authority, localId)) return;
-                    if (result.pendingQueueState && this.materializationRuntime.applyPendingQueueState(result.pendingQueueState)) {
+                    if (!authority.executionRun && result.pendingQueueState && this.materializationRuntime.applyPendingQueueState(result.pendingQueueState)) {
                         this.emit('metadata-updated');
                     }
                     const hasExactCommittedMessage = result.message?.localId === localId
@@ -3236,7 +3954,10 @@ export class ApiSessionClient extends EventEmitter {
                     if (hasExactCommittedMessage) {
                         this.recordCommittedUserMessageSeq(localId, result.message!.seq);
                     }
-                    this.materializationRuntime.deleteMaterializedLocalId(localId);
+                    this.deletePendingProviderInputLocalState(localId);
+                    if (authority.executionRun) {
+                        this.executionRunPendingCustody.delete(localId);
+                    }
                     this.acceptedPendingSettlementLocalIds.delete(localId);
                     return;
                 } catch (error) {
@@ -3299,7 +4020,8 @@ export class ApiSessionClient extends EventEmitter {
                     this.acceptedPendingSettlementLocalIds.delete(localId);
                     continue;
                 }
-                void this.trackAcceptedPendingSettlement(localId, authority).catch((error) => {
+                const executionRun = this.executionRunPendingCustody.get(localId);
+                void this.trackAcceptedPendingSettlement(localId, { ...authority, ...(executionRun ? { executionRun } : {}) }).catch((error) => {
                     logger.debug('[pendingQueue] accepted provider-input settlement reoffer failed', {
                         sessionId: this.sessionId,
                         localId,
@@ -3319,12 +4041,14 @@ export class ApiSessionClient extends EventEmitter {
         const localId = readPendingLocalId(outcome.localId);
         if (!localId || this.closed || !this.hasPendingProviderInput(localId)) return Promise.resolve(false);
         if (outcome.kind === 'custody_observed') return Promise.resolve(false);
+        const executionRun = this.executionRunPendingCustody.get(localId);
+        if (executionRun && !executionRun.isCurrent()) return Promise.resolve(false);
 
         let didRetireExactPreProviderCustody = false;
         const settlement = (async () => {
             if (outcome.kind === 'accepted') {
                 this.acceptedPendingSettlementLocalIds.add(localId);
-                if (outcome.appliedModel) {
+                if (outcome.appliedModel && !executionRun) {
                     const appliedModel = SessionAppliedModelV1Schema.parse({
                         v: 1,
                         provider: outcome.appliedModel.provider,
@@ -3353,6 +4077,7 @@ export class ApiSessionClient extends EventEmitter {
                     socket: this.socket,
                     providerInputConsumer: this.providerInputConsumer,
                     abortSignal: this.acceptedPendingSettlementOperationAbortController.signal,
+                    ...(executionRun ? { executionRun } : {}),
                 };
                 await this.trackAcceptedPendingSettlement(localId, authority);
                 return;
@@ -3361,20 +4086,24 @@ export class ApiSessionClient extends EventEmitter {
             const reason = outcome.kind === 'rejected_before_effect'
                 ? outcome.reason
                 : 'delivery_outcome_uncertain';
-            const result = await blockPendingQueueV2Delivery({
+            const result = executionRun ? await blockPendingExecutionRunDelivery({
+                socket: this.socket, sessionId: this.sessionId, localId, recipient: executionRun.recipient, reason,
+            }) : await this.runSessionRequest(async () => blockPendingQueueV2Delivery({
                 token: this.token,
                 sessionId: this.sessionId,
                 localId,
                 reason,
-            });
+            }));
             const didRequeueConditionalSteer =
                 reason === 'conditional_steer_unavailable'
-                && result.usedLegacySteeringUnavailableFallback !== true;
-            if (result.pendingQueueState && this.materializationRuntime.applyPendingQueueState(result.pendingQueueState)) {
+                && (!('usedLegacySteeringUnavailableFallback' in result) || result.usedLegacySteeringUnavailableFallback !== true);
+            if (executionRun && !executionRun.isCurrent()) return;
+            if (!executionRun && result.pendingQueueState && this.materializationRuntime.applyPendingQueueState(result.pendingQueueState)) {
                 this.emit('metadata-updated');
             }
             if (didRequeueConditionalSteer) {
-                this.materializationRuntime.deleteMaterializedLocalId(localId);
+                this.deletePendingProviderInputLocalState(localId);
+                if (executionRun) this.executionRunPendingCustody.delete(localId);
                 this.materializationRuntime.clearAgentQueueEchoSuppressedLocalId(localId);
             }
             if (
@@ -3384,7 +4113,8 @@ export class ApiSessionClient extends EventEmitter {
                     || outcome.retireLocalCustodyAfterDurableBlock === true
                 )
             ) {
-                this.materializationRuntime.deleteMaterializedLocalId(localId);
+                this.deletePendingProviderInputLocalState(localId);
+                if (executionRun) this.executionRunPendingCustody.delete(localId);
                 didRetireExactPreProviderCustody =
                     outcome.reason === 'provider_unavailable_before_acceptance'
                     && outcome.retireLocalCustodyAfterDurableBlock === true;

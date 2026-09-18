@@ -20,6 +20,11 @@ function buildActionBackedTools(): readonly HappierBuiltInToolDefinition[] {
       actionId: spec.id,
       inputSchema: spec.inputSchema,
       ...(spec.contextualDefaults ? { contextualDefaults: spec.contextualDefaults } : {}),
+      ...(spec.outputSchema === undefined ? {} : { outputSchema: spec.outputSchema }),
+      annotations: {
+        ...(spec.sideEffectClass === 'read' ? { readOnlyHint: true } : {}),
+        destructiveHint: spec.safety === 'danger',
+      },
     });
   }
 

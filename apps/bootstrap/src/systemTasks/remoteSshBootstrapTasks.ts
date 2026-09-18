@@ -34,6 +34,7 @@ type SshConnectionWithPasswordConfig = SshConnectionConfig & Readonly<{ password
 export async function resolveRemoteSshHostTrustDefault(params: Readonly<{
   ssh: SshConnectionConfig;
   knownHostsMode: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<RemoteHostTrustResolution> {
   if (params.knownHostsMode === 'system') {
     return { status: 'trusted' };
@@ -49,7 +50,7 @@ export async function resolveRemoteSshHostTrustDefault(params: Readonly<{
     timeoutSec: 5,
     keyType: 'ed25519',
   });
-  const keyscan = await runCommandCapture(keyscanInvocation);
+  const keyscan = await runCommandCapture({ ...keyscanInvocation, ...(params.signal ? { signal: params.signal } : {}) });
   if (keyscan.status !== 0 || !keyscan.stdout.trim()) {
     throw new Error(redactSshText(keyscan.stderr || 'Failed to resolve SSH host key.'));
   }

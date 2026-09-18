@@ -7,6 +7,11 @@ export type PersonalHomeAuthenticatedReadiness = Readonly<{
   homeServerIdentityId: string;
   accountCount: number;
   sessionCount: number;
+  /**
+   * The server-owned H6 bootstrap outcome. Older startup receipts omit this
+   * additive field; current Personal Home servers always publish it.
+   */
+  teamsBootstrapStatus?: 'ready' | 'setup_required';
 }>;
 
 const DEFAULT_READINESS_WAIT_MS = 10_000;
@@ -15,25 +20,36 @@ const READINESS_POLL_MS = 100;
 export function parsePersonalHomeAuthenticatedReadiness(value: unknown): PersonalHomeAuthenticatedReadiness | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Readonly<Record<string, unknown>>;
-  if (Object.keys(record).some((key) => !['authenticated', 'homeServerIdentityId', 'accountCount', 'sessionCount'].includes(key))) return null;
+  if (Object.keys(record).some((key) => ![
+    'authenticated',
+    'homeServerIdentityId',
+    'accountCount',
+    'sessionCount',
+    'teamsBootstrapStatus',
+  ].includes(key))) return null;
   if (record.authenticated !== true) return null;
   const homeServerIdentityId = typeof record.homeServerIdentityId === 'string'
     ? record.homeServerIdentityId.trim()
     : '';
   const accountCount = record.accountCount;
   const sessionCount = record.sessionCount;
+  const teamsBootstrapStatus = record.teamsBootstrapStatus;
   if (
     !homeServerIdentityId
     || !Number.isSafeInteger(accountCount)
     || Number(accountCount) < 1
     || !Number.isSafeInteger(sessionCount)
     || Number(sessionCount) < 0
+    || (teamsBootstrapStatus !== undefined
+      && teamsBootstrapStatus !== 'ready'
+      && teamsBootstrapStatus !== 'setup_required')
   ) return null;
   return {
     authenticated: true,
     homeServerIdentityId,
     accountCount: Number(accountCount),
     sessionCount: Number(sessionCount),
+    ...(teamsBootstrapStatus ? { teamsBootstrapStatus } : {}),
   };
 }
 

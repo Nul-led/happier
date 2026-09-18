@@ -56,6 +56,78 @@ describe('leased Agent runtime resolution', () => {
         expect(resolved).toBe(nativeRuntime);
     });
 
+    it('composes the leased auxiliary terminal beside a declarative primary runtime', async () => {
+        const terminal = Object.freeze({
+            resolveLaunch: vi.fn(async () => ({ argv: ['fixture-terminal'] })),
+        });
+        const lease: AgentRuntimeRegistrationLease = Object.freeze({
+            pluginId: 'acme.agent', pluginVersion: '1.0.0', agentId: 'assistant', localAgentId: 'assistant', generation: '7', immutableGenerationId: null, hasPrimaryRuntime: true, isCurrent: () => true,
+            retirementSignal: new AbortController().signal,
+            terminal,
+            createAgentRuntimeSurfaceInvocationContext:
+                createUnexpectedAgentRuntimeSurfaceInvocationContext,
+            createRuntime: async () => Object.freeze({
+                sessions: Object.freeze({
+                    open: async () => {
+                        throw new Error('not invoked');
+                    },
+                }),
+            }),
+        });
+
+        const resolved = await resolveLeasedAgentRuntime({ lease });
+
+        expect(resolved.surfaces?.terminal).toBe(terminal);
+    });
+
+    it('fails closed when the primary runtime and auxiliary contribution both own terminal', async () => {
+        const terminal = Object.freeze({
+            resolveLaunch: vi.fn(async () => ({ argv: ['fixture-terminal'] })),
+        });
+        const lease: AgentRuntimeRegistrationLease = Object.freeze({
+            pluginId: 'acme.agent', pluginVersion: '1.0.0', agentId: 'assistant', localAgentId: 'assistant', generation: '7', immutableGenerationId: null, hasPrimaryRuntime: true, isCurrent: () => true,
+            retirementSignal: new AbortController().signal,
+            terminal,
+            createAgentRuntimeSurfaceInvocationContext:
+                createUnexpectedAgentRuntimeSurfaceInvocationContext,
+            createRuntime: async () => Object.freeze({
+                sessions: Object.freeze({
+                    open: async () => {
+                        throw new Error('not invoked');
+                    },
+                }),
+                surfaces: Object.freeze({ terminal }),
+            }),
+        });
+
+        await expect(resolveLeasedAgentRuntime({ lease })).rejects.toThrow(/competing.*terminal/i);
+    });
+
+    it('fails closed when leased and host-bound auxiliary surfaces both own terminal', async () => {
+        const terminal = Object.freeze({
+            resolveLaunch: vi.fn(async () => ({ argv: ['fixture-terminal'] })),
+        });
+        const lease: AgentRuntimeRegistrationLease = Object.freeze({
+            pluginId: 'acme.agent', pluginVersion: '1.0.0', agentId: 'assistant', localAgentId: 'assistant', generation: '7', immutableGenerationId: null, hasPrimaryRuntime: true, isCurrent: () => true,
+            retirementSignal: new AbortController().signal,
+            terminal,
+            createAgentRuntimeSurfaceInvocationContext:
+                createUnexpectedAgentRuntimeSurfaceInvocationContext,
+            createRuntime: async () => Object.freeze({
+                sessions: Object.freeze({
+                    open: async () => {
+                        throw new Error('not invoked');
+                    },
+                }),
+            }),
+        });
+
+        await expect(resolveLeasedAgentRuntime({
+            lease,
+            resolveHostSurfaces: async () => Object.freeze({ terminal }),
+        })).rejects.toThrow(/competing leased and host.*terminal/i);
+    });
+
     it('projects host-bound surfaces onto the leased Agent runtime without replacing native surfaces', async () => {
         const retirementSignal = new AbortController().signal;
         const checkpoint = Object.freeze({

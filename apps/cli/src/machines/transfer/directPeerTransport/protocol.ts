@@ -50,11 +50,8 @@ export function formatCandidateHost(host: string): string {
 
 export function readDirectPeerAuthorizationToken(value: string | undefined): string | null {
   const raw = String(value ?? '').trim();
-  if (!raw) return null;
-  const [scheme, token] = raw.split(/\s+/, 2);
-  if (scheme !== DIRECT_PEER_AUTH_SCHEME) return null;
-  const normalizedToken = String(token ?? '').trim();
-  return normalizedToken.length > 0 ? normalizedToken : null;
+  const match = /^Bearer ([^\s]+)$/.exec(raw);
+  return match?.[1] ?? null;
 }
 
 export function extractDirectPeerRequestAuth(candidate: TransferEndpointCandidate): Readonly<{

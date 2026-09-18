@@ -1,12 +1,12 @@
 import {
-  ConnectedServiceBindingsV1Schema,
+  ConnectedServiceBindingsV2IngressSchema,
   ConnectedServiceMaterializationIdentityV1Schema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
   type ConnectedServiceMaterializationIdentityV1,
 } from '@happier-dev/protocol';
 
 export type ConnectedServiceRuntimeSnapshot = Readonly<{
-  connectedServices?: ConnectedServiceBindingsV1;
+  connectedServices?: ConnectedServiceBindingsV2;
   connectedServicesUpdatedAt?: number;
   connectedServiceMaterializationIdentityV1?: ConnectedServiceMaterializationIdentityV1;
 }>;
@@ -15,8 +15,8 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readConnectedServices(value: unknown): ConnectedServiceBindingsV1 | undefined {
-  const parsed = ConnectedServiceBindingsV1Schema.safeParse(value);
+function readConnectedServices(value: unknown): ConnectedServiceBindingsV2 | undefined {
+  const parsed = ConnectedServiceBindingsV2IngressSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -31,7 +31,7 @@ function readMaterializationIdentity(value: unknown): ConnectedServiceMaterializ
 
 export function hasConnectedServiceBindings(
   snapshot: ConnectedServiceRuntimeSnapshot,
-): snapshot is ConnectedServiceRuntimeSnapshot & Readonly<{ connectedServices: ConnectedServiceBindingsV1 }> {
+): snapshot is ConnectedServiceRuntimeSnapshot & Readonly<{ connectedServices: ConnectedServiceBindingsV2 }> {
   return Boolean(snapshot.connectedServices && Object.keys(snapshot.connectedServices.bindingsByServiceId).length > 0);
 }
 

@@ -1,9 +1,12 @@
+import { logger } from '@/ui/logger';
 import {
   buildProviderAccountUsageRecordId,
+  buildRecoveryCreditConsumeIdempotencyKey,
   buildQualifiedPluginContributionKey,
   ConnectedServiceIdSchema,
   ConnectedServiceCredentialRevisionV1Schema,
   ConnectedServiceUsageSourceV1Schema,
+  isConnectedServiceQuotaObservationFresh,
   isConnectedServiceCredentialHealthStatusUsable,
   openConnectedServiceQuotaSnapshotCiphertext,
   openQualifiedConnectedAccountQuotaResponseV4,
@@ -91,10 +94,12 @@ import {
   buildProviderAccountUsageSnapshotFromQualifiedQuotaRow,
 } from '../accountUsage/fromConnectedServiceQuotaObservation';
 import {
+  resolveConnectedServiceAuthGroupPriorityPrimaryProfileId,
   resolveConnectedServiceAuthGroupSoftSwitchSourceEvidence,
 } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
 import {
   buildConnectedServiceAuthGroupSwitchStateFromAccountUsage,
+  buildQualifiedConnectedAccountAuthGroupAccountUsageView,
   resolveAccountUsageSnapshotsByGroupProfile,
   type ConnectedServiceAuthGroupAccountUsageView,
   type AccountUsageStoreForAuthGroupSwitchState,
@@ -269,23 +274,7 @@ function canonicalConnectedAccountServiceKeyForSources(
 function scalarQualifiedGroupAccountUsageView(
   input: ScalarQualifiedConnectedAccountGroup,
 ): ConnectedServiceAuthGroupAccountUsageView {
-  return {
-    // Keep the canonical qualified service key: the runtime registry and the
-    // quota lifecycle state are keyed by `ConnectedAccountServiceKey`, and
-    // legacy consumers reverse-project at their own seam.
-    serviceId: input.serviceId,
-    groupId: input.group.ref.groupId,
-    activeProfileId: input.group.activeConnectedAccountId,
-    generation: input.group.generation,
-    policy: input.group.policy,
-    members: input.group.members.map((member) => ({
-      profileId: member.connectedAccountId,
-      priority: member.priority,
-      enabled: member.enabled,
-      state: member.state,
-      createdAt: member.createdAt,
-    })),
-  };
+  return buildQualifiedConnectedAccountAuthGroupAccountUsageView(input.group);
 }
 
 function qualifiedAccountQuotaKey(
@@ -482,6 +471,13 @@ type QuotaApi = Readonly<{
 type ExistingQuotaSnapshotResponse =
   | Awaited<ReturnType<QuotaApi['getConnectedServiceQuotaSnapshotSealed']>>
   | Awaited<ReturnType<NonNullable<QuotaApi['getConnectedServiceQuotaSnapshotPlain']>>>;
+
+export type AutomaticQuotaResetContext = Readonly<{ groupId: string; sessionId?: string }>;
+export type AutomaticQuotaResetConsumedEvent = AutomaticQuotaResetContext & Readonly<{
+  serviceId: ConnectedAccountServiceKey;
+  profileId: string;
+  receipt: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1;
+}>;
 
 export type ConnectedServiceQuotaRecoveryCreditConsumeResult =
   | Readonly<{
@@ -1089,6 +1085,7 @@ export class ConnectedServiceQuotasCoordinator {
   private readonly liveIdentityProbeUnsupportedSessionIds = new Set<string>();
   private readonly quotaLifecycleStateByGroupKey = new Map<string, ConnectedServiceAuthGroupQuotaLifecycleState>();
   private readonly onQuotaLifecycleTransition: ConnectedServiceQuotaLifecycleListener | null;
+  private readonly onAutomaticQuotaResetConsumed: ((event: AutomaticQuotaResetConsumedEvent) => Promise<void>) | null;
   private readonly recoveryCreditConsumeResultsByKey = new Map<string, ConnectedServiceQuotaRecoveryCreditConsumeResult>();
   private readonly recoveryCreditConsumeInFlightByKey = new Map<string, Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult>>();
   private readonly startupCurrentSourceRefreshByKey = new Map<string, LegacyConnectedServiceUsageSource>();
@@ -1147,6 +1144,7 @@ export class ConnectedServiceQuotasCoordinator {
     quotaPersistenceMaxConsecutiveFailures?: number;
     quotaLifecycleFreshnessMs?: number;
     onQuotaLifecycleTransition?: ConnectedServiceQuotaLifecycleListener | null;
+    onAutomaticQuotaResetConsumed?: (event: AutomaticQuotaResetConsumedEvent) => Promise<void>;
     runtimeRegistry?: ConnectedServiceRuntimeRegistry;
     qualifiedConnectedAccountRuntime?:
       QualifiedConnectedAccountQuotaRuntime | null;
@@ -1246,6 +1244,7 @@ export class ConnectedServiceQuotasCoordinator {
         ? Math.max(0, Math.trunc(params.quotaLifecycleFreshnessMs))
         : this.quotaPersistenceMinFreshnessMs;
     this.onQuotaLifecycleTransition = params.onQuotaLifecycleTransition ?? null;
+    this.onAutomaticQuotaResetConsumed = params.onAutomaticQuotaResetConsumed ?? null;
     this.runtimeRegistry = params.runtimeRegistry ?? new ConnectedServiceRuntimeRegistry();
     this.qualifiedConnectedAccountRuntime =
       params.qualifiedConnectedAccountRuntime ?? null;
@@ -2248,7 +2247,7 @@ export class ConnectedServiceQuotasCoordinator {
   }
 
   private buildRecoveryCreditConsumeLedgerKey(input: Readonly<{
-    serviceId: ConnectedServiceId;
+    serviceId: ConnectedAccountServiceKey;
     profileId: string;
     idempotencyKey: string;
     providerCreditId?: string;
@@ -2259,6 +2258,190 @@ export class ConnectedServiceQuotasCoordinator {
       input.providerCreditId ?? '',
       input.idempotencyKey,
     ].join('\u0000');
+  }
+
+  public async consumeAvailableRecoveryCreditForProfile(input: Readonly<{
+    serviceId: ConnectedAccountServiceKey;
+    profileId: string;
+    groupId?: string;
+    automaticResetContext?: AutomaticQuotaResetContext;
+  }>): Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult> {
+    const unavailable = (suffix: string): Extract<ConnectedServiceQuotaRecoveryCreditConsumeResult, { ok: false }> => ({
+      ok: false,
+      errorCode: `connected_service_quota_recovery_credit_${suffix}`,
+      error: `connected_service_quota_recovery_credit_${suffix}`,
+    });
+    const service = parseQualifiedPluginContributionKey(input.serviceId);
+    const profileId = readNonEmptyString(input.profileId);
+    const runtime = this.qualifiedConnectedAccountRuntime;
+    if (!service || !profileId || !runtime?.listAccounts) return unavailable('unavailable');
+    const profileLedgerPrefix = `${input.serviceId}\u0000${profileId}\u0000`;
+    // A changed quota timestamp cannot resolve an uncertain debit. Retain the
+    // automatic hold in the existing coordinator-lifetime receipt owner.
+    for (const [key, result] of this.recoveryCreditConsumeResultsByKey) {
+      if (key.startsWith(profileLedgerPrefix) && result.receipt?.status === 'unknown_after_timeout') return result;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pendingReceipt: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1 | undefined;
+    const timeout = new Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort('quota-recovery-credit-consume-timeout');
+        resolve({ ...unavailable('timeout'), ...(pendingReceipt ? { receipt: pendingReceipt } : {}) });
+      }, this.fetchTimeoutMs);
+      timer.unref?.();
+    });
+    const operation = async (): Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult> => {
+      const profiles = await runtime.listAccounts!({ service, signal: controller.signal });
+      controller.signal.throwIfAborted();
+      const profile = profiles.find((candidate) => candidate.ref.accountId === profileId
+        && matchesQualifiedService(candidate.ref.service, service));
+      if (!profile || profile.revisionSemantics !== 'revisioned' || !profile.credentialRevision
+        || !isConnectedServiceCredentialHealthStatusUsable(profile.status)
+        || !this.shouldRunQualifiedQuotaOperation(profile, 'recovery_credit_consume')) return unavailable('unavailable');
+      const observed = await runtime.establishedRuntimeOwner.invokeWithReceipt({
+        account: profile.ref,
+        operation: { kind: 'recoveryCredits.read' },
+        expectedCredentialRevision: profile.credentialRevision,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+      if (!observed.result || !observed.basis.isCurrent()) return unavailable('unavailable');
+      const credit = observed.result.credits.filter((candidate) => candidate.status === 'available'
+        && (candidate.expiresAtMs === undefined || candidate.expiresAtMs > this.now()))
+        .sort((left, right) => (left.expiresAtMs ?? Infinity) - (right.expiresAtMs ?? Infinity)
+          || left.providerCreditId.localeCompare(right.providerCreditId))[0];
+      if (!credit && observed.result.availableCount <= 0) return unavailable('not_available');
+      // Inventory reads get a new observation time on every provider GET. The exhausted
+      // quota observation, not that read time, identifies an aggregate reset attempt.
+      const sourceSnapshot = this.accountUsageStore?.resolveBySource({
+        serviceId: input.serviceId,
+        profileId,
+        bindingKind: 'profile',
+      });
+      const request = {
+        idempotencyKey: buildRecoveryCreditConsumeIdempotencyKey({
+          serviceId: input.serviceId,
+          profileId,
+          providerCreditId: credit?.providerCreditId,
+          sourceSnapshotFetchedAtMs: sourceSnapshot?.fetchedAtMs,
+        }),
+        ...(credit ? { providerCreditId: credit.providerCreditId } : {}),
+      };
+      const ledgerKey = this.buildRecoveryCreditConsumeLedgerKey({ ...input, profileId, ...request });
+      // Inventory preparation awaited provider work. Join a same-account debit
+      // already in progress, including one admitted from another quota snapshot.
+      for (const [key, pending] of this.recoveryCreditConsumeInFlightByKey) {
+        if (key.startsWith(profileLedgerPrefix)) return await pending;
+      }
+      for (const [key, result] of this.recoveryCreditConsumeResultsByKey) {
+        if (key.startsWith(profileLedgerPrefix) && result.receipt?.status === 'unknown_after_timeout') return result;
+      }
+      const completed = this.recoveryCreditConsumeResultsByKey.get(ledgerKey);
+      if (completed) return completed;
+      const inFlight = this.recoveryCreditConsumeInFlightByKey.get(ledgerKey);
+      if (inFlight) return await inFlight;
+      const consume = async (): Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult> => {
+        let receipt: ConnectedServiceQuotaRecoveryCreditConsumeReceiptV1 | undefined;
+        try {
+          const accountMode = await resolveConnectedServiceAccountMode(this.api);
+          controller.signal.throwIfAborted();
+          if (accountMode === 'unknown') return unavailable('account_mode_unknown');
+          pendingReceipt = { ...request, status: 'unknown_after_timeout' };
+          const consumed = await runtime.establishedRuntimeOwner.invokeWithReceipt({
+            account: profile.ref,
+            operation: { kind: 'recoveryCredits.consume', request },
+            expectedCredentialRevision: observed.basis.credentialRevision,
+            assertEffectfulOperationAllowed: () => {
+              controller.signal.throwIfAborted();
+              if (!observed.basis.isCurrent()
+                || !this.shouldRunQualifiedQuotaOperation(profile, 'recovery_credit_consume')) {
+                throw new Error('connected_service_quota_recovery_credit_stale_basis');
+              }
+            },
+            signal: controller.signal,
+          });
+          controller.signal.throwIfAborted();
+          if (!consumed.result) return unavailable('unavailable');
+          receipt = { ...request, status: consumed.result.status };
+          pendingReceipt = receipt;
+          if (receipt.status === 'consumed' && input.automaticResetContext && this.onAutomaticQuotaResetConsumed) {
+            const notification = { ...input.automaticResetContext, serviceId: input.serviceId, profileId, receipt };
+            void Promise.resolve().then(() => this.onAutomaticQuotaResetConsumed?.(notification)).catch((error) => {
+              logger.info('[ConnectedServiceQuotas] automatic quota reset notification failed', error);
+            });
+          }
+          if (!consumed.basis.isCurrent()) return { ...unavailable('stale_basis'), receipt };
+          const refreshed = await runtime.establishedRuntimeOwner.invokeWithReceipt({
+            account: profile.ref,
+            operation: { kind: 'quota' },
+            expectedCredentialRevision: consumed.basis.credentialRevision,
+            signal: controller.signal,
+          });
+          controller.signal.throwIfAborted();
+          if (!refreshed.result || !refreshed.basis.isCurrent()) return { ...unavailable('refresh_unavailable'), receipt };
+          const snapshot = buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota({
+            profile, quota: refreshed.result, staleAfterMs: this.quotaPersistenceMinFreshnessMs,
+          });
+          if (!await this.persistQualifiedConnectedAccountQuota({ accountMode, profile, snapshot, basis: refreshed.basis })) {
+            return { ...unavailable('refresh_unavailable'), receipt };
+          }
+          controller.signal.throwIfAborted();
+          const groupIds = new Set<string>(input.groupId ? [input.groupId] : []);
+          for (const target of this.runtimeRegistry.listQuotaTargets()) {
+            for (const binding of extractActiveBindings(target.bindings, target.connectedServiceSelectionsEnv)) {
+              if (binding.serviceId === input.serviceId && binding.groupId) groupIds.add(binding.groupId);
+            }
+          }
+          const groupContexts: ConnectedServiceQuotaGroupContext[] = [];
+          if (runtime.listGroupQuotaTargets) {
+            for (const groupId of groupIds) {
+              const targets = await runtime.listGroupQuotaTargets({ service, groupId, accountIds: [profileId], signal: controller.signal });
+              controller.signal.throwIfAborted();
+              const target = targets.find((candidate) => candidate.profile.ref.accountId === profileId
+                && matchesQualifiedService(candidate.profile.ref.service, service)
+                && candidate.profile.credentialRevision === refreshed.basis.credentialRevision);
+              if (target) groupContexts.push({ groupId, groupGeneration: target.groupGeneration });
+            }
+          }
+          if (!refreshed.basis.isCurrent()) return { ...unavailable('stale_basis'), receipt };
+          if (input.groupId && !groupContexts.some((context) => context.groupId === input.groupId)) {
+            return { ...unavailable('refresh_unavailable'), receipt };
+          }
+          await this.recordQualifiedPolledAccountUsageLocally({
+            profile, snapshot,
+            sourceProviderAccountId: profile.providerIdentity?.accountId?.trim() ?? '',
+            groupContexts, qualifiedGroupTargets: [], switchEvaluationTargets: [], emitLiveLifecycle: true,
+          });
+          if (receipt.status !== 'consumed' && receipt.status !== 'already_consumed') {
+            return { ...unavailable(receipt.status), receipt };
+          }
+          return { ok: true, snapshot: null, receipt };
+        } catch (error) {
+          return {
+            ...unavailable('failed'),
+            error: error instanceof Error ? error.message : 'connected_service_quota_recovery_credit_failed',
+            ...(receipt ?? pendingReceipt ? { receipt: receipt ?? pendingReceipt } : {}),
+          };
+        }
+      };
+      const promise = Promise.race([consume(), timeout]);
+      this.recoveryCreditConsumeInFlightByKey.set(ledgerKey, promise);
+      try {
+        const result = await promise;
+        if (result.receipt) this.recoveryCreditConsumeResultsByKey.set(ledgerKey, result);
+        return result;
+      } finally {
+        this.recoveryCreditConsumeInFlightByKey.delete(ledgerKey);
+      }
+    };
+    try {
+      return await Promise.race([operation(), timeout]);
+    } catch (error) {
+      return { ...unavailable('failed'), error: error instanceof Error ? error.message : 'connected_service_quota_recovery_credit_failed' };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   public async consumeRecoveryCreditForProfile(input: Readonly<{
@@ -3425,6 +3608,26 @@ export class ConnectedServiceQuotasCoordinator {
         };
       }
       if (sourceEvidence.status === 'above_threshold') {
+        const primaryProfileId = switchState.policy.strategy === 'priority'
+          && switchState.policy.autoRestorePrimaryWhenReset
+          ? resolveConnectedServiceAuthGroupPriorityPrimaryProfileId(switchState.members)
+          : null;
+        if (primaryProfileId && primaryProfileId !== activeProfileId) {
+          // Above-threshold backups normally need no soft switch. Primary restoration is the
+          // explicit exception: let the canonical selector decide from its existing reset and
+          // headroom evidence instead of duplicating that decision in this intake gate.
+          return {
+            status: 'eligible',
+            sourceProfileId: activeProfileId,
+            sourceRemainingPercent: sourceEvidence.remainingPercent,
+            sourceThresholdPercent: sourceEvidence.thresholdPercent,
+            sourceProjected: false,
+            decisionTrace: {
+              activeProfileId,
+              reason: 'primary_restore_evaluation',
+            },
+          };
+        }
         return {
           status: 'no_meaningfully_better_target',
           retryAfterMs: null,
@@ -4135,7 +4338,11 @@ export class ConnectedServiceQuotasCoordinator {
     const fetchedAt = Number(input.existing.metadata.fetchedAt ?? 0);
     const staleAfterMs = Number(input.existing.metadata.staleAfterMs ?? 0);
     if (!Number.isFinite(fetchedAt) || !Number.isFinite(staleAfterMs) || fetchedAt <= 0 || staleAfterMs <= 0) return false;
-    return !input.forcedRefresh && input.now < fetchedAt + staleAfterMs;
+    return !input.forcedRefresh && isConnectedServiceQuotaObservationFresh({
+      observedAtMs: fetchedAt,
+      nowMs: input.now,
+      maxAgeMs: staleAfterMs,
+    });
   }
 
   private async acquireQuotaFetchLease(input: Readonly<{
@@ -4175,11 +4382,11 @@ export class ConnectedServiceQuotasCoordinator {
   }
 
   public async probeGroupQuotaSnapshots(input: Readonly<{
-    serviceId: ConnectedServiceId;
+    serviceId: ConnectedAccountServiceKey;
     groupId: string;
     profileIds: ReadonlyArray<string>;
   }>): Promise<ConnectedServiceAuthGroupQuotaProbeResult> {
-    const serviceId = ConnectedServiceIdSchema.parse(input.serviceId);
+    const serviceId = input.serviceId;
     const groupId = typeof input.groupId === 'string' ? input.groupId.trim() : '';
     const profileIds = Array.from(new Set(input.profileIds
       .map((profileId) => String(profileId ?? '').trim())
@@ -4205,7 +4412,7 @@ export class ConnectedServiceQuotasCoordinator {
     if (qualifiedPeerClass === 'advertised_v4') {
       const runtime = this.qualifiedConnectedAccountRuntime;
       const service =
-        resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceInput(
+        resolveQualifiedConnectedAccountServiceForIngressServiceId(
           serviceId,
         );
       if (!service) return incomplete(0, 'probe_unavailable');
@@ -4243,7 +4450,7 @@ export class ConnectedServiceQuotasCoordinator {
               staleAfterMs: this.quotaPersistenceMinFreshnessMs,
             });
             accountUsageStore.recordSnapshot(snapshot, {
-              sources: [{
+              sources: [{ serviceId, profileId, bindingKind: 'profile' }, {
                 serviceId,
                 profileId,
                 bindingKind: 'group_member',
@@ -4708,8 +4915,11 @@ export class ConnectedServiceQuotasCoordinator {
         if (
           existing
           && existingSnapshot
-          && existing.metadata.fetchedAt
-            + existing.metadata.staleAfterMs > input.now
+          && isConnectedServiceQuotaObservationFresh({
+            observedAtMs: existing.metadata.fetchedAt,
+            nowMs: input.now,
+            maxAgeMs: existing.metadata.staleAfterMs,
+          })
           && (
             existing.metadata.refreshRequestedAt === undefined
             || existing.metadata.refreshRequestedAt

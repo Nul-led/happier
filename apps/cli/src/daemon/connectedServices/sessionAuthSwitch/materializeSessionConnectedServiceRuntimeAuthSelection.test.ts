@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildConnectedServiceCredentialRecord, type ConnectedServiceBindingsV1 } from '@happier-dev/protocol';
+import { buildConnectedServiceCredentialRecord, type ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 
 import type { ApiClient } from '@/api/api';
 import type { TrackedSession } from '@/daemon/types';
@@ -8,6 +8,9 @@ import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '@/daemon/connected
 import { materializeSessionConnectedServiceRuntimeAuthSelection } from './materializeSessionConnectedServiceRuntimeAuthSelection';
 
 const CREDENTIAL_REVISION = 'csr_0123456789ABCDEFGHJKMNPQRS';
+const CODEX_SERVICE_KEY = 'happier.agent.codex/openai-codex';
+const ANTHROPIC_SERVICE_KEY = 'happier.agent.claude/anthropic';
+const CLAUDE_SUBSCRIPTION_SERVICE_KEY = 'happier.agent.claude/claude-subscription';
 
 describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
   it('carries the exact server credential revision into the provider auth generation', async () => {
@@ -27,10 +30,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         providerEmail: null,
       },
     });
-    const bindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const bindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
+        [CODEX_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'work' },
       },
     };
     const tracked = {
@@ -67,9 +70,9 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_revision',
         agentId: 'codex',
-        serviceId: 'openai-codex',
-        previous: { source: 'connected', selection: 'profile', serviceId: 'openai-codex', profileId: 'work', groupId: null },
-        next: { source: 'connected', selection: 'profile', serviceId: 'openai-codex', profileId: 'work', groupId: null },
+        serviceId: CODEX_SERVICE_KEY,
+        previous: { source: 'connected', selection: 'profile', serviceId: CODEX_SERVICE_KEY, profileId: 'work', groupId: null },
+        next: { source: 'connected', selection: 'profile', serviceId: CODEX_SERVICE_KEY, profileId: 'work', groupId: null },
         previousBindings: bindings,
         normalizedBindings: bindings,
       },
@@ -104,10 +107,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       token: 'token',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     };
-    const previousBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const previousBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
       },
     };
     const tracked: TrackedSession = {
@@ -122,7 +125,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
             {
               kind: 'group',
-              serviceId: 'anthropic',
+              serviceId: ANTHROPIC_SERVICE_KEY,
               groupId: 'work',
               activeProfileId: 'primary',
               fallbackProfileId: 'fallback',
@@ -134,9 +137,9 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
     };
 
     const normalizedBindings = {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'backup' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'backup' },
       },
     } as const;
 
@@ -148,18 +151,18 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_1',
         agentId: 'claude',
-        serviceId: 'anthropic',
+        serviceId: ANTHROPIC_SERVICE_KEY,
         previous: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: 'primary',
           groupId: 'work',
         },
         next: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: 'backup',
           groupId: 'work',
         },
@@ -167,7 +170,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         normalizedBindings,
       },
     })).resolves.toMatchObject({
-      serviceId: 'anthropic',
+      serviceId: ANTHROPIC_SERVICE_KEY,
       profileId: 'backup',
       groupId: 'work',
       activeProfileId: 'backup',
@@ -202,10 +205,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       token: 'token',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     };
-    const previousBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const previousBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
       },
     };
     const tracked: TrackedSession = {
@@ -220,9 +223,9 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       },
     };
     const normalizedBindings = {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work' },
       },
     } as const;
 
@@ -234,18 +237,18 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_1',
         agentId: 'claude',
-        serviceId: 'anthropic',
+        serviceId: ANTHROPIC_SERVICE_KEY,
         previous: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: 'primary',
           groupId: 'work',
         },
         next: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: null,
           groupId: 'work',
         },
@@ -259,7 +262,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         },
       },
     })).resolves.toMatchObject({
-      serviceId: 'anthropic',
+      serviceId: ANTHROPIC_SERVICE_KEY,
       profileId: 'backup',
       groupId: 'work',
       activeProfileId: 'backup',
@@ -298,10 +301,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       token: 'token',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     };
-    const previousBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const previousBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work' },
       },
     };
     const tracked: TrackedSession = {
@@ -316,7 +319,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
             {
               kind: 'group',
-              serviceId: 'anthropic',
+              serviceId: ANTHROPIC_SERVICE_KEY,
               groupId: 'work',
               activeProfileId: 'primary',
               fallbackProfileId: 'fallback',
@@ -327,9 +330,9 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       },
     };
     const normalizedBindings = {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work' },
       },
     } as const;
 
@@ -341,18 +344,18 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_1',
         agentId: 'claude',
-        serviceId: 'anthropic',
+        serviceId: ANTHROPIC_SERVICE_KEY,
         previous: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: null,
           groupId: 'work',
         },
         next: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: null,
           groupId: 'work',
         },
@@ -360,7 +363,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         normalizedBindings,
       },
     })).resolves.toMatchObject({
-      serviceId: 'anthropic',
+      serviceId: ANTHROPIC_SERVICE_KEY,
       profileId: 'primary',
       groupId: 'work',
       activeProfileId: 'primary',
@@ -395,10 +398,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       token: 'token',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     };
-    const previousBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const previousBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'primary' },
       },
     };
     const tracked: TrackedSession = {
@@ -413,7 +416,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
           [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: JSON.stringify([
             {
               kind: 'group',
-              serviceId: 'anthropic',
+              serviceId: ANTHROPIC_SERVICE_KEY,
               groupId: 'work',
               activeProfileId: 'primary',
               fallbackProfileId: 'stale-fallback',
@@ -424,9 +427,9 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       },
     };
     const normalizedBindings = {
-      v: 1,
+      v: 2,
       bindingsByServiceId: {
-        anthropic: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'backup' },
+        [ANTHROPIC_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'work', profileId: 'backup' },
       },
     } as const;
 
@@ -438,18 +441,18 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_1',
         agentId: 'claude',
-        serviceId: 'anthropic',
+        serviceId: ANTHROPIC_SERVICE_KEY,
         previous: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: 'primary',
           groupId: 'work',
         },
         next: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'anthropic',
+          serviceId: ANTHROPIC_SERVICE_KEY,
           profileId: 'backup',
           groupId: 'work',
         },
@@ -463,7 +466,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         },
       },
     })).resolves.toMatchObject({
-      serviceId: 'anthropic',
+      serviceId: ANTHROPIC_SERVICE_KEY,
       profileId: 'backup',
       groupId: 'work',
       activeProfileId: 'backup',
@@ -503,10 +506,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
       token: 'token',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
     };
-    const previousBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const previousBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        'claude-subscription': {
+        [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: {
           source: 'connected',
           selection: 'group',
           groupId: 'work',
@@ -514,10 +517,10 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         },
       },
     };
-    const normalizedBindings: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const normalizedBindings: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: {
-        'claude-subscription': {
+        [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: {
           source: 'connected',
           selection: 'group',
           groupId: 'work',
@@ -550,18 +553,18 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
         tracked,
         sessionId: 'sess_1',
         agentId: 'claude',
-        serviceId: 'claude-subscription',
+        serviceId: CLAUDE_SUBSCRIPTION_SERVICE_KEY,
         previous: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'claude-subscription',
+          serviceId: CLAUDE_SUBSCRIPTION_SERVICE_KEY,
           profileId: 'primary',
           groupId: 'work',
         },
         next: {
           source: 'connected',
           selection: 'group',
-          serviceId: 'claude-subscription',
+          serviceId: CLAUDE_SUBSCRIPTION_SERVICE_KEY,
           profileId: 'backup',
           groupId: 'work',
         },
@@ -586,7 +589,7 @@ describe('materializeSessionConnectedServiceRuntimeAuthSelection', () => {
     const result = await materializeSessionConnectedServiceRuntimeAuthSelection(params);
 
     expect(result).toMatchObject({
-      serviceId: 'claude-subscription',
+      serviceId: CLAUDE_SUBSCRIPTION_SERVICE_KEY,
       profileId: 'backup',
       groupId: 'work',
       activeProfileId: 'backup',

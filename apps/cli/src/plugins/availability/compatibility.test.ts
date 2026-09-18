@@ -34,6 +34,40 @@ function projectionWithIncompatibleUiArtifact(contributionId: string): Record<st
   };
 }
 
+function projectionWithCanonicalIngestionInvalidManifest(
+  duplicateContributionId: string,
+): Record<string, unknown> {
+  return {
+    version: 1,
+    manifest: {
+      schemaVersion: 2,
+      id: 'acme.compatibility-fixture',
+      version: '1.2.5',
+      displayName: 'Compatibility fixture',
+      engines: { happier: '>=0.0.0' },
+      runtime: { apiVersion: 1 },
+      contributes: {
+        resources: [{
+          id: duplicateContributionId,
+          kind: 'asset',
+          path: 'shared.txt',
+          contentType: 'text/plain',
+        }],
+        actions: [{
+          id: duplicateContributionId,
+          title: 'Shared',
+          scopes: ['session'],
+          surfaces: ['cli'],
+          placementBindings: ['primary'],
+          dangerLevel: 'safe',
+          execution: { target: 'daemon' },
+        }],
+      },
+    },
+    uiArtifacts: { version: 1, entries: [] },
+  };
+}
+
 describe('evaluatePluginCompatibilityProjection', () => {
   it('reports one bounded non-echoing diagnostic for malformed generated metadata', () => {
     const untrustedUnknownKey = `unexpected-${'x'.repeat(32_769)}`;
@@ -46,6 +80,22 @@ describe('evaluatePluginCompatibilityProjection', () => {
       code: 'plugin_compatibility_projection_invalid',
       message: 'Plugin compatibility projection is invalid.',
     });
+  });
+
+  it('reports a bounded non-echoing host diagnostic for a canonically invalid manifest', () => {
+    const duplicateContributionId = `duplicated-contribution-id-${'x'.repeat(200)}`;
+    const evaluation = evaluatePluginCompatibilityProjection(
+      projectionWithCanonicalIngestionInvalidManifest(duplicateContributionId),
+    );
+
+    expect(evaluation.kind).toBe('incompatible');
+    if (evaluation.kind !== 'incompatible') return;
+    expect(evaluation.projection.manifest.id).toBe('acme.compatibility-fixture');
+    expect(evaluation.diagnostics).toEqual([{
+      code: 'plugin_manifest_invalid',
+      message: 'Plugin manifest compatibility check failed: plugin_manifest_duplicate_contribution_id.',
+    }]);
+    expect(evaluation.diagnostics[0]?.message).not.toContain(duplicateContributionId);
   });
 
   it('reports a bounded non-echoing reason for an incompatible generated UI artifact', () => {

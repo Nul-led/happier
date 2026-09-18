@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
 
+import { ARTIFACT_ENCRYPTION_MATERIAL_UNAVAILABLE } from '@/api/artifacts/accountArtifactStore';
 import { encodeBase64, encryptWithDataKey } from '@/api/encryption';
 import type { Credentials, StoredCredentials } from '@/persistence';
-import {
-  ARTIFACT_ENCRYPTION_MATERIAL_UNAVAILABLE,
-} from '@/session/actions/approvals/artifactStore';
 
 import {
   resolveAgentCompositionPromptText,

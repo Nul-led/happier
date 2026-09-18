@@ -7,6 +7,7 @@ import {
 
 import {
     materializeFirstPartyConnectedAccountBearer,
+    projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot,
     projectConnectedServiceBindingsToQualifiedPurposeBindings,
     resolveFirstPartyConnectedAccountBinding,
     resolveFirstPartyConnectedAccountServiceId,
@@ -79,7 +80,7 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
                 },
             }],
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -137,7 +138,7 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
                 service: externalService,
             }],
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'acme.connected-account/credential': {
                         source: 'connected',
@@ -166,7 +167,7 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
             consumer: externalConsumer,
             declarations: [{ purpose: 'direct', service: externalService }],
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'acme.connected-account/credential': {
                         source: 'connected',
@@ -187,6 +188,57 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
         }]);
     });
 
+    it('preserves an exact Team direct origin beside the qualified purpose binding', () => {
+        const externalService = {
+            pluginId: 'acme.connected-account',
+            localId: 'credential',
+        } as const;
+        const externalConsumer = {
+            pluginId: 'acme.agent',
+            localId: 'runtime',
+        } as const;
+        const snapshot = projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot({
+            consumer: externalConsumer,
+            declarations: [{ purpose: 'model-request', service: externalService }],
+            bindings: {
+                v: 2,
+                bindingsByServiceId: {
+                    'acme.connected-account/credential': {
+                        source: 'team_resource',
+                        resourceId: 'resource-1',
+                        deliveryMode: 'direct',
+                        disclosedMember: {
+                            service: externalService,
+                            accountId: 'source-account-1',
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(snapshot).toEqual({
+            purposes: [{ consumer: externalConsumer, purpose: 'model-request' }],
+            bindings: [{
+                purpose: { consumer: externalConsumer, purpose: 'model-request' },
+                target: {
+                    kind: 'account',
+                    account: {
+                        service: externalService,
+                        accountId: 'source-account-1',
+                    },
+                },
+            }],
+            directMaterialOrigins: [{
+                purpose: { consumer: externalConsumer, purpose: 'model-request' },
+                resourceId: 'resource-1',
+                disclosedMember: {
+                    service: externalService,
+                    accountId: 'source-account-1',
+                },
+            }],
+        });
+    });
+
     it('normalizes a manifest-local service id against its declaring Agent plugin', () => {
         expect(projectConnectedServiceBindingsToQualifiedPurposeBindings({
             consumer: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -195,7 +247,7 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
                 service: 'openai-codex',
             }],
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': {
                         source: 'connected',
@@ -227,7 +279,7 @@ describe('first-party Connected Account request-auth compatibility adapter', () 
                 service: codexService,
             }],
             bindings: {
-                v: 1,
+                v: 2,
                 bindingsByServiceId: {
                     'openai-codex': { source: 'native' },
                 },

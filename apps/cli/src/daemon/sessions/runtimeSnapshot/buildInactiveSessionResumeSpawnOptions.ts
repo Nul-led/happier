@@ -143,6 +143,11 @@ export function buildInactiveSessionResumeSpawnOptions(
   const metadataMachineId = readNonEmptyString(params.metadata.machineId);
   if (rawMachineId && metadataMachineId && rawMachineId !== metadataMachineId) return null;
 
+  const rawCorrespondence = params.metadata.sessionCreationCorrespondenceV1;
+  const parsedCorrespondence = SessionCreationCorrespondenceV1Schema.safeParse(rawCorrespondence);
+  if (rawCorrespondence !== undefined && !parsedCorrespondence.success) return null;
+  const correspondence = parsedCorrespondence.success ? parsedCorrespondence.data : null;
+
   const persistedDirectory = selectCanonicalPersistedDirectory(rawDirectory, metadataDirectory);
   const machineId = rawMachineId ?? metadataMachineId ?? readNonEmptyString(params.fallbackMachineId);
   const runtimeIdentity = resolveExactPersistedBackendIdentity(params.metadata);
@@ -161,6 +166,18 @@ export function buildInactiveSessionResumeSpawnOptions(
         existingSessionId: params.sessionId,
         machineId,
         directory,
+        ...(correspondence
+          ? {
+              sessionCreationTag: correspondence.sessionCreationTag,
+              sessionCreationCorrespondence: correspondence,
+              ...(correspondence.recipe.profileId
+                ? { profileId: correspondence.recipe.profileId }
+                : {}),
+              ...(correspondence.recipe.secretReferenceOverlay
+                ? { secretReferenceOverlay: correspondence.recipe.secretReferenceOverlay }
+                : {}),
+            }
+          : {}),
         ...(runtimeIdentity.agentTarget ? { agentTarget: runtimeIdentity.agentTarget } : {}),
         ...(runtimeIdentity.backendTarget ? { backendTarget: runtimeIdentity.backendTarget } : {}),
         approvedNewDirectoryCreation: true,

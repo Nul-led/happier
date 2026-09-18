@@ -103,6 +103,24 @@ describe('ApiClient connected services v3 credentials', () => {
     });
   });
 
+  it('refreshes through the installed daemon snapshot owner when available', async () => {
+    const cached = { status: 'ready', features: { features: {}, capabilities: {} } } as const;
+    const refreshed = { status: 'unsupported', reason: 'endpoint_missing' } as const;
+    const refresh = vi.fn(async () => refreshed as CliServerFeaturesSnapshot);
+    const api = await ApiClient.create({
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32) },
+    });
+    api.setServerFeaturesSnapshotProvider(
+      () => cached as unknown as CliServerFeaturesSnapshot,
+      refresh,
+    );
+
+    await expect(api.getServerFeaturesSnapshot({ refresh: true })).resolves.toBe(refreshed);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(mockFetchServerFeaturesSnapshot).not.toHaveBeenCalled();
+  });
+
   it('rejects a v3 credential whose embedded binding does not match the requested route', async () => {
     const record = buildConnectedServiceCredentialRecord({
       now: 1_000,

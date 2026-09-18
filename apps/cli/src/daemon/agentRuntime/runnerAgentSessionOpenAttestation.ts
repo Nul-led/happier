@@ -1,3 +1,5 @@
+import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+
 import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import {
@@ -75,8 +77,11 @@ export async function recordTrackedRunnerAgentSessionOpenAttestation(
   const authorityFilePath =
     input.tracked
       .agentRuntimeDaemonServiceAuthorityFilePath?.trim() ?? '';
+  // The request side already carries the Agent's exact bytes
+  // (`NonBlankOpaqueIdentifierSchema`). Trimming this side would make a resume
+  // attestation fail for an id whose padding is part of its identity.
   const providerSessionId =
-    input.providerSessionId?.trim() || null;
+    readNonBlankOpaqueIdentifier(input.providerSessionId);
   if (
     !sessionId
     || request.sessionId !== sessionId

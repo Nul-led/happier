@@ -168,6 +168,26 @@ function killIsolatedTmuxServer(socketPath: string): void {
     }
 }
 
+async function removeTmuxTempDir(dir: string): Promise<void> {
+    // tmux can release or recreate its socket entry briefly after kill-server exits.
+    // Retry the cleanup boundary at a fixed short interval. Node's built-in
+    // rmSync retry uses linear backoff, which exhausted its budget while late
+    // panes were still writing their final fixture output on faster runners.
+    const deadline = Date.now() + 5_000;
+    while (true) {
+        try {
+            rmSync(dir, { recursive: true, force: true });
+            return;
+        } catch (error) {
+            const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+            if (!['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(String(code)) || Date.now() >= deadline) {
+                throw error;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+    }
+}
+
 function resolveRealTmuxPath(): string {
     const result = spawnSync('/bin/sh', ['-c', 'command -v tmux'], { encoding: 'utf8' });
     if (result.status !== 0 || !result.stdout.trim()) {
@@ -205,7 +225,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(results.every((r) => r.success)).toBe(true);
         } finally {
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -231,12 +251,16 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             if (!result.success) throw new Error(result.error ?? 'expected tmux launch to succeed');
             expect(typeof result.pid).toBe('number');
             expect(result.pid).toBeGreaterThan(0);
+            expect(result.windowId).toMatch(/^@\d+$/);
 
             // Ground truth: query tmux directly for the pane pid.
             const panes = runTmux(['-S', socketPath, 'list-panes', '-t', `${sessionName}:${windowName}`, '-F', '#{pane_pid}']);
             expect(panes.status).toBe(0);
             const listedPid = Number.parseInt(panes.stdout.trim(), 10);
             expect(listedPid).toBe(result.pid);
+            const listedWindowId = runTmux(['-S', socketPath, 'display-message', '-p', '-t', `${sessionName}:${windowName}`, '#{window_id}']);
+            expect(listedWindowId.status).toBe(0);
+            expect(listedWindowId.stdout.trim()).toBe(result.windowId);
 
             await waitForFile(outFile, 2_000);
             const payload = readDumpPayload(outFile);
@@ -248,10 +272,78 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(parts.length).toBeGreaterThanOrEqual(3);
             expect(parts[0]!.length).toBeGreaterThan(0);
             expect(/^\d+$/.test(parts[1]!)).toBe(true);
+
+            expect(runTmux(['-S', socketPath, 'rename-window', '-t', result.windowId, 'renamed-after-bind']).status).toBe(0);
+            await expect(utils.killWindow(result.windowId)).resolves.toBe(true);
+            const remainingIds = runTmux(['-S', socketPath, 'list-windows', '-a', '-F', '#{window_id}']);
+            expect(remainingIds.status).toBe(0);
+            expect(remainingIds.stdout.split('\n')).not.toContain(result.windowId);
         } finally {
             // Kill only the isolated server (never touch the user's default tmux server).
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
+        }
+    });
+
+    it('spawnInTmux parses -P/-F output when the client environment has no UTF-8 locale (regression: daemon launched over SSH)', async () => {
+        // tmux flags a command client as non-UTF-8 unless TMUX is set or LC_ALL/LC_CTYPE/LANG
+        // mention UTF-8, and then passes printed output through utf8_sanitize(), which turns
+        // the TAB separator in `#{window_id}\t#{pane_pid}` into `_`. A daemon started over SSH
+        // (no locale forwarded) reproduced this as `Failed to extract PID from tmux output`.
+        const dir = mkdtempSync(join(tmpdir(), 'happier-cli-tmux-nolocale-it-'));
+        const socketPath = join(dir, 'tmux.sock');
+        const utils = new TmuxUtilities('happy', { LANG: '', LC_ALL: '', LC_CTYPE: '' }, socketPath);
+
+        try {
+            const scriptPath = writeDumpScript(dir);
+            const outFile = join(dir, 'out.json');
+            const sessionName = `happy-it-nolocale-${process.pid}-${Date.now()}`;
+            const windowName = 'pid';
+
+            const result = await utils.spawnInTmux(
+                [process.execPath, scriptPath, outFile, '5000', 'no-locale'],
+                { sessionName, windowName, cwd: dir },
+                {},
+            );
+
+            if (!result.success) {
+                throw new Error(`spawnInTmux failed: ${result.error ?? 'unknown error'}`);
+            }
+            expect(result.pid).toBeGreaterThan(0);
+            expect(result.windowId).toMatch(/^@\d+$/);
+
+            const panes = runTmux(['-S', socketPath, 'list-panes', '-t', `${sessionName}:${windowName}`, '-F', '#{pane_pid}']);
+            expect(panes.status).toBe(0);
+            expect(Number.parseInt(panes.stdout.trim(), 10)).toBe(result.pid);
+        } finally {
+            killIsolatedTmuxServer(socketPath);
+            await removeTmuxTempDir(dir);
+        }
+    });
+
+    it('captureCursorPosition returns the live pane cursor for a window-id target (regression: display-message operand order)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'happier-cli-tmux-cursor-it-'));
+        const socketPath = join(dir, 'tmux.sock');
+        const utils = new TmuxUtilities('happy', undefined, socketPath);
+
+        try {
+            const scriptPath = writeDumpScript(dir);
+            const outFile = join(dir, 'out.json');
+            const sessionName = `happy-it-cursor-${process.pid}-${Date.now()}`;
+            const result = await utils.spawnInTmux(
+                [process.execPath, scriptPath, outFile, '5000', 'cursor'],
+                { sessionName, windowName: 'cursor', cwd: dir },
+                {},
+            );
+            if (!result.success) {
+                throw new Error(`spawnInTmux failed: ${result.error ?? 'unknown error'}`);
+            }
+
+            const cursor = await utils.captureCursorPosition(result.windowId);
+            expect(cursor).toEqual({ x: expect.any(Number), y: expect.any(Number) });
+        } finally {
+            killIsolatedTmuxServer(socketPath);
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -310,7 +402,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             if (runTmux(['-S', socketPath, 'list-sessions']).status === 0) {
                 killIsolatedTmuxServer(socketPath);
             }
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -346,7 +438,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(payload.env?.BAR).toBe(env.BAR);
         } finally {
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -377,7 +469,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(payload.env?.[inheritedKey]).toBeUndefined();
         } finally {
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -414,7 +506,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(existsSync(sentinelFile)).toBe(false);
         } finally {
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -455,7 +547,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             if (originalTimeout === undefined) delete process.env.HAPPIER_CLI_TMUX_COMMAND_TIMEOUT_MS;
             else process.env.HAPPIER_CLI_TMUX_COMMAND_TIMEOUT_MS = originalTimeout;
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -501,7 +593,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             if (originalTimeout === undefined) delete process.env.HAPPIER_CLI_TMUX_COMMAND_TIMEOUT_MS;
             else process.env.HAPPIER_CLI_TMUX_COMMAND_TIMEOUT_MS = originalTimeout;
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -557,7 +649,7 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
             expect(readFileSync(targetObservation, 'utf8')).toBe('unset');
         } finally {
             killIsolatedTmuxServer(socketPath);
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(dir);
         }
     });
 
@@ -611,8 +703,8 @@ describe.skipIf(!shouldRunTmuxIntegration())('tmux (real) integration tests (opt
                     error: result.error?.message,
                 });
             }
-            rmSync(tmuxTmpDir, { recursive: true, force: true });
-            rmSync(dir, { recursive: true, force: true });
+            await removeTmuxTempDir(tmuxTmpDir);
+            await removeTmuxTempDir(dir);
         }
     });
 });

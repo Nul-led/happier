@@ -7,6 +7,7 @@ import {
     createPluginContributionIdentity,
     isValidPluginJsonSchemaValue,
     normalizePluginDeclarativeDocumentV1,
+    type ActionId,
     type PluginContributionIdentityV1,
     type PluginDeclarativeActionVariantV2,
     type PluginDeclarativeComposerApplyEffectV1,
@@ -98,6 +99,14 @@ export type StablePluginDeclarativeTargetedSurfaceNode =
     }>;
 
 export type StablePluginDeclarativeActionNode =
+    | (StablePluginDeclarativeNodeBase & Readonly<{
+        kind: 'action';
+        hostAction: ActionId;
+        label: PluginLocalizedStringV2;
+        variant?: StablePluginDeclarativeActionVariant;
+        input?: JsonValue;
+        enabled: boolean;
+    }>)
     | (StablePluginDeclarativeNodeBase & Readonly<{
         kind: 'action';
         action: StablePluginQualifiedReference;
@@ -669,7 +678,14 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
                 break;
             }
             case 'action':
-                if ('effect' in source) {
+                if ('hostAction' in source) {
+                    projected = Object.freeze({
+                        ...source,
+                        // The mounted Host API owns host Action admission; the
+                        // contributed Action inventory cannot grant authority.
+                        enabled: true,
+                    });
+                } else if ('effect' in source) {
                     projected = Object.freeze({
                         kind: source.kind,
                         path: source.path,

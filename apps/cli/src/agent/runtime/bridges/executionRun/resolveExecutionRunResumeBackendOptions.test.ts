@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildBackendTargetKeyV2,
   ProviderBoundModelRefSchema,
-  type ConnectedServiceBindingsV1,
+  type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 
 import type { ExecutionRunState } from './executionRunTypes';
 import { resolveExecutionRunResumeBackendOptions } from './resolveExecutionRunResumeBackendOptions';
 
-const CONNECTED_SELECTION: ConnectedServiceBindingsV1 = {
-  v: 1,
+const CONNECTED_SELECTION: ConnectedServiceBindingsV2 = {
+  v: 2,
   bindingsByServiceId: {
     'openai-codex': { source: 'connected', selection: 'profile', profileId: 'team' },
   },
@@ -49,6 +50,25 @@ function baseRun(launch: ExecutionRunState['launch']): ExecutionRunState {
 }
 
 describe('resolveExecutionRunResumeBackendOptions', () => {
+  it('rehydrates the exact Team credential model selection for re-authorization on resume', () => {
+    const teamCredentialModel = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-team',
+      teamId: 'team-1',
+      expectedResourceRevision: 8,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model',
+      deliveryMode: 'brokered' as const,
+    };
+    const options = resolveExecutionRunResumeBackendOptions({
+      run: baseRun({ modelId: teamCredentialModel.modelId, teamCredentialModel }),
+    });
+    expect(options).toMatchObject({
+      modelId: teamCredentialModel.modelId,
+      teamCredentialModel,
+    });
+  });
+
   it('rehydrates the exact model selection, config overrides, and SAME persisted CS selection', () => {
     const options = resolveExecutionRunResumeBackendOptions({
       run: baseRun({
@@ -56,6 +76,8 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
         modelSelection: MODEL_SELECTION,
         sessionConfigOptionOverrides: OVERRIDES,
         connectedServicesSelection: CONNECTED_SELECTION,
+        acpSessionModeId: 'plan',
+        runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: { backendMode: 'acp' } },
       }),
     });
     expect(options.modelId).toBe('gpt-5.5');
@@ -63,11 +85,29 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
     expect(options.sessionConfigOptionOverrides).toEqual(OVERRIDES);
     // The persisted selection is authoritative on resume — the daemon re-materializes it verbatim.
     expect(options.connectedServices).toEqual(CONNECTED_SELECTION);
+    expect(options.start).toMatchObject({
+      acpSessionModeId: 'plan',
+      runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: { backendMode: 'acp' } },
+    });
+  });
+
+  it('rehydrates the exact value-free Saved Secret overlay for fresh materialization', () => {
+    const secretReferenceOverlay = {
+      v: 1 as const,
+      bindings: {
+        API_KEY: { ref: 'happier:shared-secret:v1:resource', revision: 9 },
+      },
+    };
+    const options = resolveExecutionRunResumeBackendOptions({
+      run: baseRun({ secretReferenceOverlay }),
+    });
+    expect(options.secretReferenceOverlay).toEqual(secretReferenceOverlay);
+    expect(JSON.stringify(options)).not.toContain('secret-value');
   });
 
   it('carries a persisted native (opt-out) selection through so resume honors the opt-out explicitly', () => {
-    const nativeSelection: ConnectedServiceBindingsV1 = {
-      v: 1,
+    const nativeSelection: ConnectedServiceBindingsV2 = {
+      v: 2,
       bindingsByServiceId: { 'openai-codex': { source: 'native' } },
     };
     const options = resolveExecutionRunResumeBackendOptions({
@@ -96,6 +136,8 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
     expect(options.start).toEqual({
       intent: 'delegate',
       retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
       profileId: 'review_profile',
       intentInput: { commitModelSelection: MODEL_SELECTION },
     });
@@ -106,6 +148,8 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
     expect(options.start).toEqual({
       intent: 'delegate',
       retentionPolicy: 'resumable',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
     });
     expect(options.modelId).toBeUndefined();
     expect(options.connectedServices).toBeUndefined();

@@ -120,7 +120,7 @@ async function writeSpawnHookPluginFixture(params: Readonly<{
         : []),
       '',
       'export async function validateSpawn(event = {}, context = {}) {',
-      `  await appendFile(${JSON.stringify(params.markerPath)}, JSON.stringify({ type: "decision", event, hasToolContext: typeof context?.tools?.resolveManagedInstallable === "function", hasRunToolContext: typeof context?.tools?.runSystemTool === "function" }) + "\\n", "utf8");`,
+      `  await appendFile(${JSON.stringify(params.markerPath)}, JSON.stringify({ type: "decision", event, hasToolContext: typeof context?.tools?.resolveManagedInstallable === "function", hasRunToolContext: typeof context?.tools?.runSystemTool === "function", hasSharedSignal: context?.signal === context?.tools?.signal }) + "\\n", "utf8");`,
       ...(params.resolveInstallableInDecision
         ? [
           `  const installable = await context.tools.resolveManagedInstallable({ installableId: ${JSON.stringify(params.resolveInstallableInDecision)}, reason: "spawn hook fixture" });`,
@@ -133,7 +133,7 @@ async function writeSpawnHookPluginFixture(params: Readonly<{
       '}',
       '',
       'export async function augmentSpawnEnv(event = {}, context = {}) {',
-      `  await appendFile(${JSON.stringify(params.markerPath)}, JSON.stringify({ type: "augment", event, hasToolContext: typeof context?.tools?.resolveManagedInstallable === "function", hasRunToolContext: typeof context?.tools?.runSystemTool === "function" }) + "\\n", "utf8");`,
+      `  await appendFile(${JSON.stringify(params.markerPath)}, JSON.stringify({ type: "augment", event, hasToolContext: typeof context?.tools?.resolveManagedInstallable === "function", hasRunToolContext: typeof context?.tools?.runSystemTool === "function", hasSharedSignal: context?.signal === context?.tools?.signal }) + "\\n", "utf8");`,
       '  return { HAPPIER_PLUGIN_SPAWN_ENV: "plugin-hook" };',
       '}',
       '',
@@ -220,6 +220,7 @@ async function readMarkerRecords(markerPath: string): Promise<ReadonlyArray<{
   event: Record<string, unknown>;
   hasToolContext?: boolean;
   hasRunToolContext?: boolean;
+  hasSharedSignal?: boolean;
 }>> {
   return (await readFile(markerPath, 'utf8'))
     .trim()
@@ -230,6 +231,7 @@ async function readMarkerRecords(markerPath: string): Promise<ReadonlyArray<{
       event: Record<string, unknown>;
       hasToolContext?: boolean;
       hasRunToolContext?: boolean;
+      hasSharedSignal?: boolean;
     });
 }
 
@@ -366,8 +368,10 @@ describe('resolveSpawnChildEnvironment (plugin hooks)', () => {
       });
       expect(decision?.hasToolContext).toBe(true);
       expect(decision?.hasRunToolContext).toBe(true);
+      expect(decision?.hasSharedSignal).toBe(true);
       expect(augment?.hasToolContext).toBe(true);
       expect(augment?.hasRunToolContext).toBe(true);
+      expect(augment?.hasSharedSignal).toBe(true);
     } finally {
       await releaseAppliedPluginRuntime(appliedRuntime);
       await rm(happyHomeDir, { recursive: true, force: true });

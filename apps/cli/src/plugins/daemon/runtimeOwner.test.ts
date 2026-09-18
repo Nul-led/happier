@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createCurrentGlobalExternalSessionsRouter,
@@ -198,6 +198,10 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     ownerMocks.readAvailabilityInventory.mockClear();
     ownerMocks.readAvailabilityInventoryForCommit.mockClear();
     ownerMocks.releaseInitialLease.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('retains every executable source-overlay generation for custody cleanup', async () => {
@@ -864,6 +868,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
   });
 
   it('isolates failing activation and primary-Agent-runtime participants at cold start', async () => {
+    vi.useFakeTimers();
     const events: string[] = [];
     const dispose = vi.fn(async () => undefined);
     const activatedPluginIds = new Set([
@@ -879,9 +884,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       events.push(`activated:${pluginIds.join(',')}`);
       return Object.freeze([]);
     });
-    const brokenCreateRuntime = vi.fn(async () => {
-      throw new Error('agent runtime factory rejected');
-    });
+    const brokenCreateRuntime = vi.fn(() => new Promise<never>(() => undefined));
     const healthyCreateRuntime = vi.fn(async () => {
       events.push('healthy-runtime-created');
       return Object.freeze({});
@@ -923,7 +926,14 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       connectedAccounts: createUnusedConnectedAccountsOwner(),
     });
 
-    await owner.initialize();
+    const initialization = owner.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Per-plugin isolation shares the cold-start phase instead of serializing
+    // timeout windows: the healthy peer constructs while the broken peer hangs.
+    expect(healthyCreateRuntime).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await initialization;
 
     // A rejected activation and a rejected Agent-runtime factory are both isolated:
     // their healthy peers still complete and the registry still becomes serving.
@@ -945,7 +955,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     expect(fencing.fenced[0]?.message).toContain('cold-start activation failed');
     expect(fencing.fenced[0]?.message).toContain('plugin activation rejected');
     expect(fencing.fenced[1]?.message).toContain('cold-start primary Agent runtime construction failed');
-    expect(fencing.fenced[1]?.message).toContain('agent runtime factory rejected');
+    expect(fencing.fenced[1]?.message).toContain('primary Agent runtime readiness timed out after 30000ms');
     expect(dispose).not.toHaveBeenCalled();
   });
 

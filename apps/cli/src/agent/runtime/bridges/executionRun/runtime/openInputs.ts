@@ -19,6 +19,7 @@ export function buildExecutionRunConfiguration(input: Readonly<{
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
+    acpSessionModeId?: string;
     permissionMode: string;
     updatedAtMs: number;
 }>): Readonly<{
@@ -44,7 +45,10 @@ export function buildExecutionRunConfiguration(input: Readonly<{
     }
     const selectedModelId = modelSelection?.modelId ?? legacyModelId ?? null;
     const configuration = AgentSessionConfigurationSnapshotV1Schema.parse({
-        mode: { value: null, updatedAtMs: 0 },
+        mode: {
+            value: input.acpSessionModeId ?? null,
+            updatedAtMs: input.acpSessionModeId === undefined ? 0 : input.updatedAtMs,
+        },
         model: {
             value: selectedModelId,
             updatedAtMs: selectedModelId === null ? 0 : input.updatedAtMs,

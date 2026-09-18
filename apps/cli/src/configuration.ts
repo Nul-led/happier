@@ -24,6 +24,7 @@ import {
 } from './configuration/serverSelection'
 import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from './daemon/spawn/sessionWebhookTimeoutPolicy'
 import { FILES_TRANSFER_CHUNK_CONFIG_MAX_BYTES } from './configuration/fileTransferLimits'
+import type { ClientEncryptionRequirement } from '@happier-dev/protocol'
 
 export const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 100_000_000;
 export const DEFAULT_EXECUTION_RUN_WAIT_MCP_TIMEOUT_GRACE_MS = 60_000;
@@ -35,6 +36,15 @@ function resolveShellBridgeContextEnvMode(env: NodeJS.ProcessEnv): ShellBridgeCo
   const raw = String(env.HAPPIER_SHELL_BRIDGE_CONTEXT_ENV ?? '').trim().toLowerCase();
   if (raw === 'home' || raw === 'full') return raw;
   return 'off';
+}
+
+function resolveClientEncryptionRequirementEnv(env: NodeJS.ProcessEnv): ClientEncryptionRequirement {
+  const raw = String(env.HAPPIER_ENCRYPTION_REQUIREMENT ?? '').trim().toLowerCase();
+  if (!raw || raw === 'follow_account') return 'follow_account';
+  if (raw === 'require_e2ee') return 'require_e2ee';
+  throw new Error(
+    'Invalid HAPPIER_ENCRYPTION_REQUIREMENT; expected "follow_account" or "require_e2ee"',
+  );
 }
 
 export function isDaemonProcessArgv(args: readonly string[]): boolean {
@@ -246,6 +256,7 @@ class Configuration {
   public readonly startupOverridesCacheMaxAgeMs: number
   // Shell-bridge command context env policy (default: off).
   public readonly shellBridgeContextEnvMode: ShellBridgeContextEnvMode
+  public readonly clientEncryptionRequirement: ClientEncryptionRequirement
 
   constructor() {
     // Check if we're running as daemon based on process args
@@ -295,6 +306,7 @@ class Configuration {
 
     this.activeServerDir = join(this.serversDir, this.activeServerId)
     this.shellBridgeContextEnvMode = resolveShellBridgeContextEnvMode(process.env)
+    this.clientEncryptionRequirement = resolveClientEncryptionRequirementEnv(process.env)
     this.legacyPrivateKeyFile = join(this.happyHomeDir, 'access.key')
     this.privateKeyFile = join(this.activeServerDir, 'access.key')
     this.installationIdentityFile = join(this.happyHomeDir, 'installation-identity.json')

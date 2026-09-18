@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { TrackedSession } from '@/daemon/types';
 
-import { resolveSessionRunnerRestartEligibility } from './resolveRestartEligibility';
+import {
+  resolveSessionRunnerRestartEligibility,
+  shouldRefreshSessionRunnerResumeIdentity,
+} from './resolveRestartEligibility';
 
 function trackedRunner(overrides: Partial<TrackedSession> = {}): TrackedSession {
   return {
@@ -23,6 +26,25 @@ function trackedRunner(overrides: Partial<TrackedSession> = {}): TrackedSession 
 }
 
 describe('resolveSessionRunnerRestartEligibility', () => {
+  it('accepts the Agent resume id byte-exact and rejects whitespace-only identity', () => {
+    const exactResume = '  provider\nses/AB+cd==  ';
+    const eligible = { eligible: true, disabledReason: null };
+    const missing = { eligible: false, disabledReason: 'missing_resume_identity' };
+
+    expect(resolveSessionRunnerRestartEligibility(trackedRunner({
+      vendorResumeId: undefined,
+      spawnOptions: { directory: '/workspace', resume: exactResume },
+    }))).toEqual(eligible);
+    expect(resolveSessionRunnerRestartEligibility(trackedRunner({
+      vendorResumeId: exactResume,
+      spawnOptions: { directory: '/workspace' },
+    }))).toEqual(eligible);
+    expect(resolveSessionRunnerRestartEligibility(trackedRunner({
+      vendorResumeId: '   ',
+      spawnOptions: { directory: '/workspace', resume: ' \n ', existingSessionId: '  ' },
+    }))).toEqual(missing);
+  });
+
   it.each([
     ['missing command hash', { processCommandHash: undefined }],
     ['blank command hash', { processCommandHash: '   ' }],
@@ -39,4 +61,22 @@ describe('resolveSessionRunnerRestartEligibility', () => {
       });
     },
   );
+});
+
+describe('shouldRefreshSessionRunnerResumeIdentity', () => {
+  it('excludes runners whose cold-resume contract is unsupported even when no identity is tracked', () => {
+    const missingIdentity = trackedRunner({
+      vendorResumeId: undefined,
+      spawnOptions: { directory: '/workspace' },
+    });
+    expect(shouldRefreshSessionRunnerResumeIdentity(missingIdentity)).toBe(true);
+    expect(shouldRefreshSessionRunnerResumeIdentity({
+      ...missingIdentity,
+      agentSessionStartupInstructionsMarkerV1: {
+        v: 1,
+        id: 'happier.global_voice_agent',
+        revision: 7,
+      },
+    })).toBe(false);
+  });
 });

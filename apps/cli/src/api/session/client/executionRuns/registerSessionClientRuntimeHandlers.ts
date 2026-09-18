@@ -1,12 +1,23 @@
 import { randomUUID } from 'node:crypto';
 
-import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import { resolveAgentIdFromSessionMetadata, resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
+import { parseSessionPermissionModeAlias, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import { configuration } from '@/configuration';
 import { notifyDaemonConnectedServiceUsageLimitWaitResumeCancel } from '@/daemon/controlClient';
 import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import { readStoredCredentials } from '@/persistence';
+import type { StoredCredentials } from '@/persistence';
+import {
+    createActionSettingsProvider,
+    type RuntimeActionSettingsProvider,
+} from '@/settings/actionsSettingsProvider';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
-import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
+import { toAgentSessionMcpLaunchConfigs } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
+import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
+import type { NativeAgentSessionRunToolBindingRequest } from '@/agent/runtime/registry/engineRegistryTypes';
 
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
 import type { registerCapabilitiesHandlers } from '@/rpc/handlers/capabilities';
@@ -14,6 +25,12 @@ import type { SessionRuntimeControls } from '@/rpc/handlers/sessionControls';
 import { registerExecutionRunHandlers } from '@/rpc/handlers/executionRuns';
 import { createExecutionRunRpcApprovalDeps } from '@/rpc/handlers/executionRuns/createExecutionRunRpcApprovalDeps';
 import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
+import {
+    createRestrictedCurrentSessionListActionDependency,
+    createSessionListActionDependency,
+} from '@/session/actions/sessionListActionDependency';
+import { setSessionModel } from '@/session/services/setSessionModel';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
@@ -51,6 +68,12 @@ import type { SessionStoredContentCryptoContext } from '@/session/transport/encr
 import { createExecutionRunTranscriptCustodyError } from '@/agent/runtime/bridges/executionRun/executionRunTranscriptPublisher';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/createHandler';
+import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
+import { createDaemonApprovalExecutionOriginCurrentnessFromCredentials } from '@/daemon/externalActions/daemonExternalActionTargetResolver';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import { createSessionFollowSourceHydrator } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
+import { resolveSessionFollowContextUtf8AllowanceV1 } from '@/agent/runtime/session/follow/sessionFollowContextBudget';
 
 export function resolveSessionClientParentProvider(metadata: unknown): ACPProvider {
     const configuredAcpBackendId = typeof readAcpConfiguredBackendV1FromMetadata(metadata)?.backendId === 'string'
@@ -93,6 +116,21 @@ export function registerSessionClientRuntimeHandlers(
     params: Readonly<{
         rpcHandlerManager: RpcHandlerManager;
         token: string;
+        /** Exact qualified Home captured by the owning Session composition. */
+        serverId: string;
+        /** Immutable HTTP origin carried by this Session's transport. */
+        serverUrl: string;
+        /** Verified restricted-runtime principal; absent for ordinary Account clients. */
+        runtimePrincipalAccountId?: string;
+        /**
+         * The Account credentials the owning composition may use for
+         * Account-scoped Action policy and approval storage. A restricted
+         * Session-runtime composition supplies none, so those consumers return
+         * their canonical unavailable outcome instead of borrowing an
+         * unrelated Account signed in on that machine.
+         */
+        readOwnerAccountCredentials: () => Promise<StoredCredentials | null>;
+        actionsSettingsProvider?: RuntimeActionSettingsProvider;
         metadataPath: string;
         metadata: unknown;
         sessionId: string;
@@ -103,6 +141,8 @@ export function registerSessionClientRuntimeHandlers(
             text: string;
             localId?: string;
             meta?: Record<string, unknown>;
+            requestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
+            recipient?: import('@happier-dev/protocol').ParticipantRecipientV1;
         }>) => Promise<void> | void;
         enqueueUserTextMessageCommitted: (
             text: string,
@@ -150,31 +190,283 @@ export function registerSessionClientRuntimeHandlers(
         observeExecutionRunPublicState?: (run: unknown) => void;
     }>,
 ): void {
-    const parentProvider = resolveSessionClientParentProvider(params.metadata);
-    const workingDirectory = params.metadataPath ?? process.cwd();
-    const sessionMachineId = typeof (params.metadata as { machineId?: unknown })?.machineId === 'string'
-        ? (params.metadata as { machineId: string }).machineId.trim()
-        : '';
-    const sessionInteractionHost = params.session
-        ? {
-            session: params.session,
-            machineId: sessionMachineId,
-            permissionHandler: createProviderEnforcedPermissionHandler({
-                session: params.session,
-                logPrefix: '[Voice Agent Session]',
-                getAccountSettings: () => getActiveAccountSettingsSnapshot()?.settings ?? null,
-            }),
-        }
+    const readOwnerAccountCredentials = params.readOwnerAccountCredentials;
+    const actionsSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider({
+        scopeKey: resolveAccountSettingsScopeKeyForToken(params.token),
+    });
+    const approvalServerId = params.serverId;
+    const approvalServerApiUrl = params.serverUrl;
+    const tokenPayload = decodeJwtPayload(params.token);
+    const rawTokenSubject = typeof tokenPayload?.sub === 'string' && tokenPayload.sub.trim().length > 0
+        ? tokenPayload.sub
         : null;
-    const executionBudgetRegistry = createExecutionBudgetRegistry();
+    const restrictedRuntimeAdmission = params.runtimePrincipalAccountId !== undefined
+        && rawTokenSubject !== null
+        && params.runtimePrincipalAccountId === rawTokenSubject
+        ? Object.freeze({
+            accountId: rawTokenSubject,
+            credentials: Object.freeze({ token: params.token, encryption: null }),
+        })
+        : null;
+    const runtimeAccountId = params.runtimePrincipalAccountId !== undefined
+        ? restrictedRuntimeAdmission?.accountId
+        : rawTokenSubject ?? undefined;
     const transcriptQueryContext = params.getTranscriptQueryContext();
     const transcriptTransportContext: SessionStoredContentCryptoContext =
         transcriptQueryContext.encryptionMode === 'plain'
             ? { mode: 'plain', ctx: null }
             : { mode: 'e2ee', ctx: transcriptQueryContext };
+    const sessionTransportMaterial = transcriptQueryContext.encryptionMode === 'plain'
+        ? { mode: 'plain' as const }
+        : { mode: 'e2ee' as const, dataEncryptionKey: transcriptQueryContext.encryptionKey };
+    const parentProvider = resolveSessionClientParentProvider(params.metadata);
+    const workingDirectory = params.metadataPath ?? process.cwd();
+    const sessionMachineId = typeof (params.metadata as { machineId?: unknown })?.machineId === 'string'
+        ? (params.metadata as { machineId: string }).machineId.trim()
+        : '';
+    const parentSessionForTools = params.session;
+    const accountVoiceFollowReconciler = parentSessionForTools && runtimeAccountId
+        ? createSessionFollowContextReconciler({
+            session: parentSessionForTools,
+            observer: {
+                kind: 'account_voice',
+                accountId: runtimeAccountId,
+                voiceSessionId: parentSessionForTools.sessionId,
+            },
+            hydrateObservation: async (input) => {
+                const credentials = await readOwnerAccountCredentials();
+                if (!credentials) return null;
+                return await createSessionFollowSourceHydrator({
+                    session: parentSessionForTools,
+                    credentials,
+                })(input);
+            },
+        })
+        : null;
+    let ownerAccountSettingsForRuntime: AccountSettings | null = null;
+    const resolveOwnerAccountSettingsSnapshot = async (input?: Readonly<{
+        secretReferenceOverlay?: import('@happier-dev/protocol').SecretReferenceOverlayV1;
+    }>) => {
+        const credentials = await readOwnerAccountCredentials();
+        if (!credentials) {
+            ownerAccountSettingsForRuntime = null;
+            return null;
+        }
+        const context = await bootstrapAccountSettingsContext({ credentials, mode: 'fast' });
+        const operationSnapshot = input?.secretReferenceOverlay
+            ? await refreshSavedSecretCatalogForOperation({
+                expectedScopeKey: resolveAccountSettingsScopeKeyForToken(credentials.token),
+                secretReferenceOverlay: input.secretReferenceOverlay,
+            })
+            : null;
+        const resolved = operationSnapshot ?? context;
+        ownerAccountSettingsForRuntime = resolved.settings ?? null;
+        return resolved;
+    };
+    const resolveOwnerAccountSettings = async (): Promise<AccountSettings | null> => {
+        return (await resolveOwnerAccountSettingsSnapshot())?.settings ?? null;
+    };
+    const sessionInteractionHost = parentSessionForTools
+        ? {
+            session: parentSessionForTools,
+            machineId: sessionMachineId,
+            permissionHandler: createProviderEnforcedPermissionHandler({
+                session: parentSessionForTools,
+                logPrefix: '[Voice Agent Session]',
+                getAccountSettings: () => ownerAccountSettingsForRuntime,
+            }),
+            ...(typeof params.sessionRuntimeControls?.listSkills === 'function'
+                ? { listSkills: () => params.sessionRuntimeControls!.listSkills!() }
+                : {}),
+            ...(typeof params.sessionRuntimeControls?.listVendorPlugins === 'function'
+                ? { listVendorPlugins: () => params.sessionRuntimeControls!.listVendorPlugins!() }
+                : {}),
+            ...(typeof params.sessionRuntimeControls?.resolveComposerReference === 'function'
+                ? { resolveComposerReference: params.sessionRuntimeControls.resolveComposerReference }
+                : {}),
+            ...(typeof params.sessionRuntimeControls?.resolveComposerAttachmentForDispatch === 'function'
+                ? { resolveComposerAttachmentForDispatch: params.sessionRuntimeControls.resolveComposerAttachmentForDispatch }
+                : {}),
+            prepareRunTeamCredentialProviderBinding: async ({ runId, selection: explicitSelection }: Readonly<{
+                runId: string;
+                selection?: TeamCredentialProviderModelSelectionV1;
+            }>) => {
+                const prepare = params.sessionRuntimeControls?.prepareRunTeamCredentialProviderBinding;
+                if (!prepare) return null;
+                const inherited = explicitSelection
+                    ? null
+                    : SessionModelSelectionV2Schema.safeParse(
+                        (parentSessionForTools.getMetadataSnapshot() as Record<string, unknown> | null)?.modelSelectionIntentV2,
+                    );
+                const resourceId = explicitSelection?.resourceId
+                    ?? (inherited?.success && inherited.data.ref.source === 'team_resource'
+                        ? inherited.data.ref.resourceId
+                        : null);
+                const modelId = explicitSelection?.modelId
+                    ?? (inherited?.success && inherited.data.ref.source === 'team_resource'
+                        ? inherited.data.ref.modelId
+                        : null);
+                if (!resourceId || !modelId) return null;
+                return await prepare({
+                    runId,
+                    resourceId,
+                    modelId,
+                    ...(explicitSelection ? { selection: explicitSelection } : {}),
+                });
+            },
+            ...(accountVoiceFollowReconciler
+                ? {
+                    prepareAccountVoiceFollowContext: async (input: Readonly<{
+                        executionRunId: string;
+                        requiredPrompt: string;
+                        signal: AbortSignal;
+                    }>) => {
+                        const allowance = resolveSessionFollowContextUtf8AllowanceV1({
+                            requiredPrompt: input.requiredPrompt,
+                            activeModelId: null,
+                            contextUsage: null,
+                        });
+                        return await accountVoiceFollowReconciler({
+                            signal: input.signal,
+                            maxFollowContextUtf8Bytes: allowance.maxUtf8Bytes,
+                            executionRunId: input.executionRunId,
+                        });
+                    },
+                }
+                : {}),
+            /**
+             * Composes this parent Session's effective tool profile for one
+             * Session-owned Run. Configured third-party servers stay exactly as the
+             * Session materialization owner resolved them; only the built-in Happier
+             * bridge is rebound to the Run's permission mode, location, lifetime and
+             * own admitted turn.
+             */
+            composeRunToolBinding: async (request: NativeAgentSessionRunToolBindingRequest) => {
+                const ownerCredentials = await readOwnerAccountCredentials();
+                const credentials = ownerCredentials ?? restrictedRuntimeAdmission?.credentials ?? null;
+                if (!credentials) return {
+                    supportedSessionReadActions: [],
+                    dispose: () => undefined,
+                };
+                const accountSettingsSnapshot = ownerCredentials
+                    ? await resolveOwnerAccountSettingsSnapshot()
+                    : null;
+                const accountSettings = accountSettingsSnapshot?.settings ?? null;
+                // An explicit view, not a spread of the live client: the durable
+                // Session client owns prototype-bound behavior the MCP seam must
+                // reach through its real methods.
+                const parentMcpSession: HappyMcpSessionClient = applyRunnerMcpSessionContext({
+                    sessionId: parentSessionForTools.sessionId,
+                    rpcHandlerManager: params.rpcHandlerManager,
+                    updateMetadata: (updater) => parentSessionForTools.updateMetadata(updater),
+                    getMetadataSnapshot: () => parentSessionForTools.getMetadataSnapshot(),
+                    getServerBinding: () => ({
+                        serverId: approvalServerId,
+                        serverUrl: approvalServerApiUrl,
+                    }),
+                    confirmSessionAction: (confirmation, binding) =>
+                        parentSessionForTools.confirmSessionAction(confirmation, binding),
+                }, {
+                    getCurrentSessionLocation: () => ({
+                        path: workingDirectory,
+                        machineId: sessionMachineId,
+                    }),
+                });
+                const resolved = await resolveRunnerMcpServers({
+                    session: parentMcpSession,
+                    credentials,
+                    accountCredentials: ownerCredentials,
+                    sessionList,
+                    accountSettings,
+                    ...(params.actionsSettingsProvider
+                        ? { actionsSettingsProvider: params.actionsSettingsProvider }
+                        : {}),
+                    ...(accountSettingsSnapshot?.savedSecretResources
+                        ? { savedSecretResources: accountSettingsSnapshot.savedSecretResources }
+                        : {}),
+                    machineId: sessionMachineId,
+                    // The parent Session directory owns the configured server selection.
+                    directory: workingDirectory,
+                    sessionMetadata: parentSessionForTools.getMetadataSnapshot() ?? null,
+                    executionRun: {
+                        ...request,
+                        // The host carries a raw mode token; the canonical Session
+                        // parser owns its meaning at this boundary.
+                        getPermissionMode: () =>
+                            parseSessionPermissionModeAlias(request.getPermissionMode()),
+                    },
+                });
+                const mcpServers = toAgentSessionMcpLaunchConfigs(resolved.mcpServers);
+                return {
+                    ...(mcpServers ? { mcpServers } : {}),
+                    supportedSessionReadActions: resolved.happierMcpServer.supportedSessionReadActions,
+                    dispose: () => resolved.happierMcpServer.stop(),
+                };
+            },
+        }
+        : null;
+    const executionBudgetRegistry = createExecutionBudgetRegistry();
+    let executionRunManager: ExecutionRunHostBridgeContract | null = null;
+    const sessionList: ActionExecutorDeps['sessionList'] = async (input) => {
+        if (
+            input.context.sessionListAccess !== 'current_session'
+            || input.context.defaultSessionId !== params.sessionId
+            || input.context.runtimeAccountId !== runtimeAccountId
+        ) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.list' };
+        }
+        const ownerCredentials = await readOwnerAccountCredentials();
+        const credentials = ownerCredentials ?? restrictedRuntimeAdmission?.credentials ?? null;
+        if (!credentials || credentials.token !== params.token) {
+            return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+        }
+        // This ad-hoc Run read has no client list-membership owner: it returns the
+        // canonical Action result only and cannot replace ordinary/query membership.
+        return await (ownerCredentials
+            ? createSessionListActionDependency({
+                credentials,
+                serverId: approvalServerId,
+                serverHttpBaseUrl: approvalServerApiUrl,
+            })
+            : createRestrictedCurrentSessionListActionDependency({
+                credentials,
+                sessionId: params.sessionId,
+                serverId: approvalServerId,
+                serverHttpBaseUrl: approvalServerApiUrl,
+                material: sessionTransportMaterial,
+            }))(input);
+    };
+    const isApprovalExecutionOriginCurrent: NonNullable<
+        ActionExecutorDeps['isApprovalExecutionOriginCurrent']
+    > = async (args) => {
+        const credentials = await readOwnerAccountCredentials();
+        if (!credentials || !sessionMachineId) return false;
+        const checker = createDaemonApprovalExecutionOriginCurrentnessFromCredentials({
+            credentials,
+            machineId: sessionMachineId,
+            serverId: approvalServerId,
+            serverApiUrl: approvalServerApiUrl,
+            resolveCurrentPermissionMode: async (origin) => {
+                if (origin.runId) {
+                    const run = executionRunManager?.get(origin.runId);
+                    return run?.sessionId === params.sessionId
+                        ? parseSessionPermissionModeAlias(run.permissionMode)
+                        : null;
+                }
+                if (origin.sessionId !== params.sessionId) return null;
+                return resolvePermissionIntentFromSessionMetadata(params.getSessionMetadata())?.intent ?? null;
+            },
+            resolveCurrentSessionAgentSpawnPolicyV1: async () => (
+                await resolveOwnerAccountSettings()
+            )?.sessionAgentSpawnPolicyV1 ?? null,
+        });
+        return checker ? await checker(args) : false;
+    };
     const transcriptActionExecutor = createCliActionExecutor({
         token: params.token,
         sessionId: params.sessionId,
+        actionsSettingsProvider,
+        isApprovalExecutionOriginCurrent,
         ...transcriptTransportContext,
         transcriptSessionId: params.sessionId,
         transcriptStore: createServerBackedSessionTranscriptStore({
@@ -210,6 +502,8 @@ export function registerSessionClientRuntimeHandlers(
             text: string;
             localId?: string;
             meta?: Record<string, unknown>;
+            requestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
+            recipient?: import('@happier-dev/protocol').ParticipantRecipientV1;
         }>) => params.enqueueSessionUserMessage(request),
         transcriptActionExecutor,
         notifyUsageLimitWaitResumeCancelled: async (request) =>
@@ -284,12 +578,74 @@ export function registerSessionClientRuntimeHandlers(
 
     registerExecutionRunHandlers(params.rpcHandlerManager, {
         sessionId: params.sessionId,
+        serverId: approvalServerId,
+        sessionList,
+        ...(runtimeAccountId ? { runtimeAccountId } : {}),
         cwd: workingDirectory,
         ...(sessionMachineId.length > 0
             ? { machineId: sessionMachineId }
             : {}),
         ...(sessionInteractionHost ? { sessionInteractionHost } : {}),
-        serverUrl: configuration.serverUrl,
+        prepareAttachedTeamCredentialSessionBinding: async ({ sessionId, selection, consent }) => {
+            if (sessionId !== params.sessionId) {
+                return {
+                    ok: false,
+                    error: 'Execution-run parent Session scope changed',
+                    errorCode: 'execution_run_scope_mismatch',
+                };
+            }
+            const credentials = await readOwnerAccountCredentials();
+            if (!credentials || credentials.token !== params.token) {
+                return {
+                    ok: false,
+                    error: 'Session owner credentials are unavailable',
+                    errorCode: 'execution_run_team_session_binding_unavailable',
+                };
+            }
+            try {
+                const serverFeaturesSnapshot = params.getServerFeaturesSnapshot?.();
+                const result = await runWithServerHttpBaseUrl(approvalServerApiUrl, async () => (
+                    await setSessionModel({
+                        credentials,
+                        idOrPrefix: sessionId,
+                        teamCredentialModel: selection,
+                        ...(consent ? { teamVisibilityGrantConsent: { teamId: consent.teamId } } : {}),
+                        ...(serverFeaturesSnapshot
+                            ? { serverFeaturesSnapshot }
+                            : {}),
+                    })
+                ));
+                if (result.ok || ('status' in result && result.status === 'restart_required')) {
+                    return { ok: true };
+                }
+                return {
+                    ok: false,
+                    error: 'The parent Session could not accept the selected Team credential model',
+                    errorCode: 'execution_run_team_session_binding_rejected',
+                    details: result,
+                };
+            } catch (error) {
+                return {
+                    ok: false,
+                    error: error instanceof Error ? error.message : 'Team credential Session binding failed',
+                    errorCode: 'execution_run_team_session_binding_rejected',
+                };
+            }
+        },
+        onManagerCreated: (manager) => {
+            executionRunManager = manager;
+            if (parentSessionForTools?.subscribeExecutionRunPendingTarget) {
+                parentSessionForTools.subscribeExecutionRunPendingTarget((runId) =>
+                    manager.reconcilePendingExecutionRunTarget(runId));
+            }
+        },
+        enqueueParentSessionInput: async (input) => {
+            await params.enqueueSessionUserMessage({
+                ...input,
+                requestedAction: { v: 1, kind: 'steer_if_active' },
+            });
+        },
+        serverUrl: approvalServerApiUrl,
         parentProvider,
         browserControl: params.getBrowserDaemonControlRoutes?.() ?? null,
         browserContext: params.getBrowserDaemonContextRoutes?.() ?? null,
@@ -367,15 +723,13 @@ export function registerSessionClientRuntimeHandlers(
             maxDepth: configuration.executionRunsMaxDepth,
         },
         resolveAccountSettings: async () => {
-            const activeSettings = getActiveAccountSettingsSnapshot()?.settings ?? null;
-            if (activeSettings) return activeSettings;
-            const credentials = await readStoredCredentials();
-            if (!credentials) return null;
-            const context = await bootstrapAccountSettingsContext({ credentials, mode: 'fast' });
-            return context.settings ?? null;
+            return await resolveOwnerAccountSettings();
         },
+        resolveAccountSettingsSnapshot: resolveOwnerAccountSettingsSnapshot,
+        actionsSettingsProvider,
         actionApprovalDeps: createExecutionRunRpcApprovalDeps({
-            readCredentials: readStoredCredentials,
+            readCredentials: readOwnerAccountCredentials,
+            isApprovalExecutionOriginCurrent,
         }),
     });
 }

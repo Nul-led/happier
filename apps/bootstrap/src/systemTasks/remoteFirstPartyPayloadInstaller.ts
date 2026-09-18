@@ -32,6 +32,7 @@ async function runRemoteTextDefault(params: Readonly<{
   ssh: SshConnectionConfig;
   remoteCommand: string;
   knownHostsMode?: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<RemoteFirstPartyCommandResult> {
   const ssh = params.ssh as SshConnectionWithPasswordConfig;
   const knownHosts = resolveKnownHostsConfig(ssh, params.knownHostsMode);
@@ -47,6 +48,7 @@ async function runRemoteTextDefault(params: Readonly<{
     knownHostsMode: knownHosts.mode,
     knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
     remoteCommand: ['bash', '-lc', safeBashSingleQuote(params.remoteCommand)],
+    ...(params.signal ? { signal: params.signal } : {}),
     rejectOnNonZero: false,
     errorPrefix: `SSH command failed for ${params.ssh.target}`,
   });
@@ -61,6 +63,7 @@ async function copyLocalDirectoryToRemoteDefault(params: Readonly<{
   localPath: string;
   remotePath: string;
   knownHostsMode?: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<void> {
   const ssh = params.ssh as SshConnectionWithPasswordConfig;
   const invocation = buildScpCommand({
@@ -79,6 +82,7 @@ async function copyLocalDirectoryToRemoteDefault(params: Readonly<{
     command: invocation.command,
     args: invocation.args,
     ...(invocation.env ? { env: invocation.env } : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   if (result.status !== 0) {
     throw new Error(redactSshText(result.stderr || result.stdout || `SCP command failed for ${params.ssh.target}.`));
@@ -88,6 +92,7 @@ async function copyLocalDirectoryToRemoteDefault(params: Readonly<{
 async function resolveRemoteReleaseTargetDefault(params: Readonly<{
   ssh: SshConnectionConfig;
   knownHostsMode?: 'app' | 'system';
+  signal?: AbortSignal;
 }>): Promise<Readonly<{ os: 'linux' | 'darwin'; arch: 'x64' | 'arm64' }>> {
   const preflight = await runRemoteTextDefault({
     ssh: params.ssh,
@@ -97,6 +102,7 @@ async function resolveRemoteReleaseTargetDefault(params: Readonly<{
       '"$(uname -s | tr \'[:upper:]\' \'[:lower:]\')"',
       '"$(uname -m | tr \'[:upper:]\' \'[:lower:]\')"',
     ].join(' '),
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   const parsed = parseFirstJsonObject(preflight.stdout) as null | Readonly<{
     platform?: unknown;
@@ -115,6 +121,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
   knownHostsMode?: 'app' | 'system';
   installerBinaryPath?: string;
   remoteHomeDir?: string;
+  signal?: AbortSignal;
 }>, deps: Partial<RemoteFirstPartyInstallDeps> = {}): Promise<Readonly<{ binaryPath: string; versionId: string; source: string | null }>> {
   return await installRemoteFirstPartyComponentShared(params, {
     resolveRemoteReleaseTarget: async (innerParams) => await (deps.resolveRemoteReleaseTarget ?? resolveRemoteReleaseTargetDefault)(innerParams),

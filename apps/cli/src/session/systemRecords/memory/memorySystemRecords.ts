@@ -11,11 +11,12 @@ import {
 } from '@happier-dev/protocol';
 
 import {
-  decryptSessionPayload,
-  encryptSessionPayload,
+  openSessionStoredContent,
+  sealSessionStoredContent,
   type SessionEncryptionContext,
+  type SessionStoredContentCryptoContext,
   type SessionStoredContentEncryptionMode,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+} from '@/session/transport/encryption/sessionStoredContentCodec';
 import { AccountEncryptionMaterialUnavailableError } from '@/api/client/encryptionKey';
 
 export const MEMORY_SYSTEM_RECORD_NAMESPACE = SESSION_SYSTEM_RECORD_MEMORY_NAMESPACE satisfies SessionSystemRecordNamespace;
@@ -28,6 +29,15 @@ export const MEMORY_SYSTEM_RECORD_KINDS = {
 export type MemorySystemRecordPayload =
   | SessionSummaryShardV1
   | SessionSynopsisV1;
+
+function requireStoredContentContext(params: Readonly<{
+  mode: SessionStoredContentEncryptionMode;
+  ctx?: SessionEncryptionContext;
+}>): SessionStoredContentCryptoContext {
+  if (params.mode === 'plain') return { mode: 'plain', ctx: null };
+  if (!params.ctx) throw new AccountEncryptionMaterialUnavailableError();
+  return { mode: 'e2ee', ctx: params.ctx };
+}
 
 export function buildMemorySummaryShardSystemRecordLocalId(params: Readonly<{ seqFrom: number; seqTo: number }>): string {
   const seqFrom = Math.max(0, Math.trunc(params.seqFrom));
@@ -62,16 +72,10 @@ export function sealMemorySystemRecordPayload(params: Readonly<{
   if (!payload) {
     throw new Error(`Invalid memory system record payload for kind ${params.kind}`);
   }
-  if (params.mode === 'plain') {
-    return { t: 'plain', v: payload };
-  }
-  if (!params.ctx) {
-    throw new AccountEncryptionMaterialUnavailableError();
-  }
-  return {
-    t: 'encrypted',
-    c: encryptSessionPayload({ ctx: params.ctx, payload }),
-  };
+  return sealSessionStoredContent({
+    ...requireStoredContentContext(params),
+    payload,
+  });
 }
 
 export function openMemorySystemRecordPayload(params: Readonly<{
@@ -82,20 +86,11 @@ export function openMemorySystemRecordPayload(params: Readonly<{
   ctx?: SessionEncryptionContext;
 }>): MemorySystemRecordPayload | null {
   if (params.namespace && params.namespace !== MEMORY_SYSTEM_RECORD_NAMESPACE) return null;
-  if (params.mode === 'plain') {
-    if (params.content.t !== 'plain') {
-      throw new AccountEncryptionMaterialUnavailableError();
-    }
-    return parseMemoryPayload(params.kind, params.content.v);
-  }
-  if (params.content.t !== 'encrypted') {
-    throw new AccountEncryptionMaterialUnavailableError();
-  }
-  if (!params.ctx) {
-    throw new AccountEncryptionMaterialUnavailableError();
-  }
   try {
-    const decrypted = decryptSessionPayload({ ctx: params.ctx, ciphertextBase64: params.content.c });
+    const decrypted = openSessionStoredContent({
+      ...requireStoredContentContext(params),
+      content: params.content,
+    });
     const payload = parseMemoryPayload(params.kind, decrypted);
     if (!payload) {
       throw new AccountEncryptionMaterialUnavailableError();

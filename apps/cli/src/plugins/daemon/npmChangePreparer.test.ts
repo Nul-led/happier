@@ -915,7 +915,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           blockedNewerVersions: [{
             version: incompatibleFixture.version,
             diagnostics: [expect.objectContaining({
-              code: 'plugin_manifest_semantic_invalid',
+              code: 'plugin_manifest_invalid',
               message: 'Plugin manifest requires a compatible Happier CLI version',
             })],
           }],
@@ -1003,7 +1003,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           blockedNewerVersions: [{
             version: incompatibleFixture.version,
             diagnostics: [{
-              code: 'plugin_manifest_semantic_invalid',
+              code: 'plugin_manifest_invalid',
               message: 'Plugin daemon entry uses an unsupported extension',
             }],
           }],
@@ -1091,7 +1091,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           blockedNewerVersions: [{
             version: incompatibleFixture.version,
             diagnostics: [{
-              code: 'plugin_manifest_semantic_invalid',
+              code: 'plugin_manifest_invalid',
               message: 'Plugin manifest requires a compatible Happier CLI version',
             }],
           }],

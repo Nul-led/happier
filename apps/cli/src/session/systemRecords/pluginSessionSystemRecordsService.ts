@@ -2,24 +2,13 @@ import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 import type { PluginCancellationOptions } from '@happier-dev/plugin-sdk';
 import type {
   SessionHandle,
-  SessionSystemRecord,
-  SessionSystemRecordAddress,
-  SessionSystemRecordDeleteRequest,
-  SessionSystemRecordListQuery,
-  SessionSystemRecordPage,
-  SessionSystemRecordReadRequest,
-  SessionSystemRecordUpsertRequest,
 } from '@happier-dev/plugin-sdk/sessions';
 import {
   PluginIdSchema,
   SessionSystemRecordDeleteRequestSchema,
   SessionSystemRecordListQuerySchema,
   SessionSystemRecordReadRequestSchema,
-  SessionSystemRecordSchema,
   SessionSystemRecordUpsertRequestSchema,
-  StrictJsonValueSchema,
-  getSessionSystemRecordPayloadSchema,
-  type SessionSystemRecordContent,
   type SessionSystemRecordStored,
 } from '@happier-dev/protocol';
 
@@ -28,15 +17,16 @@ import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import type { StoredCredentials } from '@/persistence';
 import { resolveSessionTransportContext, type ResolveSessionTransportContextResult } from '@/session/services/resolveSessionTransportContext';
 import {
-  decryptSessionPayload,
-  encryptSessionPayload,
-} from '@/session/transport/encryption/sessionEncryptionContext';
-import {
   deleteSessionSystemRecordV1,
   listSessionSystemRecordsV1,
   readSessionSystemRecordV1,
   upsertSessionSystemRecordV1,
 } from '@/session/transport/http/sessionSystemRecordsHttp';
+import {
+  openSessionSystemRecord,
+  sealSessionSystemRecordContent,
+  validateSessionSystemRecordOpenedContent,
+} from './sessionSystemRecordCodec';
 
 type PluginSessionSystemRecordsService = Pick<
   SessionHandle,
@@ -121,6 +111,7 @@ function mapTransportFailure(error: unknown): PluginError {
     'plugin_session_record_revision_conflict',
     'plugin_session_record_revision_exhausted',
     'plugin_session_record_outcome_unknown',
+    'plugin_session_record_invalid_response',
   ]).has(code)
     ? code
     : 'plugin_session_records_unavailable';
@@ -132,114 +123,6 @@ function mapTransportFailure(error: unknown): PluginError {
       ...(currentRevision ? { details: { currentRevision } } : {}),
     },
   );
-}
-
-function addressesEqual(first: SessionSystemRecordAddress, second: SessionSystemRecordAddress): boolean {
-  return first.owner === second.owner
-    && first.namespace === second.namespace
-    && first.kind === second.kind
-    && first.localId === second.localId;
-}
-
-function matchesListQuery(address: SessionSystemRecordAddress, query: SessionSystemRecordListQuery): boolean {
-  return address.owner === query.owner
-    && address.namespace === query.namespace
-    && (query.kind === undefined || address.kind === query.kind)
-    && (query.localId === undefined || address.localId === query.localId);
-}
-
-function sealRecordContent(
-  context: ResolvedSessionTransportContext,
-  content: SessionSystemRecordUpsertRequest['content'],
-): SessionSystemRecordContent {
-  if (context.mode === 'plain') return Object.freeze({ t: 'plain' as const, v: content });
-  return Object.freeze({
-    t: 'encrypted' as const,
-    c: encryptSessionPayload({ ctx: context.ctx, payload: content }),
-  });
-}
-
-function validateOpenedRecordContent(
-  address: SessionSystemRecordAddress,
-  content: unknown,
-  invalidCode: 'plugin_session_record_invalid_request' | 'plugin_session_record_invalid_response',
-): SessionSystemRecordUpsertRequest['content'] {
-  const parsed = StrictJsonValueSchema.safeParse(content);
-  if (!parsed.success) {
-    throw pluginError(
-      invalidCode,
-      'Session system record content did not contain bounded JSON',
-    );
-  }
-  if (address.owner === 'host') {
-    const payloadSchema = getSessionSystemRecordPayloadSchema(address.namespace, address.kind);
-    const registered = payloadSchema?.safeParse(parsed.data);
-    if (!registered?.success) {
-      throw pluginError(
-        invalidCode,
-        'Session system record content did not match the registered host record schema',
-      );
-    }
-    const normalized = StrictJsonValueSchema.safeParse(registered.data);
-    if (!normalized.success) {
-      throw pluginError(
-        invalidCode,
-        'Session system record content did not contain bounded JSON',
-      );
-    }
-    return normalized.data;
-  }
-  return parsed.data;
-}
-
-function openRecordContent(
-  context: ResolvedSessionTransportContext,
-  content: SessionSystemRecordContent,
-): unknown {
-  if (context.mode === 'plain') {
-    if (content.t !== 'plain') {
-      throw pluginError(
-        'plugin_session_record_encryption_mismatch',
-        'Session system record content did not match the Session encryption mode',
-      );
-    }
-    return content.v;
-  }
-  if (content.t !== 'encrypted') {
-    throw pluginError(
-      'plugin_session_record_encryption_mismatch',
-      'Session system record content did not match the Session encryption mode',
-    );
-  }
-  try {
-    return decryptSessionPayload({ ctx: context.ctx, ciphertextBase64: content.c });
-  } catch {
-    throw pluginError(
-      'plugin_session_record_encryption_unavailable',
-      'Session system record content could not be opened with the Session encryption material',
-    );
-  }
-}
-
-function openStoredRecord(
-  context: ResolvedSessionTransportContext,
-  stored: SessionSystemRecordStored,
-): SessionSystemRecord {
-  const parsed = SessionSystemRecordSchema.safeParse({
-    ...stored,
-    content: validateOpenedRecordContent(
-      stored.address,
-      openRecordContent(context, stored.content),
-      'plugin_session_record_invalid_response',
-    ),
-  });
-  if (!parsed.success) {
-    throw pluginError(
-      'plugin_session_record_invalid_response',
-      'Session system record response did not match the public record contract',
-    );
-  }
-  return Object.freeze(parsed.data);
 }
 
 async function readCredentials(
@@ -338,18 +221,6 @@ function parseRequest<T>(
   return parsed.data;
 }
 
-function assertResponseAddress(
-  record: SessionSystemRecord,
-  address: SessionSystemRecordAddress,
-): void {
-  if (!addressesEqual(record.address, address)) {
-    throw pluginError(
-      'plugin_session_record_invalid_response',
-      'Session system record response did not match the requested address',
-    );
-  }
-}
-
 export function createPluginSessionSystemRecordsService(
   params: CreatePluginSessionSystemRecordsServiceParams,
 ): PluginSessionSystemRecordsService {
@@ -387,19 +258,7 @@ export function createPluginSessionSystemRecordsService(
         throw mapTransportFailure(error);
       }
       assertCurrent(params, prepared.signal);
-      const records = page.records.map((stored) => {
-        const record = openStoredRecord(prepared.context, stored);
-        if (!matchesListQuery(record.address, parsedQuery)) {
-          throw pluginError(
-            'plugin_session_record_invalid_response',
-            'Session system record list response escaped the requested address scope',
-          );
-        }
-        return record;
-      });
-      if (page.hasNext !== (page.nextCursor !== null)) {
-        throw pluginError('plugin_session_record_invalid_response', 'Session system record pagination response was inconsistent');
-      }
+      const records = page.records.map((stored) => openSessionSystemRecord(prepared.context, stored));
       assertCurrent(params, prepared.signal);
       return Object.freeze({
         records,
@@ -411,9 +270,9 @@ export function createPluginSessionSystemRecordsService(
     async upsertSystemRecord(request, options) {
       const parsedRequest = parseRequest(SessionSystemRecordUpsertRequestSchema, request);
       const prepared = await prepare(options);
-      const content = sealRecordContent(
+      const content = sealSessionSystemRecordContent(
         prepared.context,
-        validateOpenedRecordContent(
+        validateSessionSystemRecordOpenedContent(
           parsedRequest.address,
           parsedRequest.content,
           'plugin_session_record_invalid_request',
@@ -437,8 +296,7 @@ export function createPluginSessionSystemRecordsService(
         throw mapTransportFailure(error);
       }
       assertMutationOutcomeCurrent(params, prepared.signal);
-      const record = openStoredRecord(prepared.context, stored);
-      assertResponseAddress(record, parsedRequest.address);
+      const record = openSessionSystemRecord(prepared.context, stored);
       assertMutationOutcomeCurrent(params, prepared.signal);
       return record;
     },
@@ -461,8 +319,7 @@ export function createPluginSessionSystemRecordsService(
       }
       assertCurrent(params, prepared.signal);
       if (!stored) return null;
-      const record = openStoredRecord(prepared.context, stored);
-      assertResponseAddress(record, parsedRequest.address);
+      const record = openSessionSystemRecord(prepared.context, stored);
       assertCurrent(params, prepared.signal);
       return record;
     },

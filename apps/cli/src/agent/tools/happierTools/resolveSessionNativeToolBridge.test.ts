@@ -49,6 +49,61 @@ describe('resolveSessionNativeToolDescriptors', () => {
     expect(window?.inputSchema).not.toMatchObject({ required: expect.arrayContaining(['machineId']) });
   });
 
+  it('exposes the current-Session presentation Action to the real native Agent tool catalog', () => {
+    const tools = resolveSessionNativeToolDescriptors({
+      accountSettings: {},
+      profileId: null,
+      sessionId: 'session-1',
+      sessionMachineId: 'machine-1',
+      memoryRecallGuidanceEnabled: false,
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain('session_presentation_apply');
+  });
+
+  it('admits Board tools only when the exact Home feature and shared Action policy both allow them', () => {
+    const resolve = (overrides: Partial<Parameters<typeof resolveSessionNativeToolDescriptors>[0]> = {}) => (
+      resolveSessionNativeToolDescriptors({
+        accountSettings: {},
+        profileId: null,
+        sessionId: 'session-1',
+        sessionMachineId: 'machine-1',
+        memoryRecallGuidanceEnabled: false,
+        ...overrides,
+      }).map((tool) => tool.name)
+    );
+    const boardTools = [
+      'session_board_get',
+      'session_board_item_upsert',
+      'session_board_item_remove',
+      'session_board_layout_update',
+    ];
+
+    for (const names of [
+      resolve(),
+      resolve({ isServerFeatureEnabled: () => false }),
+      resolve({ isServerFeatureEnabled: () => { throw new Error('malformed feature snapshot'); } }),
+    ]) {
+      expect(names).not.toEqual(expect.arrayContaining(boardTools));
+      expect(names).toEqual(expect.arrayContaining(['change_title', 'session_presentation_apply']));
+    }
+
+    expect(resolve({ isServerFeatureEnabled: (featureId) => featureId === 'sessions.board' }))
+      .toEqual(expect.arrayContaining(boardTools));
+
+    expect(resolve({
+      accountSettings: {
+        actionsSettingsV1: {
+          v: 1,
+          actions: {
+            'session.board.get': { enabled: false },
+          },
+        },
+      },
+      isServerFeatureEnabled: (featureId) => featureId === 'sessions.board',
+    })).not.toContain('session_board_get');
+  });
+
   it('honors profile title disabling and explicit discoverable-only memory exposure', () => {
     const tools = resolveSessionNativeToolDescriptors({
       accountSettings: {

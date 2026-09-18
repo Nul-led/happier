@@ -594,7 +594,7 @@ export async function startMemoryWorker(params: Readonly<{
       const page = await fetchMemorySemanticTranscriptPage({
         token: params.credentials.token,
         sessionId,
-        ctx: cryptoContext.ctx,
+        contentContext: cryptoContext,
         limit: rawPageLimit,
         rawPageLimit,
         maxRawRowsToScan: rawPageLimit * 4,

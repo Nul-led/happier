@@ -7,6 +7,22 @@ import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
 } from '@/agent/runtime/permissions/queuedPrompt';
+import {
+  renderSessionInputContextBlockV1,
+  renderSessionInputContextPromptV1,
+  resolveSessionInputPromptProvenanceV1,
+} from '@happier-dev/protocol';
+
+const LEGACY_UNKNOWN_INPUT_CONTEXT = renderSessionInputContextBlockV1({
+  provenance: resolveSessionInputPromptProvenanceV1({}),
+});
+
+function renderLegacyUnknownProviderPrompt(text: string): string {
+  return renderSessionInputContextPromptV1({
+    provenanceBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+    transformedUserText: text,
+  });
+}
 
 function createSessionHarness() {
   let handler: ((message: any) => void) | null = null;
@@ -68,6 +84,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         steerText,
         rejectPromptBeforeProvider,
         ...override,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -111,6 +128,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         steerText,
         rejectPromptBeforeProvider,
         reportPromptEffectMayHaveOccurred,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -154,6 +172,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         steerText,
         rejectPromptBeforeProvider,
         reportPromptEffectMayHaveOccurred,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -202,6 +221,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         runProviderInputDispatch: vi.fn(async () => ({ status: 'cancelled' as const })),
         steerText,
         rejectPromptBeforeProvider,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -238,6 +258,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -247,8 +268,15 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(steerText).not.toHaveBeenCalled();
     expect(spyPush).not.toHaveBeenCalled();
     expect(spyIsolate).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'send next', localId: 'send-local' }),
-      { permissionMode: 'default' },
+      expect.objectContaining({
+        text: 'send next',
+        localId: 'send-local',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
     );
   });
 
@@ -272,6 +300,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
           effects.push('interrupt');
           return { status: 'interrupted' as const };
         }),
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
     spyIsolate.mockImplementation(((..._args: unknown[]) => { effects.push('send'); }) as any);
@@ -302,6 +331,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         interruptActiveTurn: vi.fn(async () => ({
           status: 'deferred_until_turn_end' as const,
         })),
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -352,6 +382,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         rejectPromptBeforeProvider,
         reportPromptEffectMayHaveOccurred,
         ...(interruptActiveTurn ? { interruptActiveTurn } : {}),
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -386,7 +417,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     });
 
     emitUserMessage({ content: { text: 'hello' }, meta: {} });
-    expect(spyPush).toHaveBeenCalledWith({ text: 'hello', localId: null }, { permissionMode: 'default' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'hello',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('steers a message during an in-flight turn and does not queue it when steer succeeds', async () => {
@@ -406,14 +447,147 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight,
         supportsInFlightSteer,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
     emitUserMessage({ content: { text: 'steer me' }, meta: {} });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(steerText).toHaveBeenCalledWith('steer me', { localId: null });
+    expect(steerText).toHaveBeenCalledWith(
+      renderLegacyUnknownProviderPrompt('steer me'),
+      { localId: null },
+    );
     expect(spyPush).not.toHaveBeenCalled();
+  });
+
+  it('steers a completion-only structured message as its tagged notification text', async () => {
+    const { session, emitUserMessage } = createSessionHarness();
+    const { queue, spyPush, spyIsolate } = createQueue();
+    const steerText = vi.fn(async () => {});
+    const rejectPromptBeforeProvider = vi.fn();
+
+    registerPermissionModeMessageQueueBinding({
+      session,
+      queue,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        isTurnInFlight: () => true,
+        supportsInFlightSteer: () => true,
+        steerText,
+        rejectPromptBeforeProvider,
+        registerProviderAcceptedEffect: () => undefined,
+      },
+    } as any);
+
+    emitUserMessage({
+      content: {
+        text: [
+          '<happier_execution_run_notification>',
+          'This is an automated background-run notification from Happier, not a user message.',
+          'Run ID: run_1',
+          'Status: succeeded',
+          '',
+          'Final result:',
+          'Reviewed the change.',
+          '</happier_execution_run_notification>',
+        ].join('\n'),
+      },
+      localId: 'execution-run-completion',
+      meta: {
+        happierStructuredInputV1: {
+          v: 1,
+          executionRunCompletion: {
+            v: 1,
+            runId: 'run_1',
+            status: 'succeeded',
+            finishedAtMs: 42,
+            canInspect: true,
+            summary: 'Reviewed the change.',
+          },
+        },
+      },
+      pendingProviderAction: 'steer',
+      pendingRequestedAction: { v: 1, kind: 'steer_if_active' },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(steerText).toHaveBeenCalledWith(
+      renderLegacyUnknownProviderPrompt([
+        '<happier_execution_run_notification>',
+        'This is an automated background-run notification from Happier, not a user message.',
+        'Run ID: run_1',
+        'Status: succeeded',
+        '',
+        'Final result:',
+        'Reviewed the change.',
+        '</happier_execution_run_notification>',
+      ].join('\n')),
+      expect.objectContaining({ localId: 'execution-run-completion' }),
+    );
+    expect(spyPush).not.toHaveBeenCalled();
+    expect(spyIsolate).not.toHaveBeenCalled();
+    expect(rejectPromptBeforeProvider).not.toHaveBeenCalled();
+  });
+
+  it('does not drop additional structured semantics while steering a completion message', async () => {
+    const { session, emitUserMessage } = createSessionHarness();
+    const { queue, spyPush, spyIsolate } = createQueue();
+    const steerText = vi.fn(async () => {});
+    const rejectPromptBeforeProvider = vi.fn();
+
+    registerPermissionModeMessageQueueBinding({
+      session,
+      queue,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        isTurnInFlight: () => true,
+        supportsInFlightSteer: () => true,
+        steerText,
+        rejectPromptBeforeProvider,
+        registerProviderAcceptedEffect: () => undefined,
+      },
+    } as any);
+
+    emitUserMessage({
+      content: {
+        text: [
+          '<happier_execution_run_notification>',
+          'This is an automated background-run notification from Happier, not a user message.',
+          'Run ID: run_1',
+          'Status: succeeded',
+          '</happier_execution_run_notification>',
+        ].join('\n'),
+      },
+      localId: 'completion-with-extra-semantics',
+      meta: {
+        happierStructuredInputV1: {
+          v: 1,
+          executionRunCompletion: {
+            v: 1,
+            runId: 'run_1',
+            status: 'succeeded',
+            finishedAtMs: 42,
+            canInspect: true,
+          },
+          futureStructuredContract: { value: 'must not be discarded' },
+        },
+      },
+      pendingProviderAction: 'steer',
+      pendingRequestedAction: { v: 1, kind: 'steer_if_active' },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(steerText).not.toHaveBeenCalled();
+    expect(spyPush).not.toHaveBeenCalled();
+    expect(spyIsolate).not.toHaveBeenCalled();
+    expect(rejectPromptBeforeProvider).toHaveBeenCalledExactlyOnceWith({
+      localIds: ['completion-with-extra-semantics'],
+      userMessageSeq: null,
+      reason: 'conditional_steer_unavailable',
+    });
   });
 
   it('queues model-carrying messages instead of steering them into an active turn', async () => {
@@ -432,6 +606,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -454,15 +629,21 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     expect(steerText).not.toHaveBeenCalled();
     expect(spyPush).toHaveBeenCalledWith(
-      { text: 'switch model next', localId: 'local-model-steer-1', localIds: ['local-model-steer-1'] },
-      {
+      expect.objectContaining({
+        text: 'switch model next',
+        localId: 'local-model-steer-1',
+        localIds: ['local-model-steer-1'],
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
         permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
         modelSelection: {
           agentTargetKey: 'backend:opencode',
           providerConnectionId: null,
           modelId: 'opencode/big-pickle',
         },
-      },
+      }),
     );
   });
 
@@ -484,13 +665,14 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
     emitUserMessage({ content: { text: 'steer with seq' }, localId: 'local-steer-seq', meta: {} });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(steerText).toHaveBeenCalledWith('steer with seq', {
+    expect(steerText).toHaveBeenCalledWith(renderLegacyUnknownProviderPrompt('steer with seq'), {
       localId: 'local-steer-seq',
       localIds: ['local-steer-seq'],
       userMessageSeq: 17,
@@ -515,6 +697,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         supportsInFlightSteer: () => true,
         canSteerPrompt: () => false,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -522,7 +705,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(steerText).not.toHaveBeenCalled();
-    expect(spyPush).toHaveBeenCalledWith({ text: 'queue me', localId: null }, { permissionMode: 'default' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'queue me',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('prefixes replaySeedV1 when steering and consumes it exactly once', async () => {
@@ -594,6 +787,76 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     const finalMeta = session.getMetadataSnapshot();
     expect(finalMeta?.replaySeedV1?.seedText).toBe('');
     expect(finalMeta?.replaySeedV1?.appliedToLocalId).toBe('local-1');
+  });
+
+  it('composes Follow into an in-flight steer and acknowledges only on exact provider acceptance', async () => {
+    const { session, emitUserMessage } = createSessionHarness();
+    const { queue, spyPush } = createQueue();
+    const acknowledgeAccepted = vi.fn();
+    const prepareSessionFollowContext = vi.fn(async ({ requiredPrompt }: { requiredPrompt: string }) => {
+      expect(requiredPrompt).toContain('steer with context');
+      return {
+        updates: [{
+          v: 1,
+          kind: 'session_follow_update' as const,
+          edge: { sourceSessionId: 'source', destinationSessionId: 'destination' },
+          reason: 'source_changed' as const,
+          deliveryIntent: 'context_only' as const,
+          observed: { transcriptSeq: 2, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+          awareness: {
+            v: 1,
+            sessionId: 'source',
+            lifecycle: 'ready' as const,
+            runtime: 'idle' as const,
+            freshness: 'live' as const,
+            operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+            encryption: 'plain' as const,
+            availability: 'complete' as const,
+          },
+          recentMessages: [{ messageId: 'source-2', seq: 2, text: 'follow context', provenance: null }],
+          truncated: false,
+        }],
+        acknowledgeAccepted,
+      };
+    });
+    let accept: (() => void) | null = null;
+    const steerText = vi.fn(async () => {});
+
+    registerPermissionModeMessageQueueBinding({
+      session: session as any,
+      queue,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        isTurnInFlight: () => true,
+        supportsInFlightSteer: () => true,
+        registerProviderAcceptedEffect: (_localId: string, onAccepted: (() => void) | null) => {
+          accept = onAccepted;
+        },
+        prepareSessionFollowContext,
+        steerText,
+      },
+    } as any);
+
+    emitUserMessage({ content: { text: 'steer with context' }, localId: 'steer-follow', meta: {} });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(spyPush).not.toHaveBeenCalled();
+    expect(steerText).toHaveBeenCalledWith(
+      expect.stringContaining('<session_follow>'),
+      expect.objectContaining({ localId: 'steer-follow' }),
+    );
+    const sentPrompt = (steerText.mock.calls as unknown as Array<[string]>)[0]?.[0] ?? '';
+    expect(sentPrompt).toContain('follow context');
+    expect(sentPrompt.endsWith('steer with context')).toBe(true);
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+    expect(accept).toBeTypeOf('function');
+    (accept as unknown as () => void)();
+    expect(acknowledgeAccepted).toHaveBeenCalledWith({
+      localInputId: 'steer-follow',
+      userMessageSeq: null,
+    });
   });
 
   it('keeps a steered replay seed live until exact provider acceptance', async () => {
@@ -700,7 +963,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await waitFor(() => retirementWriteAttempts === 1);
     expect(steerText).toHaveBeenCalledTimes(1);
     expect(steerText).toHaveBeenCalledWith(
-      'SEED\n\nsteer me',
+      renderLegacyUnknownProviderPrompt('SEED\n\nsteer me'),
       expect.objectContaining({ localId: 'local-1' }),
     );
 
@@ -710,8 +973,14 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await waitFor(() => retirementWriteAttempts === 2 && spyPush.mock.calls.length > 0);
     expect(steerText).toHaveBeenCalledTimes(1);
     expect(spyPush).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'again' }),
-      { permissionMode: 'default' },
+      expect.objectContaining({
+        text: 'again',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
     );
 
     // The write recovers; the next steer admission boundary retries successfully and only
@@ -720,7 +989,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     emitUserMessage({ content: { text: 'third' }, localId: 'local-3', meta: {} });
     await waitFor(() => steerText.mock.calls.length === 2);
     expect(steerText).toHaveBeenCalledWith(
-      'third',
+      renderLegacyUnknownProviderPrompt('third'),
       expect.objectContaining({ localId: 'local-3' }),
     );
     expect(retirementWriteAttempts).toBeGreaterThanOrEqual(3);
@@ -826,7 +1095,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(steerText).toHaveBeenCalledTimes(2);
-    expect(steerText.mock.calls[1]?.[0]).toBe('second');
+    expect(steerText.mock.calls[1]?.[0]).toBe(renderLegacyUnknownProviderPrompt('second'));
   });
 
   it('falls back to queueing when steering fails', async () => {
@@ -846,6 +1115,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -853,7 +1123,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(spyPush).toHaveBeenCalledWith({ text: 'queue me', localId: null }, { permissionMode: 'default' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'queue me',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('does not leak unhandledRejection when fallback queueing throws', async () => {
@@ -883,6 +1163,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
           isTurnInFlight: () => true,
           supportsInFlightSteer: () => true,
           steerText,
+          registerProviderAcceptedEffect: () => undefined,
         },
       } as any);
 
@@ -931,6 +1212,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -973,6 +1255,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1004,6 +1287,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1011,7 +1295,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     await Promise.resolve();
 
     expect(steerText).not.toHaveBeenCalled();
-    expect(spyPush).toHaveBeenCalledWith({ text: 'mode change', localId: null }, { permissionMode: 'read-only' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'mode change',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'read-only',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('steers when the message carries an ALIAS of the current mode (no semantic change; ported S-6)', async () => {
@@ -1033,13 +1327,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
     emitUserMessage({ content: { text: 'same mode, alias spelling' }, meta: { permissionMode: 'safe-yolo' } });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(steerText).toHaveBeenCalledWith('same mode, alias spelling', { localId: null });
+    expect(steerText).toHaveBeenCalledWith(
+      renderLegacyUnknownProviderPrompt('same mode, alias spelling'),
+      { localId: null },
+    );
     expect(spyPush).not.toHaveBeenCalled();
   });
 
@@ -1058,6 +1356,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1066,7 +1365,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     expect(steerText).not.toHaveBeenCalled();
     expect(spyPush).not.toHaveBeenCalled();
-    expect(spyIsolate).toHaveBeenCalledWith({ text: '/clear', localId: null }, { permissionMode: 'default' });
+    expect(spyIsolate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/clear',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('does not steer /compact (it must be handled by the main loop)', async () => {
@@ -1084,6 +1393,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1092,7 +1402,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
 
     expect(steerText).not.toHaveBeenCalled();
     expect(spyIsolate).not.toHaveBeenCalled();
-    expect(spyPush).toHaveBeenCalledWith({ text: '/compact', localId: null }, { permissionMode: 'default' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/compact',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'default',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('steers native provider slash commands that are not Happier context-mutating commands', async () => {
@@ -1110,13 +1430,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         isTurnInFlight: () => true,
         supportsInFlightSteer: () => true,
         steerText,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
     emitUserMessage({ content: { text: '/model' }, meta: {} });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(steerText).toHaveBeenCalledWith('/model', { localId: null });
+    expect(steerText).toHaveBeenCalledWith(
+      renderLegacyUnknownProviderPrompt('/model'),
+      { localId: null },
+    );
     expect(spyPush).not.toHaveBeenCalled();
   });
 
@@ -1140,6 +1464,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         supportsInFlightSteer: () => true,
         steerText,
         onPromptQueuedDuringTurn,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1170,6 +1495,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         supportsInFlightSteer: () => true,
         steerText,
         onPromptQueuedDuringTurn,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1197,6 +1523,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
         supportsInFlightSteer: () => true,
         steerText: vi.fn(async () => {}),
         onPromptQueuedDuringTurn,
+        registerProviderAcceptedEffect: () => undefined,
       },
     } as any);
 
@@ -1223,6 +1550,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight config delta, lan
         supportsInFlightSteer: () => true,
         steerText,
         applyConfigDeltaInFlight,
+        registerProviderAcceptedEffect: () => undefined,
       },
     };
   }
@@ -1246,7 +1574,10 @@ describe('registerPermissionModeMessageQueueBinding (in-flight config delta, lan
     // The wire alias 'acceptEdits' normalizes to the canonical intent 'safe-yolo' before the
     // delta reaches the backend capability.
     expect(applyConfigDeltaInFlight).toHaveBeenCalledWith({ permissionMode: 'safe-yolo' });
-    expect(steerText).toHaveBeenCalledWith('switch and steer', expect.anything());
+    expect(steerText).toHaveBeenCalledWith(
+      renderLegacyUnknownProviderPrompt('switch and steer'),
+      expect.anything(),
+    );
     expect(spyPush).not.toHaveBeenCalled();
   });
 
@@ -1269,7 +1600,17 @@ describe('registerPermissionModeMessageQueueBinding (in-flight config delta, lan
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(steerText).not.toHaveBeenCalled();
-    expect(spyPush).toHaveBeenCalledWith({ text: 'switch and steer', localId: null }, { permissionMode: 'safe-yolo' });
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'switch and steer',
+        localId: null,
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+      expect.objectContaining({
+        permissionMode: 'safe-yolo',
+        inputContextBlock: LEGACY_UNKNOWN_INPUT_CONTEXT,
+      }),
+    );
   });
 
   it('treats a thrown config apply as failed and queues (never crashes the handler)', async () => {

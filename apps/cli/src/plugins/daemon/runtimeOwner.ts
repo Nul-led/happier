@@ -17,7 +17,10 @@ import {
 import {
   resolveBundledImmutableGenerationRetentionIds,
 } from '@/plugins/runtime/bundledActivationSource';
-import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import {
+  resolveExecutablePluginRuntimeRegistry,
+  type PluginRuntimeMachineAdmissionTransport,
+} from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import {
   BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
 } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
@@ -98,6 +101,8 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   happyHomeDir: string;
   /** Daemon-owned live machine identity for host-stamped nested Action callers. */
   resolveCurrentMachineId?: () => string | null;
+  /** Existing authenticated Machine admission authority for protected Session input. */
+  machineAdmissionTransport?: PluginRuntimeMachineAdmissionTransport;
   /** Existing daemon-local transfer carrier for host-authored Composer media. */
   resolveComposerMediaStageTransferRpcHandler?: () => RpcHandlerInvoker | null;
   /** Fresh server/machine identity; never the daemon feature cache. */
@@ -199,6 +204,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
     happyHomeDir: params.happyHomeDir,
     ...(params.resolveCurrentMachineId
       ? { resolveCurrentMachineId: params.resolveCurrentMachineId }
+      : {}),
+    ...(params.machineAdmissionTransport
+      ? { machineAdmissionTransport: params.machineAdmissionTransport }
       : {}),
     ...(params.resolveComposerMediaStageTransferRpcHandler
       ? { resolveComposerMediaStageTransferRpcHandler: params.resolveComposerMediaStageTransferRpcHandler }
@@ -396,6 +404,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
             ...(params.resolveCurrentMachineId
               ? { resolveCurrentMachineId: params.resolveCurrentMachineId }
               : {}),
+            ...(params.machineAdmissionTransport
+              ? { machineAdmissionTransport: params.machineAdmissionTransport }
+              : {}),
             ...(params.resolveComposerMediaStageTransferRpcHandler
               ? {
                   resolveComposerMediaStageTransferRpcHandler:
@@ -487,14 +498,13 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
               ? { contributes: getResolvedContributionRegistry() }
               : {}),
           });
-          // Cold start has no serving incumbent to fall back to, so a rejected
-          // projection exits the daemon instead of serving its healthy plugins.
-          // A rejected participant is fenced at the canonical activation owner so
-          // the published registry stops advertising it, keyed on the structural
-          // fact that it failed and never on where it came from: a bundled
-          // participant is fenced exactly like an external one. The reload path
-          // deliberately keeps the opposite contract — there a rejected candidate
-          // must be discarded whole because the incumbent is still serving.
+          // Cold start has no serving incumbent to preserve, so isolate a rejected
+          // participant at the canonical activation owner and publish the healthy
+          // remainder without advertising the failed plugin. Isolation is keyed on
+          // the structural failure, never its provenance: a bundled participant is
+          // fenced exactly like an external one. The reload path deliberately keeps
+          // the opposite contract — there the changed candidate is discarded whole
+          // because the incumbent is still serving.
           const isolateReadinessParticipant = async (
             pluginId: string,
             stage: keyof typeof COLD_START_READINESS_STAGE_REASONS,
@@ -560,18 +570,18 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
                 });
               }
             }
-            for (const pluginId of readinessPluginIds) {
+            await Promise.all(readinessPluginIds.map(async (pluginId) => {
               // A plugin an earlier readiness step already fenced is retired.
               // Constructing its runtime against that retired generation would
               // only fail again and record a second reason for one rejection.
-              if (!registry.activatedPluginIds.has(pluginId)) continue;
+              if (!registry.activatedPluginIds.has(pluginId)) return;
               await isolateReadinessParticipant(pluginId, 'primaryAgentRuntime', async () => {
                 await bootstrapPrimaryAgentRuntimesForReadiness({
                   registry,
                   pluginIds: [pluginId],
                 });
               });
-            }
+            }));
             return registry;
           } catch (error) {
             try {

@@ -4,18 +4,28 @@ import {
   CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
   CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY,
   CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+  CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD,
   CurrentSessionPresentationAckV1Schema,
   CurrentSessionPresentationBindV1Schema,
+  CurrentSessionPresentationUnbindV1Schema,
+  CurrentSessionPresentationIntentResultV1Schema,
   CurrentSessionPresentationOwnerV1Schema,
   CurrentSessionPresentationStateV1Schema,
   sameCurrentSessionPresentationOwnerV1,
   type CurrentSessionPresentationAckV1,
   type CurrentSessionPresentationBindV1,
+  type CurrentSessionPresentationIntentResultV1,
+  type CurrentSessionPresentationIntentV1,
   type CurrentSessionPresentationOwnerV1,
   type CurrentSessionPresentationStateV1,
 } from '@happier-dev/protocol/sessions';
+import {
+  isSocketRpcCurrentSessionPresentationOriginAuthorizationContext,
+  type SocketRpcCurrentSessionPresentationOriginAuthorizationContext,
+} from '@happier-dev/protocol/rpc';
 
 import type { AgentState } from '@/api/types';
+import { ComposerTransactionResultV1Schema, type ComposerTransactionResultV1 } from '@happier-dev/protocol';
 import type { SessionClientPort } from '@/api/session/sessionClientPort';
 import type {
   HostCurrentSessionPresentationService,
@@ -34,10 +44,14 @@ type PresentationSessionPort = Pick<
   'sessionId' | 'rpcHandlerManager' | 'updateAgentState'
 >;
 
-type BoundClient = CurrentSessionPresentationBindV1;
+type BoundClient = Readonly<{
+  binding: CurrentSessionPresentationBindV1;
+  origin: SocketRpcCurrentSessionPresentationOriginAuthorizationContext;
+}>;
 
 type PendingCommand = Readonly<{
   clientId: string;
+  origin: SocketRpcCurrentSessionPresentationOriginAuthorizationContext;
   resolve: (ack: CurrentSessionPresentationAckV1 | null) => void;
 }>;
 
@@ -108,13 +122,22 @@ function abortPromise(signal: AbortSignal): Promise<null> {
   return new Promise((resolve) => signal.addEventListener('abort', () => resolve(null), { once: true }));
 }
 
+function samePresentationOrigin(
+  left: SocketRpcCurrentSessionPresentationOriginAuthorizationContext,
+  right: SocketRpcCurrentSessionPresentationOriginAuthorizationContext,
+): boolean {
+  return left.sessionId === right.sessionId
+    && left.accountId === right.accountId
+    && left.connectionId === right.connectionId;
+}
+
 function formatRevision(hostNonce: string, revision: number): string {
   return `${hostNonce}:${revision}`;
 }
 
 function mapComposerTransactionResult(
   hostNonce: string,
-  result: CurrentSessionPresentationAckV1['result'],
+  result: ComposerTransactionResultV1,
 ): HostSessionPresentationOneShotResult {
   switch (result.status) {
     case 'applied':
@@ -129,6 +152,24 @@ function mapComposerTransactionResult(
       return unavailable('The client rejected the composer transaction as invalid');
     case 'limitExceeded':
       return unavailable('The client rejected the composer transaction because it exceeds a limit');
+  }
+}
+
+function mapPresentationIntentResult(
+  hostNonce: string,
+  revision: number,
+  result: CurrentSessionPresentationIntentResultV1,
+): HostSessionPresentationOneShotResult {
+  switch (result.status) {
+    case 'applied':
+    case 'unchanged':
+      return Object.freeze({ status: result.status, revision: formatRevision(hostNonce, revision) });
+    case 'notCurrent':
+      return unavailable('The bound client is no longer presenting this Session', 'current_session_presentation_not_current');
+    case 'invalidTarget':
+      return unavailable('The requested Board or Companion target is unavailable', 'current_session_presentation_invalid_target');
+    case 'unavailable':
+      return unavailable('The current Session presentation adapter is unavailable');
   }
 }
 
@@ -270,20 +311,34 @@ export function createCurrentSessionPresentationService(params: Readonly<{
 
   params.session.rpcHandlerManager.registerHandler(
     CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
-    async (raw) => {
+    async (raw, context) => {
       const parsed = CurrentSessionPresentationBindV1Schema.safeParse(raw);
-      if (!parsed.success || !isAvailable()) {
-        return { error: 'Current-session presentation binding is unavailable' };
-      }
-      const candidate = Object.freeze({ ...parsed.data });
+      const origin = context?.authorization;
       if (
-        boundClient === null
-        || boundClient.clientId === candidate.clientId
-        || candidate.focused
-        || !boundClient.focused
+        !parsed.success
+        || !isAvailable()
+        || !isSocketRpcCurrentSessionPresentationOriginAuthorizationContext(origin)
+        || origin.sessionId !== params.session.sessionId
       ) {
-        boundClient = candidate;
+        return { status: 'rejected' as const, reason: 'unavailable' as const };
       }
+      const candidate: BoundClient = Object.freeze({
+        binding: Object.freeze({ ...parsed.data }),
+        origin,
+      });
+      const sameBinding = boundClient !== null
+        && boundClient.binding.clientId === candidate.binding.clientId
+        && samePresentationOrigin(boundClient.origin, candidate.origin);
+      const accepted = sameBinding || (
+        boundClient === null
+        || candidate.binding.focused
+        || !boundClient.binding.focused
+      );
+      if (!accepted) {
+        return { status: 'rejected' as const, reason: 'notCurrent' as const };
+      }
+      const replacedBinding = boundClient !== null && !sameBinding;
+      const replacedPending = replacedBinding ? [...pendingCommands.values()] : [];
       const snapshot = await updateState((current, storedHostNonce) => {
         const nextRevision = ++revision;
         if (storedHostNonce !== null && storedHostNonce !== hostNonce) {
@@ -300,12 +355,17 @@ export function createCurrentSessionPresentationService(params: Readonly<{
             command: undefined,
           };
         }
-        return {
-          ...current,
-          revision: nextRevision,
-          command: undefined,
-        };
+        return replacedBinding
+          ? { ...current, revision: nextRevision, command: undefined }
+          : { ...current, revision: nextRevision };
       });
+      if (replacedBinding) {
+        for (const [commandId, pending] of pendingCommands) {
+          if (replacedPending.includes(pending)) pendingCommands.delete(commandId);
+        }
+      }
+      boundClient = candidate;
+      for (const pending of replacedPending) pending.resolve(null);
       return Object.freeze({
         status: 'bound' as const,
         sessionId: params.session.sessionId,
@@ -317,14 +377,57 @@ export function createCurrentSessionPresentationService(params: Readonly<{
 
   params.session.rpcHandlerManager.registerHandler(
     CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
-    async (raw) => {
+    async (raw, context) => {
       const parsed = CurrentSessionPresentationAckV1Schema.safeParse(raw);
-      if (!parsed.success || parsed.data.hostNonce !== hostNonce) return { status: 'ignored' };
+      const origin = context?.authorization;
+      if (
+        !parsed.success
+        || parsed.data.hostNonce !== hostNonce
+        || !isSocketRpcCurrentSessionPresentationOriginAuthorizationContext(origin)
+        || origin.sessionId !== params.session.sessionId
+      ) return { status: 'ignored' };
       const pending = pendingCommands.get(parsed.data.commandId);
-      if (!pending || pending.clientId !== parsed.data.clientId) return { status: 'ignored' };
+      if (
+        !pending
+        || pending.clientId !== parsed.data.clientId
+        || !samePresentationOrigin(pending.origin, origin)
+        || !boundClient
+        || boundClient.binding.clientId !== parsed.data.clientId
+        || !samePresentationOrigin(boundClient.origin, origin)
+      ) return { status: 'ignored' };
       pendingCommands.delete(parsed.data.commandId);
       pending.resolve(parsed.data);
       return { status: 'accepted' };
+    },
+  );
+
+  params.session.rpcHandlerManager.registerHandler(
+    CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD,
+    async (raw, context) => {
+      const parsed = CurrentSessionPresentationUnbindV1Schema.safeParse(raw);
+      const origin = context?.authorization;
+      if (
+        !parsed.success
+        || !isSocketRpcCurrentSessionPresentationOriginAuthorizationContext(origin)
+        || origin.sessionId !== params.session.sessionId
+        || !boundClient
+        || boundClient.binding.clientId !== parsed.data.clientId
+        || !samePresentationOrigin(boundClient.origin, origin)
+      ) return { status: 'ignored' as const };
+      boundClient = null;
+      const retiredPending = [...pendingCommands.values()].filter((pending) => (
+        pending.clientId === parsed.data.clientId && samePresentationOrigin(pending.origin, origin)
+      ));
+      for (const [commandId, pending] of pendingCommands) {
+        if (pending.clientId === parsed.data.clientId && samePresentationOrigin(pending.origin, origin)) {
+          pendingCommands.delete(commandId);
+        }
+      }
+      await updateState((current) => current.command?.clientId === parsed.data.clientId
+        ? { ...current, revision: ++revision, command: undefined }
+        : current);
+      for (const pending of retiredPending) pending.resolve(null);
+      return { status: 'retired' as const };
     },
   );
 
@@ -390,7 +493,7 @@ export function createCurrentSessionPresentationService(params: Readonly<{
       return unavailable('The current Agent session is not available');
     }
     const client = boundClient;
-    if (!client) return unavailable('No authenticated client is bound to this session presentation');
+    if (!client?.binding.focused) return unavailable('No focused authenticated client is bound to this session presentation');
     let published: CurrentSessionPresentationStateV1;
     try {
       published = await updateState((current) => ({
@@ -398,7 +501,7 @@ export function createCurrentSessionPresentationService(params: Readonly<{
         revision: ++revision,
         command: {
           id: operationId,
-          clientId: client.clientId,
+          clientId: client.binding.clientId,
           kind: 'notify',
           message: request.message,
           severity: request.severity,
@@ -432,21 +535,25 @@ export function createCurrentSessionPresentationService(params: Readonly<{
       return unavailable('The current Agent session is not available');
     }
     const client = boundClient;
-    if (!client) return unavailable('No authenticated client is bound to this session presentation');
+    if (!client?.binding.focused) return unavailable('No focused authenticated client is bound to this session presentation');
     if (pendingCommands.size > 0) return unavailable('Another current-session presentation is awaiting the client');
     const nextCommand = {
       id: operationId,
-      clientId: client.clientId,
+      clientId: client.binding.clientId,
       kind: 'composer.replace' as const,
       transaction: {
-        expectedRevision: client.draftRevision,
+        expectedRevision: client.binding.draftRevision,
         operations: [{ kind: 'text.set' as const, text }],
       },
     };
     let published = false;
     let resolveAck: (ack: CurrentSessionPresentationAckV1 | null) => void = () => undefined;
     const ackPromise = new Promise<CurrentSessionPresentationAckV1 | null>((resolve) => { resolveAck = resolve; });
-    pendingCommands.set(operationId, Object.freeze({ clientId: client.clientId, resolve: resolveAck }));
+    pendingCommands.set(operationId, Object.freeze({
+      clientId: client.binding.clientId,
+      origin: client.origin,
+      resolve: resolveAck,
+    }));
     try {
       await updateState((current) => ({ ...current, revision: ++revision, command: nextCommand }));
       published = true;
@@ -479,7 +586,70 @@ export function createCurrentSessionPresentationService(params: Readonly<{
         ? outcomeUnknown('The command was published, but the client acknowledgement was not observed')
         : unavailable('The command was not published');
     }
-    return mapComposerTransactionResult(hostNonce, ack.result);
+    const result = ComposerTransactionResultV1Schema.safeParse(ack.result);
+    return result.success
+      ? mapComposerTransactionResult(hostNonce, result.data)
+      : unavailable('The client returned a result for a different presentation operation');
+  };
+
+  const publishPresentationIntent = async (
+    operationId: string,
+    intent: CurrentSessionPresentationIntentV1,
+    options?: { signal?: AbortSignal },
+  ): Promise<HostSessionPresentationOneShotResult> => {
+    if (!operationId.trim() || !isAvailable() || options?.signal?.aborted) {
+      return unavailable('The current Agent session is not available');
+    }
+    const client = boundClient;
+    if (!client) return unavailable(
+      'No current Session UI is mounted',
+      'current_session_presentation_not_current',
+    );
+    if (!client.binding.focused) return conflict('The target Session UI is not focused');
+    if (pendingCommands.size > 0) return unavailable('Another current-session presentation is awaiting the client');
+    let publishedRevision = 0;
+    let resolveAck: (ack: CurrentSessionPresentationAckV1 | null) => void = () => undefined;
+    const ackPromise = new Promise<CurrentSessionPresentationAckV1 | null>((resolve) => { resolveAck = resolve; });
+    pendingCommands.set(operationId, Object.freeze({
+      clientId: client.binding.clientId,
+      origin: client.origin,
+      resolve: resolveAck,
+    }));
+    try {
+      const published = await updateState((current) => ({
+        ...current,
+        revision: ++revision,
+        command: { id: operationId, clientId: client.binding.clientId, kind: 'presentation.apply', intent },
+      }));
+      publishedRevision = published.revision;
+    } catch (error) {
+      pendingCommands.delete(operationId);
+      if (isLocalContractFailure(error)) {
+        return unavailable('The presentation command did not satisfy the bounded host contract');
+      }
+      return isKnownPreApplicationFailure(error)
+        ? unavailable('The presentation target was offline before the command could be published')
+        : outcomeUnknown('The command may have been published before the transport failed');
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ackTimeoutMs);
+      timer.unref?.();
+    });
+    const ack = await Promise.race([
+      ackPromise,
+      timeout,
+      abortPromise(params.signal),
+      ...(options?.signal ? [abortPromise(options.signal)] : []),
+    ]);
+    if (timer) clearTimeout(timer);
+    pendingCommands.delete(operationId);
+    await clearCommand(operationId);
+    if (!ack) return outcomeUnknown('The command was published, but the client acknowledgement was not observed');
+    const result = CurrentSessionPresentationIntentResultV1Schema.safeParse(ack.result);
+    return result.success
+      ? mapPresentationIntentResult(hostNonce, publishedRevision, result.data)
+      : unavailable('The client returned a result for a different presentation operation');
   };
 
   const service: HostCurrentSessionPresentationService = {
@@ -559,13 +729,18 @@ export function createCurrentSessionPresentationService(params: Readonly<{
     },
     replaceComposerText: async (request, options) => {
       const client = boundClient;
-      if (!client?.focused) return conflict('The target session composer is not focused');
+      if (!client?.binding.focused) return conflict('The target session composer is not focused');
       return await publishComposerReplace(
         request.operationId,
         request.text,
         options,
       );
     },
+    present: async (request, options) => await publishPresentationIntent(
+      request.operationId,
+      request.intent,
+      options,
+    ),
   };
   return Object.freeze(service);
 }

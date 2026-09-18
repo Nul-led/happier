@@ -12,6 +12,7 @@ import {
   buildCliBinaryArtifactCodePayload,
   buildCliBinaryArtifactSupportPayload,
   buildCliBinaryArtifactPayload,
+  prepareCliBinaryArtifactWorkspacePublication,
   readCliBinaryArtifactSupportIdentity,
 } from './buildCliBinaryArtifactPayload.js';
 import {
@@ -363,6 +364,65 @@ describe('daemon runtime support identity', () => {
     expect(existsSync(join(payloadDir, 'node_modules'))).toBe(false);
     expect(existsSync(join(payloadDir, 'tools'))).toBe(false);
     expect(existsSync(join(payloadDir, 'scripts'))).toBe(false);
+  });
+
+  it('settles a stale installed workspace publication before support identity capture', async () => {
+    const root = await makeTempRepo();
+    await createSupportIdentityFixture(root);
+    const installedDistPath = join(
+      root,
+      'apps',
+      'cli',
+      'node_modules',
+      '@happier-dev',
+      'cli-common',
+      'dist',
+      'index.js',
+    );
+    await writeFixtureFile(installedDistPath, 'export const publication = "stale";\n');
+    const ensureWorkspacePackagesBuiltByName = async (_repoRoot: string, packageNames: string[]) => ({
+      ok: true,
+      built: [],
+      skipped: packageNames,
+    });
+
+    await prepareCliBinaryArtifactWorkspacePublication({
+      repoRoot: root,
+      ensureWorkspacePackagesBuiltByName,
+    });
+    const settledBytes = await readFile(installedDistPath, 'utf8');
+    expect(settledBytes).toBe('export {};\n');
+    const identityInput = {
+      repoRoot: root,
+      target: targetForHost(),
+      goVersion: 'go version go1.fixture',
+    };
+    const settledIdentity = readCliBinaryArtifactSupportIdentity(identityInput);
+    const payloadDir = join(root, 'artifacts', 'daemon', 'post-identity', 'payload');
+
+    await buildCliBinaryArtifactCodePayload({
+      repoRoot: root,
+      payloadDir,
+      target: identityInput.target,
+      commandProbe: (command) => command === 'bun' || command === 'yarn',
+      ensureWorkspacePackagesBuiltByName,
+      runCommand: async () => {
+        const entrypoint = join(root, 'apps', 'cli', 'dist', 'index.mjs');
+        await writeFixtureFile(entrypoint, 'export const daemonCode = true;\n');
+        const workspaceRuntime = readCliNodeWorkspaceRuntimeIdentity({ repoRoot: root });
+        cliDistBuildManifest.writeCliDistBuildManifest(entrypoint, {
+          workspaceRuntimeIdentity: workspaceRuntime.fingerprint,
+          workspaceRuntimePackages: workspaceRuntime.packageNames,
+        });
+      },
+      compileBinary: async ({ outfile }) => {
+        await writeFixtureFile(outfile, 'compiled daemon binary\n');
+      },
+    });
+
+    expect(await readFile(installedDistPath, 'utf8')).toBe(settledBytes);
+    expect(readCliBinaryArtifactSupportIdentity(identityInput).fingerprint)
+      .toBe(settledIdentity.fingerprint);
   });
 
   it('retains one flattened self-contained daemon payload for release packaging', async () => {

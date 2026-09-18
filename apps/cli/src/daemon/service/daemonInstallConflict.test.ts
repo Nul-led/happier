@@ -226,6 +226,37 @@ describe('resolveDaemonServiceInstallConflictPlan', () => {
     expect(plan.exactTargetIsConverged).toBe(false);
   });
 
+  it('keeps replace-all blocked for a non-default default-following service from another Happier home', () => {
+    const foreignService = {
+      serverId: 'legacy-custom',
+      name: 'Legacy custom background service',
+      installed: true as const,
+      path: '/Users/alice/Library/LaunchAgents/com.happier.cli.daemon.legacy-custom.plist',
+      platform: 'darwin' as const,
+      mode: 'user' as const,
+      happierHomeDir: '/Users/alice/.happier-other',
+      releaseChannel: 'stable' as const,
+      label: 'com.happier.cli.daemon.legacy-custom',
+      targetMode: 'default-following' as const,
+    };
+
+    const plan = resolveDaemonServiceInstallConflictPlan({
+      target: {
+        platform: 'darwin',
+        mode: 'user',
+        targetMode: 'default-following',
+        ring: 'publicdev',
+        instanceId: null,
+        happierHomeDir: '/Users/alice/.happier',
+      },
+      strategy: 'replace-all',
+      services: [foreignService],
+    });
+
+    expect(plan.foreignHomeConflicts).toEqual([foreignService]);
+    expect(plan.servicesToRemove).toEqual([]);
+  });
+
   it('keeps replace-all blocked for same-instance pinned services from another Happier home', () => {
     const pinnedService = {
       serverId: 'company',

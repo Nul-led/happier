@@ -39,12 +39,14 @@ export type ActiveServerAuthReadiness = Readonly<{
 type ActiveServerAuthReadinessDeps = Readonly<{
   readCredentialsFn?: typeof readStoredCredentials;
   readSettingsFn?: typeof readSettings;
-  validateTokenFn?: (token: string) => Promise<ActiveServerStoredTokenValidationResult>;
+  validateTokenFn?: (token: string, signal?: AbortSignal) => Promise<ActiveServerStoredTokenValidationResult>;
+  signal?: AbortSignal;
 }>;
 
 export async function resolveActiveServerAuthReadiness(
   deps: ActiveServerAuthReadinessDeps = {},
 ): Promise<ActiveServerAuthReadiness> {
+  deps.signal?.throwIfAborted();
   const readCredentialsFn = deps.readCredentialsFn ?? readStoredCredentials;
   const readSettingsFn = deps.readSettingsFn ?? readSettings;
   const validateTokenFn = deps.validateTokenFn ?? validateStoredAuthTokenAgainstActiveServer;
@@ -52,6 +54,7 @@ export async function resolveActiveServerAuthReadiness(
     readCredentialsFn(),
     readSettingsFn(),
   ]);
+  deps.signal?.throwIfAborted();
 
   const machineIdRaw = settings?.machineId;
   const machineId = typeof machineIdRaw === 'string' && machineIdRaw.trim().length > 0
@@ -79,7 +82,8 @@ export async function resolveActiveServerAuthReadiness(
     };
   }
 
-  const validation = await validateTokenFn(credentials.token);
+  const validation = await validateTokenFn(credentials.token, deps.signal);
+  deps.signal?.throwIfAborted();
   const credentialState: CredentialReadinessState = validation.state;
   const rejected = credentialState === 'invalid';
   return {

@@ -95,6 +95,79 @@ describe('createSessionRunnerRespawnManager', () => {
     );
   });
 
+  it('respawns with the exact bytes of an opaque tracked vendor resume id', async () => {
+    vi.useFakeTimers();
+    // Respawn hands this id straight back to the Agent. Trimming it turns a
+    // silent recovery into a resume of a session the Agent never minted.
+    const opaqueVendorResumeId = '  provider\nses/AB+cd==  ';
+    const spawnSession = vi.fn(async (_opts: unknown) => ({ type: 'success' as const, pid: 123 }));
+
+    const manager = createSessionRunnerRespawnManager({
+      enabled: true,
+      maxRestarts: 1,
+      baseDelayMs: 50,
+      maxDelayMs: 50,
+      jitterMs: 0,
+      isSessionAlreadyRunning: async () => false,
+      spawnSession: (opts) => spawnSession(opts),
+      random: () => 0,
+      logDebug: () => {},
+      logWarn: () => {},
+    });
+
+    const tracked: TrackedSession = {
+      startedBy: 'daemon',
+      pid: 111,
+      happySessionId: 'sess-opaque',
+      vendorResumeId: opaqueVendorResumeId,
+      spawnOptions: { directory: '/tmp', backendTarget: { kind: 'builtInAgent', agentId: 'codex' } } as any,
+    };
+
+    manager.handleUnexpectedExit(tracked, { reason: 'process-missing', code: null, signal: null });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(spawnSession).toHaveBeenCalledWith(
+      expect.objectContaining({ resume: opaqueVendorResumeId }),
+    );
+  });
+
+  it('respawns with the exact bytes of an opaque spawn-options resume id', async () => {
+    vi.useFakeTimers();
+    const opaqueResume = '  provider\nses/AB+cd==  ';
+    const spawnSession = vi.fn(async (_opts: unknown) => ({ type: 'success' as const, pid: 123 }));
+
+    const manager = createSessionRunnerRespawnManager({
+      enabled: true,
+      maxRestarts: 1,
+      baseDelayMs: 50,
+      maxDelayMs: 50,
+      jitterMs: 0,
+      isSessionAlreadyRunning: async () => false,
+      spawnSession: (opts) => spawnSession(opts),
+      random: () => 0,
+      logDebug: () => {},
+      logWarn: () => {},
+    });
+
+    const tracked: TrackedSession = {
+      startedBy: 'daemon',
+      pid: 111,
+      happySessionId: 'sess-opaque-2',
+      spawnOptions: {
+        directory: '/tmp',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        resume: opaqueResume,
+      } as any,
+    };
+
+    manager.handleUnexpectedExit(tracked, { reason: 'process-missing', code: null, signal: null });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(spawnSession).toHaveBeenCalledWith(
+      expect.objectContaining({ resume: opaqueResume }),
+    );
+  });
+
   it('terminalizes a required continuation refusal without scheduling a retry', async () => {
     vi.useFakeTimers();
     const spawnSession = vi.fn(async (_opts: unknown) => ({ type: 'success' as const, pid: 123 }));

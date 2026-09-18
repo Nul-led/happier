@@ -16,6 +16,36 @@ const envScope = createEnvKeyScope([
 ]);
 
 describe('createBaseSessionForAttach', () => {
+  it('accepts a process-local attach secret without consulting ambient process state', async () => {
+    envScope.patch({ HAPPIER_SESSION_ATTACH_FILE: '/ambient/must-not-be-read.json' });
+    try {
+      vi.resetModules();
+      const { createBaseSessionForAttach } = await import('./createBaseSessionForAttach');
+      const encryptionKey = new Uint8Array(32).fill(13);
+
+      const session = await createBaseSessionForAttach({
+        existingSessionId: 'session-process-local',
+        metadata: createTestMetadata(),
+        state: { controlledByUser: false },
+        sessionAttachSecret: {
+          encryptionMode: 'e2ee',
+          encryptionKey,
+          encryptionVariant: 'dataKey',
+        },
+      });
+
+      expect(session).toMatchObject({
+        id: 'session-process-local',
+        encryptionMode: 'e2ee',
+        encryptionKey,
+        encryptionVariant: 'dataKey',
+      });
+      expect(process.env.HAPPIER_SESSION_ATTACH_FILE).toBe('/ambient/must-not-be-read.json');
+    } finally {
+      envScope.restore();
+    }
+  });
+
   it('prefers the typed attach path without reading or mutating ambient process state', async () => {
     const dir = await createTempDir('happy-base-attach-');
     try {
@@ -213,6 +243,28 @@ describe('createBaseSessionForAttach', () => {
       envScope.restore();
       await removeTempDir(dir);
     }
+  });
+
+  it('carries queued Execution Run targets from the attach snapshot into the initial Session', async () => {
+    const { createBaseSessionForAttach } = await import('./createBaseSessionForAttach');
+
+    const session = await createBaseSessionForAttach({
+      existingSessionId: 'session-with-pending-run',
+      metadata: createTestMetadata(),
+      state: { controlledByUser: false },
+      sessionAttachSecret: {
+        encryptionMode: 'plain',
+        snapshot: {
+          metadata: createTestMetadata(),
+          metadataVersion: 2,
+          agentState: null,
+          agentStateVersion: 3,
+          pendingExecutionRunIds: ['run-offline'],
+        },
+      },
+    });
+
+    expect(session.pendingExecutionRunIds).toEqual(['run-offline']);
   });
 
   it('materializes strict owner categories for the resumed local runtime without treating shared metadata as authority', async () => {

@@ -57,6 +57,11 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         ownerPacket: 'A.12.0',
     },
     {
+        method: RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED,
+        rationale: 'Exact-daemon transport may consume only an already-approved durable Artifact; the public present-user Action remains the sole decision owner.',
+        ownerPacket: 'teams-lane-11-machine-pools-and-exact-dispatch',
+    },
+    {
         method: RPC_METHODS.SPAWN_HAPPY_SESSION,
         rationale: 'Private machine Session lifecycle transport with daemon-owned spawn/resume request and response semantics; it is not the public V2 session.spawn_new Action surface.',
         ownerPacket: 'SESSION-COMPAT',
@@ -85,6 +90,11 @@ export const INTERNAL_ONLY_RPC_METHODS = Object.freeze([
         method: RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST,
         rationale: 'PMS-5 direct-eligible daemon read projection; remains internal transport, not a public action surface.',
         ownerPacket: 'PMS-5',
+    },
+    {
+        method: RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE,
+        rationale: 'Exact-Machine daemon-owned Run currentness proof for Home broker admission; no Run mirror or credential authority.',
+        ownerPacket: 'teams-lane-10',
     },
     {
         method: RPC_METHODS.DAEMON_MEMORY_STATUS,

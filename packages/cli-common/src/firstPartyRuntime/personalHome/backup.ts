@@ -4,7 +4,7 @@ import { mkdir, readFile, lstat, cp, opendir, readdir, writeFile, rm, stat, real
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { createPersonalHomeArchive, PersonalHomeArchiveError, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive } from './archive.js';
 import { type PersonalHomeRuntimeLayout } from './layout.js';
-import { fingerprintMasterSecret, type PersonalHomeBackupEntry, type PersonalHomeBackupManifestV1 } from './manifest.js';
+import { comparePersonalHomeBackupArtifactNames, fingerprintMasterSecret, type PersonalHomeBackupEntry, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './sqliteSnapshot.js';
 import { withPersonalHomeOperationLock } from './lock.js';
 import {
@@ -13,7 +13,19 @@ import {
 } from './configuration.js';
 import { createPersonalHomePathProtection, type PersonalHomePathProtection } from './protection.js';
 
-export type PersonalHomeBackupResult = Readonly<{ path: string; manifest: PersonalHomeBackupManifestV1; sha256: string; archiveBytes: number; homeNeedsAttention?: boolean }>;
+export type PersonalHomeBackupCleanupRequired = Readonly<{
+  kind: 'backup_staging';
+  path: string;
+  error: string;
+}>;
+export type PersonalHomeBackupResult = Readonly<{
+  path: string;
+  manifest: PersonalHomeBackupManifestV1;
+  sha256: string;
+  archiveBytes: number;
+  homeNeedsAttention?: boolean;
+  cleanupRequired?: PersonalHomeBackupCleanupRequired;
+}>;
 export type PersonalHomeSqliteMaintenance = Readonly<{
   checkpoint: () => Promise<{ busy: number }>;
   quickCheck: () => Promise<boolean>;
@@ -31,7 +43,7 @@ async function addTree(source: string, staging: string, prefix: string, entries:
   // directory headers. Manifest v1 remains file-only and hashes content bytes only.
   await mkdir(join(staging, prefix), { recursive: true });
   await protect(join(staging, prefix), 'directory');
-  for (const name of names.sort()) { const sourcePath = join(source, name); if (excludedPath && resolve(sourcePath) === resolve(excludedPath)) continue; const info = await lstat(sourcePath); const archivePath = join(prefix, name).split('\\').join('/'); if (info.isDirectory()) await addTree(sourcePath, staging, archivePath, entries, protect, excludedPath); else await addFile(sourcePath, staging, archivePath, entries, protect); }
+  for (const name of names.sort(comparePersonalHomeBackupArtifactNames)) { const sourcePath = join(source, name); if (excludedPath && resolve(sourcePath) === resolve(excludedPath)) continue; const info = await lstat(sourcePath); const archivePath = join(prefix, name).split('\\').join('/'); if (info.isDirectory()) await addTree(sourcePath, staging, archivePath, entries, protect, excludedPath); else await addFile(sourcePath, staging, archivePath, entries, protect); }
 }
 function overlaps(left: string, right: string): boolean { const relation = relative(resolve(left), resolve(right)); return relation === '' || (!relation.startsWith('..') && !isAbsolute(relation)); }
 
@@ -84,7 +96,7 @@ async function assertSafeOutputPath(layout: PersonalHomeRuntimeLayout, outputPat
 }
 
 export async function createPersonalHomeBackup(params: Readonly<{
-  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>;
+  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>; cleanupStaging?: (path: string) => Promise<void>;
 }>): Promise<PersonalHomeBackupResult> {
   return withPersonalHomeOperationLock(params.layout.dataDir, 'backup', () =>
     createPersonalHomeBackupWithLease({ ...params, operationLeaseHeld: true }));
@@ -92,7 +104,7 @@ export async function createPersonalHomeBackup(params: Readonly<{
 
 /** Package-internal primitive for callers that already hold the canonical Home operation lease. */
 export async function createPersonalHomeBackupWithLease(params: Readonly<{
-  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>; operationLeaseHeld: true;
+  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>; cleanupStaging?: (path: string) => Promise<void>; operationLeaseHeld: true;
 }>): Promise<PersonalHomeBackupResult> {
     if (!params.sqlite || typeof params.sqlite.close !== 'function') {
       throw new PersonalHomeSqliteSnapshotError('sqlite_maintenance_required', 'SQLite maintenance with an explicit close boundary is required');
@@ -116,6 +128,7 @@ export async function createPersonalHomeBackupWithLease(params: Readonly<{
       throw new Error('Personal Home backup staging must be separate from Home files and output');
     }
     let backupResult: PersonalHomeBackupResult | undefined;
+    let cleanupRequired: PersonalHomeBackupCleanupRequired | undefined;
     const protect = createPersonalHomePathProtection({ platform: params.layout.platform });
     try {
       try {
@@ -147,70 +160,77 @@ export async function createPersonalHomeBackupWithLease(params: Readonly<{
       const configBytes = Buffer.from(serializePersonalHomeRestorableConfigurationV1(
         normalizePersonalHomeRestorableConfigurationV1(params.configuration, params.homeServerIdentityId),
       )); const configPath = join(staging, 'configuration/home.env.json'); await mkdir(dirname(configPath), { recursive: true }); await protect(dirname(configPath), 'directory'); await writeFile(configPath, configBytes, { mode: 0o600 }); await protect(configPath, 'file'); entries.push({ path: 'configuration/home.env.json', size: configBytes.byteLength, sha256: createHash('sha256').update(configBytes).digest('hex') });
-      const manifest: PersonalHomeBackupManifestV1 = { format: 'happier-personal-home-backup', version: 1, createdAt: new Date().toISOString(), happierVersion: params.happierVersion, schemaVersion: params.schemaVersion, homeServerIdentityId: params.homeServerIdentityId, masterSecretFingerprint: fingerprintMasterSecret(await readFile(params.layout.masterSecretPath)), databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: params.layout.platform, sourceRuntimeMode: params.layout.mode, entries: entries.sort((a, b) => a.path.localeCompare(b.path)) };
+      const manifest: PersonalHomeBackupManifestV1 = { format: 'happier-personal-home-backup', version: 1, createdAt: new Date().toISOString(), happierVersion: params.happierVersion, schemaVersion: params.schemaVersion, homeServerIdentityId: params.homeServerIdentityId, masterSecretFingerprint: fingerprintMasterSecret(await readFile(params.layout.masterSecretPath)), databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: params.layout.platform, sourceRuntimeMode: params.layout.mode, entries: entries.sort((a, b) => comparePersonalHomeBackupArtifactNames(a.path, b.path)) };
       const archive = await createPersonalHomeArchive({ stagingDir: staging, outputPath: params.outputPath, manifest });
       await verifyPersonalHomeArchive(archive.path);
       backupResult = { path: archive.path, manifest, sha256: archive.sha256, archiveBytes: archive.archiveBytes };
     } finally {
-      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      const cleanupStaging = params.cleanupStaging ?? (async (path: string) => rm(path, { recursive: true, force: true }));
+      try {
+        await cleanupStaging(staging);
+      } catch {
+        try {
+          await cleanupStaging(staging);
+        } catch (error) {
+          const detail = error instanceof Error && error.message.trim() ? error.message.trim() : 'unknown platform error';
+          cleanupRequired = { kind: 'backup_staging', path: staging, error: detail };
+        }
+      }
       if (params.wasRunning && params.startHome) await params.startHome().catch(() => { homeNeedsAttention = true; });
     }
     if (!backupResult) throw new Error('Personal Home backup did not produce a result');
-    return homeNeedsAttention ? { ...backupResult, homeNeedsAttention: true } : backupResult;
+    return {
+      ...backupResult,
+      ...(homeNeedsAttention ? { homeNeedsAttention: true } : {}),
+      ...(cleanupRequired ? { cleanupRequired } : {}),
+    };
 }
 
 export type PersonalHomeBackupArchiveInventoryEntry = Readonly<{ path: string; createdAt: string; archiveBytes: number }>;
 
-/**
- * Upper bound on archives whose manifests one settings inventory may quick-read. The protected
- * resource is the shared host's inspect/settings latency and I/O, not backup retention: the user
- * backup directory is never pruned or size-capped. Beyond either the directory or manifest-read
- * budget the inventory reports a confirmed lower bound and no authoritative latest archive;
- * explicit Verify and Restore remain unaffected.
- */
-export const PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS = 32;
-const PERSONAL_HOME_BACKUP_INVENTORY_MAX_DIRECTORY_ENTRIES = 64;
-
 export type PersonalHomeBackupArchiveInventory = Readonly<{
   /** Confirmed Personal Home archives; exact when `complete`, otherwise a confirmed lower bound. */
   count: number;
-  /** False when directory or manifest projection stopped early, or a candidate could not be quick-confirmed within the parser resource limit. */
+  /** False only when a candidate could not be quick-confirmed within the parser's real resource limits. */
   complete: boolean;
   /** Newest archive by manifest creation time only when the inventory is complete. */
   latest: PersonalHomeBackupArchiveInventoryEntry | null;
 }>;
 
-export async function listPersonalHomeBackupArchives(backupsDir: string): Promise<PersonalHomeBackupArchiveInventory> {
-  const candidates: string[] = [];
+export async function listPersonalHomeBackupArchives(
+  backupsDir: string,
+  checkCancelled: () => void = () => undefined,
+): Promise<PersonalHomeBackupArchiveInventory> {
+  let count = 0;
   let complete = true;
+  let latest: PersonalHomeBackupArchiveInventoryEntry | null = null;
   try {
     const directory = await opendir(backupsDir);
-    let observedEntries = 0;
     for await (const entry of directory) {
-      if (observedEntries >= PERSONAL_HOME_BACKUP_INVENTORY_MAX_DIRECTORY_ENTRIES) {
-        complete = false;
-        break;
+      checkCancelled();
+      if (!entry.isFile() || !entry.name.endsWith('.tar')) continue;
+      const candidate = resolve(backupsDir, entry.name);
+      try {
+        const metadata = await readPersonalHomeArchiveManifestMetadata(candidate);
+        const confirmed = { path: candidate, createdAt: metadata.manifest.createdAt, archiveBytes: metadata.archiveBytes };
+        count += 1;
+        const confirmedCreatedAt = Date.parse(confirmed.createdAt);
+        const latestCreatedAt = latest ? Date.parse(latest.createdAt) : Number.NEGATIVE_INFINITY;
+        if (!latest
+          || confirmedCreatedAt > latestCreatedAt
+          || (confirmedCreatedAt === latestCreatedAt && comparePersonalHomeBackupArtifactNames(confirmed.path, latest.path) > 0)) {
+          latest = confirmed;
+        }
+      } catch (error) {
+        // A candidate the quick parser cannot confirm may still be a valid legacy archive, so
+        // exact count/latest facts are unavailable. Structurally invalid or disappearing files
+        // are not current Personal Home archive facts.
+        if (error instanceof PersonalHomeArchiveError && error.code === 'resource_limit') complete = false;
       }
-      observedEntries += 1;
-      if (entry.isFile() && entry.name.endsWith('.tar')) candidates.push(resolve(backupsDir, entry.name));
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { count: 0, complete: true, latest: null };
     throw error;
   }
-  if (candidates.length > PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS) complete = false;
-  const confirmed: PersonalHomeBackupArchiveInventoryEntry[] = [];
-  for (const candidate of candidates.slice(0, PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS)) {
-    try {
-      const metadata = await readPersonalHomeArchiveManifestMetadata(candidate);
-      confirmed.push({ path: candidate, createdAt: metadata.manifest.createdAt, archiveBytes: metadata.archiveBytes });
-    } catch (error) {
-      // An archive the quick-manifest budget cannot confirm (e.g. a legacy backup whose manifest
-      // sits beyond the header budget) must never let the inventory report a partial count as
-      // exact. Structural failures remain "not a current archive fact", as for arbitrary tars.
-      if (error instanceof PersonalHomeArchiveError && error.code === 'resource_limit') complete = false;
-    }
-  }
-  confirmed.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
-  return { count: confirmed.length, complete, latest: complete ? confirmed[0] ?? null : null };
+  return { count, complete, latest: complete ? latest : null };
 }

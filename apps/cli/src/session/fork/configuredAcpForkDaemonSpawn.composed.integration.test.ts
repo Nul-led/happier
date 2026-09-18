@@ -100,7 +100,6 @@ async function forkThenAdmitSpawn(params: Readonly<{
             },
             accountSettings: ACCOUNT_SETTINGS,
             credentials,
-            loadLocalHandoffMetadataByVendorResumeId: async () => null,
         },
         validateEnvVarRecordStrict: () => ({ ok: true, env: {} }),
     });

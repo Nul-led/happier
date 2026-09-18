@@ -12,7 +12,7 @@ import {
   type MarketplaceIndexSourceKindV1,
   type MarketplaceIndexSourceSnapshotV1,
 } from '@happier-dev/protocol';
-import { readMarketplaceNpmDiscoveryProjectionV1 } from '@happier-dev/protocol/marketplace/internal';
+import { parseMarketplaceIndexSourceSnapshotV1, readMarketplaceNpmDiscoveryProjectionV1 } from '@happier-dev/protocol/marketplace/internal';
 
 import {
   assertRemoteAcquisitionUrl,
@@ -297,7 +297,6 @@ function parseCommunityNpmMetadataEntry(
   }
   if (!marketplaceNpmDiscoveryProjectionEqualV1(discovery.projection, expectedDiscovery)) return { status: 'skipped', reason: 'unusable-metadata' };
   const happierRange = artifact.compatibility.projection.manifest.engines?.happier;
-  if (!happierRange) return { status: 'skipped', reason: 'unusable-metadata' };
   const parsed = MarketplaceIndexEntryV1Schema.safeParse({
     pluginId: discovery.projection.pluginId,
     publisher,
@@ -311,7 +310,7 @@ function parseCommunityNpmMetadataEntry(
     },
     manifestDigest: discovery.projection.manifestDigest,
     compatibility: {
-      happier: happierRange,
+      ...(happierRange === undefined ? {} : { happier: happierRange }),
       platforms: deriveMarketplaceNpmCompatibilityPlatformsV1(artifact.compatibility.projection),
     },
     summary: discovery.projection.summary,
@@ -467,17 +466,11 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
             ...(params.query?.exactPackageName ? { exactPackageName: params.query.exactPackageName } : {}),
           });
         } else {
-          parsed = MarketplaceIndexSourceSnapshotV1Schema.parse(body);
+          parsed = parseMarketplaceIndexSourceSnapshotV1(body);
         }
         // Immutable identity decides the binding match; the editable local
         // title is overlaid as presentation metadata, never compared.
         if (parsed.source.id !== params.source.id || parsed.source.kind !== params.source.kind || parsed.source.sourceUrl !== sourceUrl) throw new Error('Marketplace index source identity does not match its configured binding');
-        const invalidReview = parsed.entries.find((entry) => (
-          params.source.kind === 'curated'
-            ? entry.review.status === 'unreviewed'
-            : entry.review.status !== 'unreviewed'
-        ));
-        if (invalidReview) throw new Error(`Marketplace source '${params.source.id}' claims review authority outside its source kind`);
         const { communityNpmPage = null, ...parsedSnapshot } = parsed;
         const boundSnapshot = withConfiguredSourcePresentation(parsedSnapshot, params.source.title);
         const snapshot: LoadedMarketplaceIndexSource = { ...boundSnapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(communityNpmPage ? { communityNpmPage } : {}) };

@@ -1,5 +1,4 @@
 import { splitUnifiedDiffByFile, type ChangeConfidence, type ChangeEvidenceSource, type FileChangeEvidence, type FileChangeKind, type RepositoryCheckpointTurnMetadata, type TurnChangeSet } from '@happier-dev/protocol';
-import { deriveCanonicalPatchFileDiffs } from '@happier-dev/protocol/tools/v2';
 
 import { TurnDiffEmitter } from './turnDiffEmitter';
 
@@ -123,6 +122,7 @@ export class TurnChangeSetCollector {
                     filePath: file.filePath,
                     oldText: file.oldText,
                     newText: file.newText,
+                    ...(file.unifiedDiff ? { unifiedDiff: file.unifiedDiff } : {}),
                     ...(file.description ? { description: file.description } : {}),
                 });
                 continue;
@@ -149,11 +149,15 @@ export class TurnChangeSetCollector {
         newText: string;
         source: ChangeEvidenceSource;
         confidence: ChangeConfidence;
+        agentTurnId?: string | null;
+        providerMessageId?: string | null;
         description?: string;
     }>): void {
         this.metadataByFilePath.set(params.filePath, {
             source: params.source,
             confidence: params.confidence,
+            agentTurnId: params.agentTurnId ?? null,
+            providerMessageId: params.providerMessageId ?? null,
             description: params.description ?? null,
         });
         this.emitter.observeTextDiff({
@@ -169,11 +173,15 @@ export class TurnChangeSetCollector {
         unifiedDiff: string;
         source: ChangeEvidenceSource;
         confidence: ChangeConfidence;
+        agentTurnId?: string | null;
+        providerMessageId?: string | null;
         description?: string;
     }>): void {
         this.metadataByFilePath.set(params.filePath, {
             source: params.source,
             confidence: params.confidence,
+            agentTurnId: params.agentTurnId ?? null,
+            providerMessageId: params.providerMessageId ?? null,
             description: params.description ?? null,
         });
         this.emitter.observeUnifiedDiff({
@@ -195,60 +203,12 @@ export class TurnChangeSetCollector {
         this.emitter.observeUnifiedDiffSnapshot({ unifiedDiff: params.unifiedDiff });
     }
 
-    observePatchChanges(params: Readonly<{
-        changes: Record<string, unknown>;
-        source: ChangeEvidenceSource;
-        confidence: ChangeConfidence;
-    }>): void {
-        const files = deriveCanonicalPatchFileDiffs({ changes: params.changes });
-        if (files.length === 0) {
-            for (const filePath of Object.keys(params.changes)) {
-                if (!filePath.trim()) continue;
-                this.metadataByFilePath.set(filePath, {
-                    source: params.source,
-                    confidence: params.confidence,
-                });
-                this.emitter.observeUnifiedDiff({
-                    filePath,
-                    unifiedDiff: `diff --git a/${filePath} b/${filePath}`,
-                });
-            }
-            return;
-        }
-
-        for (const file of files) {
-            const filePath = file.filePath;
-            this.metadataByFilePath.set(filePath, {
-                source: params.source,
-                confidence: params.confidence,
-            });
-            if (typeof file.oldText === 'string' && typeof file.newText === 'string') {
-                this.emitter.observeTextDiff({
-                    filePath,
-                    oldText: file.oldText,
-                    newText: file.newText,
-                });
-                continue;
-            }
-            if (typeof file.unifiedDiff === 'string' && file.unifiedDiff.trim().length > 0) {
-                this.emitter.observeUnifiedDiff({
-                    filePath,
-                    unifiedDiff: file.unifiedDiff,
-                });
-                continue;
-            }
-            this.emitter.observeUnifiedDiff({
-                filePath,
-                unifiedDiff: `diff --git a/${filePath} b/${filePath}`,
-            });
-        }
-    }
-
     flushTurn(params: Readonly<{
         sessionId: string;
         turnId: string;
         seqRange: { startSeqInclusive: number; endSeqInclusive: number };
         status: TurnChangeSet['status'];
+        agentTurnId?: string | null;
     }>): TurnChangeSet | null {
         const output = this.emitter.flushTurn();
         const files: FileChangeEvidence[] = [];
@@ -269,7 +229,7 @@ export class TurnChangeSetCollector {
                     source: metadata?.source ?? 'provider_tool',
                     confidence: metadata?.confidence ?? 'strong',
                     provider: metadata?.provider ?? this.provider,
-                    agentTurnId: metadata?.agentTurnId ?? null,
+                    agentTurnId: metadata?.agentTurnId ?? params.agentTurnId ?? null,
                     providerMessageId: metadata?.providerMessageId ?? null,
                     description: metadata?.description ?? null,
                 });

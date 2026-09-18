@@ -7,6 +7,7 @@ vi.mock('@/daemon/executionRunRegistry', () => ({
 
 import { writeExecutionRunActivityMarker } from './activityMarkers';
 import type { ExecutionRunState } from './executionRunTypes';
+import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 
 describe('writeExecutionRunActivityMarker marker privacy', () => {
   it('does not copy the in-memory connected-services registration into the marker', async () => {
@@ -17,7 +18,7 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
       agentId: 'codex',
       materializationKey: 'run_1',
       connectedServicesBindings: {
-        v: 1 as const,
+        v: 2 as const,
         bindingsByServiceId: {
           'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'profile_1' },
         },
@@ -100,7 +101,7 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
           runKey: 'run_required',
           agentId: 'codex',
           materializationKey: 'run_required',
-          connectedServicesBindings: { v: 1 as const, bindingsByServiceId: {} },
+          connectedServicesBindings: { v: 2 as const, bindingsByServiceId: {} },
           connectedServiceSelectionsEnv: {},
           sessionDirectory: '/tmp/project',
           materializedRoot: null,
@@ -118,5 +119,57 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
       controllers: new Map(),
       enqueueMarkerWrite: async (_runId, write) => await write(),
     })).resolves.toBeUndefined();
+  });
+
+  it('does not publish broker authority for a voice-agent controller without a backend occurrence', async () => {
+    const run = {
+      runId: 'voice_run',
+      callId: 'voice_call',
+      sidechainId: 'voice_side',
+      sessionId: 'voice_session',
+      depth: 0,
+      intent: 'voice_agent' as const,
+      backendTarget: { kind: 'builtInAgent' as const, agentId: 'claude' },
+      backendId: 'claude',
+      instructions: '',
+      permissionMode: 'read_only',
+      retentionPolicy: 'resumable' as const,
+      runClass: 'long_lived' as const,
+      ioMode: 'streaming' as const,
+      status: 'running' as const,
+      startedAtMs: 10,
+    } satisfies ExecutionRunState;
+    const controller = {
+      kind: 'voice_agent' as const,
+      controllerOccurrenceId: 'voice_occurrence_current',
+      voiceAgentId: run.runId,
+      cancelled: false,
+      lastMarkerWriteAtMs: 0,
+      terminalPromise: Promise.resolve(),
+      resolveTerminal: () => undefined,
+      transcript: { persistenceMode: 'persistent' as const, epoch: 1 },
+      externalStreamIdByInternal: new Map(),
+      internalStreamIdByExternal: new Map(),
+      pendingTranscriptTurnByExternalStreamId: new Map(),
+      terminalReadByExternalStreamId: new Map(),
+      readInFlightByExternalStreamId: new Map(),
+    } satisfies ExecutionRunController;
+
+    await writeExecutionRunActivityMarker({
+      runId: run.runId,
+      nowMs: 20,
+      opts: { force: true },
+      runs: new Map([[run.runId, run]]),
+      controllers: new Map([[run.runId, controller]]),
+      enqueueMarkerWrite: async (_runId, write) => await write(),
+    });
+
+    expect(writeExecutionRunMarkerMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      runId: run.runId,
+      intent: 'voice_agent',
+      happySessionId: run.sessionId,
+    });
+    expect(writeExecutionRunMarkerMock.mock.calls.at(-1)?.[0])
+      .not.toHaveProperty('executionRunBrokerAuthorityV1');
   });
 });

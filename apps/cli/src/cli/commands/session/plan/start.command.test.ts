@@ -131,7 +131,7 @@ describe('happier session plan start command', () => {
           sessionId: 'sess-plan-1',
           includeDisabled: true,
         },
-        { surface: 'cli', defaultSessionId: 'sess-plan-1' },
+        { surface: 'cli', authority: 'present_user', defaultSessionId: 'sess-plan-1' },
       );
       expect(execute).toHaveBeenNthCalledWith(
         2,
@@ -140,7 +140,7 @@ describe('happier session plan start command', () => {
           backendTargetKeys: ['agent:claude'],
           instructions: 'Plan.',
         },
-        { defaultSessionId: 'sess-plan-1' },
+        { authority: 'present_user', defaultSessionId: 'sess-plan-1' },
       );
       expect(createCliActionExecutorFromCredentials).toHaveBeenCalledTimes(1);
       expect(createCliActionExecutorFromCredentials).toHaveBeenCalledWith({

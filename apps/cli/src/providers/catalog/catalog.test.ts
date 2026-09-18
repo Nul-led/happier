@@ -5,6 +5,7 @@ import {
   ProviderCatalogRuntimeStateKeyV1Schema,
   ProviderCatalogRuntimeStateRecordV1Schema,
   ProviderConnectionIdSchema,
+  ProviderConnectionSecurityFingerprintV1Schema,
   ProviderContributionV1Schema,
   ProviderRuntimeStateFileV1Schema,
   ProviderSettingsV1Schema,
@@ -58,7 +59,7 @@ function contribution(
       manualModelPolicy: 'allowed',
       ...(membershipPolicy ? { membershipPolicy } : {}),
       staticModels: [
-        { id: 'default', name: 'Literal Default' },
+        { id: 'default', name: 'Literal Default', aliases: ['current'] },
         { id: 'Case', name: 'Static Case' },
       ],
       probes: [{ endpointTemplateId: 'responses', path: '/models', parser: 'openai-models' }],
@@ -112,7 +113,7 @@ function resolvedConnection(input: Readonly<{
       nonPublicAddresses: [],
     }],
     scope: 'account',
-    connectionSecurityFingerprint: 'connection-security:v1:a',
+    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:a'),
     endpointSetFingerprint: 'endpoint-set:v1:a',
     authorization: {
       authorized: true,
@@ -334,6 +335,7 @@ describe('provider catalog host assembly', () => {
       { agentTargetKey: 'codex', providerConnectionId: 'pc_a', modelId: 'probe-only' },
     ]);
     expect(assembled.rows[1]?.descriptor.name).toBe('Manual Case');
+    expect(assembled.rows[0]?.descriptor.aliases).toEqual(['current']);
     expect(assembled.rows[1]?.sources).toEqual({ manual: true, static: true, probe: true });
     expect(assembled.rows[0]?.presentation).toEqual({
       compatibility: {

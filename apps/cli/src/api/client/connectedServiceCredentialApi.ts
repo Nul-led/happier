@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import {
   AccountEncryptionCurrentnessResponseSchema,
-  AccountEncryptionModeResponseSchema,
+  AccountEncryptionCurrentnessErrorResponseSchema,
   assertConnectedServiceCredentialRecordBinding,
   ConnectedServiceCredentialRecordV1Schema,
   ConnectedServiceIdSchema,
@@ -17,13 +17,16 @@ import {
   type ConnectedServiceId,
   type SealedConnectedServiceCredentialV1,
   type AccountEncryptionCurrentnessResponse,
+  type AccountEncryptionCurrentnessErrorResponse,
 } from '@happier-dev/protocol';
 
 import { logger } from '@/ui/logger';
 
 import { resolveConnectedServicesServerApiTimeoutMs } from './connectedServicesServerApiTimeout';
+import { createHttpStatusError } from './httpStatusError';
 import { logServerEndpointFailure } from './serverEndpointFailureLog';
 import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
+import { readAccountEncryptionModeOnce } from './accountEncryptionMode';
 
 const CONNECTED_SERVICE_PROFILE_LIST_CACHE_TTL_MS = 10_000;
 const ACCOUNT_ENCRYPTION_MODE_CACHE_TTL_MS = 10_000;
@@ -114,8 +117,15 @@ export class ConnectedServiceCredentialUnsupportedFormatError extends Error {
 export class AccountEncryptionCurrentnessUnavailableError extends Error {
   readonly code = 'account_encryption_currentness_unavailable' as const;
 
-  constructor(message = 'Account encryption currentness is unavailable') {
-    super(message);
+  constructor(
+    message = 'Account encryption currentness is unavailable',
+    readonly recipientEnvelopeReadiness?: AccountEncryptionCurrentnessErrorResponse['recipientEnvelopeReadiness'],
+    options?: ErrorOptions,
+  ) {
+    // The wrapped transport failure stays reachable as `cause` so the caller
+    // that owns the offline/auth classification (getOrCreateSession) can
+    // classify this preflight exactly as it classifies its own request.
+    super(message, options);
     this.name = 'AccountEncryptionCurrentnessUnavailableError';
   }
 }
@@ -137,6 +147,7 @@ function createHeaders(token: string): Readonly<Record<string, string>> {
 
 export async function fetchAccountEncryptionCurrentness(params: Readonly<{
   token: string;
+  authorizationHeaders?: Readonly<Record<string, string>>;
   serverBaseUrl?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -148,7 +159,7 @@ export async function fetchAccountEncryptionCurrentness(params: Readonly<{
     response = await axios.get(
       `${serverBaseUrl}/v1/account/encryption/currentness`,
       {
-        headers: createHeaders(params.token),
+        headers: params.authorizationHeaders ?? createHeaders(params.token),
         timeout: params.timeoutMs ?? resolveConnectedServicesServerApiTimeoutMs(),
         validateStatus: () => true,
         ...(params.signal ? { signal: params.signal } : {}),
@@ -156,11 +167,19 @@ export async function fetchAccountEncryptionCurrentness(params: Readonly<{
     );
   } catch (error) {
     if (params.signal?.aborted) throw error;
-    throw new AccountEncryptionCurrentnessUnavailableError();
+    throw new AccountEncryptionCurrentnessUnavailableError(undefined, undefined, { cause: error });
   }
   if (response.status !== 200) {
+    const parsedError = response.status === 400
+      ? AccountEncryptionCurrentnessErrorResponseSchema.safeParse(response.data)
+      : null;
+    const message = `Account encryption currentness is unavailable (${response.status})`;
     throw new AccountEncryptionCurrentnessUnavailableError(
-      `Account encryption currentness is unavailable (${response.status})`,
+      message,
+      parsedError?.success ? parsedError.data.recipientEnvelopeReadiness : undefined,
+      // `validateStatus` suppresses Axios' own rejection, so carry the status
+      // on the canonical minimal Axios-like error the status policies read.
+      { cause: createHttpStatusError(response.status, message) },
     );
   }
   const parsed = AccountEncryptionCurrentnessResponseSchema.safeParse(
@@ -428,18 +447,15 @@ export class ConnectedServiceCredentialHttpClient implements ConnectedServiceCre
   private async fetchAccountEncryptionModeFromServer(signal?: AbortSignal): Promise<ConnectedServiceAccountEncryptionMode> {
     const serverUrl = resolveServerHttpBaseUrl();
     try {
-      const response = await axios.get(
-        `${serverUrl}/v1/account/encryption`,
-        {
+      const result = await readAccountEncryptionModeOnce({
+        request: async () => await axios.get(`${serverUrl}/v1/account/encryption`, {
           headers: createHeaders(this.token),
           timeout: resolveConnectedServicesServerApiTimeoutMs(),
+          validateStatus: () => true,
           ...(signal ? { signal } : {}),
-        },
-      );
-      if (response.status !== 200) return 'unknown';
-      const parsed = AccountEncryptionModeResponseSchema.safeParse(response.data);
-      if (!parsed.success) return 'unknown';
-      return parsed.data.mode === 'plain' ? 'plain' : 'e2ee';
+        }),
+      });
+      return result.kind === 'resolved' ? result.mode : 'unknown';
     } catch (error: unknown) {
       if (signal?.aborted) throw error;
       logServerEndpointFailure({

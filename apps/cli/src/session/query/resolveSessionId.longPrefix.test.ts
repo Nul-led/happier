@@ -222,6 +222,7 @@ describe('resolveSessionIdOrPrefix', () => {
           encryption: { type: 'legacy', secret },
         },
         idOrPrefix: tag,
+        accountEncryptionMode: 'plain',
       });
 
       expect(res).toMatchObject({
@@ -301,6 +302,7 @@ describe('resolveSessionIdOrPrefix', () => {
           encryption: { type: 'legacy', secret },
         },
         idOrPrefix: tag,
+        accountEncryptionMode: 'plain',
       });
 
       expect(res).toEqual({
@@ -542,11 +544,11 @@ describe('resolveSessionIdOrPrefix', () => {
         expect.objectContaining({ signal: cancellation.signal }),
       );
       expect(mockAxiosGet).toHaveBeenCalledWith(
-        'http://example.test/v2/sessions',
+        'http://example.test/v2/sessions?limit=200',
         expect.objectContaining({ signal: cancellation.signal }),
       );
       expect(mockAxiosGet).toHaveBeenCalledWith(
-        'http://example.test/v2/sessions/archived',
+        'http://example.test/v2/sessions/archived?limit=200',
         expect.objectContaining({ signal: cancellation.signal }),
       );
     } finally {

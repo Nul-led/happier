@@ -1,0 +1,2141 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
+import fastify from 'fastify';
+import tweetnacl from 'tweetnacl';
+
+import {
+  createActionExecutor,
+  deriveBoxPublicKeyFromSeed,
+  decodeBase64,
+  encodeBase64,
+  EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
+  EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
+  EXTERNAL_ACTION_RESOLVED_TARGET_HEADER,
+  encodeExternalActionResolvedTargetV1,
+  openEncryptedDataKeyEnvelopeV1,
+  openPublicShareEncryptedDataKeyEnvelopeV0,
+  PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
+  PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
+  PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
+  sealEncryptedDataKeyEnvelopeV1,
+  SetSessionAccessGrantRequestV1Schema,
+  signAccountContentKeyBindingV1,
+  verifyExternalActionMachineRequestV1,
+  FeaturesResponseSchema,
+} from '@happier-dev/protocol';
+import { NO_TEAM_CAPABILITIES_V1 } from '@happier-dev/protocol/teams';
+
+import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
+import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { deriveKey } from '@/utils/deriveKey';
+import { createAccountServerActionDeps } from './accountServerActionDeps';
+
+async function openPublicShareDataKeyEnvelope(params: Readonly<{ encryptedDataKey: string; token: string }>): Promise<Uint8Array | null> {
+  try {
+    const wrappingKey = await deriveKey(
+      new TextEncoder().encode(params.token),
+      PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
+      [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
+    );
+    return openPublicShareEncryptedDataKeyEnvelopeV0({
+      envelope: decodeBase64(params.encryptedDataKey),
+      wrappingKey,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function ownerSessionAccessGrants(grants: readonly unknown[] = []) {
+  return {
+    visibility: 'complete' as const,
+    owner: {
+      kind: 'account' as const,
+      accountId: 'owner-account',
+      firstName: 'Owner',
+      lastName: null,
+      username: 'owner',
+      avatarUrl: null,
+    },
+    effectiveAccess: {
+      v: 1 as const,
+      level: 'owner' as const,
+      capabilities: {
+        readTranscript: true,
+        submitAgentInput: true,
+        editSessionRecords: true,
+        approveRuntimePermissions: true,
+        manageAccess: true,
+        managePermissionDelegation: true,
+        managePublicLink: true,
+        archiveSession: true,
+        renameSession: true,
+        assignResponsibility: true,
+        stopSession: true,
+        deleteSession: true,
+      },
+      sources: [{ kind: 'owner' as const }],
+    },
+    primaryTeamId: null,
+    grants,
+  };
+}
+
+const archivedTeamSummary = {
+  id: 'team-1',
+  name: 'Platform',
+  description: null,
+  logo: null,
+  archivedAt: 1,
+  recovery: null,
+  policy: {
+    v: 1,
+    sessionCreationPolicy: 'private_default',
+    externalSharingPolicy: 'allowed',
+    defaultSessionHistoryAccess: 'from_membership',
+    admissionMode: 'invite_only',
+    authenticationPolicy: null,
+  },
+  viewerRole: 'owner',
+  capabilities: NO_TEAM_CAPABILITIES_V1,
+  admission: { historyChoice: { admin: 'choice', member: 'choice', guest: 'hidden' } },
+} as const;
+
+function managedIdentityProviderFixture() {
+  return {
+    v: 1 as const,
+    owner: { kind: 'home' as const },
+    id: 'provider-1',
+    kind: 'oidc' as const,
+    displayName: 'Corporate OIDC',
+    enabled: false,
+    firstEnabledAt: null,
+    securityRevision: 2,
+    revision: 3,
+    config: {
+      v: 1 as const,
+      kind: 'oidc' as const,
+      issuer: 'https://id.example.test',
+      clientId: 'happier',
+      clientAuthenticationMethod: 'client_secret_post' as const,
+      scopes: 'openid profile email',
+      httpTimeoutSeconds: 15,
+      claims: { login: 'preferred_username', email: 'email', groups: 'groups' },
+      allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
+      fetchUserInfo: true,
+      storeRefreshToken: false,
+      ui: { buttonColor: null, iconHint: null },
+    },
+    secret: { configured: true, health: 'configured' as const },
+    lastSuccessfulTest: null,
+    createdByAccountId: 'account-1',
+    createdAt: 1,
+    updatedAt: 2,
+    teamConsumers: [],
+  };
+}
+
+describe('Account API token HTTP adapter', () => {
+  let app = fastify();
+  let restore = () => {};
+  beforeEach(() => {
+    app = fastify();
+    restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+  });
+  afterEach(async () => { restore(); await app.close(); });
+
+  it('rejects a fixed Home endpoint without its matching Home identity', () => {
+    const partialFixedHome = { token: 'bound-home-token', serverHttpBaseUrl: 'http://account.test' };
+    // @ts-expect-error -- Untyped JavaScript callers can still provide a partial fixed-Home binding.
+    expect(() => createAccountServerActionDeps(partialFixedHome)).toThrow('fixed_action_server_target_incomplete');
+  });
+
+  it('uses the one current list route with an empty body and no projection query', async () => {
+    const requests: unknown[] = [];
+    app.post('/v1/auth/api-tokens/list', async (request) => {
+      requests.push({ query: request.query, body: request.body });
+      return { tokens: [] };
+    });
+    const deps = createAccountServerActionDeps({ token: 'interactive', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+    await expect(deps.accountApiTokensListAction!({ input: {}, context: { surface: 'cli' } }))
+      .resolves.toEqual({ tokens: [] });
+    expect(requests).toEqual([{ query: {}, body: {} }]);
+  });
+
+  it('does not retry listing after an authority denial and does not admit error-body extras', async () => {
+    let requests = 0;
+    app.post('/v1/auth/api-tokens/list', async (_request, reply) => {
+      requests++; return reply.code(403).send({ error: 'present_user_required', secret: 'DO_NOT_DISCLOSE' });
+    });
+    const deps = createAccountServerActionDeps({ token: 'interactive', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+    const result = await deps.accountApiTokensListAction!({ input: {}, context: { surface: 'cli' } });
+    expect(result).toEqual({ ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' });
+    expect(JSON.stringify(result)).not.toContain('DO_NOT_DISCLOSE');
+    expect(requests).toBe(1);
+  });
+
+  it('preserves strict server codes and removes untrusted error bodies', async () => {
+    app.post('/v1/auth/api-tokens/revoke', async (_request, reply) => reply.code(403).send({ error: 'present_user_required' }));
+    const deps = createAccountServerActionDeps({ token: 'interactive', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+    await expect(deps.accountApiTokensRevokeAction!({ input: { tokenId: '12345678-1234-4234-8234-123456789abc' }, context: { surface: 'cli' } }))
+      .resolves.toEqual({ ok: false, errorCode: 'present_user_required', error: 'present_user_required' });
+  });
+
+  it('refuses API-token management addressed to a different selected Home before sending credentials', async () => {
+    let requests = 0;
+    app.post('/v1/auth/api-tokens/list', async () => {
+      requests += 1;
+      return { tokens: [] };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    await expect(deps.accountApiTokensListAction!({
+      input: {},
+      context: { surface: 'cli', serverId: 'home-b' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'server_target_mismatch',
+      error: 'server_target_mismatch',
+    });
+    expect(requests).toBe(0);
+  });
+
+  it('settles a mutation cancelled before transport issuance without fabricating uncertainty', async () => {
+    let requests = 0;
+    app.post('/v1/auth/api-tokens/create', async () => {
+      requests += 1;
+      return { unexpected: true };
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const deps = createAccountServerActionDeps({
+      token: 'interactive',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    await expect(deps.accountApiTokensCreateAction!({
+      input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'cancelled' },
+      context: { surface: 'cli', serverId: 'home-a' },
+      signal: controller.signal,
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'cancelled',
+      error: 'cancelled',
+    });
+    expect(requests).toBe(0);
+  });
+
+  it('settles malformed API-token acknowledgements from each ActionSpec side-effect class', async () => {
+    app.post('/v1/auth/api-tokens/create', async () => ({}));
+    app.post('/v1/auth/api-tokens/list', async () => ({}));
+    app.post('/v1/auth/api-tokens/revoke', async () => ({}));
+    app.post('/v1/auth/api-tokens/revoke-all', async () => ({}));
+    const deps = createAccountServerActionDeps({
+      token: 'interactive',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+    const context = { surface: 'cli' as const, serverId: 'home-a' };
+
+    await expect(deps.accountApiTokensCreateAction!({
+      input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'malformed' },
+      context,
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.accountApiTokensRevokeAction!({
+      input: { tokenId: '12345678-1234-4234-8234-123456789abc' },
+      context,
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.accountApiTokensRevokeAllAction!({
+      input: {},
+      context,
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.accountApiTokensListAction!({
+      input: {},
+      context,
+    })).rejects.toMatchObject({ name: 'ZodError' });
+  });
+
+  it('retains outcome uncertainty when a dispatched API-token mutation loses its response through a nested socket reset', async () => {
+    const originalAdapter = axios.defaults.adapter;
+    let requests = 0;
+    axios.defaults.adapter = async () => {
+      requests += 1;
+      throw Object.assign(new Error('API-token response was lost'), {
+        cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+      });
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'interactive',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    try {
+      await expect(deps.accountApiTokensCreateAction!({
+        input: { tokenId: '12345678-1234-4234-8234-123456789abc', label: 'lost response' },
+        context: { surface: 'cli', serverId: 'home-a' },
+      })).resolves.toEqual({
+        ok: false,
+        errorCode: 'outcome_unknown',
+        error: 'outcome_unknown',
+      });
+
+      axios.defaults.adapter = async () => {
+        requests += 1;
+        throw Object.assign(new Error('API-token request was refused'), {
+          cause: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+        });
+      };
+      await expect(deps.accountApiTokensCreateAction!({
+        input: { tokenId: '22345678-1234-4234-8234-123456789abc', label: 'refused request' },
+        context: { surface: 'cli', serverId: 'home-a' },
+      })).resolves.toEqual({
+        ok: false,
+        errorCode: 'server_unreachable',
+        error: 'server_unreachable',
+      });
+      expect(requests).toBe(2);
+    } finally {
+      axios.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('surfaces ambiguous sign-out response loss without widening the signed-out result contract', async () => {
+    const originalAdapter = axios.defaults.adapter;
+    let requests = 0;
+    axios.defaults.adapter = async () => {
+      requests += 1;
+      throw Object.assign(new Error('sign-out response was lost'), { code: 'ECONNRESET' });
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'interactive',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    try {
+      await expect(deps.accountSessionsSignOutEverywhereAction!({
+        input: {},
+        context: { surface: 'cli', serverId: 'home-a' },
+      })).rejects.toMatchObject({ code: 'outcome_unknown' });
+      expect(requests).toBe(1);
+    } finally {
+      axios.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('carries all six Machine Pool intents through the bound Home with natural typed results', async () => {
+    const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
+    const pool = {
+      pool: {
+        id: poolId,
+        name: 'Fast pool',
+        description: 'Home-readable administration',
+        revision: 4,
+        createdAt: 1,
+        updatedAt: 2,
+        members: [{ machineId: 'machine-1', priorityTier: 0, enabled: true, state: 'connected' }],
+      },
+      availability: { state: 'known', connectedCount: 1, enabledCount: 1 },
+    } as const;
+    const observed: Array<{ path: string; body: unknown }> = [];
+    for (const verb of ['list', 'get', 'create', 'update', 'delete', 'resolve'] as const) {
+      app.post(`/v1/machines/pools/${verb}`, async (request) => {
+        expect(request.headers.authorization).toBe('Bearer interactive');
+        observed.push({ path: request.url, body: request.body });
+        if (verb === 'list') return { pools: [pool] };
+        if (verb === 'delete') return { poolId, deleted: true };
+        if (verb === 'resolve') return { kind: 'resolved', poolId, machineId: 'machine-1', priorityTier: 0 };
+        return pool;
+      });
+    }
+    const inputs = {
+      'machines.pools.list': {},
+      'machines.pools.get': { poolId },
+      'machines.pools.create': {
+        poolId,
+        name: 'Fast pool',
+        description: 'Home-readable administration',
+        members: [{ machineId: 'machine-1', priorityTier: 0, enabled: true }],
+      },
+      'machines.pools.update': {
+        poolId,
+        expectedRevision: 4,
+        name: 'Fast pool',
+        description: 'Home-readable administration',
+        members: [{ machineId: 'machine-1', priorityTier: 0, enabled: true }],
+      },
+      'machines.pools.delete': { poolId, expectedRevision: 4 },
+      'machines.pools.resolve': { poolId, requestKey: 'deliberate-selection-1' },
+    } as const;
+    const deps = createAccountServerActionDeps({
+      token: 'interactive',
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    for (const [actionId, actionInput] of Object.entries(inputs)) {
+      await expect(deps.machinePoolAction!({
+        actionId: actionId as keyof typeof inputs,
+        input: actionInput,
+        context: { surface: 'cli', authority: 'present_user', serverId: 'home-a' },
+      })).resolves.not.toMatchObject({ ok: false });
+    }
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.create',
+      input: inputs['machines.pools.create'],
+      context: { surface: 'cli', authority: 'present_user', serverId: 'home-a' },
+    })).resolves.not.toMatchObject({ ok: false });
+    expect(observed.map(({ path }) => path)).toEqual([
+      '/v1/machines/pools/list',
+      '/v1/machines/pools/get',
+      '/v1/machines/pools/create',
+      '/v1/machines/pools/update',
+      '/v1/machines/pools/delete',
+      '/v1/machines/pools/resolve',
+      '/v1/machines/pools/create',
+    ]);
+    expect(JSON.stringify(observed)).toContain('Home-readable administration');
+    expect(observed[5]?.body).toEqual({ poolId, requestKey: 'deliberate-selection-1' });
+    expect(observed[2]?.body).toEqual(observed[6]?.body);
+  });
+
+  it('preserves Pool CAS/current data, non-disclosing not-found, and old-Home unsupported errors', async () => {
+    const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
+    app.post('/v1/machines/pools/update', async (request, reply) => {
+      expect(request.headers.authorization).toBe('Bearer interactive');
+      expect(request.body).toMatchObject({ poolId, expectedRevision: 1 });
+      return reply.code(409).send({
+        code: 'pool_changed',
+        current: {
+          pool: { id: poolId, name: 'Current', description: null, revision: 2, createdAt: 1, updatedAt: 2, members: [] },
+          availability: { state: 'known', connectedCount: 0, enabledCount: 0 },
+        },
+      });
+    });
+    app.post('/v1/machines/pools/get', async (_request, reply) => reply.code(404).send({ code: 'pool_not_found' }));
+    app.post('/v1/machines/pools/list', async (_request, reply) => reply.code(404).send({ error: 'route_not_found' }));
+    const deps = createAccountServerActionDeps({ token: 'interactive', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.update',
+      input: { poolId, expectedRevision: 1, name: 'Pool', members: [] },
+      context: { surface: 'cli' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'pool_changed',
+      error: 'pool_changed',
+      details: expect.objectContaining({ code: 'pool_changed', current: expect.objectContaining({ pool: expect.objectContaining({ revision: 2 }) }) }),
+    });
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.get', input: { poolId }, context: { surface: 'cli' },
+    })).resolves.toEqual({
+      ok: false, errorCode: 'pool_not_found', error: 'pool_not_found', details: { code: 'pool_not_found' },
+    });
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.list', input: {}, context: { surface: 'cli' },
+    })).resolves.toEqual({
+      ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:machines.pools.list',
+    });
+  });
+
+  it('refuses a Machine Pool Action addressed to another Home before sending the bound credential', async () => {
+    let requests = 0;
+    app.post('/v1/machines/pools/list', async () => {
+      requests += 1;
+      return { pools: [] };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.list',
+      input: {},
+      context: { surface: 'cli', serverId: 'other-home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'server_target_mismatch',
+      error: 'server_target_mismatch',
+    });
+    expect(requests).toBe(0);
+  });
+
+  it('settles Machine Pool transport loss according to the canonical Action side-effect class', async () => {
+    const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+    const originalAdapter = axios.defaults.adapter;
+    let requests = 0;
+    axios.defaults.adapter = async () => {
+      requests += 1;
+      throw Object.assign(new Error('connection reset after Home commit'), { code: 'ECONNRESET' });
+    };
+
+    try {
+      for (const action of [
+        {
+          actionId: 'machines.pools.create' as const,
+          input: { poolId, name: 'Development', members: [] },
+        },
+        {
+          actionId: 'machines.pools.delete' as const,
+          input: { poolId, expectedRevision: 1 },
+        },
+      ]) {
+        await expect(deps.machinePoolAction!({
+          ...action,
+          context: { surface: 'cli', serverId: 'home' },
+        })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+      }
+
+      await expect(deps.machinePoolAction!({
+        actionId: 'machines.pools.list',
+        input: {},
+        context: { surface: 'cli', serverId: 'home' },
+      })).resolves.toEqual({ ok: false, errorCode: 'server_unreachable', error: 'server_unreachable' });
+
+      expect(requests).toBe(3);
+    } finally {
+      axios.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('does not issue a Machine Pool request when cancellation is already observable', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const originalAdapter = axios.defaults.adapter;
+    let requests = 0;
+    axios.defaults.adapter = async () => {
+      requests += 1;
+      throw new Error('pre-cancelled request must not reach the Axios adapter');
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    try {
+      await expect(deps.machinePoolAction!({
+        actionId: 'machines.pools.delete',
+        input: { poolId: '99d55938-f860-4af8-8023-01fecec86f35', expectedRevision: 1 },
+        context: { surface: 'cli', serverId: 'home' },
+        signal: controller.signal,
+      })).resolves.toEqual({ ok: false, errorCode: 'cancelled', error: 'cancelled' });
+      expect(requests).toBe(0);
+    } finally {
+      axios.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('settles cancellation after a Machine Pool mutation was issued as an unknown outcome', async () => {
+    const controller = new AbortController();
+    const originalAdapter = axios.defaults.adapter;
+    let requests = 0;
+    axios.defaults.adapter = async () => {
+      requests += 1;
+      controller.abort();
+      throw new axios.CanceledError('cancelled after dispatch');
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    try {
+      await expect(deps.machinePoolAction!({
+        actionId: 'machines.pools.delete',
+        input: { poolId: '99d55938-f860-4af8-8023-01fecec86f35', expectedRevision: 1 },
+        context: { surface: 'cli', serverId: 'home' },
+        signal: controller.signal,
+      })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+      expect(requests).toBe(1);
+    } finally {
+      axios.defaults.adapter = originalAdapter;
+    }
+  });
+
+  it('treats malformed mutation acknowledgements as ambiguous while malformed reads remain protocol failures', async () => {
+    const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
+    app.post('/v1/machines/pools/create', async () => ({ malformed: true }));
+    app.post('/v1/machines/pools/delete', async () => ({ malformed: true }));
+    app.post('/v1/machines/pools/list', async () => ({ malformed: true }));
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.create',
+      input: { poolId, name: 'Development', members: [] },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.delete',
+      input: { poolId, expectedRevision: 1 },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({ ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
+    await expect(deps.machinePoolAction!({
+      actionId: 'machines.pools.list',
+      input: {},
+      context: { surface: 'cli', serverId: 'home' },
+    })).rejects.toThrow();
+  });
+
+  it('carries the complete managed provider lifecycle through exact Home routes with redacted typed output', async () => {
+    const provider = managedIdentityProviderFixture();
+    const lifecycleInput = {
+      owner: { kind: 'home' as const },
+      id: provider.id,
+      expectedRevision: provider.revision,
+      expectedSecurityRevision: provider.securityRevision,
+    };
+    const cases = [
+      ['identity.providers.list', '/v1/identity/providers/list', { owner: { kind: 'home' } }, { items: [provider], unreadableCount: 0 }],
+      ['identity.providers.create', '/v1/identity/providers/create', { owner: { kind: 'home' }, displayName: provider.displayName, config: provider.config, clientSecret: 'create-secret' }, provider],
+      ['identity.providers.update', '/v1/identity/providers/update', { owner: { kind: 'home' }, id: provider.id, expectedRevision: provider.revision, displayName: 'Renamed' }, provider],
+      ['identity.providers.secret.replace', '/v1/identity/providers/secret/replace', { owner: { kind: 'home' }, id: provider.id, expectedRevision: provider.revision, clientSecret: 'replacement-secret' }, provider],
+      ['identity.providers.validate', '/v1/identity/providers/validate', lifecycleInput, provider],
+      ['identity.providers.test.start', '/v1/identity/providers/test/start', lifecycleInput, { authorizeUrl: 'https://id.example.test/authorize', attemptId: 'attempt-1' }],
+      ['identity.providers.test.consume', '/v1/identity/providers/test/consume', { owner: { kind: 'home' }, id: provider.id, resultHandle: 'result-1' }, { provider, testedAt: 3, subjectPresent: true }],
+      ['identity.providers.enable', '/v1/identity/providers/enable', lifecycleInput, provider],
+      ['identity.providers.disable', '/v1/identity/providers/disable', lifecycleInput, provider],
+      ['identity.providers.remove.preview', '/v1/identity/providers/remove/preflight', { owner: { kind: 'home' }, id: provider.id, expectedRevision: provider.revision }, { provider, canRemove: true, blockers: { identityCount: 0, connectionCount: 0, affectedAccountIds: [] } }],
+      ['identity.providers.remove', '/v1/identity/providers/remove', { owner: { kind: 'home' }, id: provider.id, expectedRevision: provider.revision }, { outcome: 'removed' }],
+    ] as const;
+    const observed: Array<{ path: string; authorization: string | undefined; body: unknown }> = [];
+    for (const [, path, , output] of cases) {
+      app.post(path, async (request) => {
+        observed.push({ path: request.url, authorization: request.headers.authorization, body: request.body });
+        return output;
+      });
+    }
+    const deps = createAccountServerActionDeps({
+      token: 'selected-home-token',
+      serverId: 'selected-home-profile-id',
+      serverIdentityId: 'selected-home-server-identity',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    const results: unknown[] = [];
+    for (const [actionId, , input] of cases) {
+      results.push(await deps.homeDomainAction!({
+        actionId,
+        input,
+        context: { surface: 'cli', authority: 'present_user', serverId: 'selected-home-profile-id' },
+      }));
+    }
+
+    expect(observed.map(({ path }) => path)).toEqual(cases.map(([, path]) => path));
+    expect(observed.every(({ authorization }) => authorization === 'Bearer selected-home-token')).toBe(true);
+    expect(observed.map(({ body }) => body)).toEqual(cases.map(([, , input]) => input));
+    expect(JSON.stringify(results)).not.toContain('create-secret');
+    expect(JSON.stringify(results)).not.toContain('replacement-secret');
+    expect(results.at(-1)).toEqual({ outcome: 'removed' });
+  });
+
+  it('preserves managed-provider domain failures without reflecting untrusted secret fields', async () => {
+    const provider = managedIdentityProviderFixture();
+    app.post('/v1/identity/providers/update', async (_request, reply) => reply.code(409).send({
+      error: 'identity_provider_revision_conflict',
+      current: provider,
+    }));
+    const deps = createAccountServerActionDeps({ token: 'selected-home-token', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+
+    const result = await deps.homeDomainAction!({
+      actionId: 'identity.providers.update',
+      input: { owner: { kind: 'home' }, id: provider.id, expectedRevision: 1, displayName: 'Stale' },
+      context: { surface: 'cli', authority: 'present_user', serverId: 'home' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'identity_provider_revision_conflict',
+      error: 'identity_provider_revision_conflict',
+      details: { error: 'identity_provider_revision_conflict', current: provider },
+    });
+    expect(JSON.stringify(result)).not.toContain('clientSecret');
+  });
+
+  it.each([405, 501])('fails an old Home provider route closed as unsupported at HTTP %s', async (status) => {
+    app.post('/v1/identity/providers/list', async (_request, reply) => reply.code(status).send({ secret: 'do-not-reflect' }));
+    const deps = createAccountServerActionDeps({ token: 'selected-home-token', serverId: 'home', serverHttpBaseUrl: 'http://account.test' });
+
+    const result = await deps.homeDomainAction!({
+      actionId: 'identity.providers.list',
+      input: { owner: { kind: 'home' } },
+      context: { surface: 'cli', authority: 'present_user', serverId: 'home' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:identity.providers.list',
+    });
+    expect(JSON.stringify(result)).not.toContain('do-not-reflect');
+  });
+
+  it('uses the Home execution authorization plus a fresh Machine signature instead of the daemon bearer', async () => {
+    const installationIdentity = tweetnacl.sign.keyPair();
+    const authorization = {
+      v: 1 as const,
+      token: 'home-minted-exact-invocation',
+      binding: {
+        serverIdentityId: 'home',
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+        machineId: 'machine-1',
+        actionId: 'teams.archive',
+        requestId: 'request-1',
+        requestEnvelopeDigest: 'A'.repeat(43),
+        target: { kind: 'machine' as const, machineId: 'machine-1' },
+      },
+    };
+    let requests = 0;
+    app.post('/v1/teams/archive', async (request) => {
+      requests += 1;
+      expect(request.headers.authorization).toBeUndefined();
+      expect(request.headers[EXTERNAL_ACTION_EFFECT_ACTION_HEADER]).toBe('teams.archive');
+      expect(request.headers[EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER]).toBe(authorization.token);
+      expect(request.headers[EXTERNAL_ACTION_RESOLVED_TARGET_HEADER]).toBe(
+        encodeExternalActionResolvedTargetV1(authorization.binding.target),
+      );
+      const signature = request.headers[EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER];
+      expect(typeof signature).toBe('string');
+      expect(verifyExternalActionMachineRequestV1({
+        authorizationToken: authorization.token,
+        effectActionId: 'teams.archive',
+        target: authorization.binding.target,
+        installationId: 'installation-1',
+        requestId: authorization.binding.requestId,
+        method: 'POST',
+        path: '/v1/teams/archive',
+        body: { v: 1, teamId: 'team-1' },
+        publicKey: installationIdentity.publicKey,
+        signature: signature as string,
+      })).toBe(true);
+      return archivedTeamSummary;
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'daemon-bearer-must-not-cross',
+      serverId: 'home',
+      serverIdentityId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+      externalActionMachineRequestPrivateKey: installationIdentity.secretKey,
+      externalActionMachineInstallationId: 'installation-1',
+    });
+
+    await expect(deps.homeDomainAction!({
+      actionId: 'teams.archive',
+      input: { v: 1, teamId: 'team-1' },
+      context: {
+        surface: 'api',
+        authority: 'account_automation',
+        externalActionTarget: authorization.binding.target,
+        externalActionExecutionAuthorization: authorization,
+      },
+    })).resolves.toEqual(archivedTeamSummary);
+    expect(requests).toBe(1);
+  });
+
+  it('does not send an externally authorized request when the Machine signing key is unavailable', async () => {
+    let requests = 0;
+    app.post('/v1/teams/archive', async () => {
+      requests += 1;
+      return archivedTeamSummary;
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'daemon-bearer-must-not-cross',
+      serverId: 'home',
+      serverIdentityId: 'home',
+      serverHttpBaseUrl: 'http://account.test',
+    });
+
+    await expect(deps.homeDomainAction!({
+      actionId: 'teams.archive',
+      input: { v: 1, teamId: 'team-1' },
+      context: {
+        surface: 'api',
+        authority: 'account_automation',
+        externalActionTarget: { kind: 'machine', machineId: 'machine-1' },
+        externalActionExecutionAuthorization: {
+          v: 1,
+          token: 'proof-alone-is-insufficient',
+          binding: {
+            serverIdentityId: 'home',
+            accountId: 'account-1',
+            principalId: 'principal-1',
+            credentialId: 'credential-1',
+            machineId: 'machine-1',
+            actionId: 'teams.archive',
+            requestId: 'request-1',
+            requestEnvelopeDigest: 'A'.repeat(43),
+            target: { kind: 'machine', machineId: 'machine-1' },
+          },
+        },
+      },
+    })).resolves.toMatchObject({ ok: false });
+    expect(requests).toBe(0);
+  });
+});
+
+describe('Session access HTTP adapter', () => {
+  let app = fastify();
+  let restore = () => {};
+  beforeEach(() => {
+    app = fastify();
+    restore = installAxiosFastifyAdapter({ app, origin: 'http://access.test' });
+  });
+  afterEach(async () => { restore(); await app.close(); });
+
+  it('uses the exact Home feature snapshot for direct-grant Session hydration', async () => {
+    const sessionQueries: unknown[] = [];
+    app.get('/v2/sessions/session-plain', async (request, reply) => {
+      sessionQueries.push(request.query);
+      if ((request.query as { accessProjectionVersion?: string }).accessProjectionVersion !== '1') {
+        return reply.code(404).send({ error: 'session_access_session_not_found' });
+      }
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+          effectiveAccess: ownerSessionAccessGrants().effectiveAccess,
+        }),
+      };
+    });
+    app.post('/v2/sessions/access-grants/set', async () => ({
+      changed: true,
+      grant: {
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+    }));
+    const serverFeaturesSnapshot = {
+      status: 'ready' as const,
+      features: FeaturesResponseSchema.parse({
+        features: {
+          sessions: { enabled: true, collaboration: { enabled: true } },
+          sharing: { session: { enabled: true } },
+        },
+        capabilities: {},
+      }),
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+      resolveServerFeaturesSnapshot: async () => serverFeaturesSnapshot,
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: {
+        sessionId: 'session-plain',
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(sessionQueries).toEqual([{ accessProjectionVersion: '1' }]);
+  });
+
+  it('keeps supported older Homes on the released bare detail projection during grant preparation', async () => {
+    const sessionQueries: unknown[] = [];
+    app.get('/v2/sessions/session-plain', async (request) => {
+      sessionQueries.push(request.query);
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+        }),
+      };
+    });
+    app.post('/v2/sessions/access-grants/set', async () => ({
+      changed: true,
+      grant: {
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+    }));
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+      resolveServerFeaturesSnapshot: async () => ({
+        status: 'unsupported',
+        reason: 'endpoint_missing',
+      }),
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: {
+        sessionId: 'session-plain',
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(sessionQueries).toEqual([{}]);
+  });
+
+  it('uses the captured Home credential and descriptor transport for responsibility', async () => {
+    app.post('/v2/sessions/responsibility/set', async (request) => {
+      expect(request.headers.authorization).toBe('Bearer bound-home-token');
+      expect(request.body).toEqual({ sessionId: 'session', responsibleAccountId: null });
+      return { changed: true, responsibleAccountId: null, responsibleAccount: null, autoFollowed: false };
+    });
+    const deps = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home', serverHttpBaseUrl: 'http://access.test' });
+    await expect(deps.sessionAccessAction!({ actionId: 'session.responsibility.set', input: { sessionId: 'session', responsibleAccountId: null }, context: { surface: 'cli', serverId: 'home' } }))
+      .resolves.toMatchObject({ changed: true, responsibleAccountId: null });
+  });
+
+  it.each([
+    [409, 'session_responsibility_assignee_unavailable'],
+    [403, 'session_access_forbidden'],
+    [404, 'session_access_session_not_found'],
+    [400, 'invalid_cursor'],
+  ] as const)('preserves the typed Session responsibility failure from HTTP status %s', async (status, errorCode) => {
+    app.post('/v2/sessions/responsibility/set', async (_request, reply) => reply.code(status).send({ error: errorCode }));
+    const deps = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home', serverHttpBaseUrl: 'http://access.test' });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.responsibility.set',
+      input: { sessionId: 'session', responsibleAccountId: null },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({ ok: false, errorCode, error: errorCode });
+  });
+
+  it('materializes a key-free direct E2EE grant through the bound credential before the physical mutation', async () => {
+    const callerMachineKey = new Uint8Array(32).fill(7);
+    const callerPublicKey = deriveBoxPublicKeyFromSeed(callerMachineKey);
+    const sessionDataKey = new Uint8Array(32).fill(9);
+    const recipientContentKey = tweetnacl.box.keyPair();
+    const recipientSigningKey = tweetnacl.sign.keyPair();
+    const recipientContentKeySignature = signAccountContentKeyBindingV1({
+      accountSigningSecretKey: recipientSigningKey.secretKey,
+      contentPublicKey: recipientContentKey.publicKey,
+    });
+    const publishedCallerEnvelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionDataKey,
+      recipientPublicKey: callerPublicKey,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    }));
+    const physicalBodies: unknown[] = [];
+
+    // An existing direct grant is not proof that its canonical recipient tuple
+    // exists. The trusted host must still prepare current material; only the
+    // physical transaction may decide that an existing tuple can be reused.
+    app.post('/v2/sessions/access-grants/list', async () => ownerSessionAccessGrants([{
+      grant: {
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+      principal: {
+        kind: 'account', accountId: 'recipient-account', firstName: 'Recipient',
+        lastName: null, username: 'recipient', avatarUrl: null,
+      },
+      allowedTransitions: {
+        accessLevels: ['view', 'edit', 'admin'], canChangePermissionDelegation: true, canRemove: true,
+      },
+    }]));
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: publishedCallerEnvelope,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account',
+        firstName: 'Recipient',
+        lastName: null,
+        avatar: null,
+        username: 'recipient',
+        bio: null,
+        badges: [],
+        status: 'none',
+        recipientEnvelopeReadiness: { status: 'available' },
+        publicKey: Buffer.from(recipientSigningKey.publicKey).toString('hex'),
+        contentPublicKey: encodeBase64(recipientContentKey.publicKey),
+        contentPublicKeySig: encodeBase64(recipientContentKeySignature),
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+      };
+    });
+
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: {
+        token: 'bound-home-token',
+        encryption: { type: 'dataKey', publicKey: callerPublicKey, machineKey: callerMachineKey },
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const publicInput = {
+      sessionId: 'session-e2ee',
+      subject: { kind: 'account' as const, accountId: 'recipient-account' },
+      accessLevel: 'view' as const,
+      canApprovePermissions: false,
+    };
+
+    const actionExecutor = createActionExecutor(deps as Parameters<typeof createActionExecutor>[0]);
+    await expect(actionExecutor.execute(
+      'session.access.grant.set',
+      publicInput,
+      { surface: 'cli', serverId: 'home', bypassApprovals: true },
+    )).resolves.toMatchObject({ ok: true, result: { changed: true } });
+
+    expect(publicInput).not.toHaveProperty('accountEnvelopeInput');
+    expect(physicalBodies).toHaveLength(1);
+    const physical = physicalBodies[0] as typeof publicInput & {
+      accountEnvelopeInput: { v: 1; encryptedDataKey: string };
+    };
+    expect(SetSessionAccessGrantRequestV1Schema.safeParse(physical).success).toBe(true);
+    expect(physical).toMatchObject(publicInput);
+    expect(physical.accountEnvelopeInput.v).toBe(1);
+    expect(openEncryptedDataKeyEnvelopeV1({
+      envelope: Buffer.from(physical.accountEnvelopeInput.encryptedDataKey, 'base64'),
+      recipientSecretKeyOrSeed: recipientContentKey.secretKey,
+    })).toEqual(sessionDataKey);
+  });
+
+  it('lets the canonical route reuse a retained recipient envelope when this host cannot reopen the Session DEK', async () => {
+    const recipientContentKey = tweetnacl.box.keyPair();
+    const recipientSigningKey = tweetnacl.sign.keyPair();
+    const recipientContentKeySignature = signAccountContentKeyBindingV1({
+      accountSigningSecretKey: recipientSigningKey.secretKey,
+      contentPublicKey: recipientContentKey.publicKey,
+    });
+    const publicInput = {
+      sessionId: 'session-e2ee',
+      subject: { kind: 'account' as const, accountId: 'recipient-account' },
+      accessLevel: 'view' as const,
+      canApprovePermissions: false,
+    };
+    const physicalBodies: unknown[] = [];
+    const authorizationHeaders: string[] = [];
+    let retainedTupleState: 'valid' | 'missing' | 'invalid' | 'other_error' = 'valid';
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account', firstName: 'Recipient', lastName: null, avatar: null,
+        username: 'recipient', bio: null, badges: [], status: 'none',
+        recipientEnvelopeReadiness: { status: 'available' },
+        publicKey: Buffer.from(recipientSigningKey.publicKey).toString('hex'),
+        contentPublicKey: encodeBase64(recipientContentKey.publicKey),
+        contentPublicKeySig: encodeBase64(recipientContentKeySignature),
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request, reply) => {
+      physicalBodies.push(request.body);
+      authorizationHeaders.push(request.headers.authorization ?? '');
+      if (retainedTupleState !== 'valid') {
+        return reply.code(400).send({
+          error: retainedTupleState === 'other_error'
+            ? 'recipient_key_unavailable'
+            : 'recipient_envelope_required',
+        });
+      }
+      return {
+        changed: true,
+        grant: {
+          subject: publicInput.subject,
+          accessLevel: publicInput.accessLevel,
+          canApprovePermissions: publicInput.canApprovePermissions,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'other-home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'server_target_mismatch',
+      error: 'server_target_mismatch',
+    });
+    expect(physicalBodies).toEqual([]);
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(physicalBodies).toEqual([publicInput]);
+    retainedTupleState = 'missing';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_data_key_unavailable',
+      error: 'session_data_key_unavailable',
+    });
+    retainedTupleState = 'invalid';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_data_key_unavailable',
+      error: 'session_data_key_unavailable',
+    });
+    retainedTupleState = 'other_error';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'recipient_key_unavailable',
+      error: 'recipient_key_unavailable',
+    });
+    expect(physicalBodies).toEqual([publicInput, publicInput, publicInput, publicInput]);
+    expect(authorizationHeaders).toEqual([
+      'Bearer bound-home-token',
+      'Bearer bound-home-token',
+      'Bearer bound-home-token',
+      'Bearer bound-home-token',
+    ]);
+  });
+
+  it('keeps a direct Plain grant key-free without requiring local encryption credentials', async () => {
+    const physicalBodies: unknown[] = [];
+    app.get('/v2/sessions/session-plain', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-plain',
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+      };
+    });
+
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const publicInput = {
+      sessionId: 'session-plain',
+      subject: { kind: 'account' as const, accountId: 'recipient-account' },
+      accessLevel: 'view' as const,
+      canApprovePermissions: false,
+    };
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(physicalBodies).toEqual([publicInput]);
+  });
+
+  it('does not submit a sealed direct-recipient envelope after the credential is replaced', async () => {
+    const managerKey = tweetnacl.box.keyPair();
+    const recipientContentKey = tweetnacl.box.keyPair();
+    const recipientSigningKey = tweetnacl.sign.keyPair();
+    const sessionDataKey = new Uint8Array(32).fill(19);
+    const ownerEnvelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionDataKey,
+      recipientPublicKey: managerKey.publicKey,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    }));
+    const credentials = {
+      token: 'bound-home-token',
+      encryption: {
+        type: 'dataKey' as const,
+        publicKey: managerKey.publicKey,
+        machineKey: managerKey.secretKey,
+      },
+    };
+    let currentnessReads = 0;
+    let mutationCalls = 0;
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: ownerEnvelope,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account', firstName: 'Recipient', lastName: null, avatar: null,
+        username: 'recipient', bio: null, badges: [], status: 'none',
+        recipientEnvelopeReadiness: { status: 'available' },
+        publicKey: Buffer.from(recipientSigningKey.publicKey).toString('hex'),
+        contentPublicKey: encodeBase64(recipientContentKey.publicKey),
+        contentPublicKeySig: encodeBase64(signAccountContentKeyBindingV1({
+          accountSigningSecretKey: recipientSigningKey.secretKey,
+          contentPublicKey: recipientContentKey.publicKey,
+        })),
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async () => {
+      mutationCalls += 1;
+      return { changed: true };
+    });
+    const deps = createAccountServerActionDeps({
+      token: credentials.token,
+      credentials,
+      isCredentialCurrent: async () => {
+        currentnessReads += 1;
+        return currentnessReads < 6;
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: {
+        sessionId: 'session-e2ee',
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_access_stale_scope',
+      error: 'session_access_stale_scope',
+    });
+    expect(currentnessReads).toBeGreaterThanOrEqual(3);
+    expect(mutationCalls).toBe(0);
+  });
+
+  it('keeps Team grants on the key-free physical path without probing Session crypto', async () => {
+    const physicalBodies: unknown[] = [];
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'team', teamId: 'team-1' },
+          accessLevel: 'edit',
+          canApprovePermissions: false,
+          requiredByTeamPolicy: false,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const publicInput = {
+      sessionId: 'session-e2ee',
+      subject: { kind: 'team' as const, teamId: 'team-1' },
+      accessLevel: 'edit' as const,
+      canApprovePermissions: false,
+    };
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(physicalBodies).toEqual([publicInput]);
+  });
+
+  it('lets the server commit an E2EE grant pending recipient setup without fabricating an envelope', async () => {
+    const physicalBodies: unknown[] = [];
+    app.post('/v2/sessions/access-grants/list', async () => ownerSessionAccessGrants());
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: 'published-owner-envelope',
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account',
+        firstName: 'Recipient',
+        lastName: null,
+        avatar: null,
+        username: 'recipient',
+        bio: null,
+        badges: [],
+        status: 'none',
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' },
+        publicKey: null,
+        contentPublicKey: null,
+        contentPublicKeySig: null,
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const publicInput = {
+      sessionId: 'session-e2ee',
+      subject: { kind: 'account' as const, accountId: 'recipient-account' },
+      accessLevel: 'view' as const,
+      canApprovePermissions: false,
+    };
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(physicalBodies).toEqual([publicInput]);
+  });
+
+  it('leaves recipient repair key-free for the canonical physical grant admission', async () => {
+    const physicalBodies: unknown[] = [];
+    const callerMachineKey = new Uint8Array(32).fill(19);
+    const callerPublicKey = deriveBoxPublicKeyFromSeed(callerMachineKey);
+    const callerEnvelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: new Uint8Array(32).fill(23),
+      recipientPublicKey: callerPublicKey,
+      randomBytes: (length) => new Uint8Array(length).fill(7),
+    }));
+    let readiness: unknown = { status: 'unavailable', reason: 'encryption_inconsistent' };
+    app.post('/v2/sessions/access-grants/list', async () => ownerSessionAccessGrants());
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: callerEnvelope,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account',
+        firstName: 'Recipient',
+        lastName: null,
+        avatar: null,
+        username: 'recipient',
+        bio: null,
+        badges: [],
+        status: 'none',
+        recipientEnvelopeReadiness: readiness,
+        publicKey: '00'.repeat(32),
+        contentPublicKey: null,
+        contentPublicKeySig: null,
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: {
+        token: 'bound-home-token',
+        encryption: { type: 'dataKey', publicKey: callerPublicKey, machineKey: callerMachineKey },
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: {
+        sessionId: 'session-e2ee',
+        subject: { kind: 'account', accountId: 'recipient-account' },
+        accessLevel: 'view',
+        canApprovePermissions: false,
+      },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    // With a usable Session key, unavailable readiness must remain distinct from
+    // malformed projections and advertised-ready Accounts missing their binding.
+    for (const [nextReadiness, errorCode] of [
+      [undefined, 'unsupported_action'],
+      [{ status: 'available' }, 'recipient_key_unavailable'],
+    ] as const) {
+      readiness = nextReadiness;
+      await expect(deps.sessionAccessAction!({
+        actionId: 'session.access.grant.set',
+        input: {
+          sessionId: 'session-e2ee',
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+        context: { surface: 'cli', serverId: 'home' },
+      })).resolves.toMatchObject({ ok: false, errorCode });
+    }
+    expect(physicalBodies).toEqual([{
+      sessionId: 'session-e2ee',
+      subject: { kind: 'account', accountId: 'recipient-account' },
+      accessLevel: 'view',
+      canApprovePermissions: false,
+    }]);
+  });
+
+  it('keeps an E2EE Session grant key-free for a Plain recipient with retained binding columns', async () => {
+    const physicalBodies: unknown[] = [];
+    app.post('/v2/sessions/access-grants/list', async () => ownerSessionAccessGrants());
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: 'published-owner-envelope',
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.get('/v1/user/recipient-account', async () => ({
+      user: {
+        id: 'recipient-account',
+        firstName: 'Recipient',
+        lastName: null,
+        avatar: null,
+        username: 'recipient',
+        bio: null,
+        badges: [],
+        status: 'none',
+        recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
+        // Retained legacy binding columns are deliberately present. The Account
+        // mode/readiness owner, not key presence, decides this path is Plain.
+        publicKey: '00'.repeat(32),
+        contentPublicKey: encodeBase64(new Uint8Array(32).fill(5)),
+        contentPublicKeySig: encodeBase64(new Uint8Array(64).fill(6)),
+      },
+    }));
+    app.post('/v2/sessions/access-grants/set', async (request) => {
+      physicalBodies.push(request.body);
+      return {
+        changed: true,
+        grant: {
+          subject: { kind: 'account', accountId: 'recipient-account' },
+          accessLevel: 'view',
+          canApprovePermissions: false,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const publicInput = {
+      sessionId: 'session-e2ee',
+      subject: { kind: 'account' as const, accountId: 'recipient-account' },
+      accessLevel: 'view' as const,
+      canApprovePermissions: false,
+    };
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.access.grant.set',
+      input: publicInput,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true });
+    expect(physicalBodies).toEqual([publicInput]);
+  });
+
+  it('does not disclose an untrusted domain error body', async () => {
+    app.post('/v2/sessions/responsibility/set', async (_request, reply) => reply.code(403).send({ error: 'Forbidden', token: 'PRIVATE_BEARER' }));
+    const deps = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home', serverHttpBaseUrl: 'http://access.test' });
+    const result = await deps.sessionAccessAction!({ actionId: 'session.responsibility.set', input: { sessionId: 'session', responsibleAccountId: null }, context: { surface: 'cli', serverId: 'home' } }).catch((error: unknown) => error);
+    expect(result).toMatchObject({ code: 'not_authenticated', response: { status: 403 } });
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_BEARER');
+  });
+
+  it('refuses another Home before sending the bound credential', async () => {
+    let requests = 0;
+    app.post('/v2/sessions/responsibility/set', async () => { requests++; return {}; });
+    const deps = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home', serverHttpBaseUrl: 'http://access.test' });
+    await expect(deps.sessionAccessAction!({ actionId: 'session.responsibility.set', input: { sessionId: 'session', responsibleAccountId: null }, context: { surface: 'cli', serverId: 'other-home' } }))
+      .resolves.toEqual({ ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' });
+    expect(requests).toBe(0);
+  });
+
+  it('routes Session-access Actions through the declared Home transport and pins the bound Home', async () => {
+    const requests: unknown[] = [];
+    app.post('/v2/sessions/responsibility/set', async (request) => {
+      requests.push({
+        body: request.body,
+        authorization: request.headers.authorization,
+      });
+      return { changed: true, responsibleAccountId: null, responsibleAccount: null, autoFollowed: false };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.responsibility.set',
+      input: { sessionId: 'session', responsibleAccountId: null },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ changed: true, responsibleAccountId: null });
+    expect(requests).toEqual([{
+      body: { sessionId: 'session', responsibleAccountId: null },
+      authorization: 'Bearer bound-home-token',
+    }]);
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.responsibility.set',
+      input: { sessionId: 'session', responsibleAccountId: null },
+      context: { surface: 'cli', serverId: 'other-home' },
+    })).resolves.toEqual({ ok: false, errorCode: 'server_target_mismatch', error: 'server_target_mismatch' });
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      actionId: 'session.access.grant.set' as const,
+      method: 'post' as const,
+      path: '/v2/sessions/access-grants/set',
+      input: {
+        sessionId: 'session',
+        subject: { kind: 'team' as const, teamId: 'team' },
+        accessLevel: 'edit' as const,
+        canApprovePermissions: false,
+      },
+    },
+    {
+      actionId: 'session.access.grant.remove' as const,
+      method: 'post' as const,
+      path: '/v2/sessions/access-grants/remove',
+      input: { sessionId: 'session', subject: { kind: 'team' as const, teamId: 'team' } },
+    },
+    {
+      actionId: 'session.access.context.set' as const,
+      method: 'post' as const,
+      path: '/v2/sessions/access-context/set',
+      input: { sessionId: 'session', primaryTeamId: 'team' },
+    },
+    {
+      actionId: 'session.responsibility.set' as const,
+      method: 'post' as const,
+      path: '/v2/sessions/responsibility/set',
+      input: { sessionId: 'session', responsibleAccountId: null },
+    },
+    {
+      actionId: 'session.public_link.create' as const,
+      method: 'post' as const,
+      path: '/v1/sessions/session/public-share',
+      input: { sessionId: 'session' },
+    },
+    {
+      actionId: 'session.public_link.remove' as const,
+      method: 'delete' as const,
+      path: '/v1/sessions/session/public-share',
+      input: { sessionId: 'session' },
+    },
+  ])('returns outcome_unknown when $actionId receives a malformed successful acknowledgement', async ({
+    actionId,
+    method,
+    path,
+    input,
+  }) => {
+    app.get('/v2/sessions/session', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session',
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.route({ method: method.toUpperCase() as 'POST' | 'DELETE', url: path, handler: async () => ({}) });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId,
+      input,
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'outcome_unknown',
+      error: 'outcome_unknown',
+    });
+  });
+
+  it.each([
+    {
+      actionId: 'session.access.grants.list' as const,
+      method: 'post' as const,
+      path: '/v2/sessions/access-grants/list',
+      input: { sessionId: 'session' },
+    },
+    {
+      actionId: 'session.public_link.get' as const,
+      method: 'get' as const,
+      path: '/v1/sessions/session/public-share',
+      input: { sessionId: 'session' },
+    },
+  ])('keeps malformed successful $actionId reads as invalid responses', async ({ actionId, method, path, input }) => {
+    app.route({ method: method.toUpperCase() as 'GET' | 'POST', url: path, handler: async () => ({}) });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId,
+      input,
+      context: { surface: 'cli', serverId: 'home' },
+    })).rejects.toThrow();
+  });
+
+  it('creates a Plain public link with a fresh token and no key material in the logical result', async () => {
+    const physicalBodies: unknown[] = [];
+    let sessionReads = 0;
+    app.get('/v2/sessions/session-plain', async () => {
+      sessionReads += 1;
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+        }),
+      };
+    });
+    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+      physicalBodies.push({ url: request.url, body: request.body });
+      return {
+        publicShare: {
+          id: 'share-plain',
+          token: 'PHYSICAL_TOKEN_MUST_NOT_LEAK',
+          expiresAt: null,
+          maxUses: null,
+          useCount: 0,
+          isConsentRequired: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const logicalInput = { sessionId: 'session-plain', isConsentRequired: false };
+    const snapshot = JSON.parse(JSON.stringify(logicalInput));
+
+    const result = await deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: logicalInput,
+      context: { surface: 'cli', serverId: 'home' },
+    });
+    expect(result).toEqual({ id: 'share-plain', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: false });
+    expect(logicalInput).toEqual(snapshot);
+    expect(sessionReads).toBe(1);
+    expect(physicalBodies).toHaveLength(1);
+    const physical = (physicalBodies[0] as { body: Record<string, unknown> }).body;
+    expect(typeof physical.token).toBe('string');
+    expect((physical.token as string)).toMatch(/^[0-9a-f]{24}$/);
+    expect(physical).not.toHaveProperty('encryptedDataKey');
+    expect(physical).toMatchObject({ isConsentRequired: false });
+    expect(JSON.stringify(result)).not.toContain(physical.token as string);
+  });
+
+  it('replays one lost public-link create with the identical physical body', async () => {
+    const physicalBodies: string[] = [];
+    let sessionReads = 0;
+    app.get('/v2/sessions/session-plain', async () => {
+      sessionReads += 1;
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+        }),
+      };
+    });
+    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+      physicalBodies.push(JSON.stringify(request.body));
+      return {
+        publicShare: {
+          id: 'share-plain', expiresAt: null, maxUses: null, useCount: 0,
+          isConsentRequired: false, createdAt: 1, updatedAt: 1,
+        },
+      };
+    });
+    const installedAdapter = axios.getAdapter(axios.defaults.adapter);
+    let publicationAttempts = 0;
+    axios.defaults.adapter = async (config) => {
+      if (config.method === 'post' && config.url?.endsWith('/v1/sessions/session-plain/public-share')) {
+        publicationAttempts += 1;
+        const response = await installedAdapter(config);
+        if (publicationAttempts === 1) {
+          throw Object.assign(new Error('response lost after Home commit'), { code: 'ECONNRESET' });
+        }
+        return response;
+      }
+      return await installedAdapter(config);
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-plain', isConsentRequired: false },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toMatchObject({ id: 'share-plain' });
+
+    expect(sessionReads).toBe(1);
+    expect(physicalBodies).toHaveLength(2);
+    expect(physicalBodies[1]).toBe(physicalBodies[0]);
+  });
+
+  it('creates an E2EE public link by wrapping the exact-Home current Session DEK without leaking secrets', async () => {
+    const callerMachineKey = new Uint8Array(32).fill(11);
+    const callerPublicKey = deriveBoxPublicKeyFromSeed(callerMachineKey);
+    const sessionDataKey = new Uint8Array(32).fill(29);
+    const publishedCallerEnvelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: sessionDataKey,
+      recipientPublicKey: callerPublicKey,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    }));
+    const physicalBodies: Array<{ body: Record<string, unknown> }> = [];
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: publishedCallerEnvelope,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+      physicalBodies.push({ body: request.body as Record<string, unknown> });
+      return {
+        publicShare: {
+          id: 'share-e2ee',
+          token: 'PHYSICAL_TOKEN_MUST_NOT_LEAK',
+          expiresAt: null,
+          maxUses: null,
+          useCount: 0,
+          isConsentRequired: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: {
+        token: 'bound-home-token',
+        encryption: { type: 'dataKey', publicKey: callerPublicKey, machineKey: callerMachineKey },
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    const logicalInput = { sessionId: 'session-e2ee', isConsentRequired: true };
+    const snapshot = JSON.parse(JSON.stringify(logicalInput));
+
+    const result = await deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: logicalInput,
+      context: { surface: 'cli', serverId: 'home' },
+    });
+    expect(result).toEqual({ id: 'share-e2ee', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: true });
+    expect(logicalInput).toEqual(snapshot);
+    expect(physicalBodies).toHaveLength(1);
+    const physical = physicalBodies[0]!.body;
+    const token = physical.token as string;
+    expect(token).toMatch(/^[0-9a-f]{24}$/);
+    expect(typeof physical.encryptedDataKey).toBe('string');
+    expect(decodeBase64(physical.encryptedDataKey as string)).toHaveLength(
+      PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
+    );
+    await expect(openPublicShareDataKeyEnvelope({ encryptedDataKey: physical.encryptedDataKey as string, token }))
+      .resolves.toEqual(sessionDataKey);
+    const serialized = JSON.stringify({ result, physical });
+    expect(result).not.toHaveProperty('token');
+    expect(result).not.toHaveProperty('encryptedDataKey');
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(physical.encryptedDataKey as string);
+    expect(serialized).toContain(token);
+  });
+
+  it('rejects a caller-authored public-link envelope before any effect', async () => {
+    let sessionReads = 0;
+    let mutations = 0;
+    app.get('/v2/sessions/session-e2ee', async () => {
+      sessionReads += 1;
+      return { session: createSessionRecordFixture({ id: 'session-e2ee' }) };
+    });
+    app.post('/v1/sessions/:sessionId/public-share', async () => {
+      mutations += 1;
+      return { publicShare: null };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-e2ee', token: 'caller-token', encryptedDataKey: 'caller-envelope' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).rejects.toThrow();
+    expect(sessionReads).toBe(0);
+    expect(mutations).toBe(0);
+  });
+
+  it('fails closed on malformed current E2EE Session key material before publication', async () => {
+    let mutations = 0;
+    app.get('/v2/sessions/session-e2ee', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-e2ee',
+        encryptionMode: 'e2ee',
+        dataEncryptionKey: 'not-an-envelope',
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    app.post('/v1/sessions/:sessionId/public-share', async () => {
+      mutations += 1;
+      return { publicShare: null };
+    });
+    const callerMachineKey = new Uint8Array(32).fill(11);
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: {
+        token: 'bound-home-token',
+        encryption: {
+          type: 'dataKey',
+          publicKey: deriveBoxPublicKeyFromSeed(callerMachineKey),
+          machineKey: callerMachineKey,
+        },
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-e2ee' },
+      context: { surface: 'agent', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_data_key_unavailable',
+      error: 'session_data_key_unavailable',
+    });
+    expect(mutations).toBe(0);
+  });
+
+  it('rechecks credential currentness after Session hydration and before publication', async () => {
+    let currentnessChecks = 0;
+    let sessionReads = 0;
+    let mutations = 0;
+    app.get('/v2/sessions/session-plain', async () => {
+      sessionReads += 1;
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+        }),
+      };
+    });
+    app.post('/v1/sessions/:sessionId/public-share', async () => {
+      mutations += 1;
+      return { publicShare: null };
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      isCredentialCurrent: async () => {
+        currentnessChecks += 1;
+        return currentnessChecks < 3;
+      },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-plain' },
+      context: { surface: 'mcp', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_access_stale_scope',
+      error: 'session_access_stale_scope',
+    });
+    expect(sessionReads).toBe(1);
+    expect(mutations).toBe(0);
+  });
+
+  it('sends nothing when public-link creation is cancelled or the scope goes stale', async () => {
+    let sessionReads = 0;
+    let mutations = 0;
+    app.get('/v2/sessions/session-plain', async () => {
+      sessionReads += 1;
+      return {
+        session: createSessionRecordFixture({
+          id: 'session-plain',
+          encryptionMode: 'plain',
+          dataEncryptionKey: null,
+          metadataVersion: 0,
+          agentStateVersion: 0,
+        }),
+      };
+    });
+    app.post('/v1/sessions/:sessionId/public-share', async () => {
+      mutations += 1;
+      return { publicShare: null };
+    });
+    const staleDeps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      isCredentialCurrent: async () => false,
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    await expect(staleDeps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-plain' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_access_stale_scope',
+      error: 'session_access_stale_scope',
+    });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const freshDeps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+    await expect(freshDeps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-plain' },
+      context: { surface: 'cli', serverId: 'home' },
+      signal: cancelled.signal,
+    })).resolves.toEqual({ ok: false, errorCode: 'cancelled', error: 'cancelled' });
+    expect(sessionReads).toBe(0);
+    expect(mutations).toBe(0);
+  });
+
+  it('translates a committed public-link delete without ambiguous post-commit decoding', async () => {
+    let mode: 'ok' | 'absent' | 'route_missing' = 'ok';
+    app.delete('/v1/sessions/:sessionId/public-share', async (_request, reply) => {
+      if (mode === 'ok') return { success: true };
+      if (mode === 'absent') return reply.code(404).send({ error: 'Share not found' });
+      return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Route DELETE:/v1/sessions/session-1/public-share not found' });
+    });
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    mode = 'ok';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.remove',
+      input: { sessionId: 'session-1' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({ changed: true });
+    mode = 'absent';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.remove',
+      input: { sessionId: 'session-1' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({ changed: false });
+    mode = 'route_missing';
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.remove',
+      input: { sessionId: 'session-1' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.public_link.remove',
+    });
+  });
+
+  it('reports cancellation after public-link mutation dispatch as an unknown outcome', async () => {
+    app.get('/v2/sessions/session-plain', async () => ({
+      session: createSessionRecordFixture({
+        id: 'session-plain',
+        encryptionMode: 'plain',
+        dataEncryptionKey: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+      }),
+    }));
+    const installedAdapter = axios.getAdapter(axios.defaults.adapter);
+    axios.defaults.adapter = async (config) => {
+      if (config.method === 'post' && config.url?.endsWith('/v1/sessions/session-plain/public-share')) {
+        throw new axios.CanceledError('cancelled after dispatch', undefined, config);
+      }
+      return await installedAdapter(config);
+    };
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      credentials: { token: 'bound-home-token', encryption: null },
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId: 'session.public_link.create',
+      input: { sessionId: 'session-plain' },
+      context: { surface: 'cli', serverId: 'home' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'outcome_unknown',
+      error: 'outcome_unknown',
+    });
+  });
+
+  it.each([
+    {
+      actionId: 'session.access.grant.set' as const,
+      input: {
+        sessionId: 'session-1',
+        subject: { kind: 'team' as const, teamId: 'team-1' },
+        accessLevel: 'edit' as const,
+        canApprovePermissions: false,
+      },
+    },
+    {
+      actionId: 'session.access.grant.remove' as const,
+      input: {
+        sessionId: 'session-1',
+        subject: { kind: 'team' as const, teamId: 'team-1' },
+      },
+    },
+  ])('does not dispatch an already-cancelled $actionId mutation', async ({ actionId, input }) => {
+    let mutations = 0;
+    app.post('/v2/sessions/access-grants/set', async () => {
+      mutations += 1;
+      return { changed: true };
+    });
+    app.post('/v2/sessions/access-grants/remove', async () => {
+      mutations += 1;
+      return { changed: true };
+    });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const deps = createAccountServerActionDeps({
+      token: 'bound-home-token',
+      serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test',
+    });
+
+    await expect(deps.sessionAccessAction!({
+      actionId,
+      input,
+      context: { surface: 'mcp', serverId: 'home' },
+      signal: cancelled.signal,
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'cancelled',
+      error: 'cancelled',
+    });
+    expect(mutations).toBe(0);
+  });
+});

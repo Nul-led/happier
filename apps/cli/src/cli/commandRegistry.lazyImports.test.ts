@@ -63,7 +63,8 @@ describe('commandRegistry import laziness', () => {
       ['spawn', ['create']],
       ['list', ['list']],
       ['ls', ['list']],
-      ['send', ['send']],
+      // `send` is a compiled `session.message.send` command, not a nested
+      // session delegation; its ownership is asserted beside the compiler.
       ['history', ['history']],
       ['wait', ['wait']],
       ['stop', ['stop']],

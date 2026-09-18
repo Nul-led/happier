@@ -20,6 +20,7 @@ import {
     type PluginMachineMaterializationRefV1,
 } from '@happier-dev/protocol';
 import type { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
+import { isWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 import { createPluginInteractionsService } from '@/plugins/runtime/invocation/services/interactions';
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
@@ -28,8 +29,10 @@ import { createPluginSessionsInventory } from '@/session/services/pluginSessions
 import { createPluginSessionHandleCapabilitiesFactory } from '@/session/services/pluginSessionHandleCapabilities';
 import { executePluginSessionMessageAction } from '@/session/services/executePluginSessionMessageAction';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
     CURRENT_SESSION_INTERACTION_DEADLINE_MS,
+    createCurrentExecutionRunInteractionOwner,
     createCurrentSessionInteractionOwner,
     createUnavailableCurrentSessionInteractionOwner,
     isCurrentSessionInteractionDeadlineMs,
@@ -171,12 +174,21 @@ export type NativeAgentSessionInteractionParams = Readonly<{
     signal?: AbortSignal;
     credentials?: StoredCredentials;
     readCredentials?: () => Promise<StoredCredentials | null>;
+    /** The daemon's already-retained snapshot for this exact Home. */
+    resolveServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
     readPermissionMode?: () => string;
     media?: SessionMediaService;
     presentation?: HostCurrentSessionUiServices['presentation'];
     currentSessionUi?: HostCurrentSessionUiServices;
     resolveCallerMaterialization?(): PluginMachineMaterializationRefV1 | null;
     readActiveTurnAdmissionWitness?(): AgentInvocationTurnAdmissionWitness | null;
+}>;
+
+export type NativeAgentExecutionRunInteractionParams = Omit<
+    NativeAgentSessionInteractionParams,
+    'sessionId' | 'credentials' | 'readCredentials' | 'readPermissionMode' | 'media'
+> & Readonly<{
+    executionRunId: string;
 }>;
 
 type PluginGenerationState = 'current' | 'retired' | 'unverifiable';
@@ -195,7 +207,9 @@ type NativePermissionPresentationContext = Readonly<{
     permissionContext: NonNullable<HostSessionInteractionOptions['permissionContext']>;
 }>;
 
-function defaultRequester(params: NativeAgentSessionInteractionParams): InteractionTransientRequesterV1 {
+function defaultRequester(
+    params: NativeAgentSessionInteractionParams | NativeAgentExecutionRunInteractionParams,
+): InteractionTransientRequesterV1 {
     return Object.freeze({
         pluginId: params.pluginId,
         contributionId: params.contributionId,
@@ -205,7 +219,7 @@ function defaultRequester(params: NativeAgentSessionInteractionParams): Interact
 }
 
 function readPermissionHandler(
-    params: NativeAgentSessionInteractionParams,
+    params: NativeAgentSessionInteractionParams | NativeAgentExecutionRunInteractionParams,
 ): Pick<ProviderEnforcedPermissionHandler, 'handleToolCall'> | null {
     return params.permissionHandler && typeof params.permissionHandler.handleToolCall === 'function'
         ? params.permissionHandler
@@ -223,7 +237,7 @@ type CurrentSessionInteractionDeadlineResolution =
     | Readonly<{ ok: false }>;
 
 function readInteractionDeadlineMs(
-    params: NativeAgentSessionInteractionParams,
+    params: NativeAgentSessionInteractionParams | NativeAgentExecutionRunInteractionParams,
 ): CurrentSessionInteractionDeadlineResolution {
     if (params.interactionDeadlineMs === undefined) {
         return Object.freeze({ ok: true, deadlineMs: CURRENT_SESSION_INTERACTION_DEADLINE_MS });
@@ -233,7 +247,9 @@ function readInteractionDeadlineMs(
         : Object.freeze({ ok: false });
 }
 
-function canPresentCurrentSessionInteraction(params: NativeAgentSessionInteractionParams): boolean {
+function canPresentCurrentSessionInteraction(
+    params: NativeAgentSessionInteractionParams | NativeAgentExecutionRunInteractionParams,
+): boolean {
     return readInteractionDeadlineMs(params).ok
         && params.signal !== undefined
         && params.isCurrent !== undefined
@@ -279,7 +295,8 @@ async function presentBoundPermissionRequest(
                 signal: params.signal,
             },
         );
-    } catch {
+    } catch (error) {
+        if (isWorkflowInteractionCapacityError(error)) throw error;
         return unavailable(request, request.requestId);
     }
     if (!result || typeof result !== 'object' || typeof result.decision !== 'string') {
@@ -359,6 +376,38 @@ function createNativeCurrentSessionInteractionOwner(
         sessionSignal: signal,
         isGenerationCurrent: isCurrent,
         deadlineMs: deadline.deadlineMs,
+        propagatePresentationError: isWorkflowInteractionCapacityError,
+        present: async (request, options) => await presentBoundPermissionRequest({
+            permissionHandler,
+            request,
+            signal: options.signal,
+            ...(options.presentationContext === undefined
+                ? {}
+                : {
+                    permissionContext: (
+                        options.presentationContext as NativePermissionPresentationContext
+                    ).permissionContext,
+                }),
+        }),
+    });
+}
+
+function createNativeCurrentExecutionRunInteractionOwner(
+    params: NativeAgentExecutionRunInteractionParams,
+): CurrentSessionInteractionOwner {
+    const deadline = readInteractionDeadlineMs(params);
+    const signal = params.signal;
+    const isCurrent = params.isCurrent;
+    const permissionHandler = readPermissionHandler(params);
+    if (!deadline.ok || !signal || !isCurrent || !permissionHandler) {
+        return createUnavailableCurrentSessionInteractionOwner();
+    }
+    return createCurrentExecutionRunInteractionOwner({
+        executionRunId: params.executionRunId,
+        executionRunSignal: signal,
+        isGenerationCurrent: isCurrent,
+        deadlineMs: deadline.deadlineMs,
+        propagatePresentationError: isWorkflowInteractionCapacityError,
         present: async (request, options) => await presentBoundPermissionRequest({
             permissionHandler,
             request,
@@ -401,11 +450,47 @@ class NativeAgentCurrentSessionInteractionAdapter implements PluginCurrentSessio
     }
 }
 
+class NativeAgentCurrentExecutionRunInteractionAdapter implements PluginCurrentSessionInteractionsService {
+    private readonly owner: CurrentSessionInteractionOwner;
+    private readonly requester: InteractionTransientRequesterV1;
+
+    constructor(params: NativeAgentExecutionRunInteractionParams) {
+        this.owner = createNativeCurrentExecutionRunInteractionOwner(params);
+        this.requester = defaultRequester(params);
+    }
+
+    request(request: PluginSessionApprovalRequest, options?: HostSessionInteractionOptions): Promise<PluginSessionApprovalResult>;
+    request(request: PluginSessionQuestionsRequest, options?: HostSessionInteractionOptions): Promise<PluginSessionQuestionsResult>;
+    request(request: PluginSessionConfirmationRequest, options?: HostSessionInteractionOptions): Promise<PluginSessionConfirmationResult>;
+    async request(
+        request: PluginSessionApprovalRequest | PluginSessionQuestionsRequest | PluginSessionConfirmationRequest,
+        options?: HostSessionInteractionOptions,
+    ): Promise<InteractionResult> {
+        return await this.owner.request(request, {
+            requester: options?.requester ?? this.requester,
+            ...(options?.signal ? { signal: options.signal } : {}),
+            ...(options?.permissionContext === undefined
+                ? {}
+                : { presentationContext: Object.freeze({ permissionContext: options.permissionContext }) }),
+        }) as InteractionResult;
+    }
+}
+
 export function createNativeAgentCurrentSessionUiServices(
     params: NativeAgentSessionInteractionParams,
 ): HostCurrentSessionUiServices {
     return Object.freeze({
         interactions: Object.freeze(new NativeAgentCurrentSessionInteractionAdapter(params)),
+        ...(params.presentation ? { presentation: params.presentation } : {}),
+    });
+}
+
+/** Interaction-only binding for a detached Execution Run; no Session inventory is projected. */
+export function createNativeAgentCurrentExecutionRunUiServices(
+    params: NativeAgentExecutionRunInteractionParams,
+): HostCurrentSessionUiServices {
+    return Object.freeze({
+        interactions: Object.freeze(new NativeAgentCurrentExecutionRunInteractionAdapter(params)),
         ...(params.presentation ? { presentation: params.presentation } : {}),
     });
 }
@@ -444,6 +529,7 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
         ? createCliActionExecutorFromCredentials({
             credentials: params.credentials,
             ...(params.readCredentials ? { readCredentials: params.readCredentials } : {}),
+            ...(params.resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot } : {}),
         })
         : null;
     const inventory = params.credentials && params.isCurrent
@@ -455,6 +541,7 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
                     ),
                     pluginId: params.pluginId,
                     contributionLocalId: params.contributionId,
+                    immutableGenerationId: params.immutableGenerationId ?? params.generationId,
                     ...(params.resolveCallerMaterialization
                         ? { resolveCallerMaterialization: params.resolveCallerMaterialization }
                         : {}),
@@ -466,6 +553,7 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
             credentials: params.credentials,
             signal: params.signal ?? new AbortController().signal,
             ...(params.readCredentials ? { readCredentials: params.readCredentials } : {}),
+            ...(params.resolveServerFeaturesSnapshot ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot } : {}),
             currentSessionId: params.sessionId,
             sessionScopes: Object.freeze([Object.freeze({
                 access: Object.freeze(['read', 'write', 'control'] as const),

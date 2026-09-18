@@ -1,4 +1,7 @@
+import type { WorkflowRunUpdateNotificationV1 } from '@happier-dev/protocol';
+
 export type ActivityNotificationEvent =
+  | WorkflowRunUpdateNotificationV1
   | Readonly<{
     topic: 'ready';
     sessionId: string;
@@ -50,9 +53,14 @@ export type ActivityNotificationEvent =
     providerErrorCode?: string | null;
     action?: Readonly<{ kind: 'open_url'; url: string }> | null;
   }>
-  | Readonly<{
-    topic: 'connected_service_quota_blocked' | 'connected_service_quota_recovered';
+  | (Readonly<{
+    topic: 'connected_service_quota_blocked';
     sessionId: string;
+  }> | Readonly<{
+    topic: 'connected_service_quota_recovered';
+    sessionId?: string;
+    recoveryReason?: 'automatic_quota_reset';
+  }>) & Readonly<{
     sessionTitle?: string | null;
     serviceId: string;
     serviceDisplayName?: string | null;

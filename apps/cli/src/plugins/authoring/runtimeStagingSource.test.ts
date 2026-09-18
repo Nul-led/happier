@@ -7,10 +7,22 @@ import { describe, expect, it } from 'vitest';
 
 import { evaluatePluginAuthorRuntimeStagingSource } from './runtimeStagingSource';
 
-const ANTIGRAVITY_PLUGIN_ROOT = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../../packages/plugins/antigravity',
-);
+function bundledPluginRoot(packageName: string): string {
+  return resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../packages/plugins',
+    packageName,
+  );
+}
+
+/**
+ * Surviving bundled plugin whose runner leaf still owns a custom session runtime
+ * and exports the External Sessions companion beside it. Pi is the smallest such
+ * source graph, which keeps this real-root staging case affordable.
+ */
+const PI_PLUGIN_ROOT = bundledPluginRoot('pi');
+/** Declarative-ACP bundled plugin: the ACP runtime owns its sessions, so it stages no locator. */
+const ANTIGRAVITY_PLUGIN_ROOT = bundledPluginRoot('antigravity');
 
 async function createSessionRunnerFixture(input: Readonly<{
   pluginId: string;
@@ -72,11 +84,36 @@ async function createSessionRunnerFixture(input: Readonly<{
 }
 
 describe('plugin author runtime staging authority', () => {
-  it('stages Antigravity with the exact External Sessions companion exported by its runner leaf', async () => {
+  it('stages Pi with the exact External Sessions companion exported by its runner leaf', async () => {
+    const staged = await evaluatePluginAuthorRuntimeStagingSource({
+      locator: join(PI_PLUGIN_ROOT, 'src', 'index.ts'),
+      rootPath: PI_PLUGIN_ROOT,
+      immutableGenerationId: 'bundled-pi-companion-positive',
+      authority: {
+        kind: 'bundled_first_party',
+        pluginId: 'happier.agent.pi',
+        packageRootPath: PI_PLUGIN_ROOT,
+      },
+    });
+
+    expect(staged.sessionRunnerFactories).toEqual([expect.objectContaining({
+      localAgentId: 'pi',
+      normalizedModulePath: 'src/agent/runtime/engine.ts',
+      loadMode: 'source-ts',
+      locator: {
+        module: './agent/runtime/engine',
+        export: 'createPiAgentRuntime',
+        runtimeApiVersion: 1,
+        externalSessionsExport: 'piExternalSessionsContribution',
+      },
+    })]);
+  });
+
+  it('stages no session runner locator for declarative-ACP Antigravity', async () => {
     const staged = await evaluatePluginAuthorRuntimeStagingSource({
       locator: join(ANTIGRAVITY_PLUGIN_ROOT, 'src', 'index.ts'),
       rootPath: ANTIGRAVITY_PLUGIN_ROOT,
-      immutableGenerationId: 'bundled-antigravity-companion-positive',
+      immutableGenerationId: 'bundled-antigravity-declarative-acp',
       authority: {
         kind: 'bundled_first_party',
         pluginId: 'happier.agent.antigravity',
@@ -84,17 +121,9 @@ describe('plugin author runtime staging authority', () => {
       },
     });
 
-    expect(staged.sessionRunnerFactories).toEqual([expect.objectContaining({
-      localAgentId: 'antigravity',
-      normalizedModulePath: 'src/agent/runtime/factory.ts',
-      loadMode: 'source-ts',
-      locator: {
-        module: './agent/runtime/factory',
-        export: 'createAntigravityAgentRuntime',
-        runtimeApiVersion: 1,
-        externalSessionsExport: 'antigravityExternalSessionsContribution',
-      },
-    })]);
+    // The ACP runtime declared in the manifest owns Antigravity sessions. A staged
+    // custom locator here would mean the retired plugin-side runtime came back.
+    expect(staged.sessionRunnerFactories).toEqual([]);
   });
 
   it('admits the exact bundled Claude source root through normal activation validation', async () => {
