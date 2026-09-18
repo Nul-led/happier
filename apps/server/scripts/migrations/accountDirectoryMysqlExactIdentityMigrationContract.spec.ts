@@ -2,10 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Directory identifiers are trimmed at the protocol boundary, so the portable binary
-// collation supplies the required case-sensitive comparison without raising the
-// repository's documented MySQL 8.0.16 support floor to the 0900 collation family.
-const MYSQL_BINARY_COLLATION = "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin";
+// Home and issuer identifiers are exact opaque values. MySQL's legacy utf8mb4_bin
+// collation is PAD SPACE and would alias a value with its trailing-space variant.
+const MYSQL_BINARY_COLLATION = "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin";
 
 function migrationSql(name: string): string {
     return readFileSync(join(process.cwd(), "prisma/mysql/migrations", name, "migration.sql"), "utf8");
@@ -35,10 +34,10 @@ describe("Account Directory MySQL exact identity migration contract", () => {
             "`requesterIssuerSubjectId` VARCHAR(256) " + MYSQL_BINARY_COLLATION + " NULL",
         );
 
-        expect(directorySql.match(/COLLATE utf8mb4_bin/gu)).toHaveLength(4);
-        expect(approvalSql.match(/COLLATE utf8mb4_bin/gu)).toHaveLength(2);
-        expect(directorySql).not.toContain("COLLATE utf8mb4_0900_bin");
-        expect(approvalSql).not.toContain("COLLATE utf8mb4_0900_bin");
+        expect(directorySql.match(/COLLATE utf8mb4_0900_bin/gu)).toHaveLength(4);
+        expect(approvalSql.match(/COLLATE utf8mb4_0900_bin/gu)).toHaveLength(2);
+        expect(directorySql).not.toMatch(/COLLATE utf8mb4_bin\b/u);
+        expect(approvalSql).not.toMatch(/COLLATE utf8mb4_bin\b/u);
         expect(directorySql).toMatch(/`accountId` VARCHAR\(191\) NOT NULL/gu);
         expect(approvalSql).not.toMatch(/`accountId`[^,;\n]*COLLATE/gu);
         expect(directorySql.match(/DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci/gu))

@@ -18,6 +18,90 @@ const MYSQL_VOICE_GRANT_PROVENANCE_TRIGGER =
     "VoiceSessionLease_preserve_conversation_grant";
 const MYSQL_MIGRATION_APPROVAL_ENV = "HAPPIER_DB_MIGRATION_APPROVAL";
 
+type MysqlTriggerExpectation = Readonly<{
+    name: string;
+    timing: "BEFORE";
+    event: "DELETE" | "INSERT" | "UPDATE";
+    tableName: string;
+}>;
+
+type MysqlTriggerMigration = Readonly<{
+    migrationName: string;
+    requiredPrivileges: ReadonlyArray<Readonly<{ privilege: string; tableName: string }>>;
+    triggers: ReadonlyArray<MysqlTriggerExpectation>;
+}>;
+
+export const MYSQL_TRIGGER_MIGRATIONS: ReadonlyArray<MysqlTriggerMigration> = [
+    {
+        migrationName: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
+        requiredPrivileges: [
+            { privilege: "ALTER", tableName: "VoiceConversation" },
+            { privilege: "UPDATE", tableName: "VoiceConversation" },
+            { privilege: "TRIGGER", tableName: "VoiceSessionLease" },
+        ],
+        triggers: [{
+            name: MYSQL_VOICE_GRANT_PROVENANCE_TRIGGER,
+            timing: "BEFORE",
+            event: "DELETE",
+            tableName: "VoiceSessionLease",
+        }],
+    },
+    {
+        migrationName: "20260905230000_add_session_follow_edges",
+        requiredPrivileges: [{ privilege: "TRIGGER", tableName: "SessionFollowEdge" }],
+        triggers: [
+            {
+                name: "SessionFollowEdge_distinct_sessions_insert",
+                timing: "BEFORE",
+                event: "INSERT",
+                tableName: "SessionFollowEdge",
+            },
+            {
+                name: "SessionFollowEdge_distinct_sessions_update",
+                timing: "BEFORE",
+                event: "UPDATE",
+                tableName: "SessionFollowEdge",
+            },
+        ],
+    },
+    {
+        migrationName: "20260906210000_add_managed_identity_providers",
+        requiredPrivileges: [{ privilege: "TRIGGER", tableName: "TeamProvisionedIdentity" }],
+        triggers: [
+            {
+                name: "TeamProvisionedIdentity_membership_team_insert",
+                timing: "BEFORE",
+                event: "INSERT",
+                tableName: "TeamProvisionedIdentity",
+            },
+            {
+                name: "TeamProvisionedIdentity_membership_team_update",
+                timing: "BEFORE",
+                event: "UPDATE",
+                tableName: "TeamProvisionedIdentity",
+            },
+        ],
+    },
+    {
+        migrationName: "20260908120000_add_workflow_run_invocations",
+        requiredPrivileges: [{ privilege: "TRIGGER", tableName: "AutomationRun" }],
+        triggers: [
+            {
+                name: "AutomationRun_origin_kind_insert",
+                timing: "BEFORE",
+                event: "INSERT",
+                tableName: "AutomationRun",
+            },
+            {
+                name: "AutomationRun_origin_kind_update",
+                timing: "BEFORE",
+                event: "UPDATE",
+                tableName: "AutomationRun",
+            },
+        ],
+    },
+];
+
 type QueryRows = ReadonlyArray<Record<string, unknown>>;
 
 export interface MysqlMigrationAdmissionDatabase {
@@ -61,10 +145,10 @@ function readCount(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function readMigrationState(
+async function readMigrationStates(
     database: MysqlMigrationAdmissionDatabase,
     options: Readonly<{ ledgerExists?: boolean }> = {},
-): Promise<MigrationState> {
+): Promise<ReadonlyMap<string, MigrationState>> {
     let ledgerExists = options.ledgerExists;
     if (ledgerExists === undefined) {
         const tableRows = await database.query(
@@ -73,18 +157,36 @@ async function readMigrationState(
         );
         ledgerExists = readCount(readRowValue(tableRows[0] ?? {}, "table_count")) > 0;
     }
-    if (!ledgerExists) return { status: "pending" };
+    if (!ledgerExists) {
+        return new Map(MYSQL_TRIGGER_MIGRATIONS.map(({ migrationName }) => [
+            migrationName,
+            { status: "pending" } as const,
+        ]));
+    }
 
     const rows = await database.query(
-        "SELECT finished_at, rolled_back_at FROM `_prisma_migrations` WHERE migration_name = ? " +
-        "ORDER BY started_at DESC LIMIT 1",
-        MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
+        "SELECT migration_name, finished_at, rolled_back_at FROM `_prisma_migrations` " +
+        `WHERE migration_name IN (${MYSQL_TRIGGER_MIGRATIONS.map(() => "?").join(", ")}) ` +
+        "ORDER BY migration_name, started_at DESC",
+        ...MYSQL_TRIGGER_MIGRATIONS.map(({ migrationName }) => migrationName),
     );
-    const row = rows[0];
-    if (!row) return { status: "pending" };
-    if (readRowValue(row, "finished_at") != null) return { status: "applied" };
-    if (readRowValue(row, "rolled_back_at") != null) return { status: "pending" };
-    return { status: "failed" };
+    const latestRows = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+        const migrationName = readRowValue(row, "migration_name");
+        if (typeof migrationName === "string" && !latestRows.has(migrationName)) {
+            latestRows.set(migrationName, row);
+        }
+    }
+    return new Map(MYSQL_TRIGGER_MIGRATIONS.map(({ migrationName }) => {
+        const row = latestRows.get(migrationName);
+        if (!row || readRowValue(row, "rolled_back_at") != null) {
+            return [migrationName, { status: "pending" } as const];
+        }
+        if (readRowValue(row, "finished_at") != null) {
+            return [migrationName, { status: "applied" } as const];
+        }
+        return [migrationName, { status: "failed" } as const];
+    }));
 }
 
 function assertOperatorApproval(env: NodeJS.ProcessEnv): void {
@@ -160,6 +262,7 @@ function hasGlobalSuper(grants: readonly ParsedGrant[]): boolean {
 
 async function verifyTriggerAuthority(
     database: MysqlMigrationAdmissionDatabase,
+    pendingMigrations: readonly MysqlTriggerMigration[],
 ): Promise<TriggerAuthority> {
     const identityRows = await database.query(
         "SELECT DATABASE() AS database_name, CURRENT_USER() AS current_user_name, " +
@@ -185,23 +288,23 @@ async function verifyTriggerAuthority(
         .map(parseGrant)
         .filter((grant): grant is ParsedGrant => grant !== null);
 
-    const requiredPrivileges = [
-        { privilege: "ALTER", tableName: "VoiceConversation" },
-        { privilege: "UPDATE", tableName: "VoiceConversation" },
-        { privilege: "TRIGGER", tableName: "VoiceSessionLease" },
-    ] as const;
+    const requiredPrivileges = Array.from(new Map(
+        pendingMigrations
+            .flatMap(({ requiredPrivileges: privileges }) => privileges)
+            .map((privilege) => [`${privilege.privilege}:${privilege.tableName}`, privilege]),
+    ).values());
     const missing = requiredPrivileges
         .filter(({ privilege, tableName }) => !hasPrivilege(grants, {
             privilege,
             databaseName,
             tableName,
         }))
-        .map(({ privilege }) => privilege);
+        .map(({ privilege, tableName }) => `${privilege} on ${tableName}`);
     if (missing.length > 0) {
         throw new Error(
             `[mysql-migration-admission] CURRENT_USER() ${currentUser} lacks provable ` +
-            `${missing.join(", ")} authority required before installing ` +
-            `${MYSQL_VOICE_GRANT_PROVENANCE_TRIGGER}. Grant the authority directly or through ` +
+            `${missing.join(", ")} authority required before installing pending MySQL triggers. ` +
+            "Grant the authority directly or through " +
             "a schema/global grant visible to SHOW GRANTS, then rerun the preflight before Prisma.",
         );
     }
@@ -219,37 +322,48 @@ async function verifyTriggerAuthority(
     return { currentUser, databaseName };
 }
 
-async function verifyVoiceGrantProvenancePostflight(
+async function verifyTriggerPostflight(
     database: MysqlMigrationAdmissionDatabase,
     authority: TriggerAuthority,
+    pendingMigrations: readonly MysqlTriggerMigration[],
 ): Promise<void> {
-    const migrationState = await readMigrationState(database, { ledgerExists: true });
-    if (migrationState.status !== "applied") {
+    const migrationStates = await readMigrationStates(database, { ledgerExists: true });
+    const incompleteMigration = pendingMigrations.find(
+        ({ migrationName }) => migrationStates.get(migrationName)?.status !== "applied",
+    );
+    if (incompleteMigration) {
         throw new Error(
             `[mysql-migration-admission] Prisma returned without a finished ` +
-            `${MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION} migration record.`,
+            `${incompleteMigration.migrationName} migration record.`,
         );
     }
 
+    const expectedTriggers = pendingMigrations.flatMap(({ triggers }) => triggers);
     const triggerRows = await database.query(
-        "SELECT DEFINER AS definer, ACTION_TIMING AS action_timing, " +
+        "SELECT TRIGGER_NAME AS trigger_name, DEFINER AS definer, ACTION_TIMING AS action_timing, " +
         "EVENT_MANIPULATION AS event_manipulation, EVENT_OBJECT_TABLE AS event_object_table " +
-        "FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?",
+        "FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ? " +
+        `AND TRIGGER_NAME IN (${expectedTriggers.map(() => "?").join(", ")})`,
         authority.databaseName,
-        MYSQL_VOICE_GRANT_PROVENANCE_TRIGGER,
+        ...expectedTriggers.map(({ name }) => name),
     );
-    const trigger = triggerRows[0];
-    const matches =
-        trigger !== undefined
-        && readRowValue(trigger, "definer") === authority.currentUser
-        && String(readRowValue(trigger, "action_timing") ?? "").toUpperCase() === "BEFORE"
-        && String(readRowValue(trigger, "event_manipulation") ?? "").toUpperCase() === "DELETE"
-        && readRowValue(trigger, "event_object_table") === "VoiceSessionLease";
-    if (!matches) {
+    const actualTriggers = new Map(triggerRows.flatMap((row) => {
+        const name = readRowValue(row, "trigger_name");
+        return typeof name === "string" ? [[name, row] as const] : [];
+    }));
+    const invalidTrigger = expectedTriggers.find(({ name, timing, event, tableName }) => {
+        const trigger = actualTriggers.get(name);
+        return trigger === undefined
+            || readRowValue(trigger, "definer") !== authority.currentUser
+            || String(readRowValue(trigger, "action_timing") ?? "").toUpperCase() !== timing
+            || String(readRowValue(trigger, "event_manipulation") ?? "").toUpperCase() !== event
+            || readRowValue(trigger, "event_object_table") !== tableName;
+    });
+    if (invalidTrigger) {
         throw new Error(
-            `[mysql-migration-admission] Prisma returned without the expected compatibility trigger ` +
-            `${MYSQL_VOICE_GRANT_PROVENANCE_TRIGGER} owned by CURRENT_USER() ${authority.currentUser}. ` +
-            "Keep old writers stopped and inspect INFORMATION_SCHEMA.TRIGGERS before starting the server.",
+            `[mysql-migration-admission] Prisma returned without the expected MySQL trigger ` +
+            `${invalidTrigger.name} owned by CURRENT_USER() ${authority.currentUser}. ` +
+            "Inspect INFORMATION_SCHEMA.TRIGGERS before starting the server.",
         );
     }
 }
@@ -259,23 +373,31 @@ export async function runMysqlMigrationDeploy(input: Readonly<{
     env: NodeJS.ProcessEnv;
     deploy(): Promise<void>;
 }>): Promise<void> {
-    const state = await readMigrationState(input.database);
-    if (state.status === "failed") {
+    const states = await readMigrationStates(input.database);
+    const failedMigration = MYSQL_TRIGGER_MIGRATIONS.find(
+        ({ migrationName }) => states.get(migrationName)?.status === "failed",
+    );
+    if (failedMigration) {
         throw new Error(
-            `[mysql-migration-admission] ${MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION} has an unfinished failed ` +
+            `[mysql-migration-admission] ${failedMigration.migrationName} has an unfinished failed ` +
             "Prisma record. Keep old writers stopped and use an approved provider-specific recovery procedure; " +
             "do not retry DDL or run prisma migrate resolve automatically.",
         );
     }
-    if (state.status === "applied") {
+    const pendingMigrations = MYSQL_TRIGGER_MIGRATIONS.filter(
+        ({ migrationName }) => states.get(migrationName)?.status === "pending",
+    );
+    if (pendingMigrations.length === 0) {
         await input.deploy();
         return;
     }
 
-    assertOperatorApproval(input.env);
-    const authority = await verifyTriggerAuthority(input.database);
+    if (pendingMigrations.some(({ migrationName }) => migrationName === MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION)) {
+        assertOperatorApproval(input.env);
+    }
+    const authority = await verifyTriggerAuthority(input.database, pendingMigrations);
     await input.deploy();
-    await verifyVoiceGrantProvenancePostflight(input.database, authority);
+    await verifyTriggerPostflight(input.database, authority, pendingMigrations);
 }
 
 async function main(): Promise<void> {

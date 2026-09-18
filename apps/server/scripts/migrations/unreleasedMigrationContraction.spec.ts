@@ -1,4 +1,5 @@
-import { access, readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -11,6 +12,13 @@ const providerRoots = [
     "prisma/mysql/migrations",
 ] as const;
 
+const releasedQuotaSnapshotDropMigrationId = "20260630223000_drop_service_account_quota_snapshots";
+const releasedQuotaSnapshotDropChecksums = {
+    "prisma/migrations": "a5b3f4ee6551ebf2c534ab2c7539a768d1d0c718dd75620eef02b9006c659608",
+    "prisma/sqlite/migrations": "a5b3f4ee6551ebf2c534ab2c7539a768d1d0c718dd75620eef02b9006c659608",
+    "prisma/mysql/migrations": "6a619b1867ee680426e7ee5f03d7bbc048b59ecddab7b4a1caf3e9187f972b62",
+} satisfies Record<(typeof providerRoots)[number], string>;
+
 const retainedMigrationIds = [
     "20260624123000_add_pending_delivery_state",
     "20260630162000_add_provider_account_usage_records",
@@ -21,7 +29,6 @@ const retainedMigrationIds = [
 ] as const;
 
 const supersededMigrationIds = [
-    "20260630223000_drop_service_account_quota_snapshots",
     "20260624143000_add_session_pending_blocked_count",
     "20260709090000_drop_connected_service_usage_source_profile_unique",
     "20260711194500_add_session_runtime_activity_v2",
@@ -94,6 +101,12 @@ const supersededAutomationMigrationIds = [
     "20260829000000_add_automation_claim_currentness_witness",
 ] as const;
 
+const consolidatedTeamCredentialMigrationId = "20260906220000_add_team_credential_resources";
+const supersededTeamCredentialMigrationIds = [
+    "20260909100000_add_team_credential_direct_source_versions",
+    "20260910100000_add_session_team_credential_binding_revision",
+] as const;
+
 async function exists(path: string): Promise<boolean> {
     return await access(path).then(() => true, () => false);
 }
@@ -118,20 +131,19 @@ describe("unreleased migration contraction", () => {
         }
     });
 
-    it.each(providerRoots)("preserves released quota snapshots for bounded V2 reads in %s", async (providerRoot) => {
-        const migrationRoot = join(serverRoot, providerRoot);
-        const migrationIds = await readdir(migrationRoot);
-        const sqlPaths = migrationIds.map((migrationId) =>
-            join(migrationRoot, migrationId, "migration.sql")
+    it.each(providerRoots)("preserves the released quota-snapshot drop bytes and restores the current table in %s", async (providerRoot) => {
+        const releasedDropSql = await migrationSql(providerRoot, releasedQuotaSnapshotDropMigrationId);
+        expect(createHash("sha256").update(releasedDropSql).digest("hex"))
+            .toBe(releasedQuotaSnapshotDropChecksums[providerRoot]);
+
+        const reconciliationSql = await migrationSql(
+            providerRoot,
+            "20260725110000_reconcile_predecessor_migration_lineage",
         );
-        const sql = (await Promise.all(
-            sqlPaths.map(async (path) =>
-                await exists(path) ? await readFile(path, "utf8") : null
-            ),
-        )).filter((value): value is string => value !== null);
-        expect(sql.some((value) => /DROP TABLE\s+(?:IF EXISTS\s+)?["`]?ServiceAccountQuotaSnapshot["`]?/i.test(value))).toBe(false);
-        expect(await migrationSql(providerRoot, "20260216143000_connected_services_quota_snapshots"))
-            .toContain("ServiceAccountQuotaSnapshot");
+        expect(reconciliationSql).toMatch(/CREATE TABLE IF NOT EXISTS ["`]ServiceAccountQuotaSnapshot["`]/u);
+        expect(reconciliationSql).toContain("ServiceAccountQuotaSnapshot_accountId_vendor_profileId_key");
+        expect(reconciliationSql).toContain("ServiceAccountQuotaSnapshot_accountId_idx");
+        expect(reconciliationSql).toContain("ServiceAccountQuotaSnapshot_accountId_fkey");
     });
 
     it.each(providerRoots)("contracts Dev-only draft chains into their final transition owners for %s", async (providerRoot) => {
@@ -168,6 +180,14 @@ describe("unreleased migration contraction", () => {
         expect(sql).toContain("AccountApiToken");
         expect(sql).toContain("secretDigest");
         expect(sql).toContain("AccountApiToken_accountId_fkey");
+        expect(sql).toContain("encryptionAccess");
+        expect(sql).toContain("operationKind");
+        expect(sql).toContain("operationDigest");
+        expect(sql).toContain("verifiedNativeMethodId");
+
+        const nativeSql = await migrationSql(providerRoot, "20260905210000_add_native_account_auth");
+        expect(nativeSql).not.toMatch(/ALTER TABLE\s+["`]?AccountApiToken["`]?/u);
+        expect(nativeSql).not.toMatch(/ALTER TABLE\s+["`]?KeyChallengeV2["`]?/u);
     });
 
     it.each(providerRoots)(
@@ -226,6 +246,19 @@ describe("unreleased migration contraction", () => {
         const custodySql = await migrationSql(providerRoot, "20260713210000_add_session_subagent_custody");
         expect(custodySql).toContain("immutableGenerationId");
         expect(custodySql).toContain("SessionSubagentCustodyRetiredGeneration");
+    });
+
+    it.each(providerRoots)("creates final Team credential resources from one unreleased transition for %s", async (providerRoot) => {
+        const sql = await migrationSql(providerRoot, consolidatedTeamCredentialMigrationId);
+        expect(sql).toContain("directSourceVersionsJson");
+        expect(sql).toMatch(/["`]resourceRevision["`]\s+INTEGER\s+NOT NULL/u);
+
+        for (const migrationId of supersededTeamCredentialMigrationIds) {
+            expect(
+                await exists(join(serverRoot, providerRoot, migrationId)),
+                `superseded Team credential migration remains ${providerRoot}/${migrationId}`,
+            ).toBe(false);
+        }
     });
 
     it("creates MySQL plugin-permission indexes within the InnoDB key limit at their owning statements", async () => {

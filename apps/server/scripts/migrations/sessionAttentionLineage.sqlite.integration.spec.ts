@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,9 +13,16 @@ const serverRoot = join(import.meta.dirname, "..", "..");
 const sqliteMigrationsRoot = join(serverRoot, "prisma", "sqlite", "migrations");
 const quotaDropId = "20260630223000_drop_service_account_quota_snapshots";
 const releasedPredecessorLastId = "20260326130000_add_pending_queue_seq";
-// Immutable release basis: server-v0.2.1 at 4913c1e533c872a0712ba1c25b3104fd470aacc2.
-// Current predecessor basis: ../0.2 at a7305433ac9e3dffdba4d24e82e2bea068c623b3,
-// including its dirty replacement bytes for 20260902120000. The aggregate hashes below pin
+const latestReleasedPredecessorLastId = "20260902120000_add_pending_activation_authorization";
+// Immutable server-v0.2.1 at 4913c1e533c872a0712ba1c25b3104fd470aacc2
+// ends at `releasedPredecessorLastId`. The current predecessor owns the quota
+// DROP on its independent line. The exact released DROP remains in 0.3 and is
+// copied from the canonical migration below.
+// Immutable server-v0.2.12 at a357c65536ba89669422977d6f7daf9aa0d17e73
+// ends at `latestReleasedPredecessorLastId`; every included SQLite SQL file is
+// byte-identical to the retained current migration with the same identity.
+// Current predecessor basis: ../0.2 at 7e1ce993c408c0f634b81267aac2bcd8e7859975.
+// Its relevant migration tree is clean through 20260907190000. The aggregate hashes below pin
 // every migration ID and SQL byte so this fixture cannot silently borrow changed 0.3 history.
 const currentPredecessorLaterIds = [
     "20260504110500_add_account_pet_library",
@@ -45,21 +52,19 @@ const currentPredecessorLaterIds = [
     "20260816230000_add_manual_automation_triggers",
     "20260819120000_add_session_attention_standing",
     "20260902120000_add_pending_activation_authorization",
+    "20260907190000_add_session_attention_reminder",
 ] as const;
 const predecessorSqlDigests = {
     "released-v0.2.1": "e8727e472791d7de236f2cfa1ef7e8da7c179cbc97c3e137df2eb00b3b9873e5",
-    "current-0.2": "22a64155dbbc987ebb8bb1fbfbcf1f82fad8065bb37c935fd5c03e953f458227",
+    "released-v0.2.12": "22a64155dbbc987ebb8bb1fbfbcf1f82fad8065bb37c935fd5c03e953f458227",
+    "current-0.2": "0890d61c09138618af0fa2d1a1152cea38a349fbe8fae2c1b7bc11807be3b6e5",
 } as const;
-type PredecessorFrontier = "released-v0.2.1" | "current-0.2";
+type PredecessorFrontier = "released-v0.2.1" | "released-v0.2.12" | "current-0.2";
 
 async function copyMigration(sourceId: string, targetRoot: string): Promise<void> {
-    const targetDir = join(targetRoot, sourceId);
-    await mkdir(targetDir, { recursive: true });
-    await writeFile(
-        join(targetDir, "migration.sql"),
-        await readFile(join(sqliteMigrationsRoot, sourceId, "migration.sql"), "utf8"),
-        "utf8",
-    );
+    await cp(join(sqliteMigrationsRoot, sourceId), join(targetRoot, sourceId), {
+        recursive: true,
+    });
 }
 
 async function listCurrentMigrationIds(): Promise<string[]> {
@@ -80,18 +85,13 @@ async function preparePredecessorLedger(
     }
     if (frontier === "released-v0.2.1") return predecessorMigrationIds;
 
-    for (const id of currentPredecessorLaterIds) {
-        if (id !== quotaDropId) await copyMigration(id, migrationsDir);
+    const laterIds = frontier === "released-v0.2.12"
+        ? currentPredecessorLaterIds.filter((id) => id <= latestReleasedPredecessorLastId)
+        : currentPredecessorLaterIds;
+    for (const id of laterIds) {
+        await copyMigration(id, migrationsDir);
     }
-
-    const quotaDropDir = join(migrationsDir, quotaDropId);
-    await mkdir(quotaDropDir, { recursive: true });
-    await writeFile(
-        join(quotaDropDir, "migration.sql"),
-        'DROP TABLE IF EXISTS "ServiceAccountQuotaSnapshot";\n',
-        "utf8",
-    );
-    return [...predecessorMigrationIds, ...currentPredecessorLaterIds].sort((left, right) => left.localeCompare(right));
+    return [...predecessorMigrationIds, ...laterIds].sort((left, right) => left.localeCompare(right));
 }
 
 async function digestMigrationSql(migrationsDir: string, ids: readonly string[]): Promise<string> {
@@ -114,12 +114,12 @@ async function appendCurrentMigrations(
     for (const id of currentMigrationIds) {
         await copyMigration(id, migrationsDir);
     }
-    const predecessorIds = frontier === "released-v0.2.1"
-        ? currentMigrationIds.filter((id) => id <= releasedPredecessorLastId)
-        : [
-            ...currentMigrationIds.filter((id) => id <= releasedPredecessorLastId),
-            ...currentPredecessorLaterIds,
-        ];
+    const predecessorIds = currentMigrationIds.filter((id) => id <= releasedPredecessorLastId);
+    if (frontier !== "released-v0.2.1") {
+        predecessorIds.push(...(frontier === "released-v0.2.12"
+            ? currentPredecessorLaterIds.filter((id) => id <= latestReleasedPredecessorLastId)
+            : currentPredecessorLaterIds));
+    }
     const predecessorIdSet = new Set(predecessorIds);
     return currentMigrationIds.filter((id) => !predecessorIdSet.has(id));
 }
@@ -175,8 +175,11 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
             const quotaTable =
                 predecessor.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
                     .get("ServiceAccountQuotaSnapshot");
-            if (frontier === "current-0.2") expect(quotaTable).toBeUndefined();
-            else expect(quotaTable).toEqual({ name: "ServiceAccountQuotaSnapshot" });
+            if (frontier === "released-v0.2.1") {
+                expect(quotaTable).toEqual({ name: "ServiceAccountQuotaSnapshot" });
+            } else {
+                expect(quotaTable).toBeUndefined();
+            }
         } finally {
             predecessor.close();
         }
@@ -184,8 +187,76 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         return { databasePath, migrationsDir };
     }
 
+    it("backfills owner Session and current Discussion tracking baselines without enrolling recipients", async () => {
+        const migrationsDir = await mkdtemp(join(tmpdir(), "happier-private-read-migrations-"));
+        const dataDir = await mkdtemp(join(tmpdir(), "happier-private-read-db-"));
+        temporaryPaths.push(migrationsDir, dataDir);
+        const databasePath = join(dataDir, "read.sqlite");
+        const readMigration = "20260905235000_add_account_session_read_state";
+        for (const id of await listCurrentMigrationIds()) {
+            if (id < readMigration) await copyMigration(id, migrationsDir);
+        }
+        await applySqliteMigrations({ databasePath, migrationsDir });
+        const database = new DatabaseSync(databasePath);
+        try {
+            database.exec(`INSERT INTO "Account" ("id", "publicKey", "updatedAt") VALUES
+                ('owner', 'owner-key', CURRENT_TIMESTAMP), ('recipient', 'recipient-key', CURRENT_TIMESTAMP)`);
+            const insert = database.prepare(`INSERT INTO "Session"
+                ("id", "tag", "accountId", "metadata", "updatedAt", "seq", "lastViewedSessionSeq", "unreadSince",
+                 "currentStorageState", "acceptedThroughServerSeq", "materializationPublicationId", "materializedThroughSourceAt", "publishedThroughServerSeq")
+                VALUES (?, ?, 'owner', '{}', CURRENT_TIMESTAMP, 5, ?, ?, ?, ?, ?, ?, ?)`);
+            insert.run('never', 'never', null, null, 'hosted', null, null, null, null);
+            insert.run('unread', 'unread', 2, 1234, 'hosted', null, null, null, null);
+            insert.run('caught', 'caught', 8, 1234, 'hosted', null, null, null, null);
+            insert.run('partial', 'partial', 5, 1234, 'server_partial', 3, null, null, null);
+            insert.run('snapshot', 'snapshot', 5, 1234, 'snapshot_complete', null, 'publication', 1000, 4);
+            insert.run('unpublished', 'unpublished', 5, 1234, 'snapshot_complete', null, null, null, 4);
+            database.exec(`INSERT INTO "SessionDiscussion"
+                ("id", "sessionId", "creationLocalId", "creationEqualityEvidenceV1", "createdByAccountId",
+                 "titleContent", "messageSeq", "lastMessageAt", "updatedAt") VALUES
+                ('discussion-unread-a', 'unread', 'create-unread-a', '{}', 'owner', '{}', 3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                ('discussion-unread-b', 'unread', 'create-unread-b', '{}', 'owner', '{}', 7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+            await copyMigration(readMigration, migrationsDir);
+            await applySqliteMigrations({ databasePath, migrationsDir });
+            expect(database.prepare('SELECT "accountId", "sessionId", "lastViewedSessionSeq", "unreadSince" FROM "AccountSessionReadState" ORDER BY "sessionId"').all()).toEqual([
+                { accountId: 'owner', sessionId: 'caught', lastViewedSessionSeq: 5, unreadSince: null },
+                { accountId: 'owner', sessionId: 'never', lastViewedSessionSeq: 0, unreadSince: null },
+                { accountId: 'owner', sessionId: 'partial', lastViewedSessionSeq: 3, unreadSince: null },
+                { accountId: 'owner', sessionId: 'snapshot', lastViewedSessionSeq: 4, unreadSince: null },
+                { accountId: 'owner', sessionId: 'unpublished', lastViewedSessionSeq: 0, unreadSince: null },
+                { accountId: 'owner', sessionId: 'unread', lastViewedSessionSeq: 2, unreadSince: 1234 },
+            ]);
+            expect(database.prepare('SELECT "discussionId", "accountId", "lastReadSeq" FROM "SessionDiscussionReadState" ORDER BY "discussionId"').all()).toEqual([
+                { discussionId: 'discussion-unread-a', accountId: 'owner', lastReadSeq: 3 },
+                { discussionId: 'discussion-unread-b', accountId: 'owner', lastReadSeq: 7 },
+            ]);
+            expect(database.prepare('SELECT COUNT(*) AS "count" FROM "SessionDiscussionReadState" WHERE "accountId" = ?').get('recipient')).toEqual({ count: 0 });
+            await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({ applied: [] });
+            expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+            expect(database.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+        } finally {
+            database.close();
+        }
+    });
+
     it("recreates quota storage after the current 0.2 DROP and deploys current migrations twice", async () => {
         const { databasePath, migrationsDir } = await createPredecessorDatabase("current-0.2");
+        const predecessor = new DatabaseSync(databasePath);
+        try {
+            predecessor.exec(`
+                INSERT INTO "Account" ("id", "publicKey", "updatedAt")
+                VALUES ('read-owner', 'read-owner-key', CURRENT_TIMESTAMP);
+                INSERT INTO "Session" (
+                    "id", "tag", "accountId", "metadata", "updatedAt", "seq",
+                    "lastViewedSessionSeq", "unreadSince"
+                ) VALUES (
+                    'read-session', 'read-session', 'read-owner', '{}', CURRENT_TIMESTAMP,
+                    5, 2, 1000
+                );
+            `);
+        } finally {
+            predecessor.close();
+        }
         const currentMigrationIds = await appendCurrentMigrations(migrationsDir, "current-0.2");
 
         await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({
@@ -198,6 +269,7 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
             const sessionSql = deployed
                 .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'Session'")
                 .get() as { sql?: string } | undefined;
+            expect(sessionSql?.sql).toContain('"lastViewedSessionSeq"');
             expect(sessionSql?.sql).toContain('"unreadSince"');
             expect(sessionSql?.sql).toContain('"needsAttention"');
             expect(deployed.prepare(
@@ -205,6 +277,18 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
             ).get("Session_accountId_needsAttention_meaningfulActivityAt_id_idx")).toEqual({
                 name: "Session_accountId_needsAttention_meaningfulActivityAt_id_idx",
             });
+            expect(deployed.prepare(`
+                SELECT "lastViewedSessionSeq" FROM "AccountSessionReadState"
+                WHERE "accountId" = 'read-owner' AND "sessionId" = 'read-session'
+            `).get()).toEqual({ lastViewedSessionSeq: 2 });
+            deployed.exec(`
+                UPDATE "Session" SET "lastViewedSessionSeq" = 4, "unreadSince" = NULL
+                WHERE "id" = 'read-session'
+            `);
+            expect(deployed.prepare(`
+                SELECT "lastViewedSessionSeq" FROM "AccountSessionReadState"
+                WHERE "accountId" = 'read-owner' AND "sessionId" = 'read-session'
+            `).get()).toEqual({ lastViewedSessionSeq: 2 });
         } finally {
             deployed.close();
         }
@@ -242,7 +326,98 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         }
     });
 
-    it("preserves the released 0.2.1 quota table and its rows across two current deploys", async () => {
+    it("upgrades the exact immutable server-v0.2.12 SQLite lineage twice and preserves current storage contracts", async () => {
+        const { databasePath, migrationsDir } = await createPredecessorDatabase("released-v0.2.12");
+
+        const predecessor = new DatabaseSync(databasePath);
+        try {
+            predecessor.exec(`
+                INSERT INTO "Account" ("id", "publicKey", "updatedAt")
+                VALUES ('released-account', 'released-account-key', CURRENT_TIMESTAMP);
+                INSERT INTO "Session" (
+                    "id", "tag", "accountId", "metadata", "updatedAt", "seq",
+                    "lastViewedSessionSeq", "unreadSince"
+                ) VALUES (
+                    'released-session', 'released-session', 'released-account', '{}', CURRENT_TIMESTAMP,
+                    5, 2, 1000
+                );
+            `);
+        } finally {
+            predecessor.close();
+        }
+
+        const currentMigrationIds = await appendCurrentMigrations(migrationsDir, "released-v0.2.12");
+        await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({
+            applied: currentMigrationIds,
+        });
+        await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({ applied: [] });
+
+        const deployed = new DatabaseSync(databasePath);
+        try {
+            expect(deployed.prepare('SELECT "publicKey" FROM "Account" WHERE "id" = ?')
+                .get("released-account")).toEqual({ publicKey: "released-account-key" });
+            expect(deployed.prepare(`
+                SELECT "lastViewedSessionSeq" FROM "AccountSessionReadState"
+                WHERE "accountId" = ? AND "sessionId" = ?
+            `).get("released-account", "released-session")).toEqual({ lastViewedSessionSeq: 2 });
+
+            expect(deployed.prepare(`
+                SELECT name FROM sqlite_schema
+                WHERE type = 'table' AND name = 'ServiceAccountQuotaSnapshot'
+            `).get()).toEqual({ name: "ServiceAccountQuotaSnapshot" });
+            expect(deployed.prepare('SELECT COUNT(*) AS "count" FROM "ServiceAccountQuotaSnapshot"').get())
+                .toEqual({ count: 0 });
+            expect(deployed.prepare('PRAGMA table_info("ServiceAccountQuotaSnapshot")').all()
+                .map((column) => (column as { name: string }).name)).toEqual([
+                "id",
+                "accountId",
+                "vendor",
+                "profileId",
+                "snapshot",
+                "status",
+                "fetchedAt",
+                "staleAfterMs",
+                "metadata",
+                "createdAt",
+                "updatedAt",
+            ]);
+            expect(deployed.prepare(`
+                SELECT name FROM sqlite_schema
+                WHERE type = 'index' AND tbl_name = 'ServiceAccountQuotaSnapshot'
+                ORDER BY name
+            `).all()).toEqual([
+                { name: "ServiceAccountQuotaSnapshot_accountId_idx" },
+                { name: "ServiceAccountQuotaSnapshot_accountId_vendor_profileId_key" },
+                { name: "sqlite_autoindex_ServiceAccountQuotaSnapshot_1" },
+            ]);
+            expect(deployed.prepare('PRAGMA foreign_key_list("ServiceAccountQuotaSnapshot")').all())
+                .toEqual([expect.objectContaining({
+                    table: "Account",
+                    from: "accountId",
+                    to: "id",
+                    on_update: "CASCADE",
+                    on_delete: "CASCADE",
+                })]);
+
+            const ledger = deployed.prepare(`
+                SELECT "migration_name", "checksum" FROM "_prisma_migrations"
+                WHERE "finished_at" IS NOT NULL AND "rolled_back_at" IS NULL
+                ORDER BY "migration_name"
+            `).all() as Array<{ migration_name: string; checksum: string }>;
+            expect(ledger.map((row) => row.migration_name)).toEqual(await listCurrentMigrationIds());
+            for (const row of ledger) {
+                expect(row.checksum).toBe(createHash("sha256")
+                    .update(await readFile(join(migrationsDir, row.migration_name, "migration.sql"), "utf8"))
+                    .digest("hex"));
+            }
+            expect(deployed.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+            expect(deployed.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+        } finally {
+            deployed.close();
+        }
+    });
+
+    it("applies the released quota DROP after 0.2.1 and recreates empty storage across two current deploys", async () => {
         const { databasePath, migrationsDir } = await createPredecessorDatabase("released-v0.2.1");
         await seedReleasedQuotaRow(databasePath);
         await appendCurrentMigrations(migrationsDir, "released-v0.2.1");
@@ -261,11 +436,7 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
                     },
                 },
                 select: { id: true, snapshot: true, status: true },
-            })).resolves.toEqual({
-                id: "preserved-quota-row",
-                snapshot: new TextEncoder().encode("sealed-preserved-quota"),
-                status: "ok",
-            });
+            })).resolves.toBeNull();
         } finally {
             await prisma.$disconnect();
         }

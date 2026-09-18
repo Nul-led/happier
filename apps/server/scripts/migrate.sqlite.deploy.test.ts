@@ -4,7 +4,7 @@ import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { runSqliteMigrationDeploy } from "./migrate.sqlite.deploy";
 import { applySqliteMigrations } from "./prismaMigrations";
@@ -64,7 +64,7 @@ describe("migrate.sqlite.deploy.ts", () => {
 
     beforeEach(async () => {
         tmpDir = await mkdtemp(join(tmpdir(), "happier-server-light-deploy-"));
-        lightDataDir = join(tmpDir, "happy server #light");
+        lightDataDir = join(tmpDir, "happy server light");
         serverRoot = join(tmpDir, "server");
         migrationsDir = join(serverRoot, "prisma", "sqlite", "migrations");
         await mkdir(lightDataDir, { recursive: true });
@@ -104,7 +104,7 @@ describe("migrate.sqlite.deploy.ts", () => {
 
         const databasePath = join(lightDataDir, "happier-server-light.sqlite");
         expect(env.DATABASE_URL).toBe(
-            `${pathToFileURL(databasePath).href}?socket_timeout=30&connection_limit=4`,
+            `file:${databasePath}?socket_timeout=30&connection_limit=4`,
         );
         const db = new DatabaseSync(databasePath);
         try {

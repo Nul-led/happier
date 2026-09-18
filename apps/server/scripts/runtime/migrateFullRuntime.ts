@@ -1,3 +1,4 @@
+import { RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS } from '@happier-dev/cli-common/firstPartyRuntime/server';
 import { spawnSync } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -192,11 +193,10 @@ export async function runFullRuntimeMigration({
         requirePath(schemaWasmPath, 'file'),
         requirePath(queryEnginePath, 'file'),
     ]);
-    const includesIrreversibleV4 = await stat(join(
-        migrationRoot,
-        '20260725100000_activate_qualified_connected_accounts_v4',
-    )).then((value) => value.isDirectory()).catch(() => false);
-    if (includesIrreversibleV4) assertForwardRecoveryCapableUpdater(env);
+    const irreversibleMigrationPresence = await Promise.all(RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS.map(
+        ({ name }) => stat(join(migrationRoot, name)).then((value) => value.isDirectory()).catch(() => false),
+    ));
+    if (irreversibleMigrationPresence.some(Boolean)) assertForwardRecoveryCapableUpdater(env);
 
     const pgliteSession = provider === 'pglite' ? await pgliteBoundary.open(env) : null;
     const databaseUrl = pgliteSession?.databaseUrl ?? configuredDatabaseUrl;

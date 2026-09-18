@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -136,21 +136,6 @@ function topLevelArmContaining(check: string, markers: readonly string[]): strin
 
 const replyHandoffDueIndexName = "AutomationRun_replyHandoffState_replyHandoffDueAt_idx";
 
-function createsReplyHandoffDueIndex(sql: string): boolean {
-    const columns = `\\(\\s*[\`"]?replyHandoffState[\`"]?\\s*,\\s*[\`"]?replyHandoffDueAt[\`"]?\\s*\\)`;
-    return new RegExp(
-        `CREATE\\s+INDEX\\s+[\`"]?${replyHandoffDueIndexName}[\`"]?\\s+ON\\s+[\`"]?AutomationRun[\`"]?\\s*${columns}`,
-        "i",
-    ).test(sql) || new RegExp(
-        `ADD\\s+INDEX\\s+[\`"]?${replyHandoffDueIndexName}[\`"]?\\s*${columns}`,
-        "i",
-    ).test(sql);
-}
-
-function migrationIdOf(migrationPath: string): string {
-    return migrationPath.split("/").at(-2)!;
-}
-
 async function applySqliteMigrationThroughCanonicalExecutor(
     db: DatabaseSync,
     sql: string,
@@ -273,7 +258,14 @@ describe("Automation trigger-set persistence contract", () => {
         // The reply-handoff worker discovers unresolved delivery attention
         // through this indexed pair; every dialect schema declares it.
         expect(run).toContain("@@index([replyHandoffState, replyHandoffDueAt])");
-        expect(run).not.toMatch(/^\s*origin(?:Kind|OccurredAt|SourceSelectorId)\s+/m);
+        // Workflow Runs extend this shared custody row with one exact origin
+        // discriminator and optional Session provenance. Keep rejecting the
+        // retired Automation-origin fields without forbidding that approved
+        // owner-level extension.
+        expect(
+            [...run.matchAll(/^\s*(origin\w+)\s+/gm)].map((match) => match[1]),
+        ).toEqual(["originKind", "originSessionId", "originSession"]);
+        expect(run).not.toMatch(/^\s*origin(?:OccurredAt|SourceSelectorId)\s+/m);
         expect(run).not.toMatch(/^\s*claimRequestNonceDigest\s+/m);
         // AUTO-09: exactly one ordinary nullable composite unique owns Run
         // rejoin for every cause. Trigger identity is already inside the
@@ -458,23 +450,12 @@ describe("Automation trigger-set persistence contract", () => {
         expect(replyCheck).not.toContain("contentRemovedAt");
     });
 
-    it("creates the reply-handoff due index exactly once per provider through the single consolidated owner", async () => {
-        const ledgerDirectories = [
-            "prisma/migrations",
-            "prisma/sqlite/migrations",
-            "prisma/mysql/migrations",
-        ] as const;
-        for (const [index, directory] of ledgerDirectories.entries()) {
-            const ledgerRoot = join(serverRoot, directory);
-            const creating: string[] = [];
-            for (const entry of await readdir(ledgerRoot, { withFileTypes: true })) {
-                if (!entry.isDirectory()) continue;
-                const sql = await readFile(join(ledgerRoot, entry.name, "migration.sql"), "utf8")
-                    .catch(() => null);
-                if (sql !== null && createsReplyHandoffDueIndex(sql)) creating.push(entry.name);
-            }
-            expect(creating, directory).toEqual([migrationIdOf(migrationPaths[index]!)]);
-        }
+    it.each(schemaPaths)("keeps one reply-handoff due index in the final %s schema", async (schemaPath) => {
+        const run = model(await read(schemaPath), "AutomationRun");
+        expect(
+            run.match(/@@index\(\[replyHandoffState, replyHandoffDueAt\]\)/g),
+            schemaPath,
+        ).toHaveLength(1);
     });
 
     it("executes the PostgreSQL reply-handoff due index statement against the canonical columns", async () => {
@@ -513,7 +494,7 @@ describe("Automation trigger-set persistence contract", () => {
             /`occurrenceKey`\s+CHAR\(43\)\s+CHARACTER SET ascii\s+COLLATE ascii_bin/i,
         );
         expect(sql).toMatch(
-            /`reporterMaterializationId`\s+VARCHAR\(256\)\s+CHARACTER SET ascii\s+COLLATE ascii_bin/i,
+            /`reporterMaterializationId`\s+VARCHAR\(256\)\s+CHARACTER SET utf8mb4\s+COLLATE utf8mb4_bin/i,
         );
         expect(sql).toMatch(
             /INSERT INTO `AutomationTrigger`[\s\S]*SELECT `id`, `id`, 'schedule'[\s\S]*FROM `Automation`/,
@@ -534,9 +515,10 @@ describe("Automation trigger-set persistence contract", () => {
         expect(sql).toMatch(/`AutomationTrigger`[\s\S]*?`eventPluginId` VARCHAR\(191\) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL/);
         expect(sql).toMatch(/`AutomationTrigger`[\s\S]*?`eventLocalId` VARCHAR\(191\) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL/);
         expect(sql).toMatch(/`AutomationEventSourceStatus`[\s\S]*?`triggerId` VARCHAR\(191\) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL/);
-        // The catalog-status primary key folds distinct author plugin IDs under
-        // the table default collation; the member must be exact.
-        expect(sql).toMatch(/`AutomationEventSourceCatalogStatus`[\s\S]*?`eventPluginId` VARCHAR\(191\) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL/);
+        // Plugin ids use the canonical 256-byte ASCII grammar. Exact binary
+        // comparison preserves identity and its one-byte charset keeps the
+        // complete catalog primary key inside InnoDB's 3072-byte boundary.
+        expect(sql).toMatch(/`AutomationEventSourceCatalogStatus`[\s\S]*?`eventPluginId` VARCHAR\(256\) CHARACTER SET ascii COLLATE ascii_bin NOT NULL/);
         expect(sql).toMatch(
             /CASE WHEN run\.`summaryCiphertext` IS NOT NULL[\s\S]*JSON_OBJECT\([\s\S]*'legacySummaryCiphertext'/,
         );

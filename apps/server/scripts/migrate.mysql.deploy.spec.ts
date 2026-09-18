@@ -1,6 +1,10 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
+    MYSQL_TRIGGER_MIGRATIONS,
     MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
     runMysqlMigrationDeploy,
     type MysqlMigrationAdmissionDatabase,
@@ -16,16 +20,18 @@ function createDatabase(results: QueryResult[]): MysqlMigrationAdmissionDatabase
         if (!next) throw new Error("Unexpected query");
         return next;
     });
-    return {
-        query,
-        disconnect: vi.fn(async () => {}),
-    };
+    return { query };
 }
 
-const pendingMigrationQueries: QueryResult[] = [
-    [{ table_count: 1n }],
-    [],
-];
+function appliedMigrationRows(names = MYSQL_TRIGGER_MIGRATIONS.map(({ migrationName }) => migrationName)): QueryResult {
+    return names.map((migrationName) => ({
+        migration_name: migrationName,
+        finished_at: new Date("2026-09-13T00:00:00.000Z"),
+        rolled_back_at: null,
+    }));
+}
+
+const pendingMigrationQueries: QueryResult[] = [[{ table_count: 1n }], []];
 
 const capableIdentityQueries: QueryResult[] = [
     [{
@@ -40,68 +46,76 @@ const capableIdentityQueries: QueryResult[] = [
     }],
 ];
 
-const successfulPostflightQueries: QueryResult[] = [
-    [{ finished_at: new Date("2026-07-30T00:00:00.000Z"), rolled_back_at: null }],
-    [{
+function triggerRows(names = MYSQL_TRIGGER_MIGRATIONS.flatMap(({ triggers }) => triggers)): QueryResult {
+    return names.map(({ name, timing, event, tableName }) => ({
+        trigger_name: name,
         definer: "migrator@%",
-        action_timing: "BEFORE",
-        event_manipulation: "DELETE",
-        event_object_table: "VoiceSessionLease",
-    }],
-];
+        action_timing: timing,
+        event_manipulation: event,
+        event_object_table: tableName,
+    }));
+}
 
 describe("MySQL migration deploy admission", () => {
-    it("skips the one-time admission after the migration is already applied", async () => {
-        const database = createDatabase([
-            [{ table_count: 1n }],
-            [{ finished_at: new Date("2026-07-30T00:00:00.000Z"), rolled_back_at: null }],
-        ]);
+    it("catalogs every current MySQL trigger migration and trigger", () => {
+        const migrationsRoot = join(import.meta.dirname, "../prisma/mysql/migrations");
+        const migrationTriggers = readdirSync(migrationsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .flatMap((entry) => {
+                const sql = readFileSync(join(migrationsRoot, entry.name, "migration.sql"), "utf8");
+                const triggers = Array.from(sql.matchAll(/CREATE\s+TRIGGER\s+`([^`]+)`/giu), (match) => match[1]!);
+                return triggers.length > 0 ? [{ migrationName: entry.name, triggers: triggers.sort() }] : [];
+            })
+            .sort((a, b) => a.migrationName.localeCompare(b.migrationName));
+        const catalogTriggers = MYSQL_TRIGGER_MIGRATIONS
+            .map(({ migrationName, triggers }) => ({
+                migrationName,
+                triggers: triggers.map(({ name }) => name).sort(),
+            }))
+            .sort((a, b) => a.migrationName.localeCompare(b.migrationName));
+
+        expect(catalogTriggers).toEqual(migrationTriggers);
+    });
+
+    it("skips trigger admission after every trigger migration is already applied", async () => {
+        const database = createDatabase([[{ table_count: 1n }], appliedMigrationRows()]);
         const deploy = vi.fn(async () => {});
 
-        await runMysqlMigrationDeploy({
-            database,
-            env: {},
-            deploy,
-        });
+        await runMysqlMigrationDeploy({ database, env: {}, deploy });
 
         expect(deploy).toHaveBeenCalledOnce();
         expect(database.query).toHaveBeenCalledTimes(2);
     });
 
-    it("fails before Prisma when the pending migration lacks exact maintenance approval", async () => {
+    it("preserves the one-time Voice operator admission when its migration is pending", async () => {
         const database = createDatabase([...pendingMigrationQueries]);
         const deploy = vi.fn(async () => {});
 
-        await expect(runMysqlMigrationDeploy({
-            database,
-            env: {},
-            deploy,
-        })).rejects.toThrow(
+        await expect(runMysqlMigrationDeploy({ database, env: {}, deploy })).rejects.toThrow(
             `HAPPIER_DB_MIGRATION_APPROVAL=${MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION}`,
         );
 
         expect(deploy).not.toHaveBeenCalled();
     });
 
-    it("fails before Prisma when the migration ledger contains an unfinished attempt", async () => {
+    it("fails before Prisma when any trigger migration ledger record is unfinished", async () => {
+        const laterMigration = MYSQL_TRIGGER_MIGRATIONS[1]!.migrationName;
         const database = createDatabase([
             [{ table_count: 1n }],
-            [{ finished_at: null, rolled_back_at: null }],
+            [
+                ...appliedMigrationRows([MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION]),
+                { migration_name: laterMigration, finished_at: null, rolled_back_at: null },
+            ],
         ]);
         const deploy = vi.fn(async () => {});
 
-        await expect(runMysqlMigrationDeploy({
-            database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
-            deploy,
-        })).rejects.toThrow("approved provider-specific recovery procedure");
+        await expect(runMysqlMigrationDeploy({ database, env: {}, deploy }))
+            .rejects.toThrow(`${laterMigration} has an unfinished failed Prisma record`);
 
         expect(deploy).not.toHaveBeenCalled();
     });
 
-    it("fails before Prisma when binary logging rejects the schema-scoped trigger grant", async () => {
+    it("fails before Prisma when binary logging rejects schema-scoped trigger authority", async () => {
         const database = createDatabase([
             ...pendingMigrationQueries,
             [{
@@ -119,9 +133,7 @@ describe("MySQL migration deploy admission", () => {
 
         await expect(runMysqlMigrationDeploy({
             database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
+            env: { HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION },
             deploy,
         })).rejects.toThrow("log_bin_trust_function_creators");
 
@@ -137,32 +149,45 @@ describe("MySQL migration deploy admission", () => {
                 log_bin_value: 1n,
                 trust_value: 0n,
             }],
-            [{
-                "Grants for root@%":
-                    "GRANT ALL PRIVILEGES ON *.* TO `root`@`%` WITH GRANT OPTION",
-            }],
-            [{ finished_at: new Date("2026-07-30T00:00:00.000Z"), rolled_back_at: null }],
-            [{
-                definer: "root@%",
-                action_timing: "BEFORE",
-                event_manipulation: "DELETE",
-                event_object_table: "VoiceSessionLease",
-            }],
+            [{ "Grants for root@%": "GRANT ALL PRIVILEGES ON *.* TO `root`@`%` WITH GRANT OPTION" }],
+            appliedMigrationRows(),
+            triggerRows().map((row) => ({ ...row, definer: "root@%" })),
         ]);
         const deploy = vi.fn(async () => {});
 
         await runMysqlMigrationDeploy({
             database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
+            env: { HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION },
             deploy,
         });
 
         expect(deploy).toHaveBeenCalledOnce();
     });
 
-    it("fails before Prisma when the trigger definer lacks UPDATE authority", async () => {
+    it("checks table-scoped TRIGGER authority for every pending trigger migration", async () => {
+        const database = createDatabase([
+            [{ table_count: 1n }],
+            appliedMigrationRows([MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION]),
+            [{
+                database_name: "happier",
+                current_user_name: "migrator@%",
+                log_bin_value: 0n,
+                trust_value: 0n,
+            }],
+            [{
+                "Grants for migrator@%":
+                    "GRANT TRIGGER ON `happier`.`VoiceSessionLease` TO `migrator`@`%`",
+            }],
+        ]);
+        const deploy = vi.fn(async () => {});
+
+        await expect(runMysqlMigrationDeploy({ database, env: {}, deploy }))
+            .rejects.toThrow("TRIGGER on SessionFollowEdge");
+
+        expect(deploy).not.toHaveBeenCalled();
+    });
+
+    it("still checks Voice UPDATE authority when the Voice trigger migration is pending", async () => {
         const database = createDatabase([
             ...pendingMigrationQueries,
             [{
@@ -180,28 +205,42 @@ describe("MySQL migration deploy admission", () => {
 
         await expect(runMysqlMigrationDeploy({
             database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
+            env: { HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION },
             deploy,
-        })).rejects.toThrow("UPDATE");
+        })).rejects.toThrow("UPDATE on VoiceConversation");
 
         expect(deploy).not.toHaveBeenCalled();
     });
 
-    it("deploys only after admission and verifies the migration and trigger definer", async () => {
+    it("admits later trigger migrations without inventing another operator approval", async () => {
+        const laterMigrations = MYSQL_TRIGGER_MIGRATIONS.slice(1);
+        const database = createDatabase([
+            [{ table_count: 1n }],
+            appliedMigrationRows([MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION]),
+            ...capableIdentityQueries,
+            appliedMigrationRows(),
+            triggerRows(laterMigrations.flatMap(({ triggers }) => triggers)),
+        ]);
+        const deploy = vi.fn(async () => {});
+
+        await runMysqlMigrationDeploy({ database, env: {}, deploy });
+
+        expect(deploy).toHaveBeenCalledOnce();
+        expect(database.query).toHaveBeenCalledTimes(6);
+    });
+
+    it("deploys only after admission and verifies every pending migration and trigger", async () => {
         const database = createDatabase([
             ...pendingMigrationQueries,
             ...capableIdentityQueries,
-            ...successfulPostflightQueries,
+            appliedMigrationRows(),
+            triggerRows(),
         ]);
         const deploy = vi.fn(async () => {});
 
         await runMysqlMigrationDeploy({
             database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
+            env: { HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION },
             deploy,
         });
 
@@ -209,22 +248,21 @@ describe("MySQL migration deploy admission", () => {
         expect(database.query).toHaveBeenCalledTimes(6);
     });
 
-    it("fails closed when Prisma returns without the expected trigger", async () => {
+    it("fails closed when Prisma returns without any expected later trigger", async () => {
+        const laterMigrations = MYSQL_TRIGGER_MIGRATIONS.slice(1);
+        const expectedTriggers = laterMigrations.flatMap(({ triggers }) => triggers);
+        const missingTrigger = expectedTriggers.at(-1)!;
         const database = createDatabase([
-            ...pendingMigrationQueries,
+            [{ table_count: 1n }],
+            appliedMigrationRows([MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION]),
             ...capableIdentityQueries,
-            [{ finished_at: new Date("2026-07-30T00:00:00.000Z"), rolled_back_at: null }],
-            [],
+            appliedMigrationRows(),
+            triggerRows(expectedTriggers.slice(0, -1)),
         ]);
         const deploy = vi.fn(async () => {});
 
-        await expect(runMysqlMigrationDeploy({
-            database,
-            env: {
-                HAPPIER_DB_MIGRATION_APPROVAL: MYSQL_VOICE_GRANT_PROVENANCE_MIGRATION,
-            },
-            deploy,
-        })).rejects.toThrow("expected compatibility trigger");
+        await expect(runMysqlMigrationDeploy({ database, env: {}, deploy }))
+            .rejects.toThrow(missingTrigger.name);
 
         expect(deploy).toHaveBeenCalledOnce();
     });

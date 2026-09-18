@@ -120,6 +120,8 @@ function generateProviderSchemaFromPostgres(
 
         body = annotateMySqlAccountAuthFields(body);
 
+        body = annotateMySqlTeamFields(body);
+
 	        // MySQL defaults `String` to VARCHAR(191), which is too small for our encrypted state blobs.
 	        body = body.replace(/^(\s*metadata\s+String\b)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*ownerMetadata\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
@@ -151,6 +153,8 @@ function generateProviderSchemaFromPostgres(
         body = annotateMySqlSessionOrganizationFields(body);
 
         body = annotateMySqlVoiceIdentityFields(body);
+
+        body = annotateMySqlMachinePoolFields(body);
 	    }
 
     const header = [
@@ -180,6 +184,157 @@ function generateProviderSchemaFromPostgres(
     ].join('\n');
 
     return normalizeSchemaText([header, '', generatorClient, '', datasourceDb, '', body].join('\n'));
+}
+
+function annotateMySqlTeamFields(schemaBody: string): string {
+    return schemaBody
+        .replace(
+            /^model\s+IdentityProviderInstance\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*displayName\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*lastSuccessfulTestRuntimeFingerprint\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(1024)"),
+        )
+        .replace(
+            /^model\s+GitHubAppRegistration\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*githubHost\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*githubClientId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*githubAppSlug\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*githubOwnerLogin\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)"),
+        )
+        .replace(
+            /^model\s+GitHubAppInstallation\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^([ \t]*githubOrganizationLogin\s+String)(?![^\n]*@db\.)/m,
+                "$1 @db.VarChar(256)",
+            ),
+        )
+        .replace(
+            /^model\s+TeamDirectorySource\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*displayName\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*externalSourceKey\s+String\s+@unique)(?![^\n]*@db\.)/m, "$1 @db.VarChar(64)")
+                .replace(/^([ \t]*eventCursor\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*activeReconcileRunId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(36)")
+                .replace(/^([ \t]*lastErrorCode\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(64)"),
+        )
+        .replace(
+            /^model\s+TeamProvisionedIdentity\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*externalUserId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*externalSubjectId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*normalizedEmail\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*displayName\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*externalLogin\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*lastSeenReconcileRunId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)"),
+        )
+        .replace(
+            /^model\s+TeamDirectoryGroup\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*externalGroupId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*externalDisplayName\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^([ \t]*lastSeenReconcileRunId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)"),
+        )
+        .replace(
+            /^model\s+TeamDirectoryGroupMember\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*externalGroupId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*externalUserId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*lastSeenReconcileRunId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)"),
+        )
+        .replace(
+            /^model\s+TeamExternalGroupBinding\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*externalGroupId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)"),
+        )
+        .replace(
+            /^model\s+TeamCredentialActivityEvent\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*subjectDisplayName\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+(?:Team|TeamGroup)\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*description\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+TeamCredentialResource\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                // Resource ids are caller-supplied by the V1 contract up to 256 characters.
+                .replace(/^([ \t]*id\s+String\s+@id\s+@default\(cuid\(\)\))(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*(?:displayName|sourceBindingJson|directSourceVersionsJson|requestPolicyJson)\s+String\??)(?![^\n]*@db\.)/gm, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+(?:TeamCredentialExternalApiKey|TeamCredentialRecipientMaterial|TeamCredentialActivityEvent|TeamCredentialGroupGrant|TeamCredentialMemberGrant|SessionTeamCredentialBinding)\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*resourceId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)"),
+        )
+        .replace(
+            /^model\s+TeamCredentialExternalApiKey\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*label\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+TeamCredentialRecipientMaterial\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                // The protocol emits a fixed 43-character canonical digest for source-member identity.
+                .replace(/^([ \t]*sourceMemberKey\s+String)(?![^\n]*@db\.)/m, "$1 @db.Char(43)")
+                // The accepted source-version contract is bounded at 256 characters.
+                .replace(/^([ \t]*sourceVersion\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*recipientContentPublicKeyFingerprint\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                // Direct material can contain the protocol's multi-megabyte encrypted envelope.
+                .replace(/^([ \t]*storedMaterial\s+Bytes)(?![^\n]*@db\.)/m, "$1 @db.LongBlob"),
+        )
+        .replace(
+            /^model\s+SavedSecretResource\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^([ \t]*storedContent\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+SavedSecretResourceKeyEnvelope\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^([ \t]*encryptedDataKey\s+Bytes)(?![^\n]*@db\.)/m,
+                "$1 @db.LongBlob",
+            ),
+        )
+        .replace(
+            /^model\s+SessionTeamCredentialBinding\s+\{[\s\S]*?^\}\s*$/gm,
+            // Prefixed canonical slot key (encodeSessionTeamCredentialSlotKeyV1):
+            // 25-char kind literal, 13 delimiter bytes (2 brackets, 8 quotes,
+            // 3 commas), two ASCII ids at their 256-byte cap, and a 128-unit
+            // purpose at six JSON-escape bytes per unit = 1318 bytes. The width
+            // keeps the compound primary key within InnoDB's 3072-byte limit.
+            (model) => model.replace(/^([ \t]*slotKey\s+Bytes)(?![^\n]*@db\.)/m, "$1 @db.VarBinary(1536)"),
+        )
+        .replace(
+            /^model\s+(?:SessionTurn|UsageEvent)\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^([ \t]*teamCredentialResourceId\s+String\?)(?![^\n]*@db\.)/m,
+                "$1 @db.VarChar(256)",
+            ),
+        )
+        .replace(
+            /^model\s+TeamCredentialUsageLimit\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^([ \t]*resourceId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^([ \t]*subjectKind\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(32)")
+                .replace(/^([ \t]*period\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(16)")
+                .replace(/^([ \t]*metric\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(32)")
+                // Canonical decimals are deliberately not product-limited to MySQL's default 191 characters.
+                .replace(/^([ \t]*maximum\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+        )
+        .replace(
+            /^model\s+TeamInvitation\s+\{[\s\S]*?^\}\s*$/gm,
+            // Lane 02's normalized mailbox contract is the same 320-character locator as AccountEmail.
+            (model) => model.replace(/^([ \t]*recipientEmailNormalized\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(320)"),
+        );
+}
+
+/**
+ * Pool display text is unindexed administrative content with no product length ceiling, so MySQL
+ * must not infer its VARCHAR(191) default for it.
+ */
+function annotateMySqlMachinePoolFields(schemaBody: string): string {
+    return schemaBody.replace(
+        /^model\s+MachinePool\s+\{[\s\S]*?^\}\s*$/gm,
+        (model) => model
+            .replace(/^([ \t]*name\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText")
+            .replace(/^([ \t]*description\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.LongText"),
+    );
 }
 
 function annotateMySqlRepeatKeyFields(schemaBody: string): string {
@@ -328,8 +483,8 @@ function annotateMySqlAccountEncryptionTransitionFields(schemaBody: string): str
             (model) => model
                 .replace(/^(\s*id\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(36)")
                 .replace(/^(\s*transitionId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(36)")
-                .replace(/^(\s*participantKind\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(16)")
-                .replace(/^(\s*(?:participantId|automationId)\s+String)(?![^\n]*@db\.)/gm, "$1 @db.VarChar(256)")
+                .replace(/^(\s*participantKind\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(32)")
+                .replace(/^(\s*(?:participantId|automationId)\s+String\??)(?![^\n]*@db\.)/gm, "$1 @db.VarChar(256)")
                 // Staged Automation facts hold whole retained private-content
                 // envelopes, far past MySQL's VARCHAR(191) default for String.
                 .replace(/^(\s*sourceContent\s+String)(?![^\n]*@db\.)/m, "$1 @db.LongText")
@@ -405,8 +560,16 @@ function annotateMySqlEventAutomationFields(schemaBody: string): string {
             /^model\s+AutomationEventSourceCatalogStatus\s+\{[\s\S]*?^\}\s*$/gm,
             (model) => model
                 .replace(
+                    /^(\s*eventPluginId\s+String)(?![^\n]*@db\.)/m,
+                    "$1 @db.VarChar(256)",
+                )
+                .replace(
                     /^(\s*reporterMaterializationId\s+String)(?![^\n]*@db\.)/m,
                     "$1 @db.VarChar(256)",
+                )
+                .replace(
+                    /^(\s*scopeKey\s+String)(?![^\n]*@db\.)/m,
+                    "$1 @db.VarChar(40)",
                 )
                 .replace(
                     /^(\s*reporterImmutableGenerationId\s+String)(?![^\n]*@db\.)/m,
@@ -592,13 +755,24 @@ function annotateMySqlAccountDirectoryFields(schemaBody: string): string {
 }
 
 function annotateMySqlAccountAuthFields(schemaBody: string): string {
-    return schemaBody.replace(
-        /^model\s+AccountAuthRequest\s+\{[\s\S]*?^\}\s*$/gm,
-        (model) => model.replace(
-            /^(\s*tokenEncrypted\s+String\?)(?![^\n]*@db\.)/m,
-            "$1 @db.Text",
-        ),
-    );
+    return schemaBody
+        .replace(
+            /^model\s+AccountIdentity\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^(\s*providerUserId\s+String)(?![^\n]*@db\.)/m, "$1 @db.VarChar(512)")
+                .replace(/^(\s*providerLogin\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(320)"),
+        )
+        .replace(
+            /^model\s+AccountEmail\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(/^(\s*(?:address|normalizedEmail)\s+String)(?![^\n]*@db\.)/gm, "$1 @db.VarChar(320)"),
+        )
+        .replace(
+            /^model\s+AccountAuthRequest\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^(\s*tokenEncrypted\s+String\?)(?![^\n]*@db\.)/m,
+                "$1 @db.Text",
+            ),
+        );
 }
 
 /**

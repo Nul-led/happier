@@ -24,7 +24,7 @@ function ensureSqliteDatabaseUrl(env: NodeJS.ProcessEnv): void {
     if (raw) return;
 
     const dataDir = requireLightDataDir(env);
-    env.DATABASE_URL = resolveLightSqliteDatabaseUrl(dataDir);
+    env.DATABASE_URL = resolveLightSqliteDatabaseUrl(dataDir, process.platform, env);
 }
 
 async function ensureSqliteDbDir(env: NodeJS.ProcessEnv): Promise<void> {

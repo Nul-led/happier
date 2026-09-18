@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -6,11 +7,61 @@ function readText(path: string): string {
     return readFileSync(path, "utf-8");
 }
 
+function listMigrationNames(migrationsDir: string): string[] {
+    return readdirSync(migrationsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && /^\d{14}_/u.test(e.name))
+        .map((e) => e.name)
+        .sort();
+}
+
 function listMigrationSqlFiles(migrationsDir: string): string[] {
-    const entries = readdirSync(migrationsDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => join(migrationsDir, e.name, "migration.sql"));
-    return entries;
+    return listMigrationNames(migrationsDir).map((name) => join(migrationsDir, name, "migration.sql"));
+}
+
+type MigrationProvider = "postgres" | "mysql" | "sqlite";
+
+const MIGRATION_PROVIDER_DIRS: Record<MigrationProvider, string[]> = {
+    postgres: ["prisma", "migrations"],
+    mysql: ["prisma", "mysql", "migrations"],
+    sqlite: ["prisma", "sqlite", "migrations"],
+};
+
+interface ReleasedMigrationsFixture {
+    tag: string;
+    commit: string;
+    providers: Record<MigrationProvider, Record<string, string>>;
+}
+
+/**
+ * `migrationsConsistency.released.json` pins every migration that shipped in the newest released
+ * server tag, per provider, as `<name>: sha256(migration.sql)`. Released migrations are immutable
+ * (`docs/compatibility.md` §Migration history): a released database records each name in
+ * `_prisma_migrations`, so a deleted or edited released migration fails `migrate deploy` on every
+ * supported database before any new migration runs. Regenerate only when a newer server tag is
+ * released: for each provider directory in MIGRATION_PROVIDER_DIRS, list
+ * `git ls-tree --name-only <tag> -- apps/server/<dir>/` and record
+ * `git show <tag>:apps/server/<dir>/<name>/migration.sql | sha256sum` under that provider.
+ */
+function readReleasedMigrationsFixture(root: string): ReleasedMigrationsFixture {
+    const parsed: unknown = JSON.parse(readText(join(root, "scripts", "migrationsConsistency.released.json")));
+    if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("released migrations fixture must be an object");
+    }
+    const fixture = parsed as Partial<ReleasedMigrationsFixture>;
+    if (typeof fixture.tag !== "string" || typeof fixture.commit !== "string" || typeof fixture.providers !== "object" || fixture.providers === null) {
+        throw new Error("released migrations fixture must carry tag, commit and providers");
+    }
+    for (const provider of Object.keys(MIGRATION_PROVIDER_DIRS) as MigrationProvider[]) {
+        const entries = fixture.providers[provider];
+        if (typeof entries !== "object" || entries === null || Object.values(entries).some((digest) => !/^[0-9a-f]{64}$/u.test(String(digest)))) {
+            throw new Error(`released migrations fixture provider ${provider} must map names to sha256 digests`);
+        }
+    }
+    return fixture as ReleasedMigrationsFixture;
+}
+
+function sha256Hex(path: string): string {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function anyFileContains(paths: string[], patterns: string[]): boolean {
@@ -383,5 +434,44 @@ describe("migrations (provider completeness)", () => {
             ).toBe(false);
             expectNoFileContains(listMigrationSqlFiles(join(providerPath, "migrations")), "primaryTurnProjectionStateJson");
         }
+    });
+});
+
+describe("migrations (released set and provider parity)", () => {
+    const root = process.cwd();
+    const released = readReleasedMigrationsFixture(root);
+
+    it("keeps every released migration present with unchanged bytes in each provider tree", () => {
+        for (const [provider, dirSegments] of Object.entries(MIGRATION_PROVIDER_DIRS) as [MigrationProvider, string[]][]) {
+            const migrationsDir = join(root, ...dirSegments);
+            for (const [name, releasedDigest] of Object.entries(released.providers[provider])) {
+                const sqlPath = join(migrationsDir, name, "migration.sql");
+                expect(existsSync(sqlPath), `${released.tag} shipped ${provider}/${name}; it must exist on disk`).toBe(true);
+                expect(sha256Hex(sqlPath), `${provider}/${name} bytes must equal ${released.tag}`).toBe(releasedDigest);
+            }
+        }
+    });
+
+    it("mirrors every unreleased PostgreSQL migration into the MySQL and SQLite trees by name", () => {
+        const releasedPostgresNames = new Set(Object.keys(released.providers.postgres));
+        const unreleasedPostgresNames = listMigrationNames(join(root, ...MIGRATION_PROVIDER_DIRS.postgres))
+            .filter((name) => !releasedPostgresNames.has(name));
+        expect(unreleasedPostgresNames.length).toBeGreaterThan(0);
+
+        for (const provider of ["mysql", "sqlite"] as const) {
+            const providerNames = new Set(listMigrationNames(join(root, ...MIGRATION_PROVIDER_DIRS[provider])));
+            const missing = unreleasedPostgresNames.filter((name) => !providerNames.has(name));
+            expect(missing, `${provider} tree is missing PostgreSQL migrations`).toEqual([]);
+        }
+    });
+
+    it("keeps every PostgreSQL migration identifier within the 63-character NAMEDATALEN limit", () => {
+        const overLength: string[] = [];
+        for (const sqlPath of listMigrationSqlFiles(join(root, ...MIGRATION_PROVIDER_DIRS.postgres))) {
+            for (const match of readText(sqlPath).matchAll(/"([A-Za-z0-9_]{64,})"/gu)) {
+                overLength.push(`${sqlPath.slice(root.length + 1)}: ${match[1]}`);
+            }
+        }
+        expect(overLength, "PostgreSQL truncates these identifiers, so the stored name never matches the migration").toEqual([]);
     });
 });

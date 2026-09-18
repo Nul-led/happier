@@ -22,7 +22,18 @@ datasource db {
 //
 
 model Account {
+    teamCredentialActivityEvents TeamCredentialActivityEvent[]
+    custodiedTeamCredentialResources TeamCredentialResource[]
+    ownedSavedSecretResources SavedSecretResource[] @relation("SavedSecretResourceOwner")
+    savedSecretAccountGrants SavedSecretAccountGrant[] @relation("SavedSecretAccountGrantRecipient")
+    savedSecretAccountGrantCreations SavedSecretAccountGrant[] @relation("SavedSecretAccountGrantCreator")
+    savedSecretResourceKeyEnvelopes SavedSecretResourceKeyEnvelope[] @relation("SavedSecretResourceKeyEnvelopeRecipient")
+    createdSavedSecretTeamGrants SavedSecretTeamGrant[] @relation("SavedSecretTeamGrantCreator")
+    createdSavedSecretGroupGrants SavedSecretGroupGrant[] @relation("SavedSecretGroupGrantCreator")
+    receivedTeamCredentialMaterials TeamCredentialRecipientMaterial[]
     id              String      @id @default(cuid())
+    homeRole        HomeRole    @default(member)
+    status          AccountStatus @default(active)
     publicKey       String?     @unique
     /// X25519 (NaCl box) public key for encrypting session DEKs to this account
     contentPublicKey Bytes?
@@ -38,12 +49,19 @@ model Account {
     updatedAt       DateTime    @updatedAt
     settings        String?
     settingsVersion Int         @default(0)
+    remoteAlertPolicy Json?
     tokenEpoch      Int         @default(0)
     encryptionMode  String      @default("e2ee")
     encryptionModeUpdatedAt DateTime @default(now())
     /// Server-readable Automation operational policy; never stored in private Account settings.
     automationMaxActiveRunsPerMachine Int @default(4)
     automationRunRetention String @default("thirtyDays")
+    /// Prospective Follow defaults; existing per-Session choices always win.
+    sessionAutoFollowAssigned Boolean @default(true)
+    sessionAutoFollowDirect Boolean @default(false)
+    sessionAutoFollowTeam Boolean @default(false)
+    sessionAutoFollowGroup Boolean @default(false)
+    sessionFollows AccountSessionFollow[]
     preferredHomeServerIdentityId String?
 
     // Profile
@@ -54,17 +72,29 @@ model Account {
     avatar    Json?
 
     Session                Session[]
+    responsibleSessions    Session[]                  @relation("SessionResponsibleAccount")
     AccountPushToken       AccountPushToken[]
     AccountLiveActivityTarget AccountLiveActivityTarget[]
     VoiceSessionLease      VoiceSessionLease[]
     VoiceConversation      VoiceConversation[]
     TerminalAuthRequest    TerminalAuthRequest[]
     AccountAuthRequest     AccountAuthRequest[]
+    EphemeralRunnerActivation EphemeralRunnerActivation[]
     AccountApiToken        AccountApiToken[]
+    AccountEmail           AccountEmail[]
+    AccountPasswordCredential AccountPasswordCredential?
+    teamMemberships        TeamMembership[]
+    provisionedTeamIdentities TeamProvisionedIdentity[]
+    teamInvitationsCreated TeamInvitation[] @relation("TeamInvitationCreator")
+    teamInvitationsAccepted TeamInvitation[] @relation("TeamInvitationAccepter")
+    identityProviderInstancesCreated IdentityProviderInstance[] @relation("IdentityProviderInstanceCreator")
+    teamIdentityConnectionsCreated TeamIdentityConnection[] @relation("TeamIdentityConnectionCreator")
+    githubAppRegistrationsCreated GitHubAppRegistration[] @relation("GitHubAppRegistrationCreator")
     AuthPairingSession     AuthPairingSession[]
     UsageReport            UsageReport[]
     UsageEvent             UsageEvent[]
     Machine                Machine[]
+    machinePools           MachinePool[]
     UploadedFile           UploadedFile[]
     AccountPetPackage      AccountPetPackage[]
     AccountPetAsset        AccountPetAsset[]
@@ -93,6 +123,7 @@ model Account {
     PluginCollectionCandidatePreparationStages PluginCollectionCandidatePreparationStage[]
     SharedBySessions       SessionShare[]             @relation("SharedBySessions")
     SharedWithSessions     SessionShare[]             @relation("SharedWithSessions")
+    sessionDataKeyEnvelopes SessionDataKeyEnvelope[]
     SessionShareAccessLogs SessionShareAccessLog[]    @relation("SessionShareAccessLogs")
     PublicSessionShares    PublicSessionShare[]       @relation("PublicSessionShares")
     PublicShareAccessLogs  PublicShareAccessLog[]     @relation("PublicShareAccessLogs")
@@ -100,6 +131,8 @@ model Account {
     AccountSettingsSnapshots AccountSettingsSnapshot[]
     AccountEncryptionTransitions AccountEncryptionTransition[]
     SessionPendingMessage  SessionPendingMessage[]
+    /// Receipt-derived historical authorship, never an access or membership fact.
+    authoredSessionMessages SessionMessage[]          @relation("AuthoredSessionMessages")
     SessionSystemRecord    SessionSystemRecord[]
     SessionSubagentCustody SessionSubagentCustody[]
     SessionSubagentCustodyReceipt SessionSubagentCustodyReceipt[]
@@ -125,6 +158,724 @@ model Account {
     SessionOrganizationOrderEntry SessionOrganizationOrderEntry[]
     SessionOrganizationLabel      SessionOrganizationLabel[]
     SessionOrganizationCheckpoint SessionOrganizationCheckpoint?
+    SessionDiscussionsCreated     SessionDiscussion[]
+    SessionDiscussionMessages     SessionDiscussionMessage[]
+    SessionDiscussionMentions     SessionDiscussionMessageMention[]
+    SessionDiscussionReadStates   SessionDiscussionReadState[]
+    AccountSessionReadStates      AccountSessionReadState[]
+}
+
+enum HomeRole {
+    owner
+    admin
+    member
+}
+
+enum AccountStatus {
+    active
+    suspended
+    disabled
+}
+
+enum TeamCreationPolicy {
+    self_service
+    managed_only
+    disabled
+}
+
+model HomeGovernancePolicy {
+    id                    String             @id
+    teamCreationPolicy    TeamCreationPolicy @default(managed_only)
+    authenticationPolicy  Json?
+    teamProviderPolicy    Json?
+    identityNetworkPolicy Json?
+    revision              Int                @default(1)
+    updatedAt             DateTime           @updatedAt
+}
+
+enum TeamRole {
+    owner
+    admin
+    member
+    guest
+}
+
+enum TeamMembershipStatus {
+    active
+    suspended
+}
+
+enum TeamSessionCreationPolicy {
+    private_default
+    team_default
+    team_required
+}
+
+enum TeamExternalSharingPolicy {
+    allowed
+    team_admins_only
+    disabled
+}
+
+enum SessionHistoryAccess {
+    all_existing
+    from_membership
+}
+
+enum TeamAdmissionMode {
+    invite_only
+    provisioned
+    jit
+}
+
+model Team {
+    credentialActivityEvents TeamCredentialActivityEvent[]
+    credentialResources TeamCredentialResource[]
+    id                          String                    @id @default(cuid())
+    name                        String
+    description                 String?
+    logo                        Json?
+    sessionCreationPolicy       TeamSessionCreationPolicy @default(private_default)
+    externalSharingPolicy       TeamExternalSharingPolicy @default(allowed)
+    defaultSessionHistoryAccess SessionHistoryAccess      @default(from_membership)
+    admissionMode               TeamAdmissionMode         @default(invite_only)
+    authenticationPolicy        Json?
+    archivedAt                  DateTime?
+    createdAt                   DateTime                  @default(now())
+    updatedAt                   DateTime                  @updatedAt
+
+    memberships   TeamMembership[]
+    groups        TeamGroup[]
+    invitations   TeamInvitation[]
+    sessionGrants SessionTeamGrant[]
+    primaryContextSessions Session[] @relation("SessionPrimaryTeam")
+    identityProviderInstances IdentityProviderInstance[]
+    identityConnections TeamIdentityConnection[]
+    directorySources TeamDirectorySource[]
+    githubAppRegistrations GitHubAppRegistration[]
+    savedSecretTeamGrants SavedSecretTeamGrant[]
+
+    @@index([name, id])
+}
+
+enum IdentityProviderKind {
+    oidc
+    workos_sso
+    github_app_identity
+}
+
+/// One server-managed identity-provider instance. A null ownerTeamId denotes the
+/// singleton Home owner; a non-null ownerTeamId denotes that exact Home-local Team.
+model IdentityProviderInstance {
+    id                 String               @id @default(cuid())
+    ownerTeamId        String?
+    kind               IdentityProviderKind
+    displayName        String
+    enabled            Boolean              @default(false)
+    firstEnabledAt     DateTime?
+    securityRevision   Int                  @default(1)
+    revision           Int                  @default(1)
+    config             Json
+    encryptedSecrets   Bytes?
+    githubAppInstallationId String?
+    lastSuccessfulTestAt DateTime?
+    lastSuccessfulTestRuntimeFingerprint String?
+    lastSuccessfulTestSecurityRevision Int?
+    createdByAccountId String?
+    createdAt          DateTime             @default(now())
+    updatedAt          DateTime             @updatedAt
+
+    ownerTeam Team?    @relation(fields: [ownerTeamId], references: [id], onDelete: Restrict)
+    createdBy Account? @relation("IdentityProviderInstanceCreator", fields: [createdByAccountId], references: [id], onDelete: SetNull)
+    githubAppInstallation GitHubAppInstallation? @relation(fields: [githubAppInstallationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+    connections TeamIdentityConnection[]
+
+    @@index([ownerTeamId, createdAt, id])
+    @@index([githubAppInstallationId])
+}
+
+/// One Team's binding to one provider instance. Provider-kind leaves validate
+/// the strict externalReference/settings documents; this row owns lifecycle.
+model TeamIdentityConnection {
+    id                       String   @id @default(cuid())
+    teamId                   String
+    providerInstanceId       String
+    externalReference        Json
+    settings                 Json
+    enabled                  Boolean  @default(false)
+    firstEnabledAt           DateTime?
+    revision                 Int      @default(1)
+    lastObservation          Json?
+    lastSuccessfulTestAt     DateTime?
+    createdByAccountId       String?
+    createdAt                DateTime @default(now())
+    updatedAt                DateTime @updatedAt
+
+    team             Team                     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+    providerInstance IdentityProviderInstance @relation(fields: [providerInstanceId], references: [id], onDelete: Restrict)
+    createdBy        Account?                 @relation("TeamIdentityConnectionCreator", fields: [createdByAccountId], references: [id], onDelete: SetNull)
+    externalBindings TeamExternalGroupBinding[]
+    directorySources TeamDirectorySource[]
+    managedMemberships TeamMembershipIdentityConnectionManagement[]
+
+    @@unique([teamId, providerInstanceId])
+    @@unique([id, teamId])
+}
+
+/// The sole secret/configuration owner for one real GitHub App registration.
+/// A null ownerTeamId denotes the singleton Home owner; a non-null value limits
+/// the registration to that exact Team. Consumer bindings retain installation
+/// references and never copy these secrets or persist facet-enable booleans.
+model GitHubAppRegistration {
+    id                 String   @id @default(cuid())
+    ownerTeamId        String?
+    githubHost         String
+    githubAppId        BigInt
+    githubClientId     String
+    githubAppSlug      String?
+    githubOwnerId      BigInt?
+    githubOwnerLogin   String?
+    config             Json
+    encryptedSecrets   Bytes
+    revision           Int      @default(1)
+    securityRevision   Int      @default(1)
+    state              String   @default("draft")
+    verificationHealth Json?
+    lastVerifiedAt     DateTime?
+    createdByAccountId String?
+    createdAt          DateTime @default(now())
+    updatedAt          DateTime @updatedAt
+
+    ownerTeam     Team?                   @relation(fields: [ownerTeamId], references: [id], onDelete: Restrict)
+    createdBy     Account?                @relation("GitHubAppRegistrationCreator", fields: [createdByAccountId], references: [id], onDelete: SetNull)
+    installations GitHubAppInstallation[]
+
+    @@unique([githubHost, githubAppId])
+    @@index([ownerTeamId, createdAt, id])
+}
+
+/// Verified correspondence between one registration and one GitHub
+/// organization installation. Access tokens are always short lived and are
+/// never persisted on this record.
+model GitHubAppInstallation {
+    id                      String   @id @default(cuid())
+    registrationId          String
+    githubInstallationId    BigInt
+    githubOrganizationId    BigInt
+    githubOrganizationLogin String
+    repositorySelection     String
+    revision                Int      @default(1)
+    state                   String   @default("unverified")
+    verifiedPermissions     Json?
+    verifiedEvents          Json?
+    suspendedAt             DateTime?
+    lastVerifiedAt          DateTime?
+    createdAt               DateTime @default(now())
+    updatedAt               DateTime @updatedAt
+
+    registration              GitHubAppRegistration     @relation(fields: [registrationId], references: [id], onDelete: Restrict)
+    identityProviderInstances IdentityProviderInstance[]
+    directorySources          TeamDirectorySource[]
+
+    @@unique([registrationId, githubInstallationId])
+    @@unique([registrationId, githubOrganizationId])
+    @@index([registrationId, state, id])
+}
+
+/// One immutable membership lifetime. Removal/rejoin creates a new id and horizon.
+model TeamMembership {
+    credentialGrants TeamCredentialMemberGrant[]
+    externalApiKeys TeamCredentialExternalApiKey[]
+    id                    String               @id @default(cuid())
+    teamId                String
+    accountId             String
+    role                  TeamRole
+    status                TeamMembershipStatus @default(active)
+    sessionAccessStartsAt DateTime?
+    createdAt             DateTime             @default(now())
+
+    team             Team                  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    account          Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    groupMemberships TeamGroupMembership[]
+    provisionedIdentity TeamProvisionedIdentity?
+    identityConnectionManagement TeamMembershipIdentityConnectionManagement?
+
+    @@unique([teamId, accountId])
+    @@unique([id, teamId])
+    @@index([accountId, status, teamId])
+    @@index([teamId, createdAt, id])
+}
+
+/// Exact JIT management owner for one membership lifetime. The paired Team FKs
+/// prevent a valid connection id from managing a membership in another Team.
+model TeamMembershipIdentityConnectionManagement {
+    teamMembershipId String @id
+    teamId String
+    teamIdentityConnectionId String
+
+    membership TeamMembership @relation(fields: [teamMembershipId, teamId], references: [id, teamId], onDelete: Cascade, onUpdate: Restrict, map: "TeamMembershipIdentityConnectionManagement_membership_fkey")
+    identityConnection TeamIdentityConnection @relation(fields: [teamIdentityConnectionId, teamId], references: [id, teamId], onDelete: Restrict, onUpdate: Restrict, map: "TeamMembershipIdentityConnectionManagement_connection_fkey")
+
+    @@index([teamIdentityConnectionId], map: "TeamMembershipIdentityConnectionManagement_connection_idx")
+    @@unique([teamMembershipId, teamId], map: "TeamMembershipIdentityConnectionManagement_membership_team_key")
+}
+
+enum TeamDirectorySourceKind {
+    workos_directory
+    github_organization
+}
+
+enum TeamDirectorySourceState {
+    initializing
+    active
+    paused
+    needs_attention
+}
+
+/// Server-owned external directory source. Projection rows are evidence only;
+/// native Team access remains owned by TeamMembership and TeamGroupMembership.
+model TeamDirectorySource {
+    id                         String                   @id @default(cuid())
+    teamId                     String
+    kind                       TeamDirectorySourceKind
+    state                      TeamDirectorySourceState @default(initializing)
+    displayName                String
+    externalSourceKey          String                   @unique
+    bindingConfig              Json
+    teamIdentityConnectionId   String?
+    githubAppInstallationId    String?
+    eventCursor                String?
+    eventRangeStart            DateTime?
+    manualSyncRequestedAt      DateTime?
+    activeReconcileRunId       String?
+    activeReconcileStartedAt   DateTime?
+    lastAttemptAt              DateTime?
+    lastSuccessAt              DateTime?
+    lastFullReconcileAt        DateTime?
+    lastErrorCode              String?
+    consecutiveFailureCount    Int                      @default(0)
+    retryNotBefore             DateTime?
+    createdAt                  DateTime                 @default(now())
+    updatedAt                  DateTime                 @updatedAt
+
+    team Team @relation(fields: [teamId], references: [id], onDelete: Restrict)
+    identityConnection TeamIdentityConnection? @relation(fields: [teamIdentityConnectionId, teamId], references: [id, teamId], onDelete: Restrict, onUpdate: Restrict)
+    githubAppInstallation GitHubAppInstallation? @relation(fields: [githubAppInstallationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+    provisionedIdentities TeamProvisionedIdentity[]
+    groups TeamDirectoryGroup[]
+    groupMembers TeamDirectoryGroupMember[]
+    externalBindings TeamExternalGroupBinding[]
+
+    @@unique([id, teamId])
+    @@index([teamId, state])
+    @@index([githubAppInstallationId])
+    @@index([state, manualSyncRequestedAt])
+    @@index([state, retryNotBefore, lastAttemptAt, id])
+}
+
+enum TeamProvisionedIdentityState {
+    active
+    suspended
+    deleted
+}
+
+model TeamProvisionedIdentity {
+    id                         String                         @id @default(cuid())
+    directorySourceId          String
+    teamId                     String
+    externalUserId             String
+    externalSubjectId          String?
+    normalizedEmail            String?
+    displayName                String?
+    externalLogin              String?
+    state                      TeamProvisionedIdentityState
+    boundAccountId             String?
+    teamMembershipId           String?                        @unique
+    teamMembershipTeamId       String?
+    externalUpdatedAt          DateTime?
+    lastSeenReconcileRunId     String?
+    createdAt                  DateTime                       @default(now())
+    updatedAt                  DateTime                       @updatedAt
+
+    source TeamDirectorySource @relation(fields: [directorySourceId, teamId], references: [id, teamId], onDelete: Cascade, onUpdate: Restrict)
+    boundAccount Account? @relation(fields: [boundAccountId], references: [id], onDelete: SetNull)
+    teamMembership TeamMembership? @relation(fields: [teamMembershipId, teamMembershipTeamId], references: [id, teamId], onDelete: SetNull, onUpdate: Restrict)
+    groupMemberships TeamDirectoryGroupMember[]
+
+    @@unique([directorySourceId, externalUserId])
+    @@unique([teamMembershipId, teamMembershipTeamId], map: "TeamProvisionedIdentity_membership_team_key")
+    @@index([boundAccountId])
+    @@index([directorySourceId, state])
+}
+
+enum TeamDirectoryGroupState {
+    active
+    deleted
+}
+
+model TeamDirectoryGroup {
+    id                         String                    @id @default(cuid())
+    directorySourceId          String
+    externalGroupId            String
+    externalDisplayName        String
+    state                      TeamDirectoryGroupState
+    externalUpdatedAt          DateTime?
+    lastSeenReconcileRunId     String?
+    createdAt                  DateTime                  @default(now())
+    updatedAt                  DateTime                  @updatedAt
+
+    source TeamDirectorySource @relation(fields: [directorySourceId], references: [id], onDelete: Cascade)
+    members TeamDirectoryGroupMember[]
+
+    @@unique([directorySourceId, externalGroupId])
+}
+
+model TeamDirectoryGroupMember {
+    directorySourceId      String
+    externalGroupId        String
+    externalUserId         String
+    lastSeenReconcileRunId String?
+
+    source TeamDirectorySource @relation(fields: [directorySourceId], references: [id], onDelete: Cascade)
+    group TeamDirectoryGroup @relation(fields: [directorySourceId, externalGroupId], references: [directorySourceId, externalGroupId], onDelete: Cascade)
+    identity TeamProvisionedIdentity @relation(fields: [directorySourceId, externalUserId], references: [directorySourceId, externalUserId], onDelete: Cascade)
+
+    @@id([directorySourceId, externalGroupId, externalUserId])
+    @@index([directorySourceId, externalUserId])
+}
+
+model TeamGroup {
+    credentialGrants TeamCredentialGroupGrant[]
+    id               String   @id @default(cuid())
+    teamId           String
+    name             String
+    nameKey          String
+    description      String?
+    archivedAt       DateTime?
+    createdAt        DateTime @default(now())
+    updatedAt        DateTime @updatedAt
+
+    team             Team                       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    memberships      TeamGroupMembership[]
+    externalBindings TeamExternalGroupBinding[]
+    sessionGrants    SessionGroupGrant[]
+    savedSecretGroupGrants SavedSecretGroupGrant[]
+
+    @@unique([id, teamId])
+    @@unique([teamId, nameKey])
+}
+
+// Team-owned credential references and consent; source material remains at its existing owner.
+// One polymorphic source lifetime: `sourceBindingJson` is the strict
+// TeamCredentialSourceBindingV1 union (connected_account | connected_pool |
+// provider_connection) with source-adapter currentness at the resource service.
+// There is deliberately no partial foreign key for only the relational arms;
+// a second lifetime model would create two authorities for the same source.
+// Pool incarnation is the existing qualified Group row id; generation and
+// member selection are observed use-time facts, never resource identity.
+// Provider Connections are non-relational and revalidated by id/fingerprint/slot.
+model TeamCredentialResource {
+    id                     String   @id @default(cuid())
+    teamId                 String
+    custodianAccountId     String
+    displayName            String
+    enabled                Boolean  @default(true)
+    revision               Int      @default(0)
+    disclosureCeiling      String
+    sessionUsePolicy       String
+    sourceBindingJson      String
+    directSourceVersionsJson String?
+    requestPolicyJson      String?
+    brokerMachineId        String?
+    brokerPoolId           String?
+    allMembersDeliveryMode String?
+    createdAt              DateTime @default(now())
+    updatedAt              DateTime @updatedAt
+
+    team             Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    custodianAccount Account  @relation(fields: [custodianAccountId], references: [id], onDelete: Cascade)
+    brokerMachine    Machine? @relation(fields: [brokerMachineId], references: [id], onDelete: SetNull)
+    brokerPool       MachinePool? @relation(fields: [brokerPoolId], references: [id], onDelete: SetNull)
+    groupGrants      TeamCredentialGroupGrant[]
+    memberGrants     TeamCredentialMemberGrant[]
+    sessionBindings  SessionTeamCredentialBinding[]
+    externalApiKeys  TeamCredentialExternalApiKey[]
+    usageLimits      TeamCredentialUsageLimit[]
+    directRecipientMaterials TeamCredentialRecipientMaterial[]
+
+    @@index([teamId, enabled, updatedAt])
+    @@index([custodianAccountId, updatedAt])
+    @@index([brokerMachineId])
+    @@index([brokerPoolId])
+}
+
+/// Resource-scoped external inference credential. The bearer is returned only
+/// at creation; this row retains a digest and the immutable accountable
+/// membership lifetime, never plaintext secret material.
+model TeamCredentialExternalApiKey {
+    id               String   @id @default(uuid())
+    resourceId       String
+    teamMembershipId  String
+    label            String
+    displayPrefix    String
+    secretDigest     String   @unique
+    createdAt        DateTime @default(now())
+    lastUsedAt       DateTime?
+    expiresAt        DateTime?
+
+    resource   TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    membership TeamMembership         @relation(fields: [teamMembershipId], references: [id], onDelete: Restrict)
+
+    @@index([resourceId, createdAt])
+    @@index([teamMembershipId, resourceId])
+}
+
+// Derived direct-delivery bytes for one authorized recipient and one stable
+// source member. This is never a recipient-owned Connected Account, Pool,
+// Provider Connection, or Saved Secret.
+model TeamCredentialRecipientMaterial {
+    id                                   String   @id @default(cuid())
+    resourceId                           String
+    recipientAccountId                   String
+    sourceMemberKey                      String
+    sourceVersion                        String
+    recipientMode                        String
+    recipientContentPublicKeyFingerprint String?
+    storedMaterial                       Bytes
+    createdAt                            DateTime @default(now())
+    updatedAt                            DateTime @updatedAt
+
+    resource          TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    recipientAccount  Account                @relation(fields: [recipientAccountId], references: [id], onDelete: Cascade)
+
+    @@unique([resourceId, recipientAccountId, sourceMemberKey], map: "TCRM_resource_recipient_member_key")
+    @@index([recipientAccountId, resourceId], map: "TCRM_recipient_resource_idx")
+}
+
+// Administrative history survives resource deletion; Team erasure removes it.
+// The resource service validates kind and the bounded subject display snapshot.
+model TeamCredentialActivityEvent {
+    id                 String   @id @default(cuid())
+    teamId             String
+    resourceId         String
+    kind               String
+    actorAccountId     String?
+    subjectDisplayName String
+    createdAt          DateTime @default(now())
+
+    team         Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    actorAccount Account? @relation(fields: [actorAccountId], references: [id], onDelete: SetNull)
+
+    @@index([teamId, resourceId, createdAt])
+    @@index([actorAccountId])
+}
+
+model TeamCredentialGroupGrant {
+    resourceId   String
+    teamGroupId  String
+    deliveryMode String
+    createdAt    DateTime @default(now())
+    updatedAt    DateTime @updatedAt
+
+    resource TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    group    TeamGroup              @relation(fields: [teamGroupId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, teamGroupId])
+    @@index([teamGroupId, resourceId])
+}
+
+model TeamCredentialMemberGrant {
+    resourceId       String
+    teamMembershipId String
+    deliveryMode     String
+    createdAt        DateTime @default(now())
+    updatedAt        DateTime @updatedAt
+
+    resource   TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    membership TeamMembership         @relation(fields: [teamMembershipId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, teamMembershipId])
+    @@index([teamMembershipId, resourceId])
+}
+
+// Accepted durable Session selection intent; only the canonical configuration transaction writes it.
+model SessionTeamCredentialBinding {
+    sessionId  String
+    slotKind   String
+    // Exact UTF-8 canonical slot encoding, kept binary for full-length MySQL compound-key identity.
+    slotKey    Bytes
+    resourceId String
+    resourceRevision Int
+    createdAt  DateTime @default(now())
+    updatedAt  DateTime @updatedAt
+
+    session  Session                @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    resource TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+    @@id([sessionId, slotKind, slotKey])
+    @@index([resourceId, sessionId])
+}
+
+model SavedSecretResource {
+    id              String   @id @default(cuid())
+    ownerAccountId  String
+    displayName     String
+    kind            String
+    encryptionMode  String
+    revision        Int      @default(1)
+    storedContent   String
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+
+    owner Account @relation("SavedSecretResourceOwner", fields: [ownerAccountId], references: [id], onDelete: Cascade)
+    accountGrants SavedSecretAccountGrant[]
+    teamGrants SavedSecretTeamGrant[]
+    groupGrants SavedSecretGroupGrant[]
+    keyEnvelopes SavedSecretResourceKeyEnvelope[]
+
+    @@index([ownerAccountId, updatedAt], map: "SavedSecretResource_owner_updated_idx")
+}
+
+model SavedSecretAccountGrant {
+    resourceId String
+    accountId String
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    resource SavedSecretResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    account Account @relation("SavedSecretAccountGrantRecipient", fields: [accountId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("SavedSecretAccountGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, accountId])
+    @@index([accountId, resourceId])
+}
+
+model SavedSecretTeamGrant {
+    resourceId String
+    teamId String
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    resource SavedSecretResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("SavedSecretTeamGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, teamId])
+    @@index([teamId, resourceId])
+}
+
+model SavedSecretGroupGrant {
+    resourceId String
+    teamGroupId String
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    resource SavedSecretResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    teamGroup TeamGroup @relation(fields: [teamGroupId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("SavedSecretGroupGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, teamGroupId])
+    @@index([teamGroupId, resourceId])
+}
+
+model SavedSecretResourceKeyEnvelope {
+    resourceId String
+    recipientAccountId String
+    encryptedDataKey Bytes
+    recipientContentPublicKeyFingerprint String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    resource SavedSecretResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+    recipient Account @relation("SavedSecretResourceKeyEnvelopeRecipient", fields: [recipientAccountId], references: [id], onDelete: Cascade)
+
+    @@id([resourceId, recipientAccountId])
+    @@index([recipientAccountId, resourceId])
+}
+
+model TeamGroupMembership {
+    teamId                String
+    teamGroupId           String
+    teamMembershipId      String
+    nativeContribution    Boolean  @default(false)
+    sessionAccessStartsAt DateTime?
+    createdAt             DateTime @default(now())
+
+    group                 TeamGroup      @relation(fields: [teamGroupId, teamId], references: [id, teamId], onDelete: Cascade)
+    teamMembership        TeamMembership @relation(fields: [teamMembershipId, teamId], references: [id, teamId], onDelete: Cascade)
+    externalContributions TeamGroupMembershipExternalContribution[]
+
+    @@id([teamGroupId, teamMembershipId])
+    @@index([teamMembershipId, teamId])
+    @@index([teamGroupId, createdAt, teamMembershipId], map: "TeamGroupMembership_page_idx")
+}
+
+enum TeamExternalGroupBindingMode {
+    directory_created
+    native_target
+}
+
+/// Native mapping only. Lane 03 must add same-Team source-owner FKs before external activation.
+/// Exactly one source owner is enforced by the provider migration CHECK.
+model TeamExternalGroupBinding {
+    id                       String @id @default(cuid())
+    teamId                   String
+    teamGroupId              String
+    directorySourceId        String?
+    teamIdentityConnectionId String?
+    externalGroupId          String
+    bindingMode              TeamExternalGroupBindingMode
+
+    group         TeamGroup @relation(fields: [teamGroupId, teamId], references: [id, teamId], onDelete: Restrict)
+    identityConnection TeamIdentityConnection? @relation(fields: [teamIdentityConnectionId, teamId], references: [id, teamId], onDelete: Restrict, onUpdate: Restrict)
+    directorySource TeamDirectorySource? @relation(fields: [directorySourceId, teamId], references: [id, teamId], onDelete: Restrict, onUpdate: Restrict)
+    contributions TeamGroupMembershipExternalContribution[]
+
+    @@unique([id, teamGroupId])
+    @@unique([directorySourceId, externalGroupId], map: "TeamExternalGroupBinding_directory_key")
+    @@unique([teamIdentityConnectionId, externalGroupId], map: "TeamExternalGroupBinding_connection_key")
+    @@index([teamGroupId])
+}
+
+model TeamGroupMembershipExternalContribution {
+    teamGroupId            String
+    teamMembershipId       String
+    externalGroupBindingId String
+    createdAt              DateTime @default(now())
+
+    membership TeamGroupMembership @relation(fields: [teamGroupId, teamMembershipId], references: [teamGroupId, teamMembershipId], onDelete: Cascade, map: "TeamGroupContribution_membership_fkey")
+    binding    TeamExternalGroupBinding @relation(fields: [externalGroupBindingId, teamGroupId], references: [id, teamGroupId], onDelete: Restrict, map: "TeamGroupContribution_binding_fkey")
+
+    @@id([teamGroupId, teamMembershipId, externalGroupBindingId], map: "TeamGroupContribution_pkey")
+    @@index([externalGroupBindingId], map: "TeamGroupContribution_binding_idx")
+}
+
+enum TeamInvitationEmailDeliveryStatus {
+    sent
+    failed
+}
+
+model TeamInvitation {
+    id                         String   @id @default(cuid())
+    teamId                     String
+    tokenHash                  Bytes    @unique
+    recipientEmailNormalized   String?
+    role                       TeamRole
+    historyAccess              SessionHistoryAccess
+    createdByAccountId         String?
+    acceptedAt                 DateTime?
+    acceptedByAccountId        String?
+    revokedAt                  DateTime?
+    expiresAt                  DateTime
+    lastEmailDeliveryStatus    TeamInvitationEmailDeliveryStatus?
+    lastEmailDeliveryAttemptAt DateTime?
+    createdAt                  DateTime @default(now())
+
+    team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdByAccount  Account? @relation("TeamInvitationCreator", fields: [createdByAccountId], references: [id], onDelete: SetNull)
+    acceptedByAccount Account? @relation("TeamInvitationAccepter", fields: [acceptedByAccountId], references: [id], onDelete: SetNull)
+
+    @@index([teamId, createdAt, id])
 }
 
 model AccountHomeDirectoryEntry {
@@ -182,6 +933,8 @@ model AccountApiToken {
     accountId     String
     displayPrefix String
     secretDigest  String
+    encryptionAccess Json?
+    authenticationEvidence Json?
     label         String
     createdAt     DateTime @default(now())
     lastUsedAt    DateTime?
@@ -213,6 +966,12 @@ model AccountEncryptionTransition {
     targetAccountPublicKey      String?
     targetContentPublicKey      Bytes?
     targetContentPublicKeySig   Bytes?
+    /// Prepared replacement password credential for an Account that has one
+    /// enrolled. It is staged at authorization and committed by the same
+    /// Account mode flip, so a mode can never be published beside a credential
+    /// of the other mode. Null means the Account has no password to convert.
+    targetPasswordCredential    Json?
+    targetPasswordRevision      Int?
     /// `activeAccountId` is present only while this row is preparing or authorized.
     status                     String
     activeAccountId            String?  @unique
@@ -293,14 +1052,14 @@ model AccountEncryptionTransitionAutomationStageState {
 }
 
 /// Exact immutable Automation source/target facts staged by the one Account transition.
-/// This is a closed Definition|Run participant union, not a generic participant registry.
+/// This is the closed Definition|Run|WorkflowInvocation transition participant union.
 model AccountEncryptionTransitionAutomationStage {
     id                 String   @id @default(uuid())
     transitionId       String
     participantKind    String
     participantId      String
-    automationId       String
-    sourceRevision     Int
+    automationId       String?
+    sourceRevision     Int?
     sourceContent      String
     targetContent      String?
     sourceEncodedBytes BigInt
@@ -318,6 +1077,24 @@ enum AccountIdentityEligibilityStatus {
     unknown
     eligible
     ineligible
+}
+
+/// Proven mailbox evidence; native login remains an AccountIdentity binding.
+model AccountEmail {
+    accountId       String
+    account         Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    address         String
+    normalizedEmail String
+
+    @@id([accountId, normalizedEmail])
+    @@index([normalizedEmail])
+}
+
+model AccountPasswordCredential {
+    accountId  String @id
+    account    Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    credential Json
+    revision   Int @default(1)
 }
 
 model AccountIdentity {
@@ -466,6 +1243,8 @@ model TerminalAuthRequest {
     claimedAt         DateTime?
     response          String?
     responseAccountId String?
+    authenticationEvidence Json?
+    approvalTokenEpoch Int?
     responseAccount   Account? @relation(fields: [responseAccountId], references: [id])
     createdAt         DateTime @default(now())
     updatedAt         DateTime @updatedAt
@@ -516,6 +1295,14 @@ model KeyChallengeV2 {
     audienceOrigin            String
     audienceServerIdentityId  String?
     expectedAccountId         String?
+    operationKind             String?
+    operationDigest           String?
+    /// Server-owned evidence that this exact challenge was issued to a caller
+    /// who already proved the Account's native password at the unlock
+    /// boundary. It is never client-supplied and never part of the signed
+    /// challenge bytes; the finalizer reads it to stamp truthful credential
+    /// provenance. Null means the credential records only `key_challenge`.
+    verifiedNativeMethodId    String?
     consumedAt                DateTime?
 
     @@index([expiresAt])
@@ -527,6 +1314,7 @@ model AccountPushToken {
     account   Account  @relation(fields: [accountId], references: [id])
     token     String
     clientServerUrl String?
+    remoteAlerts    Json?
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
@@ -570,10 +1358,20 @@ model AccountLiveActivityTarget {
 //
 
 model Session {
+    teamCredentialBindings SessionTeamCredentialBinding[]
     id                String              @id @default(cuid())
     tag               String
     accountId         String
     account           Account             @relation(fields: [accountId], references: [id])
+    accountFollows    AccountSessionFollow[]
+    /// Explicit authored Team context only; access remains grant-owned.
+    primaryTeamId     String?
+    primaryTeam       Team?                @relation("SessionPrimaryTeam", fields: [primaryTeamId], references: [id], onDelete: SetNull)
+    /// The one human Account currently expected to handle this Session.
+    /// It is a workflow fact only: it never grants access and is cleared when the
+    /// responsible Account loses its final read-access source.
+    responsibleAccountId String?
+    responsibleAccount   Account?          @relation("SessionResponsibleAccount", fields: [responsibleAccountId], references: [id], onDelete: SetNull)
     encryptionMode    String              @default("e2ee")
     metadata          String
     metadataVersion   Int                 @default(0)
@@ -581,8 +1379,9 @@ model Session {
     metadataLayoutVersion Int             @default(0)
     agentState        String?
     agentStateVersion Int                 @default(0)
-    dataEncryptionKey Bytes?
     seq               Int                 @default(0)
+    /// Released compatibility storage only. Current viewer state is owned by AccountSessionReadState.
+    lastViewedSessionSeq Int?
     // Server-readable External Sessions publication authority. Raw Agent-source
     // watermarks stay local/E2EE-only; readers use only these bounded fields.
     currentStorageState                 String @default("hosted")
@@ -598,9 +1397,6 @@ model Session {
     pendingActivationRequestedAt DateTime?
     pendingActivationStatus      String?
     pendingActivationFailureCode String?
-    // Server-readable per-session activity projection (minimal, E2EE-safe).
-    // These fields exist to support authoritative badge counts for background/closed devices.
-    lastViewedSessionSeq            Int?
     pendingPermissionRequestCount   Int                 @default(0)
     pendingUserActionRequestCount   Int                 @default(0)
     pendingRequestObservedAt        DateTime?
@@ -622,7 +1418,9 @@ model Session {
     publisherGeneration BigInt             @default(0)
     publisherGenerationLastActiveAt DateTime?
     meaningfulActivityAt DateTime?
+    /// Released compatibility storage only. Current viewer state is owned by AccountSessionReadState.
     unreadSince       DateTime?
+    /// Released generated compatibility projection; application code must not treat it as current viewer authority.
     needsAttention    Boolean             @default(dbgenerated())
     createdAt         DateTime            @default(now())
     updatedAt         DateTime            @updatedAt
@@ -634,16 +1432,24 @@ model Session {
     usageEvents       UsageEvent[]
     accessKeys        AccessKey[]
     shares            SessionShare[]
+    dataKeyEnvelopes   SessionDataKeyEnvelope[]
+    teamGrants        SessionTeamGrant[]
+    groupGrants       SessionGroupGrant[]
     publicShare       PublicSessionShare?
     sessionFolderAssignments SessionFolderAssignment[]
     sessionPins                   SessionPin[]
     sessionAttentionStandings     SessionAttentionStanding[]
+    accountReadStates             AccountSessionReadState[]
     sessionTagAssignments         SessionTagAssignment[]
     systemRecords    SessionSystemRecord[]
     subagentCustodyRecords SessionSubagentCustody[]
     subagentCustodyReceipts SessionSubagentCustodyReceipt[]
     accountChanges    AccountChange[]    @relation("AccountChangeSession")
     producedByAutomationRuns AutomationRun[] @relation("AutomationRunProducedSession")
+    originatedWorkflowRuns AutomationRun[] @relation("WorkflowRunOriginSession")
+    discussions       SessionDiscussion[]
+    followSourceEdges      SessionFollowEdge[] @relation("SessionFollowSource")
+    followDestinationEdges SessionFollowEdge[] @relation("SessionFollowDestination")
 
     @@unique([accountId, tag])
     @@index([accountId, updatedAt(sort: Desc)])
@@ -651,6 +1457,20 @@ model Session {
     @@index([accountId, needsAttention, meaningfulActivityAt(sort: Desc), id(sort: Desc)])
     @@index([accountId, archivedAt(sort: Desc)])
     @@index([lastActiveAt(sort: Asc), updatedAt(sort: Asc)])
+    @@index([responsibleAccountId])
+    @@index([primaryTeamId])
+}
+
+model SessionDataKeyEnvelope {
+    sessionId          String
+    recipientAccountId String
+    encryptedDataKey   Bytes
+
+    session          Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    recipientAccount Account @relation(fields: [recipientAccountId], references: [id], onDelete: Cascade)
+
+    @@id([sessionId, recipientAccountId])
+    @@index([recipientAccountId, sessionId])
 }
 
 model SessionTurn {
@@ -672,6 +1492,9 @@ model SessionTurn {
     rollbackState           String?
     rollbackReason          String?
     agentRollbackOrdinal    Int?
+    usageActorAccountId     String?
+    teamCredentialResourceId String?
+    credentialDeliveryMode  String?
     rollbackUpdatedAt       BigInt?
     lastMutationId          String?
     createdAt               DateTime @default(now())
@@ -738,6 +1561,8 @@ model SessionAttentionStanding {
     accountId String
     sessionId String
     standing  Boolean
+    remindAt  DateTime?
+    standingBeforeReminder Boolean?
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
@@ -746,6 +1571,25 @@ model SessionAttentionStanding {
 
     @@unique([accountId, sessionId])
     @@index([accountId, standing])
+    @@index([accountId, remindAt])
+    @@index([sessionId])
+}
+
+/// One Account's private view frontier for one Session (Lane 09B, L09B-I1).
+/// Absence of a row is a first-class state: it means quiet, not "read from zero"
+/// and not "all history unread". Rows exist only for the Session owner and for
+/// Accounts that entered tracking through an active Follow.
+model AccountSessionReadState {
+    accountId            String
+    sessionId            String
+    lastViewedSessionSeq Int
+    /// Stable unread-entry instant. Null while the viewer is caught up.
+    unreadSince          DateTime?
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+    @@id([accountId, sessionId])
     @@index([sessionId])
 }
 
@@ -949,18 +1793,171 @@ model SessionSubagentCustodyRetiredGeneration {
     @@unique([accountId, capacitySlot], map: "SubagentCustodyRetiredGeneration_capacity_slot_key")
 }
 
+/// One human discussion attached to a Session. Its readers are derived live
+/// from Session access: a discussion never owns an ACL, membership table,
+/// encryption key, runtime, or delivery queue.
+model SessionDiscussion {
+    id                         String   @id @default(cuid())
+    sessionId                  String
+    creationLocalId            String
+    creationEqualityEvidenceV1 Json
+    createdByAccountId         String?
+    titleContent               Json
+    /// Latest assigned message sequence and the transactional allocator.
+    messageSeq                 Int      @default(0)
+    /// Sidebar pagination key. Deliberately denormalized so the list can order
+    /// by message activity without decrypting content or being reordered by a
+    /// title edit. No last-message ciphertext or preview is copied here.
+    lastMessageAt              DateTime
+    archivedAt                 DateTime?
+    createdAt                  DateTime @default(now())
+    updatedAt                  DateTime @updatedAt
+
+    session                    Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    createdByAccount           Account? @relation(fields: [createdByAccountId], references: [id], onDelete: SetNull)
+    messages                   SessionDiscussionMessage[]
+    readStates                 SessionDiscussionReadState[]
+
+    @@unique([id, sessionId])
+    @@unique([sessionId, creationLocalId])
+    @@index([sessionId, archivedAt, lastMessageAt(sort: Desc), id(sort: Desc)])
+}
+
+/// One immutable authored human message. `producerV1` is null for a direct
+/// human post and mandatory for a post an Agent made on behalf of its
+/// authenticated execution Account, which remains `authorAccountId`.
+model SessionDiscussionMessage {
+    id                        String   @id @default(cuid())
+    /// Present only to enforce cross-Session correspondence through the
+    /// composite foreign key. It is not independently writable after creation.
+    sessionId                 String
+    discussionId              String
+    localId                   String
+    requestEqualityEvidenceV1 Json
+    seq                       Int
+    authorAccountId           String?
+    producerV1                Json?
+    content                   Json
+    createdAt                 DateTime @default(now())
+
+    discussion                SessionDiscussion @relation(fields: [discussionId, sessionId], references: [id, sessionId], onDelete: Cascade)
+    authorAccount             Account? @relation(fields: [authorAccountId], references: [id], onDelete: SetNull)
+    mentions                  SessionDiscussionMessageMention[]
+
+    @@unique([discussionId, localId])
+    @@unique([discussionId, seq])
+    @@index([discussionId, seq(sort: Desc)])
+    @@index([authorAccountId, createdAt])
+}
+
+/// "This Account was mentioned for attention." The row grants no access, implies
+/// no participation, and exposes no surrounding text.
+model SessionDiscussionMessageMention {
+    messageId String
+    accountId String
+    createdAt DateTime @default(now())
+
+    message   SessionDiscussionMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+    account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@id([messageId, accountId])
+    @@index([accountId, createdAt])
+}
+
+/// One private read cursor per tracked Account. A missing row never means
+/// historical unread: the tracking owner establishes the baseline before any
+/// unread can accrue, and another Account's cursor is never projected.
+model SessionDiscussionReadState {
+    discussionId String
+    accountId    String
+    lastReadSeq  Int
+    updatedAt    DateTime @updatedAt
+
+    discussion   SessionDiscussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+    account      Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@id([discussionId, accountId])
+    @@index([accountId, discussionId])
+}
+
+enum SessionFollowNotificationLevel {
+    none
+    important
+    all_messages
+}
+
+model AccountSessionFollow {
+    accountId String
+    sessionId String
+    following Boolean @default(true)
+    notificationLevel SessionFollowNotificationLevel @default(important)
+    includeInVoice Boolean @default(false)
+    voiceDeliveredFrontier String?
+
+    account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+    @@id([accountId, sessionId])
+    @@index([sessionId])
+}
+
+enum SessionFollowDeliveredTurnStatus {
+    completed
+    failed
+    cancelled
+}
+
+enum SessionFollowMode {
+    next_turn
+    wake_on_human_change
+}
+
+/// Durable Session-to-Session Follow relation.
+///
+/// The Home stores the authorized pair and the content-free
+/// frontier this destination has already consumed. It never stores source
+/// content, a delivery Account, a configuring author, runtime reachability, key
+/// readiness, a pause flag, or a Follow-specific generation: every one of those
+/// is derived by its own owner from current facts.
+model SessionFollowEdge {
+    sourceSessionId      String
+    destinationSessionId String
+    mode                  SessionFollowMode @default(next_turn)
+    deliveredTranscriptSeq     Int    @default(0)
+    deliveredReadyEventSeq     Int    @default(0)
+    deliveredAgentStateVersion Int    @default(0)
+    deliveredTurnId            String?
+    deliveredTurnStatus        SessionFollowDeliveredTurnStatus?
+
+    sourceSession      Session @relation("SessionFollowSource", fields: [sourceSessionId], references: [id], onDelete: Cascade)
+    destinationSession Session @relation("SessionFollowDestination", fields: [destinationSessionId], references: [id], onDelete: Cascade)
+
+    @@id([destinationSessionId, sourceSessionId])
+    @@index([sourceSessionId])
+}
+
 model SessionMessage {
     id        String   @id @default(cuid())
     sessionId String
     session   Session  @relation(fields: [sessionId], references: [id])
     localId   String?
     sidechainId String?
+    /// Server-private immutable binding copied from Pending custody. This is
+    /// not a client-authored routing field or part of the public Message wire.
+    targetExecutionRunId String?
     seq       Int
     messageRole String?
     /// [SessionMessageContent]
     content   Json
     /// [SessionInputAdmissionReceiptV1]
     inputAdmissionReceipt Json?
+    /// Derived query projection of `inputAdmissionReceipt.actorAccountId` for a
+    /// `messageRole: "user"` row admitted from an authenticated Account. The
+    /// receipt stays the immutable actor authority; this column exists only so
+    /// historical participation is a portable indexed predicate. `SetNull`
+    /// after Account deletion is expected and does not erase the receipt.
+    authorAccountId String?
+    authorAccount   Account? @relation("AuthoredSessionMessages", fields: [authorAccountId], references: [id], onDelete: SetNull)
     /// [SessionInputRequestEqualityEvidenceV1]
     requestEqualityEvidenceV1 Json?
     sourceCreatedAt DateTime?
@@ -980,6 +1977,7 @@ model SessionMessage {
     @@index([sessionId, sidechainId, seq])
     @@index([sessionId, messageRole, seq])
     @@index([sessionId, sidechainId, messageRole, seq])
+    @@index([authorAccountId, sessionId])
 }
 
 enum SessionPendingMessageStatus {
@@ -1003,6 +2001,8 @@ model SessionPendingMessage {
     authorAccount    Account?                   @relation(fields: [authorAccountId], references: [id], onDelete: SetNull)
 
     localId          String
+    /// Null selects the primary Session runtime; Runs remain daemon-owned identities.
+    targetExecutionRunId String?
     messageRole      String?
     /// [SessionPendingMessageContent]
     content          Json
@@ -1030,6 +2030,7 @@ model SessionPendingMessage {
     @@unique([sessionId, localId])
     @@index([sessionId, status, position])
     @@index([sessionId, status, deliveryState, position], map: "SessionPendingMessage_sid_status_dstate_position_idx")
+    @@index([sessionId, targetExecutionRunId, status, deliveryState, position], map: "SessionPendingMessage_sid_target_status_dstate_position_idx")
     @@index([sessionId, authorAccountId])
     @@index([sessionId, status, updatedAt])
 }
@@ -1111,6 +2112,14 @@ model UsageEvent {
     externalKey        String?
     idempotencyKey     String?  @unique
     turnId             String?
+    executionRunId     String?
+    teamCredentialResourceId       String?
+    teamCredentialActorAccountId   String?
+    teamCredentialExternalApiKeyId String?
+    teamCredentialSourceCredentialId String?
+    brokerMachineId                String?
+    credentialDeliveryMode         String?
+    requestCount                   Int      @default(0)
     isCumulative       Boolean  @default(false)
     inputTokens        Int      @default(0)
     outputTokens       Int      @default(0)
@@ -1131,6 +2140,8 @@ model UsageEvent {
     createdAt          DateTime @default(now())
     updatedAt          DateTime @updatedAt
 
+    teamCredentialGroupAttributions UsageEventTeamCredentialGroupAttribution[]
+
     @@index([accountId, observedAt(sort: Desc)])
     @@index([sessionId, observedAt(sort: Desc)])
     @@index([accountId, agentId, observedAt(sort: Desc)])
@@ -1139,14 +2150,52 @@ model UsageEvent {
     @@index([accountId, workspaceId, observedAt(sort: Desc)])
     @@index([accountId, source, observedAt(sort: Desc)])
     @@index([accountId, sessionId, source, externalKey])
+    @@index([teamCredentialResourceId, observedAt])
+    @@index([teamCredentialResourceId, teamCredentialActorAccountId, observedAt], map: "UsageEvent_resource_actor_observed_idx")
+    @@index([teamCredentialExternalApiKeyId, observedAt])
+}
+
+model UsageEventTeamCredentialGroupAttribution {
+    usageEventId String
+    teamGroupId  String
+
+    usageEvent UsageEvent @relation(fields: [usageEventId], references: [id], onDelete: Cascade)
+
+    @@id([usageEventId, teamGroupId])
+    @@index([teamGroupId, usageEventId], map: "UETCGA_group_event_idx")
+}
+
+model TeamCredentialUsageLimit {
+    id          String   @id @default(cuid())
+    resourceId  String
+    subjectKind String
+    subjectId   String   @default("")
+    period      String
+    metric      String
+    maximum     String
+    enabled     Boolean  @default(true)
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    resource TeamCredentialResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+    @@unique([resourceId, subjectKind, subjectId, period, metric])
+    @@index([resourceId, enabled])
 }
 
 //
 // Machines
 //
 
+enum MachineKind {
+    persistent
+    ephemeral_session_runner
+}
+
 model Machine {
+    brokeredTeamCredentialResources TeamCredentialResource[]
     id                 String      @id
+    kind               MachineKind @default(persistent)
     accountId          String
     account            Account     @relation(fields: [accountId], references: [id])
     metadata           String // Encrypted - contains static machine info
@@ -1154,6 +2203,8 @@ model Machine {
     daemonState        String? // Encrypted - contains dynamic daemon state
     daemonStateVersion Int         @default(0)
     dataEncryptionKey  Bytes?
+    /// Creator-authenticated provenance for a Runner-scoped Machine content key.
+    runnerContentKeyBinding Json?
     installationId     String?
     installationPublicKey Bytes?
     contentPublicKeyFingerprint String?
@@ -1180,12 +2231,53 @@ model Machine {
     automationClaimedRuns AutomationRun[] @relation("AutomationRunClaimedByMachine")
     pluginMaterializations PluginMachineMaterialization[]
 
+    poolMemberships    MachinePoolMember[]
+
     @@unique([accountId, id])
     @@index([accountId])
     @@index([accountId, installationId])
     @@index([accountId, replacedByMachineId])
     @@index([accountId, replacedAt(sort: Desc)])
     @@index([accountId, revokedAt(sort: Desc)])
+}
+
+//
+// Machine Pools
+//
+// A reusable named set of one Account's own persistent Machines on one Home. Membership is a saved
+// preference: it confers no Team, Session, Machine or credential authority, and later exact
+// dispatch still revalidates Machine state at its own owners. Home locality follows the
+// authenticated database and the Machine foreign key, so there is no persisted serverId, homeId,
+// principal union or generic resource owner here. No candidate list, request key, score or
+// selection result is ever persisted.
+
+model MachinePool {
+    id          String   @id
+    accountId   String
+    name        String
+    description String?
+    /// Bumped once per actual definition change; the client's expected value is the CAS token.
+    revision    Int      @default(0)
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+    account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    members     MachinePoolMember[]
+    credentialResources TeamCredentialResource[]
+
+    @@index([accountId, id])
+}
+
+model MachinePoolMember {
+    poolId       String
+    machineId    String
+    /// Nonnegative ordinal compared by numeric order; equal-tier membership is unordered.
+    priorityTier Int
+    enabled      Boolean @default(true)
+    pool         MachinePool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+    machine      Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+    @@id([poolId, machineId])
+    @@index([machineId])
 }
 
 enum AutomationScheduleKind {
@@ -1212,6 +2304,37 @@ enum AutomationRunState {
     skipped
     missed
     outcome_uncertain
+    pause_requested
+    paused
+    interrupted
+}
+
+enum WorkflowRunCustodyState {
+    pending
+    settled
+}
+
+enum WorkflowRunResultDeliveryState {
+    pending
+    accepted
+    unavailable
+    workflow_outcome_unresolved
+}
+
+enum WorkflowInvocationLifecycle {
+    pending
+    waiting_for_capacity
+    admitting
+    running
+    waiting_for_approval
+    needs_attention
+    completed
+    failed
+    skipped
+    cancel_requested
+    cancelled
+    outcome_uncertain
+    superseded
 }
 
 enum AutomationTriggerKind {
@@ -1292,7 +2415,7 @@ model Automation {
     description      String?
     enabled          Boolean                @default(true)
     deletedAt        DateTime?
-    targetType       AutomationTargetType
+    targetType       AutomationTargetType?
     templateCiphertext String
     templateVersion  Int                    @default(0)
     lastRunAt        DateTime?
@@ -1366,13 +2489,20 @@ model AutomationAssignment {
 
 model AutomationRun {
     id                 String             @id @default(cuid())
-    automationId       String
-    automation         Automation         @relation(fields: [automationId], references: [id], onDelete: Restrict)
+    originKind                 String   @default("automation")
+    automationId               String?
+    automation                 Automation? @relation(fields: [automationId], references: [id], onDelete: Restrict)
+    originSessionId            String?
+    originSession              Session? @relation("WorkflowRunOriginSession", fields: [originSessionId], references: [id], onDelete: SetNull)
+    workflowAcceptedSnapshotEnvelope String?
+    workflowCheckpointEnvelope String?
+    workflowCustodyState       WorkflowRunCustodyState?
+    workflowResultDeliveryState WorkflowRunResultDeliveryState?
     accountId          String
     account            Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
     state              AutomationRunState @default(queued)
     triggerId          String?
-    causeKind          AutomationRunCauseKind @default(trigger)
+    causeKind          AutomationRunCauseKind? @default(trigger)
     causeTriggerKind   AutomationTriggerKind?
     causeTriggerRevision Int?
     causeEventPluginId String?
@@ -1429,6 +2559,7 @@ model AutomationRun {
     updatedAt          DateTime           @updatedAt
     events             AutomationRunEvent[]
     assignments        AutomationRunAssignment[]
+    workflowInvocations        WorkflowRunInvocation[]
 
     @@index([accountId, state, dueAt])
     @@index([accountId, causeKind, state])
@@ -1446,6 +2577,26 @@ model AutomationRun {
     @@unique([automationId, occurrenceKey])
     @@unique([automationId, legacyManualIdempotencyKey], map: "AutomationRun_automationId_idempotencyKey_key")
     @@index([triggerId, state])
+    @@index([accountId, originKind, createdAt(sort: Desc), id(sort: Desc)], map: "AutomationRun_account_origin_created_id_idx")
+    @@index([originSessionId, createdAt(sort: Desc), id(sort: Desc)], map: "AutomationRun_originSession_created_id_idx")
+}
+
+model WorkflowRunInvocation {
+    id              String   @id @default(cuid())
+    runId           String
+    run             AutomationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+    sequence        BigInt
+    parentRecordId  String?
+    memberOrdinal   BigInt
+    attempt         BigInt   @default(0)
+    lifecycle       WorkflowInvocationLifecycle @default(pending)
+    contentEnvelope String
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+
+    @@unique([runId, sequence], map: "WorkflowRunInvocation_run_sequence_key")
+    @@unique([runId, parentRecordId, memberOrdinal, attempt], map: "WorkflowRunInvocation_slot_attempt_key")
+    @@index([runId, lifecycle, sequence], map: "WorkflowRunInvocation_lifecycle_idx")
 }
 
 /// Atomic replay result for one signed V3 claim request. This intentionally
@@ -2558,7 +3709,7 @@ model PluginPermissionGrantEvent {
 enum ShareAccessLevel {
     /// Read-only access - can view session content but cannot interact
     view
-    /// Edit access - can send messages and approve tool execution
+    /// Edit access - can send messages; tool approval requires explicit delegation
     edit
     /// Admin access - can manage sharing settings and archive session
     admin
@@ -2576,8 +3727,6 @@ model SessionShare {
     accessLevel       ShareAccessLevel @default(view)
     /// Whether this recipient can approve permission prompts for this session (delegated to the owner daemon)
     canApprovePermissions Boolean       @default(false)
-    /// NaCl Box encrypted dataEncryptionKey for the recipient
-    encryptedDataKey  Bytes?
     createdAt         DateTime         @default(now())
     updatedAt         DateTime         @updatedAt
     accessLogs        SessionShareAccessLog[]
@@ -2586,6 +3735,46 @@ model SessionShare {
     @@index([sharedWithUserId])
     @@index([sharedByUserId])
     @@index([sessionId])
+}
+
+/// One Session access grant to a whole Team.
+///
+/// Team membership itself is never copied into rows here: the grant is durable and
+/// membership is evaluated live, so removing a member revokes their access without
+/// touching this row. `effectiveAt` is minted once by the canonical grant service
+/// from the same transaction-scoped database clock that mints Lane 01 membership
+/// horizons, and is preserved by later desired-state replacements, because it is the
+/// only fact that can decide a `from_membership` member's historical access.
+model SessionTeamGrant {
+    sessionId             String
+    teamId                String
+    accessLevel           ShareAccessLevel @default(view)
+    canApprovePermissions Boolean          @default(false)
+    /// Set only by the Team session-policy composition; never accepted from a client.
+    requiredByTeamPolicy  Boolean          @default(false)
+    effectiveAt           DateTime
+
+    session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+    @@id([sessionId, teamId])
+    @@index([teamId, sessionId])
+}
+
+/// One Session access grant to a flat Team Group. The Group reaches its Team through
+/// its own relation, so no redundant `teamId` column is stored here.
+model SessionGroupGrant {
+    sessionId             String
+    teamGroupId           String
+    accessLevel           ShareAccessLevel @default(view)
+    canApprovePermissions Boolean          @default(false)
+    effectiveAt           DateTime
+
+    session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    teamGroup TeamGroup @relation(fields: [teamGroupId], references: [id], onDelete: Cascade)
+
+    @@id([sessionId, teamGroupId])
+    @@index([teamGroupId, sessionId])
 }
 
 /// Access log for direct session shares
@@ -2646,4 +3835,37 @@ model PublicShareAccessLog {
     @@index([publicShareId])
     @@index([userId])
     @@index([accessedAt])
+}
+
+// Pre-Session reservations; Session/Machine rows deliberately do not exist yet.
+model EphemeralRunnerActivation {
+    id                         String   @id
+    creatorAccountId           String
+    creatorAccount             Account  @relation(fields: [creatorAccountId], references: [id], onDelete: Restrict)
+    creatorTokenEpoch          Int
+    draftId                    String
+    sessionId                  String   @unique
+    machineId                  String   @unique
+    state                      String
+    closeReason                String?
+    progressPhase              String?
+    activationExpiresAt        DateTime?
+    workspacePolicy            String
+    homeServerIdentityId       String
+    activationSigningPublicKey String
+    authoringCommitment        String
+    artifact                   Json
+    endpointFactsRecipient     Json
+    authenticationEvidence     Json?
+    claim                      Json?
+    endpointFacts              Json?
+    credentialSelection        Json?
+    review                     Json?
+    consent                    Json?
+    readiness                  Json?
+    sealedBootstrap            Json?
+    createdAt                  DateTime @default(now())
+    updatedAt                  DateTime @updatedAt
+
+    @@index([creatorAccountId, draftId])
 }

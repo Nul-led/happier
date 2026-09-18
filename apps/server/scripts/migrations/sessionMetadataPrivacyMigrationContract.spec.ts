@@ -94,7 +94,9 @@ describe('session metadata privacy envelope schema and migration contract', () =
 
         const sql = await read(`prisma/mysql/migrations/${migrationId}/migration.sql`);
         // MySQL 8.0's utf8mb4_bin is case-sensitive on the admitted ASCII Base64
-        // alphabet and preserves the repository's documented 8.0.16 support floor:
+        // alphabet. The persisted ciphertext grammar cannot contain spaces, so
+        // PAD SPACE does not weaken this non-identity column even though the
+        // server's broader MySQL support floor is 8.0.17:
         // https://dev.mysql.com/doc/refman/8.0/en/charset-binary-collations.html
         expect(sql).toMatch(
             /`ownerMetadata`\s+LONGTEXT\s+CHARACTER SET utf8mb4\s+COLLATE utf8mb4_bin\s+NULL/,

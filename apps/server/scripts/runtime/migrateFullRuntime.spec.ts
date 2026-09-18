@@ -41,9 +41,13 @@ async function createArtifact(): Promise<{ root: string; executablePath: string 
 afterEach(async () => Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
 
 describe('runFullRuntimeMigration', () => {
-    it('refuses the irreversible V4 boundary before spawn without updater handoff', async () => {
+    it.each([
+        '20260725100000_activate_qualified_connected_accounts_v4',
+        '20260905220000_add_team_home_governance',
+        '20260905235000_add_account_session_read_state',
+        '20260906160100_contract_session_data_key_envelopes',
+    ])('refuses %s before spawn without updater handoff', async (boundaryMigration) => {
         const artifact = await createArtifact();
-        const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
         const migrationDir = join(artifact.root, 'prisma', 'migrations', boundaryMigration);
         await mkdir(migrationDir);
         // Candidate bytes come from the current checked-in migration. The predecessor
@@ -63,9 +67,13 @@ describe('runFullRuntimeMigration', () => {
         expect(spawned).toBe(false);
     });
 
-    it('admits the current updater capability for the real V4 migration candidate', async () => {
+    it.each([
+        '20260725100000_activate_qualified_connected_accounts_v4',
+        '20260905220000_add_team_home_governance',
+        '20260905235000_add_account_session_read_state',
+        '20260906160100_contract_session_data_key_envelopes',
+    ])('admits the current updater capability for %s', async (boundaryMigration) => {
         const artifact = await createArtifact();
-        const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
         const migrationDir = join(artifact.root, 'prisma', 'migrations', boundaryMigration);
         await mkdir(migrationDir);
         await writeFile(
